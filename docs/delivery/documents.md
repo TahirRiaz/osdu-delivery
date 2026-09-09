@@ -99,7 +99,11 @@ reliability:
   fanOut: 0                        # member runs a large submission spreads over (0 = none; at most 64)
   fanOutMinRecords: 1000           # below this a submission never fans out
 
-schedule: { cron: "0 * * * *", timezone: UTC, operation: deliver }   # service: what to run, and when
+schedule:                          # service: what to run, when, and with which parameter values
+  cron: "0 * * * *"
+  timezone: UTC
+  operation: deliver
+  values: { logSource: STAT_COMP }  # required when the flow declares required parameters; a fire supplies nothing else
 verify: { reconcile: false }       # whether the verify pass re-queues drifted or missing records
 ```
 
@@ -117,7 +121,10 @@ in a retrieval flow's `source.query` and `target.location`.
 ### Schedules
 
 The inline `schedule` fires the flow on the platform scheduler; `operation` (deliver by default; verify, plan,
-known-state, intake or drain, and retrieve or plan on a retrieval flow) is what every fire runs. A nightly drift pass is a second schedule in the repository's schedule
+known-state, intake or drain, and retrieve or plan on a retrieval flow) is what every fire runs, and `values`
+supplies the flow's own parameters. A flow that declares a required parameter **must** give the schedule values for
+it: a fire supplies nothing on its own, so without them every run fails validation with "parameter 'name' is
+required". A run-now's values override the schedule's name by name, leaving the rest in place. A nightly drift pass is a second schedule in the repository's schedule
 library with `operation: verify` and the flow as its member. Run-now on a schedule keeps its operation and adds
 `force`.
 

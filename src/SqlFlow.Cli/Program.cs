@@ -652,7 +652,7 @@ internal static class Program
 
                     Console.WriteLine(missing.Count == 0
                         ? "catalog: provisioned and matches this build's model."
-                        : $"catalog: provisioned but missing {missing.Count} table(s) this build declares.");
+                        : $"catalog: provisioned but missing {missing.Count} table(s) or column(s) this build declares.");
                     foreach (var table in missing)
                     {
                         Console.WriteLine($"  missing: {table}");

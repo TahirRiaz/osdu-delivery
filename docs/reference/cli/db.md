@@ -69,16 +69,16 @@ ERROR  catalog 'migrate' failed: The catalog database (server '<server>', databa
 
 ### status
 
-`db status` compares the tables the EF model declares against those the database actually has, and prints one of:
+`db status` compares the tables and columns the EF model declares against those the database actually has, and prints one of:
 
 ```text
 catalog: not provisioned (the database holds none of the catalog's tables).
 catalog: provisioned and matches this build's model.
-catalog: provisioned but missing N table(s) this build declares.
+catalog: provisioned but missing N table(s) or column(s) this build declares.
   missing: <schema>.<table>
 ```
 
-with one `missing:` line (indented two spaces) per absent table. It exits 0 when the database matches the model and 2 otherwise, so it works as a CI drift gate.
+with one `missing:` line (indented two spaces) per absent table or column (`schema.table.column`). It exits 0 when the database matches the model and 2 otherwise, so it works as a CI drift gate.
 
 ### sync
 

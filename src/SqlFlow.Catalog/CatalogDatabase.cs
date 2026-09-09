@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 
 namespace SqlFlow.Catalog;
@@ -132,10 +133,8 @@ public static class CatalogDatabase
         string connectionString, CancellationToken ct = default)
     {
         await using var context = Create(connectionString);
-        var expected = ExpectedTables(context);
         var present = await PresentTablesAsync(context, ct).ConfigureAwait(false);
-        var missing = expected.Where(t => !present.Contains(t)).OrderBy(t => t, StringComparer.Ordinal).ToList();
-        return (present.Count > 0, missing);
+        return (present.Count > 0, await MissingAsync(context, ct).ConfigureAwait(false));
     }
 
     /// <summary>A human-readable, secret-free description of a connection's target (server and database), for logs
@@ -162,19 +161,40 @@ public static class CatalogDatabase
     /// </summary>
     private static async Task VerifyAsync(CatalogDbContext context, string connectionString, CancellationToken ct)
     {
-        var expected = ExpectedTables(context);
-        var present = await PresentTablesAsync(context, ct).ConfigureAwait(false);
-        var missing = expected.Where(t => !present.Contains(t)).OrderBy(t => t, StringComparer.Ordinal).ToList();
+        var missing = await MissingAsync(context, ct).ConfigureAwait(false);
         if (missing.Count == 0)
         {
             return;
         }
 
+        var listed = string.Join(", ", missing.Take(20)) + (missing.Count > 20 ? ", ..." : string.Empty);
         throw new CatalogProvisioningException(
-            $"The catalog database ({DescribeTarget(connectionString)}) is missing {missing.Count} table(s) this build " +
-            $"declares: {string.Join(", ", missing)}. The schema is created from the model and nothing upgrades it in " +
-            "place, so a database provisioned before a model change has to be provisioned again: drop it and run " +
+            $"The catalog database ({DescribeTarget(connectionString)}) is missing {missing.Count} table(s) or " +
+            $"column(s) this build declares: {listed}. The schema is created from the model and nothing upgrades it " +
+            "in place, so a database provisioned before a model change has to be provisioned again: drop it and run " +
             "'sqlflow db migrate --create --db <ref>'.");
+    }
+
+    /// <summary>
+    /// What the database lacks against the model: missing tables first, then missing columns of the tables it does
+    /// have. A missing table subsumes its columns, so those are not listed twice.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> MissingAsync(CatalogDbContext context, CancellationToken ct)
+    {
+        var presentTables = await PresentTablesAsync(context, ct).ConfigureAwait(false);
+        var missingTables = ExpectedTables(context)
+            .Where(t => !presentTables.Contains(t))
+            .OrderBy(t => t, StringComparer.Ordinal)
+            .ToList();
+
+        var presentColumns = await PresentColumnsAsync(context, ct).ConfigureAwait(false);
+        var missingColumns = ExpectedColumns(context)
+            .Where(c => !presentColumns.Contains(c))
+            .Where(c => !missingTables.Any(t => c.StartsWith(t + ".", StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(c => c, StringComparer.Ordinal)
+            .ToList();
+
+        return [.. missingTables, .. missingColumns];
     }
 
     /// <summary>Every table the model declares, as <c>schema.table</c>.</summary>
@@ -192,18 +212,63 @@ public static class CatalogDatabase
         return tables;
     }
 
-    /// <summary>The model's tables that the connected database actually has, as <c>schema.table</c>.</summary>
-    private static async Task<HashSet<string>> PresentTablesAsync(CatalogDbContext context, CancellationToken ct)
+    /// <summary>
+    /// Every column the model declares, as <c>schema.table.column</c>. Columns matter as much as tables: adding a
+    /// property to an existing entity is the commonest model change, and a database that predates it fails with
+    /// "Invalid column name" on the first query that selects it, no easier to diagnose than a missing table.
+    /// </summary>
+    private static HashSet<string> ExpectedColumns(CatalogDbContext context)
     {
-        var expected = ExpectedTables(context);
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entity in context.Model.GetEntityTypes())
+        {
+            if (entity.GetTableName() is not { Length: > 0 } table)
+            {
+                continue;
+            }
+
+            var schema = entity.GetSchema() ?? CatalogDbContext.SchemaName;
+            var identifier = StoreObjectIdentifier.Table(table, entity.GetSchema());
+            foreach (var property in entity.GetProperties())
+            {
+                if (property.GetColumnName(identifier) is { Length: > 0 } column)
+                {
+                    columns.Add(schema + "." + table + "." + column);
+                }
+            }
+        }
+
+        return columns;
+    }
+
+    /// <summary>The model's tables that the connected database actually has, as <c>schema.table</c>.</summary>
+    private static Task<HashSet<string>> PresentTablesAsync(CatalogDbContext context, CancellationToken ct)
+        => QueryAsync(
+            context,
+            "SELECT s.name + N'.' + t.name FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id",
+            ExpectedTables(context),
+            ct);
+
+    /// <summary>The model's columns that the connected database actually has, as <c>schema.table.column</c>.</summary>
+    private static Task<HashSet<string>> PresentColumnsAsync(CatalogDbContext context, CancellationToken ct)
+        => QueryAsync(
+            context,
+            "SELECT s.name + N'.' + t.name + N'.' + c.name FROM sys.columns c " +
+            "JOIN sys.tables t ON c.object_id = t.object_id JOIN sys.schemas s ON t.schema_id = s.schema_id",
+            ExpectedColumns(context),
+            ct);
+
+    /// <summary>Runs a name query and keeps the rows the model cares about, so the two sets compare directly.</summary>
+    private static async Task<HashSet<string>> QueryAsync(
+        CatalogDbContext context, string sql, HashSet<string> expected, CancellationToken ct)
+    {
         var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var connection = context.Database.GetDbConnection();
         await context.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
         try
         {
             await using var command = connection.CreateCommand();
-            command.CommandText =
-                "SELECT s.name + N'.' + t.name FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id";
+            command.CommandText = sql;
             await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {

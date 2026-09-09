@@ -165,6 +165,14 @@ public sealed record ScheduleSpec
     /// </summary>
     public int? MaxConcurrency { get; init; } = ScheduleDefaults.MaxConcurrency;
 
+    /// <summary>
+    /// The flow parameter values every fire runs its members with (<c>values:</c> in the document). Without them a
+    /// flow that declares a required parameter can never be scheduled: the fire supplies nothing and every run
+    /// fails with "parameter '<c>name</c>' is required". A member that does not declare a name supplied here fails
+    /// its own validation, exactly as it would for a manual trigger, so the values are not silently ignored.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Values { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
     /// <summary>Whether this declaration is a membership reference rather than a cadence of its own.</summary>
     public bool IsReference => Refs.Count > 0;
 }

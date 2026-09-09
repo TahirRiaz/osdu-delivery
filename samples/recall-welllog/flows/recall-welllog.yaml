@@ -66,6 +66,10 @@ reliability:
 # schedule of its own in the GUI, or a run with --operation verify.
 schedule:
   cron: "0 * * * *"
+  # The flow declares logSource as required, so the schedule has to say which one it fires for. Without values
+  # every fire would fail validation before it read anything. A second log source is a second schedule.
+  values:
+    logSource: STAT_COMP
 
 verify:
   reconcile: false

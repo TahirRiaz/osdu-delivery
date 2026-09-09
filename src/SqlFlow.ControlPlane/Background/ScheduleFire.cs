@@ -38,6 +38,24 @@ public static class ScheduleFire
         public bool Queued => Outcome is Outcome.Enqueued or Outcome.EnqueuedGroup;
     }
 
+    /// <summary>The schedule's values, with a run-now's own values winning name by name.</summary>
+    private static IReadOnlyDictionary<string, string> Merge(
+        IReadOnlyDictionary<string, string> scheduled, IReadOnlyDictionary<string, string> supplied)
+    {
+        if (supplied.Count == 0)
+        {
+            return scheduled;
+        }
+
+        var merged = new Dictionary<string, string>(scheduled, StringComparer.Ordinal);
+        foreach (var (name, value) in supplied)
+        {
+            merged[name] = value;
+        }
+
+        return merged;
+    }
+
     /// <summary>
     /// Enqueues the schedule's member set and stamps the work on the schedule. Returns
     /// <see cref="Outcome.ScopeEmpty"/> when the set resolves to nothing runnable, which is a normal state (a source
@@ -74,8 +92,15 @@ public static class ScheduleFire
         // schedules page) apply to every member alike: a delivery schedule has no per-layer roles, each member is
         // one flow working on its own drop.
         var operation = string.IsNullOrWhiteSpace(schedule.Operation) ? RunParameters.DeliverOperation : schedule.Operation.Trim().ToLowerInvariant();
-        var scheduled = string.Equals(operation, RunParameters.DeliverOperation, StringComparison.Ordinal) ? null : new RunParameters { Operation = operation };
-        var effective = parameters is null ? scheduled : parameters with { Operation = operation };
+
+        // The schedule's declared flow parameter values ride along, so a flow with a required parameter can be
+        // scheduled at all; a run-now that supplies its own values overrides them name by name, leaving the ones
+        // it does not mention in place.
+        var values = ScheduleValues.FromJson(schedule.ValuesJson);
+        var scheduled = string.Equals(operation, RunParameters.DeliverOperation, StringComparison.Ordinal) && values.Count == 0
+            ? null
+            : new RunParameters { Operation = operation, Values = values };
+        var effective = parameters is null ? scheduled : parameters with { Operation = operation, Values = Merge(values, parameters.Values) };
         var memberParameters = effective is null
             ? null
             : expansion.Members.ToDictionary(m => m.FlowName, _ => effective, StringComparer.Ordinal);

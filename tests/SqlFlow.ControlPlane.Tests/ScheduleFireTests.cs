@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
+using SqlFlow.Core.Runs;
 using SqlFlow.Core;
 using SqlFlow.ControlPlane.Background;
 using SqlFlow.Core.Identity;
@@ -255,6 +256,76 @@ public sealed class ScheduleFireTests
 
     /// <summary>A dispatcher that enqueues through the real store (so the rows, group and waves are genuine) without
     /// the control plane's in-process signalling, which needs a hosted worker.</summary>
+    [SkippableFact]
+    public async Task Fire_CarriesTheSchedulesFlowParameterValuesOntoEveryMemberRun()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        var (repoId, suffix) = NewRepo();
+        var first = $"a_{suffix}";
+        var second = $"b_{suffix}";
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await SeedPipelineAsync(db, repoId, first, wave: 0, batch: "small");
+            await SeedPipelineAsync(db, repoId, second, wave: 0, batch: "small");
+
+            // A flow that declares a required parameter can only be scheduled because the schedule supplies it.
+            var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["logSource"] = "STAT_COMP" };
+            var schedule = await SeedScheduleAsync(db, repoId, $"s_{suffix}", [first, second], values: values);
+            var fire = await ScheduleFire.EnqueueAsync(db, new RecordingDispatcher(), schedule, DateTime.UtcNow, default);
+            Assert.True(fire.Queued);
+
+            var runs = await db.Runs.AsNoTracking().Where(r => r.RepoId == repoId).ToListAsync();
+            Assert.Equal(2, runs.Count);
+            foreach (var run in runs)
+            {
+                var parameters = RunParameters.FromJson(run.ParametersJson);
+                Assert.Equal("STAT_COMP", parameters.Values["logSource"]);
+            }
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task RunNow_ValuesOverrideTheSchedulesOwnByName()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        var (repoId, suffix) = NewRepo();
+        var solo = $"a_{suffix}";
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await SeedPipelineAsync(db, repoId, solo, wave: 0, batch: "small");
+            var scheduled = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["logSource"] = "STAT_COMP",
+                ["region"] = "north",
+            };
+            var schedule = await SeedScheduleAsync(db, repoId, $"s_{suffix}", [solo], values: scheduled);
+
+            // A run-now supplies one name; the schedule's other value survives rather than being wiped.
+            var supplied = new RunParameters { Values = new Dictionary<string, string>(StringComparer.Ordinal) { ["logSource"] = "STAT_CPI" } };
+            var fire = await ScheduleFire.EnqueueAsync(db, new RecordingDispatcher(), schedule, DateTime.UtcNow, default, parameters: supplied);
+            Assert.True(fire.Queued);
+
+            var run = await db.Runs.AsNoTracking().FirstAsync(r => r.RepoId == repoId);
+            var parameters = RunParameters.FromJson(run.ParametersJson);
+            Assert.Equal("STAT_CPI", parameters.Values["logSource"]);
+            Assert.Equal("north", parameters.Values["region"]);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
     private sealed class RecordingDispatcher : IRunDispatcher
     {
         public Task<Guid> EnqueueAsync(CatalogDbContext catalog, RunEnqueueRequest request, CancellationToken ct = default)
@@ -304,12 +375,13 @@ public sealed class ScheduleFireTests
     }
 
     private static async Task<CatalogSchedule> SeedScheduleAsync(
-        CatalogDbContext db, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string operation = "deliver")
+        CatalogDbContext db, Guid repoId, string scheduleName, IReadOnlyCollection<string> members, string operation = "deliver",
+        IReadOnlyDictionary<string, string>? values = null)
     {
         var now = DateTime.UtcNow;
         await ScheduleStore.StageYamlUpsertAsync(
             db, repoId, scheduleName, members, "0 4 * * *", null, "UTC", enabled: true, catchup: false, maxConcurrency: ScheduleDefaults.MaxConcurrency, now.AddHours(1), now,
-            operation: operation);
+            operation: operation, valuesJson: ScheduleValues.ToJson(values));
         await db.SaveChangesAsync();
         var id = CatalogIdentity.YamlSchedule(repoId, scheduleName);
         return await db.Schedules.AsNoTracking().FirstAsync(s => s.Id == id);

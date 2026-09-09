@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Schedules carry the flow parameter values every fire supplies (`values:` in a flow's inline `schedule` block or a
+  schedule library entry, `values` on `POST /api/v1/schedules`). Without them a flow that declares a required
+  parameter could not be scheduled at all: the fire supplied nothing and every run failed validation. A run-now's
+  values override the schedule's name by name.
 - Removal of delivered records at three scopes, named for what they take rather than for the verb: `record`
   (`POST /records/{id}:delete`, reversible in OSDU), `history` (`DELETE /records/{id}/versions`, the earlier
   versions destroyed and the latest left live) and `everything` (`DELETE /records/{id}`, the record and every

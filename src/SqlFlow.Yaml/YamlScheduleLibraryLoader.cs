@@ -62,6 +62,8 @@ public sealed class YamlScheduleLibraryLoader
         public int? MaxConcurrency { get; set; }
 
         public string? Operation { get; set; }
+
+        public Dictionary<string, string>? Values { get; set; }
     }
 
     /// <summary>Parses a library file's YAML. <paramref name="source"/> only labels warnings.</summary>
@@ -151,6 +153,7 @@ public sealed class YamlScheduleLibraryLoader
                 Catchup = entry.Catchup ?? false,
                 MaxConcurrency = NormalizeMaxConcurrency(entry.MaxConcurrency, name, source, warnings),
                 Operation = operation,
+                Values = YamlDocumentParts.ParseScheduleValues(entry.Values, $"schedules.{name}.values", source),
             }));
         }
 

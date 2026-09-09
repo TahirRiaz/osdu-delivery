@@ -62,6 +62,32 @@ public static class YamlDocumentParts
 
     public static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
+    /// <summary>
+    /// Parses a schedule's <c>values</c> (the flow parameter values every fire supplies) with the same rules a
+    /// manual trigger's values obey, so a schedule can never queue something a trigger would reject: identifier
+    /// names, bounded lengths, no control characters.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> ParseScheduleValues(
+        IReadOnlyDictionary<string, string>? values, string property, string source)
+    {
+        if (values is null || values.Count == 0)
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        var parsed = new Dictionary<string, string>(values, StringComparer.Ordinal);
+        try
+        {
+            new RunParameters { Values = parsed }.Validate();
+        }
+        catch (SqlFlowException ex)
+        {
+            throw new FlowValidationException($"{source}: {property} is invalid - {ex.Message}", ex);
+        }
+
+        return parsed;
+    }
+
     /// <summary>Parses a schedule's <c>operation</c> (absent is deliver) against the run operations the platform knows.</summary>
     public static string ParseOperation(string? value, string property, string source)
     {

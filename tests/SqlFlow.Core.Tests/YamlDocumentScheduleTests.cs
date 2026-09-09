@@ -33,6 +33,61 @@ public sealed class YamlDocumentScheduleTests
     }
 
     [Fact]
+    public void Parse_ScheduleValues_CarryTheFlowParametersAFireSupplies()
+    {
+        var doc = Loader.Parse("""
+            flowType: test
+            name: orders
+            schedule:
+              cron: "0 6 * * *"
+              values:
+                logSource: STAT_COMP
+                region: north
+            source: ./orders.csv
+            target: dbo.Orders
+            """);
+
+        // Without these a flow that declares a required parameter can never be scheduled: the fire supplies
+        // nothing and every run fails validation before it reads anything.
+        Assert.Equal(2, doc.Schedule!.Values.Count);
+        Assert.Equal("STAT_COMP", doc.Schedule.Values["logSource"]);
+        Assert.Equal("north", doc.Schedule.Values["region"]);
+    }
+
+    [Fact]
+    public void Parse_ScheduleValues_AreValidatedLikeATriggersOwn()
+    {
+        const string Body = """
+            flowType: test
+            name: orders
+            schedule:
+              cron: "0 6 * * *"
+              values:
+                "not an identifier": x
+            source: ./orders.csv
+            target: dbo.Orders
+            """;
+
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse(Body));
+        Assert.Contains("schedule.values", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Parse_ScheduleWithoutValues_HasNone()
+    {
+        var doc = Loader.Parse("""
+            flowType: test
+            name: orders
+            schedule:
+              cron: "0 6 * * *"
+            source: ./orders.csv
+            target: dbo.Orders
+            """);
+
+        Assert.Empty(doc.Schedule!.Values);
+    }
+
+    [Fact]
     public void Parse_ScheduleOperation_DefaultsToDeliver_AndRejectsAnUnknownOne()
     {
         const string Body = """

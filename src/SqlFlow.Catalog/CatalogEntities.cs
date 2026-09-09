@@ -992,6 +992,10 @@ public class CatalogSchedule
     /// drift check is a second schedule on the same flows with operation verify.</summary>
     public string Operation { get; set; } = RunParameters.DeliverOperation;
 
+    /// <summary>The flow parameter values every fire runs its members with, as a JSON object; null when the
+    /// schedule supplies none. A flow with a required parameter cannot be scheduled without these.</summary>
+    public string? ValuesJson { get; set; }
+
     /// <summary>The repo-relative path of the file this cadence is written in (a flow document with an inline
     /// <c>schedule:</c> block, or a <c>schedules.yaml</c> library file). Null for an API-created schedule, which has
     /// no file behind it. Refreshed by every sync, so it always names the file git currently defines it in.</summary>

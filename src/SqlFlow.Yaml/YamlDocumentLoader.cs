@@ -46,6 +46,8 @@ public sealed class YamlDocumentLoader
         public int? MaxConcurrency { get; set; }
 
         public string? Operation { get; set; }
+
+        public Dictionary<string, string>? Values { get; set; }
     }
 
     /// <summary>The mapping shape the converter delegates an inline <c>schedule:</c> block to: the same inline fields
@@ -69,6 +71,8 @@ public sealed class YamlDocumentLoader
         public bool? Catchup { get; set; }
 
         public int? MaxConcurrency { get; set; }
+
+        public Dictionary<string, string>? Values { get; set; }
     }
 
     /// <summary>
@@ -119,6 +123,7 @@ public sealed class YamlDocumentLoader
                 Catchup = inline.Catchup,
                 MaxConcurrency = inline.MaxConcurrency,
                 Operation = inline.Operation,
+                Values = inline.Values,
             };
         }
 
@@ -298,6 +303,7 @@ public sealed class YamlDocumentLoader
             // loader, which does have a warning channel, reports it).
             MaxConcurrency = ScheduleDefaults.Resolve(schedule.MaxConcurrency, out _),
             Operation = YamlDocumentParts.ParseOperation(schedule.Operation, "schedule.operation", source),
+            Values = YamlDocumentParts.ParseScheduleValues(schedule.Values, "schedule.values", source),
         };
     }
 }
