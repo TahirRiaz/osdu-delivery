@@ -14,8 +14,9 @@ namespace SqlFlow.ControlPlane.Background;
 /// creates the configured initial admin when absent, and registers the configured demo repo source. Every step is
 /// idempotent and never overwrites operator state: an existing admin keeps their password, an edited role keeps
 /// its scopes. Runs as a background service that retries with backoff until the catalog is reachable, so a control
-/// plane that starts before its database (compose ordering, cold restores) converges instead of crashing; the
-/// readiness probe reflects the catalog being unavailable in the meantime.
+/// plane that starts before its database (compose ordering, cold restores) converges instead of crashing. The
+/// outcome is published on <see cref="BootstrapState"/>, which the readiness probe gates on, so a replica that has
+/// not provisioned its catalog is never routed to.
 /// </summary>
 public sealed class BootstrapProvisioningService : BackgroundService
 {
@@ -24,6 +25,7 @@ public sealed class BootstrapProvisioningService : BackgroundService
 
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(60);
 
+    private readonly BootstrapState _state;
     private readonly CatalogConnectionProvider _connection;
     private readonly ISecretResolver _secrets;
     private readonly IPasswordHasher<CatalogUser> _hasher;
@@ -32,15 +34,18 @@ public sealed class BootstrapProvisioningService : BackgroundService
     private readonly ILogger<BootstrapProvisioningService> _logger;
 
     public BootstrapProvisioningService(
-        CatalogConnectionProvider connection, ISecretResolver secrets, IPasswordHasher<CatalogUser> hasher,
-        IOptions<ControlPlaneOptions> options, TimeProvider clock, ILogger<BootstrapProvisioningService> logger)
+        BootstrapState state, CatalogConnectionProvider connection, ISecretResolver secrets,
+        IPasswordHasher<CatalogUser> hasher, IOptions<ControlPlaneOptions> options, TimeProvider clock,
+        ILogger<BootstrapProvisioningService> logger)
     {
+        ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(secrets);
         ArgumentNullException.ThrowIfNull(hasher);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(logger);
+        _state = state;
         _connection = connection;
         _secrets = secrets;
         _hasher = hasher;
@@ -56,6 +61,7 @@ public sealed class BootstrapProvisioningService : BackgroundService
             try
             {
                 await ProvisionAsync(stoppingToken).ConfigureAwait(false);
+                _state.MarkCompleted();
                 _logger.LogInformation("Bootstrap provisioning completed.");
                 return;
             }
@@ -65,9 +71,11 @@ public sealed class BootstrapProvisioningService : BackgroundService
             }
             catch (CatalogProvisioningException ex)
             {
-                // A deterministic configuration mistake (the target database is missing, or is not a catalog).
-                // Retrying cannot fix it and creating the database is exactly what we refuse to do, so stop and
-                // surface it. Readiness stays red, signalling the misconfiguration without touching the database.
+                // A deterministic configuration mistake (the target database is missing, is not a catalog, or
+                // predates this build's model). Retrying cannot fix it and creating the database is exactly what
+                // we refuse to do, so stop and surface it. Readiness stays red, signalling the misconfiguration
+                // without touching the database.
+                _state.MarkRefused(SecretHygiene.RedactedMessage(ex));
                 _logger.LogCritical(
                     "Bootstrap provisioning refused: {Error} Set ControlPlane:Bootstrap:AllowCreate=true only if you intend to provision this exact database.",
                     ex.Message);
@@ -76,6 +84,7 @@ public sealed class BootstrapProvisioningService : BackgroundService
             catch (Exception ex)
             {
                 var delay = attempt < RetryDelays.Length ? RetryDelays[attempt] : MaxRetryDelay;
+                _state.MarkRetrying(SecretHygiene.RedactedMessage(ex));
                 _logger.LogError(
                     "Bootstrap provisioning attempt {Attempt} failed ({Error}); retrying in {Delay}s.",
                     attempt + 1, SecretHygiene.RedactedMessage(ex), (int)delay.TotalSeconds);

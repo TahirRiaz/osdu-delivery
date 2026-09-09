@@ -80,6 +80,11 @@ public sealed partial class SnapshotBuilder
 
         var captured = _time.GetUtcNow();
         var snapshot = new ReferenceSnapshot(Storage.FileSnapshotStore.MintVersion(captured), captured, types);
+        if (await UnchangedAsync(snapshot, ct).ConfigureAwait(false) is { } unchanged)
+        {
+            return unchanged;
+        }
+
         await _store.SaveReferencesAsync(snapshot, makeCurrent, ct).ConfigureAwait(false);
         _logger.LogInformation("Reference snapshot {Version} saved with {Count} type(s){Current}.", snapshot.Version, types.Count, makeCurrent ? " (current)" : string.Empty);
         return snapshot;
@@ -107,11 +112,38 @@ public sealed partial class SnapshotBuilder
             ? new ReferenceSnapshot(version, captured, types)
             : current.With(version, captured, types);
 
+        if (await UnchangedAsync(snapshot, ct).ConfigureAwait(false) is { } unchanged)
+        {
+            return unchanged;
+        }
+
         await _store.SaveReferencesAsync(snapshot, makeCurrent, ct).ConfigureAwait(false);
         _logger.LogInformation(
             "Reference snapshot {Version} saved with {Count} type(s), {Refreshed} of them refreshed{Current}.",
             snapshot.Version, snapshot.Types.Count, types.Count, makeCurrent ? " (current)" : string.Empty);
         return snapshot;
+    }
+
+    /// <summary>
+    /// The current snapshot when a capture produced byte-identical content, or null when the content really moved.
+    ///
+    /// A reference version is a timestamp, and it enters the render context, so minting one for a capture that
+    /// found nothing new would change every record's metadata hash and redeliver the whole estate for no reason.
+    /// Schema snapshots are already content-addressed and immune to this; comparing content here gives reference
+    /// snapshots the same property, so recapturing defensively is free.
+    /// </summary>
+    private async Task<ReferenceSnapshot?> UnchangedAsync(ReferenceSnapshot captured, CancellationToken ct)
+    {
+        var current = await CurrentAsync(ct).ConfigureAwait(false);
+        if (current is null || !string.Equals(current.ContentHash(), captured.ContentHash(), StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        _logger.LogInformation(
+            "Reference capture matched the current snapshot {Version} exactly; keeping it rather than minting a version that would re-render every record.",
+            current.Version);
+        return current;
     }
 
     /// <summary>The snapshot a refresh builds on: the current version, or null when the store holds none.</summary>

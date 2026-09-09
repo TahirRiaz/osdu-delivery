@@ -171,15 +171,16 @@ public sealed class RepoSourceTests
     {
         Repository.Init(path);
         Directory.CreateDirectory(Path.Combine(path, "flows"));
+        // A minimal valid document of a kind this product actually registers. The sync only has to parse it and
+        // project it as a pipeline; a retrieval flow is the smallest one that parses.
         File.WriteAllText(Path.Combine(path, "flows", "orders.flow.yaml"), """
+            flowType: retrieval
             name: __NAME__
             source:
-              type: csv
-              location: ./data.csv
+              endpoint: https://osdu.example.com
+              kind: "osdu:wks:master-data--Wellbore:1.0.0"
             target:
-              connection: ${env:SQLFlowSinkConStr}
-              schema: dbo
-              table: SrcOrders
+              location: ./out
             """.Replace("__NAME__", flowName, StringComparison.Ordinal));
 
         using var repo = new Repository(path);

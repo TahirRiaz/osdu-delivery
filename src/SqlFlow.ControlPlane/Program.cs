@@ -247,7 +247,12 @@ builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddOpenApi();
 builder.Services.AddResponseCompression();
-builder.Services.AddHealthChecks().AddDbContextCheck<CatalogDbContext>("catalog");
+// Readiness gates traffic, so it asserts more than connectivity: the catalog must also have been provisioned,
+// or a replica whose schema is missing or stale would be routed to and serve 500s (see BootstrapState).
+builder.Services.AddSingleton<BootstrapState>();
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<CatalogDbContext>("catalog")
+    .AddCheck<BootstrapHealthCheck>("bootstrap");
 
 builder.Services.AddRateLimiter(rate =>
 {
