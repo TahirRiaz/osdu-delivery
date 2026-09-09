@@ -1,7 +1,7 @@
 import { expect, test } from "./helpers";
 
-// The OSDU cache page: the read-only view over what the repositories declare they cache and what the current
-// reference snapshot actually holds. Runs after the seed (03), so the fixture repo is synced: its metadata sync
+// The OSDU cache page: what the repositories declare they cache, what the current reference snapshot holds, and
+// the changes waiting for a decision. Runs after the seed (03), so the fixture repo is synced: its metadata sync
 // flow declares four cached types, and its captured snapshot carries their records.
 
 test.describe.serial("osdu cache", () => {
@@ -9,22 +9,36 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("nav-delivery-cache").click();
     await expect(adminPage.getByTestId("page-delivery-cache")).toBeVisible();
 
-    // The definitions come from the metadata sync flow's cache section, the counts from the snapshot.
-    const definitions = adminPage.getByTestId("delivery-cache-definitions-table");
-    await expect(definitions).toBeVisible({ timeout: 30_000 });
-    await expect(definitions.getByText("UnitOfMeasure").first()).toBeVisible();
-    await expect(definitions.getByText("osdu-cache-sync").first()).toBeVisible();
+    // The summary strip answers the three questions the page exists for.
+    await expect(adminPage.getByTestId("cache-kpi-types-value")).toBeVisible({ timeout: 30_000 });
+    await expect(adminPage.getByTestId("cache-kpi-records-value")).toBeVisible();
+    await expect(adminPage.getByTestId("cache-kpi-pending-value")).toHaveText("0");
 
-    // The alias path is cached under its declared name, which is what a mapping matches by.
-    await expect(definitions.getByText("Alias").first()).toBeVisible();
+    // The cached types come from the metadata sync flow's cache section, with the paths they capture.
+    const types = adminPage.getByTestId("delivery-cache-types");
+    await expect(types.getByText("UnitOfMeasure").first()).toBeVisible({ timeout: 30_000 });
+    await expect(types.getByText("Alias").first()).toBeVisible();
 
     // The records themselves, out of the current snapshot.
     const items = adminPage.getByTestId("delivery-cache-items-table");
-    await expect(items).toBeVisible();
     await expect(items.getByText("reference-data--UnitOfMeasure:m").first()).toBeVisible({ timeout: 30_000 });
   });
 
-  test("search finds a cached record by a value it holds, and a row opens what it caches", async ({ adminPage }) => {
+  test("picking a type filters the records, and a row opens what it caches", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-delivery-cache").click();
+    await expect(adminPage.getByTestId("page-delivery-cache")).toBeVisible();
+
+    await adminPage.getByTestId("delivery-cache-type-card").filter({ hasText: "Wellbore" }).first().click();
+    await expect(adminPage.getByTestId("delivery-cache-clear-type")).toBeVisible();
+    const items = adminPage.getByTestId("delivery-cache-items-table");
+    await expect(items.getByText("master-data--Wellbore:OSDU-DEV-1-A").first()).toBeVisible({ timeout: 30_000 });
+
+    await items.getByText("master-data--Wellbore:OSDU-DEV-1-A").first().click();
+    await expect(adminPage.getByTestId("delivery-cache-item-detail")).toBeVisible();
+    await expect(adminPage.getByTestId("delivery-cache-item-json")).toBeVisible();
+  });
+
+  test("search finds a cached record by a value it holds rather than its id", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
     await expect(adminPage.getByTestId("page-delivery-cache")).toBeVisible();
 
@@ -32,9 +46,12 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("delivery-cache-search").fill("metre");
     const items = adminPage.getByTestId("delivery-cache-items-table");
     await expect(items.getByText("reference-data--UnitOfMeasure:m").first()).toBeVisible({ timeout: 30_000 });
+  });
 
-    await items.getByText("reference-data--UnitOfMeasure:m").first().click();
-    await expect(adminPage.getByTestId("delivery-cache-item-detail")).toBeVisible();
-    await expect(adminPage.getByTestId("delivery-cache-item-json")).toBeVisible();
+  test("the updates tab is empty until a cached value moves", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-delivery-cache").click();
+    await adminPage.getByTestId("delivery-cache-tab-updates").click();
+    await expect(adminPage.getByTestId("delivery-cache-tag-status")).toBeVisible();
+    await expect(adminPage.getByText("Nothing is waiting")).toBeVisible({ timeout: 30_000 });
   });
 });
