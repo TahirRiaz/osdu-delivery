@@ -34,6 +34,10 @@ internal sealed class ExportSourceYaml
     public string? Object { get; set; }
     public string? Table { get; set; }
 
+    /// <summary>A table hint applied to every chunk read (legacy srcWithHint), e.g. <c>WITH (NOLOCK)</c> or
+    /// <c>WITH (INDEX([NCI_CalendarID]))</c>. Written as it appears in the SELECT.</summary>
+    public string? WithHint { get; set; }
+
     /// <summary>A static predicate ANDed to every chunk's read (legacy srcFilter). A leading AND is optional.</summary>
     public string? Filter { get; set; }
 }
@@ -49,6 +53,12 @@ internal sealed class ExportTargetYaml
     public string? TextQualifier { get; set; }
     public bool? AddTimestamp { get; set; }
     public string? SubfolderPattern { get; set; }
+
+    /// <summary>Compress each written file into a single-entry .zip in place (legacy ZipTrg).</summary>
+    public bool? Zip { get; set; }
+
+    /// <summary>How values are rendered as CSV text: <c>iso</c> (default) or <c>legacy</c>.</summary>
+    public string? ValueFormat { get; set; }
 }
 
 internal sealed class ExportChunkYaml

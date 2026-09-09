@@ -1,5 +1,6 @@
 ﻿using SqlFlow.Core;
 using SqlFlow.Core.Connections;
+using SqlFlow.Core.Export;
 using SqlFlow.Yaml;
 using Xunit;
 
@@ -220,7 +221,7 @@ public sealed class YamlExportFlowLoaderTests
 
     [Theory]
     [InlineData("fileType: xlsx", "'target.fileType' must be csv or parquet")]
-    [InlineData("encoding: latin1", "'target.encoding' must be utf8, utf16, utf32, or ascii")]
+    [InlineData("encoding: latin1", "'target.encoding' must be utf8, utf8bom, utf16, utf32, or ascii")]
     [InlineData("compression: zstd", "'target.compression' must be gzip, snappy, or none")]
     [InlineData("delimiter: ''", "'target.delimiter' must not be empty")]
     [InlineData("textQualifier: ''", "'target.textQualifier' must be a single character")]
@@ -266,5 +267,64 @@ public sealed class YamlExportFlowLoaderTests
         var ex = Assert.Throws<FlowValidationException>(() => documents.Parse("flowType: bogus"));
         Assert.Contains("'exp' for a file export", ex.Message, StringComparison.Ordinal);
         Assert.Contains("'sp' for a stored-procedure flow", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LegacyDeliveryFields_ReachTheModel()
+    {
+        var doc = Loader.Parse("""
+            flowType: exp
+            name: apc-matchedtrip-history
+            connections:
+              dwh: ${env:DWH}
+            source:
+              server: dwh
+              object: DW.edw.APC_MatchedTrip
+              withHint: WITH (INDEX([NCI_CalendarID]))
+            target:
+              path: https://acct.dfs.core.windows.net/export/APC_MatchedTrip/History
+              encoding: utf8bom
+              valueFormat: legacy
+              zip: true
+            export:
+              by: month
+              dateColumn: CalendarID
+            """);
+
+        var flow = doc.Flow;
+        Assert.Equal("WITH (INDEX([NCI_CalendarID]))", flow.SrcWithHint);
+        Assert.Equal("UTF8BOM", flow.TrgEncoding);
+        Assert.Equal(ExportValueFormat.Legacy, flow.TrgValueFormat);
+        Assert.True(flow.ZipTrg);
+    }
+
+    [Fact]
+    public void LegacyDeliveryFields_DefaultToTheModernForm()
+    {
+        var flow = Loader.Parse(Minimal).Flow;
+
+        Assert.Null(flow.SrcWithHint);
+        Assert.Null(flow.TrgEncoding);
+        Assert.Equal(ExportValueFormat.Iso, flow.TrgValueFormat);
+        Assert.False(flow.ZipTrg);
+    }
+
+    [Fact]
+    public void ValueFormat_RejectsAnUnknownToken()
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Loader.Parse("""
+            flowType: exp
+            name: bad-value-format
+            connections:
+              dwh: ${env:DWH}
+            source:
+              server: dwh
+              object: DW.raw.Orders
+            target:
+              path: ./out
+              valueFormat: csvhelper
+            """));
+
+        Assert.Contains("valueFormat", ex.Message, StringComparison.Ordinal);
     }
 }

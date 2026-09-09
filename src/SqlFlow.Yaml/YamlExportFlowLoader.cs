@@ -1,6 +1,7 @@
 using SqlFlow.Core;
 using SqlFlow.Core.Connections;
 using SqlFlow.Core.Export;
+using SqlFlow.Core.Ingestion;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
@@ -107,6 +108,7 @@ public sealed class YamlExportFlowLoader
             Lifecycle = YamlDocumentParts.ParseLifecycle(y.Lifecycle, source),
             SrcServer = sourceServer,
             Source = sourceObject,
+            SrcWithHint = YamlDocumentParts.NullIfBlank(sourceYaml.WithHint)?.Trim(),
             SrcFilter = NormalizeFilter(sourceYaml.Filter, source),
             IncrementalColumn = keyColumn,
             DateColumn = dateColumn,
@@ -123,6 +125,8 @@ public sealed class YamlExportFlowLoader
             TextQualifier = target.TextQualifier,
             AddTimeStampToFileName = target.AddTimestamp,
             Subfolderpattern = target.SubfolderPattern,
+            TrgValueFormat = target.ValueFormat,
+            ZipTrg = target.Zip,
             NoOfThreads = threads,
             OnErrorResume = y.OnErrorResume ?? true,
             PostInvokeAlias = YamlInvokeParts.ResolveHookAlias(y.PostInvoke, "postInvoke", invokes, source),
@@ -160,8 +164,10 @@ public sealed class YamlExportFlowLoader
             throw new FlowValidationException($"{source}: 'export.size' must be at least 1, got {size}.");
         }
 
-        var dateColumn = YamlDocumentParts.NullIfBlank(y?.DateColumn);
-        var keyColumn = YamlDocumentParts.NullIfBlank(y?.KeyColumn);
+        // The planner brackets the chunk column itself, so an author who writes it bracketed ([CalendarID],
+        // the form legacy metadata used) gets the same SELECT as one who writes it bare.
+        var dateColumn = Column(y?.DateColumn);
+        var keyColumn = Column(y?.KeyColumn);
         if (by is "D" or "M" && dateColumn is null)
         {
             throw new FlowValidationException(
@@ -190,6 +196,9 @@ public sealed class YamlExportFlowLoader
         return (by, size, dateColumn, keyColumn, fromDate, toDate, threads);
     }
 
+    private static string? Column(string? value)
+        => YamlDocumentParts.NullIfBlank(value) is { } name ? IngestionText.Unbracket(name) : null;
+
     private static string ParseExportBy(string? value, string source)
         => value?.Trim().ToLowerInvariant() switch
         {
@@ -201,9 +210,21 @@ public sealed class YamlExportFlowLoader
                 $"{source}: 'export.by' must be full, day, month, or key; got '{value}'."),
         };
 
-    private static (string Path, string? FileName, string FileType, string? Encoding, string Compression,
-        string Delimiter, string TextQualifier, bool AddTimestamp, string? SubfolderPattern)
-        MapTarget(ExportTargetYaml y, string source)
+    /// <summary>The validated <c>target:</c> block.</summary>
+    private sealed record MappedTarget(
+        string Path,
+        string? FileName,
+        string FileType,
+        string? Encoding,
+        string Compression,
+        string Delimiter,
+        string TextQualifier,
+        bool AddTimestamp,
+        string? SubfolderPattern,
+        bool Zip,
+        ExportValueFormat ValueFormat);
+
+    private static MappedTarget MapTarget(ExportTargetYaml y, string source)
     {
         var path = YamlDocumentParts.NullIfBlank(y.Path)
             ?? throw new FlowValidationException(
@@ -223,11 +244,14 @@ public sealed class YamlExportFlowLoader
         {
             null or "" => null,
             "utf8" or "utf-8" => null,
+            // The legacy engine's cloud path always wrote a UTF-8 byte-order mark, so a ported export that must
+            // keep its consumer parsing unchanged asks for it by name.
+            "utf8bom" or "utf-8bom" => "UTF8BOM",
             "unicode" or "utf16" or "utf-16" => "UTF-16",
             "utf32" or "utf-32" => "UTF-32",
             "ascii" => "ASCII",
             _ => throw new FlowValidationException(
-                $"{source}: 'target.encoding' must be utf8, utf16, utf32, or ascii; got '{y.Encoding}'."),
+                $"{source}: 'target.encoding' must be utf8, utf8bom, utf16, utf32, or ascii; got '{y.Encoding}'."),
         };
 
         // Same reasoning for the Parquet codec: the writer maps unknown values to gzip, so reject them here.
@@ -254,8 +278,17 @@ public sealed class YamlExportFlowLoader
                 $"{source}: 'target.textQualifier' must be a single character (omit it for the default double quote); got '{textQualifier}'.");
         }
 
-        return (path.Trim(), YamlDocumentParts.NullIfBlank(y.FileName)?.Trim(), fileType, encoding, compression,
-            delimiter, textQualifier, y.AddTimestamp ?? true, YamlDocumentParts.NullIfBlank(y.SubfolderPattern)?.Trim());
+        var valueFormat = y.ValueFormat?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "iso" => ExportValueFormat.Iso,
+            "legacy" => ExportValueFormat.Legacy,
+            _ => throw new FlowValidationException(
+                $"{source}: 'target.valueFormat' must be iso or legacy; got '{y.ValueFormat}'."),
+        };
+
+        return new MappedTarget(path.Trim(), YamlDocumentParts.NullIfBlank(y.FileName)?.Trim(), fileType, encoding,
+            compression, delimiter, textQualifier, y.AddTimestamp ?? true,
+            YamlDocumentParts.NullIfBlank(y.SubfolderPattern)?.Trim(), y.Zip ?? false, valueFormat);
     }
 
     /// <summary>Normalizes the source filter into the form the segment planner appends verbatim after

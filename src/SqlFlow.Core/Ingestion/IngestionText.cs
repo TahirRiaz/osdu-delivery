@@ -6,7 +6,7 @@ namespace SqlFlow.Core.Ingestion;
 /// Text helpers for parsing SQLFlow identifier lists and bracketed multipart names, matching the legacy
 /// comma/period splitting that tolerates bracket-quoted identifiers (an inner ']' is escaped as ']]').
 /// </summary>
-internal static class IngestionText
+public static class IngestionText
 {
     /// <summary>
     /// Splits <paramref name="value"/> on <paramref name="delimiter"/> but not inside a [bracketed]

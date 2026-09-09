@@ -28,15 +28,20 @@ public static class ExportFileWriterFactory
                 Delimiter = flow.ColumnDelimiter,
                 Qualifier = string.IsNullOrEmpty(flow.TextQualifier) ? '"' : flow.TextQualifier[0],
                 Encoding = ResolveEncoding(flow.TrgEncoding),
+                ValueFormat = flow.TrgValueFormat,
             }),
         };
     }
 
+    // UTF-16/UTF-32 carry their byte-order mark by definition; UTF-8 is the one that has to say so, and the
+    // legacy engine's cloud path always did (new StreamWriter(stream, Encoding.UTF8)), so a port that must keep
+    // its consumer parsing unchanged asks for UTF8BOM explicitly.
     private static Encoding ResolveEncoding(string? name) => (name?.Trim().ToUpperInvariant()) switch
     {
         "UNICODE" or "UTF16" or "UTF-16" => Encoding.Unicode,
         "UTF32" or "UTF-32" => Encoding.UTF32,
         "ASCII" => Encoding.ASCII,
+        "UTF8BOM" or "UTF-8BOM" => new UTF8Encoding(encoderShouldEmitUTF8Identifier: true),
         _ => new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
     };
 }
@@ -55,6 +60,10 @@ public sealed record CsvWriteOptions
     /// <summary>Quote every string-typed column (legacy parity); non-string columns are quoted only when their
     /// value contains the delimiter, qualifier, or a line break.</summary>
     public bool QuoteStringColumnsOnly { get; init; } = true;
+
+    /// <summary>How non-string values are rendered as text: ISO-8601 by default, or the invariant culture's own
+    /// default formats for byte parity with the legacy CsvHelper writer.</summary>
+    public ExportValueFormat ValueFormat { get; init; } = ExportValueFormat.Iso;
 }
 
 /// <summary>
@@ -68,6 +77,10 @@ public sealed class CsvExportFileWriter : IExportFileWriter
     private const string RecordSeparator = "\r\n";
 
     private readonly CsvWriteOptions _options;
+
+    /// <summary>The settings this writer resolved, so a caller can confirm what a flow actually selected
+    /// (the encoding's preamble and the value format decide the bytes a consumer parses).</summary>
+    public CsvWriteOptions Options => _options;
 
     public CsvExportFileWriter(CsvWriteOptions options)
     {
@@ -118,7 +131,7 @@ public sealed class CsvExportFileWriter : IExportFileWriter
                 // NULL writes nothing: an empty, unquoted field, as before.
                 if (!await reader.IsDBNullAsync(i, ct).ConfigureAwait(false))
                 {
-                    await WriteFieldAsync(writer, FormatValue(reader.GetValue(i)), isStringColumn[i]).ConfigureAwait(false);
+                    await WriteFieldAsync(writer, FormatValue(reader.GetValue(i), _options.ValueFormat), isStringColumn[i]).ConfigureAwait(false);
                 }
             }
 
@@ -161,7 +174,11 @@ public sealed class CsvExportFileWriter : IExportFileWriter
         await writer.WriteAsync(q).ConfigureAwait(false);
     }
 
-    private static string FormatValue(object value) => value switch
+    private static string FormatValue(object value, ExportValueFormat format) => format == ExportValueFormat.Legacy
+        ? FormatLegacyValue(value)
+        : FormatIsoValue(value);
+
+    private static string FormatIsoValue(object value) => value switch
     {
         string s => s,
         bool b => b ? "True" : "False",
@@ -173,6 +190,31 @@ public sealed class CsvExportFileWriter : IExportFileWriter
         decimal m => m.ToString(CultureInfo.InvariantCulture),
         double db => db.ToString("R", CultureInfo.InvariantCulture),
         float f => f.ToString("R", CultureInfo.InvariantCulture),
+        Guid g => g.ToString("D", CultureInfo.InvariantCulture),
+        byte[] bytes => Convert.ToBase64String(bytes),
+        _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty,
+    };
+
+    /// <summary>
+    /// Renders a value the way legacy did: CsvHelper under <see cref="CultureInfo.InvariantCulture"/> called each
+    /// value's own <c>ToString(IFormatProvider)</c> with no explicit format, so a DateTime came out as
+    /// <c>MM/dd/yyyy HH:mm:ss</c> and a SQL <c>date</c> (read back as a midnight DateTime) as
+    /// <c>MM/dd/yyyy 00:00:00</c>. Reproduced exactly so a ported export keeps its consumer parsing unchanged.
+    /// The single deliberate deviation is <c>byte[]</c>: legacy rendered the literal text "System.Byte[]",
+    /// discarding the value, and base64 is kept here rather than reproducing that data loss.
+    /// </summary>
+    private static string FormatLegacyValue(object value) => value switch
+    {
+        string s => s,
+        bool b => b ? "True" : "False",
+        DateTime dt => dt.ToString(CultureInfo.InvariantCulture),
+        DateTimeOffset dto => dto.ToString(CultureInfo.InvariantCulture),
+        DateOnly d => d.ToString(CultureInfo.InvariantCulture),
+        TimeOnly t => t.ToString(CultureInfo.InvariantCulture),
+        TimeSpan ts => ts.ToString("c", CultureInfo.InvariantCulture),
+        decimal m => m.ToString(CultureInfo.InvariantCulture),
+        double db => db.ToString(CultureInfo.InvariantCulture),
+        float f => f.ToString(CultureInfo.InvariantCulture),
         Guid g => g.ToString("D", CultureInfo.InvariantCulture),
         byte[] bytes => Convert.ToBase64String(bytes),
         _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty,

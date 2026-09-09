@@ -105,7 +105,36 @@ public sealed class ExportFlowRunner
                 }
             }
 
-            var segments = ExportSegmentPlanner.Plan(flow, columns, keyMax, startUtc, fullKeyRange);
+            // A day/month export with an open bound takes that bound from the data, as legacy did: it probed the
+            // source's own MIN/MAX and clamped the window to it before planning. Without this the planner falls
+            // back to "the last three years", so a history export silently skips everything older than that.
+            var planFlow = flow;
+            if (IsDateChunked(flow.ExportBy) && !string.IsNullOrWhiteSpace(flow.DateColumn)
+                && (flow.FromDate is null || flow.ToDate is null))
+            {
+                var dateColumn = Escape(flow.DateColumn!);
+                var filter = string.IsNullOrWhiteSpace(flow.SrcFilter) ? string.Empty : " " + flow.SrcFilter.Trim();
+                var boundsSql = $"SELECT MIN([{dateColumn}]), MAX([{dateColumn}]) FROM {from}"
+                    + $"{ExportSegmentPlanner.TableHint(flow.SrcWithHint)} WHERE 1=1{filter}";
+                Trace("source.datebounds", boundsSql);
+                var (min, max) = await ProbeDateBoundsAsync(sourceConnectionString, boundsSql, flow.DateColumn!, ct).ConfigureAwait(false);
+                if (min is null || max is null)
+                {
+                    // No dated rows to bound: the planner's default window still produces the NULL-rows segment,
+                    // which is exactly what the source has to give.
+                    events.Log(RunLogLevel.Info, "export.window",
+                        $"source has no non-NULL [{flow.DateColumn}] to bound the window; planning the default window");
+                }
+                else
+                {
+                    planFlow = flow with { FromDate = flow.FromDate ?? min, ToDate = flow.ToDate ?? max };
+                    events.Log(RunLogLevel.Info, "export.window",
+                        $"window {planFlow.FromDate:yyyy-MM-dd}..{planFlow.ToDate:yyyy-MM-dd} on [{flow.DateColumn}] "
+                        + $"(source range {min:yyyy-MM-dd}..{max:yyyy-MM-dd})");
+                }
+            }
+
+            var segments = ExportSegmentPlanner.Plan(planFlow, columns, keyMax, startUtc, fullKeyRange);
             events.Log(RunLogLevel.Info, "export.plan",
                 $"{segments.Count} segment(s), chunked by '{flow.ExportBy.Trim().ToUpperInvariant()}', {Math.Max(1, flow.NoOfThreads)} concurrent");
             foreach (var segment in segments)
@@ -264,6 +293,43 @@ public sealed class ExportFlowRunner
         await using var command = new SqlCommand(keyMaxSql, connection) { CommandTimeout = 0 };
         var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
         return value is null or DBNull ? 0 : Math.Max(0, Convert.ToInt32(value, CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>Reads the source's MIN/MAX of the chunk date column, so an open <c>fromDate</c>/<c>toDate</c>
+    /// is bounded by the data rather than by a fixed fallback window. Both are null when the source holds no
+    /// row with a non-NULL date.</summary>
+    private static async Task<(DateOnly? Min, DateOnly? Max)> ProbeDateBoundsAsync(
+        string connectionString, string boundsSql, string dateColumn, CancellationToken ct)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = new SqlCommand(boundsSql, connection) { CommandTimeout = 0 };
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false) || await reader.IsDBNullAsync(0, ct).ConfigureAwait(false))
+        {
+            return (null, null);
+        }
+
+        return (ToDateOnly(reader.GetValue(0), dateColumn), ToDateOnly(reader.GetValue(1), dateColumn));
+    }
+
+    // The chunk date column has to be a date to bound a date window; a flow pointed at some other column is a
+    // configuration error, and saying so beats an InvalidCastException from deep inside the probe.
+    private static DateOnly ToDateOnly(object value, string dateColumn) => value switch
+    {
+        DateTime dt => DateOnly.FromDateTime(dt),
+        DateOnly d => d,
+        DateTimeOffset dto => DateOnly.FromDateTime(dto.DateTime),
+        _ => throw new SqlFlowException(
+            $"Export chunk column [{dateColumn}] is {value.GetType().Name}, not a date; "
+            + "day/month chunking needs a date, datetime, or datetimeoffset column."),
+    };
+
+    // The planner's day/month arm, the one bounded by a date window.
+    private static bool IsDateChunked(string exportBy)
+    {
+        var by = exportBy.Trim().ToUpperInvariant();
+        return by is "D" or "M";
     }
 
     // Anything the planner does not chunk by day/month/key runs its default full-table arm.

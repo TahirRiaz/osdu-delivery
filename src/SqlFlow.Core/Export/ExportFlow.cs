@@ -60,6 +60,12 @@ public sealed record ExportFlow
 
     public string? TrgEncoding { get; init; }                 // trgEncoding (V3 honors; default UTF-8 no BOM)
 
+    /// <summary>How CSV values are rendered as text. Legacy wrote every value through CsvHelper under the
+    /// invariant culture, so a DateTime became <c>MM/dd/yyyy HH:mm:ss</c>; V3 writes ISO-8601 by default. A
+    /// port whose consumer still parses the legacy files selects <see cref="ExportValueFormat.Legacy"/> so the
+    /// bytes match what the old engine produced. Ignored by the Parquet writer, which is typed.</summary>
+    public ExportValueFormat TrgValueFormat { get; init; } = ExportValueFormat.Iso;
+
     public string CompressionType { get; init; } = "gzip";    // CompressionType (Parquet codec)
 
     public string ColumnDelimiter { get; init; } = ";";       // ColumnDelimiter (CSV)
@@ -94,6 +100,17 @@ public sealed record ExportFlow
 
     /// <summary>The source connection reference understood by the resolver.</summary>
     public string ConnectionReference => "@" + SrcServer;
+}
+
+/// <summary>How the CSV writer renders non-string values as text.</summary>
+public enum ExportValueFormat
+{
+    /// <summary>ISO-8601 dates and times (<c>yyyy-MM-dd HH:mm:ss.fffffff</c>), the V3 default.</summary>
+    Iso,
+
+    /// <summary>The invariant culture's own default formats, byte-for-byte as legacy CsvHelper wrote them: a
+    /// DateTime becomes <c>MM/dd/yyyy HH:mm:ss</c>, a date <c>MM/dd/yyyy 00:00:00</c>.</summary>
+    Legacy,
 }
 
 /// <summary>One file produced by an export run.</summary>
