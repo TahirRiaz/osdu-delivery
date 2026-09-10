@@ -26,13 +26,16 @@ export default function globalSetup(): void {
   // logSource parameter still in it: a run with logSource=demo reads the demo drop wherever the node runs.
   const dropRoot = join(repoDir, "drops");
   cpSync(join(samplesDir, "out"), dropRoot, { recursive: true });
-  const flowYaml = readFileSync(join(samplesDir, "flows", "recall-welllog.yaml"), "utf8")
+  const flowYaml = withoutSchedule(readFileSync(join(samplesDir, "flows", "recall-welllog.yaml"), "utf8"), "recall-welllog")
     .replace("location: samples/recall-welllog/out/{logSource}", `location: ${dropRoot.replace(/\\/g, "/")}/{logSource}`);
   writeFileSync(join(repoDir, "flows", "recall-welllog.yaml"), flowYaml);
 
-  // The metadata sync flow comes along unchanged. The suite never runs it (that would need an OSDU target), but
-  // the repository sync projects its cache section, which is what the OSDU cache page reads.
-  cpSync(join(samplesDir, "flows", "osdu-cache-sync.yaml"), join(repoDir, "flows", "osdu-cache-sync.yaml"));
+  // The metadata sync flow comes along without its schedule. The suite never runs it (that would need an OSDU target),
+  // but the repository sync projects its cache section, which is what the OSDU cache page reads.
+  writeFileSync(
+    join(repoDir, "flows", "osdu-cache-sync.yaml"),
+    withoutSchedule(readFileSync(join(samplesDir, "flows", "osdu-cache-sync.yaml"), "utf8"), "osdu-cache-sync"),
+  );
 
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: repoDir, stdio: "pipe" }).toString("utf8").trim();
@@ -55,4 +58,18 @@ export default function globalSetup(): void {
   if (!existsSync(join(repoDir, ".git"))) {
     throw new Error(`Fixture repo was not initialized at ${repoDir}.`);
   }
+}
+
+/**
+ * A sample flow without its top-level schedule block. The suite triggers every run itself: a fire would be a real run
+ * against the sample's OSDU target whenever a suite crossed its cron, and the specs expect flows that join no schedule,
+ * so the runs board and the schedules page show only what the suite created.
+ */
+function withoutSchedule(yaml: string, flow: string): string {
+  const stripped = yaml.replace(/^schedule:\r?\n(?:[ \t].*\r?\n)*/m, "");
+  if (/^schedule:/m.test(stripped)) {
+    throw new Error(`The fixture flow '${flow}' still declares a schedule block; the e2e suite needs flows that join no schedule.`);
+  }
+
+  return stripped;
 }

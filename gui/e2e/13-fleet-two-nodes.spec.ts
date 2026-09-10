@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { E2E } from "../playwright.config";
 import { expect, test } from "./helpers";
 
 // Nodes are not a GUI-CRUD entity: a worker registers itself by heartbeating (keyed on its machine name), so the
@@ -8,8 +9,32 @@ import { expect, test } from "./helpers";
 
 const SEEDED = ["e2e-node-alpha", "e2e-node-beta"] as const;
 
+/**
+ * The server and database of the catalog the e2e control plane is pointed at (E2E.catalogDb, which
+ * SQLFLOW_E2E_CATALOG_DB overrides). A fixed database name here seeded some other catalog whenever the suite ran
+ * against an overridden one, and the Nodes page never showed the seeded rows.
+ */
+function catalogTarget(): { server: string; database: string } {
+  const parts = new Map<string, string>();
+  for (const part of E2E.catalogDb.split(";")) {
+    const index = part.indexOf("=");
+    if (index > 0) {
+      parts.set(part.slice(0, index).trim().toLowerCase(), part.slice(index + 1).trim());
+    }
+  }
+
+  const server = parts.get("server") ?? parts.get("data source");
+  const database = parts.get("database") ?? parts.get("initial catalog");
+  if (!server || !database) {
+    throw new Error("E2E.catalogDb names no server or no database, so the fleet spec cannot seed its nodes into it.");
+  }
+
+  return { server, database };
+}
+
 /** Upsert two nodes with a fresh last-seen (so they fall inside the control plane's 60s online window). */
 function seedTwoNodes(): void {
+  const target = catalogTarget();
   const sql = `
 SET NOCOUNT ON;
 MERGE catalog.[Node] AS t
@@ -18,13 +43,13 @@ USING (VALUES ('${SEEDED[0]}', '3.0.0-e2e'), ('${SEEDED[1]}', '3.0.0-e2e')) AS s
 WHEN MATCHED THEN
   UPDATE SET LastSeenUtc = SYSUTCDATETIME(), Version = s.Version
 WHEN NOT MATCHED THEN
-  INSERT (Name, FirstSeenUtc, LastSeenUtc, Version)
-  VALUES (s.Name, SYSUTCDATETIME(), SYSUTCDATETIME(), s.Version);
+  INSERT (Name, FirstSeenUtc, LastSeenUtc, Version, BusyRuns)
+  VALUES (s.Name, SYSUTCDATETIME(), SYSUTCDATETIME(), s.Version, 0);
 SELECT Name FROM catalog.[Node] ORDER BY LastSeenUtc DESC;`;
   // Trusted connection to the same local catalog the e2e control plane uses (see playwright.config E2E.catalogDb).
   const out = execFileSync(
     "sqlcmd",
-    ["-S", "localhost", "-d", "SqlFlowCatalogE2E", "-E", "-C", "-b", "-Q", sql],
+    ["-S", target.server, "-d", target.database, "-E", "-C", "-b", "-Q", sql],
     { encoding: "utf8" },
   );
   for (const name of SEEDED) {

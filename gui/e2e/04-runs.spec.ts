@@ -34,6 +34,11 @@ test.describe.serial("runs", () => {
 
   test("the runs list shows the run and the status filter narrows it", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-runs").click();
+    await expect(adminPage.getByTestId("page-runs")).toBeVisible();
+
+    // The board starts grouped with every schedule collapsed, so the run rows show only in the flat view.
+    await adminPage.getByTestId("group-by-batch").click();
+    await expect(adminPage.getByTestId("group-header-row")).toHaveCount(0);
     const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" });
     await expect(row.first()).toBeVisible({ timeout: 30_000 });
 
@@ -49,6 +54,9 @@ test.describe.serial("runs", () => {
     ).toBeVisible({ timeout: 15_000 });
     await adminPage.getByTestId("filter-status").click();
     await adminPage.getByRole("option", { name: "all statuses" }).click(); // back to all
+
+    await adminPage.getByTestId("group-by-batch").click(); // back to the grouped default
+    await expect(adminPage.getByTestId("schedule-group-header").first()).toBeVisible();
   });
 
   test("runs group under their schedule, collapsed by default, then batch and step; the batch dropdown filters", async ({ adminPage }) => {
@@ -141,8 +149,12 @@ test.describe.serial("runs", () => {
 
     // A terminal run offers a re-run instead. The re-run repeats the run's own parameters, including the
     // unserved pool, so the new run also stays queued; the page navigates to it. Cancel it to clean up.
+    // Re-run opens the trigger dialog prefilled with the run's own parameters, its pool among them.
     const cancelledUrl = adminPage.url();
     await adminPage.getByTestId("rerun-run").click();
+    await expect(adminPage.getByTestId("trigger-run-dialog")).toBeVisible();
+    await expect(adminPage.getByTestId("trigger-pool")).toHaveValue("e2e-unserved-pool");
+    await adminPage.getByTestId("trigger-submit").click();
     await expect(adminPage).not.toHaveURL(cancelledUrl, { timeout: 15_000 });
     await expect(adminPage.getByTestId("page-run-detail")).toBeVisible();
     await expect(adminPage.getByTestId("status-badge").filter({ hasText: "queued" }).first())
@@ -155,6 +167,11 @@ test.describe.serial("runs", () => {
 
   test("run detail links back to its pipeline and repo", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-runs").click();
+    await expect(adminPage.getByTestId("page-runs")).toBeVisible();
+
+    // Run rows show in the flat view; the grouped default starts with every schedule collapsed.
+    await adminPage.getByTestId("group-by-batch").click();
+    await expect(adminPage.getByTestId("group-header-row")).toHaveCount(0);
     await adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first().click();
     await expect(adminPage.getByTestId("page-run-detail")).toBeVisible();
     await adminPage.getByTestId("run-pipeline-link").click();

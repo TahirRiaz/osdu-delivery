@@ -49,7 +49,7 @@ test.describe.serial("new features", () => {
     await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first()).toBeVisible();
   });
 
-  test("a catch-up schedule shows the catchup chip", async ({ adminPage }) => {
+  test("a catch-up schedule says it backfills missed occurrences", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-schedules").click();
     await expect(adminPage.getByTestId("page-schedules")).toBeVisible();
 
@@ -67,7 +67,11 @@ test.describe.serial("new features", () => {
 
     const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first();
     await expect(row).toBeVisible({ timeout: 15_000 });
-    await expect(row.getByText("catchup")).toBeVisible();
+
+    // The list keeps to one line per schedule, so catch-up is told where the trigger is explained: its tooltip.
+    await row.getByText("Every 6 hours").hover();
+    await expect(adminPage.getByRole("tooltip")).toContainText("Missed occurrences are backfilled", { timeout: 10_000 });
+    await adminPage.keyboard.press("Escape");
 
     // Clean up so the suite leaves no schedule behind.
     await row.getByTestId("schedule-delete").click();
