@@ -37,6 +37,7 @@ public sealed class RunTriggerContractParityTests
     [InlineData("SubmissionId")]
     [InlineData("RecordKeys")]
     [InlineData("PublishTo")]
+    [InlineData("Redeliver")]
     public void EveryRunParameter_IsCarriedByBothSides(string parameter)
     {
         var client = typeof(SqlFlow.Cli.Remote.RunTriggerAccepted).Assembly.GetType("SqlFlow.Cli.Remote.RunTriggerRequest", throwOnError: true)!;

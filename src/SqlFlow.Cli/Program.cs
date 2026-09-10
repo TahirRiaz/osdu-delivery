@@ -887,7 +887,7 @@ internal static class Program
               sqlflow snapshot <flow.yaml> list    Capture or list the schema and reference snapshots the flow renders with
               sqlflow run      <flow.yaml>         Execute the flow (Ctrl+C aborts the in-flight work)
                                [--operation deliver|verify|plan|known-state|intake|drain|retrieve] [--force] [--set name=value]...
-                               [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>]
+                               [--drop <location>] [--submission <id>] [--record <key>]... [--redeliver all|metadata|payload] [--publish-to <location>]
                                [--log-level info|debug|trace] [--json] [--db <conn-ref>] [--no-db-sync]
               sqlflow auth     [--scope storage|keyvault|arm|<uri>]
                                                    Verify Azure auth in THIS environment: reports the resolved mode
@@ -927,7 +927,7 @@ internal static class Program
               sqlflow logout                       Revoke the stored token server-side and remove it locally.
               sqlflow trigger  --repo <name|id> --flow <f> [--pool <p>] [--commit <sha>] [--preview] [--follow]
                                [--operation deliver|verify|plan|known-state|intake|drain|retrieve] [--force] [--set name=value]...
-                               [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>]
+                               [--drop <location>] [--submission <id>] [--record <key>]... [--redeliver all|metadata|payload] [--publish-to <location>]
                                                    Enqueue a run on the fleet (POST /runs). --preview shows what would
                                                    run without enqueuing; --follow attaches to the live trace.
               sqlflow runs list [--status s] [--flow name] [--batch b] [--kind k] [--repo r] [--group g] [--latest]
@@ -958,7 +958,7 @@ internal static class Program
     /// The per-run parameters' CLI surface: <c>--operation deliver|verify|plan|known-state|intake|drain|retrieve</c> picks the operation
     /// (deliver by default), <c>--force</c> pushes past the change gates, <c>--set name=value</c> (repeatable) supplies
     /// the flow's parameter values, <c>--drop</c> overrides the drop location, <c>--submission</c> re-runs one
-    /// submission, <c>--record</c> (repeatable) scopes the run to those delivery keys, and <c>--publish-to</c> names
+    /// submission, <c>--record</c> (repeatable) scopes the run to those delivery keys, <c>--redeliver</c> says what of them a deliver run sends again, and <c>--publish-to</c> names
     /// where a known-state publication goes. Parsed and validated once here, for a local run and a remote trigger alike.
     /// </summary>
     internal static RunParameters ParseRunParameters(string[] args)
@@ -977,6 +977,7 @@ internal static class Program
             SubmissionId = GetOption(args, "--submission") is { } submission ? ParseGuid(submission, "--submission") : null,
             RecordKeys = GetOptions(args, "--record").Select(r => ParseGuid(r, "--record")).ToList(),
             PublishTo = GetOption(args, "--publish-to"),
+            Redeliver = GetOption(args, "--redeliver")?.Trim().ToLowerInvariant(),
         };
         parameters.Validate();
         return parameters;
@@ -989,7 +990,7 @@ internal static class Program
         // The control-plane verbs (health/login/logout/trigger/runs/groups and the estate family).
         "--url", "--token", "--username", "--token-name", "--expires-days", "--scopes",
         "--scope", "--batch", "--pool", "--poll-seconds", "--drain-seconds", "--commit", "--flow", "--status", "--kind", "--group",
-        "--page", "--page-size", "--operation", "--set", "--drop", "--submission", "--record", "--publish-to",
+        "--page", "--page-size", "--operation", "--set", "--drop", "--submission", "--record", "--redeliver", "--publish-to",
         "--kind", "--from-dir", "--spec", "--endpoint",
         "--cron", "--interval", "--timezone", "--max-concurrency",
         "--remote-url", "--credential-ref", "--credential-user",

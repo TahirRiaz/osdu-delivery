@@ -44,7 +44,7 @@ internal sealed record CreatedAccessTokenDto(AccessTokenDto Token, string Secret
 internal sealed record RunTriggerRequest(
     Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null, string? Scope = null,
     string? Operation = null, bool Force = false, IReadOnlyDictionary<string, string>? Values = null, string? Drop = null,
-    Guid? SubmissionId = null, IReadOnlyList<Guid>? RecordKeys = null, string? PublishTo = null);
+    Guid? SubmissionId = null, IReadOnlyList<Guid>? RecordKeys = null, string? PublishTo = null, string? Redeliver = null);
 
 internal sealed record RunTriggerAccepted(Guid RunId, string Status);
 

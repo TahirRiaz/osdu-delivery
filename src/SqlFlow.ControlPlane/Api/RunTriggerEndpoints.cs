@@ -16,7 +16,7 @@ namespace SqlFlow.ControlPlane.Api;
 public sealed record RunTriggerRequest(
     Guid RepoId, string FlowName, string? Pool = null, string? CommitSha = null, string? Scope = null,
     string? Operation = null, bool Force = false, IReadOnlyDictionary<string, string>? Values = null, string? Drop = null,
-    Guid? SubmissionId = null, IReadOnlyList<Guid>? RecordKeys = null, string? PublishTo = null);
+    Guid? SubmissionId = null, IReadOnlyList<Guid>? RecordKeys = null, string? PublishTo = null, string? Redeliver = null);
 
 public sealed record RunTriggerAccepted(Guid RunId, string Status);
 
@@ -93,6 +93,7 @@ public static class RunTriggerEndpoints
             SubmissionId = request.SubmissionId,
             RecordKeys = request.RecordKeys ?? [],
             PublishTo = string.IsNullOrWhiteSpace(request.PublishTo) ? null : request.PublishTo.Trim(),
+            Redeliver = string.IsNullOrWhiteSpace(request.Redeliver) ? null : request.Redeliver.Trim().ToLowerInvariant(),
         };
         try
         {

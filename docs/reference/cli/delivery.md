@@ -41,7 +41,8 @@ endpoint). Commit the snapshot store with the flow.
 | `--set name=value` | A flow parameter value; repeatable. |
 | `--drop <location>` | Read this drop instead of the flow's declared source location. |
 | `--submission <id>` | Re-run one submission from its own drop, with the parameters it was received with. |
-| `--record <key>` | Scope the run to this delivery key; repeatable. With deliver, the records are redelivered regardless of what OSDU holds; with verify, only they are checked. |
+| `--record <key>` | Scope the run to this delivery key; repeatable. With deliver, the records are redelivered regardless of what OSDU holds, and the run re-plans the drop even when no source table advanced or the submission already completed, so the redelivery is never skipped; with verify, only they are checked. |
+| `--redeliver all\|metadata\|payload` | With `--record` on a deliver run: what of those records is sent again. Default all. |
 | `--publish-to <location>` | Where a known-state publication is written; without it the flow's `source.knownState` (with the flow parameters substituted) is used. |
 | `--db <ref>` | The catalog connection (default `${env:SQLFLOW_CATALOG_DB}`). With it the ledger is live and the run is recorded; without it `run` plans and checks only. |
 

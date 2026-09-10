@@ -69,7 +69,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /records/{key}/cache` | read | What one record read out of the cache when it was rendered: the cached item, the path and the value. |
 | `POST /flows/{pipelineId}/release` | operate | Release the flow's blocked records (all, or `keys`). |
 | `POST /flows/{pipelineId}/probe` | operate | Queue a target probe on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
-| `POST /records/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope` all, metadata or payload, `run` true queues the deliver run); queue a verify run scoped to it. |
+| `POST /records/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope` all, metadata or payload; `run` true queues a deliver run of the record's last submission, scoped to the record, that marks it with that scope and sends it); queue a verify run scoped to it. |
 | `POST /records/{key}/read` | operate | Queue a read-back of the record as OSDU holds it, on a node. |
 | `POST /records/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
@@ -77,7 +77,8 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /ledger/prune` | admin | Age out attempts older than `olderThanDays`, keeping the latest per record. |
 
 Runs carry the delivery parameters on the platform's trigger (`POST /api/v1/runs`): `operation`, `force`,
-`values`, `drop`, `submissionId`, `recordKeys`, `publishTo`, and for a fan-out member `partitions`. The run row
+`values`, `drop`, `submissionId`, `recordKeys`, `redeliver` (what a deliver run scoped to `recordKeys` sends again:
+`all`, the default, `metadata` or `payload`), `publishTo`, and for a fan-out member `partitions`. The run row
 records them, the delivery counts are projected onto it when the run completes, and its result (the operation's
 outcome as JSON) and its fan-out membership (root, slot, count) are on the run detail.
 

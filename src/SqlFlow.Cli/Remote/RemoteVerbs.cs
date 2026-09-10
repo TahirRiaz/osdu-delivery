@@ -248,7 +248,8 @@ internal static partial class RemoteVerbs
                 Drop: parameters.Drop,
                 SubmissionId: parameters.SubmissionId,
                 RecordKeys: parameters.RecordKeys.Count == 0 ? null : parameters.RecordKeys,
-                PublishTo: parameters.PublishTo);
+                PublishTo: parameters.PublishTo,
+                Redeliver: parameters.Redeliver);
             var outcome = await client.TriggerRunAsync(request, ct).ConfigureAwait(false);
 
             if (outcome.Run is { } run)

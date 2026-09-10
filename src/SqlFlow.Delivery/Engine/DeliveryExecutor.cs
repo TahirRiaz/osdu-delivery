@@ -148,12 +148,13 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
             case RunParameters.DeliverOperation:
                 if (keys.Count > 0)
                 {
-                    // A scoped redelivery: forget what OSDU holds for these records, then let the plan re-send them.
-                    var marked = await runtime.RedeliverAsync(keys, RedeliverScope.All, ct).ConfigureAwait(false);
+                    // A scoped redelivery: forget what OSDU holds for these records (all of it, or the part the run
+                    // names), then let the plan re-send them.
+                    var marked = await runtime.RedeliverAsync(keys, RedeliverScopeOf(parameters), ct).ConfigureAwait(false);
                     LogRedeliver(log, marked, keys.Count);
                 }
 
-                var run = await runtime.RunAsync(force: parameters.Force || submission is not null, ct).ConfigureAwait(false);
+                var run = await runtime.RunAsync(force: ForcesReplan(parameters, submission is not null), ct).ConfigureAwait(false);
                 LogOutcome(log, SubmissionIntake.Summarize(run.Submission));
                 return DeliverOutcome.From(run, runtime.DropLocation);
 
@@ -188,6 +189,26 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
             default:
                 throw new SqlFlowException($"Unknown operation '{parameters.Operation}'.");
         }
+    }
+
+    /// <summary>
+    /// Whether a deliver run re-plans past the gates that skip a drop as a whole: the tier-0 source-version gate and an
+    /// already completed submission. A forced run, a submission re-run and a run scoped to record keys all do. The
+    /// scoped run has to, or its marks are never seen: a drop whose source did not advance is skipped before any record
+    /// is compared, and the run reports the earlier delivery as if it had sent something. Forcing lifts only those two
+    /// gates; each record's own hashes still decide what is sent, so only the marked records go.
+    /// </summary>
+    public static bool ForcesReplan(RunParameters parameters, bool reRunningSubmission)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        return parameters.Force || reRunningSubmission || parameters.RecordKeys.Count > 0;
+    }
+
+    /// <summary>What a record-scoped deliver run sends again: the run's validated <c>redeliver</c>, everything when unset.</summary>
+    public static RedeliverScope RedeliverScopeOf(RunParameters parameters)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        return parameters.Redeliver is { } scope ? Enum.Parse<RedeliverScope>(scope, ignoreCase: true) : RedeliverScope.All;
     }
 
     /// <summary>A plan run streams the drop, writes the first entries to its trace and counts the rest.</summary>

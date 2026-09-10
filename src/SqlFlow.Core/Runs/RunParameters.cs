@@ -40,6 +40,17 @@ public sealed partial record RunParameters
 
     public static readonly IReadOnlyList<string> Operations = [DeliverOperation, VerifyOperation, PlanOperation, KnownStateOperation, IntakeOperation, DrainOperation, RetrieveOperation];
 
+    /// <summary>A scoped redelivery sends the record's document and its payload again.</summary>
+    public const string RedeliverAll = "all";
+
+    /// <summary>A scoped redelivery sends the record's document again, not its payload.</summary>
+    public const string RedeliverMetadata = "metadata";
+
+    /// <summary>A scoped redelivery sends the record's payload (its bulk data or files) again, not its document.</summary>
+    public const string RedeliverPayload = "payload";
+
+    public static readonly IReadOnlyList<string> RedeliverScopes = [RedeliverAll, RedeliverMetadata, RedeliverPayload];
+
     public const int MaxDropLength = 2000;
 
     public const int MaxValueLength = 1000;
@@ -74,6 +85,13 @@ public sealed partial record RunParameters
     /// <summary>The delivery keys the run is scoped to (a verify of a few records, a redelivery of one); empty means every record.</summary>
     public IReadOnlyList<Guid> RecordKeys { get; init; } = [];
 
+    /// <summary>
+    /// What a deliver run scoped to <see cref="RecordKeys"/> sends again: <c>all</c> (the default when unset),
+    /// <c>metadata</c> or <c>payload</c>. The run marks the records itself, so the mark and the delivery it causes are
+    /// one recorded run under one scope.
+    /// </summary>
+    public string? Redeliver { get; init; }
+
     /// <summary>Where a known-state publication is written; null uses the flow's declared location.</summary>
     public string? PublishTo { get; init; }
 
@@ -82,7 +100,7 @@ public sealed partial record RunParameters
 
     public bool IsDefault
         => string.Equals(Operation, DeliverOperation, StringComparison.OrdinalIgnoreCase) && !Force && Values.Count == 0
-           && string.IsNullOrWhiteSpace(Drop) && SubmissionId is null && RecordKeys.Count == 0 && string.IsNullOrWhiteSpace(PublishTo) && Partitions.Count == 0;
+           && string.IsNullOrWhiteSpace(Drop) && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && string.IsNullOrWhiteSpace(PublishTo) && Partitions.Count == 0;
 
     /// <summary>True for the operations that write to the target (deliver, drain) as opposed to reading it or the ledger.</summary>
     public bool WritesTarget => string.Equals(Operation, DeliverOperation, StringComparison.OrdinalIgnoreCase) || string.Equals(Operation, DrainOperation, StringComparison.OrdinalIgnoreCase);
@@ -130,6 +148,19 @@ public sealed partial record RunParameters
         if (RecordKeys.Any(k => k == Guid.Empty))
         {
             throw new SqlFlowException("recordKeys must be non-empty UUIDs.");
+        }
+
+        if (Redeliver is { } redeliver)
+        {
+            if (!RedeliverScopes.Contains(redeliver, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new SqlFlowException($"redeliver must be one of {string.Join(", ", RedeliverScopes)}; '{redeliver}' is not.");
+            }
+
+            if (!string.Equals(Operation, DeliverOperation, StringComparison.OrdinalIgnoreCase) || RecordKeys.Count == 0)
+            {
+                throw new SqlFlowException("redeliver applies to a deliver run scoped to record keys: it says what of those records is sent again.");
+            }
         }
 
         if (PublishTo is { } to && (string.IsNullOrWhiteSpace(to) || to.Length > MaxDropLength || to.Any(char.IsControl)))
@@ -195,6 +226,11 @@ public sealed partial record RunParameters
         if (RecordKeys.Count > 0)
         {
             parts.Add($"records={RecordKeys.Count}");
+        }
+
+        if (Redeliver is { } redeliver)
+        {
+            parts.Add($"redeliver={redeliver.ToLowerInvariant()}");
         }
 
         if (!string.IsNullOrWhiteSpace(PublishTo))

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
+using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Verify;
@@ -622,6 +623,38 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_redelivery_scoped_to_one_record_sends_only_that_part_of_it_after_the_drop_was_delivered()
+    {
+        // Live, a redelivery of two well logs was marked and then skipped: no source table had advanced and the
+        // submission was already completed, so nothing was sent while the run reported the earlier delivery.
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var drop = await DropAsync("scoped-redeliver", records, Submission1, 1);
+        var (runtime, protocol, ledger) = await RuntimeAsync(drop);
+        using (runtime)
+        {
+            Assert.Equal(records.Count, (await RunAsync(runtime, protocol, ledger, Submission1)).Delivered);
+            protocol.Deliveries.Clear();
+
+            var run = new RunParameters { RecordKeys = [records[1].Key.Value], Redeliver = RunParameters.RedeliverPayload };
+            await runtime.RedeliverAsync([records[1].Key], DeliveryExecutor.RedeliverScopeOf(run));
+
+            // Without re-planning, the delivered submission is skipped whole and the mark is never seen.
+            var unforced = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.DropLocation, force: false);
+            Assert.True(unforced.NothingToDo);
+
+            var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.DropLocation, force: DeliveryExecutor.ForcesReplan(run, reRunningSubmission: false));
+            Assert.False(intake.NothingToDo);
+            var worker = new DeliveryWorker(ledger, runtime.Context.Drops, runtime.Context.Stores, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker") { MaxWait = null };
+            await worker.DrainAsync(Submission1);
+
+            var sent = Assert.Single(protocol.Deliveries);
+            Assert.Equal(records[1].Key, sent.Key);
+            Assert.False(sent.DeliverMetadata);
+            Assert.True(sent.DeliverPayload);
+        }
+    }
+
+    [Fact]
     public async Task Drop_prepared_for_another_mapping_or_flow_is_refused()
     {
         var drop = await DropAsync("mismatch", SampleDropBuilder.DefaultRecords("STAT_COMP"), Submission1, 1);
@@ -1094,5 +1127,27 @@ public class ProtocolTests
             SqlFlow.Delivery.Storage.ParquetScopeReader.WriteAsync(buffer, names, rows).GetAwaiter().GetResult();
             return buffer.ToArray();
         }
+    }
+}
+
+/// <summary>How a deliver run decides whether it re-plans a drop, and what a record-scoped run sends again.</summary>
+public class DeliverRunScopeTests
+{
+    [Fact]
+    public void A_run_scoped_to_records_replans_past_the_whole_run_gates()
+    {
+        Assert.True(DeliveryExecutor.ForcesReplan(new RunParameters { RecordKeys = [Guid.NewGuid()] }, reRunningSubmission: false));
+        Assert.True(DeliveryExecutor.ForcesReplan(new RunParameters { Force = true }, reRunningSubmission: false));
+        Assert.True(DeliveryExecutor.ForcesReplan(RunParameters.None, reRunningSubmission: true));
+        Assert.False(DeliveryExecutor.ForcesReplan(RunParameters.None, reRunningSubmission: false));
+    }
+
+    [Fact]
+    public void A_record_scoped_run_redelivers_what_it_names_and_everything_by_default()
+    {
+        var key = Guid.NewGuid();
+        Assert.Equal(RedeliverScope.All, DeliveryExecutor.RedeliverScopeOf(new RunParameters { RecordKeys = [key] }));
+        Assert.Equal(RedeliverScope.Payload, DeliveryExecutor.RedeliverScopeOf(new RunParameters { RecordKeys = [key], Redeliver = RunParameters.RedeliverPayload }));
+        Assert.Equal(RedeliverScope.Metadata, DeliveryExecutor.RedeliverScopeOf(new RunParameters { RecordKeys = [key], Redeliver = "Metadata" }));
     }
 }

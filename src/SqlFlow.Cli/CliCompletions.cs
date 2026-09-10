@@ -26,7 +26,7 @@ internal static class CliCompletions
     private static readonly string[] CommonOptions =
     [
         "--url", "--token", "--json", "--repo", "--flow", "--scope", "--batch", "--follow", "--preview",
-        "--operation", "--force", "--set", "--drop", "--submission", "--record", "--publish-to", "--page", "--page-size", "--status", "--kind",
+        "--operation", "--force", "--set", "--drop", "--submission", "--record", "--redeliver", "--publish-to", "--page", "--page-size", "--status", "--kind",
         "--db", "--verbose", "--help",
     ];
 

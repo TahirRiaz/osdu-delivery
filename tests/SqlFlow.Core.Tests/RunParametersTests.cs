@@ -47,6 +47,7 @@ public sealed class RunParametersTests
         Assert.False(new RunParameters { Drop = "abfss://drops@lake/recall/2026-09-01" }.IsDefault);
         Assert.False(new RunParameters { SubmissionId = Guid.NewGuid() }.IsDefault);
         Assert.False(new RunParameters { RecordKeys = [Guid.NewGuid()] }.IsDefault);
+        Assert.False(new RunParameters { RecordKeys = [Guid.NewGuid()], Redeliver = RunParameters.RedeliverPayload }.IsDefault);
         Assert.False(new RunParameters { PublishTo = "/known-state" }.IsDefault);
     }
 
@@ -94,6 +95,21 @@ public sealed class RunParametersTests
         }
 
         Assert.Throws<SqlFlowException>(() => new RunParameters { RecordKeys = keys }.Validate());
+    }
+
+    [Fact]
+    public void Redeliver_NamesWhatARecordScopedDeliverRunSendsAgain()
+    {
+        var key = Guid.NewGuid();
+        new RunParameters { RecordKeys = [key], Redeliver = "Metadata" }.Validate();
+        var payload = new RunParameters { RecordKeys = [key], Redeliver = RunParameters.RedeliverPayload };
+        payload.Validate();
+        Assert.Contains("redeliver=payload", payload.Describe(), StringComparison.Ordinal);
+        Assert.Equal(RunParameters.RedeliverPayload, RunParameters.FromJson(payload.ToJson()).Redeliver);
+
+        Assert.Throws<SqlFlowException>(() => new RunParameters { RecordKeys = [key], Redeliver = "document" }.Validate());
+        Assert.Throws<SqlFlowException>(() => new RunParameters { Redeliver = RunParameters.RedeliverAll }.Validate());
+        Assert.Throws<SqlFlowException>(() => new RunParameters { Operation = RunParameters.VerifyOperation, RecordKeys = [key], Redeliver = RunParameters.RedeliverAll }.Validate());
     }
 
     [Fact]

@@ -841,18 +841,21 @@ public static class DeliveryEndpoints
             return TypedResults.Problem(detail: "scope must be all, metadata or payload.", statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
         }
 
-        // With a run, the node marks and re-sends in one recorded run (the mark carries the run id); without one,
-        // the mark is made here under the caller's name and the next delivery of the drop sends the record.
+        // With a run, the node marks and re-sends in one recorded run (the mark carries the run id and the scope);
+        // without one, the mark is made here under the caller's name and the next delivery of the drop sends the
+        // record. The run works on the record's last submission: that drop holds the record's source row, and the
+        // submission carries the flow parameter values it was opened with, which a flow declaring a required parameter
+        // cannot run without.
         if (request?.Run ?? true)
         {
-            if (scope != RedeliverScope.All)
+            var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
+            var parameters = new RunParameters
             {
-                using var marking = FlowRuntime.ForTarget(engine, flow.Flow);
-                marking.Actor = RequestActor.Label(user);
-                await marking.RedeliverAsync([new DeliveryKey(key)], scope, ct).ConfigureAwait(false);
-            }
-
-            var runId = await EnqueueRunAsync(db, dispatcher, flow, new RunParameters { RecordKeys = [key] }, request?.Pool, user, ct).ConfigureAwait(false);
+                RecordKeys = [key],
+                Redeliver = scope.ToString().ToLowerInvariant(),
+                SubmissionId = record?.LastSubmissionId,
+            };
+            var runId = await EnqueueRunAsync(db, dispatcher, flow, parameters, request?.Pool, user, ct).ConfigureAwait(false);
             return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryRedeliverResult(1, runId));
         }
 

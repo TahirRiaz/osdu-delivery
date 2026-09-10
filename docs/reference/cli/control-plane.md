@@ -54,7 +54,7 @@ name or id) and `--flow` are required. `--pool` routes the run to a worker pool,
 object id (otherwise the run is pinned to the repo's last synced commit), `--preview` prints what would be
 enqueued and stops, and `--follow` attaches to the live trace and exits by the run's outcome. The delivery
 run options (`--operation deliver|verify|plan|known-state`, `--force`, `--set name=value`, `--drop`,
-`--submission`, `--record`, `--publish-to`) are the same as a local `sqlflow run` and are parsed and
+`--submission`, `--record`, `--redeliver`, `--publish-to`) are the same as a local `sqlflow run` and are parsed and
 validated once for both; see [the delivery run options](delivery.md). A `--scope` other than `flow` is
 refused: a whole set of flows runs through its schedule (`sqlflow schedules run <id>`), whose membership is
 what a fire runs.
