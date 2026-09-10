@@ -142,7 +142,7 @@ public sealed class AuthResolver
 
             request.Content = new FormUrlEncodedContent(body);
             return request;
-        }, ct: ct).ConfigureAwait(false);
+        }, ct: ct, idempotent: true).ConfigureAwait(false);
 
         JsonElement root;
         try

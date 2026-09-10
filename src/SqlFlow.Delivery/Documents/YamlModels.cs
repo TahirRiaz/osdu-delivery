@@ -183,6 +183,16 @@ internal sealed class ProtocolOptionsYaml
 
     public string? VersionPath { get; set; }
 
+    public bool? SkipDuplicates { get; set; }
+
+    public string? VerifyBatchPath { get; set; }
+
+    public string? DdmsRoot { get; set; }
+
+    public bool? ValidateLegalTags { get; set; }
+
+    public string? LegalValidatePath { get; set; }
+
     public List<string>? PreserveDataKeys { get; set; }
 
     public int? BatchSize { get; set; }

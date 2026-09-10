@@ -541,6 +541,14 @@ public sealed class DeliveryWorker
                     }
 
                     var backoff = RetryPolicy.RecordBackoff(_flow.Reliability.Retry, attempts);
+
+                    // A service that said how long to wait is not asked again sooner: the transport hands a wait
+                    // longer than it will sit through inline up here, and the record's next attempt honours it.
+                    if (failure is HttpStatusException { RetryAfter: { } asked } && asked > backoff)
+                    {
+                        backoff = asked;
+                    }
+
                     var next = _time.GetUtcNow().UtcDateTime + backoff;
                     return Settle(record, batch, started, RecordStatus.Pending, AttemptOutcome.Failed, "none", null, null, failure.Message, resultJson, null, keepSteps: true, nextAttempt: next);
                 }

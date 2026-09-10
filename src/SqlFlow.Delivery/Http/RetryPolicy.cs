@@ -8,22 +8,38 @@ using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.Http;
 
-/// <summary>The outcome of a retry decision: stop (surface the failure) or wait the given delay and retry.</summary>
-public readonly record struct RetryDecision(bool ShouldRetry, TimeSpan Delay)
+/// <summary>
+/// The outcome of a retry decision: stop (surface the failure) or wait the given delay and retry. A stop also
+/// carries the wait the service asked for, when it named one, so whoever tries again later knows the earliest it
+/// may.
+/// </summary>
+public readonly record struct RetryDecision(bool ShouldRetry, TimeSpan Delay, TimeSpan? RetryAfter = null)
 {
     public static readonly RetryDecision Stop = new(false, TimeSpan.Zero);
 
     public static RetryDecision Retry(TimeSpan delay) => new(true, delay);
+
+    public static RetryDecision StopFor(TimeSpan? retryAfter) => new(false, TimeSpan.Zero, retryAfter);
 }
 
 /// <summary>
-/// Exponential backoff with a retryable-status allowlist and Retry-After honouring. Transport failures (no status)
-/// and the transient statuses 408/425/429/500/502/503/504 retry up to the attempt cap; every other status is
-/// permanent. Retry-After is a floor raised to (never below) the computed backoff and bounded by the max delay.
+/// Exponential backoff with a transient-status allowlist and Retry-After honouring, for requests that are safe to
+/// repeat (the executor decides that; this decides when).
+///
+/// Transient means the service said so: 429 and 503 (busy), 504 (a gateway gave up waiting), and 408 and 425, which
+/// RFC 9110 and RFC 8470 define as safe to repeat. 500 and 502 are not repeated here. The OSDU services answer 500
+/// for failures that are deterministic as often as for passing ones (an unexpected record shape, a legal tag the
+/// service cannot resolve), so an immediate replay tends to fail again; the OSDU C# client declines to retry them
+/// for the same reason. They are not given up on: the worker retries the record on its own backoff, measured in
+/// minutes rather than milliseconds.
+///
+/// Retry-After is honoured and never shortened. A requested wait no longer than the max delay becomes the floor of
+/// the backoff; a longer one is not waited out inline, because that would pin a worker for as long as the service
+/// likes, so the request stops and the requested wait travels with the failure for the record-level retry to honour.
 /// </summary>
 public sealed class RetryPolicy
 {
-    private static readonly HashSet<int> Retryable = [408, 425, 429, 500, 502, 503, 504];
+    private static readonly HashSet<int> Retryable = [408, 425, 429, 503, 504];
 
     private readonly FlowRetry _config;
     private readonly TimeProvider _time;
@@ -43,25 +59,32 @@ public sealed class RetryPolicy
     /// <param name="headers">Response headers, for Retry-After; null for a transport failure.</param>
     public RetryDecision Next(int attempt, HttpStatusCode? status, HttpResponseHeaders? headers)
     {
-        if (attempt >= _config.Attempts)
-        {
-            return RetryDecision.Stop;
-        }
-
+        var requested = _config.HonorRetryAfter && headers?.RetryAfter is { } retryAfter ? ParseRetryAfter(retryAfter) : null;
         var code = status is { } s ? (int)s : (int?)null;
         if (code is { } c && !Retryable.Contains(c))
         {
-            return RetryDecision.Stop;
+            return RetryDecision.StopFor(requested);
         }
 
-        var backoff = Backoff(attempt);
-        if (_config.HonorRetryAfter && headers?.RetryAfter is { } retryAfter && ParseRetryAfter(retryAfter) is { } floor)
+        if (attempt >= _config.Attempts)
         {
-            backoff = floor > backoff ? floor : backoff;
+            return RetryDecision.StopFor(requested);
         }
 
         var max = TimeSpan.FromMilliseconds(_config.MaxDelayMs);
-        return RetryDecision.Retry(backoff > max ? max : backoff);
+        if (requested is { } wait && wait > max)
+        {
+            // Waiting less than the service asked would be a retry it told us not to make.
+            return RetryDecision.StopFor(wait);
+        }
+
+        var backoff = Backoff(attempt);
+        if (backoff > max)
+        {
+            backoff = max;
+        }
+
+        return RetryDecision.Retry(requested is { } floor && floor > backoff ? floor : backoff);
     }
 
     private TimeSpan Backoff(int attempt)

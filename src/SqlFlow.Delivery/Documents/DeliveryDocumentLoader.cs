@@ -129,8 +129,21 @@ public sealed class DeliveryDocumentLoader
     }
 }
 
-internal static class FlowMapper
+internal static partial class FlowMapper
 {
+    /// <summary>The tenant header every OSDU service requires on every request.</summary>
+    public const string PartitionHeader = "data-partition-id";
+
+    /// <summary>
+    /// True for a kind the storage service accepts on a record (openapi storage v2, Record.kind:
+    /// <c>^[\w\-\.]+:[\w\-\.]+:[\w\-\.]+:[0-9]+.[0-9]+.[0-9]+$</c>). A kind that only looks like four colon-separated
+    /// parts, with a space in the entity type or a two-part version, would be refused on every record of a run.
+    /// </summary>
+    public static bool IsRecordKind(string kind) => RecordKindPattern().IsMatch(kind);
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^[\w\-\.]+:[\w\-\.]+:[\w\-\.]+:[0-9]+\.[0-9]+\.[0-9]+$")]
+    private static partial System.Text.RegularExpressions.Regex RecordKindPattern();
+
     public static FlowDefinition Map(FlowYaml y, string source)
     {
         var name = Require(y.Name, "name", source);
@@ -232,9 +245,56 @@ internal static class FlowMapper
             throw new FlowValidationException($"{source}: reliability.renderParallelism must be between 0 and 256.");
         }
 
+        // Every OSDU service makes data-partition-id a required header (openapi storage v2, file v2, search v2,
+        // workflow v1, schema-service v1). A flow that leaves it out authors a run where every single request comes
+        // back 400 with a message about a tenant, which is a slow and confusing way to learn about a typo in the
+        // flow. It costs nothing to say so while the document is being read.
+        if (!flow.Target.Headers.ContainsKey(PartitionHeader))
+        {
+            throw new FlowValidationException(
+                $"{source}: target.headers must declare '{PartitionHeader}'. Every OSDU service requires it and rejects a request without it.");
+        }
+
+        if (string.IsNullOrWhiteSpace(flow.Target.Headers[PartitionHeader]))
+        {
+            throw new FlowValidationException($"{source}: target.headers.{PartitionHeader} must not be empty.");
+        }
+
         if (flow.Target.ProtocolOptions.BatchSize is < 1 or > ProtocolOptions.MaxBatchSize)
         {
             throw new FlowValidationException($"{source}: target.protocolOptions.batchSize must be between 1 and {ProtocolOptions.MaxBatchSize}.");
+        }
+
+        if (flow.Target.ProtocolOptions.DdmsRoot is { } ddmsRoot)
+        {
+            if (flow.Target.Protocol != DeliveryProtocol.OsduWellLog)
+            {
+                throw new FlowValidationException(
+                    $"{source}: target.protocolOptions.ddmsRoot only applies to the osduWellLog protocol; {flow.Target.Protocol} reaches its services under the endpoint already.");
+            }
+
+            if (ddmsRoot.Length == 0 || ddmsRoot[0] != '/' || ddmsRoot.Contains("://", StringComparison.Ordinal) || ddmsRoot.Any(char.IsWhiteSpace))
+            {
+                throw new FlowValidationException(
+                    $"{source}: target.protocolOptions.ddmsRoot '{ddmsRoot}' must be a path under the endpoint starting with '/', such as /api/os-wellbore-ddms.");
+            }
+        }
+
+        if (flow.Target.ProtocolOptions.LegalValidatePath is { } legalPath
+            && legalPath[0] != '/'
+            && !(Uri.TryCreate(legalPath, UriKind.Absolute, out var legalUrl) && legalUrl.Scheme is "http" or "https"))
+        {
+            throw new FlowValidationException(
+                $"{source}: target.protocolOptions.legalValidatePath '{legalPath}' must be a path under the endpoint starting with '/', or an absolute http(s) URL.");
+        }
+
+        // The bulk endpoint replaces the whole bulk, so at most one chunk can go to it; more than one is a session.
+        // A flow that asked for a higher threshold was asking for chunks to overwrite each other.
+        if (flow.Target.ProtocolOptions.SessionThresholdChunks is < 0 or > 1)
+        {
+            throw new FlowValidationException(
+                $"{source}: target.protocolOptions.sessionThresholdChunks must be 1 (a single chunk goes straight to the bulk endpoint, more open a session) or 0 (always open a session). "
+                + "The bulk endpoint replaces the whole bulk on every write, so several chunks sent to it would overwrite each other.");
         }
 
         if (flow.Target.ProtocolOptions.MaxChunkValues < 0 || flow.Target.ProtocolOptions.MaxChunkColumns < 0)
@@ -250,6 +310,17 @@ internal static class FlowMapper
         if (flow.Target.ProtocolOptions.UploadUrlExpiry is { } expiry && !ValidExpiry(expiry))
         {
             throw new FlowValidationException($"{source}: target.protocolOptions.uploadUrlExpiry '{expiry}' must be a whole number of minutes, hours or days, such as 30M, 12H or 2D.");
+        }
+
+        // Both are written onto records the target stores (a dataset record per file, the manifest the workflow
+        // ingests), so they answer to the same pattern as a mapping's kind, and are checked while the flow is read
+        // rather than on the first delivery that needs them.
+        foreach (var (key, value) in new[] { ("datasetKind", flow.Target.ProtocolOptions.DatasetKind), ("manifestKind", flow.Target.ProtocolOptions.ManifestKind) })
+        {
+            if (!IsRecordKind(value))
+            {
+                throw new FlowValidationException($"{source}: target.protocolOptions.{key} '{value}' must be 'authority:source:entityType:major.minor.patch'.");
+            }
         }
 
         if (flow.Target.ProtocolOptions.ManifestSection is { } section && !ProtocolOptions.ManifestSections.Contains(section, StringComparer.Ordinal))
@@ -369,6 +440,11 @@ internal static class FlowMapper
             MaxChunkColumns = o.MaxChunkColumns ?? WellboreDdmsBulkLimits.MaxChunkColumns,
             PayloadContentType = o.PayloadContentType ?? "application/x-parquet",
             VersionPath = o.VersionPath ?? "recordIdVersions[0]",
+            SkipDuplicates = o.SkipDuplicates ?? true,
+            VerifyBatchPath = o.VerifyBatchPath,
+            DdmsRoot = string.IsNullOrWhiteSpace(o.DdmsRoot) ? null : o.DdmsRoot!.Trim().TrimEnd('/'),
+            ValidateLegalTags = o.ValidateLegalTags ?? true,
+            LegalValidatePath = string.IsNullOrWhiteSpace(o.LegalValidatePath) ? null : o.LegalValidatePath!.Trim(),
             PreserveDataKeys = o.PreserveDataKeys ?? [],
             BatchSize = o.BatchSize ?? 100,
             UploadUrlPath = o.UploadUrlPath,
@@ -454,14 +530,34 @@ internal static class FlowMapper
 
 internal static class MappingMapper
 {
+    /// <summary>
+    /// The legal block's lists are sets to the services that store it (openapi storage v2 and file v2, Legal:
+    /// <c>legaltags</c> and <c>otherRelevantDataCountries</c> are <c>uniqueItems</c>), so a repeated entry is a
+    /// record the target may refuse. It is refused here, naming the entry, rather than on every record of a run.
+    /// </summary>
+    private static List<string> Unique(List<string> values, string key, string source)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var value in values)
+        {
+            if (!seen.Add(value))
+            {
+                throw new FlowValidationException($"{source}: {key} lists '{value}' more than once; the legal block's lists are sets.");
+            }
+        }
+
+        return values;
+    }
+
     public static MappingDefinition Map(MappingYaml y, string source)
     {
         var name = FlowMapper.Require(y.Name, "name", source);
         var version = FlowMapper.Require(y.Version, "version", source);
         var kind = FlowMapper.Require(y.Kind, "kind", source);
-        if (kind.Split(':').Length != 4)
+        if (!FlowMapper.IsRecordKind(kind))
         {
-            throw new FlowValidationException($"{source}: kind '{kind}' must be 'authority:source:entityType:version'.");
+            throw new FlowValidationException(
+                $"{source}: kind '{kind}' must be 'authority:source:entityType:major.minor.patch', each of the first three made of letters, digits, underscore, hyphen and dot, as the storage service requires of every record it accepts.");
         }
 
         var src = y.Source ?? throw FlowMapper.Missing("source", source);
@@ -493,8 +589,8 @@ internal static class MappingMapper
             },
             Envelope = new MappingEnvelope
             {
-                LegalTags = envelope.LegalTags is { Count: > 0 } lt ? lt : throw new FlowValidationException($"{source}: envelope.legalTags must list at least one legal tag."),
-                OtherRelevantDataCountries = envelope.OtherRelevantDataCountries is { Count: > 0 } c ? c : throw new FlowValidationException($"{source}: envelope.otherRelevantDataCountries must list at least one country."),
+                LegalTags = Unique(envelope.LegalTags is { Count: > 0 } lt ? lt : throw new FlowValidationException($"{source}: envelope.legalTags must list at least one legal tag."), "envelope.legalTags", source),
+                OtherRelevantDataCountries = Unique(envelope.OtherRelevantDataCountries is { Count: > 0 } c ? c : throw new FlowValidationException($"{source}: envelope.otherRelevantDataCountries must list at least one country."), "envelope.otherRelevantDataCountries", source),
                 Acl = new MappingAcl
                 {
                     Owners = acl.Owners is { Count: > 0 } o ? o : throw new FlowValidationException($"{source}: envelope.acl.owners must list at least one group."),

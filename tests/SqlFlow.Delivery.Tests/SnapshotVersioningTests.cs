@@ -1,4 +1,9 @@
+using System.Net;
+using SqlFlow.Core;
+using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Engine.Snapshots;
+using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Storage;
 using Xunit;
 
@@ -100,5 +105,78 @@ public class SnapshotVersioningTests
         var again = await builder.SchemaFromDirectoryAsync(root, kind);
 
         Assert.Equal(first.Version, again.Version);
+    }
+}
+
+/// <summary>
+/// Paging the search index for a reference capture. The service hands back a cursor for the page after the last
+/// one as well, and that page is empty, so ending only on a null cursor is how a capture pages forever.
+/// </summary>
+public class ReferenceCaptureCursorTests
+{
+    private static readonly ReferenceTypeSpec Spec = new()
+    {
+        Name = "UnitOfMeasure",
+        Kind = "osdu:wks:reference-data--UnitOfMeasure:1.0.0",
+        EntityType = "reference-data--UnitOfMeasure",
+        Fields = [new ReferenceFieldSpec("data.Code", "Code")],
+    };
+
+    private static (SnapshotBuilder Builder, OsduConnection Osdu) Build(FakeHttpHandler handler)
+    {
+        var store = new FileSnapshotStore(Samples.NewTempDirectory(), Samples.Stores());
+        var builder = new SnapshotBuilder(store, new TestClock(), Samples.Logger<SnapshotBuilder>());
+        var osdu = new OsduConnection(
+            "http://localhost/osdu",
+            new TargetAuth { Type = TargetAuthType.None },
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" },
+            new FlowReliability { Retry = new FlowRetry { Attempts = 1, BaseDelayMs = 1, MaxDelayMs = 1 } },
+            new SecretResolver([new EnvSecretProvider()]),
+            handler,
+            allowLoopback: true);
+        return (builder, osdu);
+    }
+
+    [Fact]
+    public async Task An_empty_page_ends_the_capture_even_though_the_service_still_offers_a_cursor()
+    {
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", hit => hit switch
+        {
+            0 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c1","results":[{"id":"opendes:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}"""),
+            1 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c2","results":[{"id":"opendes:reference-data--UnitOfMeasure:ft","data":{"Code":"ft"}}]}"""),
+
+            // Elasticsearch keeps handing out a scroll id past the end. The page is empty, and that is the end.
+            _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c3","results":[]}"""),
+        });
+        var (builder, osdu) = Build(handler);
+        using (osdu)
+        {
+            var captured = await builder.CaptureTypeAsync(osdu, Spec);
+
+            Assert.Equal(2, captured.Items.Count);
+            Assert.Equal(3, handler.Calls.Count(c => c.Uri.AbsolutePath.EndsWith("/query_with_cursor", StringComparison.Ordinal)));
+        }
+    }
+
+    [Fact]
+    public async Task A_cursor_that_never_moves_fails_instead_of_paging_forever()
+    {
+        var handler = new FakeHttpHandler().On(
+            HttpMethod.Post,
+            "/query_with_cursor",
+            HttpStatusCode.OK,
+            """{"cursor":"stuck","results":[{"id":"opendes:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}""");
+        var (builder, osdu) = Build(handler);
+        using (osdu)
+        {
+            var ex = await Assert.ThrowsAsync<DeliveryException>(() => builder.CaptureTypeAsync(osdu, Spec));
+
+            Assert.Contains("same cursor twice", ex.Message, StringComparison.Ordinal);
+
+            // Two search pages, then one DELETE releasing the scroll the capture walked away from.
+            Assert.Equal(2, handler.Calls.Count(c => c.Method == HttpMethod.Post));
+            var closed = Assert.Single(handler.Calls, c => c.Method == HttpMethod.Delete);
+            Assert.EndsWith("/query_with_cursor/stuck", closed.Uri.AbsolutePath, StringComparison.Ordinal);
+        }
     }
 }

@@ -144,17 +144,48 @@ public sealed class OsduFileProtocol : IDeliveryProtocol
     public Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default)
         => RecordWriter.VerifyAsync(_client, _options.VerifyPath ?? OsduRecordProtocol.DefaultVerifyPath, targetId, expectedVersion, ct);
 
+    int IDeliveryProtocol.MaxVerifyBatch => OsduRecordProtocol.MaxVerifyBatch;
+
+    /// <summary>The record lives in the storage service like any other, so it verifies in batched reads like any other.</summary>
+    public Task<IReadOnlyList<VerifyResult>> VerifyBatchAsync(IReadOnlyList<VerifyRequest> requests, CancellationToken ct = default)
+        => RecordWriter.VerifyBatchAsync(_client, _options.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath, requests, ct);
+
     public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
         => RecordWriter.ReadAsync(_client, _options.VerifyPath ?? OsduRecordProtocol.DefaultVerifyPath, targetId, ct);
 
     public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
         => RecordWriter.ProbeAsync(_client, _options.ProbePath ?? FileUploads.DefaultFileProbePath, ct);
 
+    private LegalTagValidator? _legal;
+
+    /// <summary>Asks the legal service under this target, when the flow's target reaches it (see <see cref="LegalTagValidator.PathFor"/>).</summary>
+    public async Task<IReadOnlyDictionary<string, string>?> InvalidLegalTagsAsync(IReadOnlyCollection<string> tags, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(tags);
+        if (LegalTagValidator.PathFor(Kind, _options) is not { } path)
+        {
+            return null;
+        }
+
+        _legal ??= new LegalTagValidator(_client, path, _time);
+        return await _legal.InvalidAsync(tags, ct).ConfigureAwait(false);
+    }
+
     public Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
         return FileUploads.DeleteRecordAndDatasetsAsync(_client, _options, targetId, scope, targetState, ct);
     }
+
+    /// <summary>
+    /// The reversible removal leaves the record's datasets in place so OSDU can restore it whole, which is exactly
+    /// what the storage service's bulk soft delete does, so that scope goes through it. The purges have to visit
+    /// each record's datasets and stay one at a time.
+    /// </summary>
+    public Task<IReadOnlyList<RemovalResult>> DeleteBatchAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct = default)
+        => scope == RemovalScope.Record
+            ? _records.DeleteBatchAsync(removals, scope, ct)
+            : ((IDeliveryProtocol)this).DeleteOneByOneAsync(removals, scope, ct);
 
     private sealed record Staged(int Index, DeliveryWork Original, DeliveryWork Record, DeliverySteps Steps, int Files, IReadOnlyList<string> Datasets);
 }

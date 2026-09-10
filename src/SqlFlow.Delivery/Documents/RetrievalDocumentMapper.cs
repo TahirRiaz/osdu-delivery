@@ -263,6 +263,15 @@ internal static partial class RetrievalMapper
     private static void Validate(RetrievalDefinition flow, string source)
     {
         var s = flow.Source;
+
+        // The search and storage services require the tenant header on every request, exactly as a delivery flow's
+        // target does; without it a retrieval fails on its first page instead of at load.
+        if (!s.Headers.TryGetValue(FlowMapper.PartitionHeader, out var partition) || string.IsNullOrWhiteSpace(partition))
+        {
+            throw new FlowValidationException(
+                $"{source}: source.headers must declare a non-empty '{FlowMapper.PartitionHeader}'. Every OSDU service requires it and rejects a request without it.");
+        }
+
         if (s.PageSize is < 1 or > RetrievalSource.MaxPageSize)
         {
             throw new FlowValidationException($"{source}: source.pageSize must be between 1 and {RetrievalSource.MaxPageSize}.");

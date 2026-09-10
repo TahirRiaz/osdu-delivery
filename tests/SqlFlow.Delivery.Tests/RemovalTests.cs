@@ -36,9 +36,9 @@ public class RemovalProtocolTests
     public async Task Each_scope_calls_its_own_storage_endpoint()
     {
         var handler = new FakeHttpHandler()
-            .On(HttpMethod.Post, "%3Aabc:delete", HttpStatusCode.NoContent, null)
-            .On(HttpMethod.Delete, "%3Aabc/versions", HttpStatusCode.NoContent, null)
-            .On(HttpMethod.Delete, "%3Aabc", HttpStatusCode.NoContent, null);
+            .On(HttpMethod.Post, ":abc:delete", HttpStatusCode.NoContent, null)
+            .On(HttpMethod.Delete, ":abc/versions", HttpStatusCode.NoContent, null)
+            .On(HttpMethod.Delete, ":abc", HttpStatusCode.NoContent, null);
         var (client, runtime) = Client(handler);
         using (runtime)
         {
@@ -61,7 +61,7 @@ public class RemovalProtocolTests
             Assert.True(everything.Deleted);
             Assert.Contains("every version", everything.Detail, StringComparison.Ordinal);
             Assert.Equal(HttpMethod.Delete, handler.Calls[2].Method);
-            Assert.EndsWith("%3Aabc", handler.Calls[2].Uri.AbsolutePath, StringComparison.Ordinal);
+            Assert.EndsWith(":abc", handler.Calls[2].Uri.AbsolutePath, StringComparison.Ordinal);
         }
     }
 
@@ -103,7 +103,7 @@ public class RemovalProtocolTests
         // every record in the chunk is asked for again on its own and reports its own outcome.
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Post, "/records/delete", HttpStatusCode.MultiStatus, """{"notDeletedRecordIds":["dev:x:b"]}""")
-            .On(HttpMethod.Post, "%3Ab:delete", HttpStatusCode.NotFound, null)
+            .On(HttpMethod.Post, ":b:delete", HttpStatusCode.NotFound, null)
             .On(HttpMethod.Post, ":delete", HttpStatusCode.NoContent, null);
         var (client, runtime) = Client(handler);
         using (runtime)
@@ -115,6 +115,51 @@ public class RemovalProtocolTests
             Assert.All(results, r => Assert.True(r.Succeeded));
             Assert.True(results.Single(r => r.Removal.TargetId == "dev:x:b").Outcome!.AlreadyGone);
             Assert.False(results.Single(r => r.Removal.TargetId == "dev:x:a").Outcome!.AlreadyGone);
+            Assert.Equal(4, handler.Calls.Count);
+        }
+    }
+
+    [Fact]
+    public async Task A_bulk_removal_the_service_refused_outright_does_not_repeat_itself_once_per_record()
+    {
+        // 401 is not a verdict on any record in the chunk. Asking again one id at a time would produce the same
+        // failure three times over; every record carries the one failure that actually happened.
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/records/delete", HttpStatusCode.Unauthorized, """{"code":401,"reason":"Unauthorized"}""");
+        var (client, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduRecordProtocol(client, new ProtocolOptions());
+            var results = await protocol.DeleteBatchAsync(Removals("a", "b", "c"), RemovalScope.Record);
+
+            Assert.Equal(3, results.Count);
+            Assert.All(results, r => Assert.False(r.Succeeded));
+            Assert.All(results, r => Assert.Contains("401", r.Failure!.Message, StringComparison.Ordinal));
+
+            // Twice, not once per record: the client retries a 401 once under a freshly resolved token, and stops.
+            Assert.Equal(2, handler.Calls.Count);
+            Assert.All(handler.Calls, c => Assert.EndsWith("/records/delete", c.Uri.AbsolutePath, StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public async Task A_bulk_removal_the_service_rejected_as_malformed_is_asked_again_record_by_record()
+    {
+        // 400 is about the ids in the list, so the chunk is split to find which of them the service objects to.
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/records/delete", HttpStatusCode.BadRequest, """{"code":400,"reason":"Invalid id format"}""")
+            .On(HttpMethod.Post, ":b:delete", HttpStatusCode.BadRequest, """{"code":400,"reason":"Invalid id format"}""")
+            .On(HttpMethod.Post, ":delete", HttpStatusCode.NoContent, null);
+        var (client, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduRecordProtocol(client, new ProtocolOptions());
+            var results = await protocol.DeleteBatchAsync(Removals("a", "b", "c"), RemovalScope.Record);
+
+            Assert.Equal(3, results.Count);
+            Assert.True(results.Single(r => r.Removal.TargetId == "dev:x:a").Succeeded);
+            Assert.False(results.Single(r => r.Removal.TargetId == "dev:x:b").Succeeded);
+            Assert.True(results.Single(r => r.Removal.TargetId == "dev:x:c").Succeeded);
             Assert.Equal(4, handler.Calls.Count);
         }
     }
@@ -144,11 +189,56 @@ public class RemovalProtocolTests
         Assert.Equal("/api/storage/v2/records/{id}/versions", storage.History);
         Assert.Equal("/api/storage/v2/records/{id}", storage.Everything);
 
-        // The wellbore DDMS owns the record but not its versions, so only the history scope leaves the DDMS.
+        // The wellbore DDMS owns the record but not its versions, so only the history scope leaves the DDMS. Its
+        // paths carry no /api/<service>/ prefix, so a storage path under a DDMS endpoint would not resolve: with
+        // nowhere to send it the scope reports itself unconfigured rather than naming a URL that would 404.
         var ddms = RemovalEndpoints.Of(new FlowTarget { Endpoint = "http://x", Protocol = DeliveryProtocol.OsduWellLog });
         Assert.Equal("/ddms/v3/welllogs/{id}", ddms.Record);
-        Assert.Equal("/api/storage/v2/records/{id}/versions", ddms.History);
+        Assert.Equal(RemovalEndpoints.HistoryNotConfigured, ddms.History);
         Assert.Equal("/ddms/v3/welllogs/{id}?purge=true", ddms.Everything);
+
+        // A well log flow that says where storage lives is taken at its word.
+        var configured = RemovalEndpoints.Of(new FlowTarget
+        {
+            Endpoint = "http://x",
+            Protocol = DeliveryProtocol.OsduWellLog,
+            ProtocolOptions = new ProtocolOptions { PurgeVersionsPath = "https://osdu.example.com/api/storage/v2/records/{id}/versions" },
+        });
+        Assert.Equal("https://osdu.example.com/api/storage/v2/records/{id}/versions", configured.History);
+    }
+
+    [Fact]
+    public async Task A_well_log_history_purge_refuses_rather_than_deleting_somewhere_nobody_chose()
+    {
+        var handler = new FakeHttpHandler();
+        var (client, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var ex = await Assert.ThrowsAsync<RecordHeldException>(() => protocol.DeleteAsync(RecordId, RemovalScope.History));
+
+            Assert.Contains("purgeVersionsPath", ex.Message, StringComparison.Ordinal);
+            Assert.Empty(handler.Calls);
+        }
+    }
+
+    [Fact]
+    public async Task A_well_log_history_purge_goes_to_the_storage_service_the_flow_names()
+    {
+        var handler = new FakeHttpHandler().On(HttpMethod.Delete, "/versions", HttpStatusCode.NoContent, null);
+        var (client, runtime) = Client(handler);
+        using (runtime)
+        {
+            var options = new ProtocolOptions { PurgeVersionsPath = "http://localhost/storage/api/storage/v2/records/{id}/versions" };
+            var protocol = new OsduWellLogProtocol(client, options, Samples.Logger<OsduWellLogProtocol>());
+            var outcome = await protocol.DeleteAsync(RecordId, RemovalScope.History);
+
+            Assert.True(outcome.Deleted);
+
+            // The absolute path is honoured as written, not joined under the flow's DDMS endpoint.
+            var call = Assert.Single(handler.Calls);
+            Assert.Equal("http://localhost/storage/api/storage/v2/records/" + RecordId + "/versions", call.Uri.AbsoluteUri);
+        }
     }
 
     private static List<RecordRemoval> Removals(params string[] keys)

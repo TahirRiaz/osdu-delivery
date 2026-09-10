@@ -202,16 +202,22 @@ export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, 
           </legend>
           {SCOPES.map((option) => {
             const active = option.scope === scope;
+
+            // A scope whose call the flow cannot resolve is not offered: the node would refuse it anyway, and
+            // showing it as available invites an operator to ask for a removal that never happens.
+            const unavailable = target !== undefined && option.path(target).startsWith("(not configured");
             return (
               <button
                 key={option.scope}
                 type="button"
+                disabled={unavailable}
                 onClick={() => { setScope(option.scope); setTyped(""); }}
                 aria-pressed={active}
                 className={cn(
                   "flex w-full flex-col items-start gap-1 rounded-md border p-2.5 text-left transition-colors",
                   active ? "border-primary bg-primary/5" : "border-border hover:bg-accent/50",
                   !option.reversible && active && "border-destructive bg-destructive/5",
+                  unavailable && "cursor-not-allowed opacity-60 hover:bg-transparent",
                 )}
                 data-testid={`removal-scope-${option.scope}`}
               >

@@ -906,6 +906,14 @@ the window the run covered, and the records storage could not read back. Kinds r
 concurrently up to the flow's concurrency; pages within a kind are sequential because a
 cursor is.
 
+An empty page ends a cursor. The search service hands back a cursor for the page after
+the last one as well, so ending only on a null cursor is how a walk pages forever, and a
+cursor that comes back unchanged is the same page again. A walk that stops before the
+end (a failure, a cancellation) releases the cursor
+(`DELETE /api/search/v2/query_with_cursor/{cursor}`) rather than leaving the search
+context to expire. The reference capture in section 11 pages the same way for the same
+reasons.
+
 The index holds a projection of each record. When the flow needs the whole record it sets
 `fetchRecords`, and every page's ids are read back from storage a hundred at a time
 (`POST /api/storage/v2/query/records`), several requests in flight per page; the ids

@@ -48,11 +48,11 @@ public sealed partial class SnapshotBuilder
     public async Task<SchemaSnapshot> SchemaFromOsduAsync(OsduConnection osdu, string kind, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(osdu);
-        var root = await osdu.GetJsonAsync($"/api/schema-service/v1/schema/{Uri.EscapeDataString(kind)}", ct).ConfigureAwait(false);
+        var root = await osdu.GetJsonAsync($"{SchemaPath}/{Http.UrlPath.EscapeSegment(kind)}", ct).ConfigureAwait(false);
         var bundled = await SchemaBundler.BundleAsync(root, kind, async (reference, _, token) =>
         {
             var id = reference.Replace("#/definitions/", string.Empty, StringComparison.Ordinal);
-            var schema = await osdu.GetJsonAsync($"/api/schema-service/v1/schema/{Uri.EscapeDataString(id)}", token).ConfigureAwait(false);
+            var schema = await osdu.GetJsonAsync($"{SchemaPath}/{Http.UrlPath.EscapeSegment(id)}", token).ConfigureAwait(false);
             return (id, schema);
         }, ct).ConfigureAwait(false);
         var snapshot = new SchemaSnapshot(kind, bundled, _time.GetUtcNow());
@@ -159,6 +159,12 @@ public sealed partial class SnapshotBuilder
 {
     private const int SearchPageSize = 1000;
 
+    /// <summary>The cursor search the capture pages through (openapi search v2, POST /query_with_cursor).</summary>
+    private const string SearchPath = "/api/search/v2/query_with_cursor";
+
+    /// <summary>The schema service's read endpoint (openapi schema_service v1, GET /schema/{id}).</summary>
+    private const string SchemaPath = "/api/schema-service/v1/schema";
+
     /// <summary>Captures one reference type: every hit of its search kind, projected onto the paths it declares.</summary>
     public async Task<ReferenceType> CaptureTypeAsync(OsduConnection osdu, ReferenceTypeSpec typeSpec, CancellationToken ct = default)
     {
@@ -169,38 +175,68 @@ public sealed partial class SnapshotBuilder
         var items = new List<ReferenceItem>();
         var coverage = typeSpec.Fields.ToDictionary(f => f.Name, _ => 0, StringComparer.OrdinalIgnoreCase);
         string? cursor = null;
-        do
+        string? previousCursor = null;
+        var finished = false;
+        try
         {
-            var body = new JsonObject
+            while (true)
             {
-                ["kind"] = typeSpec.Kind,
-                ["query"] = typeSpec.Query,
-                ["limit"] = SearchPageSize,
-                ["returnedFields"] = new JsonArray(typeSpec.Fields
-                    .Select(f => (JsonNode)JsonValue.Create(f.Path))
-                    .Prepend(JsonValue.Create("id"))
-                    .ToArray()),
-            };
-            if (cursor is not null)
-            {
-                body["cursor"] = cursor;
-            }
-
-            var page = await osdu.PostJsonAsync("/api/search/v2/query_with_cursor", body, ct).ConfigureAwait(false);
-            if (page["results"] is JsonArray results)
-            {
-                foreach (var hit in results.OfType<JsonObject>())
+                ct.ThrowIfCancellationRequested();
+                var body = new JsonObject
                 {
-                    if (Project(hit, typeSpec.Fields, coverage) is { } item)
+                    ["kind"] = typeSpec.Kind,
+                    ["query"] = typeSpec.Query,
+                    ["limit"] = SearchPageSize,
+                    ["returnedFields"] = new JsonArray(typeSpec.Fields
+                        .Select(f => (JsonNode)JsonValue.Create(f.Path))
+                        .Prepend(JsonValue.Create("id"))
+                        .ToArray()),
+                };
+                if (cursor is not null)
+                {
+                    body["cursor"] = cursor;
+                }
+
+                var page = await osdu.PostJsonAsync(SearchPath, body, ct).ConfigureAwait(false);
+                var results = page["results"] as JsonArray;
+                var inPage = results?.Count ?? 0;
+                if (results is not null)
+                {
+                    foreach (var hit in results.OfType<JsonObject>())
                     {
-                        items.Add(item);
+                        if (Project(hit, typeSpec.Fields, coverage) is { } item)
+                        {
+                            items.Add(item);
+                        }
                     }
                 }
-            }
 
-            cursor = page["cursor"]?.GetValue<string>();
+                previousCursor = cursor;
+                cursor = page["cursor"] is JsonValue value && value.TryGetValue<string>(out var next) ? next : null;
+
+                // The search service hands back a cursor for the page after the last one too, and that page is
+                // empty; ending only on a null cursor would page forever. An empty page is the end, and a cursor
+                // that has not moved would be the same page again.
+                if (inPage == 0 || string.IsNullOrEmpty(cursor))
+                {
+                    finished = true;
+                    break;
+                }
+
+                if (string.Equals(cursor, previousCursor, StringComparison.Ordinal))
+                {
+                    throw new DeliveryException(
+                        $"Reference type {typeSpec.Name}: the search service returned the same cursor twice for kind {typeSpec.Kind} after {items.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)} item(s), so the capture would not advance.");
+                }
+            }
         }
-        while (!string.IsNullOrEmpty(cursor));
+        finally
+        {
+            if (!finished && cursor is not null)
+            {
+                await CloseCursorAsync(osdu, cursor).ConfigureAwait(false);
+            }
+        }
 
         foreach (var field in typeSpec.Fields.Where(f => coverage[f.Name] == 0))
         {
@@ -214,6 +250,23 @@ public sealed partial class SnapshotBuilder
             "Captured {Count} {Type} item(s) with {Fields}.",
             items.Count, typeSpec.Name, string.Join(", ", typeSpec.Fields.Select(f => $"{f.Name}={coverage[f.Name]}")));
         return new ReferenceType(typeSpec.Name, typeSpec.EntityType, items.OrderBy(i => i.Id, StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// Releases the search context a capture stopped part way through (openapi search v2,
+    /// DELETE /query_with_cursor/{cursor}), so an abandoned scroll does not hold index resources until it expires.
+    /// The capture's own failure is what the caller sees; failing to close is logged and nothing more.
+    /// </summary>
+    private async Task CloseCursorAsync(OsduConnection osdu, string cursor)
+    {
+        try
+        {
+            await osdu.DeleteAsync(SearchPath + "/" + Http.UrlPath.EscapeSegment(cursor), CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
+        {
+            _logger.LogWarning("Could not close the search cursor after the capture stopped: {Message}", HeaderRedaction.RedactMessage(ex.Message));
+        }
     }
 
     /// <summary>Projects one search hit onto the declared paths, keeping whatever shape each path yields.</summary>
@@ -249,7 +302,18 @@ public sealed class OsduConnection : IDisposable
     private readonly TargetAuth _auth;
     private readonly IReadOnlyDictionary<string, string> _headers;
 
-    public OsduConnection(string endpoint, TargetAuth auth, IReadOnlyDictionary<string, string> headers, FlowReliability reliability, ISecretResolver secrets)
+    /// <remarks>
+    /// <paramref name="handler"/> replaces the built transport (null builds the configured one) and
+    /// <paramref name="allowLoopback"/> lets the URL guard accept a loopback endpoint; both exist for tests.
+    /// </remarks>
+    public OsduConnection(
+        string endpoint,
+        TargetAuth auth,
+        IReadOnlyDictionary<string, string> headers,
+        FlowReliability reliability,
+        ISecretResolver secrets,
+        HttpMessageHandler? handler = null,
+        bool allowLoopback = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
         ArgumentNullException.ThrowIfNull(auth);
@@ -259,26 +323,49 @@ public sealed class OsduConnection : IDisposable
         Endpoint = endpoint.TrimEnd('/');
         _auth = auth;
         _headers = headers;
-        _http = new HttpRuntime(reliability, secrets);
+        _http = new HttpRuntime(reliability, secrets, handler: handler, allowLoopback: allowLoopback);
     }
 
     public string Endpoint { get; }
 
     public async Task<JsonObject> GetJsonAsync(string path, CancellationToken ct)
     {
-        var auth = await _http.AuthResolver.ResolveAsync(_auth, _http.Auth, ct).ConfigureAwait(false);
         var url = new Uri(Endpoint + "/" + path.TrimStart('/'));
-        var result = await _http.Data.SendAsync(() => Build(HttpMethod.Get, url, auth, null), ct: ct).ConfigureAwait(false);
+        var result = await SendAsync(auth => _http.Data.SendAsync(() => Build(HttpMethod.Get, url, auth, null), ct: ct), ct).ConfigureAwait(false);
         return JsonNode.Parse(result.Body) as JsonObject ?? throw new DeliveryException($"{url} did not return a JSON object.");
     }
 
     public async Task<JsonObject> PostJsonAsync(string path, JsonObject body, CancellationToken ct)
     {
-        var auth = await _http.AuthResolver.ResolveAsync(_auth, _http.Auth, ct).ConfigureAwait(false);
+        ArgumentNullException.ThrowIfNull(body);
         var url = new Uri(Endpoint + "/" + path.TrimStart('/'));
         var bytes = CanonicalJson.ToBytes(body);
-        var result = await _http.Data.SendAsync(() => Build(HttpMethod.Post, url, auth, bytes), ct: ct).ConfigureAwait(false);
+        // Only ever a search: a read, safe to repeat.
+        var result = await SendAsync(auth => _http.Data.SendAsync(() => Build(HttpMethod.Post, url, auth, bytes), ct: ct, idempotent: true), ct).ConfigureAwait(false);
         return JsonNode.Parse(result.Body) as JsonObject ?? throw new DeliveryException($"{url} did not return a JSON object.");
+    }
+
+    /// <summary>A DELETE whose body is not read, for releasing a server-side resource such as a search cursor.</summary>
+    public async Task DeleteAsync(string path, CancellationToken ct)
+    {
+        var url = new Uri(Endpoint + "/" + path.TrimStart('/'));
+        await SendAsync(auth => _http.Data.SendAsync(() => Build(HttpMethod.Delete, url, auth, null), new HashSet<int> { 404 }, ct: ct), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Sends under the resolved auth, retrying once with a fresh token when the service answers 401.</summary>
+    private async Task<HttpFetchResult> SendAsync(Func<AppliedAuth, Task<HttpFetchResult>> send, CancellationToken ct)
+    {
+        var auth = await _http.AuthResolver.ResolveAsync(_auth, _http.Auth, ct).ConfigureAwait(false);
+        try
+        {
+            return await send(auth).ConfigureAwait(false);
+        }
+        catch (HttpStatusException ex) when (ex.StatusCode == 401)
+        {
+            _http.AuthResolver.Invalidate();
+            var refreshed = await _http.AuthResolver.ResolveAsync(_auth, _http.Auth, ct).ConfigureAwait(false);
+            return await send(refreshed).ConfigureAwait(false);
+        }
     }
 
     private HttpRequestMessage Build(HttpMethod method, Uri url, AppliedAuth auth, byte[]? body)
@@ -290,12 +377,10 @@ public sealed class OsduConnection : IDisposable
         }
 
         auth.ApplyTo(request);
-        if (body is not null)
-        {
-            request.Content = new ByteArrayContent(body);
-            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-        }
 
+        // A bodiless request still carries Content-Type: application/json, as every OSDU call from this system does
+        // (see OsduHttpClient.JsonBody for why the services insist).
+        request.Content = Protocols.OsduHttpClient.JsonBody(body);
         return request;
     }
 

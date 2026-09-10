@@ -178,6 +178,7 @@ public sealed class RepoSourceTests
             name: __NAME__
             source:
               endpoint: https://osdu.example.com
+              headers: { data-partition-id: opendes }
               kind: "osdu:wks:master-data--Wellbore:1.0.0"
             target:
               location: ./out

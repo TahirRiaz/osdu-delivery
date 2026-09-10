@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Hashing;
 using ContentHash = SqlFlow.Delivery.Hashing.ContentHash;
@@ -11,7 +12,7 @@ namespace SqlFlow.Delivery.Snapshots;
 /// values the flow supplied (section 9.5). Recorded in the ledger against every document and part of every
 /// content hash.
 /// </summary>
-public sealed record RenderContext
+public sealed partial record RenderContext
 {
     /// <summary>Well-known parameter every mapping receives: the OSDU data partition ids are minted in.</summary>
     public const string DataPartitionParameter = "dataPartition";
@@ -24,9 +25,33 @@ public sealed record RenderContext
 
     public IReadOnlyDictionary<string, string> Parameters { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
 
-    public string DataPartition => Parameters.TryGetValue(DataPartitionParameter, out var p) && !string.IsNullOrWhiteSpace(p)
-        ? p
-        : throw new FlowValidationException($"The mapping parameter '{DataPartitionParameter}' is required and must be supplied by the flow under render.parameters.");
+    /// <summary>
+    /// The partition every record id is minted in. It is the first segment of the id, and the storage service
+    /// holds ids to <c>^[\w\-\.]+:[\w\-\.]+:[\w\-\.\:\%]+$</c> (openapi storage v2, Record.id), so a
+    /// partition carrying anything else would mint an id the service refuses on every record of the run. Saying so
+    /// here costs one check and turns a whole failed run into one legible message.
+    /// </summary>
+    public string DataPartition
+    {
+        get
+        {
+            if (!Parameters.TryGetValue(DataPartitionParameter, out var partition) || string.IsNullOrWhiteSpace(partition))
+            {
+                throw new FlowValidationException($"The mapping parameter '{DataPartitionParameter}' is required and must be supplied by the flow under render.parameters.");
+            }
+
+            if (!IdSegment().IsMatch(partition))
+            {
+                throw new FlowValidationException(
+                    $"The mapping parameter '{DataPartitionParameter}' is '{partition}', which is not a valid OSDU id segment (letters, digits, underscore, hyphen and dot). Record ids are minted as {{partition}}:{{entityType}}:{{key}} and the storage service would refuse every one of them.");
+            }
+
+            return partition;
+        }
+    }
+
+    [GeneratedRegex(@"^[\w\-\.]+$")]
+    private static partial Regex IdSegment();
 
     /// <summary>Canonical JSON form, stored verbatim in the ledger and fed into hashes.</summary>
     public string Canonical()

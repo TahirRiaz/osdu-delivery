@@ -331,6 +331,48 @@ public sealed record ProtocolOptions
     public string VersionPath { get; init; } = "recordIdVersions[0]";
 
     /// <summary>
+    /// Sends <c>skipdupes=true</c> on the record write (openapi storage v2, PUT /records). The storage service then
+    /// compares an incoming record with the one it already holds and, when they are the same, names it under
+    /// <c>skippedRecordIds</c> and leaves the record at its current version instead of minting a new one. Without
+    /// the parameter the service never populates that list and a redelivery of unchanged content still burns a
+    /// version, which makes the record's history read as if something changed when nothing did. Deliveries are
+    /// already gated on the content hash, so this only bites on a forced redelivery or a repair, which is exactly
+    /// where the version should stay put.
+    /// </summary>
+    public bool SkipDuplicates { get; init; } = true;
+
+    /// <summary>
+    /// Path of the storage service's batched header read (<c>POST /query/records</c> by default), used to verify
+    /// many records' versions in one request instead of one read per record.
+    /// </summary>
+    public string? VerifyBatchPath { get; init; }
+
+    /// <summary>
+    /// Well log protocol: where the wellbore DDMS sits under the flow's endpoint, when that endpoint is the OSDU
+    /// platform root rather than the DDMS itself. The DDMS is deployed under <c>/api/os-wellbore-ddms</c> (the
+    /// platform's ingress route, and the OSDU C# client's ServiceRegistry), and its own paths
+    /// (<c>/ddms/v3/welllogs</c>, <c>/about</c>) are relative to that. Null, the default, means the endpoint already
+    /// is the DDMS or a facade serving its paths. Set, every DDMS default path is taken under it, and the operations
+    /// the storage service owns (the history purge) resolve under the endpoint as they do for every other protocol.
+    /// A path option the flow sets explicitly is used as written either way.
+    /// </summary>
+    public string? DdmsRoot { get; init; }
+
+    /// <summary>
+    /// Whether a deliver or intake run asks the legal service about the mapping's legal tags before planning anything
+    /// (openapi legal v1, <c>POST /legaltags:validate</c>). Default true. Off, the run starts without asking and says
+    /// so in its log; storage still refuses a record whose tag is invalid, one record at a time.
+    /// </summary>
+    public bool ValidateLegalTags { get; init; } = true;
+
+    /// <summary>
+    /// The legal service's validate endpoint, when the default (<c>/api/legal/v1/legaltags:validate</c> under a
+    /// platform-root endpoint) is not where it is: a path under the endpoint, or an absolute URL for a well log flow
+    /// whose endpoint is the DDMS itself.
+    /// </summary>
+    public string? LegalValidatePath { get; init; }
+
+    /// <summary>
     /// Data keys OSDU owns that must be copied forward from the existing record when updating (design.md section
     /// 7.6). Empty means the rendered document replaces the whole data block.
     /// </summary>

@@ -173,8 +173,8 @@ public class FileProtocolTests
     {
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Put, "/records", HttpStatusCode.Created, """{"recordIdVersions":["dev:work-product-component--WellLog:abc:14"]}""")
-            .On(HttpMethod.Post, "%3Aabc:delete", HttpStatusCode.NoContent, null)
-            .On(HttpMethod.Delete, "%3Aabc", HttpStatusCode.NoContent, null)
+            .On(HttpMethod.Post, ":abc:delete", HttpStatusCode.NoContent, null)
+            .On(HttpMethod.Delete, ":abc", HttpStatusCode.NoContent, null)
             .On(HttpMethod.Delete, "/files/ds-a/metadata", HttpStatusCode.NoContent, null)
             .On(HttpMethod.Delete, "/files/ds-b/metadata", HttpStatusCode.NotFound, null);
         var (client, runtime, _) = Client(handler);
@@ -304,7 +304,7 @@ public class FileProtocolTests
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-2","runId":"run-2","status":"SUBMITTED"}""")
             .OnMatch(r => RunStatus(r, "run-2"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"workflowId":"wf-2","status":"PARTIAL_SUCCESS"}"""))
-            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":6}],"invalidRecords":["dev:work-product-component--WellLog:def"]}""");
+            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":6}]}""");
         var (client, runtime, _) = Client(handler);
         using (runtime)
         {
@@ -318,6 +318,25 @@ public class FileProtocolTests
             Assert.Contains("run-2", outcomes[1].Failure!.Message, StringComparison.Ordinal);
             Assert.Equal(["manifest", "workflow", "records"], outcomes[1].Steps.Select(s => s.Name));
             Assert.NotNull(outcomes[1].Steps[2].Error);
+        }
+
+        // A record storage names under invalidRecords is a verdict on the id or the caller's entitlements, so it
+        // fails saying that rather than reading as a record the run merely left out.
+        var rejecting = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-4","runId":"run-4","status":"SUCCESS"}""")
+            .OnMatch(r => RunStatus(r, "run-4"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"workflowId":"wf-4","status":"SUCCESS"}"""))
+            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[],"invalidRecords":["dev:work-product-component--WellLog:abc"]}""");
+        var (client4, runtime4, _) = Client(rejecting);
+        using (runtime4)
+        {
+            var protocol = new OsduManifestProtocol(client4, new ProtocolOptions { WorkflowPollSeconds = 1 }, Samples.Logger<OsduManifestProtocol>());
+            var outcomes = await protocol.DeliverBatchAsync([Work(true, false, 0)]);
+            Assert.False(outcomes[0].Succeeded);
+            Assert.Contains("invalid or unreadable", outcomes[0].Failure!.Message, StringComparison.Ordinal);
+            Assert.Contains("run-4", outcomes[0].Failure!.Message, StringComparison.Ordinal);
+
+            // One run, one read-back: the record is not sent round again, because a second run would not help.
+            Assert.Equal(3, rejecting.Calls.Count);
         }
 
         var reported = new List<string>();
@@ -337,6 +356,49 @@ public class FileProtocolTests
             Assert.Contains("resumes polling", ex.Message, StringComparison.Ordinal);
             Assert.Contains(reported, r => r.StartsWith("manifest=", StringComparison.Ordinal) && r.Contains("runId:run-3", StringComparison.Ordinal));
             Assert.Equal(2, slow.Calls.Count);
+        }
+    }
+
+    [Theory]
+    [InlineData("SUCCESS")]
+    [InlineData("PARTIAL_SUCCESS")]
+    [InlineData("FINISHED")]
+    [InlineData("finished")]
+    [InlineData("success")]
+    public async Task Every_terminal_workflow_status_settles_the_run_instead_of_reading_as_unknown(string status)
+    {
+        // The workflow service reports run status in two shapes (openapi workflow v1: WorkflowRunResponse is upper
+        // case, WorkflowRun is lower) and FINISHED is a real terminal status in both. A status the protocol does not
+        // recognise fails the record, so a completed ingestion must never land there.
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-5","runId":"run-5","status":"SUBMITTED"}""")
+            .OnMatch(r => RunStatus(r, "run-5"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, $$"""{"workflowId":"wf-5","status":"{{status}}"}"""))
+            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":11}]}""");
+        var (client, runtime, _) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduManifestProtocol(client, new ProtocolOptions { WorkflowPollSeconds = 1 }, Samples.Logger<OsduManifestProtocol>());
+            var outcome = await protocol.DeliverAsync(Work(true, false, 0));
+
+            Assert.True(outcome.Succeeded);
+            Assert.Equal(11, outcome.TargetVersion);
+            Assert.Equal(status.ToUpperInvariant(), outcome.Returned["status"]);
+        }
+    }
+
+    [Fact]
+    public async Task A_workflow_status_the_service_has_never_reported_is_named_rather_than_polled_forever()
+    {
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"runId":"run-6","status":"SUBMITTED"}""")
+            .OnMatch(r => RunStatus(r, "run-6"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"status":"WEDGED"}"""));
+        var (client, runtime, _) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduManifestProtocol(client, new ProtocolOptions { WorkflowPollSeconds = 1 }, Samples.Logger<OsduManifestProtocol>());
+            var ex = await Assert.ThrowsAsync<DeliveryException>(() => protocol.DeliverAsync(Work(true, false, 0)));
+
+            Assert.Contains("unknown status 'WEDGED'", ex.Message, StringComparison.Ordinal);
         }
     }
 

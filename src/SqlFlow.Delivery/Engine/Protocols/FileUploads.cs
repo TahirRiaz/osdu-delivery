@@ -87,7 +87,7 @@ internal static class FileUploads
                 () => OsduWellLogProtocol.OpenSync(payload, chunk),
                 options.PayloadContentType,
                 chunk.Size,
-                options.UploadHeaders,
+                SignedUploadHeaders(location.SignedUrl, options.UploadHeaders),
                 ct).ConfigureAwait(false);
             var returned = new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -120,7 +120,9 @@ internal static class FileUploads
 
         var started = steps.Now;
         var url = client.Url(options.FileMetadataPath ?? DefaultFileMetadataPath);
-        var result = await client.SendJsonAsync(HttpMethod.Post, url, DatasetRecord(options, work.Document, file, null), null, ct).ConfigureAwait(false);
+        // Not repeated on an unclear outcome: every accepted POST mints another dataset record. The step is
+        // resumable, so the next try of the record registers the file once.
+        var result = await client.SendJsonAsync(HttpMethod.Post, url, DatasetRecord(options, work.Document, file, null), null, ct, idempotent: false).ConfigureAwait(false);
         var datasetId = JsonPathReader.SelectValue(OsduHttpClient.ParseJson(result, url), "id");
         if (string.IsNullOrWhiteSpace(datasetId))
         {
@@ -239,6 +241,43 @@ internal static class FileUploads
             ? outcome
             : outcome with { Deleted = true, Detail = $"{outcome.Detail}; {deleted.ToString(CultureInfo.InvariantCulture)} dataset record(s) and their files deleted" };
     }
+
+    /// <summary>The header Azure Blob Storage requires on a PUT that creates a blob, and the blob type a file upload is.</summary>
+    public const string AzureBlobTypeHeader = "x-ms-blob-type";
+
+    /// <summary>
+    /// The headers the upload to a signed URL carries: the ones the flow declares, plus the blob type when the landing
+    /// zone is Azure Blob Storage and the flow did not name one.
+    ///
+    /// A PUT that creates a blob must say which kind of blob it is, and Azure answers one without the header with
+    /// 400 <c>MissingRequiredHeader</c>, after the file service has already handed out the location. OSDU on Azure
+    /// hands out exactly such a URL, and the platform's own upload scripts send <c>x-ms-blob-type: BlockBlob</c> with
+    /// it. Adding it only for an Azure host keeps other landing zones (S3, Google Cloud Storage) receiving nothing
+    /// they did not sign for; a value the flow declares always wins.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> SignedUploadHeaders(Uri signedUrl, IReadOnlyDictionary<string, string> declared)
+    {
+        ArgumentNullException.ThrowIfNull(signedUrl);
+        ArgumentNullException.ThrowIfNull(declared);
+        if (!IsAzureBlobHost(signedUrl.Host) || declared.Keys.Any(k => string.Equals(k, AzureBlobTypeHeader, StringComparison.OrdinalIgnoreCase)))
+        {
+            return declared;
+        }
+
+        var headers = new Dictionary<string, string>(declared, StringComparer.OrdinalIgnoreCase)
+        {
+            [AzureBlobTypeHeader] = "BlockBlob",
+        };
+        return headers;
+    }
+
+    /// <summary>
+    /// An Azure Blob Storage account host in any Azure cloud: <c>{account}.blob.core.windows.net</c>, and the
+    /// sovereign equivalents (<c>blob.core.usgovcloudapi.net</c>, <c>blob.core.chinacloudapi.cn</c>), which all share
+    /// the <c>.blob.core.</c> label pair.
+    /// </summary>
+    private static bool IsAzureBlobHost(string host)
+        => host.Contains(".blob.core.", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The last path segment, the name the dataset record carries.</summary>
     public static string FileName(string path)

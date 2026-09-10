@@ -254,6 +254,31 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_record_the_service_asked_to_wait_on_is_not_attempted_again_sooner()
+    {
+        // The transport does not sit through a long Retry-After; it hands the wait up with the failure, and the
+        // worker must not schedule the record's next attempt earlier than the service asked. The ordinary record
+        // backoff for a first failure is a minute; the service asked for two hours.
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var drop = await DropAsync("retry-after", records, Submission1, 1);
+        var (runtime, protocol, ledger) = await RuntimeAsync(drop);
+        using (runtime)
+        {
+            protocol.FailWith = work => work.TargetId.EndsWith(records[0].Key.Value.ToString("N"), StringComparison.Ordinal)
+                ? new HttpStatusException(429, "HTTP 429 Too Many Requests", TimeSpan.FromHours(2))
+                : null;
+
+            var summary = await RunAsync(runtime, protocol, ledger, Submission1);
+            Assert.Equal(1, summary.Retried);
+
+            var waiting = await ledger.GetRecordAsync(runtime.Flow.Id, records[0].Key);
+            Assert.Equal(RecordStatus.Pending, waiting!.Status);
+            Assert.NotNull(waiting.NextAttemptUtc);
+            Assert.True(waiting.NextAttemptUtc!.Value >= _clock.GetUtcNow().UtcDateTime + TimeSpan.FromHours(2));
+        }
+    }
+
+    [Fact]
     public async Task Transient_failures_back_off_and_succeed_later_while_terminal_statuses_hold()
     {
         var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
@@ -450,7 +475,84 @@ public class ProtocolTests
             Assert.Equal("dev", handler.Calls[0].Headers["data-partition-id"]);
             Assert.Equal("application/x-parquet", handler.Calls[1].ContentType);
             Assert.StartsWith("PAR1", handler.Calls[1].Body, StringComparison.Ordinal);
-            Assert.EndsWith("/welllogs/dev%3Awork-product-component--WellLog%3Aabc/data", handler.Calls[1].Uri.AbsolutePath, StringComparison.Ordinal);
+            Assert.EndsWith("/welllogs/dev:work-product-component--WellLog:abc/data", handler.Calls[1].Uri.AbsolutePath, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Several_chunks_always_open_a_session_because_the_bulk_endpoint_replaces_the_whole_bulk()
+    {
+        // POST /welllogs/{id}/data carries "the entire bulk which will replace as latest version any previous
+        // bulk", so posting three chunks to it would leave the record holding the third and report three delivered.
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/sessions", HttpStatusCode.OK, """{"id":"sess-9"}""")
+            .On(HttpMethod.Post, "/sessions/sess-9/data", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Patch, "/sessions/sess-9", HttpStatusCode.OK, "{}");
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions { SessionThresholdChunks = 1 }, Samples.Logger<OsduWellLogProtocol>());
+            var outcome = await protocol.DeliverAsync(Work(false, true, 3));
+
+            Assert.Equal(3, outcome.ChunksSent);
+            Assert.Equal("sess-9", outcome.Returned["sessionId"]);
+            Assert.DoesNotContain(handler.Calls, c => c.Uri.AbsolutePath.EndsWith("/welllogs/dev:work-product-component--WellLog:abc/data", StringComparison.Ordinal));
+            Assert.Equal(3, handler.Calls.Count(c => c.Uri.AbsolutePath.EndsWith("/sessions/sess-9/data", StringComparison.Ordinal)));
+        }
+    }
+
+    [Fact]
+    public async Task A_threshold_of_zero_opens_a_session_even_for_one_chunk()
+    {
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/sessions", HttpStatusCode.OK, """{"id":"sess-0"}""")
+            .On(HttpMethod.Post, "/sessions/sess-0/data", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Patch, "/sessions/sess-0", HttpStatusCode.OK, "{}");
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions { SessionThresholdChunks = 0 }, Samples.Logger<OsduWellLogProtocol>());
+            var outcome = await protocol.DeliverAsync(Work(false, true, 1));
+
+            Assert.Equal(1, outcome.ChunksSent);
+            Assert.Equal("sess-0", outcome.Returned["sessionId"]);
+        }
+    }
+
+    [Fact]
+    public async Task A_commit_resent_after_a_lost_response_settles_on_the_session_state_rather_than_failing()
+    {
+        // The commit is a PATCH and the retry stack resends it, so a commit that worked and whose response was lost
+        // meets a session that is no longer open. The session says which happened.
+        var committed = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/sessions", HttpStatusCode.OK, """{"id":"sess-c"}""")
+            .On(HttpMethod.Post, "/sessions/sess-c/data", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Patch, "/sessions/sess-c", HttpStatusCode.Conflict, """{"detail":"session is not open"}""")
+            .On(HttpMethod.Get, "/sessions/sess-c", HttpStatusCode.OK, """{"id":"sess-c","state":"committed"}""");
+        var (client, _, runtime) = Client(committed);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var outcome = await protocol.DeliverAsync(Work(false, true, 2));
+
+            Assert.Equal(2, outcome.ChunksSent);
+            Assert.Single(committed.Calls, c => c.Method == HttpMethod.Get);
+        }
+
+        // A session that is not committed is a real failure, and the payload is reported as not landed.
+        var abandoned = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/sessions", HttpStatusCode.OK, """{"id":"sess-a"}""")
+            .On(HttpMethod.Post, "/sessions/sess-a/data", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Patch, "/sessions/sess-a", HttpStatusCode.Conflict, """{"detail":"session expired"}""")
+            .On(HttpMethod.Get, "/sessions/sess-a", HttpStatusCode.OK, """{"id":"sess-a","state":"abandoned"}""");
+        var (client2, _, runtime2) = Client(abandoned);
+        using (runtime2)
+        {
+            var protocol = new OsduWellLogProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var ex = await Assert.ThrowsAsync<DeliveryException>(() => protocol.DeliverAsync(Work(false, true, 2)));
+
+            Assert.Contains("abandoned", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("did not land", ex.Message, StringComparison.Ordinal);
         }
     }
 
@@ -573,7 +675,7 @@ public class ProtocolTests
     public async Task Record_protocol_puts_arrays_preserves_keys_and_verifies_versions()
     {
         var handler = new FakeHttpHandler()
-            .On(HttpMethod.Get, "/records/dev%3Awork-product-component--WellLog%3Aabc", HttpStatusCode.OK, """{"id":"x","version":7,"data":{"Datasets":["ds1"],"Name":"old"}}""")
+            .On(HttpMethod.Get, "/records/dev:work-product-component--WellLog:abc", HttpStatusCode.OK, """{"id":"x","version":7,"data":{"Datasets":["ds1"],"Name":"old"}}""")
             .On(HttpMethod.Put, "/records", HttpStatusCode.Created, """{"recordIdVersions":["dev:work-product-component--WellLog:abc:8"]}""");
         var (client, _, runtime) = Client(handler);
         using (runtime)
@@ -598,6 +700,112 @@ public class ProtocolTests
         {
             var protocol = new OsduRecordProtocol(client2, new ProtocolOptions());
             Assert.Equal(VerifyOutcome.Missing, (await protocol.VerifyAsync("gone", 1)).Outcome);
+        }
+    }
+
+    [Fact]
+    public async Task The_record_write_asks_storage_to_skip_duplicates_and_settles_a_skipped_record_on_its_current_version()
+    {
+        // skipdupes is what makes skippedRecordIds mean anything: without it the service never populates the list
+        // and a redelivery of identical content mints a version that says something changed when nothing did.
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Put, "/records", HttpStatusCode.Created, """{"recordIdVersions":[],"skippedRecordIds":["dev:work-product-component--WellLog:abc"]}""");
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduRecordProtocol(client, new ProtocolOptions());
+            var outcome = await protocol.DeliverAsync(Work(true, false, 0, existing: 4));
+
+            Assert.True(outcome.MetadataDelivered);
+            Assert.Equal(4, outcome.TargetVersion);
+            Assert.Equal("true", outcome.Returned["skipped"]);
+            Assert.Contains("unchanged at the target", outcome.Detail, StringComparison.Ordinal);
+            Assert.Contains("skipdupes=true", handler.Calls.Single().Uri.Query, StringComparison.Ordinal);
+        }
+
+        var plain = new FakeHttpHandler()
+            .On(HttpMethod.Put, "/records", HttpStatusCode.Created, """{"recordIdVersions":["dev:work-product-component--WellLog:abc:9"]}""");
+        var (client2, _, runtime2) = Client(plain);
+        using (runtime2)
+        {
+            var protocol = new OsduRecordProtocol(client2, new ProtocolOptions { SkipDuplicates = false });
+            var outcome = await protocol.DeliverAsync(Work(true, false, 0, existing: 4));
+
+            Assert.Equal(9, outcome.TargetVersion);
+            Assert.DoesNotContain("skipdupes", plain.Calls.Single().Uri.Query, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Verifying_many_records_is_one_batched_read_that_separates_drift_from_absence_from_refusal()
+    {
+        var handler = new FakeHttpHandler().On(
+            HttpMethod.Post,
+            "/query/records",
+            HttpStatusCode.OK,
+            """{"records":[{"id":"dev:x:match","version":3},{"id":"dev:x:drifted","version":9}],"invalidRecords":["dev:x:refused"]}""");
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            IDeliveryProtocol protocol = new OsduRecordProtocol(client, new ProtocolOptions());
+            Assert.Equal(OsduRecordProtocol.MaxVerifyBatch, protocol.MaxVerifyBatch);
+
+            var results = await protocol.VerifyBatchAsync(
+            [
+                new VerifyRequest("dev:x:match", 3),
+                new VerifyRequest("dev:x:drifted", 3),
+                new VerifyRequest("dev:x:refused", 3),
+                new VerifyRequest("dev:x:absent", 3),
+                new VerifyRequest("dev:x:adopted", null),
+            ]);
+
+            Assert.Equal(VerifyOutcome.Match, results[0].Outcome);
+            Assert.Equal(3, results[0].ObservedVersion);
+            Assert.Equal(VerifyOutcome.Drifted, results[1].Outcome);
+            Assert.Equal(9, results[1].ObservedVersion);
+            Assert.Contains("observed version 9", results[1].Detail, StringComparison.Ordinal);
+            Assert.Equal(VerifyOutcome.Error, results[2].Outcome);
+            Assert.Contains("invalid or unreadable", results[2].Detail, StringComparison.Ordinal);
+            Assert.Equal(VerifyOutcome.Missing, results[3].Outcome);
+            Assert.Equal(VerifyOutcome.Missing, results[4].Outcome);
+
+            // Five records, one request: this is what keeps a drift pass over a large estate off one call per record.
+            var call = Assert.Single(handler.Calls);
+            var body = JsonNode.Parse(call.Body!)!.AsObject();
+            Assert.Equal(5, body["records"]!.AsArray().Count);
+            Assert.Equal("id", body["attributes"]![0]!.GetValue<string>());
+        }
+    }
+
+    [Fact]
+    public async Task A_401_is_retried_once_under_a_freshly_resolved_token()
+    {
+        var handler = new FakeHttpHandler().On(
+            HttpMethod.Put,
+            "/records",
+            hit => hit == 0
+                ? FakeHttpHandler.Json(HttpStatusCode.Unauthorized, """{"code":401,"reason":"Unauthorized"}""")
+                : FakeHttpHandler.Json(HttpStatusCode.Created, """{"recordIdVersions":["dev:work-product-component--WellLog:abc:2"]}"""));
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduRecordProtocol(client, new ProtocolOptions());
+            var outcome = await protocol.DeliverAsync(Work(true, false, 0));
+
+            Assert.Equal(2, outcome.TargetVersion);
+            Assert.Equal(2, handler.Calls.Count);
+        }
+
+        // A 401 that survives the fresh token is a real authorisation failure and is not tried a third time.
+        var refusing = new FakeHttpHandler().On(HttpMethod.Put, "/records", HttpStatusCode.Unauthorized, """{"code":401,"reason":"Unauthorized"}""");
+        var (client2, _, runtime2) = Client(refusing);
+        using (runtime2)
+        {
+            var protocol = new OsduRecordProtocol(client2, new ProtocolOptions());
+            var ex = await Assert.ThrowsAsync<HttpStatusException>(() => protocol.DeliverAsync(Work(true, false, 0)));
+
+            Assert.Equal(401, ex.StatusCode);
+            Assert.Equal(2, refusing.Calls.Count);
         }
     }
 

@@ -61,62 +61,36 @@ public sealed class Verifier
         var errors = 0;
 
         using var gate = new SemaphoreSlim(Math.Max(1, _flow.Reliability.Concurrency));
-        var tasks = records.Select(async record =>
+
+        // The protocol says how many records one read of the target covers; a storage target answers a hundred at a
+        // time, so a pass over a large estate costs a handful of requests rather than one per record. A protocol
+        // that cannot batch reports one and this chunks to one, which is the same walk as before.
+        var chunks = records.Chunk(Math.Max(1, _protocol.MaxVerifyBatch)).ToList();
+        var tasks = chunks.Select(async chunk =>
         {
+            // The gate covers the read and the ledger writes that follow it, so concurrency bounds what this pass
+            // asks of both the target and the catalog, exactly as it did when the read was per record.
             await gate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                VerifyResult result;
+                IReadOnlyList<VerifyResult> results;
                 try
                 {
-                    result = await _protocol.VerifyAsync(record.TargetId!, record.TargetVersion, ct).ConfigureAwait(false);
+                    results = await _protocol.VerifyBatchAsync(
+                        chunk.Select(r => new VerifyRequest(r.TargetId!, r.TargetVersion)).ToList(), ct).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
                 {
-                    _logger.LogWarning("Verify {SourceKey} failed: {Message}", record.SourceKey, HeaderRedaction.RedactMessage(ex.Message));
-                    result = new VerifyResult(VerifyOutcome.Error, null, ex.Message);
+                    _logger.LogWarning(
+                        "Verify of {Count} record(s) failed, the first being {SourceKey}: {Message}",
+                        chunk.Length, chunk[0].SourceKey, HeaderRedaction.RedactMessage(ex.Message));
+                    var failure = new VerifyResult(VerifyOutcome.Error, null, ex.Message);
+                    results = Enumerable.Repeat(failure, chunk.Length).ToList();
                 }
 
-                switch (result.Outcome)
+                for (var i = 0; i < chunk.Length; i++)
                 {
-                    case VerifyOutcome.Match:
-                        Interlocked.Increment(ref matched);
-                        break;
-                    case VerifyOutcome.Drifted:
-                        Interlocked.Increment(ref drifted);
-                        _logger.LogWarning("Drift on {SourceKey} ({TargetId}): {Detail}", record.SourceKey, record.TargetId, result.Detail);
-                        break;
-                    case VerifyOutcome.Missing:
-                        Interlocked.Increment(ref missing);
-                        _logger.LogWarning("Missing in OSDU: {SourceKey} ({TargetId})", record.SourceKey, record.TargetId);
-                        break;
-                    default:
-                        Interlocked.Increment(ref errors);
-                        break;
-                }
-
-                if (result.Outcome != VerifyOutcome.Error)
-                {
-                    await _ledger.RecordVerifyAsync(record.DeliveryKey, result.Outcome, result.ObservedVersion, _time.GetUtcNow().UtcDateTime, reconcile, CancellationToken.None).ConfigureAwait(false);
-                }
-
-                if (result.Outcome is VerifyOutcome.Drifted or VerifyOutcome.Missing)
-                {
-                    await _listener.OnEventAsync(new DeliveryEvent
-                    {
-                        AtUtc = _time.GetUtcNow().UtcDateTime,
-                        FlowId = _flow.Id,
-                        FlowName = _flow.Name,
-                        Kind = "verify.drifted",
-                        SubmissionId = record.LastSubmissionId,
-                        DeliveryKey = record.DeliveryKey,
-                        SourceKey = record.SourceKey,
-                        Label = record.Label,
-                        TargetId = record.TargetId,
-                        TargetVersion = result.ObservedVersion,
-                        Worker = "verify",
-                        Detail = (result.Outcome == VerifyOutcome.Missing ? "missing in OSDU" : result.Detail) + (reconcile ? "; redelivery queued" : string.Empty),
-                    }, CancellationToken.None).ConfigureAwait(false);
+                    await SettleAsync(chunk[i], results[i], reconcile).ConfigureAwait(false);
                 }
             }
             finally
@@ -138,5 +112,51 @@ public sealed class Verifier
             Detail = summary.ToString() + (reconcile ? " (reconcile on)" : string.Empty),
         }, CancellationToken.None).ConfigureAwait(false);
         return summary;
+
+        // What one record's result means for the counters, the ledger and the listener.
+        async Task SettleAsync(RecordState record, VerifyResult result, bool reconciling)
+        {
+            switch (result.Outcome)
+            {
+                case VerifyOutcome.Match:
+                    Interlocked.Increment(ref matched);
+                    break;
+                case VerifyOutcome.Drifted:
+                    Interlocked.Increment(ref drifted);
+                    _logger.LogWarning("Drift on {SourceKey} ({TargetId}): {Detail}", record.SourceKey, record.TargetId, result.Detail);
+                    break;
+                case VerifyOutcome.Missing:
+                    Interlocked.Increment(ref missing);
+                    _logger.LogWarning("Missing in OSDU: {SourceKey} ({TargetId})", record.SourceKey, record.TargetId);
+                    break;
+                default:
+                    Interlocked.Increment(ref errors);
+                    break;
+            }
+
+            if (result.Outcome != VerifyOutcome.Error)
+            {
+                await _ledger.RecordVerifyAsync(record.DeliveryKey, result.Outcome, result.ObservedVersion, _time.GetUtcNow().UtcDateTime, reconciling, CancellationToken.None).ConfigureAwait(false);
+            }
+
+            if (result.Outcome is VerifyOutcome.Drifted or VerifyOutcome.Missing)
+            {
+                await _listener.OnEventAsync(new DeliveryEvent
+                {
+                    AtUtc = _time.GetUtcNow().UtcDateTime,
+                    FlowId = _flow.Id,
+                    FlowName = _flow.Name,
+                    Kind = "verify.drifted",
+                    SubmissionId = record.LastSubmissionId,
+                    DeliveryKey = record.DeliveryKey,
+                    SourceKey = record.SourceKey,
+                    Label = record.Label,
+                    TargetId = record.TargetId,
+                    TargetVersion = result.ObservedVersion,
+                    Worker = "verify",
+                    Detail = (result.Outcome == VerifyOutcome.Missing ? "missing in OSDU" : result.Detail) + (reconciling ? "; redelivery queued" : string.Empty),
+                }, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
     }
 }

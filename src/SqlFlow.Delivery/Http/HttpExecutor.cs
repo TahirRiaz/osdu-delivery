@@ -27,6 +27,16 @@ public sealed record HttpFetchResult(
 /// backoff, and a hard response-size cap. Retries rebuild the request from the factory (a message cannot be resent),
 /// so every attempt is a clean request. A 2xx returns the bytes; a non-retryable or exhausted failure throws with
 /// the status and a truncated body preview.
+///
+/// Only a request that is safe to repeat is ever repeated. Repeating one that is not turns a lost response into a
+/// second effect: a session chunk sent twice lands twice in the committed bulk, a file registration sent twice
+/// leaves an orphan dataset record. The method decides by default (GET, HEAD, PUT, DELETE, OPTIONS and TRACE are
+/// idempotent per RFC 9110; POST and PATCH are not), and a caller that knows a POST is safe by the service's own
+/// semantics (a search, a read by ids, a replace-the-whole-bulk write) says so. A request that is not safe to repeat
+/// is sent once: after a status it will not retry, and equally after a transport failure, where the service may
+/// well have acted on it before the connection went. The OSDU C# client draws the same line
+/// (<c>ReadRetryHandler</c>). The durable retry above this is the worker's, which resumes from the steps the ledger
+/// recorded rather than replaying blind.
 /// </summary>
 public sealed class HttpExecutor
 {
@@ -54,23 +64,33 @@ public sealed class HttpExecutor
 
     /// <param name="requestFactory">Builds a fresh request per attempt (and may open a fresh payload stream).</param>
     /// <param name="allowStatuses">Non-2xx statuses to return instead of throwing.</param>
+    /// <param name="idempotent">
+    /// Whether the request may be repeated. Null takes it from the method; true marks a POST or PATCH the service
+    /// treats as safe to repeat; false forbids repeating even an idempotent method.
+    /// </param>
     /// <param name="ct">Cancels the send, including the backoff wait between attempts.</param>
     public async Task<HttpFetchResult> SendAsync(
         Func<HttpRequestMessage> requestFactory,
         IReadOnlySet<int>? allowStatuses = null,
+        bool? idempotent = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(requestFactory);
 
+        bool? repeatable = null;
         for (var attempt = 1; ; attempt++)
         {
             await _rateLimiter.AcquireAsync(ct).ConfigureAwait(false);
 
             using var request = requestFactory();
+            repeatable ??= idempotent ?? IsIdempotent(request.Method);
             if (request.RequestUri is { } uri)
             {
                 _urlGuard.Check(uri);
             }
+
+            // A request that must not be repeated is decided as if it were already on its last attempt.
+            var decisionAttempt = repeatable.Value ? attempt : int.MaxValue;
 
             HttpResponseMessage? response = null;
             try
@@ -85,18 +105,18 @@ public sealed class HttpExecutor
                     return new HttpFetchResult(status, body, response.Headers, response.Content.Headers);
                 }
 
-                var decision = _retry.Next(attempt, status, response.Headers);
+                var decision = _retry.Next(decisionAttempt, status, response.Headers);
                 if (!decision.ShouldRetry)
                 {
                     var preview = await PreviewAsync(response, ct).ConfigureAwait(false);
-                    throw new HttpStatusException(code, $"HTTP {code} {status} from {request.Method} {Describe(request.RequestUri)}: {preview}");
+                    throw new HttpStatusException(code, $"HTTP {code} {status} from {request.Method} {Describe(request.RequestUri)}: {preview}", decision.RetryAfter);
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
             }
             catch (HttpRequestException ex)
             {
-                var decision = _retry.Next(attempt, null, null);
+                var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
                     throw new DeliveryException($"HTTP transport failure calling {request.Method} {Describe(request.RequestUri)}: {ex.Message}", ex);
@@ -110,7 +130,7 @@ public sealed class HttpExecutor
                 // IOException because the send uses ResponseHeadersRead. Treat it as the transient transport failure
                 // it is and retry from the factory. The response-size cap throws DeliveryException, so an oversized
                 // body is still permanent.
-                var decision = _retry.Next(attempt, null, null);
+                var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
                     throw new DeliveryException($"HTTP transport failure reading the response from {Describe(request.RequestUri)}: {ex.Message}", ex);
@@ -121,7 +141,7 @@ public sealed class HttpExecutor
             catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
             {
                 // A per-request timeout (not caller cancellation): treat as a transient transport failure.
-                var decision = _retry.Next(attempt, null, null);
+                var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
                     throw new DeliveryException($"HTTP request to {Describe(request.RequestUri)} timed out after {_client.Timeout.TotalSeconds:0}s.", ex);
@@ -135,6 +155,11 @@ public sealed class HttpExecutor
             }
         }
     }
+
+    /// <summary>RFC 9110 section 9.2.2: the methods whose repetition has the same effect as sending them once.</summary>
+    internal static bool IsIdempotent(HttpMethod method)
+        => method == HttpMethod.Get || method == HttpMethod.Head || method == HttpMethod.Put
+            || method == HttpMethod.Delete || method == HttpMethod.Options || method == HttpMethod.Trace;
 
     /// <summary>The request URL without its query string: a signed upload URL carries its credential there.</summary>
     private static string Describe(Uri? uri)
@@ -160,12 +185,13 @@ public sealed class HttpExecutor
         return buffer.ToArray();
     }
 
+    /// <summary>What the service said about the failure: its own message when the body is an OSDU error shape (see <see cref="OsduError"/>), else a bounded preview.</summary>
     private static async Task<string> PreviewAsync(HttpResponseMessage response, CancellationToken ct)
     {
         try
         {
             var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return text.Length <= 512 ? text : text[..512] + "...";
+            return OsduError.Describe(text);
         }
         catch (Exception ex) when (ex is IOException or HttpRequestException or InvalidOperationException)
         {

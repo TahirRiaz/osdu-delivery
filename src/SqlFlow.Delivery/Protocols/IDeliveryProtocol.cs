@@ -155,6 +155,9 @@ public sealed record DeliveryOutcome
 
 public sealed record VerifyResult(Ledger.VerifyOutcome Outcome, long? ObservedVersion, string? Detail);
 
+/// <summary>One record to verify: the id the target holds it under, and the version the ledger recorded for it.</summary>
+public sealed record VerifyRequest(string TargetId, long? ExpectedVersion);
+
 /// <summary>
 /// A named delivery protocol implemented in code and parameterised by the flow (design.md section 8.4). The core is
 /// protocol independent: identity, rendering, change detection, the ledger and idempotency; only this varies. A
@@ -197,6 +200,37 @@ public interface IDeliveryProtocol
     /// <summary>Reads the record back and compares the observed version with the expected one.</summary>
     Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default);
 
+    /// <summary>Records one batched read of the target takes: the id to look up and the version the ledger holds.</summary>
+    int MaxVerifyBatch => 1;
+
+    /// <summary>
+    /// Verifies several records, in one request when <see cref="MaxVerifyBatch"/> allows it. Results align with
+    /// <paramref name="requests"/>. The default reads them one at a time; a protocol whose service takes a list of
+    /// ids overrides this, which is what keeps a drift pass over a large estate to a handful of requests rather
+    /// than one per record.
+    /// </summary>
+    async Task<IReadOnlyList<VerifyResult>> VerifyBatchAsync(IReadOnlyList<VerifyRequest> requests, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        var results = new List<VerifyResult>(requests.Count);
+        foreach (var request in requests)
+        {
+            ct.ThrowIfCancellationRequested();
+            results.Add(await VerifyAsync(request.TargetId, request.ExpectedVersion, ct).ConfigureAwait(false));
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// The legal tags among <paramref name="tags"/> the legal service would refuse, each with its reason, or null
+    /// when this target does not ask the legal service: a protocol without a legal check, a flow that turned the
+    /// check off, or a well log flow whose endpoint is the DDMS and names no legal path. Null means "not checked"
+    /// and is never to be read as "valid".
+    /// </summary>
+    Task<IReadOnlyDictionary<string, string>?> InvalidLegalTagsAsync(IReadOnlyCollection<string> tags, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyDictionary<string, string>?>(null);
+
     /// <summary>
     /// Removes the record from OSDU to the extent <paramref name="scope"/> asks for. A record that is already gone
     /// is not an error. <paramref name="targetState"/> carries the identifiers of what else the record owns (its
@@ -209,7 +243,15 @@ public interface IDeliveryProtocol
     /// instead of throwing, so one bad record never sinks the set. The default removes them one at a time; a protocol
     /// whose service takes a list overrides this for the scopes that service can batch.
     /// </summary>
-    async Task<IReadOnlyList<RemovalResult>> DeleteBatchAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct = default)
+    Task<IReadOnlyList<RemovalResult>> DeleteBatchAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct = default)
+        => DeleteOneByOneAsync(removals, scope, ct);
+
+    /// <summary>
+    /// Removes the records one at a time through <see cref="DeleteAsync"/>, each reporting its own outcome. This is
+    /// the fallback behind every batched removal: a protocol whose service takes a list uses it for the scopes that
+    /// service cannot batch, and for a chunk the service refused over something other than the records in it.
+    /// </summary>
+    async Task<IReadOnlyList<RemovalResult>> DeleteOneByOneAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(removals);
         var results = new List<RemovalResult>(removals.Count);

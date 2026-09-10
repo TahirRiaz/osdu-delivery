@@ -23,12 +23,52 @@ public class YamlDocumentLoaderTests
           parameters: { dataPartition: dev }
         target:
           endpoint: https://example.org/petrodb
+          headers: { data-partition-id: opendes }
           protocol: osduWellLog
           protocolOptions: { payload: curves, recordMethod: POST }
         reliability:
           concurrency: 2
           retry: { attempts: 5, backoff: fixed }
         """;
+
+    [Fact]
+    public void A_flow_without_the_partition_header_is_refused_when_read()
+    {
+        var yaml = Flow.Replace("headers: { data-partition-id: opendes }", "headers: { }", StringComparison.Ordinal);
+        Assert.DoesNotContain("data-partition-id", yaml, StringComparison.Ordinal);
+        var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseFlow(yaml, "inline.yaml"));
+        Assert.Contains("data-partition-id", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("datasetKind: osdu:wks:dataset--File.Generic:1.0")]
+    [InlineData("manifestKind: osdu:wks:Manifest")]
+    public void A_dataset_or_manifest_kind_the_target_would_refuse_is_rejected_when_read(string option)
+    {
+        var yaml = Flow.Replace("protocolOptions: { payload: curves, recordMethod: POST }", "protocolOptions: { payload: curves, recordMethod: POST, " + option + " }", StringComparison.Ordinal);
+        var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseFlow(yaml, "inline.yaml"));
+        Assert.Contains("major.minor.patch", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    [InlineData(2, false)]
+    [InlineData(-1, false)]
+    public void Only_a_session_threshold_that_cannot_overwrite_chunks_is_accepted(int threshold, bool accepted)
+    {
+        var yaml = Flow.Replace("protocolOptions: { payload: curves, recordMethod: POST }", "protocolOptions: { payload: curves, recordMethod: POST, sessionThresholdChunks: " + threshold.ToString(System.Globalization.CultureInfo.InvariantCulture) + " }", StringComparison.Ordinal);
+        var loader = new DeliveryDocumentLoader();
+        if (accepted)
+        {
+            Assert.Equal(threshold, loader.ParseFlow(yaml, "inline.yaml").Target.ProtocolOptions.SessionThresholdChunks);
+        }
+        else
+        {
+            var ex = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(yaml, "inline.yaml"));
+            Assert.Contains("overwrite each other", ex.Message, StringComparison.Ordinal);
+        }
+    }
 
     [Fact]
     public void Loads_the_sample_flow_and_mapping()
@@ -130,4 +170,88 @@ public class YamlDocumentLoaderTests
         Assert.Equal("known/STAT_COMP", FlowParameters.KnownStateLocation(withKnownState, values));
         Assert.Throws<FlowValidationException>(() => FlowParameters.Resolve(flow, new Dictionary<string, string> { ["logSource"] = "x", ["nope"] = "y" }));
     }
+}
+
+/// <summary>
+/// The identifiers the storage service polices on every record it accepts: the kind, and the partition the record
+/// id is minted in. A value that fails either would fail every record of a run, so it is refused where it is read.
+/// </summary>
+public class OsduIdentifierValidationTests
+{
+    [Theory]
+    [InlineData("test:wks:work-product-component--Thing:1")]
+    [InlineData("test:wks:work-product-component--Thing:1.0")]
+    [InlineData("test:wks:work product:1.0.0")]
+    [InlineData("test:wks:work-product-component--Thing:1.0.x")]
+    public void A_mapping_kind_the_storage_service_would_refuse_is_rejected_when_read(string kind)
+    {
+        var yaml = TestSchema.MappingYaml.Replace("kind: test:wks:work-product-component--Thing:1.0.0", "kind: " + kind, StringComparison.Ordinal);
+        var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseMapping(yaml, "m.yaml"));
+        Assert.Contains("major.minor.patch", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("legalTags: [tag]", "legalTags: [tag, tag]", "envelope.legalTags")]
+    [InlineData("otherRelevantDataCountries: [NO]", "otherRelevantDataCountries: [NO, NO]", "envelope.otherRelevantDataCountries")]
+    public void A_repeated_legal_entry_is_rejected_because_the_legal_lists_are_sets(string from, string to, string key)
+    {
+        var yaml = TestSchema.MappingYaml.Replace(from, to, StringComparison.Ordinal);
+        var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseMapping(yaml, "m.yaml"));
+        Assert.Contains(key, ex.Message, StringComparison.Ordinal);
+        Assert.Contains("more than once", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_well_formed_mapping_kind_is_accepted()
+    {
+        var mapping = new DeliveryDocumentLoader().ParseMapping(TestSchema.MappingYaml, "m.yaml");
+        Assert.Equal("test:wks:work-product-component--Thing:1.0.0", mapping.Kind);
+    }
+
+    [Theory]
+    [InlineData("opendes")]
+    [InlineData("my-partition.eu_1")]
+    public void A_data_partition_that_is_a_valid_id_segment_is_used(string partition)
+    {
+        var context = Context(partition);
+        Assert.Equal(partition, context.DataPartition);
+    }
+
+    [Theory]
+    [InlineData("open des")]
+    [InlineData("opendes/eu")]
+    [InlineData("opendes:eu")]
+    public void A_data_partition_that_would_mint_invalid_record_ids_is_refused(string partition)
+    {
+        var ex = Assert.Throws<FlowValidationException>(() => Context(partition).DataPartition);
+        Assert.Contains("not a valid OSDU id segment", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_retrieval_flow_without_the_partition_header_is_refused_when_read()
+    {
+        const string Retrieval = """
+            flowType: retrieval
+            name: wellbores-out
+            source:
+              endpoint: https://osdu.example.com
+              headers: { }
+              kind: "osdu:wks:master-data--Wellbore:1.0.0"
+            target:
+              location: ./out
+            """;
+        var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseRetrieval(Retrieval, "r.yaml"));
+        Assert.Contains("data-partition-id", ex.Message, StringComparison.Ordinal);
+
+        var withHeader = Retrieval.Replace("headers: { }", "headers: { data-partition-id: opendes }", StringComparison.Ordinal);
+        Assert.Equal("wellbores-out", new DeliveryDocumentLoader().ParseRetrieval(withHeader, "r.yaml").Name);
+    }
+
+    private static SqlFlow.Delivery.Snapshots.RenderContext Context(string partition) => new()
+    {
+        MappingReference = "Thing@1.0.0",
+        ReferenceSnapshotVersion = "r1",
+        SchemaSnapshotVersion = "s1",
+        Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [SqlFlow.Delivery.Snapshots.RenderContext.DataPartitionParameter] = partition },
+    };
 }

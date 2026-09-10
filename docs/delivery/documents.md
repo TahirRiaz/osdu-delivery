@@ -44,7 +44,7 @@ target:
     token: { url: ${env:OSDU_TOKEN_URL}, body: { scope: ${env:OSDU_SCOPE} }, basicAuthClient: false, tokenPath: access_token, applyPrefix: "Bearer " }
   headers:                         # extra headers on every request
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
-    data-partition-id: dev
+    data-partition-id: dev         # required: every OSDU service rejects a request without it, so the loader insists on it
   protocol: osduWellLog            # osduRecord | osduWellLog | osduFile | osduManifest
   protocolOptions:
     payload: curves                # which source.payloads set the protocol streams
@@ -57,16 +57,24 @@ target:
     verifyPath: /ddms/v3/welllogs/{id}
     deletePath: /ddms/v3/welllogs/{id}       # logical delete (osduRecord: POST /api/storage/v2/records/{id}:delete)
     purgePath: /ddms/v3/welllogs/{id}        # physical purge (osduRecord: DELETE /api/storage/v2/records/{id})
-    sessionThresholdChunks: 1      # more chunks than this opens a session
+    # Versions belong to the storage service, which is not where an osduWellLog endpoint points, so that protocol
+    # needs the whole URL here. Any path option may be written absolute; it is guarded like every other request.
+    purgeVersionsPath: https://osdu.example.com/api/storage/v2/records/{id}/versions
+    sessionThresholdChunks: 1      # 1: a single chunk goes to the bulk endpoint, more open a session. 0: always a session
     maxChunkValues: 10000000       # wellbore DDMS ceiling: cells (rows x columns) per chunk (0 = do not check)
     maxChunkColumns: 3000          # wellbore DDMS ceiling: columns per chunk; 500 on targets before OSDU M26
     payloadContentType: application/x-parquet
     versionPath: recordIdVersions[0]
+    skipDuplicates: true           # osduRecord, osduFile: send skipdupes=true so an unchanged record keeps its version
+    verifyBatchPath: /api/storage/v2/query/records   # the batched read a verify pass uses (100 ids per request)
+    ddmsRoot: /api/os-wellbore-ddms  # osduWellLog: the endpoint is the platform root and the DDMS sits under this path; omit when the endpoint is the DDMS itself
+    validateLegalTags: true        # deliver and intake runs ask the legal service about the mapping's legal tags first; false skips it
+    legalValidatePath: /api/legal/v1/legaltags:validate  # where to ask; needed (as a whole URL) only for osduWellLog without ddmsRoot
     preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]
     batchSize: 100                 # records per write request where the service takes arrays (osduRecord, osduFile, osduManifest; at most 500)
     uploadUrlPath: /api/file/v2/files/uploadURL      # osduFile, osduManifest: the signed landing-zone location
     uploadUrlExpiry: 12H           # how long the signed URL stays valid (30M, 12H, 2D); default the service's one hour
-    uploadHeaders: { x-ms-blob-type: BlockBlob }     # headers on the upload to the signed URL itself
+    uploadHeaders: { x-ms-blob-type: BlockBlob }     # extra headers on the signed-URL upload; the Azure blob type is added for a *.blob.core.* URL anyway
     fileMetadataPath: /api/file/v2/files/metadata    # osduFile: registers the dataset record
     fileDeletePath: /api/file/v2/files/{id}/metadata # purge: deletes a dataset record and its file
     datasetKind: osdu:wks:dataset--File.Generic:1.0.0
@@ -141,7 +149,7 @@ parameters:
 source:
   endpoint: ${env:OSDU_URL}
   auth: { type: oauth2ClientCredentials, secondarySecretRef: ${env:OSDU_CLIENT_ID}, secretRef: ${env:OSDU_CLIENT_SECRET}, token: { url: ${env:OSDU_TOKEN_URL} } }   # as target.auth on a delivery flow
-  headers: { data-partition-id: dev }
+  headers: { data-partition-id: dev }   # required, as on a delivery flow's target
   kinds:                             # one cursor per kind; `kind:` for a single one
     - "osdu:wks:master-data--Wellbore:1.*.*"
     - "osdu:wks:master-data--Well:1.*.*"
@@ -226,7 +234,7 @@ write nothing).
 documentType: mapping
 name: WellLog
 version: 1.4.0                     # part of the render context
-kind: osdu:wks:work-product-component--WellLog:1.4.0   # pins the schema snapshot
+kind: osdu:wks:work-product-component--WellLog:1.4.0   # pins the schema snapshot; must match the storage pattern authority:source:entityType:major.minor.patch
 
 source:
   system: recall                   # enters the delivery key
@@ -237,13 +245,13 @@ identity:
   label: "{wellbore_uwi} / {log_name} / run {log_run}"   # display and search only; never in the document
 
 envelope:
-  legalTags: [...]
-  otherRelevantDataCountries: [NO]
+  legalTags: [...]                 # at least one, no repeats (the legal lists are sets to storage)
+  otherRelevantDataCountries: [NO] # at least one, no repeats
   acl: { owners: [...], viewers: [...] }
   tags: { DeliveredBy: osdu-delivery }        # static tags (optional)
 
 parameters:                        # what the mapping accepts from the flow; values enter the hash
-  dataPartition: { required: true }           # always required: ids are minted in it
+  dataPartition: { required: true }           # always required: ids are minted in it, so letters, digits, _ - . only
 
 properties:
   - target: data.Name              # dotted path from the record root (data.*, tags.*)

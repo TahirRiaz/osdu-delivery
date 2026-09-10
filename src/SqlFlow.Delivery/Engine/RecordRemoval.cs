@@ -72,25 +72,40 @@ public sealed record RemovalSelection
 /// defaults with the flow's own overrides applied. The GUI shows them next to the target so an operator can see
 /// exactly which call each scope makes before asking for it, and the well log protocol genuinely differs from the
 /// others, so this is derived from the flow rather than assumed.
+///
+/// The history scope always names a storage service path, because versions belong to storage for every kind of
+/// record. For a well log flow that is a different service from the flow's endpoint, so a path there resolves
+/// under the wrong base unless the flow declares an absolute <c>purgeVersionsPath</c>; the endpoint is reported
+/// as unconfigured in that case rather than as a URL that would not answer.
 /// </summary>
 public sealed record RemovalEndpoints(string Record, string History, string Everything)
 {
+    /// <summary>What the history endpoint reads as when the flow cannot reach the storage service by a path.</summary>
+    public const string HistoryNotConfigured = "(not configured: set protocolOptions.ddmsRoot when the endpoint is the platform root, or purgeVersionsPath to the storage service's URL)";
+
     public static RemovalEndpoints Of(FlowTarget target)
     {
         ArgumentNullException.ThrowIfNull(target);
         var options = target.ProtocolOptions;
-        var history = options.PurgeVersionsPath ?? OsduRecordProtocol.DefaultPurgeVersionsPath;
         if (target.Protocol == DeliveryProtocol.OsduWellLog)
         {
-            var delete = options.DeletePath ?? OsduWellLogProtocol.DefaultDeletePath;
-            return new RemovalEndpoints(delete, history, delete + "?purge=true");
+            var delete = options.DeletePath ?? OsduWellLogProtocol.DdmsPath(options, OsduWellLogProtocol.DefaultDeletePath);
+            return new RemovalEndpoints(delete, WellLogHistory(options), delete + "?purge=true");
         }
 
         return new RemovalEndpoints(
             options.DeletePath ?? OsduRecordProtocol.DefaultDeletePath,
-            history,
+            options.PurgeVersionsPath ?? OsduRecordProtocol.DefaultPurgeVersionsPath,
             options.PurgePath ?? OsduRecordProtocol.DefaultPurgePath);
     }
+
+    /// <summary>
+    /// A well log flow's endpoint is the wellbore DDMS, whose own paths carry no <c>/api/&lt;service&gt;/</c>
+    /// prefix, so the storage default would resolve under the DDMS and answer 404. Only an absolute URL, or a path
+    /// the flow itself chose (a facade that fronts both services), can be honoured.
+    /// </summary>
+    private static string WellLogHistory(ProtocolOptions options)
+        => OsduWellLogProtocol.HistoryPath(options) ?? HistoryNotConfigured;
 }
 
 /// <summary>What a removal did to one record: enough to answer "what happened to this one" without a second query.</summary>

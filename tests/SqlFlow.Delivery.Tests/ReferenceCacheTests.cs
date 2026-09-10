@@ -257,6 +257,7 @@ public class ReferenceCacheTests
             name: osdu-metadata-sync
             source:
               endpoint: https://osdu.example.com
+              headers: { data-partition-id: opendes }
               kinds: [osdu:wks:master-data--Wellbore:1.0.0]
             target:
               location: lake/metadata
@@ -287,6 +288,7 @@ public class ReferenceCacheTests
             name: osdu-metadata-sync
             source:
               endpoint: https://osdu.example.com
+              headers: { data-partition-id: opendes }
               kinds:
                 - osdu:wks:master-data--Wellbore:1.0.0
                 - osdu:wks:reference-data--UnitOfMeasure:1.0.0

@@ -26,9 +26,13 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
     public const string DefaultPurgePath = "/api/storage/v2/records/{id}";
     public const string DefaultPurgeVersionsPath = "/api/storage/v2/records/{id}/versions";
     public const string DefaultBulkDeletePath = "/api/storage/v2/records/delete";
+    public const string DefaultVerifyBatchPath = "/api/storage/v2/query/records";
 
     /// <summary>Record ids the storage service accepts in one bulk soft delete request.</summary>
     public const int MaxBulkDelete = 500;
+
+    /// <summary>Record ids one batched read takes (openapi storage v2, MultiRecordIds caps the list at 100).</summary>
+    public const int MaxVerifyBatch = 100;
 
     public const string RecordsStep = "records";
 
@@ -48,6 +52,8 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
     public DeliveryProtocol Kind => DeliveryProtocol.OsduRecord;
 
     public int MaxBatch => Math.Clamp(_options.BatchSize, 1, ProtocolOptions.MaxBatchSize);
+
+    int IDeliveryProtocol.MaxVerifyBatch => MaxVerifyBatch;
 
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {
@@ -115,11 +121,16 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
         var steps = new DeliverySteps(_time);
         var started = steps.Now;
         var url = _client.Url(_options.RecordPath ?? DefaultRecordPath);
+        if (_options.SkipDuplicates)
+        {
+            url = OsduHttpClient.WithQuery(url, "skipdupes", "true");
+        }
+
         var method = new HttpMethod((_options.RecordMethod ?? "PUT").ToUpperInvariant());
         HttpFetchResult result;
         try
         {
-            result = await _client.SendJsonAsync(method, url, new JsonArray(toWrite.Select(t => (JsonNode)t.Document).ToArray()), null, ct).ConfigureAwait(false);
+            result = await _client.SendJsonAsync(method, url, new JsonArray(toWrite.Select(t => (JsonNode)t.Document).ToArray()), null, ct, idempotent: true).ConfigureAwait(false);
         }
         catch (HttpStatusException ex) when (toWrite.Count > 1 && ex.StatusCode is >= 400 and < 500 and not (401 or 408 or 425 or 429))
         {
@@ -201,11 +212,29 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
     public Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default)
         => RecordWriter.VerifyAsync(_client, _options.VerifyPath ?? DefaultVerifyPath, targetId, expectedVersion, ct);
 
+    public Task<IReadOnlyList<VerifyResult>> VerifyBatchAsync(IReadOnlyList<VerifyRequest> requests, CancellationToken ct = default)
+        => RecordWriter.VerifyBatchAsync(_client, _options.VerifyBatchPath ?? DefaultVerifyBatchPath, requests, ct);
+
     public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
         => RecordWriter.ReadAsync(_client, _options.VerifyPath ?? DefaultVerifyPath, targetId, ct);
 
     public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
         => RecordWriter.ProbeAsync(_client, _options.ProbePath ?? DefaultProbePath, ct);
+
+    private LegalTagValidator? _legal;
+
+    /// <summary>Asks the legal service under this target, when the flow's target reaches it (see <see cref="LegalTagValidator.PathFor"/>).</summary>
+    public async Task<IReadOnlyDictionary<string, string>?> InvalidLegalTagsAsync(IReadOnlyCollection<string> tags, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(tags);
+        if (LegalTagValidator.PathFor(Kind, _options) is not { } path)
+        {
+            return null;
+        }
+
+        _legal ??= new LegalTagValidator(_client, path, _time);
+        return await _legal.InvalidAsync(tags, ct).ConfigureAwait(false);
+    }
 
     public Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
         => RecordWriter.DeleteAsync(_client, RemovalPaths.From(_options), targetId, scope, ct);
@@ -242,12 +271,20 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
         HttpFetchResult result;
         try
         {
-            result = await _client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 207, 404 }, ct).ConfigureAwait(false);
+            result = await _client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 207, 404 }, ct, idempotent: true).ConfigureAwait(false);
         }
-        catch (HttpStatusException)
+        catch (HttpStatusException ex) when (ex.StatusCode is 400 or 405)
         {
-            // The service refused the request as a whole; ask it record by record which ones it objects to.
+            // The service refused the list over something in it (a malformed id) or does not offer the bulk
+            // endpoint at all; ask it record by record which ones it objects to.
             return await OneByOneAsync(chunk, RemovalScope.Record, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
+        {
+            // Not a verdict on the records: the caller is unauthorised, throttled past its retries, or the service
+            // is down. Sending the chunk again one id at a time would repeat the same failure hundreds of times, so
+            // every record in it carries the one failure that actually happened.
+            return chunk.Select(r => new RemovalResult(r, null, ex)).ToList();
         }
 
         if ((int)result.Status is 207 or 404)
@@ -260,25 +297,9 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
             .ToList();
     }
 
-    private async Task<IReadOnlyList<RemovalResult>> OneByOneAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct)
-    {
-        var results = new List<RemovalResult>(removals.Count);
-        foreach (var removal in removals)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                var outcome = await DeleteAsync(removal.TargetId, scope, removal.TargetState, ct).ConfigureAwait(false);
-                results.Add(new RemovalResult(removal, outcome, null));
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-            {
-                results.Add(new RemovalResult(removal, null, ex));
-            }
-        }
-
-        return results;
-    }
+    /// <summary>The shared per-record removal, which is what every fallback here lands on.</summary>
+    private Task<IReadOnlyList<RemovalResult>> OneByOneAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct)
+        => ((IDeliveryProtocol)this).DeleteOneByOneAsync(removals, scope, ct);
 }
 
 /// <summary>The three removal endpoints of one flow's target, defaulted per protocol and overridable per flow.</summary>
@@ -316,7 +337,7 @@ internal static class RecordWriter
 
         var url = client.Url(recordPath);
         var body = new JsonArray(document);
-        var result = await client.SendJsonAsync(new HttpMethod(method.ToUpperInvariant()), url, body, null, ct).ConfigureAwait(false);
+        var result = await client.SendJsonAsync(new HttpMethod(method.ToUpperInvariant()), url, body, null, ct, idempotent: true).ConfigureAwait(false);
         if (result.Body.Length == 0)
         {
             return (null, (int)result.Status);
@@ -351,6 +372,96 @@ internal static class RecordWriter
         return observed == expectedVersion
             ? new VerifyResult(VerifyOutcome.Match, observed, null)
             : new VerifyResult(VerifyOutcome.Drifted, observed, $"observed version {observed}, ledger holds {expectedVersion}");
+    }
+
+    /// <summary>
+    /// Verifies a set of records in batched reads (openapi storage v2, <c>POST /query/records</c>, which takes up
+    /// to <see cref="OsduRecordProtocol.MaxVerifyBatch"/> ids per request), rather than one read per record.
+    /// Attributes are projected down so the service does not return whole data blocks for a pass that only compares
+    /// versions. The response names three groups and each becomes an outcome of its own: the records it returned
+    /// carry their observed version, the ones it lists under <c>invalidRecords</c> are refusals to report as errors
+    /// rather than as absences, and anything it neither returned nor named is missing from the target.
+    ///
+    /// Every protocol that writes through the storage service verifies through this, which is what keeps a drift
+    /// pass over a large estate to a handful of requests whichever of them delivered the records.
+    /// </summary>
+    public static async Task<IReadOnlyList<VerifyResult>> VerifyBatchAsync(OsduHttpClient client, string batchPath, IReadOnlyList<VerifyRequest> requests, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(requests);
+        if (requests.Count == 0)
+        {
+            return [];
+        }
+
+        var results = new VerifyResult[requests.Count];
+        var url = client.Url(batchPath);
+        foreach (var chunk in requests.Select((r, i) => (Request: r, Index: i)).Chunk(OsduRecordProtocol.MaxVerifyBatch))
+        {
+            ct.ThrowIfCancellationRequested();
+            var body = new JsonObject
+            {
+                ["records"] = new JsonArray(chunk.Select(c => (JsonNode?)JsonValue.Create(c.Request.TargetId)).ToArray()),
+
+                // A projection the service understands and that matches no data field, so the read carries record
+                // headers (id and version among them) and not every record's payload.
+                ["attributes"] = new JsonArray(JsonValue.Create("id")),
+            };
+            var result = await client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 404 }, ct, idempotent: true).ConfigureAwait(false);
+            var versions = new Dictionary<string, long?>(StringComparer.Ordinal);
+            var invalid = new HashSet<string>(StringComparer.Ordinal);
+            if (result.Body.Length > 0)
+            {
+                var root = OsduHttpClient.ParseJson(result, url);
+                foreach (var record in JsonPathReader.SelectElements(root, "records[*]"))
+                {
+                    if (record.ValueKind == JsonValueKind.Object
+                        && record.TryGetProperty("id", out var id)
+                        && id.ValueKind == JsonValueKind.String
+                        && id.GetString() is { } text)
+                    {
+                        versions[text] = ParseVersion(JsonPathReader.SelectValue(record, "version"));
+                    }
+                }
+
+                foreach (var id in JsonPathReader.SelectValues(root, "invalidRecords[*]"))
+                {
+                    invalid.Add(id);
+                }
+            }
+
+            foreach (var (request, index) in chunk)
+            {
+                results[index] = SettleVerify(request, versions, invalid);
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>What one record's batched read means for it: its version, a refusal, or an absence.</summary>
+    private static VerifyResult SettleVerify(VerifyRequest request, IReadOnlyDictionary<string, long?> versions, IReadOnlySet<string> invalid)
+    {
+        if (!versions.TryGetValue(request.TargetId, out var observed))
+        {
+            return invalid.Contains(request.TargetId)
+                ? new VerifyResult(VerifyOutcome.Error, null, "the storage service rejected the id as invalid or unreadable")
+                : new VerifyResult(VerifyOutcome.Missing, null, "record not found");
+        }
+
+        if (observed is null)
+        {
+            return new VerifyResult(VerifyOutcome.Error, null, "record has no version");
+        }
+
+        if (request.ExpectedVersion is null)
+        {
+            return new VerifyResult(VerifyOutcome.Match, observed, "no expected version recorded; observed version adopted");
+        }
+
+        return observed == request.ExpectedVersion
+            ? new VerifyResult(VerifyOutcome.Match, observed, null)
+            : new VerifyResult(VerifyOutcome.Drifted, observed, $"observed version {observed.Value.ToString(CultureInfo.InvariantCulture)}, ledger holds {request.ExpectedVersion.Value.ToString(CultureInfo.InvariantCulture)}");
     }
 
     /// <summary>Reads a record back as the target holds it; null on 404.</summary>
@@ -404,7 +515,7 @@ internal static class RecordWriter
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
         var url = client.Url(paths.For(scope), targetId);
         var method = scope == RemovalScope.Record ? HttpMethod.Post : HttpMethod.Delete;
-        var result = await client.SendJsonAsync(method, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
+        var result = await client.SendJsonAsync(method, url, null, new HashSet<int> { 404 }, ct, idempotent: true).ConfigureAwait(false);
         if ((int)result.Status == 404)
         {
             return new DeleteOutcome(false, true, "record not found in OSDU");

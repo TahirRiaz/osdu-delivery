@@ -153,7 +153,7 @@ public sealed class RetrievalRunner
                 body["query"] = query;
             }
 
-            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct).ConfigureAwait(false);
+            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
             using var document = JsonDocument.Parse(result.Body);
             var total = document.RootElement.TryGetProperty("totalCount", out var count) && count.ValueKind == JsonValueKind.Number && count.TryGetInt64(out var value)
                 ? value
@@ -288,7 +288,7 @@ public sealed class RetrievalRunner
                         body["cursor"] = cursor;
                     }
 
-                    var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct).ConfigureAwait(false);
+                    var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
                     using var document = JsonDocument.Parse(result.Body);
                     var root = document.RootElement;
                     if (pages == 0 && root.TryGetProperty("totalCount", out var count) && count.ValueKind == JsonValueKind.Number && count.TryGetInt64(out var totalCount))
@@ -397,11 +397,12 @@ public sealed class RetrievalRunner
         var url = _client.Url(_flow.Source.RecordQueryPath);
         var records = new List<JsonElement>(ids.Count);
         var found = new HashSet<string>(StringComparer.Ordinal);
+        var invalid = new List<string>();
         var pending = ids;
         for (var attempt = 0; attempt < 2 && pending.Count > 0; attempt++)
         {
             var body = new JsonObject { ["records"] = new JsonArray(pending.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray()) };
-            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct).ConfigureAwait(false);
+            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
             using var document = JsonDocument.Parse(result.Body);
             var root = document.RootElement;
             if (root.TryGetProperty("records", out var array) && array.ValueKind == JsonValueKind.Array)
@@ -428,7 +429,28 @@ public sealed class RetrievalRunner
                 }
             }
 
+            if (root.TryGetProperty("invalidRecords", out var rejected) && rejected.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var id in rejected.EnumerateArray())
+                {
+                    if (id.ValueKind == JsonValueKind.String && id.GetString() is { } text)
+                    {
+                        invalid.Add(text);
+                    }
+                }
+            }
+
             pending = retry;
+        }
+
+        if (invalid.Count > 0)
+        {
+            // The index found these but storage would not hand them over. That is a different thing from a record
+            // that has since been deleted, and saying so is what keeps the run's missing count from reading as data
+            // loss when it is really an entitlements gap.
+            _logger.LogWarning(
+                "retrieve: storage rejected {Count} id(s) as invalid or unreadable, so they are counted as missing. First: {Ids}",
+                invalid.Count, string.Join(", ", invalid.Take(5)));
         }
 
         return (records, ids.Where(id => !found.Contains(id)).ToList());

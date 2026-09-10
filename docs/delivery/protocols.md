@@ -46,29 +46,67 @@ a workflow run id. See [design.md](design.md) section 16.3.
 
 - `{recordMethod} {endpoint}{recordPath}` with an array of up to `protocolOptions.batchSize` records (default
   100, at most 500). Defaults: `PUT /api/storage/v2/records`.
+- The write carries `skipdupes=true` unless `protocolOptions.skipDuplicates` is false. The service then leaves
+  a record whose content it already holds at its current version and names it under `skippedRecordIds`, rather
+  than minting a version that says something changed when nothing did. Deliveries are gated on the content
+  hash anyway, so this only bites on a forced redelivery or a repair, which is where the version should stay put.
 - The response's `recordIdVersions` (`id:version` strings) supply each record's version; `skippedRecordIds`
   marks the records the service found unchanged. A single-record write also honours `versionPath`.
 - A batch the service refuses as a whole (a 4xx) is retried record by record, so one bad document holds
   itself and not its neighbours.
-- Verify: `GET {endpoint}{verifyPath}` (default `/api/storage/v2/records/{id}`), compare `version`.
+- Verify, one record: `GET {endpoint}{verifyPath}` (default `/api/storage/v2/records/{id}`), compare `version`.
+- Verify, a pass: `POST {verifyBatchPath}` (default `/api/storage/v2/query/records`) with up to 100 ids and
+  the attributes projected down, so a drift pass over a large estate costs a handful of requests rather than
+  one per record. The records it returns carry their observed version, the ids it names under `invalidRecords`
+  are reported as errors (the id or the caller's entitlements, not an absence), and the rest are missing.
+  `osduFile` and `osduManifest` verify through the same read, because their records live in storage too.
 - Remove: `POST {id}:delete` stops the record resolving and is revertible in OSDU; `DELETE {id}/versions`
   purges the earlier versions and leaves the latest live; `DELETE {id}` purges the record and every version.
   A set of records at the reversible scope goes through `POST /records/delete` (up to 500 ids per request);
-  a 207, or a status that rejects the request, falls back to one request per record so each reports its own
-  outcome. The paths are `deletePath`, `purgeVersionsPath`, `purgePath` and `bulkDeletePath`.
+  a 207, or a 400 or 405, falls back to one request per record so each reports its own outcome. Any other
+  refusal (401, 403, an exhausted 5xx) is not a verdict on the records, so the chunk is not resent one id at a
+  time: every record in it carries the one failure that happened. The paths are `deletePath`,
+  `purgeVersionsPath`, `purgePath` and `bulkDeletePath`.
 
 ## `osduWellLog`
 
 - Metadata: `POST {endpoint}/ddms/v3/welllogs` with a one-element array (the wellbore DDMS shape). Override
   `recordPath` and `recordMethod` for a facade such as petrodb-api. Step `metadata` returns the version.
+- The endpoint of a well log flow is, by default, the wellbore DDMS itself (or a facade serving its paths): the
+  DDMS paths (`/ddms/v3/...`, `/about`) carry no `/api/<service>/` prefix, unlike every other protocol, whose
+  endpoint is the OSDU platform root. A flow whose endpoint is the platform root declares
+  `protocolOptions.ddmsRoot: /api/os-wellbore-ddms` (the platform's ingress route for the DDMS, and the base the
+  OSDU C# client uses); every DDMS default path is then taken under it, and the storage-owned calls resolve under
+  the endpoint as they do for the other protocols. A path option the flow sets explicitly is used as written
+  either way. `ddmsRoot` must be a path starting with `/` and is refused on any other protocol. The distinction is
+  also why `sqlflow snapshot` takes `--endpoint` to capture schemas and references from the platform.
+- Remove: `DELETE {deletePath}` is a logical deletion the DDMS can revert; `?purge=true` makes it physical. The
+  DDMS has no operation on a record's versions (its only versions route is a GET listing), and versions belong to
+  the storage service for every kind of record, so the history scope goes to storage. With `ddmsRoot` declared the
+  endpoint is the platform root and the storage default (`/api/storage/v2/records/{id}/versions`) resolves under
+  it. Without it, storage is a different service from this flow's endpoint, so the flow says where it is by
+  declaring `purgeVersionsPath`, normally as a whole URL (`https://<host>/api/storage/v2/records/{id}/versions`). Any protocol path option may be written as an
+  absolute URL, and absolute URLs go through the same SSRF guard and `reliability.urlAllowlist` as every other
+  request. Without it the scope is refused rather than sent somewhere nobody chose, and the GUI does not offer it.
 - `preserveDataKeys` (for example `Datasets`, `DDMSDatasets`, `ExtensionProperties`) are read from the
   existing record before an update and copied into the document's `data`, because OSDU owns them
   ([decisions/0004](decisions/0004-preserved-keys.md)).
-- Payload, up to `sessionThresholdChunks` chunks: one `POST {dataPath}` per chunk with the chunk streamed as
-  `payloadContentType` with its length. Step `payload` returns the chunk count.
-- Payload, more chunks: `POST {sessionPath}` with `{ mode: overwrite, fromVersion, timeToLive }`, one
-  `POST {sessionDataPath}` per chunk in order, then `PATCH {sessionCommitPath}` with `{ state: commit }`. Any
-  failure abandons the session (best effort) and surfaces the error. The session id is returned.
+- Payload, one chunk: `POST {dataPath}` with the chunk streamed as `payloadContentType` with its length. Only
+  ever one chunk goes this way: that request carries "the entire bulk which will replace as latest version any
+  previous bulk", so several chunks sent to it would overwrite each other. Step `payload` returns the chunk count.
+- Payload, more than one chunk (or `sessionThresholdChunks: 0`, which sessions even a single chunk):
+  `POST {sessionPath}` with `{ mode: overwrite, fromVersion, timeToLive }`, one `POST {sessionDataPath}` per chunk
+  in order, then `PATCH {sessionCommitPath}` with `{ state: commit }`, which is what aggregates the chunks into one
+  new version. Any failure abandons the session (best effort) and surfaces the error. The session id is returned.
+- The commit is a PATCH and is never resent blind, so its outcome can be unclear: the connection went, a gateway
+  answered 5xx after the service had acted, or an intermediary resent it and the copy met a session that is no
+  longer open (409 or 412). The session's own state is read (`GET {sessionCommitPath}`) rather than guessed:
+  `committed` or `committing` is the commit that worked; anything else fails saying the payload did not land.
+- Session create, every session chunk and the commit are sent once. A chunk sent twice into a session lands twice
+  in the committed bulk, so a chunk whose outcome is unclear fails the session, which is abandoned, and the next
+  try of the record opens a new one.
+- `sessionThresholdChunks` is 1 (the default) or 0. A higher value is refused when the flow is read, because it
+  would have asked for chunks to overwrite each other.
 - A retry after a payload failure resumes past the metadata step it already completed.
 - Every chunk request is built from a factory that re-opens the blob, so the retry stack can resend a chunk
   without buffering it.
@@ -104,8 +142,10 @@ The files go first, then the record that references them (openapi file v2, stora
 
 1. Per payload chunk: `GET {uploadUrlPath}` (default `/api/file/v2/files/uploadURL`, `expiryTime` from
    `uploadUrlExpiry`) hands out `Location.SignedURL` and `Location.FileSource`; the chunk streams to the signed
-   URL with `PUT`, its length, `payloadContentType`, and only the `uploadHeaders` the flow declares (an Azure
-   landing zone needs `x-ms-blob-type: BlockBlob`). The signed URL carries its own authorisation and is never
+   URL with `PUT`, its length, `payloadContentType`, the `uploadHeaders` the flow declares, plus
+   `x-ms-blob-type: BlockBlob` when the URL is Azure Blob Storage (any `*.blob.core.*` host) and the flow names no
+   blob type, because Azure refuses a blob PUT without one; other landing zones get only what the flow declares.
+   The signed URL carries its own authorisation and is never
    logged or stored. Step `upload-{i}` returns `fileSource`, `fileId`, `name`, `size`.
 2. Per uploaded file: `POST {fileMetadataPath}` (default `/api/file/v2/files/metadata`) registers the dataset
    record: `datasetKind` (default `osdu:wks:dataset--File.Generic:1.0.0`), the record's own `acl` and `legal`
@@ -140,17 +180,40 @@ workflow run.
    The run id is chosen here, so a request the service accepted before a retry resent it answers 409 and is
    polled, not run twice. Step `manifest` is reported on every record of the batch, with the run id, before
    polling starts.
-3. `GET {workflowStatusPath}` every `workflowPollSeconds` until the run is `SUCCESS`, `PARTIAL_SUCCESS` or
-   `FAILED`, or `workflowTimeoutMinutes` pass. A timeout fails the try; the next try resumes polling the same
-   run. A failed run fails the batch; the next try triggers a new run. Step `workflow` returns the status and
-   timestamps.
+3. `GET {workflowStatusPath}` every `workflowPollSeconds` until the run reaches a terminal status, or
+   `workflowTimeoutMinutes` pass. The terminal statuses are `SUCCESS`, `PARTIAL_SUCCESS`, `FINISHED` and
+   `FAILED`, compared upper case because the service reports them in both cases (openapi workflow v1:
+   `WorkflowRunResponse` is upper, `WorkflowRun` is lower). A timeout fails the try; the next try resumes
+   polling the same run. A failed run fails the batch; the next try triggers a new run. A status the service
+   has never been known to report is named in the error rather than polled forever. Step `workflow` returns
+   the status and timestamps.
 4. The records are read back from storage (`POST {recordQueryPath}`, default
    `/api/storage/v2/query/records`, a hundred ids per request, projected to the dataset list) so each settles
-   on its own evidence: present with a version, delivered; absent, failed with the run named, and re-submitted
-   in a new run on the next try. Step `records` returns the record id and version.
+   on its own evidence: present with a version, delivered; named under `retryRecords` or `invalidRecords`,
+   failed saying which (an id storage rejects will not be helped by another run, so it is not re-submitted);
+   absent, failed with the run named, and re-submitted in a new run on the next try. Step `records` returns
+   the record id and version.
 
 Verify, read back and removal go to storage, and a purge of everything deletes the datasets and their files through the file
 service, as for `osduFile`.
+
+## Before a run: legal tags
+
+Every record a mapping renders carries the same legal tags, and storage refuses a record whose tag is unknown or
+expired, on every record that carries it. So a deliver or intake run asks the legal service first
+(`POST /api/legal/v1/legaltags:validate`, at most 25 names per request) and, when it refuses any tag, the run fails
+before anything is planned or sent, naming each tag and the reason the service gives (expired, not found). Plan runs
+do not ask; they send nothing.
+
+- Where it asks: under the endpoint, for every protocol whose endpoint is the platform root, which includes a well log
+  flow that declares `ddmsRoot`. A well log flow whose endpoint is the DDMS itself does not reach the legal service by
+  a path; it asks only when it names `protocolOptions.legalValidatePath` (normally an absolute URL), and otherwise the
+  run logs that the tags were not checked. Not checked is never read as valid.
+- `protocolOptions.validateLegalTags: false` turns the check off; storage then refuses a bad tag record by record.
+- A verdict on a tag is trusted for ten minutes, so the batches of one run do not each ask again. The service answers
+  404 without naming which of several names it does not know, so such a request is asked again name by name; a 404
+  that is not the legal service's own error (a gateway, a facade) fails the run as the legal service being
+  unreachable, not as every tag being invalid.
 
 ## Retry, hold, fail
 
@@ -161,9 +224,31 @@ service, as for `osduFile`.
 | Held | 400, 403, 404, 405, 409, 413, 415, 422, any status in `reliability.skipStatusCodes`, no payload chunks, an empty file, a `RecordHeldException` | `held` (terminal until released) |
 | Failed | the record-level retry budget (`reliability.retry.attempts`) is exhausted | `failed` (released like held) |
 
-Inside one call the HTTP executor already retries 408, 425, 429, 500, 502, 503 and 504 with backoff and
-honours `Retry-After`; the record-level backoff is the outer loop across worker passes. HTTP errors name the
-request URL without its query string, so a signed URL's credential never reaches an error message.
+Inside one call the HTTP executor repeats a request only when repeating it is safe, the line the OSDU C# client
+draws in its `ReadRetryHandler`:
+
+- Safe by method: GET, HEAD, PUT, DELETE (RFC 9110). Safe by the service's own semantics, declared by the
+  protocol that makes the call: record writes with client-supplied ids, `POST /records/{id}:delete` and the bulk
+  soft delete (a repeat finds the records already gone), reads by id (`POST /query/records`), searches, the
+  replace-the-whole-bulk `POST {dataPath}`, the workflow trigger (it names its own run id, so a resend answers
+  409), and token requests.
+- Never repeated: session create, session chunks, session commit, and file registration
+  (`POST /files/metadata`, which mints a dataset record per accepted call). Not after a status, and not after a
+  transport failure either, where the service may have acted before the connection went.
+- A safe request is repeated on 408, 425, 429, 503 and 504, and on a transport failure. 500 and 502 are not
+  replayed inline: the services answer them for deterministic failures as often as passing ones. They fall to
+  the record-level backoff, as does anything not repeated inline.
+- `Retry-After` is never shortened. A wait within `reliability.retry.maxDelayMs` is the floor of the backoff; a
+  longer one is not sat through inline, and travels with the failure so the record's next attempt is no sooner
+  than the service asked.
+- Every request carries a `Content-Type`, bodiless ones included (an empty `application/json` body), because
+  storage answers a request without one with 415 even when the operation takes no body.
+
+The record-level backoff is the outer loop across worker passes. HTTP errors name the request URL without its
+query string, so a signed URL's credential never reaches an error message. An error body is read for what the
+service said rather than kept as raw JSON: AppError's `message` and `reason` from the Java services, a Spring
+problem's `title` and `detail` (the 415 storage sends for a missing `Content-Type`), or the wellbore DDMS `detail`,
+with the fields a validation error names. Anything else is kept as a bounded, single-line preview.
 
 ## Adding a protocol
 

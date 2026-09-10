@@ -28,15 +28,53 @@ public class RetryPolicyTests
     }
 
     [Fact]
-    public void Honors_retry_after_as_a_floor_bounded_by_the_max()
+    public void Retry_after_is_honoured_in_full_and_never_shortened()
     {
+        // Ported from the OSDU C# client's RetryAfter_UsesFullDeltaOrUtcDateWithoutShortening: a wait the service
+        // names is a wait, not a hint to be trimmed to whatever this layer is willing to sit through.
         using var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
-        response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(30));
-        Assert.Equal(TimeSpan.FromMilliseconds(1000), Policy().Next(1, HttpStatusCode.TooManyRequests, response.Headers).Delay);
         response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromMilliseconds(500));
         Assert.Equal(TimeSpan.FromMilliseconds(500), Policy().Next(1, HttpStatusCode.TooManyRequests, response.Headers).Delay);
+
+        // Longer than the max: not waited out inline, and not shortened either. The request stops and the wait
+        // travels with it for the record-level retry.
+        response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromMinutes(10));
+        var longer = Policy().Next(1, HttpStatusCode.TooManyRequests, response.Headers);
+        Assert.False(longer.ShouldRetry);
+        Assert.Equal(TimeSpan.FromMinutes(10), longer.RetryAfter);
+
+        // A date already past is no wait at all, so the ordinary backoff applies.
+        var clock = new TestClock();
+        response.Headers.RetryAfter = new RetryConditionHeaderValue(clock.GetUtcNow().AddSeconds(-1));
+        var past = new RetryPolicy(new FlowRetry { Attempts = 4, BaseDelayMs = 100, MaxDelayMs = 1000 }, clock).Next(1, HttpStatusCode.TooManyRequests, response.Headers);
+        Assert.Equal(TimeSpan.FromMilliseconds(100), past.Delay);
+
+        response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromMilliseconds(500));
         Assert.Equal(TimeSpan.FromMilliseconds(100), Policy(honor: false).Next(1, HttpStatusCode.TooManyRequests, response.Headers).Delay);
     }
+
+    [Theory]
+    [InlineData(400)]
+    [InlineData(401)]
+    [InlineData(403)]
+    [InlineData(404)]
+    [InlineData(500)]
+    [InlineData(502)]
+    public void Statuses_the_service_did_not_call_transient_are_not_repeated(int status)
+    {
+        // Ported from the client's OtherStatuses_AreNotRetried. 500 and 502 are retried by the worker on its own
+        // backoff, not replayed here within milliseconds.
+        Assert.False(Policy().Next(1, (HttpStatusCode)status, null).ShouldRetry);
+    }
+
+    [Theory]
+    [InlineData(408)]
+    [InlineData(425)]
+    [InlineData(429)]
+    [InlineData(503)]
+    [InlineData(504)]
+    public void Transient_statuses_are_repeated(int status)
+        => Assert.True(Policy().Next(1, (HttpStatusCode)status, null).ShouldRetry);
 
     [Fact]
     public void Record_backoff_grows_in_minutes_and_caps()
@@ -105,7 +143,7 @@ public class HttpExecutorTests
             var request = new HttpRequestMessage(HttpMethod.Post, "http://localhost/data");
             request.Content = new StreamContent(new MemoryStream(Encoding.UTF8.GetBytes("payload-" + opened)));
             return request;
-        });
+        }, idempotent: true);
         Assert.Equal(HttpStatusCode.OK, result.Status);
         Assert.Equal(2, opened);
         Assert.Equal(["payload-1", "payload-2"], handler.Calls.Select(c => c.Body));
@@ -125,10 +163,100 @@ public class HttpExecutorTests
     [Fact]
     public async Task Exhausted_retries_surface_the_last_status()
     {
-        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/x", HttpStatusCode.BadGateway, "down");
+        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/x", HttpStatusCode.ServiceUnavailable, "down");
         using var runtime = Runtime(handler, attempts: 2);
         await Assert.ThrowsAsync<HttpStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "http://localhost/x")));
         Assert.Equal(2, handler.Calls.Count);
+    }
+
+    [Theory]
+    [InlineData("GET", 429)]
+    [InlineData("GET", 503)]
+    [InlineData("HEAD", 504)]
+    public async Task Eligible_reads_are_repeated_up_to_the_configured_attempts(string method, int status)
+    {
+        // Ported from the client's EligibleReads_RetryOnlyConfiguredNumber.
+        var handler = new FakeHttpHandler().On(new HttpMethod(method), "/records", (HttpStatusCode)status, null);
+        using var runtime = Runtime(handler);
+        var ex = await Assert.ThrowsAsync<HttpStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(new HttpMethod(method), "http://localhost/records")));
+        Assert.Equal(status, ex.StatusCode);
+        Assert.Equal(3, handler.Calls.Count);
+    }
+
+    [Theory]
+    [InlineData("POST", "/records")]
+    [InlineData("PATCH", "/records")]
+    [InlineData("POST", "/ddms/v3/welllogs/id/sessions")]
+    [InlineData("POST", "/ddms/v3/welllogs/id/sessions/sid/data")]
+    [InlineData("POST", "/api/file/v2/files/metadata")]
+    public async Task Writes_that_are_not_safe_to_repeat_are_sent_once(string method, string path)
+    {
+        // Ported from the client's WritesUploadsAndNonAllowlistedBodies_AreNotRetried: a lost response on one of
+        // these may mean the service acted, so resending would act twice.
+        var handler = new FakeHttpHandler().On(new HttpMethod(method), path, HttpStatusCode.ServiceUnavailable, null);
+        using var runtime = Runtime(handler);
+        await Assert.ThrowsAsync<HttpStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(new HttpMethod(method), "http://localhost" + path)));
+        Assert.Single(handler.Calls);
+    }
+
+    [Fact]
+    public async Task A_post_the_caller_declares_safe_to_repeat_is_repeated_with_the_same_body()
+    {
+        // Ported from the client's SearchPost_ReplaysJsonAndPreservesHeadersAndOptions. The client's allowlist is
+        // search; here each protocol states it for the calls it knows to be safe.
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/api/search/v2/query", hit => FakeHttpHandler.Json(hit == 0 ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK, "{}"));
+        using var runtime = Runtime(handler);
+        var result = await runtime.Data.SendAsync(
+            () =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Post, "http://localhost/api/search/v2/query") { Content = new StringContent("{\"kind\":\"osdu:*:*:*\"}", Encoding.UTF8, "application/json") };
+                request.Headers.TryAddWithoutValidation("data-partition-id", "partition");
+                return request;
+            },
+            idempotent: true);
+        Assert.Equal(HttpStatusCode.OK, result.Status);
+        Assert.Equal(2, handler.Calls.Count);
+        Assert.Equal(handler.Calls[0].Body, handler.Calls[1].Body);
+        Assert.All(handler.Calls, c => Assert.Equal("partition", c.Headers["data-partition-id"]));
+    }
+
+    [Fact]
+    public async Task A_transport_failure_on_a_write_is_never_repeated()
+    {
+        // Ported from the client's TransportExceptions_AreNeverRetried, for the requests where it matters: the
+        // connection going says nothing about whether the service acted.
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/sessions/sid/data", _ => throw new HttpRequestException("connection reset"));
+        using var runtime = Runtime(handler);
+        var ex = await Assert.ThrowsAsync<DeliveryException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Post, "http://localhost/sessions/sid/data")));
+        Assert.Contains("transport failure", ex.Message, StringComparison.Ordinal);
+        Assert.Single(handler.Calls);
+    }
+
+    [Fact]
+    public async Task A_transport_failure_on_a_read_is_repeated()
+    {
+        // Deliberately unlike the client, which retries no transport failure at all: a GET has no effect to
+        // repeat, so a dropped connection on one is exactly the transient failure a retry exists for.
+        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/records/x", hit => hit == 0 ? throw new HttpRequestException("connection reset") : FakeHttpHandler.Json(HttpStatusCode.OK, "{}"));
+        using var runtime = Runtime(handler);
+        var result = await runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "http://localhost/records/x"));
+        Assert.Equal(HttpStatusCode.OK, result.Status);
+        Assert.Equal(2, handler.Calls.Count);
+    }
+
+    [Fact]
+    public async Task A_wait_longer_than_the_transport_will_sit_through_travels_with_the_failure()
+    {
+        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/records", _ =>
+        {
+            var response = FakeHttpHandler.Json(HttpStatusCode.TooManyRequests, "{}");
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromMinutes(20));
+            return response;
+        });
+        using var runtime = Runtime(handler);
+        var ex = await Assert.ThrowsAsync<HttpStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "http://localhost/records")));
+        Assert.Equal(TimeSpan.FromMinutes(20), ex.RetryAfter);
+        Assert.Single(handler.Calls);
     }
 
     [Fact]
@@ -182,5 +310,46 @@ public class AuthResolverTests
         var basic = await resolver.ResolveAsync(new TargetAuth { Type = TargetAuthType.Basic, SecondarySecretRef = "u", SecretRef = "p" }, runtime.Auth);
         Assert.Equal("Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("u:p")), basic.Headers["Authorization"]);
         await Assert.ThrowsAsync<DeliveryException>(() => resolver.ResolveAsync(new TargetAuth { Type = TargetAuthType.Bearer }, runtime.Auth));
+    }
+}
+
+/// <summary>
+/// Path-segment escaping. OSDU identifiers are colon separated and every endpoint that takes one takes it in the
+/// path, so what goes on the wire has to be what RFC 3986 says a segment may carry rather than what a form field
+/// may carry.
+/// </summary>
+public class UrlPathTests
+{
+    [Fact]
+    public void A_record_id_keeps_its_colons_and_its_other_legal_characters()
+    {
+        Assert.Equal("opendes:master-data--Well:1234-abc", UrlPath.EscapeSegment("opendes:master-data--Well:1234-abc"));
+        Assert.Equal("osdu:wks:work-product-component--WellLog:1.0.0", UrlPath.EscapeSegment("osdu:wks:work-product-component--WellLog:1.0.0"));
+        Assert.Equal("a_b~c.d-e", UrlPath.EscapeSegment("a_b~c.d-e"));
+    }
+
+    [Fact]
+    public void A_base64_search_cursor_keeps_its_padding()
+    {
+        Assert.Equal("DXF1ZXJ5QW5kRmV0Y2gBAAAAAAAA==", UrlPath.EscapeSegment("DXF1ZXJ5QW5kRmV0Y2gBAAAAAAAA=="));
+    }
+
+    [Fact]
+    public void What_a_segment_cannot_carry_is_percent_encoded()
+    {
+        Assert.Equal("a%2Fb", UrlPath.EscapeSegment("a/b"));
+        Assert.Equal("a%3Fb", UrlPath.EscapeSegment("a?b"));
+        Assert.Equal("a%23b", UrlPath.EscapeSegment("a#b"));
+        Assert.Equal("a%25b", UrlPath.EscapeSegment("a%b"));
+        Assert.Equal("a%20b", UrlPath.EscapeSegment("a b"));
+        Assert.Equal("caf%C3%A9", UrlPath.EscapeSegment("café"));
+        Assert.Equal(string.Empty, UrlPath.EscapeSegment(string.Empty));
+    }
+
+    [Fact]
+    public void The_escaped_segment_survives_being_put_in_a_Uri()
+    {
+        var url = new Uri("https://osdu.example.com/api/storage/v2/records/" + UrlPath.EscapeSegment("opendes:master-data--Well:1") + ":delete");
+        Assert.Equal("/api/storage/v2/records/opendes:master-data--Well:1:delete", url.AbsolutePath);
     }
 }

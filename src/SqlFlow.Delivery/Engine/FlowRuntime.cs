@@ -197,6 +197,7 @@ public sealed class FlowRuntime : IDisposable
     public Task<RunResult> RunAsync(bool force, CancellationToken ct = default)
         => TrackAsync("deliver", new { force, drop = DropLocation, parameters = Parameters, fanOut = Flow.Reliability.FanOut }, null, async () =>
         {
+            await EnsureLegalTagsAsync(ct).ConfigureAwait(false);
             FanOutHandle? handle = null;
             try
             {
@@ -220,10 +221,39 @@ public sealed class FlowRuntime : IDisposable
             }
         }, ct);
 
+    /// <summary>
+    /// Asks the legal service about the mapping's legal tags before a run plans or sends anything. Every record the
+    /// mapping renders carries the same tags, and storage refuses a record whose tag is unknown or expired, so a run
+    /// that starts with a bad tag would fail each record it plans with the same error; refusing the run names the tag
+    /// and the service's reason once, before anything reaches the ledger or OSDU. A target that does not ask (see
+    /// <see cref="IDeliveryProtocol.InvalidLegalTagsAsync"/>) is logged as not checked, never taken as valid.
+    /// </summary>
+    private async Task EnsureLegalTagsAsync(CancellationToken ct)
+    {
+        var tags = Mapping.Mapping.Envelope.LegalTags;
+        var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
+        var invalid = await protocol.InvalidLegalTagsAsync(tags, ct).ConfigureAwait(false);
+        if (invalid is null)
+        {
+            _log.LogInformation(
+                "The mapping's legal tags ({Tags}) were not checked with the legal service before the run: the target does not ask it (validateLegalTags is off, or a well log endpoint names neither ddmsRoot nor legalValidatePath).",
+                string.Join(", ", tags));
+            return;
+        }
+
+        if (invalid.Count > 0)
+        {
+            throw new DeliveryException(
+                string.Create(CultureInfo.InvariantCulture, $"The legal service refuses {invalid.Count} of the legal tag(s) mapping {Mapping.Mapping.Reference} puts on every record, so nothing was planned or sent: ")
+                + string.Join("; ", invalid.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + ": " + kv.Value)));
+        }
+    }
+
     /// <summary>Intake only: register and plan the drop (or a subset of its partitions) into work batches, leaving the delivery to a drain.</summary>
     public Task<IntakeResult> IntakeAsync(bool force, IReadOnlyList<int>? partitions = null, CancellationToken ct = default)
         => TrackAsync("intake", new { force, drop = DropLocation, parameters = Parameters, partitions = partitions is null ? null : SubmissionIntake.DescribePartitions(partitions) }, null, async () =>
         {
+            await EnsureLegalTagsAsync(ct).ConfigureAwait(false);
             var intake = await Intake.IntakeAsync(Flow, Mapping, Parameters, DropLocation, force, partitions, ct).ConfigureAwait(false);
             return (intake, intake.AlreadyProcessed ? SubmissionIntake.Summarize(intake.Submission) : intake.Counts.ToString(), intake.Submission.SubmissionId);
         }, ct);

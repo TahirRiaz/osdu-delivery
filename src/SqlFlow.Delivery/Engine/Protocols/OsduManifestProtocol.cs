@@ -34,8 +34,16 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     /// <summary>Records per storage read-back request (openapi storage v2, MultiRecordIds takes at most 100).</summary>
     public const int QueryBatch = 100;
 
-    private static readonly HashSet<string> Finished = new(StringComparer.Ordinal) { "SUCCESS", "PARTIAL_SUCCESS", "FAILED" };
-    private static readonly HashSet<string> Pending = new(StringComparer.Ordinal) { "SUBMITTED", "INPROGRESS", "RUNNING", "QUEUED" };
+    /// <summary>
+    /// The terminal run statuses, compared upper case because the workflow service reports them in both cases: the
+    /// run detail schema (openapi workflow v1, WorkflowRunResponse) is upper (SUBMITTED, INPROGRESS, PARTIAL_SUCCESS,
+    /// SUCCESS, FAILED) while the run schema behind the listing (WorkflowRun) is lower (submitted, running, queued,
+    /// finished, success, failed). FINISHED belongs here: it is how the Airflow-backed service reports a run that
+    /// reached its end, and treating it as unknown turned a completed ingestion into a hard failure.
+    /// </summary>
+    private static readonly HashSet<string> Finished = new(StringComparer.Ordinal) { "SUCCESS", "PARTIAL_SUCCESS", "FINISHED", "FAILED" };
+
+    private static readonly HashSet<string> Pending = new(StringComparer.Ordinal) { "SUBMITTED", "INPROGRESS", "IN_PROGRESS", "RUNNING", "QUEUED" };
 
     private readonly OsduHttpClient _client;
     private readonly ProtocolOptions _options;
@@ -210,11 +218,32 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     public Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default)
         => RecordWriter.VerifyAsync(_client, _options.VerifyPath ?? OsduRecordProtocol.DefaultVerifyPath, targetId, expectedVersion, ct);
 
+    int IDeliveryProtocol.MaxVerifyBatch => OsduRecordProtocol.MaxVerifyBatch;
+
+    /// <summary>The workflow writes the records into the storage service, so they verify in batched reads from it.</summary>
+    public Task<IReadOnlyList<VerifyResult>> VerifyBatchAsync(IReadOnlyList<VerifyRequest> requests, CancellationToken ct = default)
+        => RecordWriter.VerifyBatchAsync(_client, _options.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath, requests, ct);
+
     public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
         => RecordWriter.ReadAsync(_client, _options.VerifyPath ?? OsduRecordProtocol.DefaultVerifyPath, targetId, ct);
 
     public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
         => RecordWriter.ProbeAsync(_client, _options.ProbePath ?? DefaultProbePath, ct);
+
+    private LegalTagValidator? _legal;
+
+    /// <summary>Asks the legal service under this target, when the flow's target reaches it (see <see cref="LegalTagValidator.PathFor"/>).</summary>
+    public async Task<IReadOnlyDictionary<string, string>?> InvalidLegalTagsAsync(IReadOnlyCollection<string> tags, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(tags);
+        if (LegalTagValidator.PathFor(Kind, _options) is not { } path)
+        {
+            return null;
+        }
+
+        _legal ??= new LegalTagValidator(_client, path, _time);
+        return await _legal.InvalidAsync(tags, ct).ConfigureAwait(false);
+    }
 
     public Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
     {
@@ -369,7 +398,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         };
         var url = _client.Url(_options.WorkflowRunPath ?? DefaultWorkflowRunPath, new Dictionary<string, string>(StringComparer.Ordinal) { ["workflow"] = _options.WorkflowName });
         var started = _time.GetUtcNow().UtcDateTime;
-        var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 409 }, ct).ConfigureAwait(false);
+        var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 409 }, ct, idempotent: true).ConfigureAwait(false);
         string? workflowId = null;
         var status = "SUBMITTED";
         if ((int)result.Status != 409 && result.Body.Length > 0)
@@ -438,6 +467,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         var url = _client.Url(_options.RecordQueryPath ?? DefaultRecordQueryPath);
         var versions = new Dictionary<string, long?>(StringComparer.Ordinal);
         var retry = new HashSet<string>(StringComparer.Ordinal);
+        var invalid = new HashSet<string>(StringComparer.Ordinal);
         var status = 0;
         foreach (var chunk in group.Chunk(QueryBatch))
         {
@@ -446,7 +476,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                 ["records"] = new JsonArray(chunk.Select(s => (JsonNode?)JsonValue.Create(s.Work.TargetId)).ToArray()),
                 ["attributes"] = new JsonArray(JsonValue.Create("data." + _options.DatasetsProperty)),
             };
-            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct).ConfigureAwait(false);
+            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
             status = (int)result.Status;
             var root = OsduHttpClient.ParseJson(result, url);
             foreach (var record in JsonPathReader.SelectElements(root, "records[*]"))
@@ -462,6 +492,11 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
             foreach (var id in JsonPathReader.SelectValues(root, "retryRecords[*]"))
             {
                 retry.Add(id);
+            }
+
+            foreach (var id in JsonPathReader.SelectValues(root, "invalidRecords[*]"))
+            {
+                invalid.Add(id);
             }
         }
 
@@ -511,6 +546,15 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
             else if (retry.Contains(id))
             {
                 var reason = $"storage asked for a retry when {id} was read back after workflow run {run.RunId}";
+                staged.Steps.Add(RecordsStep, completed, status, null, reason);
+                outcomes[staged.Index] = DeliveryOutcome.Failed(new DeliveryException(reason), staged.Steps.Steps);
+            }
+            else if (invalid.Contains(id))
+            {
+                // Storage naming the id under invalidRecords is a verdict, not an absence: the id is malformed or
+                // this caller may not read it. Triggering another workflow run would not change either, so the
+                // record fails with what storage actually said instead of going round again.
+                var reason = $"storage rejected {id} as invalid or unreadable when it was read back after workflow run {run.RunId}; the id or the caller's entitlements are the problem, not the run";
                 staged.Steps.Add(RecordsStep, completed, status, null, reason);
                 outcomes[staged.Index] = DeliveryOutcome.Failed(new DeliveryException(reason), staged.Steps.Steps);
             }
