@@ -150,7 +150,7 @@ function RecordHits({ q }: { q: string }) {
   return (
     <section className="flex flex-col gap-2" data-testid="search-records">
       <h2 className="text-[13px] font-medium">
-        {`${records.total.toLocaleString()} delivery record${records.total === 1 ? "" : "s"}`}
+        {`${records.total.toLocaleString()}${records.totalCapped ? "+" : ""} delivery record${records.total === 1 && !records.totalCapped ? "" : "s"}`}
         {records.total > shown && <span className="font-normal text-muted-foreground">{` (first ${shown})`}</span>}
       </h2>
       <DataTable
@@ -185,7 +185,10 @@ function SearchSummary({ q }: { q: string }) {
 
   const total = data.flows.total;
   const records = data.records.total;
-  const recordsText = records > 0 ? ` and ${records.toLocaleString()} delivery record${records === 1 ? "" : "s"}` : "";
+  const recordsCapped = data.records.totalCapped === true;
+  const recordsText = records > 0
+    ? ` and ${records.toLocaleString()}${recordsCapped ? "+" : ""} delivery record${records === 1 && !recordsCapped ? "" : "s"}`
+    : "";
   const words = data.tokens.length > 1 ? `; every word must match: ${data.tokens.join(" + ")}` : "";
   return (
     <p className="text-[13px] text-muted-foreground" data-testid="search-summary">

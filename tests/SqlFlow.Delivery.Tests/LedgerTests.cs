@@ -78,7 +78,8 @@ public class SqlLedgerTests : IDisposable
 
         var byTargetId = await Ledger.LookupAsync("dev:x:WELL", 10);
         Assert.Equal(2, byTargetId.Count);
-        Assert.Equal(2, await Ledger.CountLookupAsync("dev:x:WELL"));
+        Assert.Equal(new BoundedCount(2, Exact: true), await Ledger.CountLookupAsync("dev:x:WELL", 10));
+        Assert.Equal(new BoundedCount(1, Exact: false), await Ledger.CountLookupAsync("dev:x:WELL", 1));
         Assert.Single(await Ledger.LookupAsync("dev:x:WELL", 1));
 
         var byLabel = await Ledger.LookupAsync("Other", 10);
@@ -87,6 +88,53 @@ public class SqlLedgerTests : IDisposable
         Assert.Empty(await Ledger.LookupAsync("nothing-like-this", 10));
         Assert.Empty(await Ledger.LookupAsync(Guid.NewGuid().ToString(), 10));
         await Assert.ThrowsAsync<ArgumentException>(() => Ledger.LookupAsync(" ", 10));
+    }
+
+    [Fact]
+    public async Task Record_listings_count_to_a_limit_page_in_a_stable_order_and_bound_their_searches()
+    {
+        var s1 = Guid.NewGuid();
+
+        // Twelve records under one update time, as a bulk write stamps a batch: the pages must still partition them.
+        await Ledger.UpsertPendingAsync(Enumerable.Range(0, 12).Select(i => Pending($"WELL-{i:D2}", s1)).ToList());
+        var all = new RecordQuery();
+        Assert.Equal(new BoundedCount(12, Exact: true), await Ledger.CountAsync(_flow, all, 13));
+        Assert.Equal(new BoundedCount(5, Exact: false), await Ledger.CountAsync(_flow, all, 5));
+        var paged = new List<DeliveryKey>();
+        for (var offset = 0; offset < 12; offset += 5)
+        {
+            paged.AddRange((await Ledger.ListAsync(_flow, all with { Offset = offset, Max = 5 })).Select(r => r.DeliveryKey));
+        }
+
+        Assert.Equal(12, paged.Distinct().Count());
+        await Assert.ThrowsAsync<RecordQueryTooBroadException>(() => Ledger.ListAsync(_flow, all with { Offset = RecordListing.CountLimit }));
+
+        // Two are held, and they sort last by source key. A prefix search whose candidates stop before reaching them
+        // cannot say there are none: the count is a floor, and a bound that reaches them counts them exactly.
+        foreach (var name in new[] { "WELL-10", "WELL-11" })
+        {
+            var key = DeliveryKey.Derive("test", [name]);
+            await Ledger.CompleteAsync(new RecordCompletion
+            {
+                DeliveryKey = key,
+                Status = RecordStatus.Held,
+                Error = "held by the test",
+                Attempt = new AttemptRecord { DeliveryKey = key, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Held, Phase = "metadata" },
+            });
+        }
+
+        var heldWells = new RecordQuery { Status = RecordStatus.Held, Search = "WELL-" };
+        Assert.Equal(new BoundedCount(0, Exact: false), await Ledger.CountAsync(_flow, heldWells, 5));
+        Assert.Equal(new BoundedCount(2, Exact: true), await Ledger.CountAsync(_flow, heldWells, 13));
+        Assert.Equal(2, (await Ledger.ListAsync(_flow, heldWells)).Count);
+
+        // A contains term has no index: it runs only over what the rest of the filter leaves, counted first.
+        var bounded = new CatalogLedger(_db.CreateDbContext, _clock) { ContainsScanLimit = 5 };
+        var contains = new RecordQuery { Search = "LL-1", Mode = SearchMode.Contains };
+        var refused = await Assert.ThrowsAsync<RecordQueryTooBroadException>(() => bounded.ListAsync(_flow, contains));
+        Assert.Contains("prefix search", refused.Message, StringComparison.Ordinal);
+        Assert.Equal(2, (await bounded.ListAsync(_flow, contains with { Status = RecordStatus.Held })).Count);
+        Assert.Equal(2, (await bounded.ListKeysAsync(_flow, contains with { Status = RecordStatus.Held }, 100)).Count);
     }
 
     [Fact]

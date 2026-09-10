@@ -329,11 +329,11 @@ public class RemovalLedgerTests : IDisposable
 
         var keys = await Ledger.ListKeysAsync(_flow, new RecordQuery { RunId = run }, 100);
         Assert.Equal([touched], keys);
-        Assert.Equal(1, await Ledger.CountAsync(_flow, new RecordQuery { RunId = run }));
+        Assert.Equal(new BoundedCount(1, Exact: true), await Ledger.CountAsync(_flow, new RecordQuery { RunId = run }, 100));
 
         // The same filter with a status the run's record is not in matches nothing, so the two compose.
         Assert.Empty(await Ledger.ListKeysAsync(_flow, new RecordQuery { RunId = run, Status = RecordStatus.Failed }, 100));
-        Assert.Equal(2, await Ledger.CountAsync(_flow, new RecordQuery()));
+        Assert.Equal(new BoundedCount(2, Exact: true), await Ledger.CountAsync(_flow, new RecordQuery(), 100));
         Assert.DoesNotContain(untouched, keys);
     }
 
@@ -369,7 +369,7 @@ public class RemovalLedgerTests : IDisposable
 
         var record = await Ledger.GetRecordAsync(_flow, DeliveryKey.Derive("test", ["no-id"]));
         Assert.Null(record!.TargetId);
-        Assert.Equal(1, await Ledger.CountAsync(_flow, new RecordQuery { EverDelivered = false }));
+        Assert.Equal(new BoundedCount(1, Exact: true), await Ledger.CountAsync(_flow, new RecordQuery { EverDelivered = false }, 100));
     }
 
     /// <summary>A record staged, claimed and delivered, so a removal has something real to act on.</summary>
@@ -499,7 +499,7 @@ public class RemovalRuntimeTests : IDisposable
             Assert.Equal(0, summary.Removed);
             Assert.Equal(0, summary.Failed);
             Assert.All(summary.Records, r => Assert.Equal("already-gone", r.Outcome));
-            Assert.Equal(keys.Count, await ledger.CountAsync(runtime.Flow.Id, new RecordQuery { EverDelivered = false }));
+            Assert.Equal(keys.Count, (await ledger.CountAsync(runtime.Flow.Id, new RecordQuery { EverDelivered = false }, 100)).Count);
         }
     }
 

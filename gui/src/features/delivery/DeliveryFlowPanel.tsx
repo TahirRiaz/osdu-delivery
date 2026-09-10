@@ -82,6 +82,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [allMatching, setAllMatching] = useState(false);
   const [matched, setMatched] = useState(0);
+  const [matchedCapped, setMatchedCapped] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removalTaskId, setRemovalTaskId] = useState<string | null>(null);
 
@@ -108,7 +109,10 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
     clearSelection();
   }
 
-  const onPageLoaded = useCallback((_rows: DeliveryRecord[], total: number) => setMatched(total), []);
+  const onPageLoaded = useCallback((_rows: DeliveryRecord[], total: number, capped: boolean) => {
+    setMatched(total);
+    setMatchedCapped(capped);
+  }, []);
   const removal = useComputeTask(removalTaskId);
 
   const stats = useQuery({
@@ -270,10 +274,15 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                     ? `All ${matched.toLocaleString()} matching records selected`
                     : `${selected.size.toLocaleString()} selected`}
                 </span>
-                {!allMatching && matched > selected.size && (
+                {!allMatching && matched > selected.size && !matchedCapped && (
                   <Button variant="link" size="sm" className="h-6 px-0 text-[13px]" onClick={() => setAllMatching(true)} data-testid="delivery-select-all-matching">
                     Select all {matched.toLocaleString()} matching
                   </Button>
+                )}
+                {!allMatching && matchedCapped && (
+                  <span className="text-[13px] text-muted-foreground" data-testid="delivery-select-all-capped">
+                    More than {matched.toLocaleString()} match; narrow the filter to remove them together
+                  </span>
                 )}
                 <Button variant="link" size="sm" className="h-6 px-0 text-[13px] text-muted-foreground" onClick={clearSelection} data-testid="delivery-clear-selection">
                   Clear

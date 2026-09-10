@@ -187,6 +187,30 @@ public class SqlServerLedgerTests
     }
 
     [SkippableFact]
+    public async Task Record_listing_searches_and_counts_run_bounded_on_sql_server()
+    {
+        // The bounded shapes (a TOP per identity index under UNION ALL, a TOP inside a count) as SQL Server runs them.
+        var ledger = await LedgerAsync(_clock);
+        var s1 = Guid.NewGuid();
+        await ledger.UpsertPendingAsync(Enumerable.Range(0, 12).Select(i => Work($"well-{i:D2}", s1, $"0:{i * 10}:10", "mh", Now.AddDays(-1))).ToList());
+
+        var prefix = new RecordQuery { Search = _run + "/well-0" };
+        Assert.Equal(new BoundedCount(10, Exact: true), await ledger.CountAsync(_flow, prefix, 11));
+        Assert.Equal(new BoundedCount(4, Exact: false), await ledger.CountAsync(_flow, prefix, 4));
+        var first = await ledger.ListAsync(_flow, prefix with { Max = 6 });
+        var second = await ledger.ListAsync(_flow, prefix with { Offset = 6, Max = 6 });
+        Assert.Equal(10, first.Concat(second).Select(r => r.DeliveryKey).Distinct().Count());
+
+        var contains = new RecordQuery { Search = "ell-1", Mode = SearchMode.Contains };
+        Assert.Equal(2, (await ledger.ListAsync(_flow, contains)).Count);
+        Assert.Equal(12, (await ledger.ListKeysAsync(_flow, new RecordQuery(), 100)).Count);
+
+        Assert.Equal(new BoundedCount(5, Exact: false), await ledger.CountLookupAsync(_run + "/well-", 5));
+        Assert.Equal(new BoundedCount(12, Exact: true), await ledger.CountLookupAsync(_run + "/well-", 13));
+        Assert.Equal(3, (await ledger.LookupAsync(_run + "/well-", 3)).Count);
+    }
+
+    [SkippableFact]
     public async Task Bulk_staging_queues_behind_an_in_flight_delivery_and_refuses_older_work_and_bulk_completion_keeps_them_apart()
     {
         var ledger = await LedgerAsync(_clock);

@@ -615,7 +615,48 @@ public sealed record RecordQuery
 
     public int Max { get; init; } = 100;
 
+    /// <summary>Where the page starts; inside the first <see cref="RecordListing.CountLimit"/> records of the order.</summary>
     public int Offset { get; init; }
+}
+
+/// <summary>A count that stops at a limit: the number of matching records when <see cref="Exact"/>, otherwise a floor.</summary>
+public readonly record struct BoundedCount(int Count, bool Exact);
+
+/// <summary>
+/// What bounds a record listing, so that every page, count and search reads a bounded part of the ledger however many
+/// records a flow holds.
+/// </summary>
+public static class RecordListing
+{
+    /// <summary>
+    /// How far a listing counts and how deep it pages. A total up to this is exact and a larger one is a floor; the
+    /// records past it are reached by narrowing the filter. It equals the removal selection limit, so a listing's count
+    /// is exact whenever the records it matches could be removed together.
+    /// </summary>
+    public const int CountLimit = RemovalLimits.MaxSelection;
+
+    /// <summary>
+    /// The most records a contains search reads. A contains term has no index, so the rest of the filter must leave at
+    /// most this many records for it to scan; a broader filter is refused with <see cref="RecordQueryTooBroadException"/>.
+    /// </summary>
+    public const int ContainsScanLimit = 100_000;
+
+    /// <summary>Candidates the lookup across every flow takes from each identity index before ordering them.</summary>
+    public const int LookupCandidateLimit = 1_000;
+}
+
+/// <summary>A record listing that cannot be answered inside the bounds of <see cref="RecordListing"/>; the message says how to narrow it.</summary>
+public sealed class RecordQueryTooBroadException : DeliveryException
+{
+    public RecordQueryTooBroadException(string message)
+        : base(message)
+    {
+    }
+
+    public RecordQueryTooBroadException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
 }
 
 /// <summary>An activity listing: filter and page.</summary>
@@ -845,6 +886,13 @@ public interface ILedger
 
     Task<long> CountWorkBatchesAsync(Guid submissionId, WorkBatchStatus? status, CancellationToken ct = default);
 
+    /// <summary>
+    /// A page of the records a listing matches, most recently updated first and ties broken by key. It reads a bounded
+    /// part of the ledger at any volume: the page starts inside the first <see cref="RecordListing.CountLimit"/> records,
+    /// a prefix search orders at most that many candidates from each identity index, and a contains search is refused
+    /// when the rest of the filter leaves more than <see cref="RecordListing.ContainsScanLimit"/> records. A listing past
+    /// those bounds throws <see cref="RecordQueryTooBroadException"/>.
+    /// </summary>
     Task<IReadOnlyList<RecordState>> ListAsync(Guid flowId, RecordQuery query, CancellationToken ct = default);
 
     Task<FlowStats> StatsAsync(Guid flowId, DateTime nowUtc, CancellationToken ct = default);
@@ -854,15 +902,19 @@ public interface ILedger
     /// <summary>The attempts a submission produced, newest first: the submission view.</summary>
     Task<IReadOnlyList<AttemptRecord>> ListAttemptsForSubmissionAsync(Guid submissionId, int max, CancellationToken ct = default);
 
-    /// <summary>How many records match a listing, for paging.</summary>
-    Task<int> CountAsync(Guid flowId, RecordQuery query, CancellationToken ct = default);
+    /// <summary>
+    /// How many records match a listing, counting no further than <paramref name="limit"/>: exact below it, a floor at
+    /// it. A prefix search that ran into its candidate bound while another filter narrowed it is a floor too.
+    /// </summary>
+    Task<BoundedCount> CountAsync(Guid flowId, RecordQuery query, int limit, CancellationToken ct = default);
 
     /// <summary>Records matching a lookup across every flow: an exact delivery key, or a prefix over the OSDU id, the
-    /// source key and the label. Index-backed, newest first.</summary>
+    /// source key and the label. At most <see cref="RecordListing.LookupCandidateLimit"/> candidates are read from each
+    /// identity index, and the most recently updated of them are returned.</summary>
     Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, CancellationToken ct = default);
 
-    /// <summary>How many records a lookup matches.</summary>
-    Task<int> CountLookupAsync(string term, CancellationToken ct = default);
+    /// <summary>How many records a lookup matches, counting no further than <paramref name="limit"/>.</summary>
+    Task<BoundedCount> CountLookupAsync(string term, int limit, CancellationToken ct = default);
 
     /// <summary>Delivered records due for the drift pass, oldest verification first.</summary>
     Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default);
@@ -893,7 +945,9 @@ public interface ILedger
     /// <summary>
     /// The keys of every record a listing matches, in key order, up to <paramref name="max"/>. Key order is what
     /// makes this safe to act on: a removal changes the records it touches, and the newest-first order the listing
-    /// pages in would shuffle rows between pages while the removal ran.
+    /// pages in would shuffle rows between pages while the removal ran. Bounded like <see cref="ListAsync"/>: a prefix
+    /// search reads at most <see cref="RecordListing.CountLimit"/> + 1 candidates per identity index, and a broad
+    /// contains search is refused.
     /// </summary>
     Task<IReadOnlyList<DeliveryKey>> ListKeysAsync(Guid flowId, RecordQuery query, int max, CancellationToken ct = default);
 

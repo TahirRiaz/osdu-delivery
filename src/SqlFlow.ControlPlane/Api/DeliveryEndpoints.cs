@@ -269,10 +269,26 @@ public static class DeliveryEndpoints
         }
 
         var (p, size) = PageRequest.Normalize(page, pageSize);
-        query = query with { Offset = (p - 1) * size, Max = size };
-        var items = await ledger.ListAsync(flow.FlowId, query, ct).ConfigureAwait(false);
-        var total = await ledger.CountAsync(flow.FlowId, query, ct).ConfigureAwait(false);
-        return TypedResults.Ok(new PagedResult<DeliveryRecordDto>(items.Select(ToDto).ToList(), p, size, total));
+        var offset = (long)(p - 1) * size;
+        if (offset >= RecordListing.CountLimit)
+        {
+            return TooBroad(
+                $"A record listing pages through its first {RecordListing.CountLimit} records, and page {p} of {size} starts past them. " +
+                "Narrow the filter (a status, a submission, a run or a search) to reach the records beyond.");
+        }
+
+        query = query with { Offset = (int)offset, Max = size };
+        try
+        {
+            var items = await ledger.ListAsync(flow.FlowId, query, ct).ConfigureAwait(false);
+            var total = await ledger.CountAsync(flow.FlowId, query, RecordListing.CountLimit + 1, ct).ConfigureAwait(false);
+            return TypedResults.Ok(new PagedResult<DeliveryRecordDto>(
+                items.Select(ToDto).ToList(), p, size, Math.Min(total.Count, RecordListing.CountLimit), TotalCapped: !total.Exact));
+        }
+        catch (RecordQueryTooBroadException ex)
+        {
+            return TooBroad(ex.Message);
+        }
     }
 
     /// <summary>The listing filter of a request, or the problem to answer with when it names something unknown.</summary>
@@ -967,30 +983,39 @@ public static class DeliveryEndpoints
             return invalid!;
         }
 
-        var matched = await ledger.CountAsync(flow.FlowId, query, ct).ConfigureAwait(false);
-        if (matched == 0)
+        BoundedCount matched;
+        try
+        {
+            matched = await ledger.CountAsync(flow.FlowId, query, RemovalLimits.MaxSelection + 1, ct).ConfigureAwait(false);
+        }
+        catch (RecordQueryTooBroadException ex)
+        {
+            return TooBroad(ex.Message);
+        }
+
+        if (!matched.Exact || matched.Count > RemovalLimits.MaxSelection)
+        {
+            return TypedResults.Problem(
+                detail: $"The filter matches more than {RemovalLimits.MaxSelection} records as far as the listing counts; a removal takes at most {RemovalLimits.MaxSelection} at a time. Narrow the filter and remove in parts.",
+                statusCode: StatusCodes.Status409Conflict, title: "Too many records");
+        }
+
+        if (matched.Count == 0)
         {
             return TypedResults.Problem(
                 detail: "The filter matches no records, so there is nothing to remove.",
                 statusCode: StatusCodes.Status409Conflict, title: "Nothing selected");
         }
 
-        if (matched > RemovalLimits.MaxSelection)
+        if (request.Expected is { } expected && expected != matched.Count)
         {
             return TypedResults.Problem(
-                detail: $"The filter matches {matched} records; a removal takes at most {RemovalLimits.MaxSelection} at a time. Narrow the filter and remove in parts.",
-                statusCode: StatusCodes.Status409Conflict, title: "Too many records");
-        }
-
-        if (request.Expected is { } expected && expected != matched)
-        {
-            return TypedResults.Problem(
-                detail: $"The filter matched {expected} records when it was shown and matches {matched} now. Nothing was removed; check the list and confirm again.",
+                detail: $"The filter matched {expected} records when it was shown and matches {matched.Count} now. Nothing was removed; check the list and confirm again.",
                 statusCode: StatusCodes.Status409Conflict, title: "The selection changed");
         }
 
         var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["filter"] = RemovalFilter.ToJson(query) };
-        return await EnqueueRemovalAsync(db, dispatcher, flow, scope, arguments, matched, user, ct).ConfigureAwait(false);
+        return await EnqueueRemovalAsync(db, dispatcher, flow, scope, arguments, matched.Count, user, ct).ConfigureAwait(false);
     }
 
     /// <summary>What a removal would take away, and from where: the confirmation's contents, computed not guessed.</summary>
@@ -1012,11 +1037,13 @@ public static class DeliveryEndpoints
         // operator needs to know is how many of the selection were ever actually delivered.
         int records;
         int neverDelivered;
+        bool capped;
         if (request.Keys is { Count: > 0 })
         {
             var found = await ledger.GetRecordsAsync(flow.FlowId, request.Keys.Select(k => new DeliveryKey(k)), ct).ConfigureAwait(false);
             records = request.Keys.Count;
             neverDelivered = records - found.Values.Count(r => r.LastDeliveredUtc is not null);
+            capped = records > RemovalLimits.MaxSelection;
         }
         else
         {
@@ -1033,14 +1060,28 @@ public static class DeliveryEndpoints
                 return invalid!;
             }
 
-            records = await ledger.CountAsync(flow.FlowId, query, ct).ConfigureAwait(false);
-            neverDelivered = await ledger.CountAsync(flow.FlowId, query with { EverDelivered = false }, ct).ConfigureAwait(false);
+            try
+            {
+                // Counted as far as one removal takes and one more, so a selection larger than a removal is named as such.
+                var counted = await ledger.CountAsync(flow.FlowId, query, RemovalLimits.MaxSelection + 1, ct).ConfigureAwait(false);
+                var never = await ledger.CountAsync(flow.FlowId, query with { EverDelivered = false }, RemovalLimits.MaxSelection + 1, ct).ConfigureAwait(false);
+                capped = !counted.Exact || counted.Count > RemovalLimits.MaxSelection;
+                records = Math.Min(counted.Count, RemovalLimits.MaxSelection);
+                neverDelivered = Math.Min(never.Count, records);
+            }
+            catch (RecordQueryTooBroadException ex)
+            {
+                return TooBroad(ex.Message);
+            }
         }
 
         return TypedResults.Ok(new DeliveryRemovalPreview(
-            RemovalScopes.Wire(scope), records, Math.Max(0, records - neverDelivered), neverDelivered,
-            records > RemovalLimits.MaxSelection, ToTargetDto(flow)));
+            RemovalScopes.Wire(scope), records, Math.Max(0, records - neverDelivered), neverDelivered, capped, ToTargetDto(flow)));
     }
+
+    /// <summary>A record listing outside the ledger's bounds (<see cref="RecordListing"/>): the detail says how to narrow it.</summary>
+    private static ProblemHttpResult TooBroad(string detail)
+        => TypedResults.Problem(detail: detail, statusCode: StatusCodes.Status400BadRequest, title: "Listing too broad");
 
     private static ProblemHttpResult BadScope(string? scope)
         => TypedResults.Problem(

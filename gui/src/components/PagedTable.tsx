@@ -29,8 +29,8 @@ interface PagedTableProps<T> {
   selection?: RowSelection<T>;
   /** Rendered inside the bordered surface above the table: where a selection toolbar goes. */
   toolbar?: ReactNode;
-  /** Called with the rows and total of each page as it arrives, for pages that act on the whole match. */
-  onPageLoaded?: (rows: T[], total: number) => void;
+  /** Called with the rows and total of each page as it arrives, for pages that act on the whole match; a capped total is a floor. */
+  onPageLoaded?: (rows: T[], total: number, totalCapped: boolean) => void;
   "data-testid"?: string;
 }
 
@@ -70,7 +70,7 @@ export function PagedTable<T>({
   const loaded = query.data;
   useEffect(() => {
     if (loaded !== undefined) {
-      onPageLoaded?.(loaded.items, loaded.total);
+      onPageLoaded?.(loaded.items, loaded.total, loaded.totalCapped === true);
     }
   }, [loaded, onPageLoaded]);
 
@@ -82,6 +82,8 @@ export function PagedTable<T>({
 
   const result = query.data;
   const total = result?.total ?? 0;
+  // A capped listing pages only through what it counted; the "+" says there is more past it.
+  const capped = result?.totalCapped === true;
   const from = total === 0 ? 0 : page * pageSize + 1;
   const to = Math.min(total, (page + 1) * pageSize);
   const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
@@ -120,7 +122,13 @@ export function PagedTable<T>({
             </Select>
           </div>
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            <span className="font-mono tabular-nums">{from}-{to} of {total}</span>
+            <span
+              className="font-mono tabular-nums"
+              title={capped ? "The listing counts this far; narrow the filter to reach the rest" : undefined}
+              data-testid="paged-table-range"
+            >
+              {from}-{to} of {total}{capped ? "+" : ""}
+            </span>
             <Button
               variant="ghost"
               size="icon-xs"

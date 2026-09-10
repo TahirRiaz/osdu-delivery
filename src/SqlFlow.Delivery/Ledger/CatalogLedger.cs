@@ -35,6 +35,9 @@ public sealed class CatalogLedger : ILedger
     private readonly Func<CatalogDbContext> _factory;
     private readonly TimeProvider _time;
 
+    /// <summary>The most records a contains search reads (<see cref="RecordListing.ContainsScanLimit"/>); tests lower it.</summary>
+    internal int ContainsScanLimit { get; init; } = RecordListing.ContainsScanLimit;
+
     public CatalogLedger(Func<CatalogDbContext> factory, TimeProvider? time = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
@@ -899,29 +902,53 @@ public sealed class CatalogLedger : ILedger
     public async Task<IReadOnlyList<RecordState>> ListAsync(Guid flowId, RecordQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfNegative(query.Offset);
+        if (query.Offset >= RecordListing.CountLimit)
+        {
+            throw new RecordQueryTooBroadException(string.Create(
+                CultureInfo.InvariantCulture,
+                $"A record listing pages through its first {RecordListing.CountLimit} records, and offset {query.Offset} is past them. Narrow the filter (a status, a submission, a run or a search) to reach the records beyond."));
+        }
+
         await using var db = Open();
-        var rows = Filter(db, db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), query);
+        var rows = await MatchingAsync(db, flowId, query, RecordListing.CountLimit, ct).ConfigureAwait(false);
+
+        // Ties broken by key: a bulk write stamps a whole batch with one update time, and the pages must still partition it.
         var list = await rows
             .OrderByDescending(r => r.UpdatedUtc)
-            .Skip(Math.Max(0, query.Offset))
+            .ThenByDescending(r => r.DeliveryKey)
+            .Skip(query.Offset)
             .Take(Math.Clamp(query.Max, 1, 1000))
             .ToListAsync(ct)
             .ConfigureAwait(false);
         return list.Select(ToState).ToList();
     }
 
-    public async Task<int> CountAsync(Guid flowId, RecordQuery query, CancellationToken ct = default)
+    public async Task<BoundedCount> CountAsync(Guid flowId, RecordQuery query, int limit, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         await using var db = Open();
-        return await Filter(db, db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), query).CountAsync(ct).ConfigureAwait(false);
+        var rows = await MatchingAsync(db, flowId, query, limit, ct).ConfigureAwait(false);
+        var count = await rows.Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false);
+        if (count >= limit)
+        {
+            return new BoundedCount(count, Exact: false);
+        }
+
+        // Below the limit the count is exact, unless a prefix search left out candidates another filter would have kept.
+        var truncated = PrefixTerm(query) is { } term
+            && Narrows(query)
+            && await PrefixCandidatesTruncatedAsync(db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), term, limit, ct).ConfigureAwait(false);
+        return new BoundedCount(count, Exact: !truncated);
     }
 
     public async Task<IReadOnlyList<DeliveryKey>> ListKeysAsync(Guid flowId, RecordQuery query, int max, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         await using var db = Open();
-        var keys = await Filter(db, db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), query)
+        var rows = await MatchingAsync(db, flowId, query, RecordListing.CountLimit + 1, ct).ConfigureAwait(false);
+        var keys = await rows
             .OrderBy(r => r.DeliveryKey)
             .Select(r => r.DeliveryKey)
             .Take(Math.Clamp(max, 1, RemovalLimits.MaxSelection))
@@ -934,34 +961,82 @@ public sealed class CatalogLedger : ILedger
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
         await using var db = Open();
-        var rows = await LookupFilter(db.DeliveryRecords.AsNoTracking(), term)
+        var rows = await LookupFilter(db, term, RecordListing.LookupCandidateLimit)
             .OrderByDescending(r => r.UpdatedUtc)
+            .ThenByDescending(r => r.DeliveryKey)
             .Take(Math.Clamp(max, 1, 200))
             .ToListAsync(ct)
             .ConfigureAwait(false);
         return rows.Select(ToState).ToList();
     }
 
-    public async Task<int> CountLookupAsync(string term, CancellationToken ct = default)
+    public async Task<BoundedCount> CountLookupAsync(string term, int limit, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         await using var db = Open();
-        return await LookupFilter(db.DeliveryRecords.AsNoTracking(), term).CountAsync(ct).ConfigureAwait(false);
+        var count = await LookupFilter(db, term, limit).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false);
+        return new BoundedCount(count, Exact: count < limit);
     }
 
-    /// <summary>A UUID is a delivery key; anything else is a prefix over the three identity columns, each with its own index.</summary>
-    private static IQueryable<DeliveryRecord> LookupFilter(IQueryable<DeliveryRecord> rows, string term)
+    /// <summary>
+    /// A UUID is a delivery key; anything else is a prefix over the three identity columns across every flow, at most
+    /// <paramref name="candidates"/> from each column's own index.
+    /// </summary>
+    private static IQueryable<DeliveryRecord> LookupFilter(CatalogDbContext db, string term, int candidates)
     {
         var t = term.Trim();
+        var rows = db.DeliveryRecords.AsNoTracking();
         if (Guid.TryParse(t, out var key))
         {
             return rows.Where(r => r.DeliveryKey == key);
         }
 
-        return rows.Where(r => (r.TargetId != null && r.TargetId.StartsWith(t)) || r.SourceKey.StartsWith(t) || (r.Label != null && r.Label.StartsWith(t)));
+        var matches = PrefixCandidates(rows, t, candidates);
+        return rows.Where(r => matches.Contains(r.DeliveryKey));
     }
 
-    private static IQueryable<DeliveryRecord> Filter(CatalogDbContext db, IQueryable<DeliveryRecord> rows, RecordQuery query)
+    /// <summary>
+    /// The records a listing matches, as a query each of whose paths reads a bounded part of the ledger. The filters
+    /// other than the search seek their <c>(FlowId, column)</c> indexes. A prefix search takes at most
+    /// <paramref name="candidates"/> records from each identity column's index, in index order, and the rest of the
+    /// filter applies to those. A contains term has no index, so the records the rest of the filter leaves are counted
+    /// first, no further than the scan limit, and a filter that leaves more is refused.
+    /// </summary>
+    private async Task<IQueryable<DeliveryRecord>> MatchingAsync(CatalogDbContext db, Guid flowId, RecordQuery query, int candidates, CancellationToken ct)
+    {
+        var flow = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId);
+        var rows = Narrow(db, flow, query);
+        if (string.IsNullOrWhiteSpace(query.Search))
+        {
+            return rows;
+        }
+
+        var term = query.Search.Trim();
+        if (Guid.TryParse(term, out var key))
+        {
+            return rows.Where(r => r.DeliveryKey == key);
+        }
+
+        if (query.Mode != SearchMode.Contains)
+        {
+            var matches = PrefixCandidates(flow, term, candidates);
+            return rows.Where(r => matches.Contains(r.DeliveryKey));
+        }
+
+        var scanned = await rows.Select(r => r.DeliveryKey).Take(ContainsScanLimit + 1).CountAsync(ct).ConfigureAwait(false);
+        if (scanned > ContainsScanLimit)
+        {
+            throw new RecordQueryTooBroadException(string.Create(
+                CultureInfo.InvariantCulture,
+                $"A contains search reads every record the rest of the filter leaves, and this filter leaves more than {ContainsScanLimit}. Use a prefix search, which is indexed, or narrow by status, submission or run first."));
+        }
+
+        return rows.Where(r => r.SourceKey.Contains(term) || (r.Label != null && r.Label.Contains(term)) || (r.TargetId != null && r.TargetId.Contains(term)));
+    }
+
+    /// <summary>The listing's filters other than its search; each one seeks an index.</summary>
+    private static IQueryable<DeliveryRecord> Narrow(CatalogDbContext db, IQueryable<DeliveryRecord> rows, RecordQuery query)
     {
         if (query.Status is { } status)
         {
@@ -976,7 +1051,7 @@ public sealed class CatalogLedger : ILedger
 
         if (query.RunId is { } runId)
         {
-            // The attempt table is indexed on RunId, so this is a semi-join over that index rather than a scan.
+            // The attempt table is indexed on (RunId, DeliveryKey), so this is a semi-join over that index rather than a scan.
             var touched = db.DeliveryAttempts.AsNoTracking().Where(a => a.RunId == runId).Select(a => a.DeliveryKey);
             rows = rows.Where(r => touched.Contains(r.DeliveryKey));
         }
@@ -991,26 +1066,34 @@ public sealed class CatalogLedger : ILedger
             rows = everDelivered ? rows.Where(r => r.LastDeliveredUtc != null) : rows.Where(r => r.LastDeliveredUtc == null);
         }
 
-        if (!string.IsNullOrWhiteSpace(query.Search))
-        {
-            var term = query.Search.Trim();
-            if (Guid.TryParse(term, out var key))
-            {
-                rows = rows.Where(r => r.DeliveryKey == key);
-            }
-            else if (query.Mode == SearchMode.Contains)
-            {
-                rows = rows.Where(r => r.SourceKey.Contains(term) || (r.Label != null && r.Label.Contains(term)) || (r.TargetId != null && r.TargetId.Contains(term)));
-            }
-            else
-            {
-                // Prefix matches translate to LIKE 'term%' and use the (FlowId, column) indexes.
-                rows = rows.Where(r => r.SourceKey.StartsWith(term) || (r.Label != null && r.Label.StartsWith(term)) || (r.TargetId != null && r.TargetId.StartsWith(term)));
-            }
-        }
-
         return rows;
     }
+
+    /// <summary>Whether the listing has a filter besides its search.</summary>
+    private static bool Narrows(RecordQuery query)
+        => query.Status is not null || query.SubmissionId is not null || query.RunId is not null || query.Drifted || query.EverDelivered is not null;
+
+    /// <summary>The listing's search term when it is a prefix search: not empty, not a delivery key, not a contains search.</summary>
+    private static string? PrefixTerm(RecordQuery query)
+        => string.IsNullOrWhiteSpace(query.Search) || query.Mode == SearchMode.Contains || Guid.TryParse(query.Search.Trim(), out _)
+            ? null
+            : query.Search.Trim();
+
+    /// <summary>
+    /// The delivery keys whose source key, label or OSDU id starts with <paramref name="term"/>: at most
+    /// <paramref name="limit"/> from each column, each read in the order of its own index so the read stops there. A
+    /// record matching on two columns appears twice, which a membership test does not mind.
+    /// </summary>
+    private static IQueryable<Guid> PrefixCandidates(IQueryable<DeliveryRecord> scope, string term, int limit)
+        => scope.Where(r => r.SourceKey.StartsWith(term)).OrderBy(r => r.SourceKey).Select(r => r.DeliveryKey).Take(limit)
+            .Concat(scope.Where(r => r.Label != null && r.Label.StartsWith(term)).OrderBy(r => r.Label).Select(r => r.DeliveryKey).Take(limit))
+            .Concat(scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).OrderBy(r => r.TargetId).Select(r => r.DeliveryKey).Take(limit));
+
+    /// <summary>Whether any identity column has at least <paramref name="limit"/> prefix matches, so candidates were left out.</summary>
+    private static async Task<bool> PrefixCandidatesTruncatedAsync(IQueryable<DeliveryRecord> scope, string term, int limit, CancellationToken ct)
+        => await scope.Where(r => r.SourceKey.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit
+            || await scope.Where(r => r.Label != null && r.Label.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit
+            || await scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit;
 
     public async Task<FlowStats> StatsAsync(Guid flowId, DateTime nowUtc, CancellationToken ct = default)
     {

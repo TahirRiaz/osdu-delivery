@@ -148,6 +148,8 @@ export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, 
   const needsTyping = !choice.reversible;
   const confirmed = !needsTyping || typed.trim() === word;
   const records = preview.data?.records ?? (selection.kind === "keys" ? selection.keys.length : selection.expected);
+  // More than one removal takes: the API would refuse it, so the dialog says so and does not offer it.
+  const capped = preview.data?.capped === true;
   const busy = remove.isPending;
 
   return (
@@ -166,10 +168,14 @@ export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, 
             Remove from OSDU
           </AlertDialogTitle>
           <AlertDialogDescription data-testid="removal-scope-line">
-            {records === 1
-              ? `One record${singleLabel ? ` (${singleLabel})` : ""} of ${flowName}.`
-              : `${records.toLocaleString()} records of ${flowName}.`}
-            {selection.kind === "filter" && " Every record the current filter matches, resolved when the removal runs."}
+            {capped
+              ? `More records than one removal takes: ${records.toLocaleString()}${selection.kind === "filter" ? "+" : ""} of ${flowName}.`
+              : records === 1
+                ? `One record${singleLabel ? ` (${singleLabel})` : ""} of ${flowName}.`
+                : `${records.toLocaleString()} records of ${flowName}.`}
+            {capped
+              ? " Narrow the selection and remove the records in parts."
+              : selection.kind === "filter" && " Every record the current filter matches, resolved when the removal runs."}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -278,7 +284,7 @@ export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, 
             variant="destructive"
             size="sm"
             onClick={() => remove.mutate()}
-            disabled={busy || !confirmed || records === 0 || preview.isError}
+            disabled={busy || !confirmed || records === 0 || capped || preview.isError}
             data-testid="removal-confirm"
           >
             {busy && <Loader2 className="animate-spin" />}

@@ -691,7 +691,8 @@ public static class DeliveryModel
             e.HasIndex(r => new { r.CacheSetId, r.DeliveryKey }).HasFilter("[CacheSetId] IS NOT NULL");
             e.HasIndex(r => new { r.LastSubmissionId, r.WorkBatch });
             e.HasIndex(r => r.LeaseOwner);
-            e.HasIndex(r => new { r.FlowId, r.LastSubmissionId });
+            // A submission's records, most recent first, read in index order however many the submission holds.
+            e.HasIndex(r => new { r.FlowId, r.LastSubmissionId, r.UpdatedUtc });
             e.HasIndex(r => new { r.Status, r.LeaseExpiresUtc });
             e.HasIndex(r => new { r.FlowId, r.LastVerifiedUtc });
 
@@ -700,6 +701,7 @@ public static class DeliveryModel
             e.HasIndex(r => new { r.FlowId, r.SourceKey });
             e.HasIndex(r => new { r.FlowId, r.TargetId });
             e.HasIndex(r => new { r.FlowId, r.UpdatedUtc });
+            e.HasIndex(r => new { r.FlowId, r.Status, r.UpdatedUtc });
             e.HasIndex(r => new { r.FlowId, r.LastDeliveredUtc });
             e.HasIndex(r => new { r.FlowId, r.LastVerifyOutcome });
 
@@ -708,6 +710,9 @@ public static class DeliveryModel
             e.HasIndex(r => r.TargetId);
             e.HasIndex(r => r.SourceKey);
             e.HasIndex(r => r.Label);
+
+            // Key-ordered walks of one flow: the known-state stream and a removal's key list page through it by key.
+            e.HasIndex(r => new { r.FlowId, r.DeliveryKey });
         });
 
         modelBuilder.Entity<DeliveryAttempt>(e =>
@@ -724,7 +729,8 @@ public static class DeliveryModel
             e.HasIndex(a => new { a.DeliveryKey, a.StartedUtc });
             e.HasIndex(a => a.StartedUtc);
             e.HasIndex(a => a.SubmissionId);
-            e.HasIndex(a => a.RunId);
+            // A run's records: the listing's run filter seeks the run and joins on the key without reading the attempt.
+            e.HasIndex(a => new { a.RunId, a.DeliveryKey });
         });
 
         modelBuilder.Entity<DeliveryRecordCount>(e =>

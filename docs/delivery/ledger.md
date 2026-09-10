@@ -187,19 +187,38 @@ Listings are index-backed so the GUI answers in milliseconds at any estate size:
 
 | Index | Serves |
 | --- | --- |
-| `Record (FlowId, Status, NextAttemptUtc)` | the worker's claim and status filters |
+| `Record (FlowId, Status, NextAttemptUtc)` | the worker's claim |
+| `Record (FlowId, Status, UpdatedUtc)`, `(FlowId, LastSubmissionId, UpdatedUtc)` | a status's or a submission's records, most recent first, read in index order |
 | `Record (LastSubmissionId, WorkBatch)`, `WorkBatch (FlowId, Status, CreatedUtc)`, `(SubmissionId, Status)`, `(Status, LeaseExpiresUtc)` | the batch claim, its records, the lease sweep, the submission's batch list |
 | `Retrieval (FlowId, StartedUtc)`, `(FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval flow's runs, the watermark chain (the last done run), the run's row |
 | `Record (FlowId, Label)`, `(FlowId, SourceKey)`, `(FlowId, TargetId)` | prefix search (`LIKE 'term%'`) on the three identity columns |
-| `Record (FlowId, UpdatedUtc)`, `(FlowId, LastDeliveredUtc)`, `(FlowId, LastVerifyOutcome)`, `(FlowId, LastSubmissionId)` | recency listings, the last delivery and the part-hour of the 24-hour count, drift, per-submission views |
+| `Record (FlowId, UpdatedUtc)`, `(FlowId, LastDeliveredUtc)`, `(FlowId, LastVerifyOutcome)` | recency listings, the last delivery and the part-hour of the 24-hour count, drift |
+| `Record (FlowId, DeliveryKey)` | key-ordered walks of one flow: the known-state stream, a removal's key list |
 | `RecordCount` indexed view `(FlowId, Status, LastVerifyOutcome, DeliveredHour)` | flow statistics, read from a few rows per flow (see [Statistics](#statistics)) |
-| `Attempt (DeliveryKey, StartedUtc)`, `(SubmissionId)`, `(RunId)`, `(StartedUtc)` | record timeline, submission view, run linkage, pruning |
+| `Attempt (DeliveryKey, StartedUtc)`, `(SubmissionId)`, `(RunId, DeliveryKey)`, `(StartedUtc)` | record timeline, submission view, a run's records, pruning |
 | `Activity (FlowId, StartedUtc)`, `(DeliveryKey, StartedUtc)`, `(Kind, StartedUtc)`, `(Actor, StartedUtc)`, `(SubmissionId)`, `(RunId)` | the audit views and their filters |
 | `Run (SubmissionId)`, `Run (ResultSubmissionId)`, `Run (PipelineId, Operation)` | a submission's runs, a flow's runs by operation |
 
 A search term that parses as a UUID matches the delivery key exactly; anything else is a prefix over label,
 source key and target id. A slower "contains" mode exists for the rare case, and the API names it explicitly.
 `SourceKey` is capped at 400 characters so it fits an index key.
+
+### Bounds
+
+Every listing reads a bounded part of the ledger, however many records a flow holds:
+
+- A listing counts no further than 25,000 matches, the removal selection limit. Up to that the total is exact; past it
+  the API returns `totalCapped: true` with the total as a floor, and the GUI shows "25,000+". Pages reach the first
+  25,000 records of the order; a page past them is refused with a 400 that says to narrow the filter.
+- Records are listed most recently updated first, ties broken by delivery key, so pages partition a batch that one bulk
+  write stamped with a single update time.
+- A prefix search takes at most 25,000 candidates from each identity column's index, in index order, and applies the rest
+  of the filter to those. When a column runs into that bound while another filter narrows the listing, the count is
+  reported as a floor.
+- A contains term has no index. It runs only when the rest of the filter leaves at most 100,000 records, counted first
+  and no further than that; a broader filter is refused with a 400 that names the ways to narrow it.
+- The lookup across every flow (the search box) takes at most 1,000 candidates from each identity index and reports a
+  larger match as "1,000+".
 
 ## Statistics
 

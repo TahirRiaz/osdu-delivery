@@ -19,7 +19,7 @@ public sealed record DeliveryRecordHitDto(
     Guid DeliveryKey, Guid FlowId, string? FlowName, Guid? PipelineId, string SourceKey, string? Label, string? TargetId,
     string Status, DateTime? LastDeliveredUtc, DateTime UpdatedUtc);
 
-public sealed record SearchCategoryDto<T>(long Total, IReadOnlyList<T> Items);
+public sealed record SearchCategoryDto<T>(long Total, IReadOnlyList<T> Items, bool TotalCapped = false);
 
 /// <summary>The combined search: the parsed tokens (a multi-word term matches word by word, every word required)
 /// and each category counted in full with a preview of its top hits.</summary>
@@ -142,14 +142,17 @@ public static class SearchEndpoints
         // The delivery ledger answers the same box: a delivery key lands on the record, an OSDU id, a source key or
         // a label prefix lists the records that start with it, across every flow.
         var records = await ledger.LookupAsync(term.Phrase, PreviewSize, ct).ConfigureAwait(false);
-        var recordTotal = records.Count < PreviewSize ? records.Count : await ledger.CountLookupAsync(term.Phrase, ct).ConfigureAwait(false);
+        // Fewer hits than the preview means no identity index ran into its candidate bound, so that count is exact.
+        var recordTotal = records.Count < PreviewSize
+            ? new BoundedCount(records.Count, Exact: true)
+            : await ledger.CountLookupAsync(term.Phrase, RecordListing.LookupCandidateLimit, ct).ConfigureAwait(false);
         var recordItems = await MapRecordsAsync(db, records, ct).ConfigureAwait(false);
 
         return TypedResults.Ok(new AllSearchDto(
             term.Phrase,
             term.Tokens,
             new SearchCategoryDto<FlowHitDto>(flowTotal, flowItems),
-            new SearchCategoryDto<DeliveryRecordHitDto>(recordTotal, recordItems)));
+            new SearchCategoryDto<DeliveryRecordHitDto>(recordTotal.Count, recordItems, TotalCapped: !recordTotal.Exact)));
     }
 
     /// <summary>Attaches the pipeline (by the delivery flow name behind each record's flow id) so a hit links to its flow.</summary>

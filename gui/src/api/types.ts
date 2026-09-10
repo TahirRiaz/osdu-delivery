@@ -8,6 +8,8 @@ export interface PagedResult<T> {
   page: number;
   pageSize: number;
   total: number;
+  /** The listing counted only as far as its bound: `total` is a floor ("25,000+"), and narrowing the filter reaches the rest. */
+  totalCapped?: boolean;
 }
 
 // ---- Authentication and identity ------------------------------------------------------------------------------------
@@ -563,6 +565,8 @@ export interface FlowHit {
 export interface SearchCategory<T> {
   total: number;
   items: T[];
+  /** The category counted only as far as its bound, so `total` is a floor. */
+  totalCapped?: boolean;
 }
 
 /** One delivery record that matched a lookup: where it belongs, how it is identified, and its custody state. */
