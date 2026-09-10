@@ -577,3 +577,40 @@ public class LegalTagCheckTests
         Assert.Contains("legalValidatePath", ex.Message, StringComparison.Ordinal);
     }
 }
+
+/// <summary>Skipping duplicates at storage is something a flow opts in to, never the default.</summary>
+public class SkipDuplicatesOptionTests
+{
+    private const string Flow = """
+        flowType: delivery
+        name: demo
+        parameters:
+          logSource: { required: true }
+        source:
+          location: drops/{logSource}
+          fingerprint: update_date
+        render:
+          mapping: WellLog@1.4.0
+          parameters: { dataPartition: dev }
+        target:
+          endpoint: https://osdu.example.com
+          headers: { data-partition-id: opendes }
+          protocol: osduRecord
+          protocolOptions: { __OPTIONS__ }
+        """;
+
+    [Fact]
+    public void A_flow_that_says_nothing_does_not_skip_duplicates()
+    {
+        Assert.False(new ProtocolOptions().SkipDuplicates);
+        var flow = new SqlFlow.Delivery.Documents.DeliveryDocumentLoader().ParseFlow(Flow.Replace("__OPTIONS__", "batchSize: 10", StringComparison.Ordinal), "inline.yaml");
+        Assert.False(flow.Target.ProtocolOptions.SkipDuplicates);
+    }
+
+    [Fact]
+    public void A_flow_can_opt_in()
+    {
+        var flow = new SqlFlow.Delivery.Documents.DeliveryDocumentLoader().ParseFlow(Flow.Replace("__OPTIONS__", "skipDuplicates: true", StringComparison.Ordinal), "inline.yaml");
+        Assert.True(flow.Target.ProtocolOptions.SkipDuplicates);
+    }
+}

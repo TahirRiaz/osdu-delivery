@@ -908,16 +908,17 @@ public class ProtocolTests
     }
 
     [Fact]
-    public async Task The_record_write_asks_storage_to_skip_duplicates_and_settles_a_skipped_record_on_its_current_version()
+    public async Task A_record_write_asks_storage_to_skip_duplicates_only_when_the_flow_opts_in()
     {
-        // skipdupes is what makes skippedRecordIds mean anything: without it the service never populates the list
-        // and a redelivery of identical content mints a version that says something changed when nothing did.
+        // Opted in, skipdupes is sent, and a record the service names under skippedRecordIds settles on the version
+        // the ledger already held. By default it is not sent: the spec does not say what the service compares, and an
+        // envelope-only change must never be skipped while the ledger records it as delivered.
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Put, "/records", HttpStatusCode.Created, """{"recordIdVersions":[],"skippedRecordIds":["dev:work-product-component--WellLog:abc"]}""");
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduRecordProtocol(client, new ProtocolOptions());
+            var protocol = new OsduRecordProtocol(client, new ProtocolOptions { SkipDuplicates = true });
             var outcome = await protocol.DeliverAsync(Work(true, false, 0, existing: 4));
 
             Assert.True(outcome.MetadataDelivered);
@@ -932,7 +933,7 @@ public class ProtocolTests
         var (client2, _, runtime2) = Client(plain);
         using (runtime2)
         {
-            var protocol = new OsduRecordProtocol(client2, new ProtocolOptions { SkipDuplicates = false });
+            var protocol = new OsduRecordProtocol(client2, new ProtocolOptions());
             var outcome = await protocol.DeliverAsync(Work(true, false, 0, existing: 4));
 
             Assert.Equal(9, outcome.TargetVersion);

@@ -65,7 +65,7 @@ target:
     maxChunkColumns: 3000          # wellbore DDMS ceiling: columns per chunk; 500 on targets before OSDU M26
     payloadContentType: application/x-parquet
     versionPath: recordIdVersions[0]
-    skipDuplicates: true           # osduRecord, osduFile: send skipdupes=true so an unchanged record keeps its version
+    skipDuplicates: false          # osduRecord, osduFile: opt in to skipdupes=true only once the target is confirmed to compare acl, legal and tags, not just data
     verifyBatchPath: /api/storage/v2/query/records   # the batched read a verify pass uses (100 ids per request)
     ddmsRoot: /api/os-wellbore-ddms  # osduWellLog: the endpoint is the platform root and the DDMS sits under this path; omit when the endpoint is the DDMS itself
     validateLegalTags: true        # deliver and intake runs ask the legal service about the mapping's legal tags first; false skips it

@@ -351,15 +351,18 @@ public sealed record ProtocolOptions
     public string VersionPath { get; init; } = "recordIdVersions[0]";
 
     /// <summary>
-    /// Sends <c>skipdupes=true</c> on the record write (openapi storage v2, PUT /records). The storage service then
-    /// compares an incoming record with the one it already holds and, when they are the same, names it under
-    /// <c>skippedRecordIds</c> and leaves the record at its current version instead of minting a new one. Without
-    /// the parameter the service never populates that list and a redelivery of unchanged content still burns a
-    /// version, which makes the record's history read as if something changed when nothing did. Deliveries are
-    /// already gated on the content hash, so this only bites on a forced redelivery or a repair, which is exactly
-    /// where the version should stay put.
+    /// Sends <c>skipdupes=true</c> on the record write (openapi storage v2, PUT /records): "Skip duplicates when
+    /// updating records with the same value". A record the service skips is named under <c>skippedRecordIds</c>
+    /// and keeps its current version, and the ledger settles it at the version it already held.
+    ///
+    /// Off by default, because the spec does not say which parts of a record the service compares. Deliveries are
+    /// already gated on the hash of the whole rendered document, so a write that reaches storage is a document that
+    /// changed. If the service judged sameness by <c>data</c> alone, a change to only <c>acl</c>, <c>legal</c> or
+    /// <c>tags</c> would be skipped: OSDU would keep the old access control or legal tags while the ledger recorded
+    /// the change as delivered. What skipping buys is small (no extra version on a forced redelivery, or on a retry
+    /// after a write that landed), so a flow opts in only once the comparison is confirmed for its target.
     /// </summary>
-    public bool SkipDuplicates { get; init; } = true;
+    public bool SkipDuplicates { get; init; }
 
     /// <summary>
     /// Path of the storage service's batched header read (<c>POST /query/records</c> by default), used to verify

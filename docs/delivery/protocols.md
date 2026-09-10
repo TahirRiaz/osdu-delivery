@@ -46,10 +46,13 @@ a workflow run id. See [design.md](design.md) section 16.3.
 
 - `{recordMethod} {endpoint}{recordPath}` with an array of up to `protocolOptions.batchSize` records (default
   100, at most 500). Defaults: `PUT /api/storage/v2/records`.
-- The write carries `skipdupes=true` unless `protocolOptions.skipDuplicates` is false. The service then leaves
-  a record whose content it already holds at its current version and names it under `skippedRecordIds`, rather
-  than minting a version that says something changed when nothing did. Deliveries are gated on the content
-  hash anyway, so this only bites on a forced redelivery or a repair, which is where the version should stay put.
+- The write carries `skipdupes=true` only when `protocolOptions.skipDuplicates` is true; it is off by default.
+  The spec says only "Skip duplicates when updating records with the same value", not which parts of a record
+  the service compares. Deliveries are already gated on the hash of the whole rendered document, so a write that
+  reaches storage is a document that changed; if the service judged sameness by `data` alone, a change to only
+  `acl`, `legal` or `tags` would be skipped while the ledger recorded it as delivered. Opt in only once that is
+  confirmed for the target. Opted in, a record the service names under `skippedRecordIds` keeps its version and
+  settles on the version the ledger already held.
 - The response's `recordIdVersions` (`id:version` strings) supply each record's version; `skippedRecordIds`
   marks the records the service found unchanged. A single-record write also honours `versionPath`.
 - A batch the service refuses as a whole (a 4xx) is retried record by record, so one bad document holds

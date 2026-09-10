@@ -461,7 +461,7 @@ internal static partial class FlowMapper
             MaxChunkColumns = o.MaxChunkColumns ?? WellboreDdmsBulkLimits.MaxChunkColumns,
             PayloadContentType = o.PayloadContentType ?? "application/x-parquet",
             VersionPath = o.VersionPath ?? "recordIdVersions[0]",
-            SkipDuplicates = o.SkipDuplicates ?? true,
+            SkipDuplicates = o.SkipDuplicates ?? false,
             VerifyBatchPath = o.VerifyBatchPath,
             DdmsRoot = string.IsNullOrWhiteSpace(o.DdmsRoot) ? null : o.DdmsRoot!.Trim().TrimEnd('/'),
             ValidateLegalTags = o.ValidateLegalTags ?? true,
