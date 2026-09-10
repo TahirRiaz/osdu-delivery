@@ -203,9 +203,34 @@ public sealed class FlowRuntime : IDisposable
             {
                 var (intake, intakeMembers) = await IntakeWithFanOutAsync(force, h => handle = h, ct).ConfigureAwait(false);
                 handle = null;
+
                 if (intake.NothingToDo)
                 {
-                    return (new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers), SubmissionIntake.Summarize(intake.Submission), intake.Submission.SubmissionId);
+                    // A plan with nothing new is not a run with nothing to send: a record released back to pending with
+                    // its rendered document, or one a stopped run left due, still waits in this submission, and the plan
+                    // skips it because the drop's row is exactly what it already queues. What is due now is sent; a record
+                    // in backoff is not waited for, because a run that planned nothing must not sit out a retry's wait.
+                    var worker = await WorkerAsync(ct).ConfigureAwait(false);
+                    var sent = WorkerSummary.Empty;
+                    while (true)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var pass = await worker.PassAsync(intake.Submission.SubmissionId, ct).ConfigureAwait(false);
+                        if (pass.Processed == 0 && pass.Batches == 0)
+                        {
+                            break;
+                        }
+
+                        sent = sent.Add(pass);
+                    }
+
+                    if (sent.Processed == 0)
+                    {
+                        return (new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers), SubmissionIntake.Summarize(intake.Submission), intake.Submission.SubmissionId);
+                    }
+
+                    var settled = await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false);
+                    return (new RunResult(intake, sent, settled, intakeMembers), SubmissionIntake.Summarize(settled), settled.SubmissionId);
                 }
 
                 var (work, drainMembers) = await DrainWithFanOutAsync(intake.Submission, h => handle = h, ct).ConfigureAwait(false);

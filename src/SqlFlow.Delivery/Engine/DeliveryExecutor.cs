@@ -337,7 +337,7 @@ public sealed record DeliverOutcome(
             return new DeliverOutcome(
                 RunParameters.DeliverOperation, s.SubmissionId, drop, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
                 s.Planned, s.SkippedUnchanged, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, run.Work.Retried, s.BatchCount,
-                run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo, s.Error, totals);
+                run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, s.Error, totals);
         }
 
         var planned = run.Intake.Counts;
@@ -345,7 +345,7 @@ public sealed record DeliverOutcome(
         return new DeliverOutcome(
             RunParameters.DeliverOperation, s.SubmissionId, drop, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
             planned.Planned, planned.Skipped, planned.Stale, work.Unchanged, planned.Blocked, work.Delivered, planned.Held + work.Held, work.Failed, work.Retried, planned.Batches,
-            run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo, s.Error, totals);
+            run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, s.Error, totals);
     }
 }
 

@@ -259,6 +259,43 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_record_released_with_its_rendered_document_is_sent_by_the_next_run_of_its_drop_though_that_run_plans_nothing()
+    {
+        // A worker hold keeps the rendered document, so a release puts the record straight back to pending. Running the
+        // drop again plans nothing for it (its row is what it already queues), and that run is still the one to send it.
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var drop = await DropAsync("release-resend", records, Submission1, 1);
+        var ledger = _db.Ledger(_clock);
+        var protocol = new FakeProtocol();
+        var engine = Samples.Engine(ledger, _clock) with { Protocols = new FakeProtocolFactory(protocol) };
+        using var runtime = await FlowRuntime.CreateAsync(engine, Samples.LocalFlow(drop), new Dictionary<string, string> { ["logSource"] = "STAT_COMP" }, drop);
+
+        var target = records[0].Key.Value.ToString("N");
+        protocol.FailWith = work => work.TargetId.EndsWith(target, StringComparison.Ordinal) ? new RecordHeldException("held by the test") : null;
+        var first = await runtime.RunAsync(force: false);
+        Assert.Equal(2, first.Work.Delivered);
+        var held = await ledger.GetRecordAsync(runtime.Flow.Id, records[0].Key);
+        Assert.Equal(RecordStatus.Held, held!.Status);
+        Assert.NotNull(held.PendingDocumentRef);
+
+        protocol.FailWith = null;
+        Assert.Equal(1, await runtime.ReleaseAsync([records[0].Key]));
+        var rerun = await runtime.RunAsync(force: true);
+        Assert.Equal(0, rerun.Intake.Counts.Planned);
+        Assert.Equal(1, rerun.Work.Delivered);
+        Assert.False(DeliverOutcome.From(rerun, drop).NothingToDo);
+        Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, records[0].Key))!.Status);
+        var submission = await ledger.GetSubmissionAsync(Submission1);
+        Assert.Equal(SubmissionStatus.Completed, submission!.Status);
+        Assert.Equal(0, submission.Held);
+
+        // With nothing pending, a run of the same drop has nothing to plan and nothing to send.
+        var idle = await runtime.RunAsync(force: true);
+        Assert.Equal(0, idle.Work.Processed);
+        Assert.True(DeliverOutcome.From(idle, drop).NothingToDo);
+    }
+
+    [Fact]
     public async Task A_record_the_service_asked_to_wait_on_is_not_attempted_again_sooner()
     {
         // The transport does not sit through a long Retry-After; it hands the wait up with the failure, and the
