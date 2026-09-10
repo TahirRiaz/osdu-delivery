@@ -102,6 +102,33 @@ public class ReferenceCacheTests
     }
 
     [Fact]
+    public void Codes_that_differ_only_by_case_are_different_records()
+    {
+        // As a live partition's search returned them: the femtotesla before the foot.
+        var type = new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
+        [
+            ReferenceItem.FromText("test:reference-data--UnitOfMeasure:fT", new Dictionary<string, string> { ["Code"] = "fT", ["Name"] = "femtotesla" }),
+            ReferenceItem.FromText("test:reference-data--UnitOfMeasure:ft", new Dictionary<string, string> { ["Code"] = "ft", ["Name"] = "foot" }),
+            ReferenceItem.FromText("test:reference-data--UnitOfMeasure:gAPI", new Dictionary<string, string> { ["Code"] = "gAPI", ["Name"] = "API gamma ray" }),
+        ]);
+
+        Assert.Equal("test:reference-data--UnitOfMeasure:ft", type.Match("Code", "ft")!.Id);
+        Assert.Equal("test:reference-data--UnitOfMeasure:fT", type.Match("Code", "fT")!.Id);
+        Assert.Equal("test:reference-data--UnitOfMeasure:ft", type.Match("id", "test:reference-data--UnitOfMeasure:ft")!.Id);
+
+        // One item under folded case is still found, so an upper-case drop value keeps resolving.
+        Assert.Equal("test:reference-data--UnitOfMeasure:gAPI", type.Match("Code", "GAPI")!.Id);
+
+        // Two items under folded case: neither is chosen, and both are named.
+        var undecided = type.Find("Code", "FT");
+        Assert.Null(undecided.Item);
+        Assert.True(undecided.IsCaseAmbiguous);
+        Assert.Equal(["test:reference-data--UnitOfMeasure:fT", "test:reference-data--UnitOfMeasure:ft"], undecided.CaseVariants.Select(i => i.Id));
+        Assert.Null(type.Match("Code", "FT"));
+        Assert.False(type.IsAmbiguous("Code"));
+    }
+
+    [Fact]
     public void Items_survive_the_snapshot_round_trip_whatever_their_shape()
     {
         var type = new ReferenceType("Wellbore", "master-data--Wellbore",

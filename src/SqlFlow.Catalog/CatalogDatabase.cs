@@ -169,15 +169,16 @@ public static class CatalogDatabase
 
         var listed = string.Join(", ", missing.Take(20)) + (missing.Count > 20 ? ", ..." : string.Empty);
         throw new CatalogProvisioningException(
-            $"The catalog database ({DescribeTarget(connectionString)}) is missing {missing.Count} table(s) or " +
-            $"column(s) this build declares: {listed}. The schema is created from the model and nothing upgrades it " +
+            $"The catalog database ({DescribeTarget(connectionString)}) does not match this build in {missing.Count} " +
+            $"place(s), missing tables or columns or carrying a column under another collation: {listed}. The schema is created from the model and nothing upgrades it " +
             "in place, so a database provisioned before a model change has to be provisioned again: drop it and run " +
             "'sqlflow db migrate --create --db <ref>'.");
     }
 
     /// <summary>
     /// What the database lacks against the model: missing tables first, then missing columns of the tables it does
-    /// have. A missing table subsumes its columns, so those are not listed twice.
+    /// have (a missing table subsumes its columns, so those are not listed twice), then columns it has under a
+    /// collation other than the one the model declares.
     /// </summary>
     private static async Task<IReadOnlyList<string>> MissingAsync(CatalogDbContext context, CancellationToken ct)
     {
@@ -194,7 +195,83 @@ public static class CatalogDatabase
             .OrderBy(c => c, StringComparer.Ordinal)
             .ToList();
 
-        return [.. missingTables, .. missingColumns];
+        var mismatched = await MismatchedCollationsAsync(context, presentColumns, ct).ConfigureAwait(false);
+        return [.. missingTables, .. missingColumns, .. mismatched];
+    }
+
+    /// <summary>
+    /// The columns the database has under a collation other than the one the model declares, as
+    /// <c>schema.table.column (collation X; this build declares Y)</c>. A collation is part of what a column means: an
+    /// OSDU id column created under a case-folding collation takes two records for one key, and nothing about its name
+    /// or type shows it.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> MismatchedCollationsAsync(
+        CatalogDbContext context, HashSet<string> presentColumns, CancellationToken ct)
+    {
+        var expected = ExpectedCollations(context);
+        if (expected.Count == 0)
+        {
+            return [];
+        }
+
+        var actual = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var connection = context.Database.GetDbConnection();
+        await context.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT s.name + N'.' + t.name + N'.' + c.name, c.collation_name FROM sys.columns c " +
+                "JOIN sys.tables t ON c.object_id = t.object_id JOIN sys.schemas s ON t.schema_id = s.schema_id";
+            await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                var name = reader.GetString(0);
+                if (expected.ContainsKey(name))
+                {
+                    actual[name] = await reader.IsDBNullAsync(1, ct).ConfigureAwait(false) ? null : reader.GetString(1);
+                }
+            }
+        }
+        finally
+        {
+            await context.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+
+        return expected
+            .Where(e => presentColumns.Contains(e.Key)
+                && !string.Equals(actual.GetValueOrDefault(e.Key), e.Value, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(e => e.Key, StringComparer.Ordinal)
+            .Select(e => $"{e.Key} (collation {actual.GetValueOrDefault(e.Key) ?? "none"}; this build declares {e.Value})")
+            .ToList();
+    }
+
+    /// <summary>
+    /// The collations the model declares, by <c>schema.table.column</c>, for the columns that declare one. Read from the
+    /// design-time model, which is the one the schema is created from; the runtime model does not carry collations.
+    /// </summary>
+    private static Dictionary<string, string> ExpectedCollations(CatalogDbContext context)
+    {
+        var collations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entity in context.GetService<IDesignTimeModel>().Model.GetEntityTypes())
+        {
+            if (entity.GetTableName() is not { Length: > 0 } table)
+            {
+                continue;
+            }
+
+            var schema = entity.GetSchema() ?? CatalogDbContext.SchemaName;
+            var identifier = StoreObjectIdentifier.Table(table, entity.GetSchema());
+            foreach (var property in entity.GetProperties())
+            {
+                if (property.GetColumnName(identifier) is { Length: > 0 } column && property.GetCollation() is { Length: > 0 } collation)
+                {
+                    collations[schema + "." + table + "." + column] = collation;
+                }
+            }
+        }
+
+        return collations;
     }
 
     /// <summary>Every table the model declares, as <c>schema.table</c>.</summary>

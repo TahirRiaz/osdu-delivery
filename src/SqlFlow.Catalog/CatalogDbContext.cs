@@ -96,7 +96,7 @@ public sealed class CatalogDbContext : DbContext
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
         modelBuilder.HasDefaultSchema(SchemaName);
-        DeliveryModel.Configure(modelBuilder);
+        DeliveryModel.Configure(modelBuilder, Database.IsSqlServer());
 
         modelBuilder.Entity<CatalogRepo>(entity =>
         {

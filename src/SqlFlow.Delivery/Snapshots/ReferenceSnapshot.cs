@@ -151,30 +151,38 @@ public sealed class ReferenceType
     }
 
     /// <summary>
-    /// Finds the item whose <paramref name="field"/> holds <paramref name="value"/> (case-insensitive, trimmed).
-    /// A field holding a set matches when any one of its values equals the value, so an item with three aliases is
-    /// found by any of them. Ambiguous matches resolve to the first item in snapshot order, which is stable per
-    /// version; <see cref="IsAmbiguous"/> reports where that happened.
+    /// The item whose <paramref name="field"/> holds <paramref name="value"/>, as <see cref="Find"/> matches it: null
+    /// when nothing matches, and when the value names several items only once case is ignored.
     /// </summary>
-    public ReferenceItem? Match(string field, string value)
+    public ReferenceItem? Match(string field, string value) => Find(field, value).Item;
+
+    /// <summary>
+    /// Matches <paramref name="value"/> (trimmed) against what <paramref name="field"/> holds. A field holding a set
+    /// matches when any one of its values does, so an item with three aliases is found by any of them.
+    /// <para>
+    /// An exact match wins. OSDU codes that differ only by case are different records (<c>ft</c> is the foot and
+    /// <c>fT</c> the femtotesla; <c>s/m</c> is second per metre and <c>S/m</c> siemens per metre), so case is ignored
+    /// only when that finds exactly one item. A value that names several items once case is ignored matches none of
+    /// them and lists them as <see cref="ReferenceMatch.CaseVariants"/>, instead of resolving to whichever comes
+    /// first. Items holding exactly the same value still resolve to the first in snapshot order, which is stable per
+    /// version; <see cref="IsAmbiguous"/> reports where that happened.
+    /// </para>
+    /// </summary>
+    public ReferenceMatch Find(string field, string value)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(field);
-        if (value is null)
-        {
-            return null;
-        }
-
-        return Index(field).Lookup(value.Trim());
+        return value is null ? ReferenceMatch.None : Index(field).Lookup(value.Trim());
     }
 
-    /// <summary>True when two or more items share a value under this field, so matching on it is order-dependent.</summary>
+    /// <summary>True when two or more items hold exactly the same value under this field, so matching on it is order-dependent.</summary>
     public bool IsAmbiguous(string field) => Index(field).Ambiguous;
 
     private FieldIndex Index(string field) => _indexes.GetOrAdd(ReferenceField.Normalize(field), BuildIndex);
 
     private FieldIndex BuildIndex(string field)
     {
-        var byTerm = new Dictionary<string, ReferenceItem>(StringComparer.OrdinalIgnoreCase);
+        var exact = new Dictionary<string, ReferenceItem>(StringComparer.Ordinal);
+        var folded = new Dictionary<string, List<ReferenceItem>>(StringComparer.OrdinalIgnoreCase);
         var ambiguous = false;
         foreach (var item in _items)
         {
@@ -187,14 +195,27 @@ public sealed class ReferenceType
             // with three aliases is found by any of them.
             foreach (var term in value.Terms)
             {
-                if (!byTerm.TryAdd(term, item))
+                if (!exact.TryAdd(term, item))
                 {
-                    ambiguous = byTerm[term] != item || ambiguous;
+                    ambiguous = exact[term] != item || ambiguous;
+                }
+
+                // The same term under folded case, every distinct item that holds it, in snapshot order: a lookup
+                // that has no exact match takes it only when there is exactly one.
+                if (!folded.TryGetValue(term, out var variants))
+                {
+                    variants = [];
+                    folded[term] = variants;
+                }
+
+                if (!variants.Contains(item))
+                {
+                    variants.Add(item);
                 }
             }
         }
 
-        return new FieldIndex(byTerm, ambiguous);
+        return new FieldIndex(exact, folded, ambiguous);
     }
 
     public JsonObject ToJson()
@@ -243,20 +264,49 @@ public sealed class ReferenceType
 
     private sealed class FieldIndex
     {
-        private readonly Dictionary<string, ReferenceItem> _byTerm;
+        private readonly Dictionary<string, ReferenceItem> _exact;
+        private readonly Dictionary<string, List<ReferenceItem>> _folded;
 
-        public FieldIndex(Dictionary<string, ReferenceItem> byTerm, bool ambiguous)
+        public FieldIndex(Dictionary<string, ReferenceItem> exact, Dictionary<string, List<ReferenceItem>> folded, bool ambiguous)
         {
-            _byTerm = byTerm;
+            _exact = exact;
+            _folded = folded;
             Ambiguous = ambiguous;
         }
 
-        public int Count => _byTerm.Count;
+        public int Count => _exact.Count;
 
         public bool Ambiguous { get; }
 
-        public ReferenceItem? Lookup(string term) => _byTerm.GetValueOrDefault(term);
+        public ReferenceMatch Lookup(string term)
+        {
+            if (_exact.TryGetValue(term, out var item))
+            {
+                return ReferenceMatch.Of(item);
+            }
+
+            if (!_folded.TryGetValue(term, out var variants))
+            {
+                return ReferenceMatch.None;
+            }
+
+            return variants.Count == 1 ? ReferenceMatch.Of(variants[0]) : new ReferenceMatch(null, variants);
+        }
     }
+}
+
+/// <summary>
+/// What matching a value against one cached field found: the item it names, or nothing. When the value names several
+/// items only once case is ignored, <see cref="Item"/> is null and <see cref="CaseVariants"/> lists them in snapshot
+/// order, so the caller can say which records it could not choose between.
+/// </summary>
+public readonly record struct ReferenceMatch(ReferenceItem? Item, IReadOnlyList<ReferenceItem> CaseVariants)
+{
+    public static ReferenceMatch None => new(null, []);
+
+    public bool IsCaseAmbiguous => Item is null && CaseVariants.Count > 1;
+
+    public static ReferenceMatch Of(ReferenceItem item) => new(item, []);
 }
 
 /// <summary>

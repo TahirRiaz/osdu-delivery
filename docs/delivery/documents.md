@@ -317,8 +317,12 @@ fixtures:                          # whole-document regression fixtures
 
 `matchBy` and `select` name cached fields by the name capture stored them under (the path without its `data.`
 root, or the `as` it declared), and a path inside one (`NameAlias.AliasName`) when the field was cached whole. A
-field holding a set matches on any one of its values, so a record with three aliases is found by any of them; two
-records sharing a value resolve to the first in snapshot order, which is stable for a snapshot version. A cached
+field holding a set matches on any one of its values, so a record with three aliases is found by any of them. An exact
+match wins, and case is ignored only when that finds exactly one record: OSDU codes that differ only by case are
+different records (`ft` is the foot and `fT` the femtotesla, `s/m` second per metre and `S/m` siemens per metre), so
+a value that names several of them once case is ignored is unresolved (`onMiss` decides what that does) with a reason
+naming them, and `valueMap` maps it to the exact code. Two records holding exactly the same value resolve to the first
+in snapshot order, which is stable for a snapshot version. A cached
 field of its own called `ID` shadows the record id under that name, so `matchBy: [ID]` reads what OSDU calls
 `data.ID` while `matchBy: [id]` on a type caching no such field reads the record id. A `lookup` whose `select`
 yields a set writes an array where the schema takes one, and holds the record where it takes a single value.

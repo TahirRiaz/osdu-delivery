@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace SqlFlow.Catalog;
 
@@ -586,7 +587,16 @@ public static class DeliveryModel
 {
     public const string SchemaName = "delivery";
 
-    public static void Configure(ModelBuilder modelBuilder)
+    /// <summary>
+    /// The collation of the columns that key on an OSDU record id. OSDU ids are case-sensitive:
+    /// <c>...UnitOfMeasure:ft</c> (the foot) and <c>...UnitOfMeasure:fT</c> (the femtotesla) are two records, and SQL
+    /// Server's default collation folds case, which would make them one key. SQLite compares ordinally already.
+    /// </summary>
+    public const string OsduIdCollation = "Latin1_General_100_BIN2";
+
+    /// <param name="modelBuilder">The catalog model being built.</param>
+    /// <param name="sqlServer">Whether the model is for SQL Server, the provider whose default collation folds case.</param>
+    public static void Configure(ModelBuilder modelBuilder, bool sqlServer)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
 
@@ -774,7 +784,7 @@ public static class DeliveryModel
         {
             e.ToTable("CacheSetEntry", SchemaName);
             e.Property(c => c.TypeName).HasMaxLength(200).IsRequired();
-            e.Property(c => c.ItemId).HasMaxLength(512).IsRequired();
+            OsduId(e.Property(c => c.ItemId), sqlServer).HasMaxLength(512).IsRequired();
             e.Property(c => c.Path).HasMaxLength(400).IsRequired();
             e.Property(c => c.Kind).HasMaxLength(16).IsRequired();
             e.Property(c => c.ValueHash).HasMaxLength(64).IsRequired();
@@ -790,7 +800,7 @@ public static class DeliveryModel
             e.HasKey(t => t.TagId);
             e.Property(t => t.Kind).HasMaxLength(16).IsRequired();
             e.Property(t => t.TypeName).HasMaxLength(200).IsRequired();
-            e.Property(t => t.ItemId).HasMaxLength(512).IsRequired();
+            OsduId(e.Property(t => t.ItemId), sqlServer).HasMaxLength(512).IsRequired();
             e.Property(t => t.Path).HasMaxLength(400).IsRequired();
             e.Property(t => t.Change).HasMaxLength(16).IsRequired();
             e.Property(t => t.OldValue).HasMaxLength(400);
@@ -826,7 +836,7 @@ public static class DeliveryModel
             e.HasKey(i => i.ItemId);
             e.Property(i => i.TypeName).HasMaxLength(200).IsRequired();
             e.Property(i => i.EntityType).HasMaxLength(200).IsRequired();
-            e.Property(i => i.RecordId).HasMaxLength(512).IsRequired();
+            OsduId(e.Property(i => i.RecordId), sqlServer).HasMaxLength(512).IsRequired();
             e.Property(i => i.FieldsJson).IsRequired();
             e.Property(i => i.Terms).IsRequired();
             e.HasIndex(i => new { i.SnapshotId, i.TypeName, i.RecordId }).IsUnique();
@@ -835,4 +845,7 @@ public static class DeliveryModel
             e.HasIndex(i => new { i.RepoId, i.TypeName, i.RecordId });
         });
     }
+
+    private static PropertyBuilder<string> OsduId(PropertyBuilder<string> property, bool sqlServer)
+        => sqlServer ? property.UseCollation(OsduIdCollation) : property;
 }

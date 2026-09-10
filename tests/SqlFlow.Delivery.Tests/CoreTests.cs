@@ -198,6 +198,33 @@ public class MappingRendererTests
     }
 
     [Fact]
+    public void Holds_a_unit_that_names_two_records_only_when_case_is_ignored()
+    {
+        var references = new ReferenceSnapshot("refs-1", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+        [
+            new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
+            [
+                ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:fT", new Dictionary<string, string> { ["Code"] = "fT", ["Name"] = "femtotesla" }),
+                ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:ft", new Dictionary<string, string> { ["Code"] = "ft", ["Name"] = "foot" }),
+            ]),
+        ]);
+        var unit = new MappingProperty { Target = "data.Unit", Source = "unit", Transform = MappingTransform.Reference, Config = new TransformConfig { Type = "UnitOfMeasure", MatchBy = ["Code", "Name"] } };
+        var renderer = new MappingRenderer(TestSchema.Mapping(unit), TestSchema.Build(), references, TestSchema.Context());
+
+        var feet = renderer.Render(Record(unit: "ft"));
+        Assert.False(feet.IsHeld);
+        Assert.Equal("dev:reference-data--UnitOfMeasure:ft:", feet.Document["data"]!["Unit"]!.GetValue<string>());
+
+        // The femtotesla comes first in the snapshot, and used to be what "FT" resolved to.
+        var undecided = renderer.Render(Record(unit: "FT"));
+        Assert.True(undecided.IsHeld);
+        Assert.Contains(undecided.Holds, h =>
+            h.Contains("'FT' matches 2 UnitOfMeasure records by Code only when case is ignored", StringComparison.Ordinal)
+            && h.Contains("dev:reference-data--UnitOfMeasure:fT", StringComparison.Ordinal)
+            && h.Contains("dev:reference-data--UnitOfMeasure:ft", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Holds_on_schema_required_property_missing_and_bad_number()
     {
         var result = Renderer().Render(Record(depth: null));

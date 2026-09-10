@@ -1,4 +1,5 @@
 using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -49,6 +50,51 @@ public class SqlServerLedgerTests
         var cs = ConnectionString.Value!;
         await CatalogDatabase.ProvisionAsync(cs);
         return new CatalogLedger(() => CatalogDatabase.Create(cs), clock);
+    }
+
+    [SkippableFact]
+    public async Task Cached_records_whose_osdu_ids_differ_only_by_case_are_two_rows()
+    {
+        // A live partition holds ...UnitOfMeasure:ft (the foot) and ...UnitOfMeasure:fT (the femtotesla). Under the
+        // server's case-folding default the catalog took them for one key and the repository sync failed.
+        Skip.IfNot(
+            Reachable.Value,
+            "The SQL Server ledger tests need a reachable, disposable catalog database. Set SQLFLOW_TEST_DB, for example via the git-ignored .sqlflow/env file.");
+        var cs = ConnectionString.Value!;
+        await CatalogDatabase.ProvisionAsync(cs);
+
+        var snapshot = Guid.NewGuid();
+        const string Foot = "test:reference-data--UnitOfMeasure:ft";
+        const string Femtotesla = "test:reference-data--UnitOfMeasure:fT";
+        await using (var db = CatalogDatabase.Create(cs))
+        {
+            db.DeliverySnapshotItems.AddRange(new[] { Foot, Femtotesla }.Select(id => new DeliverySnapshotItem
+            {
+                SnapshotId = snapshot,
+                RepoId = snapshot,
+                TypeName = "UnitOfMeasure",
+                EntityType = "reference-data--UnitOfMeasure",
+                RecordId = id,
+                Terms = id,
+            }));
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = CatalogDatabase.Create(cs))
+        {
+            try
+            {
+                var found = await db.DeliverySnapshotItems
+                    .Where(i => i.SnapshotId == snapshot && i.RecordId == Foot)
+                    .Select(i => i.RecordId)
+                    .ToListAsync();
+                Assert.Equal([Foot], found);
+            }
+            finally
+            {
+                await db.DeliverySnapshotItems.Where(i => i.SnapshotId == snapshot).ExecuteDeleteAsync();
+            }
+        }
     }
 
     private RecordState Work(string name, Guid submission, string reference, string metadataHash, DateTime modified) => new()
