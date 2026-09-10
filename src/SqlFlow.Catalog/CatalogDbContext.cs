@@ -68,6 +68,9 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<DeliveryRecord> DeliveryRecords => Set<DeliveryRecord>();
 
+    /// <summary>The <c>delivery.RecordCount</c> indexed view (SQL Server only): a flow's records counted by status.</summary>
+    public DbSet<DeliveryRecordCount> DeliveryRecordCounts => Set<DeliveryRecordCount>();
+
     public DbSet<DeliveryAttempt> DeliveryAttempts => Set<DeliveryAttempt>();
 
     public DbSet<DeliveryWorkBatch> DeliveryWorkBatches => Set<DeliveryWorkBatch>();

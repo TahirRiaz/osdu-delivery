@@ -138,6 +138,55 @@ public class SqlServerLedgerTests
     };
 
     [SkippableFact]
+    public async Task Flow_statistics_come_from_the_indexed_view_and_count_the_last_24_hours_to_the_tick()
+    {
+        // Half past the hour: the 24-hour window then opens part way through an hour, so both halves of its count run (the
+        // view's whole hours, and the index count of the part-hour).
+        _clock.Advance(TimeSpan.FromMinutes(30));
+        var now = Now;
+        var ledger = await LedgerAsync(_clock);
+        var s1 = Guid.NewGuid();
+        (string Name, TimeSpan Before)[] deliveries =
+        [
+            ("old", TimeSpan.FromHours(25)),
+            ("part-hour-outside", TimeSpan.FromHours(24) + TimeSpan.FromMinutes(10)),
+            ("part-hour-inside", TimeSpan.FromHours(24) - TimeSpan.FromMinutes(10)),
+            ("recent", TimeSpan.FromHours(1)),
+        ];
+        await ledger.UpsertPendingAsync(deliveries.Select((d, i) => Work(d.Name, s1, $"0:{i * 10}:10", "mh", now.AddDays(-3))).ToList());
+        _clock.Advance(-TimeSpan.FromHours(26));
+        var claimed = await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromDays(2), Now);
+        Assert.Equal(4, claimed.Count);
+        foreach (var (name, before) in deliveries)
+        {
+            _clock.Advance(now - before - Now);
+            await ledger.CompleteAsync(Completion(claimed.Single(r => r.SourceKey.EndsWith("/" + name, StringComparison.Ordinal)), s1, Now));
+        }
+
+        _clock.Advance(now - Now);
+        var recent = claimed.Single(r => r.SourceKey.EndsWith("/recent", StringComparison.Ordinal)).DeliveryKey;
+        await ledger.RecordVerifyAsync(recent, VerifyOutcome.Drifted, 2, Now, requeue: false);
+        await ledger.UpsertPendingAsync([Work("waiting", s1, "0:40:10", "mh", now.AddDays(-3))]);
+
+        var stats = await ledger.StatsAsync(_flow, Now);
+        Assert.Equal(5, stats.Total);
+        Assert.Equal(4, stats.Delivered);
+        Assert.Equal(1, stats.Pending);
+        Assert.Equal(1, stats.Drifted);
+        Assert.Equal(2, stats.DeliveredLast24h);
+        Assert.Equal(now.AddHours(-1), stats.LastDeliveredUtc);
+
+        // What the statistics read is the view, and it holds the flow's five records.
+        await using var db = CatalogDatabase.Create(ConnectionString.Value!);
+        var viewed = await db.DeliveryRecordCounts
+            .FromSqlRaw("SELECT [FlowId], [Status], [LastVerifyOutcome], [DeliveredHour], [Records] FROM [delivery].[RecordCount] WITH (NOEXPAND)")
+            .Where(c => c.FlowId == _flow)
+            .ToListAsync();
+        Assert.Equal(5, viewed.Sum(c => c.Records));
+        Assert.Equal(4, viewed.Where(c => c.Status == "delivered").Sum(c => c.Records));
+    }
+
+    [SkippableFact]
     public async Task Bulk_staging_queues_behind_an_in_flight_delivery_and_refuses_older_work_and_bulk_completion_keeps_them_apart()
     {
         var ledger = await LedgerAsync(_clock);

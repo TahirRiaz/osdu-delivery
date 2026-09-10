@@ -74,7 +74,11 @@ public static class CatalogDatabase
     public static async Task ProvisionAsync(string connectionString, CancellationToken ct = default)
     {
         await using var context = Create(connectionString);
-        await context.Database.EnsureCreatedAsync(ct).ConfigureAwait(false);
+        if (await context.Database.EnsureCreatedAsync(ct).ConfigureAwait(false))
+        {
+            await CreateIndexedViewsAsync(context, ct).ConfigureAwait(false);
+        }
+
         await VerifyAsync(context, connectionString, ct).ConfigureAwait(false);
     }
 
@@ -118,7 +122,10 @@ public static class CatalogDatabase
                     "'sqlflow db migrate --create'.");
             }
 
-            await context.Database.EnsureCreatedAsync(ct).ConfigureAwait(false);
+            if (await context.Database.EnsureCreatedAsync(ct).ConfigureAwait(false))
+            {
+                await CreateIndexedViewsAsync(context, ct).ConfigureAwait(false);
+            }
         }
 
         await VerifyAsync(context, connectionString, ct).ConfigureAwait(false);
@@ -170,7 +177,7 @@ public static class CatalogDatabase
         var listed = string.Join(", ", missing.Take(20)) + (missing.Count > 20 ? ", ..." : string.Empty);
         throw new CatalogProvisioningException(
             $"The catalog database ({DescribeTarget(connectionString)}) does not match this build in {missing.Count} " +
-            $"place(s), missing tables or columns or carrying a column under another collation: {listed}. The schema is created from the model and nothing upgrades it " +
+            $"place(s), missing tables, columns or indexed views, or carrying a column under another collation: {listed}. The schema is created from the model and nothing upgrades it " +
             "in place, so a database provisioned before a model change has to be provisioned again: drop it and run " +
             "'sqlflow db migrate --create --db <ref>'.");
     }
@@ -178,7 +185,7 @@ public static class CatalogDatabase
     /// <summary>
     /// What the database lacks against the model: missing tables first, then missing columns of the tables it does
     /// have (a missing table subsumes its columns, so those are not listed twice), then columns it has under a
-    /// collation other than the one the model declares.
+    /// collation other than the one the model declares, then the indexed views it lacks.
     /// </summary>
     private static async Task<IReadOnlyList<string>> MissingAsync(CatalogDbContext context, CancellationToken ct)
     {
@@ -196,7 +203,58 @@ public static class CatalogDatabase
             .ToList();
 
         var mismatched = await MismatchedCollationsAsync(context, presentColumns, ct).ConfigureAwait(false);
-        return [.. missingTables, .. missingColumns, .. mismatched];
+        var missingViews = await MissingIndexedViewsAsync(context, ct).ConfigureAwait(false);
+        return [.. missingTables, .. missingColumns, .. mismatched, .. missingViews];
+    }
+
+    // An indexed view is created, and every later write to the tables it reads is made, under these session options;
+    // SQL Server refuses the view's index otherwise.
+    private const string IndexedViewSessionOptions =
+        "SET ANSI_NULLS, ANSI_PADDING, ANSI_WARNINGS, ARITHABORT, CONCAT_NULL_YIELDS_NULL, QUOTED_IDENTIFIER ON; SET NUMERIC_ROUNDABORT OFF;";
+
+    /// <summary>
+    /// Creates the indexed views the EF model cannot declare (<see cref="DeliveryModel.IndexedViews"/>), right after
+    /// <c>EnsureCreated</c> made the tables they read. One open connection carries every batch, so the session options
+    /// set first hold for all of them.
+    /// </summary>
+    private static async Task CreateIndexedViewsAsync(CatalogDbContext context, CancellationToken ct)
+    {
+        await context.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await context.Database.ExecuteSqlRawAsync(IndexedViewSessionOptions, ct).ConfigureAwait(false);
+            foreach (var view in DeliveryModel.IndexedViews)
+            {
+                foreach (var batch in view.Batches)
+                {
+                    await context.Database.ExecuteSqlRawAsync(batch, ct).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            await context.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The indexed views the catalog declares that the database lacks, as <c>schema.view (indexed view)</c>. A view
+    /// without its unique clustered index is not indexed (every read would count the table), so it counts as missing.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> MissingIndexedViewsAsync(CatalogDbContext context, CancellationToken ct)
+    {
+        var expected = DeliveryModel.IndexedViews.Select(v => v.Schema + "." + v.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var present = await QueryAsync(
+            context,
+            "SELECT s.name + N'.' + v.name FROM sys.views v JOIN sys.schemas s ON v.schema_id = s.schema_id " +
+            "JOIN sys.indexes i ON i.object_id = v.object_id AND i.type = 1 AND i.is_unique = 1",
+            expected,
+            ct).ConfigureAwait(false);
+        return expected
+            .Where(v => !present.Contains(v))
+            .OrderBy(v => v, StringComparer.Ordinal)
+            .Select(v => v + " (indexed view)")
+            .ToList();
     }
 
     /// <summary>

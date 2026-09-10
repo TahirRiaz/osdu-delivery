@@ -416,6 +416,47 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task Flow_statistics_count_statuses_drift_and_the_last_24_hours_to_the_tick()
+    {
+        // The SQLite catalog has no indexed view and counts the records; the SQL Server test of the view runs the same timeline.
+        _clock.Advance(TimeSpan.FromMinutes(30));
+        var now = Now;
+        var s1 = Guid.NewGuid();
+        (string Name, TimeSpan Before)[] deliveries =
+        [
+            ("old", TimeSpan.FromHours(25)),
+            ("part-hour-outside", TimeSpan.FromHours(24) + TimeSpan.FromMinutes(10)),
+            ("part-hour-inside", TimeSpan.FromHours(24) - TimeSpan.FromMinutes(10)),
+            ("recent", TimeSpan.FromHours(1)),
+        ];
+        await Ledger.UpsertPendingAsync(deliveries.Select(d => Pending(d.Name, s1)).ToList());
+        foreach (var (name, before) in deliveries)
+        {
+            _clock.Advance(now - before - Now);
+            var key = DeliveryKey.Derive("test", [name]);
+            await Ledger.CompleteAsync(new RecordCompletion
+            {
+                DeliveryKey = key,
+                Status = RecordStatus.Delivered,
+                Promote = true,
+                Attempt = new AttemptRecord { DeliveryKey = key, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata+payload" },
+            });
+        }
+
+        _clock.Advance(now - Now);
+        await Ledger.RecordVerifyAsync(DeliveryKey.Derive("test", ["recent"]), VerifyOutcome.Drifted, 2, Now, requeue: false);
+        await Ledger.UpsertPendingAsync([Pending("waiting", s1)]);
+
+        var stats = await Ledger.StatsAsync(_flow, Now);
+        Assert.Equal(5, stats.Total);
+        Assert.Equal(4, stats.Delivered);
+        Assert.Equal(1, stats.Pending);
+        Assert.Equal(1, stats.Drifted);
+        Assert.Equal(2, stats.DeliveredLast24h);
+        Assert.Equal(now.AddHours(-1), stats.LastDeliveredUtc);
+    }
+
+    [Fact]
     public async Task Work_for_a_record_in_flight_queues_behind_the_delivery_and_its_completion_leaves_it_pending()
     {
         var s1 = Guid.NewGuid();

@@ -197,6 +197,28 @@ public sealed class DeliveryAttempt
     public int? WorkBatch { get; set; }
 }
 
+/// <summary>
+/// One row of the <c>delivery.RecordCount</c> indexed view: how many of a flow's records share a status, a last verify
+/// outcome and the hour they were last delivered in. SQL Server maintains the view in the transaction of every record
+/// write, so a flow's statistics read a few rows however many records the flow holds. Read-only, and SQL Server only.
+/// </summary>
+public sealed class DeliveryRecordCount
+{
+    public Guid FlowId { get; set; }
+
+    public string Status { get; set; } = string.Empty;
+
+    public string? LastVerifyOutcome { get; set; }
+
+    /// <summary>The hour <see cref="DeliveryRecord.LastDeliveredUtc"/> falls in, truncated; null for a record never delivered.</summary>
+    public DateTime? DeliveredHour { get; set; }
+
+    public long Records { get; set; }
+}
+
+/// <summary>An indexed view the catalog carries beside its tables: where it lives and the batches that create it, in order.</summary>
+public sealed record CatalogIndexedView(string Schema, string Name, IReadOnlyList<string> Batches);
+
 /// <summary>One work batch of a submission: a file of rendered documents, claimed and drained as one unit.</summary>
 public sealed class DeliveryWorkBatch
 {
@@ -587,6 +609,32 @@ public static class DeliveryModel
 {
     public const string SchemaName = "delivery";
 
+    /// <summary>The indexed view that counts a flow's records (<see cref="DeliveryRecordCount"/>).</summary>
+    public const string RecordCountView = "RecordCount";
+
+    // The hour a record was last delivered in. DATEADD/DATEDIFF against a fixed origin is deterministic and precise,
+    // which an indexed view's grouping requires; the origin is converted with an explicit style for the same reason.
+    private const string DeliveredHourSql =
+        "DATEADD(hour, DATEDIFF(hour, CONVERT(datetime2(0), '20000101', 112), [LastDeliveredUtc]), CONVERT(datetime2(0), '20000101', 112))";
+
+    /// <summary>
+    /// The indexed views the EF model cannot declare, created on SQL Server right after the tables and verified with
+    /// them. SQL Server maintains an indexed view with the table it reads, in the same transaction, so what one answers is
+    /// derived from the ledger and never counted separately.
+    /// </summary>
+    public static IReadOnlyList<CatalogIndexedView> IndexedViews { get; } =
+    [
+        new(SchemaName, RecordCountView,
+        [
+            "CREATE VIEW [" + SchemaName + "].[" + RecordCountView + "] WITH SCHEMABINDING AS " +
+            "SELECT [FlowId], [Status], [LastVerifyOutcome], " + DeliveredHourSql + " AS [DeliveredHour], COUNT_BIG(*) AS [Records] " +
+            "FROM [" + SchemaName + "].[Record] " +
+            "GROUP BY [FlowId], [Status], [LastVerifyOutcome], " + DeliveredHourSql,
+            "CREATE UNIQUE CLUSTERED INDEX [IX_" + RecordCountView + "] ON [" + SchemaName + "].[" + RecordCountView + "] " +
+            "([FlowId], [Status], [LastVerifyOutcome], [DeliveredHour])",
+        ]),
+    ];
+
     /// <summary>
     /// The collation of the columns that key on an OSDU record id. OSDU ids are case-sensitive:
     /// <c>...UnitOfMeasure:ft</c> (the foot) and <c>...UnitOfMeasure:fT</c> (the femtotesla) are two records, and SQL
@@ -677,6 +725,15 @@ public static class DeliveryModel
             e.HasIndex(a => a.StartedUtc);
             e.HasIndex(a => a.SubmissionId);
             e.HasIndex(a => a.RunId);
+        });
+
+        modelBuilder.Entity<DeliveryRecordCount>(e =>
+        {
+            // Created by CatalogDatabase from IndexedViews, not by EnsureCreated: EF cannot declare an indexed view.
+            e.HasNoKey();
+            e.ToView(RecordCountView, SchemaName);
+            e.Property(c => c.Status).HasMaxLength(16);
+            e.Property(c => c.LastVerifyOutcome).HasMaxLength(16);
         });
 
         modelBuilder.Entity<DeliveryWorkBatch>(e =>

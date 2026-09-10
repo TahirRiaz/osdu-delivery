@@ -191,7 +191,8 @@ Listings are index-backed so the GUI answers in milliseconds at any estate size:
 | `Record (LastSubmissionId, WorkBatch)`, `WorkBatch (FlowId, Status, CreatedUtc)`, `(SubmissionId, Status)`, `(Status, LeaseExpiresUtc)` | the batch claim, its records, the lease sweep, the submission's batch list |
 | `Retrieval (FlowId, StartedUtc)`, `(FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval flow's runs, the watermark chain (the last done run), the run's row |
 | `Record (FlowId, Label)`, `(FlowId, SourceKey)`, `(FlowId, TargetId)` | prefix search (`LIKE 'term%'`) on the three identity columns |
-| `Record (FlowId, UpdatedUtc)`, `(FlowId, LastDeliveredUtc)`, `(FlowId, LastVerifyOutcome)`, `(FlowId, LastSubmissionId)` | recency listings, stats, drift, per-submission views |
+| `Record (FlowId, UpdatedUtc)`, `(FlowId, LastDeliveredUtc)`, `(FlowId, LastVerifyOutcome)`, `(FlowId, LastSubmissionId)` | recency listings, the last delivery and the part-hour of the 24-hour count, drift, per-submission views |
+| `RecordCount` indexed view `(FlowId, Status, LastVerifyOutcome, DeliveredHour)` | flow statistics, read from a few rows per flow (see [Statistics](#statistics)) |
 | `Attempt (DeliveryKey, StartedUtc)`, `(SubmissionId)`, `(RunId)`, `(StartedUtc)` | record timeline, submission view, run linkage, pruning |
 | `Activity (FlowId, StartedUtc)`, `(DeliveryKey, StartedUtc)`, `(Kind, StartedUtc)`, `(Actor, StartedUtc)`, `(SubmissionId)`, `(RunId)` | the audit views and their filters |
 | `Run (SubmissionId)`, `Run (ResultSubmissionId)`, `Run (PipelineId, Operation)` | a submission's runs, a flow's runs by operation |
@@ -199,6 +200,17 @@ Listings are index-backed so the GUI answers in milliseconds at any estate size:
 A search term that parses as a UUID matches the delivery key exactly; anything else is a prefix over label,
 source key and target id. A slower "contains" mode exists for the rare case, and the API names it explicitly.
 `SourceKey` is capped at 400 characters so it fits an index key.
+
+## Statistics
+
+A flow's statistics (`GET /api/v1/delivery/flows/{id}/stats`: the records by status, the drifted ones, the deliveries
+of the last 24 hours) are read on SQL Server from the `delivery.RecordCount` indexed view, which counts the flow's
+records by status, last verify outcome and the hour of their last delivery. SQL Server maintains the view in the
+transaction of every record write, so the counts are derived from the ledger, exact, and cost a few rows per flow at
+any volume. The deliveries of the last 24 hours add the view's whole hours inside the window to an index count of the
+part-hour the window opens in, which is exact to the tick and reads under an hour of deliveries. EF cannot declare an
+indexed view, so the catalog creates it right after the tables, and a catalog without it is refused at startup like
+one missing a table. The SQLite catalog the tests use has no indexed views and counts the records directly.
 
 ## Retention
 
