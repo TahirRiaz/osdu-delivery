@@ -71,10 +71,12 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
         {
             throw;
         }
-        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException or InvalidOperationException or JsonException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            error = SecretHygiene.RedactedMessage(ex);
-            LogFailed(log, operation, error);
+            // The run boundary: every failure ends the run as a recorded one. An unexpected kind is a defect, so its
+            // stack goes to the run log as well.
+            error = RunFailure.Describe(ex);
+            LogFailed(log, operation, error, RunFailure.IsExpected(ex) ? null : ex);
             result = new OperationFailure(operation, error);
         }
 
@@ -145,8 +147,8 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
     private static void LogDone(ILogger log, string operation, double seconds)
         => log.LogInformation("{Operation} completed in {Seconds:0.###}s", operation, seconds);
 
-    private static void LogFailed(ILogger log, string operation, string error)
-        => log.LogError("{Operation} failed: {Error}", operation, error);
+    private static void LogFailed(ILogger log, string operation, string error, Exception? unexpected)
+        => log.LogError(unexpected, "{Operation} failed: {Error}", operation, error);
 }
 
 /// <summary>The <c>result</c> of a retrieve run: where the files went, the window, and the counts the ledger row carries.</summary>

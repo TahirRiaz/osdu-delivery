@@ -79,7 +79,9 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 Runs carry the delivery parameters on the platform's trigger (`POST /api/v1/runs`): `operation`, `force`,
 `values`, `drop`, `submissionId`, `recordKeys`, `redeliver` (what a deliver run scoped to `recordKeys` sends again:
 `all`, the default, `metadata` or `payload`), `publishTo`, and for a fan-out member `partitions`. The run row
-records them, the delivery counts are projected onto it when the run completes, and its result (the operation's
+records them, the delivery counts are projected onto it when the run completes (a run's own work: what it planned,
+sent and held, with the submission's totals across every run under `submission`; a fan-out root reports the submission
+its members worked on), and its result (the operation's
 outcome as JSON) and its fan-out membership (root, slot, count) are on the run detail.
 
 ## Removing records from OSDU

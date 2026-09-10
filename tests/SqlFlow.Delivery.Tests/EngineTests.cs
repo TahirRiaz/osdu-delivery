@@ -1,9 +1,13 @@
 using System.Net;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Core;
 using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Engine.Intake;
 using SqlFlow.Delivery.Engine.Protocols;
+using SqlFlow.Execution;
 using SqlFlow.Delivery.Engine.Verify;
 using SqlFlow.Delivery.Engine.Worker;
 using SqlFlow.Delivery.Http;
@@ -1150,4 +1154,93 @@ public class DeliverRunScopeTests
         Assert.Equal(RedeliverScope.Payload, DeliveryExecutor.RedeliverScopeOf(new RunParameters { RecordKeys = [key], Redeliver = RunParameters.RedeliverPayload }));
         Assert.Equal(RedeliverScope.Metadata, DeliveryExecutor.RedeliverScopeOf(new RunParameters { RecordKeys = [key], Redeliver = "Metadata" }));
     }
+}
+
+/// <summary>What a deliver run reports: its own work, and the submission it worked on alongside.</summary>
+public class DeliverOutcomeTests
+{
+    private static SubmissionState Submission(long planned, long delivered) => new()
+    {
+        SubmissionId = Guid.NewGuid(),
+        FlowId = Guid.NewGuid(),
+        FlowName = "recall-welllog",
+        MappingReference = "WellLog@1.4.0",
+        RenderContext = "{}",
+        DropLocation = "drops/STAT_COMP",
+        Status = SubmissionStatus.Completed,
+        Planned = planned,
+        Delivered = delivered,
+        SkippedUnchanged = 1,
+    };
+
+    [Fact]
+    public void A_run_reports_what_it_did_itself_not_the_submission_it_worked_on()
+    {
+        // Live, a run that found its submission completed reported "1 delivered", and one that re-sent two records
+        // of a three-record submission reported three.
+        var submission = Submission(planned: 3, delivered: 3);
+
+        var idle = DeliverOutcome.From(new RunResult(new IntakeResult(submission, null, IntakeCounts.Empty, AlreadyProcessed: true), WorkerSummary.Empty, submission), "drops/STAT_COMP");
+        Assert.Equal(0, idle.Planned);
+        Assert.Equal(0, idle.Delivered);
+        Assert.True(idle.NothingToDo);
+        Assert.Equal(3, idle.Submission.Delivered);
+
+        var two = DeliverOutcome.From(
+            new RunResult(new IntakeResult(submission, null, new IntakeCounts(3, 2, 1, 0, 0, 0, 1), AlreadyProcessed: false), new WorkerSummary(2, 2, 0, 1, 0, 1), submission),
+            "drops/STAT_COMP");
+        Assert.Equal(2, two.Planned);
+        Assert.Equal(2, two.Delivered);
+        Assert.Equal(1, two.SkippedUnchanged);
+        Assert.Equal(1, two.Held);
+        Assert.Equal(3, two.Submission.Planned);
+    }
+
+    [Fact]
+    public void A_fan_out_root_reports_the_submission_its_members_worked_on()
+    {
+        var submission = Submission(planned: 5000, delivered: 4990);
+        var root = DeliverOutcome.From(
+            new RunResult(new IntakeResult(submission, null, new IntakeCounts(5000, 1250, 0, 0, 0, 0, 3), AlreadyProcessed: false), new WorkerSummary(40, 40, 0, 0, 0, 1), submission, IntakeMembers: 3, DrainMembers: 4),
+            "drops/STAT_COMP");
+
+        Assert.Equal(5000, root.Planned);
+        Assert.Equal(4990, root.Delivered);
+    }
+}
+
+/// <summary>The run boundary: a run ends as a recorded failure whatever stopped it.</summary>
+public sealed class DeliveryRunBoundaryTests : IDisposable
+{
+    private readonly SqliteCatalog _db = new();
+
+    private sealed class UnbuildableProtocolFactory : IProtocolFactory
+    {
+        public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default)
+            => throw new NotSupportedException("the protocol could not be built");
+    }
+
+    [Fact]
+    public async Task A_failure_of_an_unexpected_kind_ends_the_run_as_a_recorded_failure()
+    {
+        // Live, an exception outside the kinds the executor listed crashed a CLI run, which then wrote no run.
+        var drop = Path.Combine(Samples.NewTempDirectory(), "STAT_COMP");
+        await SampleDropBuilder.WriteAsync(drop, "STAT_COMP", SampleDropBuilder.DefaultRecords("STAT_COMP"), Guid.NewGuid(), 1);
+        var engine = Samples.Engine(_db.Ledger(), protocols: new UnbuildableProtocolFactory());
+        using var provider = new ServiceCollection().AddSingleton(engine).BuildServiceProvider();
+
+        var result = await new DeliveryExecutor(provider).ExecuteAsync(
+            new DeliveryFlowDocument { Flow = Samples.LocalFlow(drop) },
+            Samples.Flow,
+            new DocumentExecutionOptions { Parameters = new RunParameters { Values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" } } },
+            CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.StartsWith("NotSupportedException: ", result.Error, StringComparison.Ordinal);
+        Assert.Contains("the protocol could not be built", result.Error, StringComparison.Ordinal);
+        Assert.NotNull(result.RunDirectory);
+        Assert.True(File.Exists(Path.Combine(result.RunDirectory!, "run.json")));
+    }
+
+    public void Dispose() => _db.Dispose();
 }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
@@ -84,10 +85,12 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         {
             throw;
         }
-        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException or InvalidOperationException or JsonException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            error = SecretHygiene.RedactedMessage(ex);
-            LogFailed(log, parameters.Operation.ToLowerInvariant(), error);
+            // The run boundary: every failure ends the run as a recorded one. An unexpected kind is a defect, so its
+            // stack goes to the run log as well.
+            error = RunFailure.Describe(ex);
+            LogFailed(log, parameters.Operation.ToLowerInvariant(), error, RunFailure.IsExpected(ex) ? null : ex);
             result = new OperationFailure(parameters.Operation.ToLowerInvariant(), error);
         }
 
@@ -155,8 +158,11 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
                 }
 
                 var run = await runtime.RunAsync(force: ForcesReplan(parameters, submission is not null), ct).ConfigureAwait(false);
-                LogOutcome(log, SubmissionIntake.Summarize(run.Submission));
-                return DeliverOutcome.From(run, runtime.DropLocation);
+                var delivered = DeliverOutcome.From(run, runtime.DropLocation);
+                LogOutcome(log, string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"this run: {delivered.Planned} planned, {delivered.Delivered} delivered, {delivered.SkippedUnchanged + delivered.UnchangedAtPush} unchanged, {delivered.Held} held, {delivered.Failed} failed; submission {delivered.SubmissionId:D} {SubmissionIntake.Summarize(run.Submission)}"));
+                return delivered;
 
             case RunParameters.IntakeOperation:
                 var intake = await runtime.IntakeAsync(parameters.Force || submission is not null, partitions, ct).ConfigureAwait(false);
@@ -286,11 +292,14 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
     private static void LogDone(ILogger log, string operation, double seconds)
         => log.LogInformation("{Operation} completed in {Seconds:0.###}s", operation, seconds);
 
-    private static void LogFailed(ILogger log, string operation, string error)
-        => log.LogError("{Operation} failed: {Error}", operation, error);
+    private static void LogFailed(ILogger log, string operation, string error, Exception? unexpected)
+        => log.LogError(unexpected, "{Operation} failed: {Error}", operation, error);
 }
 
-/// <summary>The <c>result</c> of a deliver run: what the intake planned and what the drain did (the counts the run row projects), and how far it fanned out.</summary>
+/// <summary>
+/// The <c>result</c> of a deliver run: what this run's intake planned and what its drain did (the counts the run row
+/// projects), how far it fanned out, and the totals of the submission it worked on across every run so far.
+/// </summary>
 public sealed record DeliverOutcome(
     string Operation,
     Guid SubmissionId,
@@ -310,18 +319,39 @@ public sealed record DeliverOutcome(
     int IntakeMembers,
     int DrainMembers,
     bool NothingToDo,
-    string? Error)
+    string? Error,
+    SubmissionTotals Submission)
 {
+    /// <summary>
+    /// A run's counts are its own work: a run re-sending two records of a delivered submission reports two, and one that
+    /// found the submission already completed reports none. A fan-out root is the exception, because its members'
+    /// deliveries are summed only in the submission, so it reports the submission it covers.
+    /// </summary>
     public static DeliverOutcome From(RunResult run, string drop)
     {
         ArgumentNullException.ThrowIfNull(run);
         var s = run.Submission;
+        var totals = new SubmissionTotals(s.Planned, s.SkippedUnchanged, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, s.BatchCount);
+        if (run.IntakeMembers > 0 || run.DrainMembers > 0)
+        {
+            return new DeliverOutcome(
+                RunParameters.DeliverOperation, s.SubmissionId, drop, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
+                s.Planned, s.SkippedUnchanged, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, run.Work.Retried, s.BatchCount,
+                run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo, s.Error, totals);
+        }
+
+        var planned = run.Intake.Counts;
+        var work = run.Work;
         return new DeliverOutcome(
             RunParameters.DeliverOperation, s.SubmissionId, drop, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
-            s.Planned, s.SkippedUnchanged, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, run.Work.Retried, s.BatchCount,
-            run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo, s.Error);
+            planned.Planned, planned.Skipped, planned.Stale, work.Unchanged, planned.Blocked, work.Delivered, planned.Held + work.Held, work.Failed, work.Retried, planned.Batches,
+            run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo, s.Error, totals);
     }
 }
+
+/// <summary>A submission's counts across every run that has worked on it.</summary>
+public sealed record SubmissionTotals(
+    long Planned, long SkippedUnchanged, long SkippedStale, long UnchangedAtPush, long Blocked, long Delivered, long Held, long Failed, int Batches);
 
 /// <summary>The <c>result</c> of a plan run: what a deliver would do, the first records in the run log, the counts here.</summary>
 public sealed record PlanOutcome(
