@@ -290,6 +290,8 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
         <DetailPair label="Metadata hash"><Hash value={record.metadataHash} /></DetailPair>
         <DetailPair label="Payload hash"><Hash value={record.payloadHash} /></DetailPair>
         <DetailPair label="Source fingerprint"><Hash value={record.sourceFingerprint} /></DetailPair>
+        <DetailPair label="Source last modified">{record.sourceModifiedUtc ? <RelativeTime value={record.sourceModifiedUtc} absolute /> : "-"}</DetailPair>
+        <DetailPair label="Payload files modified">{record.payloadModifiedUtc ? <RelativeTime value={record.payloadModifiedUtc} absolute /> : "-"}</DetailPair>
         <DetailPair label="Payload location"><TruncatedText text={record.pendingPayloadLocation} mono maxWidth={260} /></DetailPair>
         <DetailPair label="Created"><RelativeTime value={record.createdUtc} absolute /></DetailPair>
         <DetailPair label="Updated"><RelativeTime value={record.updatedUtc} absolute /></DetailPair>

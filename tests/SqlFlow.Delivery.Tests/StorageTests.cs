@@ -126,6 +126,7 @@ public class DropReaderTests
         var chunks = await reader.ListPayloadChunksAsync(drop, "curves", records[0].Key.Value);
         Assert.Single(chunks);
         Assert.EndsWith("chunk_00000.parquet", chunks[0].Path, StringComparison.Ordinal);
+        Assert.Equal(File.GetLastWriteTimeUtc(chunks[0].Path), chunks[0].Modified?.UtcDateTime);
         await using var stream = await reader.OpenChunkAsync(chunks[0]);
         Assert.True(stream.Length > 0);
 

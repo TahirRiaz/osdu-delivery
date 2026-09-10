@@ -218,7 +218,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
         LogOutcome(log, header.SkippedWholeRun ? $"plan: whole run skipped, {header.SkipReason}" : $"plan: {summary}");
         return new PlanOutcome(
-            RunParameters.PlanOperation, runtime.DropLocation, summary.Records, summary.Deliveries, summary.Skips, summary.Holds, summary.Blocked, summary.Untracked,
+            RunParameters.PlanOperation, runtime.DropLocation, summary.Records, summary.Deliveries, summary.Skips, summary.Stale, summary.Holds, summary.Blocked, summary.Untracked,
             header.Partitions, header.SkippedWholeRun, header.SkipReason, issues);
     }
 
@@ -278,6 +278,8 @@ public sealed record DeliverOutcome(
     long RecordCount,
     long Planned,
     long SkippedUnchanged,
+    long SkippedStale,
+    long UnchangedAtPush,
     long Blocked,
     long Delivered,
     long Held,
@@ -295,7 +297,7 @@ public sealed record DeliverOutcome(
         var s = run.Submission;
         return new DeliverOutcome(
             RunParameters.DeliverOperation, s.SubmissionId, drop, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
-            s.Planned, s.SkippedUnchanged, s.Blocked, s.Delivered, s.Held, s.Failed, run.Work.Retried, s.BatchCount,
+            s.Planned, s.SkippedUnchanged, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, run.Work.Retried, s.BatchCount,
             run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo, s.Error);
     }
 }
@@ -307,6 +309,7 @@ public sealed record PlanOutcome(
     long Records,
     long Deliveries,
     long Skips,
+    long Stale,
     long Holds,
     long Blocked,
     long Untracked,
@@ -324,6 +327,7 @@ public sealed record IntakeOutcome(
     long Records,
     long Planned,
     long SkippedUnchanged,
+    long SkippedStale,
     long Held,
     long Blocked,
     long Untracked,
@@ -338,10 +342,10 @@ public sealed record IntakeOutcome(
         var c = intake.Counts;
         return new IntakeOutcome(
             RunParameters.IntakeOperation, intake.Submission.SubmissionId, drop, partitions is null ? null : SubmissionIntake.DescribePartitions(partitions),
-            c.Records, c.Planned, c.Skipped, c.Held, c.Blocked, c.Untracked, c.Batches, intake.AlreadyProcessed);
+            c.Records, c.Planned, c.Skipped, c.Stale, c.Held, c.Blocked, c.Untracked, c.Batches, intake.AlreadyProcessed);
     }
 
-    public IntakeCounts ToCounts() => new(Records, Planned, SkippedUnchanged, Held, Blocked, Untracked, Batches);
+    public IntakeCounts ToCounts() => new(Records, Planned, SkippedUnchanged, Held, Blocked, Untracked, Batches, SkippedStale);
 
     /// <summary>Reads a member run's outcome back from its run row; null when the row carries none or something else.</summary>
     public static IntakeOutcome? Parse(string? json)
@@ -364,12 +368,12 @@ public sealed record IntakeOutcome(
 }
 
 /// <summary>The <c>result</c> of a drain run.</summary>
-public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Processed, long Delivered, long Retried, long Held, long Failed, int Batches)
+public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Processed, long Delivered, long Unchanged, long Retried, long Held, long Failed, int Batches)
 {
     public static DrainOutcome From(WorkerSummary summary, Guid? submissionId)
     {
         ArgumentNullException.ThrowIfNull(summary);
-        return new DrainOutcome(RunParameters.DrainOperation, submissionId, summary.Processed, summary.Delivered, summary.Retried, summary.Held, summary.Failed, summary.Batches);
+        return new DrainOutcome(RunParameters.DrainOperation, submissionId, summary.Processed, summary.Delivered, summary.Unchanged, summary.Retried, summary.Held, summary.Failed, summary.Batches);
     }
 }
 

@@ -20,7 +20,9 @@ source:
   manifest: manifest.json
   payloads:
     curves: curves/{deliveryKey}/chunk_*.parquet
-  fingerprint: update_date
+  # When the source row last changed. A row modified after the version the ledger holds goes through render and
+  # the hash check again; the same moment is skipped without rendering; an older one is never sent.
+  lastModified: update_date
   # Where a known-state run publishes the compact view the preparing side reads before its next drop.
   knownState: samples/recall-welllog/out/{logSource}/known-state
 

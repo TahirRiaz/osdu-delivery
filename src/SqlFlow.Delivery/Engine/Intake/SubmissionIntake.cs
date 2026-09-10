@@ -11,16 +11,19 @@ using SqlFlow.Delivery.Storage;
 
 namespace SqlFlow.Delivery.Engine.Intake;
 
-/// <summary>What one intake pass produced: the counts of what it planned and the batches it wrote.</summary>
-public sealed record IntakeCounts(long Records, long Planned, long Skipped, long Held, long Blocked, long Untracked, int Batches)
+/// <summary>
+/// What one intake pass produced: the counts of what it planned and the batches it wrote. <c>Stale</c> counts the
+/// records the drop carried in a version older than the ledger holds, delivered or queued, which are never sent.
+/// </summary>
+public sealed record IntakeCounts(long Records, long Planned, long Skipped, long Held, long Blocked, long Untracked, int Batches, long Stale = 0)
 {
     public static IntakeCounts Empty { get; } = new(0, 0, 0, 0, 0, 0, 0);
 
     public IntakeCounts Add(IntakeCounts other) => new(
-        Records + other.Records, Planned + other.Planned, Skipped + other.Skipped, Held + other.Held, Blocked + other.Blocked, Untracked + other.Untracked, Batches + other.Batches);
+        Records + other.Records, Planned + other.Planned, Skipped + other.Skipped, Held + other.Held, Blocked + other.Blocked, Untracked + other.Untracked, Batches + other.Batches, Stale + other.Stale);
 
     public override string ToString()
-        => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Planned} to deliver in {Batches} batch(es), {Skipped} unchanged, {Held} held, {Blocked} blocked, {Untracked} untracked");
+        => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Planned} to deliver in {Batches} batch(es), {Skipped} unchanged, {Stale} stale, {Held} held, {Blocked} blocked, {Untracked} untracked");
 }
 
 public sealed record IntakeResult(SubmissionState Submission, PlanHeader? Header, IntakeCounts Counts, bool AlreadyProcessed)
@@ -183,6 +186,8 @@ public sealed class SubmissionIntake
             CompletedUtc = counts.Planned == 0 ? now : null,
             Planned = counts.Planned,
             SkippedUnchanged = counts.Skipped,
+            SkippedStale = counts.Stale,
+            UnchangedAtPush = 0,
             Blocked = counts.Blocked,
             Held = counts.Held,
             BatchCount = counts.Batches,
@@ -208,7 +213,9 @@ public sealed class SubmissionIntake
 
         WorkBatchWriter? writer = null;
         var pending = new List<RecordState>(batchRecords);
-        var skipped = new List<DeliveryKey>(Planner.RenderBatch);
+        var skipped = new List<SkippedRecord>(Planner.RenderBatch);
+        var context = header.Mapping.Context.Canonical();
+        long refused = 0;
         var held = new List<RecordState>();
         var untrackedLogged = 0;
         var lastProgress = _time.GetUtcNow();
@@ -230,7 +237,7 @@ public sealed class SubmissionIntake
                 switch (entry.Action)
                 {
                     case PlannedAction.Skip:
-                        skipped.Add(entry.Key.Value);
+                        skipped.Add(Skipped(entry, context));
                         if (skipped.Count >= Planner.RenderBatch)
                         {
                             await _ledger.MarkSkippedAsync(flow.Id, skipped, submission.SubmissionId, ct).ConfigureAwait(false);
@@ -268,7 +275,9 @@ public sealed class SubmissionIntake
                         pending.Add(PendingState(flow, submission, header.Mapping, entry, reference, nextBatch) with { CacheSetId = cacheSet });
                         if (pending.Count >= batchRecords)
                         {
-                            staged += await CloseBatchAsync(flow, submission, writer, pending, ct).ConfigureAwait(false);
+                            var closed = await CloseBatchAsync(flow, submission, writer, pending, skipped, ct).ConfigureAwait(false);
+                            staged += closed.Staged;
+                            refused += closed.Refused.Count;
                             writer = null;
                             batches++;
                             nextBatch++;
@@ -287,7 +296,9 @@ public sealed class SubmissionIntake
 
             if (writer is not null)
             {
-                staged += await CloseBatchAsync(flow, submission, writer, pending, ct).ConfigureAwait(false);
+                var closed = await CloseBatchAsync(flow, submission, writer, pending, skipped, ct).ConfigureAwait(false);
+                staged += closed.Staged;
+                refused += closed.Refused.Count;
                 writer = null;
                 batches++;
             }
@@ -312,18 +323,58 @@ public sealed class SubmissionIntake
             await FlushHeldAsync(flow, submission, held, ct).ConfigureAwait(false);
         }
 
-        return new IntakeCounts(summary.Records, staged, summary.Skips, summary.Holds, summary.Blocked, summary.Untracked, batches);
+        return new IntakeCounts(summary.Records, staged, summary.Skips, summary.Holds, summary.Blocked, summary.Untracked, batches, summary.Stale + refused);
     }
 
-    /// <summary>Commits the batch file, stages its records in the ledger and registers the batch. Returns the records staged.</summary>
-    private async Task<int> CloseBatchAsync(
-        FlowDefinition flow, SubmissionState submission, WorkBatchWriter writer, List<RecordState> pending, CancellationToken ct)
+    /// <summary>What the ledger is told about one skipped plan entry.</summary>
+    private SkippedRecord Skipped(PlanEntry entry, string renderContext) => new()
+    {
+        DeliveryKey = entry.Key!.Value,
+        Kind = entry.SkipTier switch
+        {
+            SkipTier.Stale => SkipKind.Stale,
+            SkipTier.ContentHash => SkipKind.Rendered,
+            _ => SkipKind.Unchanged,
+        },
+        Reason = entry.Reason,
+        SourceFingerprint = entry.SourceFingerprint,
+        SourceModifiedUtc = entry.SourceModifiedUtc,
+        PayloadModifiedUtc = entry.PayloadModifiedUtc,
+        RenderContext = entry.SkipTier == SkipTier.ContentHash ? renderContext : null,
+        RunId = RunId,
+    };
+
+    /// <summary>
+    /// Commits the batch file, stages its records in the ledger and registers the batch. Records the ledger refuses
+    /// because a newer version landed or was queued since they were planned go to <paramref name="stale"/>, to be
+    /// recorded like any other stale skip.
+    /// </summary>
+    private async Task<PendingStaging> CloseBatchAsync(
+        FlowDefinition flow, SubmissionState submission, WorkBatchWriter writer, List<RecordState> pending, List<SkippedRecord> stale, CancellationToken ct)
     {
         await writer.DisposeAsync().ConfigureAwait(false);
-        var staged = await _ledger.UpsertPendingAsync(pending, ct).ConfigureAwait(false);
-        if (staged < pending.Count)
+        var staging = await _ledger.UpsertPendingAsync(pending, ct).ConfigureAwait(false);
+        if (staging.Refused.Count > 0)
         {
-            _logger.LogWarning("Batch {Batch}: {Skipped} record(s) are being delivered by another worker right now and were not re-planned; the next drop plans them again.", writer.Batch, pending.Count - staged);
+            var refused = staging.Refused.ToHashSet();
+            foreach (var record in pending.Where(p => refused.Contains(p.DeliveryKey)))
+            {
+                var carried = record.PendingSourceModifiedUtc is { } modified
+                    ? string.Create(CultureInfo.InvariantCulture, $" (this drop carried the row as last modified {modified:yyyy-MM-dd'T'HH:mm:ss.FFFFFFF'Z'})")
+                    : string.Empty;
+                stale.Add(new SkippedRecord
+                {
+                    DeliveryKey = record.DeliveryKey,
+                    Kind = SkipKind.Stale,
+                    Reason = $"a newer version of the record was delivered or queued while this drop was being planned{carried}; OSDU keeps the newer version",
+                    SourceFingerprint = record.PendingSourceFingerprint,
+                    SourceModifiedUtc = record.PendingSourceModifiedUtc,
+                    PayloadModifiedUtc = record.PendingPayloadModifiedUtc,
+                    RunId = RunId,
+                });
+            }
+
+            _logger.LogWarning("Batch {Batch}: {Refused} record(s) were not staged because a newer version was delivered or queued while this drop was planned; they are recorded as stale.", writer.Batch, staging.Refused.Count);
         }
 
         await _ledger.AddWorkBatchAsync(new WorkBatchState
@@ -332,11 +383,11 @@ public sealed class SubmissionIntake
             FlowId = flow.Id,
             Index = writer.Batch,
             Location = writer.Path,
-            RecordCount = staged,
+            RecordCount = staging.Staged,
             CreatedUtc = _time.GetUtcNow().UtcDateTime,
         }, ct).ConfigureAwait(false);
         pending.Clear();
-        return staged;
+        return staging;
     }
 
     private async Task FlushHeldAsync(FlowDefinition flow, SubmissionState submission, List<RecordState> held, CancellationToken ct)
@@ -376,6 +427,7 @@ public sealed class SubmissionIntake
         LastSubmissionId = submission.SubmissionId,
         RunId = RunId,
         PendingSourceFingerprint = entry.SourceFingerprint,
+        PendingSourceModifiedUtc = entry.SourceModifiedUtc,
         LastError = Http.HeaderRedaction.RedactMessage(entry.Reason),
     };
 
@@ -393,8 +445,10 @@ public sealed class SubmissionIntake
         WorkBatch = batch,
         PendingRenderContext = resolved.Context.Canonical(),
         PendingSourceFingerprint = entry.SourceFingerprint,
+        PendingSourceModifiedUtc = entry.SourceModifiedUtc,
         PendingMetadataHash = entry.Render!.MetadataHash,
         PendingPayloadHash = entry.PayloadHash,
+        PendingPayloadModifiedUtc = entry.DeliverPayload ? entry.PayloadModifiedUtc : null,
         PendingPayloadLocation = entry.PayloadLocation,
         PendingMetadata = entry.DeliverMetadata,
         PendingPayload = entry.DeliverPayload,
@@ -405,7 +459,10 @@ public sealed class SubmissionIntake
     {
         var submission = await _ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false)
             ?? throw new DeliveryException($"Submission {submissionId} is not in the ledger.");
-        var delivered = await _ledger.CountAsync(flowId, submissionId, RecordStatus.Delivered, ct).ConfigureAwait(false);
+        // Deliveries are counted from the attempts the submission wrote, not from where record pointers now stand: a
+        // record can move on to a newer submission while its delivery for this one is still in flight.
+        var delivered = await _ledger.CountAttemptsAsync(submissionId, AttemptOutcome.Delivered, null, ct).ConfigureAwait(false);
+        var unchangedAtPush = await _ledger.CountAttemptsAsync(submissionId, AttemptOutcome.Skipped, AttemptPhases.Unchanged, ct).ConfigureAwait(false);
         var held = await _ledger.CountAsync(flowId, submissionId, RecordStatus.Held, ct).ConfigureAwait(false);
         var failed = await _ledger.CountAsync(flowId, submissionId, RecordStatus.Failed, ct).ConfigureAwait(false);
         var stillPending = await _ledger.HasPendingAsync(flowId, submissionId, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
@@ -413,7 +470,8 @@ public sealed class SubmissionIntake
         var wasClosed = submission.Status is SubmissionStatus.Completed or SubmissionStatus.Failed;
         submission = submission with
         {
-            Delivered = Math.Max(0, delivered - submission.SkippedUnchanged),
+            Delivered = delivered,
+            UnchangedAtPush = unchangedAtPush,
             Held = held,
             Failed = failed,
             Status = stillPending ? SubmissionStatus.Running : (failed > 0 ? SubmissionStatus.Failed : SubmissionStatus.Completed),
@@ -431,7 +489,7 @@ public sealed class SubmissionIntake
     public static string Summarize(SubmissionState s)
     {
         ArgumentNullException.ThrowIfNull(s);
-        return string.Create(CultureInfo.InvariantCulture, $"{s.Status.ToString().ToLowerInvariant()}: {s.Planned} planned in {s.BatchCount} batch(es), {s.Delivered} delivered, {s.SkippedUnchanged} unchanged, {s.Blocked} blocked, {s.Held} held, {s.Failed} failed");
+        return string.Create(CultureInfo.InvariantCulture, $"{s.Status.ToString().ToLowerInvariant()}: {s.Planned} planned in {s.BatchCount} batch(es), {s.Delivered} delivered, {s.SkippedUnchanged + s.UnchangedAtPush} unchanged, {s.SkippedStale} stale, {s.Blocked} blocked, {s.Held} held, {s.Failed} failed");
     }
 
     /// <summary>The batch numbers a partition subset writes: a namespace per first partition, so fan-out members never collide.</summary>

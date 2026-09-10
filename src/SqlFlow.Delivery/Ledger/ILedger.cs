@@ -42,6 +42,16 @@ public enum AttemptOutcome
     HistoryPurged,
 }
 
+/// <summary>The phases of the attempts that record a decision not to send, beside the delivery phases the worker reports.</summary>
+public static class AttemptPhases
+{
+    /// <summary>A skipped attempt: the drop carried a version older than the one delivered or queued.</summary>
+    public const string Stale = "stale";
+
+    /// <summary>A skipped attempt: the final hash check found OSDU already holding the queued document and payload.</summary>
+    public const string Unchanged = "unchanged";
+}
+
 public enum VerifyOutcome
 {
     Match,
@@ -90,6 +100,15 @@ public sealed record SubmissionState
 
     public long SkippedUnchanged { get; init; }
 
+    /// <summary>
+    /// Records the drop carried in a version older than the one already delivered or queued: skipped and never sent,
+    /// each with an attempt saying which version it was and which one stands.
+    /// </summary>
+    public long SkippedStale { get; init; }
+
+    /// <summary>Records whose queued document was, when the worker came to send it, what OSDU already held: nothing was sent.</summary>
+    public long UnchangedAtPush { get; init; }
+
     /// <summary>Records held, failed or deleted earlier whose source has not changed; they need a release.</summary>
     public long Blocked { get; init; }
 
@@ -121,9 +140,15 @@ public sealed record RecordState
 
     public string? SourceFingerprint { get; init; }
 
+    /// <summary>When the source row the delivered document was built from last changed (the flow's source.lastModified).</summary>
+    public DateTime? SourceModifiedUtc { get; init; }
+
     public string? MetadataHash { get; init; }
 
     public string? PayloadHash { get; init; }
+
+    /// <summary>The newest modified time among the chunk files the delivered payload was sent from.</summary>
+    public DateTime? PayloadModifiedUtc { get; init; }
 
     public string? TargetId { get; init; }
 
@@ -180,9 +205,15 @@ public sealed record RecordState
     /// <summary>The source fingerprint of the pending work, or of the state a held/failed/deleted record was left in.</summary>
     public string? PendingSourceFingerprint { get; init; }
 
+    /// <summary>The source last-modified moment of the pending work, or of the state a held/failed/deleted record was left in.</summary>
+    public DateTime? PendingSourceModifiedUtc { get; init; }
+
     public string? PendingMetadataHash { get; init; }
 
     public string? PendingPayloadHash { get; init; }
+
+    /// <summary>The payload watermark of the pending work, when it carries a payload.</summary>
+    public DateTime? PendingPayloadModifiedUtc { get; init; }
 
     /// <summary>Drop-relative location of the pending payload chunks, or null when no payload is pending.</summary>
     public string? PendingPayloadLocation { get; init; }
@@ -207,6 +238,9 @@ public sealed record RecordState
     public DateTime CreatedUtc { get; init; }
 
     public DateTime UpdatedUtc { get; init; }
+
+    /// <summary>A rendered document is queued for the record, or being delivered right now.</summary>
+    public bool HasPendingWork => PendingDocumentRef is not null && Status is RecordStatus.Pending or RecordStatus.Delivering;
 }
 
 /// <summary>One delivery try, append-only (design.md section 7.3).</summary>
@@ -262,6 +296,12 @@ public sealed record RecordCompletion
     /// <summary>When delivered: promote the pending document, hashes and context to current.</summary>
     public bool Promote { get; init; }
 
+    /// <summary>
+    /// The promotion settles work the final hash check found OSDU already holding: the pending state becomes current
+    /// but nothing reached the target, so the delivery and verification times stay as they were.
+    /// </summary>
+    public bool NothingSent { get; init; }
+
     public long? TargetVersion { get; init; }
 
     public string? TargetId { get; init; }
@@ -275,7 +315,89 @@ public sealed record RecordCompletion
 
     /// <summary>The step progress to keep on the record for the next try (null clears it).</summary>
     public string? PendingStepJson { get; init; }
+
+    /// <summary>
+    /// The pending work this try carried out, as it stood when the record was claimed. A newer version of the record
+    /// can be queued while the try is in flight; the completion then promotes what it actually delivered, leaves the
+    /// newer work pending for the next pass, and keeps its step progress out of the newer work. Null for a
+    /// completion that carried no document.
+    /// </summary>
+    public ClaimedWork? Claimed { get; init; }
 }
+
+/// <summary>
+/// What a claimed record's pending work was: the submission and document reference that identify it (a reference is
+/// only unique within its submission's work batches), and the values a delivery of it establishes.
+/// </summary>
+public sealed record ClaimedWork(
+    Guid? SubmissionId,
+    string DocumentRef,
+    string? RenderContext,
+    string? SourceFingerprint,
+    DateTime? SourceModifiedUtc,
+    string? MetadataHash,
+    string? PayloadHash,
+    DateTime? PayloadModifiedUtc,
+    bool Metadata,
+    bool Payload)
+{
+    /// <summary>The claimed work of a record, or null when it holds no pending document.</summary>
+    public static ClaimedWork? Of(RecordState record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        return record.PendingDocumentRef is not { } reference
+            ? null
+            : new ClaimedWork(
+                record.LastSubmissionId, reference, record.PendingRenderContext, record.PendingSourceFingerprint, record.PendingSourceModifiedUtc,
+                record.PendingMetadataHash, record.PendingPayloadHash, record.PendingPayloadModifiedUtc, record.PendingMetadata, record.PendingPayload);
+    }
+}
+
+/// <summary>Why the intake left a record's delivered state as it is.</summary>
+public enum SkipKind
+{
+    /// <summary>The source version, payload and render context equal what OSDU holds: decided without rendering.</summary>
+    Unchanged,
+
+    /// <summary>Rendered, and the document and payload hashes equal what OSDU holds (or what is already queued).</summary>
+    Rendered,
+
+    /// <summary>The drop carries a version older than the one delivered or queued; OSDU keeps the newer one.</summary>
+    Stale,
+}
+
+/// <summary>One record the intake skipped, with what it saw, so the ledger can advance or record it.</summary>
+public sealed record SkippedRecord
+{
+    public required DeliveryKey DeliveryKey { get; init; }
+
+    public required SkipKind Kind { get; init; }
+
+    /// <summary>What the plan said about the record, for the attempt a stale skip writes.</summary>
+    public required string Reason { get; init; }
+
+    /// <summary>The source version the drop carried.</summary>
+    public string? SourceFingerprint { get; init; }
+
+    public DateTime? SourceModifiedUtc { get; init; }
+
+    /// <summary>The payload watermark the drop carried.</summary>
+    public DateTime? PayloadModifiedUtc { get; init; }
+
+    /// <summary>The render context the record was rendered under (a rendered skip advances the record to it).</summary>
+    public string? RenderContext { get; init; }
+
+    /// <summary>The platform run of the intake, for the attempt a stale skip writes.</summary>
+    public Guid? RunId { get; init; }
+}
+
+/// <summary>What staging a batch of pending work did.</summary>
+/// <param name="Staged">Records whose pending work was written (queued behind an in-flight delivery included).</param>
+/// <param name="Refused">
+/// Records refused because the ledger already holds a newer source version or payload for them, delivered or queued
+/// by a concurrent intake since this one read them. They are stale and are recorded as such.
+/// </param>
+public sealed record PendingStaging(int Staged, IReadOnlyList<DeliveryKey> Refused);
 
 /// <summary>Tier-0 watermark: the Delta commit version of a source table for one flow scope (design.md section 6.6).</summary>
 public sealed record SourceWatermark(Guid FlowId, string Scope, string Table, long Version, DateTime RecordedUtc, string? ContextHash = null);
@@ -351,7 +473,17 @@ public sealed record UpdateTag
 }
 
 /// <summary>The compact known-state row Databricks reads at the start of a run (design.md section 6.7).</summary>
-public sealed record KnownState(DeliveryKey DeliveryKey, string SourceKey, string? SourceFingerprint, string? MetadataHash, string? PayloadHash, RecordStatus Status, string? TargetId, long? TargetVersion);
+public sealed record KnownState(
+    DeliveryKey DeliveryKey,
+    string SourceKey,
+    string? SourceFingerprint,
+    DateTime? SourceModifiedUtc,
+    string? MetadataHash,
+    string? PayloadHash,
+    DateTime? PayloadModifiedUtc,
+    RecordStatus Status,
+    string? TargetId,
+    long? TargetVersion);
 
 /// <summary>What is uploaded and what is not, per flow: the numbers an operator looks at first.</summary>
 public sealed record FlowStats
@@ -633,12 +765,20 @@ public interface ILedger
 
     /// <summary>
     /// Inserts or updates records with pending work; existing current-state columns are preserved. A record another
-    /// worker is delivering right now is left alone. Returns how many records were staged.
+    /// worker is delivering right now keeps its lease and status, and the new work is queued behind the delivery:
+    /// the worker's completion leaves it pending for the next pass. Work carrying a source or payload version older
+    /// than the one the record already holds, delivered or queued, is refused, so concurrent intakes can never take
+    /// a record back to an earlier version.
     /// </summary>
-    Task<int> UpsertPendingAsync(IReadOnlyList<RecordState> records, CancellationToken ct = default);
+    Task<PendingStaging> UpsertPendingAsync(IReadOnlyList<RecordState> records, CancellationToken ct = default);
 
-    /// <summary>Records a tier-1 or tier-2 skip without queueing work: touches the submission pointer only.</summary>
-    Task MarkSkippedAsync(Guid flowId, IEnumerable<DeliveryKey> keys, Guid submissionId, CancellationToken ct = default);
+    /// <summary>
+    /// Records what the intake skipped. A record with no pending work moves to the submission; a record with pending
+    /// work stays with the submission that queued it. A rendered skip of a delivered record advances its source
+    /// version, payload watermark and render context to what was just found identical, so the next plan decides it
+    /// without rendering. A stale skip writes an attempt saying which version the drop carried and which one stands.
+    /// </summary>
+    Task MarkSkippedAsync(Guid flowId, IReadOnlyList<SkippedRecord> records, Guid submissionId, CancellationToken ct = default);
 
     /// <summary>Marks records held without queueing work (render-time holds).</summary>
     Task MarkHeldAsync(IEnumerable<RecordState> records, CancellationToken ct = default);
@@ -663,8 +803,15 @@ public interface ILedger
     /// <summary>Writes many completions in one round trip (a drained batch); each is the same write as <see cref="CompleteAsync"/>.</summary>
     Task CompleteManyAsync(IReadOnlyList<RecordCompletion> completions, CancellationToken ct = default);
 
-    /// <summary>Keeps a delivery's step progress on the record mid-try, so a crash after an upload never repeats it.</summary>
-    Task SaveStepAsync(DeliveryKey key, string stepJson, CancellationToken ct = default);
+    /// <summary>
+    /// Keeps a delivery's step progress on the record mid-try, so a crash after an upload never repeats it. Written
+    /// only while the record still holds the document the try is delivering: the steps of a superseded document
+    /// must never let the newer one skip an upload it has not made.
+    /// </summary>
+    Task SaveStepAsync(DeliveryKey key, Guid? submissionId, string documentRef, string stepJson, CancellationToken ct = default);
+
+    /// <summary>How many distinct records a submission's attempts settled with the given outcome (and phase, when given).</summary>
+    Task<long> CountAttemptsAsync(Guid submissionId, AttemptOutcome outcome, string? phase = null, CancellationToken ct = default);
 
     /// <summary>Releases leases that expired before <paramref name="beforeUtc"/> and returns how many were reclaimed.</summary>
     Task<int> ReclaimExpiredLeasesAsync(Guid flowId, DateTime beforeUtc, CancellationToken ct = default);

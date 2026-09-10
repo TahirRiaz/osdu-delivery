@@ -19,7 +19,7 @@ one backup cover both, and a run row and the attempts it produced are joined by 
 | `DropLocation`, `ParametersJson`, `RecordCount` | The handover. |
 | `WorkLocation`, `BatchCount`, `Partitions` | Where the intake wrote its work batches, how many, and how many root partitions the drop declared. |
 | `Status` | `received`, `planned`, `running`, `completed`, `failed`. |
-| `Planned`, `SkippedUnchanged`, `Blocked`, `Delivered`, `Held`, `Failed` | Counts scoped to the records this submission touched. |
+| `Planned`, `SkippedUnchanged`, `SkippedStale`, `UnchangedAtPush`, `Blocked`, `Delivered`, `Held`, `Failed` | Counts scoped to the records this submission touched. `SkippedStale` counts rows older than the version delivered or queued; `UnchangedAtPush` counts queued work the worker's final hash check found OSDU already holding. `Delivered` and `UnchangedAtPush` are counted from the submission's attempts. |
 | `ReceivedUtc`, `StartedUtc`, `CompletedUtc`, `Error` | Timeline. |
 
 The platform's run row carries the submission too: `Run.SubmissionId` when a run was asked to re-run one, and
@@ -33,6 +33,7 @@ the runs that carried it.
 | `DeliveryKey` | Primary key. Deterministic, derived from source data. |
 | `FlowId`, `SourceKey`, `Label`, `MappingName` | Provenance. `Label` is the mapping's `identity.label` rendered for the row (a wellbore name, a log name), for search and display only. |
 | `RenderContext`, `SourceFingerprint`, `MetadataHash`, `PayloadHash` | What OSDU holds: the gates for tiers 1 and 2. |
+| `SourceModifiedUtc`, `PayloadModifiedUtc` | The last-modified moment of the source row, and the newest modified time of the chunk files, that OSDU's document and payload were built from: the watermarks an incremental drop is ordered against. |
 | `TargetId`, `TargetVersion` | The OSDU id and the last known version (the drift handle). |
 | `Status` | `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`. |
 | `Blocked` | Set when the record was held, failed or deleted and not released since. |
@@ -120,9 +121,19 @@ the sync.
 ```
 
 A **blocked** record (held, failed or deleted and not released) is skipped by every later plan as `blocked`
-until either the source row changes (its fingerprint moves) or an operator releases it. That is what "do not
-retry without intervention" means in practice: a re-run of the same data never re-attempts a known problem,
-while a corrected source row flows through on its own.
+until either the source row changes (its fingerprint moves, or its last-modified moment passes the one it was left
+at) or an operator releases it. That is what "do not retry without intervention" means in practice: a re-run of the
+same data never re-attempts a known problem, while a corrected source row flows through on its own.
+
+Versions never go backwards. A row older than the version a record holds, delivered or queued, is skipped with an
+attempt (`skipped`, phase `stale`) naming both versions, and staging refuses work older than what the ledger holds,
+so two intakes racing for one record leave the newer version standing. Work planned for a record another worker is
+delivering right now is written behind the delivery rather than dropped: the record keeps its lease, the completion
+promotes what that try actually delivered (from the claim it carries, not from the columns the newer work replaced)
+and leaves the newer work pending, and the try's step progress is kept only while the record still holds its
+document. Before anything is sent, the worker compares the queued document and payload hashes with what the record
+says OSDU holds at that moment and sends only the halves that differ; when neither does, it settles the record with
+an attempt (`skipped`, phase `unchanged`) and sends nothing.
 
 **Redeliver** forgets the hashes of what OSDU holds (all of them, or only the metadata or the payload), so the
 next plan of a drop that carries the record sends that part again. From the GUI, redeliver also queues the

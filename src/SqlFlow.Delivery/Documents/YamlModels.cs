@@ -66,6 +66,8 @@ internal sealed class FlowSourceYaml
 
     public string? Fingerprint { get; set; }
 
+    public string? LastModified { get; set; }
+
     public string? KnownState { get; set; }
 
     public string? Work { get; set; }

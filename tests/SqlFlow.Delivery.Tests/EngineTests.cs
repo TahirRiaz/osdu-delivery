@@ -35,11 +35,11 @@ public class EndToEndTests : IDisposable
         return dir;
     }
 
-    private async Task<(FlowRuntime Runtime, FakeProtocol Protocol, CatalogLedger Ledger)> RuntimeAsync(string drop)
+    private async Task<(FlowRuntime Runtime, FakeProtocol Protocol, CatalogLedger Ledger)> RuntimeAsync(string drop, Func<FlowDefinition, FlowDefinition>? adjust = null)
     {
         var ledger = _db.Ledger(_clock);
         var engine = Samples.Engine(ledger, _clock);
-        var flow = Samples.LocalFlow(drop);
+        var flow = adjust is null ? Samples.LocalFlow(drop) : adjust(Samples.LocalFlow(drop));
         var runtime = await FlowRuntime.CreateAsync(engine, flow, new Dictionary<string, string> { ["logSource"] = "STAT_COMP" }, drop);
         return (runtime, new FakeProtocol(), ledger);
     }
@@ -130,7 +130,7 @@ public class EndToEndTests : IDisposable
             Assert.NotNull(state.TargetVersion);
             Assert.NotNull(state.MetadataHash);
             Assert.NotNull(state.PayloadHash);
-            Assert.Equal("2026-09-01T10:15:00Z", state.SourceFingerprint);
+            Assert.Equal(new DateTime(2026, 9, 1, 10, 15, 0, DateTimeKind.Utc), state.SourceModifiedUtc);
         }
 
         // Same source version, new submission id: tier 0 skips the whole run without reading a record.
@@ -414,6 +414,210 @@ public class EndToEndTests : IDisposable
             Assert.Equal(3, count);
             Assert.True(File.Exists(Path.Combine(target, "known-state.parquet")));
             Assert.Contains("\"delivered\": 3", File.ReadAllText(Path.Combine(target, "known-state.json")), StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task An_incremental_drop_reprocesses_rows_modified_since_and_never_goes_back_to_an_older_one()
+    {
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var drop1 = await DropAsync("inc1", records, Submission1, sourceVersion: 1);
+        var (runtime, protocol, ledger) = await RuntimeAsync(drop1);
+        using (runtime)
+        {
+            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger, Submission1)).Delivered);
+        }
+
+        // The next drop carries only the row modified since: it goes through render and the hash check, and is sent.
+        var edited = records[0] with { Creator = "HAL", UpdateDate = "2026-09-05T10:00:00Z" };
+        var drop2 = await DropAsync("inc2", [edited], Submission2, sourceVersion: 2);
+        var (runtime2, protocol2, ledger2) = await RuntimeAsync(drop2);
+        string? editedHash;
+        using (runtime2)
+        {
+            var entry = Assert.Single((await runtime2.PlanAsync()).Entries);
+            Assert.Equal(PlannedAction.UpdateMetadata, entry.Action);
+            Assert.Equal(1, (await RunAsync(runtime2, protocol2, ledger2, Submission2)).Delivered);
+            var state = await ledger2.GetRecordAsync(runtime2.Flow.Id, records[0].Key);
+            Assert.Equal(new DateTime(2026, 9, 5, 10, 0, 0, DateTimeKind.Utc), state!.SourceModifiedUtc);
+            editedHash = state.MetadataHash;
+            // The rows the incremental drop did not carry are left exactly as they were.
+            Assert.Equal(Submission1, (await ledger2.GetRecordAsync(runtime2.Flow.Id, records[1].Key))!.LastSubmissionId);
+        }
+
+        // A replay of the earlier version of the row: older than what OSDU holds, so it is skipped and the skip recorded.
+        var drop3 = await DropAsync("inc3", [records[0]], Submission3, sourceVersion: 3);
+        var (runtime3, protocol3, ledger3) = await RuntimeAsync(drop3);
+        using (runtime3)
+        {
+            var entry = Assert.Single((await runtime3.PlanAsync()).Entries);
+            Assert.Equal(PlannedAction.Skip, entry.Action);
+            Assert.Equal(SkipTier.Stale, entry.SkipTier);
+            Assert.Contains("older than the version last modified 2026-09-05T10:00:00Z already delivered", entry.Reason, StringComparison.Ordinal);
+
+            await RunAsync(runtime3, protocol3, ledger3, Submission3);
+            Assert.Empty(protocol3.Deliveries);
+            var submission = await ledger3.GetSubmissionAsync(Submission3);
+            Assert.Equal(1, submission!.SkippedStale);
+            Assert.Equal(SubmissionStatus.Completed, submission.Status);
+            Assert.Equal(editedHash, (await ledger3.GetRecordAsync(runtime3.Flow.Id, records[0].Key))!.MetadataHash);
+            var stale = (await ledger3.ListAttemptsAsync(records[0].Key, 10)).Single(a => a.Phase == AttemptPhases.Stale);
+            Assert.Equal(AttemptOutcome.Skipped, stale.Outcome);
+            Assert.Equal(Submission3, stale.SubmissionId);
+        }
+
+        // The same moment again, even with values that differ: the last-modified column says nothing changed.
+        var drop4 = await DropAsync("inc4", [edited with { LogRun = "9" }], Guid.NewGuid(), sourceVersion: 4);
+        var (runtime4, _, _) = await RuntimeAsync(drop4);
+        using (runtime4)
+        {
+            var entry = Assert.Single((await runtime4.PlanAsync()).Entries);
+            Assert.Equal(PlannedAction.Skip, entry.Action);
+            Assert.Equal(SkipTier.Fingerprint, entry.SkipTier);
+        }
+    }
+
+    [Fact]
+    public async Task A_newer_version_queued_behind_an_in_flight_delivery_lands_after_it_and_the_final_check_sends_only_what_changed()
+    {
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var drop1 = await DropAsync("flight1", records, Submission1, sourceVersion: 1);
+        var (runtime, protocol, ledger) = await RuntimeAsync(drop1);
+        using (runtime)
+        {
+            await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.DropLocation, force: false);
+            var target = records[0].Key.Value.ToString("N");
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            protocol.Before = async (work, ct) =>
+            {
+                if (work.TargetId.EndsWith(target, StringComparison.Ordinal) && entered.TrySetResult())
+                {
+                    await release.Task.WaitAsync(ct);
+                }
+            };
+
+            var first = new DeliveryWorker(ledger, runtime.Context.Drops, runtime.Context.Stores, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "first-worker") { MaxWait = null };
+            var drain = first.DrainAsync(Submission1);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // While the first version is on its way, the source row changes and the next drop is taken in.
+            var edited = records[0] with { Creator = "HAL", UpdateDate = "2026-09-05T10:00:00Z" };
+            var drop2 = await DropAsync("flight2", [edited], Submission2, sourceVersion: 2);
+            var (runtime2, _, ledger2) = await RuntimeAsync(drop2);
+            using (runtime2)
+            {
+                var intake = await runtime2.Intake.IntakeAsync(runtime2.Flow, runtime2.Mapping, runtime2.Parameters, runtime2.DropLocation, force: false);
+                Assert.Equal(1, intake.Counts.Planned);
+                var queued = await ledger2.GetRecordAsync(runtime2.Flow.Id, records[0].Key);
+                Assert.Equal(RecordStatus.Delivering, queued!.Status);
+                Assert.Equal(Submission2, queued.LastSubmissionId);
+
+                release.TrySetResult();
+                await drain;
+
+                // The first version landed; the newer one waits for the next pass, and nothing about it was lost.
+                var settled = await ledger2.GetRecordAsync(runtime2.Flow.Id, records[0].Key);
+                Assert.Equal(RecordStatus.Pending, settled!.Status);
+                Assert.Equal(new DateTime(2026, 9, 1, 10, 15, 0, DateTimeKind.Utc), settled.SourceModifiedUtc);
+                Assert.NotEqual(settled.MetadataHash, settled.PendingMetadataHash);
+                Assert.True(settled.PendingPayload);
+
+                var next = new DeliveryWorker(ledger2, runtime2.Context.Drops, runtime2.Context.Stores, protocol, runtime2.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "second-worker") { MaxWait = null };
+                Assert.Equal(1, (await next.DrainAsync(Submission2)).Delivered);
+                var sends = protocol.Deliveries.Where(w => w.TargetId.EndsWith(target, StringComparison.Ordinal)).ToList();
+                Assert.Equal(2, sends.Count);
+                // The payload the newer work carried is the one that just landed, so the final check sends the metadata alone.
+                Assert.True(sends[1].DeliverMetadata);
+                Assert.False(sends[1].DeliverPayload);
+
+                var landed = await ledger2.GetRecordAsync(runtime2.Flow.Id, records[0].Key);
+                Assert.Equal(RecordStatus.Delivered, landed!.Status);
+                Assert.Equal(settled.PendingMetadataHash, landed.MetadataHash);
+                Assert.Equal(new DateTime(2026, 9, 5, 10, 0, 0, DateTimeKind.Utc), landed.SourceModifiedUtc);
+
+                // Each submission accounts for the delivery it made.
+                Assert.Equal(3, (await runtime.Intake.CompleteAsync(Submission1, runtime.Flow.Id)).Delivered);
+                Assert.Equal(1, (await runtime2.Intake.CompleteAsync(Submission2, runtime2.Flow.Id)).Delivered);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Payload_chunk_files_are_the_watermark_when_the_flow_takes_their_modified_times()
+    {
+        static FlowDefinition ByFiles(FlowDefinition flow) => flow with { Change = flow.Change with { PayloadDetect = ChangeDetection.LastModified } };
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var t1 = new DateTime(2026, 9, 2, 6, 0, 0, DateTimeKind.Utc);
+        var t2 = t1.AddHours(4);
+
+        async Task<string> FilesDropAsync(string name, Guid submission, long version, Func<SampleRecord, DateTime> modified)
+        {
+            var dir = Path.Combine(_root, name);
+            await SampleDropBuilder.WriteAsync(dir, "STAT_COMP", records, submission, version, payloadHash: false);
+            foreach (var record in records)
+            {
+                foreach (var chunk in Directory.GetFiles(Path.Combine(dir, "curves", record.Key.ToString())))
+                {
+                    File.SetLastWriteTimeUtc(chunk, modified(record));
+                }
+            }
+
+            return dir;
+        }
+
+        // A drop without a payload hash cannot be planned by content hash.
+        var bare = await FilesDropAsync("files0", Guid.NewGuid(), 1, _ => t1);
+        var (byHash, _, _) = await RuntimeAsync(bare);
+        using (byHash)
+        {
+            var refused = await Assert.ThrowsAsync<FlowValidationException>(() => byHash.PlanAsync());
+            Assert.Contains("declares no hashColumn", refused.Message, StringComparison.Ordinal);
+        }
+
+        var drop1 = await FilesDropAsync("files1", Submission1, 1, _ => t1);
+        var (runtime, protocol, ledger) = await RuntimeAsync(drop1, ByFiles);
+        using (runtime)
+        {
+            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger, Submission1)).Delivered);
+            Assert.Equal(t1, (await ledger.GetRecordAsync(runtime.Flow.Id, records[0].Key))!.PayloadModifiedUtc);
+        }
+
+        // The same files at the same times, read from another drop: decided without rendering, nothing to send.
+        var drop2 = await FilesDropAsync("files2", Submission2, 2, _ => t1);
+        var (runtime2, _, _) = await RuntimeAsync(drop2, ByFiles);
+        using (runtime2)
+        {
+            Assert.All((await runtime2.PlanAsync()).Entries, e => Assert.Equal(SkipTier.Fingerprint, e.SkipTier));
+        }
+
+        // One record's chunk file was rewritten later: its payload is sent again, and only its payload.
+        var drop3 = await FilesDropAsync("files3", Submission3, 3, r => r.Key == records[0].Key ? t2 : t1);
+        var (runtime3, protocol3, ledger3) = await RuntimeAsync(drop3, ByFiles);
+        using (runtime3)
+        {
+            var plan = await runtime3.PlanAsync();
+            Assert.Equal(PlannedAction.UpdatePayload, plan.Entries.Single(e => e.Key == records[0].Key).Action);
+            Assert.All(plan.Entries.Where(e => e.Key != records[0].Key), e => Assert.Equal(PlannedAction.Skip, e.Action));
+            Assert.Equal(1, (await RunAsync(runtime3, protocol3, ledger3, Submission3)).Delivered);
+            var work = Assert.Single(protocol3.Deliveries);
+            Assert.False(work.DeliverMetadata);
+            Assert.True(work.DeliverPayload);
+            Assert.Equal(t2, (await ledger3.GetRecordAsync(runtime3.Flow.Id, records[0].Key))!.PayloadModifiedUtc);
+        }
+
+        // Chunk files older than the payload OSDU holds are stale: never sent, and recorded as such.
+        var drop4 = await FilesDropAsync("files4", Guid.NewGuid(), 4, r => r.Key == records[0].Key ? t1.AddHours(1) : t1);
+        var (runtime4, protocol4, ledger4) = await RuntimeAsync(drop4, ByFiles);
+        using (runtime4)
+        {
+            var plan = await runtime4.PlanAsync();
+            var stale = plan.Entries.Single(e => e.Key == records[0].Key);
+            Assert.Equal(PlannedAction.Skip, stale.Action);
+            Assert.Equal(SkipTier.Stale, stale.SkipTier);
+            await RunAsync(runtime4, protocol4, ledger4, plan.Drop.Manifest.SubmissionId);
+            Assert.Empty(protocol4.Deliveries);
+            Assert.Equal(1, (await ledger4.GetSubmissionAsync(plan.Drop.Manifest.SubmissionId))!.SkippedStale);
         }
     }
 

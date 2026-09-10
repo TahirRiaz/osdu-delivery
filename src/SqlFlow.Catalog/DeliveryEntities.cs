@@ -47,6 +47,12 @@ public sealed class DeliverySubmission
 
     public long SkippedUnchanged { get; set; }
 
+    /// <summary>Records the drop carried in a version older than the one delivered or queued; skipped, never sent.</summary>
+    public long SkippedStale { get; set; }
+
+    /// <summary>Records whose queued document was, when its turn came, what OSDU already held; nothing was sent.</summary>
+    public long UnchangedAtPush { get; set; }
+
     public long Blocked { get; set; }
 
     public long Delivered { get; set; }
@@ -75,9 +81,15 @@ public sealed class DeliveryRecord
 
     public string? SourceFingerprint { get; set; }
 
+    /// <summary>When the source row OSDU's document was built from last changed (the flow's source.lastModified).</summary>
+    public DateTime? SourceModifiedUtc { get; set; }
+
     public string? MetadataHash { get; set; }
 
     public string? PayloadHash { get; set; }
+
+    /// <summary>The newest modified time among the chunk files OSDU's payload was delivered from.</summary>
+    public DateTime? PayloadModifiedUtc { get; set; }
 
     public string? TargetId { get; set; }
 
@@ -126,9 +138,13 @@ public sealed class DeliveryRecord
 
     public string? PendingSourceFingerprint { get; set; }
 
+    public DateTime? PendingSourceModifiedUtc { get; set; }
+
     public string? PendingMetadataHash { get; set; }
 
     public string? PendingPayloadHash { get; set; }
+
+    public DateTime? PendingPayloadModifiedUtc { get; set; }
 
     public string? PendingPayloadLocation { get; set; }
 

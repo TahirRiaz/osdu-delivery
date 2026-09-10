@@ -9,20 +9,25 @@ using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Storage;
 
 namespace SqlFlow.Delivery.Engine.Worker;
 
-public sealed record WorkerSummary(long Processed, long Delivered, long Retried, long Held, long Failed, int Batches = 0)
+/// <summary>
+/// What a drain did. <c>Unchanged</c> counts the records the final hash check found OSDU already holding, settled
+/// without sending anything.
+/// </summary>
+public sealed record WorkerSummary(long Processed, long Delivered, long Retried, long Held, long Failed, int Batches = 0, long Unchanged = 0)
 {
     public static WorkerSummary Empty { get; } = new(0, 0, 0, 0, 0);
 
     public WorkerSummary Add(WorkerSummary other) => new(
-        Processed + other.Processed, Delivered + other.Delivered, Retried + other.Retried, Held + other.Held, Failed + other.Failed, Batches + other.Batches);
+        Processed + other.Processed, Delivered + other.Delivered, Retried + other.Retried, Held + other.Held, Failed + other.Failed, Batches + other.Batches, Unchanged + other.Unchanged);
 
     public override string ToString()
-        => string.Create(CultureInfo.InvariantCulture, $"{Processed} processed in {Batches} batch(es): {Delivered} delivered, {Retried} retrying later, {Held} held, {Failed} failed");
+        => string.Create(CultureInfo.InvariantCulture, $"{Processed} processed in {Batches} batch(es): {Delivered} delivered, {Unchanged} already held (nothing sent), {Retried} retrying later, {Held} held, {Failed} failed");
 }
 
 /// <summary>
@@ -425,6 +430,18 @@ public sealed class DeliveryWorker
                 continue;
             }
 
+            // The final check before anything is sent: the queued document and payload against what OSDU holds at the
+            // moment this worker has the record. What was planned against an earlier state can already have landed.
+            var (sendMetadata, sendPayload) = ChangeDetector.AtPush(state, _flow.Change);
+            if (!sendMetadata && !sendPayload)
+            {
+                var held = $"the final hash check found OSDU already holding this version (metadata hash {state.PendingMetadataHash ?? "none"}"
+                    + (state.PendingPayload ? $", payload hash {state.PendingPayloadHash ?? "none"}" : string.Empty) + "); nothing was sent";
+                var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Delivered, AttemptOutcome.Skipped, AttemptPhases.Unchanged, null, held, null, null, null, promote: true, nothingSent: true);
+                await record(index, completion, evt, summary).ConfigureAwait(false);
+                continue;
+            }
+
             JsonObject document;
             try
             {
@@ -444,15 +461,15 @@ public sealed class DeliveryWorker
                 Key = key,
                 TargetId = state.TargetId,
                 Document = document,
-                DeliverMetadata = state.PendingMetadata,
-                DeliverPayload = state.PendingPayload,
+                DeliverMetadata = sendMetadata,
+                DeliverPayload = sendPayload,
                 Payload = state.PendingPayloadLocation is { } location ? new DropPayloadSource(_drops, location) : null,
                 ExistingVersion = state.TargetVersion,
                 SourceKey = state.SourceKey,
                 Label = state.Label,
                 CompletedSteps = completedSteps,
                 TargetState = JsonMerge.ToValues(state.TargetStateJson),
-                StepCompleted = (step, returned, token) => SaveStepAsync(key, completedSteps, step, returned, reportedSteps, token),
+                StepCompleted = (step, returned, token) => SaveStepAsync(state, completedSteps, step, returned, reportedSteps, token),
             }));
         }
 
@@ -585,7 +602,8 @@ public sealed class DeliveryWorker
         string? targetStateJson,
         bool promote = false,
         bool keepSteps = false,
-        DateTime? nextAttempt = null)
+        DateTime? nextAttempt = null,
+        bool nothingSent = false)
     {
         var completed = _time.GetUtcNow().UtcDateTime;
         var redacted = error is null ? null : HeaderRedaction.RedactMessage(error);
@@ -594,6 +612,8 @@ public sealed class DeliveryWorker
             DeliveryKey = record.DeliveryKey,
             Status = status,
             Promote = promote,
+            NothingSent = nothingSent,
+            Claimed = ClaimedWork.Of(record),
             TargetVersion = version,
             TargetId = record.TargetId,
             NextAttemptUtc = nextAttempt,
@@ -627,6 +647,7 @@ public sealed class DeliveryWorker
             FlowName = _flow.Name,
             Kind = status switch
             {
+                RecordStatus.Delivered when nothingSent => "record.unchanged",
                 RecordStatus.Delivered => "record.delivered",
                 RecordStatus.Pending => "record.retry",
                 RecordStatus.Held => "record.held",
@@ -647,6 +668,7 @@ public sealed class DeliveryWorker
 
         var summary = status switch
         {
+            RecordStatus.Delivered when nothingSent => new WorkerSummary(1, 0, 0, 0, 0, Unchanged: 1),
             RecordStatus.Delivered => new WorkerSummary(1, 1, 0, 0, 0),
             RecordStatus.Pending => new WorkerSummary(1, 0, 1, 0, 0),
             RecordStatus.Held => new WorkerSummary(1, 0, 0, 1, 0),
@@ -747,15 +769,21 @@ public sealed class DeliveryWorker
         return result;
     }
 
-    /// <summary>Persists a completed step before the protocol moves on, so a crash never repeats it.</summary>
+    /// <summary>
+    /// Persists a completed step before the protocol moves on, so a crash never repeats it. The step belongs to the
+    /// document the record was claimed with; newer work queued behind the try never inherits it.
+    /// </summary>
     private async Task SaveStepAsync(
-        DeliveryKey key,
+        RecordState claimed,
         IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> completed,
         string step,
         IReadOnlyDictionary<string, string> returned,
         System.Collections.Concurrent.ConcurrentDictionary<Guid, string> reported,
         CancellationToken ct)
     {
+        var key = claimed.DeliveryKey;
+        var reference = claimed.PendingDocumentRef
+            ?? throw new DeliveryException($"Record {key} is being delivered without a pending document reference, so its step progress cannot be tied to the document it belongs to.");
         var node = new JsonObject();
         foreach (var (name, values) in completed)
         {
@@ -773,7 +801,7 @@ public sealed class DeliveryWorker
         node[step] = ToNode(returned);
         var json = node.ToJsonString();
         reported[key.Value] = json;
-        await _ledger.SaveStepAsync(key, json, ct).ConfigureAwait(false);
+        await _ledger.SaveStepAsync(key, claimed.LastSubmissionId, reference, json, ct).ConfigureAwait(false);
     }
 
     private async Task<WorkItem?> LoadItemAsync(RecordState record, CancellationToken ct)

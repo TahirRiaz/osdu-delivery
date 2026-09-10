@@ -141,12 +141,12 @@ public sealed class CatalogLedger : ILedger
         return row is null ? null : ToState(row);
     }
 
-    public async Task<int> UpsertPendingAsync(IReadOnlyList<RecordState> records, CancellationToken ct = default)
+    public async Task<PendingStaging> UpsertPendingAsync(IReadOnlyList<RecordState> records, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(records);
         if (records.Count == 0)
         {
-            return 0;
+            return new PendingStaging(0, []);
         }
 
         var now = Now;
@@ -156,13 +156,16 @@ public sealed class CatalogLedger : ILedger
             return await SqlServerLedgerBulk.UpsertPendingAsync(db, records, now, ct).ConfigureAwait(false);
         }
 
+        var delivering = StatusText.Of(RecordStatus.Delivering);
         var staged = 0;
+        var refused = new List<DeliveryKey>();
         foreach (var chunk in records.Chunk(ChunkSize))
         {
             var keys = chunk.Select(r => r.DeliveryKey.Value).ToArray();
             var existing = await db.DeliveryRecords.Where(r => keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
             foreach (var record in chunk)
             {
+                var inFlight = false;
                 if (!existing.TryGetValue(record.DeliveryKey.Value, out var entity))
                 {
                     entity = new DeliveryRecord
@@ -174,33 +177,45 @@ public sealed class CatalogLedger : ILedger
                         CreatedUtc = now,
                     };
                     db.DeliveryRecords.Add(entity);
+                    existing[entity.DeliveryKey] = entity;
                 }
-                else if (entity.Status == StatusText.Of(RecordStatus.Delivering) && entity.LeaseExpiresUtc is { } expires && expires > now)
+                else if (HoldsNewerThan(entity, record))
                 {
-                    // Another worker holds it right now; its outcome lands under its own submission. The next drop
-                    // plans it again.
+                    refused.Add(record.DeliveryKey);
                     continue;
                 }
+                else
+                {
+                    inFlight = entity.Status == delivering && entity.LeaseExpiresUtc is { } expires && expires > now;
+                }
 
-                // Current-state columns (what OSDU holds) are preserved; only the pending work is (re)written.
+                // Current-state columns (what OSDU holds) are preserved; only the pending work is (re)written. A record
+                // another worker is delivering right now keeps its status, lease and retry count: the new work queues
+                // behind the delivery, whose completion leaves it pending for the next pass.
                 entity.SourceKey = Truncate(record.SourceKey, 400)!;
                 entity.Label = Truncate(record.Label, 400);
                 entity.MappingName = record.MappingName;
                 entity.TargetId ??= record.TargetId;
-                entity.Status = StatusText.Of(RecordStatus.Pending);
                 entity.LastSubmissionId = record.LastSubmissionId;
-                entity.AttemptCount = 0;
                 entity.NextAttemptUtc = null;
-                entity.LastError = null;
-                entity.LeaseOwner = null;
-                entity.LeaseExpiresUtc = null;
+                if (!inFlight)
+                {
+                    entity.Status = StatusText.Of(RecordStatus.Pending);
+                    entity.AttemptCount = 0;
+                    entity.LastError = null;
+                    entity.LeaseOwner = null;
+                    entity.LeaseExpiresUtc = null;
+                }
+
                 entity.PendingDocumentRef = record.PendingDocumentRef;
                 entity.WorkBatch = record.WorkBatch;
                 entity.PendingStepJson = null;
                 entity.PendingRenderContext = record.PendingRenderContext;
                 entity.PendingSourceFingerprint = record.PendingSourceFingerprint;
+                entity.PendingSourceModifiedUtc = record.PendingSourceModifiedUtc;
                 entity.PendingMetadataHash = record.PendingMetadataHash;
                 entity.PendingPayloadHash = record.PendingPayloadHash;
+                entity.PendingPayloadModifiedUtc = record.PendingPayloadModifiedUtc;
                 entity.PendingPayloadLocation = record.PendingPayloadLocation;
                 entity.PendingMetadata = record.PendingMetadata;
                 entity.PendingPayload = record.PendingPayload;
@@ -213,24 +228,120 @@ public sealed class CatalogLedger : ILedger
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
 
-        return staged;
+        return new PendingStaging(staged, refused);
     }
 
-    public async Task MarkSkippedAsync(Guid flowId, IEnumerable<DeliveryKey> keys, Guid submissionId, CancellationToken ct = default)
+    /// <summary>
+    /// Whether the record already holds, delivered or queued, a source version or a payload newer than the work
+    /// carries. The planner decided against the record as it read it; another intake can have staged or delivered a
+    /// newer version since, and that version must stand. The SQL Server path applies the same test in set form.
+    /// </summary>
+    private static bool HoldsNewerThan(DeliveryRecord entity, RecordState work)
     {
-        ArgumentNullException.ThrowIfNull(keys);
+        var queued = entity.PendingDocumentRef is not null
+            && (entity.Status == StatusText.Of(RecordStatus.Pending) || entity.Status == StatusText.Of(RecordStatus.Delivering));
+        if (work.PendingSourceModifiedUtc is { } source
+            && ((entity.SourceModifiedUtc is { } delivered && source < delivered)
+                || (queued && entity.PendingSourceModifiedUtc is { } pending && source < pending)))
+        {
+            return true;
+        }
+
+        return work.PendingPayload && work.PendingPayloadModifiedUtc is { } payload
+            && ((entity.PayloadModifiedUtc is { } deliveredPayload && payload < deliveredPayload)
+                || (queued && entity.PendingPayload && entity.PendingPayloadModifiedUtc is { } pendingPayload && payload < pendingPayload));
+    }
+
+    public async Task MarkSkippedAsync(Guid flowId, IReadOnlyList<SkippedRecord> records, Guid submissionId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        if (records.Count == 0)
+        {
+            return;
+        }
+
         var now = Now;
+        var pending = StatusText.Of(RecordStatus.Pending);
+        var delivering = StatusText.Of(RecordStatus.Delivering);
+        var delivered = StatusText.Of(RecordStatus.Delivered);
         await using var db = Open();
-        foreach (var chunk in keys.Select(k => k.Value).Chunk(ChunkSize))
+
+        // An unchanged record carries nothing to write but the submission pointer: one statement per chunk, however many
+        // a quiet run skips. A record with queued work stays with the submission that queued it, or that submission's
+        // drain would never find it.
+        foreach (var chunk in records.Where(r => r.Kind == SkipKind.Unchanged).Select(r => r.DeliveryKey.Value).Chunk(ChunkSize))
         {
             await db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey))
+                .Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey) && !(r.PendingDocumentRef != null && (r.Status == pending || r.Status == delivering)))
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(r => r.LastSubmissionId, submissionId)
                     .SetProperty(r => r.UpdatedUtc, now), ct)
                 .ConfigureAwait(false);
         }
+
+        foreach (var chunk in records.Where(r => r.Kind != SkipKind.Unchanged).Chunk(ChunkSize))
+        {
+            var keys = chunk.Select(r => r.DeliveryKey.Value).ToArray();
+            var entities = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
+            foreach (var skip in chunk)
+            {
+                if (!entities.TryGetValue(skip.DeliveryKey.Value, out var entity))
+                {
+                    throw new DeliveryException($"Record {skip.DeliveryKey} is not in the ledger, but a {skip.Kind.ToString().ToLowerInvariant()} skip is only ever decided against a record the ledger holds.");
+                }
+
+                if (skip.Kind == SkipKind.Stale)
+                {
+                    // The record is left exactly as it is: the attempt is the whole of what happened, and says which
+                    // version the drop carried and which one stands.
+                    db.DeliveryAttempts.Add(new DeliveryAttempt
+                    {
+                        DeliveryKey = entity.DeliveryKey,
+                        SubmissionId = submissionId,
+                        RunId = skip.RunId,
+                        Worker = "intake",
+                        StartedUtc = now,
+                        CompletedUtc = now,
+                        Outcome = StatusText.Of(AttemptOutcome.Skipped),
+                        Phase = AttemptPhases.Stale,
+                        Error = Truncate(Http.HeaderRedaction.RedactMessage(skip.Reason), 2000),
+                    });
+                    continue;
+                }
+
+                if (entity.PendingDocumentRef is not null && (entity.Status == pending || entity.Status == delivering))
+                {
+                    // Identical to the queued work: the version the drop carried belongs to that work and lands with it.
+                    entity.PendingSourceFingerprint = skip.SourceFingerprint ?? entity.PendingSourceFingerprint;
+                    entity.PendingSourceModifiedUtc = Latest(entity.PendingSourceModifiedUtc, skip.SourceModifiedUtc);
+                    if (entity.PendingPayload)
+                    {
+                        entity.PendingPayloadModifiedUtc = Latest(entity.PendingPayloadModifiedUtc, skip.PayloadModifiedUtc);
+                    }
+
+                    entity.UpdatedUtc = now;
+                    continue;
+                }
+
+                entity.LastSubmissionId = submissionId;
+                entity.UpdatedUtc = now;
+                if (entity.Status == delivered)
+                {
+                    // OSDU holds a document identical to this render, so it is as true of the version and context just
+                    // rendered as of the ones it was built from: the next plan decides the record without rendering.
+                    entity.SourceFingerprint = skip.SourceFingerprint ?? entity.SourceFingerprint;
+                    entity.SourceModifiedUtc = Latest(entity.SourceModifiedUtc, skip.SourceModifiedUtc);
+                    entity.PayloadModifiedUtc = Latest(entity.PayloadModifiedUtc, skip.PayloadModifiedUtc);
+                    entity.RenderContext = skip.RenderContext ?? entity.RenderContext;
+                }
+            }
+
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
     }
+
+    private static DateTime? Latest(DateTime? a, DateTime? b)
+        => a is null ? b : b is null ? a : a > b ? a : b;
 
     public async Task MarkHeldAsync(IEnumerable<RecordState> records, CancellationToken ct = default)
     {
@@ -267,6 +378,7 @@ public sealed class CatalogLedger : ILedger
                 entity.WorkBatch = null;
                 entity.PendingStepJson = null;
                 entity.PendingSourceFingerprint = record.PendingSourceFingerprint;
+                entity.PendingSourceModifiedUtc = record.PendingSourceModifiedUtc;
                 entity.PendingMetadata = false;
                 entity.PendingPayload = false;
                 entity.Blocked = true;
@@ -410,14 +522,11 @@ public sealed class CatalogLedger : ILedger
 
     private static void ApplyCompletion(DeliveryRecord entity, RecordCompletion completion, DateTime now)
     {
-        entity.Status = StatusText.Of(completion.Status);
-        entity.Blocked = completion.Status is RecordStatus.Held or RecordStatus.Failed;
         entity.LeaseOwner = null;
         entity.LeaseExpiresUtc = null;
-        entity.NextAttemptUtc = completion.NextAttemptUtc;
-        entity.LastError = Truncate(completion.Error, 2000);
         entity.UpdatedUtc = now;
-        entity.PendingStepJson = completion.PendingStepJson;
+
+        // What the try did to the target is true whatever happened to the queue in the meantime.
         if (completion.TargetId is not null)
         {
             entity.TargetId = completion.TargetId;
@@ -433,10 +542,53 @@ public sealed class CatalogLedger : ILedger
             entity.TargetStateJson = completion.TargetStateJson;
         }
 
+        if (completion.Claimed is { } claimed && IsSuperseded(entity, claimed))
+        {
+            // Newer work was queued while this try was in flight. What the try delivered is now what OSDU holds, and
+            // the newer work stays pending with its own step progress and a fresh retry budget: the next pass sends
+            // it, after the final hash check against what just landed.
+            if (completion.Promote)
+            {
+                entity.RenderContext = claimed.RenderContext ?? entity.RenderContext;
+                entity.SourceFingerprint = claimed.SourceFingerprint ?? entity.SourceFingerprint;
+                entity.SourceModifiedUtc = claimed.SourceModifiedUtc ?? entity.SourceModifiedUtc;
+                if (claimed.Metadata)
+                {
+                    entity.MetadataHash = claimed.MetadataHash;
+                }
+
+                if (claimed.Payload)
+                {
+                    entity.PayloadHash = claimed.PayloadHash;
+                    entity.PayloadModifiedUtc = claimed.PayloadModifiedUtc ?? entity.PayloadModifiedUtc;
+                }
+
+                if (!completion.NothingSent)
+                {
+                    entity.LastDeliveredUtc = now;
+                    entity.LastVerifiedUtc = null;
+                    entity.LastVerifyOutcome = null;
+                }
+            }
+
+            entity.Status = StatusText.Of(RecordStatus.Pending);
+            entity.Blocked = false;
+            entity.NextAttemptUtc = null;
+            entity.LastError = null;
+            entity.AttemptCount = 0;
+            return;
+        }
+
+        entity.Status = StatusText.Of(completion.Status);
+        entity.Blocked = completion.Status is RecordStatus.Held or RecordStatus.Failed;
+        entity.NextAttemptUtc = completion.NextAttemptUtc;
+        entity.LastError = Truncate(completion.Error, 2000);
+        entity.PendingStepJson = completion.PendingStepJson;
         if (completion.Promote)
         {
             entity.RenderContext = entity.PendingRenderContext ?? entity.RenderContext;
             entity.SourceFingerprint = entity.PendingSourceFingerprint ?? entity.SourceFingerprint;
+            entity.SourceModifiedUtc = entity.PendingSourceModifiedUtc ?? entity.SourceModifiedUtc;
             if (entity.PendingMetadata)
             {
                 entity.MetadataHash = entity.PendingMetadataHash;
@@ -445,11 +597,16 @@ public sealed class CatalogLedger : ILedger
             if (entity.PendingPayload)
             {
                 entity.PayloadHash = entity.PendingPayloadHash;
+                entity.PayloadModifiedUtc = entity.PendingPayloadModifiedUtc ?? entity.PayloadModifiedUtc;
             }
 
-            entity.LastDeliveredUtc = now;
-            entity.LastVerifiedUtc = null;
-            entity.LastVerifyOutcome = null;
+            if (!completion.NothingSent)
+            {
+                entity.LastDeliveredUtc = now;
+                entity.LastVerifiedUtc = null;
+                entity.LastVerifyOutcome = null;
+            }
+
             entity.PendingDocumentRef = null;
             entity.WorkBatch = null;
             entity.PendingMetadata = false;
@@ -459,13 +616,35 @@ public sealed class CatalogLedger : ILedger
         }
     }
 
-    public async Task SaveStepAsync(DeliveryKey key, string stepJson, CancellationToken ct = default)
+    /// <summary>
+    /// Whether the record now carries other pending work than the claimed try: newer work queued behind it. A record
+    /// whose pending document is gone (a removal while the try ran) is not superseded; the completion settles it.
+    /// </summary>
+    private static bool IsSuperseded(DeliveryRecord entity, ClaimedWork claimed)
+        => entity.PendingDocumentRef is not null
+            && (!string.Equals(entity.PendingDocumentRef, claimed.DocumentRef, StringComparison.Ordinal) || entity.LastSubmissionId != claimed.SubmissionId);
+
+    public async Task SaveStepAsync(DeliveryKey key, Guid? submissionId, string documentRef, string stepJson, CancellationToken ct = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(documentRef);
         await using var db = Open();
         await db.DeliveryRecords
-            .Where(r => r.DeliveryKey == key.Value)
+            .Where(r => r.DeliveryKey == key.Value && r.PendingDocumentRef == documentRef && r.LastSubmissionId == submissionId)
             .ExecuteUpdateAsync(s => s.SetProperty(r => r.PendingStepJson, stepJson), ct)
             .ConfigureAwait(false);
+    }
+
+    public async Task<long> CountAttemptsAsync(Guid submissionId, AttemptOutcome outcome, string? phase = null, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var text = StatusText.Of(outcome);
+        var query = db.DeliveryAttempts.AsNoTracking().Where(a => a.SubmissionId == submissionId && a.Outcome == text);
+        if (phase is not null)
+        {
+            query = query.Where(a => a.Phase == phase);
+        }
+
+        return await query.Select(a => a.DeliveryKey).Distinct().LongCountAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<int> ReclaimExpiredLeasesAsync(Guid flowId, DateTime beforeUtc, CancellationToken ct = default)
@@ -922,6 +1101,7 @@ public sealed class CatalogLedger : ILedger
             // Force redelivery of everything we hold: clear the hashes so the next intake sees a change.
             entity.MetadataHash = null;
             entity.PayloadHash = null;
+            entity.PayloadModifiedUtc = null;
             entity.SourceFingerprint = null;
             entity.LastError = $"verify: {outcome.ToString().ToLowerInvariant()} (observed version {observedVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none"}, expected {entity.TargetVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none"}); redelivery queued on next submission";
         }
@@ -978,6 +1158,7 @@ public sealed class CatalogLedger : ILedger
                 .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false),
             RedeliverScope.Payload => await rows.ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.PayloadHash, (string?)null)
+                .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
                 .SetProperty(r => r.SourceFingerprint, (string?)null)
                 .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
                 .SetProperty(r => r.LastError, note)
@@ -985,6 +1166,7 @@ public sealed class CatalogLedger : ILedger
             _ => await rows.ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.MetadataHash, (string?)null)
                 .SetProperty(r => r.PayloadHash, (string?)null)
+                .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
                 .SetProperty(r => r.SourceFingerprint, (string?)null)
                 .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
                 .SetProperty(r => r.LastError, note)
@@ -1057,13 +1239,18 @@ public sealed class CatalogLedger : ILedger
 
         entity.Status = StatusText.Of(RecordStatus.Deleted);
         entity.Blocked = true;
-        // The unchanged source keeps the record blocked; a source change or a release plans it again.
+        // The unchanged source keeps the record blocked; a source change or a release plans it again. Under a
+        // last-modified flow a record that never carried a moment is held at the removal itself, so only a row
+        // modified after it was taken out brings it back.
         entity.PendingSourceFingerprint = entity.SourceFingerprint;
+        entity.PendingSourceModifiedUtc = entity.SourceModifiedUtc ?? nowUtc;
         entity.TargetVersion = null;
         entity.TargetStateJson = null;
         entity.MetadataHash = null;
         entity.PayloadHash = null;
+        entity.PayloadModifiedUtc = null;
         entity.SourceFingerprint = null;
+        entity.SourceModifiedUtc = null;
         entity.LastVerifiedUtc = null;
         entity.LastVerifyOutcome = null;
         entity.LeaseOwner = null;
@@ -1076,6 +1263,7 @@ public sealed class CatalogLedger : ILedger
         entity.PendingMetadata = false;
         entity.PendingPayload = false;
         entity.PendingPayloadLocation = null;
+        entity.PendingPayloadModifiedUtc = null;
         entity.LastError = note;
         entity.UpdatedUtc = nowUtc;
     }
@@ -1108,11 +1296,13 @@ public sealed class CatalogLedger : ILedger
 
                 var rows = await query
                     .OrderBy(r => r.DeliveryKey)
-                    .Select(r => new { r.DeliveryKey, r.SourceKey, r.SourceFingerprint, r.MetadataHash, r.PayloadHash, r.Status, r.TargetId, r.TargetVersion })
+                    .Select(r => new { r.DeliveryKey, r.SourceKey, r.SourceFingerprint, r.SourceModifiedUtc, r.MetadataHash, r.PayloadHash, r.PayloadModifiedUtc, r.Status, r.TargetId, r.TargetVersion })
                     .Take(size)
                     .ToListAsync(ct)
                     .ConfigureAwait(false);
-                page = rows.Select(r => new KnownState(new DeliveryKey(r.DeliveryKey), r.SourceKey, r.SourceFingerprint, r.MetadataHash, r.PayloadHash, StatusText.ToRecordStatus(r.Status), r.TargetId, r.TargetVersion)).ToList();
+                page = rows.Select(r => new KnownState(
+                    new DeliveryKey(r.DeliveryKey), r.SourceKey, r.SourceFingerprint, r.SourceModifiedUtc, r.MetadataHash, r.PayloadHash, r.PayloadModifiedUtc,
+                    StatusText.ToRecordStatus(r.Status), r.TargetId, r.TargetVersion)).ToList();
             }
 
             foreach (var row in page)
@@ -1891,6 +2081,8 @@ public sealed class CatalogLedger : ILedger
         entity.CompletedUtc = s.CompletedUtc;
         entity.Planned = s.Planned;
         entity.SkippedUnchanged = s.SkippedUnchanged;
+        entity.SkippedStale = s.SkippedStale;
+        entity.UnchangedAtPush = s.UnchangedAtPush;
         entity.Blocked = s.Blocked;
         entity.Delivered = s.Delivered;
         entity.Held = s.Held;
@@ -1917,6 +2109,8 @@ public sealed class CatalogLedger : ILedger
         CompletedUtc = e.CompletedUtc,
         Planned = e.Planned,
         SkippedUnchanged = e.SkippedUnchanged,
+        SkippedStale = e.SkippedStale,
+        UnchangedAtPush = e.UnchangedAtPush,
         Blocked = e.Blocked,
         Delivered = e.Delivered,
         Held = e.Held,
@@ -1933,8 +2127,10 @@ public sealed class CatalogLedger : ILedger
         MappingName = r.MappingName,
         RenderContext = r.RenderContext,
         SourceFingerprint = r.SourceFingerprint,
+        SourceModifiedUtc = r.SourceModifiedUtc,
         MetadataHash = r.MetadataHash,
         PayloadHash = r.PayloadHash,
+        PayloadModifiedUtc = r.PayloadModifiedUtc,
         TargetId = r.TargetId,
         TargetVersion = r.TargetVersion,
         Status = StatusText.ToRecordStatus(r.Status),
@@ -1953,8 +2149,10 @@ public sealed class CatalogLedger : ILedger
         PendingStepJson = r.PendingStepJson,
         PendingRenderContext = r.PendingRenderContext,
         PendingSourceFingerprint = r.PendingSourceFingerprint,
+        PendingSourceModifiedUtc = r.PendingSourceModifiedUtc,
         PendingMetadataHash = r.PendingMetadataHash,
         PendingPayloadHash = r.PendingPayloadHash,
+        PendingPayloadModifiedUtc = r.PendingPayloadModifiedUtc,
         PendingPayloadLocation = r.PendingPayloadLocation,
         PendingMetadata = r.PendingMetadata,
         PendingPayload = r.PendingPayload,

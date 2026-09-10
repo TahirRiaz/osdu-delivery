@@ -19,7 +19,7 @@ public sealed record Drop(string Location, DropManifest Manifest)
 }
 
 /// <summary>One payload chunk file, in delivery order.</summary>
-public sealed record PayloadChunk(int Index, string Path, long Size);
+public sealed record PayloadChunk(int Index, string Path, long Size, DateTimeOffset? Modified = null);
 
 /// <summary>
 /// Reads a drop: the manifest, the source-shaped records (parsed, one row group at a time), and the opaque payload

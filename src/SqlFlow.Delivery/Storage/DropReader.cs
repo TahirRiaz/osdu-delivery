@@ -84,7 +84,7 @@ public sealed class DropReader : IDropReader
         var files = await store.ListAsync(directory, new FileDiscovery { Pattern = pattern }, ct).ConfigureAwait(false);
         return files
             .OrderBy(f => f.Name, StringComparer.Ordinal)
-            .Select((f, i) => new PayloadChunk(i, f.Path, f.Size))
+            .Select((f, i) => new PayloadChunk(i, f.Path, f.Size, f.Modified))
             .ToList();
     }
 

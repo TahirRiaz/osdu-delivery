@@ -52,6 +52,10 @@ export interface DeliverySubmission {
   completedUtc: string | null;
   planned: number;
   skippedUnchanged: number;
+  /** Records the drop carried in a version older than the one delivered or queued: skipped, never sent. */
+  skippedStale: number;
+  /** Records whose queued document OSDU already held when the worker came to send it: nothing was sent. */
+  unchangedAtPush: number;
   blocked: number;
   delivered: number;
   held: number;
@@ -100,8 +104,12 @@ export interface DeliveryRecord {
   mappingName: string;
   renderContext: string | null;
   sourceFingerprint: string | null;
+  /** When the source row the delivered document was built from last changed (the flow's source.lastModified). */
+  sourceModifiedUtc: string | null;
   metadataHash: string | null;
   payloadHash: string | null;
+  /** The newest modified time among the chunk files the delivered payload was sent from. */
+  payloadModifiedUtc: string | null;
   targetId: string | null;
   targetVersion: number | null;
   status: DeliveryRecordStatus;

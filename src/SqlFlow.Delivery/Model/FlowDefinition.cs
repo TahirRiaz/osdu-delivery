@@ -107,6 +107,18 @@ public sealed record FlowSource
     /// <summary>The root-scope column carrying the source fingerprint for the tier-1 gate (design.md section 6.6).</summary>
     public string? Fingerprint { get; init; }
 
+    /// <summary>
+    /// The root-scope column saying when the source row last changed (a timestamp, or RFC 3339 / ISO 8601 text; text
+    /// without an offset is read as UTC). An alternative to <see cref="Fingerprint"/> that is ordered as well as
+    /// compared: a row modified after the version the ledger holds is planned through the whole pipeline, a row
+    /// carrying the same moment is skipped without rendering, and a row older than what was delivered or queued is
+    /// skipped as stale, so a replayed or late drop never takes OSDU back to an earlier version.
+    /// </summary>
+    public string? LastModified { get; init; }
+
+    /// <summary>The column the per-record source gate reads: the last-modified column when declared, else the fingerprint.</summary>
+    public string? ChangeColumn => LastModified ?? Fingerprint;
+
     /// <summary>Where a known-state publication is written when the run names no location: a directory or storage prefix
     /// the preparing side reads before its next drop. Supports {parameter} tokens. Null leaves it to the run.</summary>
     public string? KnownState { get; init; }
@@ -183,6 +195,14 @@ public enum ChangeDetection
 
     /// <summary>Always deliver.</summary>
     Always,
+
+    /// <summary>
+    /// Payloads only: the payload's chunk files are its watermark. A payload is reconsidered when a chunk file was
+    /// modified after the ones OSDU's payload was delivered from, or the set of chunk files changed; the drop's hash
+    /// column, when it declares one, is still the final check, so a rewrite with the same content is not uploaded
+    /// again. Chunk files older than what was delivered are stale and never sent.
+    /// </summary>
+    LastModified,
 }
 
 public enum UnchangedAction

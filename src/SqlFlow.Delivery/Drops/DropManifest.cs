@@ -165,9 +165,11 @@ public sealed record DropManifest
                 throw new FlowValidationException($"{source}: payload '{name}' pathTemplate must contain '{{deliveryKey}}'.");
             }
 
-            if (string.IsNullOrWhiteSpace(payload.HashColumn))
+            // Whether a hash column is required depends on how the flow detects payload changes, which the manifest
+            // cannot know: the planner insists on it unless the flow takes the chunk files' dates as the watermark.
+            if (payload.HashColumn is not null && string.IsNullOrWhiteSpace(payload.HashColumn))
             {
-                throw new FlowValidationException($"{source}: payload '{name}' must name the root-scope hashColumn carrying the logical payload hash.");
+                throw new FlowValidationException($"{source}: payload '{name}' hashColumn must name a root-scope column when it is given.");
             }
         }
     }
@@ -213,9 +215,12 @@ public sealed record ManifestPayload
     [JsonPropertyName("pathTemplate")]
     public required string PathTemplate { get; init; }
 
-    /// <summary>Root-scope column carrying the hash of the logical payload content (design.md section 6.4).</summary>
+    /// <summary>
+    /// Root-scope column carrying the hash of the logical payload content (design.md section 6.4). Required unless
+    /// the flow detects payload changes by the chunk files' modified times (<c>change.payloadDetect: lastModified</c>).
+    /// </summary>
     [JsonPropertyName("hashColumn")]
-    public required string HashColumn { get; init; }
+    public string? HashColumn { get; init; }
 
     /// <summary>Root-scope column carrying the chunk count, when known; null means enumerate.</summary>
     [JsonPropertyName("chunkCountColumn")]

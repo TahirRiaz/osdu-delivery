@@ -52,8 +52,10 @@ public sealed class KnownStatePublisher
             ("deliveryKey", typeof(string)),
             ("sourceKey", typeof(string)),
             ("sourceFingerprint", typeof(string)),
+            ("sourceModifiedUtc", typeof(DateTime)),
             ("metadataHash", typeof(string)),
             ("payloadHash", typeof(string)),
+            ("payloadModifiedUtc", typeof(DateTime)),
             ("status", typeof(string)),
             ("targetId", typeof(string)),
             ("targetVersion", typeof(long)),
@@ -91,8 +93,10 @@ public sealed class KnownStatePublisher
                         ["deliveryKey"] = r.DeliveryKey.Value.ToString("D"),
                         ["sourceKey"] = r.SourceKey,
                         ["sourceFingerprint"] = r.SourceFingerprint,
+                        ["sourceModifiedUtc"] = Utc(r.SourceModifiedUtc),
                         ["metadataHash"] = r.MetadataHash,
                         ["payloadHash"] = r.PayloadHash,
+                        ["payloadModifiedUtc"] = Utc(r.PayloadModifiedUtc),
                         ["status"] = r.Status.ToString().ToLowerInvariant(),
                         ["targetId"] = r.TargetId,
                         ["targetVersion"] = r.TargetVersion,
@@ -148,6 +152,9 @@ public sealed class KnownStatePublisher
         _logger.LogInformation("Published known state for {Flow}: {Count} record(s) to {Location}.", flow.Name, total.ToString(CultureInfo.InvariantCulture), dataPath);
         return total;
     }
+
+    /// <summary>The ledger stores moments as UTC without a kind; the publication says so, so a reader never takes them for local time.</summary>
+    private static object? Utc(DateTime? value) => value is { } v ? DateTime.SpecifyKind(v, DateTimeKind.Utc) : null;
 
     private static string Join(string root, string name)
         => root.Contains("://", StringComparison.Ordinal) ? root + "/" + name : Path.Combine(root, name);

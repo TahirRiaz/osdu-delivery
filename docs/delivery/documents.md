@@ -17,7 +17,7 @@ source:
   manifest: manifest.json          # default
   payloads:                        # name -> drop-relative template; must contain {deliveryKey}
     curves: curves/{deliveryKey}/chunk_*.parquet
-  fingerprint: update_date         # root-scope column for the tier-1 gate (optional)
+  lastModified: update_date        # root-scope column saying when the row last changed (optional; or fingerprint: <column>, never both)
   knownState: abfss://lake@acct.dfs.core.windows.net/osdu-prepare/{logSource}/known-state   # where a known-state run publishes when the run names no location (optional)
   work: abfss://lake@acct.dfs.core.windows.net/osdu-work/{logSource}   # where the intake writes its work batches (default {location}/.work)
   scopes:                          # optional overrides of the manifest's child scopes
@@ -31,7 +31,7 @@ render:                            # the only block that changes what a document
 
 change:
   detect: renderedHash             # renderedHash | always
-  payloadDetect: contentHash       # contentHash | always
+  payloadDetect: contentHash       # contentHash | lastModified | always
   onUnchanged: skip                # skip | deliver
   useSourceVersions: true          # tier-0 gate on the manifest's sourceVersions
 
@@ -119,6 +119,24 @@ verify: { reconcile: false }       # whether the verify pass re-queues drifted o
 
 Only `render.*` enters the render context and therefore the content hash. Everything else changes how a
 document gets there. Raising `reliability.concurrency` or changing `target.endpoint` never redelivers a record.
+
+### Incremental drops: what changed since the last run
+
+A drop does not have to carry every record. The rows it carries are planned; the records it leaves out are left
+exactly as they are. Two watermarks tell the planner which of the rows it does carry have changed, and every row
+that has goes through the whole pipeline: render, the preflight-checked mapping, the hash of the rendered document
+against what OSDU holds, and the same hash check again by the worker just before anything is sent.
+
+| Key | What it does |
+| --- | --- |
+| `source.lastModified` | A root-scope column saying when the source row last changed: a `timestamp`, or a `string` holding RFC 3339 / ISO 8601 text (without an offset it is read as UTC). A row modified after the version the ledger holds, delivered or queued, is planned; a row at the same moment is skipped without rendering; a row older than that version is **stale**, never sent, and recorded as a skipped attempt against the record. An empty or unreadable value holds the record with a reason naming the column. Declare it or `source.fingerprint`, not both: the fingerprint is compared only for equality, so it cannot tell a newer row from an older replay. |
+| `change.payloadDetect: lastModified` | The payload's chunk files are its watermark. A payload is reconsidered when a chunk file was modified after the ones OSDU's payload was sent from, or the set of chunk files (names, sizes, times) changed; files older than the payload already delivered or queued are stale and never sent. When the drop still declares a `hashColumn`, that hash stays the final check, so rewritten files with the same content are not uploaded again; without one, the files themselves are the payload's identity. Costs one storage listing per record per run. |
+
+A record whose newer version arrives while an earlier one is being delivered does not lose it: the new work queues
+behind the delivery and the next pass of the same run sends it, after the final check has compared it with what just
+landed. Concurrent intakes cannot take a record backwards either; the ledger refuses staged work older than what it
+holds and records it as stale. The submission counts the skips (`skippedStale`), and the records the final check found
+OSDU already holding (`unchangedAtPush`), beside the usual counts.
 
 ### Parameters
 

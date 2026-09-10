@@ -220,7 +220,7 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal("mh2", state.PendingMetadataHash);
         Assert.Equal(s2, state.LastSubmissionId);
 
-        await Ledger.MarkSkippedAsync(_flow, [claimed[0].DeliveryKey], s2);
+        await Ledger.MarkSkippedAsync(_flow, [new SkippedRecord { DeliveryKey = claimed[0].DeliveryKey, Kind = SkipKind.Unchanged, Reason = "unchanged" }], s2);
         var held = Pending("b", s2) with { LastError = "no wellbore" };
         await Ledger.MarkHeldAsync([held]);
         var heldState = await Ledger.GetRecordAsync(_flow, held.DeliveryKey);
@@ -329,7 +329,7 @@ public class SqlLedgerTests : IDisposable
         await Ledger.UpsertPendingAsync([Pending("s", submission)]);
         var claimed = await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now);
         var key = claimed[0].DeliveryKey;
-        await Ledger.SaveStepAsync(key, "{\"metadata\":{\"version\":\"3\"}}");
+        await Ledger.SaveStepAsync(key, submission, "0:0:10", "{\"metadata\":{\"version\":\"3\"}}");
         Assert.Equal("{\"metadata\":{\"version\":\"3\"}}", (await Ledger.GetRecordAsync(_flow, key))!.PendingStepJson);
 
         var next = Now + TimeSpan.FromMinutes(10);
@@ -413,6 +413,132 @@ public class SqlLedgerTests : IDisposable
         var pruned = await Ledger.PruneAttemptsAsync(Now - TimeSpan.FromDays(30));
         Assert.Equal(2, pruned);
         Assert.Equal(2, (await Ledger.ListAttemptsAsync(key, 10)).Count);
+    }
+
+    [Fact]
+    public async Task Work_for_a_record_in_flight_queues_behind_the_delivery_and_its_completion_leaves_it_pending()
+    {
+        var s1 = Guid.NewGuid();
+        await Ledger.UpsertPendingAsync([Pending("a", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
+        var claimed = (await Ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now)).Single();
+
+        var s2 = Guid.NewGuid();
+        var staging = await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingDocumentRef = "7:0:10", WorkBatch = 7, PendingMetadataHash = "mh2", PendingSourceModifiedUtc = Now.AddDays(-1) }]);
+        Assert.Equal(1, staging.Staged);
+        Assert.Empty(staging.Refused);
+        var queued = await Ledger.GetRecordAsync(_flow, claimed.DeliveryKey);
+        Assert.Equal(RecordStatus.Delivering, queued!.Status);
+        Assert.Equal(claimed.LeaseOwner, queued.LeaseOwner);
+        Assert.Equal(s2, queued.LastSubmissionId);
+        Assert.Equal("7:0:10", queued.PendingDocumentRef);
+
+        // The in-flight try's step progress belongs to its own document and never reaches the newer work.
+        await Ledger.SaveStepAsync(claimed.DeliveryKey, s1, "0:0:10", "{\"metadata\":{\"version\":\"1\"}}");
+        Assert.Null((await Ledger.GetRecordAsync(_flow, claimed.DeliveryKey))!.PendingStepJson);
+
+        await Ledger.CompleteAsync(new RecordCompletion
+        {
+            DeliveryKey = claimed.DeliveryKey,
+            Status = RecordStatus.Delivered,
+            Promote = true,
+            TargetVersion = 1,
+            Claimed = ClaimedWork.Of(claimed),
+            Attempt = new AttemptRecord { DeliveryKey = claimed.DeliveryKey, SubmissionId = s1, Worker = "w1", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata+payload" },
+        });
+
+        var settled = await Ledger.GetRecordAsync(_flow, claimed.DeliveryKey);
+        Assert.Equal(RecordStatus.Pending, settled!.Status);
+        Assert.Null(settled.LeaseOwner);
+        Assert.Equal("mh", settled.MetadataHash);
+        Assert.Equal(Now.AddDays(-2), settled.SourceModifiedUtc);
+        Assert.NotNull(settled.LastDeliveredUtc);
+        Assert.Equal("mh2", settled.PendingMetadataHash);
+        Assert.Equal("7:0:10", settled.PendingDocumentRef);
+        Assert.Equal(0, settled.AttemptCount);
+        Assert.Equal(1, await Ledger.CountAttemptsAsync(s1, AttemptOutcome.Delivered));
+        Assert.Equal(0, await Ledger.CountAttemptsAsync(s2, AttemptOutcome.Delivered));
+        Assert.Single(await Ledger.ClaimAsync(_flow, s2, "w2", 10, TimeSpan.FromMinutes(5), Now));
+    }
+
+    [Fact]
+    public async Task Work_older_than_what_the_record_holds_is_refused_and_a_stale_skip_is_recorded_without_touching_it()
+    {
+        var s1 = Guid.NewGuid();
+        var delivered = Now.AddDays(-1);
+        await Ledger.UpsertPendingAsync([Pending("a", s1) with { PendingSourceModifiedUtc = delivered, PendingPayloadModifiedUtc = delivered }]);
+        var claimed = (await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(5), Now)).Single();
+        await Ledger.CompleteAsync(new RecordCompletion
+        {
+            DeliveryKey = claimed.DeliveryKey,
+            Status = RecordStatus.Delivered,
+            Promote = true,
+            TargetVersion = 1,
+            Claimed = ClaimedWork.Of(claimed),
+            Attempt = new AttemptRecord { DeliveryKey = claimed.DeliveryKey, SubmissionId = s1, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata+payload" },
+        });
+        var key = claimed.DeliveryKey;
+        Assert.Equal(delivered, (await Ledger.GetRecordAsync(_flow, key))!.PayloadModifiedUtc);
+
+        var s2 = Guid.NewGuid();
+        var olderSource = await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(-1) }]);
+        Assert.Equal(0, olderSource.Staged);
+        Assert.Equal(key, Assert.Single(olderSource.Refused));
+        var olderPayload = await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(1), PendingPayloadModifiedUtc = delivered.AddHours(-1) }]);
+        Assert.Equal(key, Assert.Single(olderPayload.Refused));
+        var untouched = await Ledger.GetRecordAsync(_flow, key);
+        Assert.Equal(RecordStatus.Delivered, untouched!.Status);
+        Assert.Equal(s1, untouched.LastSubmissionId);
+
+        // Newer work is staged, and then stands against anything older than itself; work carrying no moment is never refused.
+        Assert.Equal(1, (await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(2) }])).Staged);
+        Assert.Single((await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(1) }])).Refused);
+        Assert.Equal(1, (await Ledger.UpsertPendingAsync([Pending("a", s2)])).Staged);
+
+        await Ledger.MarkSkippedAsync(_flow, [new SkippedRecord { DeliveryKey = key, Kind = SkipKind.Stale, Reason = "the drop carries an older version", SourceModifiedUtc = delivered.AddHours(-1) }], s2);
+        var stale = (await Ledger.ListAttemptsAsync(key, 10)).Single(a => a.Phase == AttemptPhases.Stale);
+        Assert.Equal(AttemptOutcome.Skipped, stale.Outcome);
+        Assert.Equal(s2, stale.SubmissionId);
+        Assert.Contains("older version", stale.Error, StringComparison.Ordinal);
+        Assert.Equal(1, await Ledger.CountAttemptsAsync(s2, AttemptOutcome.Skipped, AttemptPhases.Stale));
+    }
+
+    [Fact]
+    public async Task A_rendered_skip_advances_a_delivered_record_and_leaves_queued_work_with_its_submission()
+    {
+        var s1 = Guid.NewGuid();
+        await Ledger.UpsertPendingAsync([Pending("a", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
+        var claimed = (await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(5), Now)).Single();
+        await Ledger.CompleteAsync(new RecordCompletion
+        {
+            DeliveryKey = claimed.DeliveryKey,
+            Status = RecordStatus.Delivered,
+            Promote = true,
+            TargetVersion = 1,
+            Claimed = ClaimedWork.Of(claimed),
+            Attempt = new AttemptRecord { DeliveryKey = claimed.DeliveryKey, SubmissionId = s1, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata+payload" },
+        });
+        await Ledger.UpsertPendingAsync([Pending("b", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
+        var a = claimed.DeliveryKey;
+        var b = DeliveryKey.Derive("test", ["b"]);
+
+        var s2 = Guid.NewGuid();
+        await Ledger.MarkSkippedAsync(_flow, [
+            new SkippedRecord { DeliveryKey = a, Kind = SkipKind.Rendered, Reason = "hashes unchanged", SourceModifiedUtc = Now.AddDays(-1), RenderContext = "{\"cache\":\"2\"}" },
+            new SkippedRecord { DeliveryKey = b, Kind = SkipKind.Unchanged, Reason = "unchanged" },
+        ], s2);
+
+        var advanced = await Ledger.GetRecordAsync(_flow, a);
+        Assert.Equal(s2, advanced!.LastSubmissionId);
+        Assert.Equal(Now.AddDays(-1), advanced.SourceModifiedUtc);
+        Assert.Equal("{\"cache\":\"2\"}", advanced.RenderContext);
+        Assert.Equal(s1, (await Ledger.GetRecordAsync(_flow, b))!.LastSubmissionId);
+
+        // A render identical to the queued work lends that work the newer moment it was found at.
+        await Ledger.MarkSkippedAsync(_flow, [new SkippedRecord { DeliveryKey = b, Kind = SkipKind.Rendered, Reason = "equal to the version already queued", SourceModifiedUtc = Now }], s2);
+        var queued = await Ledger.GetRecordAsync(_flow, b);
+        Assert.Equal(s1, queued!.LastSubmissionId);
+        Assert.Equal(Now, queued.PendingSourceModifiedUtc);
+        Assert.Equal(RecordStatus.Pending, queued.Status);
     }
 
     public void Dispose()

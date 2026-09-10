@@ -49,7 +49,7 @@ File names are free; the manifest lists them. Parquet scope files need only top-
 | `partitioned` | When true, root file i and each child scope's file i hold the same records, every scope declares the same number of files, and every file is sorted by the delivery key's text: the intake joins them partition by partition without a spill, and a fan-out spreads the partitions over member runs. An unsorted file is refused. Without it, child scopes are joined through a disk spill, which works for any layout. |
 | `scopes.record` | The root scope. Must declare every column the mapping binds (the preflight gate checks). |
 | `scopes.<child>` | Child scopes: `parentKey` names the column holding the parent's delivery key; `orderBy` orders rows within a parent. |
-| `payloads.<name>` | Where the chunks live and which root column carries the logical payload hash. |
+| `payloads.<name>` | Where the chunks live and which root column carries the logical payload hash. The `hashColumn` may be left out only when the flow takes the chunk files' modified times as the payload watermark (`change.payloadDetect: lastModified`). |
 
 When the drop has child scopes or payloads, the root scope must carry a `deliveryKey` column
 (the lower-case, hyphenated UUID).
@@ -152,12 +152,28 @@ The `tools/SampleDrop` project is the reference implementation in C#; its output
 ## The known-state snapshot
 
 After a run a known-state run publishes `known-state.parquet` (`deliveryKey, sourceKey, sourceFingerprint,
-metadataHash, payloadHash, status, targetId, targetVersion`) and `known-state.json` to a location Databricks
-reads at the start of prepare. Rows whose `sourceFingerprint` and `payloadHash` are unchanged need no grid
-built and no chunk written; the drop still lists them in the root scope so the delivery run can account for them.
+sourceModifiedUtc, metadataHash, payloadHash, payloadModifiedUtc, status, targetId, targetVersion`) and
+`known-state.json` to a location Databricks reads at the start of prepare. The two `...ModifiedUtc` columns are UTC
+timestamps, null unless the flow declares the matching last-modified watermark. Rows whose `sourceFingerprint` (or
+`sourceModifiedUtc`) and `payloadHash` are unchanged need no grid built and no chunk written.
 
-## Source fingerprint
+A drop may carry every record, or only the records that changed since the last run: the delivery run plans the rows it
+is given and leaves every other record as it is. An incremental prepare selects the rows modified after the
+`sourceModifiedUtc` the known state holds for their key, plus every key whose `status` is not `delivered` (a held,
+failed or deleted record needs its row again once it is released).
 
-`source.fingerprint` names a root column that moves whenever the source row moves (for Recall,
-`recallcommonmodel:WellLog__update_date`). Watermarks cannot see deletions; a periodic full pass without the
-fingerprint gate, or Change Data Feed on the source tables, is the backstop.
+## Source version: fingerprint or last modified
+
+`source.fingerprint` names a root column that moves whenever the source row moves, compared only for equality.
+`source.lastModified` names a root column saying when the row last changed (for Recall,
+`recallcommonmodel:WellLog__update_date`), declared as `timestamp` or as `string` holding RFC 3339 text; it is ordered
+as well as compared, so a row older than the version delivered or queued is recorded as stale and never sent. A flow
+declares one of the two.
+
+With `change.payloadDetect: lastModified` the payload chunk files are the payload's watermark: storage's modified
+times, names and sizes decide whether a payload changed, and chunk files older than what was delivered are stale. Write
+chunk files in place of the ones they replace, or keep their modified times, so an unchanged payload is not taken for
+a new one.
+
+Watermarks cannot see deletions; a periodic full pass without the gate, or Change Data Feed on the source tables, is
+the backstop.

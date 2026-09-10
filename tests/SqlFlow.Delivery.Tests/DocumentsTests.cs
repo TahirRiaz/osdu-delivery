@@ -132,6 +132,26 @@ public class YamlDocumentLoaderTests
     }
 
     [Fact]
+    public void A_last_modified_column_is_an_ordered_alternative_to_the_fingerprint()
+    {
+        var loader = new DeliveryDocumentLoader();
+        var flow = loader.ParseFlow(Flow.Replace("fingerprint: update_date", "lastModified: update_date", StringComparison.Ordinal), "f");
+        Assert.Equal("update_date", flow.Source.LastModified);
+        Assert.Null(flow.Source.Fingerprint);
+        Assert.Equal("update_date", flow.Source.ChangeColumn);
+        Assert.Equal("update_date", loader.LoadFlow(Samples.Flow).Source.LastModified);
+
+        var both = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("fingerprint: update_date", "fingerprint: update_date\n  lastModified: update_date", StringComparison.Ordinal), "f"));
+        Assert.Contains("declare one of them", both.Message, StringComparison.Ordinal);
+
+        Assert.Equal(ChangeDetection.LastModified, loader.ParseFlow(Flow + "\nchange: { payloadDetect: lastModified }", "f").Change.PayloadDetect);
+        var detect = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow + "\nchange: { detect: lastModified }", "f"));
+        Assert.Contains("source.lastModified", detect.Message, StringComparison.Ordinal);
+        var noPayload = Assert.Throws<FlowValidationException>(() => loader.ParseFlow((Flow + "\nchange: { payloadDetect: lastModified }").Replace("osduWellLog", "osduRecord", StringComparison.Ordinal), "f"));
+        Assert.Contains("no payload files", noPayload.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Mapping_parse_validates_transform_configuration()
     {
         var loader = new DeliveryDocumentLoader();

@@ -178,7 +178,8 @@ internal static partial class FlowMapper
                     kv => new FlowScope { Records = Require(kv.Value?.Records, $"source.scopes.{kv.Key}.records", source), Key = kv.Value?.Key ?? "deliveryKey" },
                     StringComparer.Ordinal),
                 Payloads = src.Payloads ?? new Dictionary<string, string>(StringComparer.Ordinal),
-                Fingerprint = src.Fingerprint,
+                Fingerprint = string.IsNullOrWhiteSpace(src.Fingerprint) ? null : src.Fingerprint!.Trim(),
+                LastModified = string.IsNullOrWhiteSpace(src.LastModified) ? null : src.LastModified!.Trim(),
                 KnownState = string.IsNullOrWhiteSpace(src.KnownState) ? null : src.KnownState!.Trim(),
                 Work = string.IsNullOrWhiteSpace(src.Work) ? null : src.Work!.Trim(),
             },
@@ -215,6 +216,26 @@ internal static partial class FlowMapper
 
     private static void Validate(FlowDefinition flow, string source)
     {
+        // One per-record source gate: an opaque fingerprint compared for equality, or a last-modified moment that
+        // is ordered as well. Declaring both would leave the gate with two answers to the same question.
+        if (flow.Source.Fingerprint is not null && flow.Source.LastModified is not null)
+        {
+            throw new FlowValidationException(
+                $"{source}: source.fingerprint and source.lastModified both name the column that says the source row changed; declare one of them.");
+        }
+
+        if (flow.Change.Detect == ChangeDetection.LastModified)
+        {
+            throw new FlowValidationException(
+                $"{source}: change.detect cannot be lastModified. A document is always decided by the hash of what it renders to; the source row's last-modified column is source.lastModified.");
+        }
+
+        if (flow.Change.PayloadDetect == ChangeDetection.LastModified && !DeliveryProtocols.CarriesPayload(flow.Target.Protocol))
+        {
+            throw new FlowValidationException(
+                $"{source}: change.payloadDetect is lastModified, but the {flow.Target.Protocol} protocol delivers no payload files to take the watermark from.");
+        }
+
         if (flow.Reliability.Concurrency < 1)
         {
             throw new FlowValidationException($"{source}: reliability.concurrency must be at least 1.");

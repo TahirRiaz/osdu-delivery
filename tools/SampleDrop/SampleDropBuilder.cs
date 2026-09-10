@@ -86,6 +86,7 @@ public static class SampleDropBuilder
         Guid submissionId,
         long sourceVersion,
         int partitions = 1,
+        bool payloadHash = true,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
@@ -94,6 +95,7 @@ public static class SampleDropBuilder
         Directory.CreateDirectory(Path.Combine(root, "metadata"));
         Directory.CreateDirectory(Path.Combine(root, "curves-meta"));
 
+        // Without the payload hash the drop is one a flow can only take by its chunk files' modified times.
         var rootColumns = new (string, Type)[]
         {
             ("deliveryKey", typeof(string)), ("source_project", typeof(string)), ("log_id", typeof(string)),
@@ -102,7 +104,7 @@ public static class SampleDropBuilder
             ("depth_coding", typeof(string)), ("elev_meas_ref", typeof(string)), ("creator", typeof(string)), ("log_version", typeof(string)),
             ("log_pass", typeof(string)), ("native_uid", typeof(string)), ("update_date", typeof(string)),
             ("payloadHash", typeof(string)), ("chunkCount", typeof(long)),
-        };
+        }.Where(c => payloadHash || c.Item1 != "payloadHash").ToArray();
         var curveColumns = new (string, Type)[]
         {
             ("deliveryKey", typeof(string)), ("curve_ordinal", typeof(long)), ("curve_id", typeof(string)), ("curve_unit", typeof(string)),
@@ -117,7 +119,7 @@ public static class SampleDropBuilder
             var key = record.Key.ToString();
             var depths = record.Depths();
             var grid = BuildGrid(record, depths);
-            var payloadHash = HashGrid(grid.Columns, grid.Rows);
+            var gridHash = HashGrid(grid.Columns, grid.Rows);
             var chunkDir = Path.Combine(root, "curves", key);
             Directory.CreateDirectory(chunkDir);
             await using (var chunk = File.Create(Path.Combine(chunkDir, "chunk_00000.parquet")))
@@ -145,7 +147,7 @@ public static class SampleDropBuilder
                 ["log_pass"] = record.LogPass,
                 ["native_uid"] = record.NativeUid,
                 ["update_date"] = record.UpdateDate,
-                ["payloadHash"] = payloadHash,
+                ["payloadHash"] = payloadHash ? gridHash : null,
                 ["chunkCount"] = 1L,
             });
 
@@ -226,7 +228,7 @@ public static class SampleDropBuilder
             },
             Payloads = new Dictionary<string, ManifestPayload>(StringComparer.Ordinal)
             {
-                ["curves"] = new() { PathTemplate = "curves/{deliveryKey}/chunk_*.parquet", HashColumn = "payloadHash", ChunkCountColumn = "chunkCount" },
+                ["curves"] = new() { PathTemplate = "curves/{deliveryKey}/chunk_*.parquet", HashColumn = payloadHash ? "payloadHash" : null, ChunkCountColumn = "chunkCount" },
             },
         };
 

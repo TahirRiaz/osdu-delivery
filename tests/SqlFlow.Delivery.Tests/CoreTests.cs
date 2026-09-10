@@ -320,17 +320,111 @@ public class ChangeDetectorTests
         TargetVersion = 5,
     };
 
+    private static readonly DateTime At = new(2026, 9, 1, 10, 15, 0, DateTimeKind.Utc);
+
     [Fact]
     public void Tier1_skips_only_when_fingerprint_payload_and_context_all_match()
     {
         var change = new FlowChange();
-        Assert.True(ChangeDetector.CanSkipWithoutRender(Delivered(), "f1", "p1", "c1", change));
-        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered(), "f2", "p1", "c1", change));
-        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered(), "f1", "p2", "c1", change));
-        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered(), "f1", "p1", "c2", change));
-        Assert.False(ChangeDetector.CanSkipWithoutRender(null, "f1", "p1", "c1", change));
-        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered() with { Status = RecordStatus.Held }, "f1", "p1", "c1", change));
-        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered(), "f1", "p1", "c1", new FlowChange { OnUnchanged = UnchangedAction.Deliver }));
+        Assert.True(ChangeDetector.CanSkipWithoutRender(Delivered(), SourceVersion.Of("f1"), "p1", "c1", change));
+        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered(), SourceVersion.Of("f2"), "p1", "c1", change));
+        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered(), SourceVersion.Of("f1"), "p2", "c1", change));
+        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered(), SourceVersion.Of("f1"), "p1", "c2", change));
+        Assert.False(ChangeDetector.CanSkipWithoutRender(null, SourceVersion.Of("f1"), "p1", "c1", change));
+        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered() with { Status = RecordStatus.Held }, SourceVersion.Of("f1"), "p1", "c1", change));
+        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered(), SourceVersion.Of("f1"), "p1", "c1", new FlowChange { OnUnchanged = UnchangedAction.Deliver }));
+        // A forgotten metadata hash means the ledger no longer knows what OSDU holds: only a render can answer.
+        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered() with { MetadataHash = null }, SourceVersion.Of("f1"), "p1", "c1", change));
+    }
+
+    [Fact]
+    public void Tier1_under_a_last_modified_column_compares_the_moment()
+    {
+        var change = new FlowChange();
+        var delivered = Delivered() with { SourceFingerprint = null, SourceModifiedUtc = At };
+        Assert.True(ChangeDetector.CanSkipWithoutRender(delivered, SourceVersion.At(At), "p1", "c1", change));
+        Assert.False(ChangeDetector.CanSkipWithoutRender(delivered, SourceVersion.At(At.AddTicks(1)), "p1", "c1", change));
+        Assert.False(ChangeDetector.CanSkipWithoutRender(Delivered(), SourceVersion.At(At), "p1", "c1", change));
+    }
+
+    [Fact]
+    public void The_newest_version_counts_queued_work_but_not_where_a_blocked_record_was_left()
+    {
+        var queued = Delivered() with
+        {
+            Status = RecordStatus.Pending,
+            SourceModifiedUtc = At,
+            PayloadModifiedUtc = At,
+            PendingDocumentRef = "0:0:1",
+            PendingSourceModifiedUtc = At.AddHours(1),
+            PendingPayload = true,
+            PendingPayloadModifiedUtc = At.AddHours(2),
+        };
+        Assert.Equal(At.AddHours(1), ChangeDetector.NewestSourceModified(queued));
+        Assert.Equal(At.AddHours(2), ChangeDetector.NewestPayloadModified(queued));
+        Assert.Equal(At, ChangeDetector.NewestSourceModified(queued with { Status = RecordStatus.Held }));
+        Assert.Equal(At, ChangeDetector.NewestPayloadModified(queued with { PendingPayload = false }));
+        Assert.Null(ChangeDetector.NewestSourceModified(null));
+    }
+
+    [Fact]
+    public void A_render_is_compared_with_the_queued_work_and_keeps_every_half_the_queue_would_have_changed()
+    {
+        var change = new FlowChange();
+        var queued = Delivered() with { Status = RecordStatus.Pending, PendingDocumentRef = "0:0:1", PendingMetadata = true, PendingMetadataHash = "m2", PendingPayload = true, PendingPayloadHash = "p2" };
+
+        // Identical to the queue: the queued work lands it, nothing new is staged.
+        Assert.Equal(PlannedAction.Skip, ChangeDetector.DecideWithQueue(queued, "m2", "p2", true, change).Action);
+
+        // Back to exactly what OSDU holds: the queue is replaced by work carrying both halves, so the worker's final
+        // check settles it against whatever the target holds by then (a delivery of the queue may be in flight).
+        var back = ChangeDetector.DecideWithQueue(queued, "m1", "p1", true, change);
+        Assert.Equal(PlannedAction.UpdateBoth, back.Action);
+
+        // The metadata moves again and the payload equals the queued one, which OSDU does not hold yet: both still go.
+        var moved = ChangeDetector.DecideWithQueue(queued, "m3", "p2", true, change);
+        Assert.True(moved.DeliverMetadata && moved.DeliverPayload);
+
+        // Without queued work it is the ordinary tier 2.
+        Assert.Equal(PlannedAction.Skip, ChangeDetector.DecideWithQueue(Delivered(), "m1", "p1", true, change).Action);
+        Assert.Equal(PlannedAction.UpdatePayload, ChangeDetector.DecideWithQueue(Delivered(), "m1", "p2", true, change).Action);
+    }
+
+    [Fact]
+    public void The_final_check_sends_only_the_halves_the_target_does_not_already_hold()
+    {
+        var change = new FlowChange();
+        var claimed = Delivered() with
+        {
+            Status = RecordStatus.Delivering,
+            LastDeliveredUtc = At,
+            PendingDocumentRef = "0:0:1",
+            PendingMetadata = true,
+            PendingMetadataHash = "m1",
+            PendingPayload = true,
+            PendingPayloadHash = "p1",
+        };
+        Assert.Equal((false, false), ChangeDetector.AtPush(claimed, change));
+        Assert.Equal((true, false), ChangeDetector.AtPush(claimed with { PendingMetadataHash = "m2" }, change));
+        Assert.Equal((false, true), ChangeDetector.AtPush(claimed with { PendingPayloadHash = "p2" }, change));
+        Assert.Equal((false, false), ChangeDetector.AtPush(claimed with { PendingPayload = false, PendingPayloadHash = "p2" }, change));
+        Assert.Equal((true, false), ChangeDetector.AtPush(claimed with { MetadataHash = null }, change));
+        Assert.Equal((true, true), ChangeDetector.AtPush(claimed with { LastDeliveredUtc = null, TargetVersion = null }, change));
+        Assert.Equal((true, true), ChangeDetector.AtPush(claimed, new FlowChange { OnUnchanged = UnchangedAction.Deliver }));
+    }
+
+    [Fact]
+    public void A_blocked_record_moves_only_when_the_source_moves_past_where_it_was_left()
+    {
+        var blocked = Delivered() with { Status = RecordStatus.Held, Blocked = true, PendingSourceModifiedUtc = At, PendingSourceFingerprint = "f1" };
+        Assert.True(ChangeDetector.StaysBlocked(blocked, SourceVersion.At(At), ordered: true));
+        Assert.True(ChangeDetector.StaysBlocked(blocked, SourceVersion.At(At.AddDays(-1)), ordered: true));
+        Assert.False(ChangeDetector.StaysBlocked(blocked, SourceVersion.At(At.AddTicks(1)), ordered: true));
+        Assert.True(ChangeDetector.StaysBlocked(blocked, default, ordered: true));
+        Assert.False(ChangeDetector.StaysBlocked(blocked with { PendingSourceModifiedUtc = null }, SourceVersion.At(At), ordered: true));
+        Assert.True(ChangeDetector.StaysBlocked(blocked, SourceVersion.Of("f1"), ordered: false));
+        Assert.False(ChangeDetector.StaysBlocked(blocked, SourceVersion.Of("f2"), ordered: false));
+        Assert.True(ChangeDetector.StaysBlocked(blocked, default, ordered: false));
     }
 
     [Fact]
@@ -344,6 +438,77 @@ public class ChangeDetectorTests
         Assert.Equal(PlannedAction.UpdateBoth, ChangeDetector.Decide(Delivered(), "m2", "p2", true, change).Action);
         Assert.Equal(PlannedAction.Skip, ChangeDetector.Decide(Delivered(), "m1", "p2", false, change).Action);
         Assert.Equal(PlannedAction.UpdateBoth, ChangeDetector.Decide(Delivered(), "m1", "p1", true, new FlowChange { OnUnchanged = UnchangedAction.Deliver }).Action);
+    }
+}
+
+public class SourceVersionTests
+{
+    private static readonly DateTime At = new(2026, 9, 1, 10, 15, 0, DateTimeKind.Utc);
+
+    [Theory]
+    [InlineData("2026-09-01T10:15:00Z")]
+    [InlineData("2026-09-01T12:15:00+02:00")]
+    [InlineData("2026-09-01 10:15:00")]
+    [InlineData(" 2026-09-01T10:15:00.0000000Z ")]
+    public void Last_modified_text_is_read_as_a_utc_moment(string text)
+    {
+        var row = Rendering.SourceRow.FromStrings(new Dictionary<string, string?> { ["update_date"] = text });
+        Assert.True(LastModifiedColumn.TryRead(row, "update_date", out var utc, out var problem));
+        Assert.Null(problem);
+        Assert.Equal(At, utc);
+        Assert.Equal(DateTimeKind.Utc, utc.Kind);
+    }
+
+    [Fact]
+    public void Timestamps_are_taken_as_they_are_and_unreadable_values_say_why()
+    {
+        var zoned = new DateTimeOffset(2026, 9, 1, 12, 15, 0, TimeSpan.FromHours(2));
+        var row = new Rendering.SourceRow(new Dictionary<string, object?>
+        {
+            ["zoned"] = zoned,
+            ["unzoned"] = new DateTime(2026, 9, 1, 10, 15, 0, DateTimeKind.Unspecified),
+            ["bad"] = "yesterday",
+            ["blank"] = " ",
+            ["number"] = 42L,
+        });
+
+        Assert.True(LastModifiedColumn.TryRead(row, "zoned", out var utc, out _));
+        Assert.Equal(At, utc);
+        Assert.True(LastModifiedColumn.TryRead(row, "unzoned", out utc, out _));
+        Assert.Equal(At, utc);
+        Assert.Equal(DateTimeKind.Utc, utc.Kind);
+
+        Assert.False(LastModifiedColumn.TryRead(row, "bad", out _, out var problem));
+        Assert.Contains("'bad' holds 'yesterday'", problem, StringComparison.Ordinal);
+        Assert.False(LastModifiedColumn.TryRead(row, "blank", out _, out problem));
+        Assert.Contains("is empty", problem, StringComparison.Ordinal);
+        Assert.False(LastModifiedColumn.TryRead(row, "absent", out _, out problem));
+        Assert.Contains("is empty", problem, StringComparison.Ordinal);
+        Assert.False(LastModifiedColumn.TryRead(row, "number", out _, out problem));
+        Assert.Contains("Int64", problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Payload_files_take_the_newest_modified_time_and_sign_the_whole_set()
+    {
+        var early = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+        var late = early.AddHours(3);
+        Drops.PayloadChunk[] chunks =
+        [
+            new(0, "lake/drop1/curves/k/chunk_00000.parquet", 10, early),
+            new(1, "lake/drop1/curves/k/chunk_00001.parquet", 20, late),
+        ];
+
+        var files = PayloadFiles.Of(chunks);
+        Assert.Equal(2, files.Count);
+        Assert.Equal(late.UtcDateTime, files.ModifiedUtc);
+
+        // The same files read from another drop location are the same payload; a rewrite, a resize or a removal is not.
+        Assert.Equal(files.Signature, PayloadFiles.Of([chunks[1] with { Path = "other/drop2/curves/k/chunk_00001.parquet" }, chunks[0] with { Path = @"other\drop2\curves\k\chunk_00000.parquet" }]).Signature);
+        Assert.NotEqual(files.Signature, PayloadFiles.Of([chunks[0], chunks[1] with { Modified = late.AddSeconds(1) }]).Signature);
+        Assert.NotEqual(files.Signature, PayloadFiles.Of([chunks[0], chunks[1] with { Size = 21 }]).Signature);
+        Assert.NotEqual(files.Signature, PayloadFiles.Of([chunks[0]]).Signature);
+        Assert.Null(PayloadFiles.Of([]).ModifiedUtc);
     }
 }
 

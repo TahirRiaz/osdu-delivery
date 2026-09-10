@@ -385,6 +385,15 @@ signal is available and unused.
 **Tier 2, authoritative.** Render and compare `contentHash`. This can still skip when the
 render turns out identical despite a changed source column.
 
+A fingerprint only says "different". When the source carries a last-modified column the flow
+names it (`source.lastModified`) and the gate is ordered too: a row modified after the version
+the ledger holds, delivered or queued, is rendered and hashed; the same moment skips at tier 1;
+an older one (a replayed or late drop) is stale and never sent. The payload's chunk files can
+be the payload's watermark the same way (`change.payloadDetect: lastModified`). Whatever
+triggers the work, the hash decides the push, twice: at plan time against the ledger, and by
+the worker against what OSDU holds at the moment it has the record, because work queued behind
+an in-flight delivery is planned against a state that delivery is about to change.
+
 Two limits to respect. Watermarks **cannot see deletions**, so a periodic full fingerprint
 pass is required as a backstop. And Change Data Feed is not enabled on any source table;
 enabling it would give exact changed-row sets including deletes, which is strictly better

@@ -35,7 +35,13 @@ public sealed record PlanEntry
 
     public string? SourceFingerprint { get; init; }
 
+    /// <summary>When the drop says the source row last changed, when the flow declares source.lastModified.</summary>
+    public DateTime? SourceModifiedUtc { get; init; }
+
     public string? PayloadHash { get; init; }
+
+    /// <summary>The newest modified time among the payload's chunk files, when the flow takes them as the payload watermark.</summary>
+    public DateTime? PayloadModifiedUtc { get; init; }
 
     public string? PayloadLocation { get; init; }
 
@@ -85,6 +91,7 @@ public sealed class PlanSummary
     private long _records;
     private long _deliveries;
     private long _skips;
+    private long _stale;
     private long _holds;
     private long _blocked;
     private long _untracked;
@@ -93,7 +100,11 @@ public sealed class PlanSummary
 
     public long Deliveries => Interlocked.Read(ref _deliveries);
 
+    /// <summary>Records skipped because nothing about them changed (or an approval holds them back).</summary>
     public long Skips => Interlocked.Read(ref _skips);
+
+    /// <summary>Records skipped because the drop carries an older version than the ledger already holds.</summary>
+    public long Stale => Interlocked.Read(ref _stale);
 
     public long Holds => Interlocked.Read(ref _holds);
 
@@ -114,6 +125,9 @@ public sealed class PlanSummary
 
         switch (entry.Action)
         {
+            case PlannedAction.Skip when entry.SkipTier == SkipTier.Stale:
+                Interlocked.Increment(ref _stale);
+                break;
             case PlannedAction.Skip:
                 Interlocked.Increment(ref _skips);
                 break;
@@ -134,7 +148,7 @@ public sealed class PlanSummary
     }
 
     public override string ToString()
-        => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Deliveries} to deliver, {Skips} unchanged, {Holds} held, {Blocked} blocked, {Untracked} untracked");
+        => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Deliveries} to deliver, {Skips} unchanged, {Stale} stale, {Holds} held, {Blocked} blocked, {Untracked} untracked");
 }
 
 /// <summary>What a run would do (design.md section 11: plan changes nothing), with every entry collected. For the
@@ -436,6 +450,7 @@ public sealed class Planner
         var renderer = resolved.Renderer;
         var context = resolved.Context.Canonical();
         var gatedSets = header.GatedCacheSets;
+        var ordered = flow.Source.LastModified is not null;
         var keyed = new List<(SourceRecord Record, DeliveryKey? Key, string SourceKey, string? Label)>(batch.Count);
         foreach (var record in batch)
         {
@@ -448,6 +463,7 @@ public sealed class Planner
             : await _ledger.GetRecordsAsync(flow.Id, keyed.Where(k => k.Key is not null).Select(k => k.Key!.Value), ct).ConfigureAwait(false);
 
         var payload = payloadName is null ? null : drop.Manifest.Payloads.GetValueOrDefault(payloadName);
+        var fileWatermark = payload is not null && flow.Change.PayloadDetect == ChangeDetection.LastModified;
 
         foreach (var (record, key, sourceKey, label) in keyed)
         {
@@ -459,9 +475,22 @@ public sealed class Planner
             }
 
             var state = existing.GetValueOrDefault(key.Value);
-            var fingerprint = flow.Source.Fingerprint is { } fp ? record.Row.GetString(fp) : null;
-            var payloadHash = payload is null ? null : record.Row.GetString(payload.HashColumn);
+            var (source, sourceProblem) = ReadSourceVersion(flow, record.Row);
             var hasPayload = payload is not null;
+
+            // What every entry says about the record and the version the drop carries, whatever is decided about it.
+            var basis = new PlanEntry
+            {
+                Key = key,
+                SourceKey = sourceKey,
+                Label = label,
+                TargetId = state?.TargetId,
+                Existing = state,
+                Action = PlannedAction.Hold,
+                Reason = string.Empty,
+                SourceFingerprint = source.Fingerprint,
+                SourceModifiedUtc = source.ModifiedUtc,
+            };
 
             // A cache change is tagged against the values this record was built from and nobody has approved it:
             // OSDU keeps the document it has. The gate is a set membership test, not a column on the record, so
@@ -470,61 +499,93 @@ public sealed class Planner
             // send exactly the update being held back.
             if (state?.CacheSetId is { } cacheSet && gatedSets.Contains(cacheSet))
             {
-                entries.Add(new PlanEntry
+                entries.Add(basis with
                 {
-                    Key = key,
-                    SourceKey = sourceKey,
-                    Label = label,
-                    TargetId = state.TargetId,
-                    Existing = state,
                     Action = PlannedAction.Skip,
                     SkipTier = SkipTier.Approval,
                     Reason = "a cache change is tagged against this record and is waiting for approval",
-                    SourceFingerprint = fingerprint,
-                    PayloadHash = payloadHash,
                 });
                 continue;
             }
 
             // A record held, failed or deleted earlier stays where it is until an operator releases it or the source
-            // changes (design.md section 7.4). Without a fingerprint column, only a release can unblock it.
-            if (state is { Blocked: true } && (fingerprint is null || string.Equals(state.PendingSourceFingerprint, fingerprint, StringComparison.Ordinal)))
+            // moves past the version it was left at (design.md section 7.4). Without a version column, only a
+            // release can unblock it.
+            if (state is { Blocked: true } && ChangeDetector.StaysBlocked(state, source, ordered))
             {
-                entries.Add(new PlanEntry
+                entries.Add(basis with
                 {
-                    Key = key,
-                    SourceKey = sourceKey,
-                    Label = label,
-                    TargetId = state.TargetId,
-                    Existing = state,
                     Action = PlannedAction.Blocked,
                     Reason = $"{state.Status.ToString().ToLowerInvariant()} since {state.UpdatedUtc:u}: {state.LastError ?? "no reason recorded"}; release the record or change the source to plan it again",
-                    SourceFingerprint = fingerprint,
-                    PayloadHash = payloadHash,
                 });
                 continue;
             }
 
-            if (hasPayload && string.IsNullOrWhiteSpace(payloadHash))
+            if (sourceProblem is not null)
             {
-                entries.Add(new PlanEntry { Key = key, SourceKey = sourceKey, Label = label, Existing = state, Action = PlannedAction.Hold, Reason = $"payload '{payloadName}' declares hash column '{payload!.HashColumn}' but the row carries no value; no payload was prepared", SourceFingerprint = fingerprint });
+                entries.Add(basis with { Reason = sourceProblem });
                 continue;
             }
 
-            if (ChangeDetector.CanSkipWithoutRender(state, fingerprint, payloadHash, context, flow.Change))
+            // An older version than the ledger holds, delivered or queued: a replayed or late drop. Sending it would
+            // take OSDU back in time, so it is skipped, and the intake records the skip against the record.
+            if (source.ModifiedUtc is { } modified && ChangeDetector.NewestSourceModified(state) is { } newest && modified < newest)
             {
-                entries.Add(new PlanEntry
+                var standing = state!.HasPendingWork && state.PendingSourceModifiedUtc == newest ? "queued" : "delivered";
+                entries.Add(basis with
                 {
-                    Key = key,
-                    SourceKey = sourceKey,
-                    Label = label,
-                    TargetId = state!.TargetId,
-                    Existing = state,
+                    Action = PlannedAction.Skip,
+                    SkipTier = SkipTier.Stale,
+                    Reason = $"the drop carries the row as last modified {Moment(modified)}, older than the version last modified {Moment(newest)} already {standing}; OSDU keeps the newer version",
+                });
+                continue;
+            }
+
+            string? payloadHash = null;
+            DateTime? payloadModified = null;
+            string? payloadLocation = null;
+            int? chunkCount = null;
+            if (payload is not null)
+            {
+                if (fileWatermark)
+                {
+                    // The chunk files are the payload's watermark: listing them is the only way to see a rewrite.
+                    payloadLocation = _drops.PayloadLocation(drop, payloadName!, key.Value.Value);
+                    var files = PayloadFiles.Of(await _drops.ListPayloadChunksAsync(payloadLocation, ct).ConfigureAwait(false));
+                    if (files.Count == 0)
+                    {
+                        entries.Add(basis with { Reason = $"no payload chunk files under {payloadLocation}; the payload's watermark is its files, so there is nothing to compare or send" });
+                        continue;
+                    }
+
+                    chunkCount = files.Count;
+                    payloadModified = files.ModifiedUtc;
+                    // A declared content hash stays the final check; without one the files' names, sizes and times are the payload's identity.
+                    payloadHash = payload.HashColumn is { } hashColumn ? record.Row.GetString(hashColumn) : files.Signature;
+                }
+                else
+                {
+                    payloadHash = record.Row.GetString(payload.HashColumn!);
+                }
+
+                if (string.IsNullOrWhiteSpace(payloadHash))
+                {
+                    entries.Add(basis with { Reason = $"payload '{payloadName}' declares hash column '{payload.HashColumn}' but the row carries no value; no payload was prepared" });
+                    continue;
+                }
+            }
+
+            if (ChangeDetector.CanSkipWithoutRender(ChangeDetector.Expected(state), source, payloadHash, context, flow.Change))
+            {
+                entries.Add(basis with
+                {
                     Action = PlannedAction.Skip,
                     SkipTier = SkipTier.Fingerprint,
-                    Reason = "source fingerprint, payload hash and render context unchanged",
-                    SourceFingerprint = fingerprint,
+                    Reason = state!.HasPendingWork
+                        ? "source version, payload hash and render context equal the version already queued"
+                        : "source version, payload hash and render context unchanged",
                     PayloadHash = payloadHash,
+                    PayloadModifiedUtc = payloadModified,
                 });
                 continue;
             }
@@ -532,31 +593,69 @@ public sealed class Planner
             var render = renderer.Render(record);
             if (render.IsHeld)
             {
-                entries.Add(new PlanEntry
+                entries.Add(basis with
                 {
-                    Key = key,
-                    SourceKey = sourceKey,
-                    Label = label,
                     TargetId = render.TargetId,
-                    Existing = state,
-                    Action = PlannedAction.Hold,
                     Reason = string.Join("; ", render.Holds),
                     Render = render,
-                    SourceFingerprint = fingerprint,
                     PayloadHash = payloadHash,
+                    PayloadModifiedUtc = payloadModified,
                 });
                 continue;
             }
 
-            var decision = ChangeDetector.Decide(state, render.MetadataHash, payloadHash, hasPayload, flow.Change);
-            string? payloadLocation = null;
-            int? chunkCount = null;
+            var decision = ChangeDetector.DecideWithQueue(state, render.MetadataHash, payloadHash, hasPayload, flow.Change);
+            var carriedPayload = false;
+            if (decision.DeliverPayload && payloadModified is { } filesModified && ChangeDetector.NewestPayloadModified(state) is { } newestPayload && filesModified < newestPayload)
+            {
+                var why = $"the payload files are last modified {Moment(filesModified)}, older than the payload last modified {Moment(newestPayload)} already delivered or queued";
+                if (state is { HasPendingWork: true, PendingPayload: true } && state.PendingPayloadModifiedUtc == newestPayload)
+                {
+                    // The newer payload is still queued: the new document replaces the queue, but that payload goes with it.
+                    carriedPayload = true;
+                    payloadHash = state.PendingPayloadHash;
+                    payloadModified = state.PendingPayloadModifiedUtc;
+                    payloadLocation = state.PendingPayloadLocation;
+                    chunkCount = null;
+                    decision = decision with { Reason = $"{decision.Reason}; {why}, so the newer payload already queued is kept" };
+                }
+                else if (decision.DeliverMetadata)
+                {
+                    decision = decision with
+                    {
+                        Action = decision.Action == PlannedAction.Create ? PlannedAction.Create : PlannedAction.UpdateMetadata,
+                        DeliverPayload = false,
+                        Reason = $"{decision.Reason}; {why}, so only the metadata is sent",
+                    };
+                }
+                else
+                {
+                    decision = new ChangeDecision(PlannedAction.Skip, SkipTier.Stale, false, false, $"{why}; OSDU keeps the newer payload");
+                }
+            }
+
+            if (decision.Action == PlannedAction.Skip)
+            {
+                entries.Add(basis with
+                {
+                    TargetId = render.TargetId,
+                    Action = PlannedAction.Skip,
+                    SkipTier = decision.SkipTier,
+                    Reason = decision.Reason,
+                    Render = render,
+                    PayloadHash = payloadHash,
+                    PayloadModifiedUtc = payloadModified,
+                });
+                continue;
+            }
+
             if (decision.DeliverPayload)
             {
-                payloadLocation = _drops.PayloadLocation(drop, payloadName!, key.Value.Value);
+                payloadLocation ??= _drops.PayloadLocation(drop, payloadName!, key.Value.Value);
                 // The manifest can declare the chunk count per record, which spares a storage listing per record
-                // here (the drain lists the chunks when it streams them anyway); without it the chunks are listed.
-                chunkCount = DeclaredChunkCount(payload!, record.Row);
+                // here (the drain lists the chunks when it streams them anyway); without it the chunks are listed. A
+                // payload carried over from the queue was prepared by another drop, so its count is listed too.
+                chunkCount ??= carriedPayload ? null : DeclaredChunkCount(payload!, record.Row);
                 if (chunkCount is null)
                 {
                     var chunks = await _drops.ListPayloadChunksAsync(payloadLocation, ct).ConfigureAwait(false);
@@ -565,43 +664,50 @@ public sealed class Planner
 
                 if (chunkCount == 0)
                 {
-                    entries.Add(new PlanEntry
+                    entries.Add(basis with
                     {
-                        Key = key,
-                        SourceKey = sourceKey,
-                        Label = label,
                         TargetId = render.TargetId,
-                        Existing = state,
-                        Action = PlannedAction.Hold,
                         Reason = $"payload hash present but no chunk files under {payloadLocation}",
                         Render = render,
-                        SourceFingerprint = fingerprint,
                         PayloadHash = payloadHash,
+                        PayloadModifiedUtc = payloadModified,
                     });
                     continue;
                 }
             }
 
-            entries.Add(new PlanEntry
+            entries.Add(basis with
             {
-                Key = key,
-                SourceKey = sourceKey,
-                Label = label,
                 TargetId = render.TargetId,
-                Existing = state,
                 Action = decision.Action,
                 SkipTier = decision.SkipTier,
                 Reason = decision.Reason,
                 Render = render,
-                SourceFingerprint = fingerprint,
                 PayloadHash = payloadHash,
-                PayloadLocation = payloadLocation,
-                ChunkCount = chunkCount,
+                PayloadModifiedUtc = payloadModified,
+                PayloadLocation = decision.DeliverPayload ? payloadLocation : null,
+                ChunkCount = decision.DeliverPayload ? chunkCount : null,
                 DeliverMetadata = decision.DeliverMetadata,
                 DeliverPayload = decision.DeliverPayload,
             });
         }
     }
+
+    /// <summary>The version the row carries: its last-modified moment, or its fingerprint, as the flow declares; or why it cannot be read.</summary>
+    private static (SourceVersion Version, string? Problem) ReadSourceVersion(FlowDefinition flow, SourceRow row)
+    {
+        if (flow.Source.LastModified is { } column)
+        {
+            return LastModifiedColumn.TryRead(row, column, out var modified, out var problem)
+                ? (SourceVersion.At(modified), null)
+                : (default, problem);
+        }
+
+        return (SourceVersion.Of(flow.Source.Fingerprint is { } fingerprint ? row.GetString(fingerprint) : null), null);
+    }
+
+    private static string Moment(DateTime utc)
+        => Json.CanonicalJson.FormatDateTime(new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc)));
 
     private static int? DeclaredChunkCount(ManifestPayload payload, SourceRow row)
     {
@@ -650,6 +756,17 @@ public sealed class Planner
             throw new FlowValidationException($"{where}: source.fingerprint names column '{fp}', which the drop's root scope does not declare.");
         }
 
+        if (flow.Source.LastModified is { } lastModified)
+        {
+            var declared = manifest.Root.Columns.FirstOrDefault(c => c.Name.Equals(lastModified, StringComparison.OrdinalIgnoreCase))
+                ?? throw new FlowValidationException($"{where}: source.lastModified names column '{lastModified}', which the drop's root scope does not declare.");
+            if (!declared.Type.Equals("timestamp", StringComparison.OrdinalIgnoreCase) && !declared.Type.Equals("string", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new FlowValidationException(
+                    $"{where}: source.lastModified column '{lastModified}' is declared as {declared.Type}; it must be a timestamp, or a string holding RFC 3339 text.");
+            }
+        }
+
         var payloadName = PayloadName(flow);
         if (payloadName is not null)
         {
@@ -658,9 +775,18 @@ public sealed class Planner
                 throw new FlowValidationException($"{where}: the protocol streams payload '{payloadName}' but the manifest declares no such payload.");
             }
 
-            if (!root.Contains(payload.HashColumn))
+            if (payload.HashColumn is { } hashColumn)
             {
-                throw new FlowValidationException($"{where}: payload '{payloadName}' hashColumn '{payload.HashColumn}' is not declared in the drop's root scope.");
+                if (!root.Contains(hashColumn))
+                {
+                    throw new FlowValidationException($"{where}: payload '{payloadName}' hashColumn '{hashColumn}' is not declared in the drop's root scope.");
+                }
+            }
+            else if (flow.Change.PayloadDetect != ChangeDetection.LastModified)
+            {
+                throw new FlowValidationException(
+                    $"{where}: payload '{payloadName}' declares no hashColumn. The flow decides payload changes by content hash, so the drop must carry one; "
+                    + "set change.payloadDetect: lastModified to take the chunk files' modified times as the watermark instead.");
             }
 
             if (payload.ChunkCountColumn is { } chunkColumn && !root.Contains(chunkColumn))
@@ -690,6 +816,7 @@ public static class PlanFormatting
             {
                 SkipTier.Fingerprint => "skip (tier 1)",
                 SkipTier.Approval => "skip (awaiting approval)",
+                SkipTier.Stale => "skip (stale)",
                 _ => "skip (tier 2)",
             },
             PlannedAction.Create => "create",

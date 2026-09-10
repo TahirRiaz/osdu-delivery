@@ -1,0 +1,164 @@
+using Microsoft.Data.SqlClient;
+using SqlFlow.Catalog;
+using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Ledger;
+using Xunit;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>
+/// The ledger's SQL Server bulk path against a real catalog: staging and completion as set-based statements, which an
+/// in-memory SQLite catalog never takes. Runs when <c>SQLFLOW_TEST_DB</c> points at a reachable, disposable catalog
+/// database and skips otherwise. Every run works under a flow and keys of its own, so runs never see each other's rows.
+/// </summary>
+public class SqlServerLedgerTests
+{
+    private static readonly Lazy<string?> ConnectionString = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
+
+    private static readonly Lazy<bool> Reachable = new(() =>
+    {
+        var cs = ConnectionString.Value;
+        if (string.IsNullOrWhiteSpace(cs))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var connection = new SqlConnection(cs);
+            connection.Open();
+            return true;
+        }
+        catch (SqlException)
+        {
+            return false;
+        }
+    });
+
+    private readonly TestClock _clock = new();
+    private readonly Guid _flow = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+    private readonly string _run = Guid.NewGuid().ToString("N");
+
+    private DateTime Now => _clock.GetUtcNow().UtcDateTime;
+
+    private static async Task<CatalogLedger> LedgerAsync(TimeProvider clock)
+    {
+        Skip.IfNot(
+            Reachable.Value,
+            "The SQL Server ledger tests need a reachable, disposable catalog database. Set SQLFLOW_TEST_DB, for example via the git-ignored .sqlflow/env file.");
+        var cs = ConnectionString.Value!;
+        await CatalogDatabase.ProvisionAsync(cs);
+        return new CatalogLedger(() => CatalogDatabase.Create(cs), clock);
+    }
+
+    private RecordState Work(string name, Guid submission, string reference, string metadataHash, DateTime modified) => new()
+    {
+        DeliveryKey = DeliveryKey.Derive("sqlserver-ledger-test", [_run, name]),
+        FlowId = _flow,
+        SourceKey = _run + "/" + name,
+        MappingName = "Thing",
+        TargetId = "dev:x:" + _run + name,
+        LastSubmissionId = submission,
+        PendingDocumentRef = reference,
+        WorkBatch = 0,
+        PendingRenderContext = "{}",
+        PendingSourceModifiedUtc = modified,
+        PendingMetadataHash = metadataHash,
+        PendingPayloadHash = "ph",
+        PendingPayloadModifiedUtc = modified,
+        PendingPayloadLocation = "loc",
+        PendingMetadata = true,
+        PendingPayload = true,
+    };
+
+    private static RecordCompletion Completion(RecordState claimed, Guid submission, DateTime at, bool nothingSent = false) => new()
+    {
+        DeliveryKey = claimed.DeliveryKey,
+        Status = RecordStatus.Delivered,
+        Promote = true,
+        NothingSent = nothingSent,
+        TargetVersion = nothingSent ? null : 1,
+        Claimed = ClaimedWork.Of(claimed),
+        Attempt = new AttemptRecord
+        {
+            DeliveryKey = claimed.DeliveryKey,
+            SubmissionId = submission,
+            Worker = "w",
+            StartedUtc = at,
+            CompletedUtc = at,
+            Outcome = nothingSent ? AttemptOutcome.Skipped : AttemptOutcome.Delivered,
+            Phase = nothingSent ? AttemptPhases.Unchanged : "metadata+payload",
+        },
+    };
+
+    [SkippableFact]
+    public async Task Bulk_staging_queues_behind_an_in_flight_delivery_and_refuses_older_work_and_bulk_completion_keeps_them_apart()
+    {
+        var ledger = await LedgerAsync(_clock);
+        var s1 = Guid.NewGuid();
+        var first = await ledger.UpsertPendingAsync([Work("a", s1, "0:0:10", "mh-a1", Now.AddDays(-3)), Work("b", s1, "0:10:10", "mh-b1", Now.AddDays(-3))]);
+        Assert.Equal(2, first.Staged);
+        Assert.Empty(first.Refused);
+        var claimed = await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now);
+        Assert.Equal(2, claimed.Count);
+        var a = claimed.Single(r => r.SourceKey.EndsWith("/a", StringComparison.Ordinal));
+        var b = claimed.Single(r => r.SourceKey.EndsWith("/b", StringComparison.Ordinal));
+
+        // One call carries newer work for a record in flight and older work for another: the first queues, the second is named.
+        var s2 = Guid.NewGuid();
+        var second = await ledger.UpsertPendingAsync([Work("a", s2, "0:0:12", "mh-a2", Now.AddDays(-1)), Work("b", s2, "0:12:10", "mh-b0", Now.AddDays(-4))]);
+        Assert.Equal(1, second.Staged);
+        Assert.Equal(b.DeliveryKey, Assert.Single(second.Refused));
+        var queued = await ledger.GetRecordAsync(_flow, a.DeliveryKey);
+        Assert.Equal(RecordStatus.Delivering, queued!.Status);
+        Assert.Equal(a.LeaseOwner, queued.LeaseOwner);
+        Assert.Equal(1, queued.AttemptCount);
+        Assert.Equal(s2, queued.LastSubmissionId);
+        Assert.Equal("0:0:12", queued.PendingDocumentRef);
+        Assert.Equal(s1, (await ledger.GetRecordAsync(_flow, b.DeliveryKey))!.LastSubmissionId);
+
+        // The in-flight try's steps never reach the newer work.
+        await ledger.SaveStepAsync(a.DeliveryKey, s1, "0:0:10", "{\"metadata\":{\"version\":\"1\"}}");
+        Assert.Null((await ledger.GetRecordAsync(_flow, a.DeliveryKey))!.PendingStepJson);
+
+        // Two completions take the set-based statement: a was superseded while in flight, b was not.
+        await ledger.CompleteManyAsync([Completion(a, s1, Now), Completion(b, s1, Now)]);
+        var settledA = await ledger.GetRecordAsync(_flow, a.DeliveryKey);
+        Assert.Equal(RecordStatus.Pending, settledA!.Status);
+        Assert.Null(settledA.LeaseOwner);
+        Assert.Equal(0, settledA.AttemptCount);
+        Assert.Equal("mh-a1", settledA.MetadataHash);
+        Assert.Equal(Now.AddDays(-3), settledA.SourceModifiedUtc);
+        Assert.Equal(Now.AddDays(-3), settledA.PayloadModifiedUtc);
+        Assert.Equal(Now, settledA.LastDeliveredUtc);
+        Assert.Equal("mh-a2", settledA.PendingMetadataHash);
+        Assert.Equal("0:0:12", settledA.PendingDocumentRef);
+        var settledB = await ledger.GetRecordAsync(_flow, b.DeliveryKey);
+        Assert.Equal(RecordStatus.Delivered, settledB!.Status);
+        Assert.Equal("mh-b1", settledB.MetadataHash);
+        Assert.Null(settledB.PendingDocumentRef);
+        Assert.Equal(Now.AddDays(-3), settledB.SourceModifiedUtc);
+        Assert.Equal(Now, settledB.LastDeliveredUtc);
+
+        // The queued work lands without anything sent (the final check found it held): promoted, delivery time untouched.
+        var delivered = Now;
+        await ledger.UpsertPendingAsync([Work("c", s2, "0:22:10", "mh-c1", Now)]);
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        var next = await ledger.ClaimAsync(_flow, s2, "w2", 10, TimeSpan.FromMinutes(5), Now);
+        Assert.Equal(2, next.Count);
+        var a2 = next.Single(r => r.SourceKey.EndsWith("/a", StringComparison.Ordinal));
+        var c = next.Single(r => r.SourceKey.EndsWith("/c", StringComparison.Ordinal));
+        await ledger.CompleteManyAsync([Completion(a2, s2, Now, nothingSent: true), Completion(c, s2, Now)]);
+
+        var landedA = await ledger.GetRecordAsync(_flow, a.DeliveryKey);
+        Assert.Equal(RecordStatus.Delivered, landedA!.Status);
+        Assert.Equal("mh-a2", landedA.MetadataHash);
+        Assert.Equal(delivered.AddDays(-1), landedA.SourceModifiedUtc);
+        Assert.Equal(delivered, landedA.LastDeliveredUtc);
+        Assert.Null(landedA.PendingDocumentRef);
+        Assert.Equal(Now, (await ledger.GetRecordAsync(_flow, c.DeliveryKey))!.LastDeliveredUtc);
+        Assert.Equal(2, await ledger.CountAttemptsAsync(s1, AttemptOutcome.Delivered));
+        Assert.Equal(1, await ledger.CountAttemptsAsync(s2, AttemptOutcome.Delivered));
+        Assert.Equal(1, await ledger.CountAttemptsAsync(s2, AttemptOutcome.Skipped, AttemptPhases.Unchanged));
+    }
+}
