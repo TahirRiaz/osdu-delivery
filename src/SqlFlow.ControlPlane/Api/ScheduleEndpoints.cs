@@ -165,7 +165,7 @@ public static class ScheduleEndpoints
         var ordered = query.OrderBy(s => s.Name).ThenBy(s => s.Id);
         var total = await ordered.LongCountAsync(ct).ConfigureAwait(false);
         var rows = await ordered.Skip((p - 1) * size).Take(size)
-            .Select(Project(db)).ToListAsync(ct).ConfigureAwait(false);
+            .AsSplitQuery().Select(Project(db)).ToListAsync(ct).ConfigureAwait(false);
         var items = await WithLastFireOutcomeAsync(db, rows, ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<ScheduleDto>(items, p, size, total));
     }
@@ -174,7 +174,7 @@ public static class ScheduleEndpoints
         Guid id, CatalogDbContext db, CancellationToken ct)
     {
         var row = await db.Schedules.AsNoTracking().Where(s => s.Id == id)
-            .Select(Project(db)).FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            .AsSingleQuery().Select(Project(db)).FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (row is null)
         {
             return TypedResults.Problem(detail: $"No schedule '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
@@ -439,7 +439,7 @@ public static class ScheduleEndpoints
         }
 
         var row = await db.Schedules.AsNoTracking().Where(s => s.Id == id)
-            .Select(Project(db)).FirstAsync(ct).ConfigureAwait(false);
+            .AsSingleQuery().Select(Project(db)).FirstAsync(ct).ConfigureAwait(false);
         var dto = await WithLastFireOutcomeAsync(db, [row], ct).ConfigureAwait(false);
         return TypedResults.Ok(dto[0]);
     }
@@ -471,6 +471,9 @@ public static class ScheduleEndpoints
     // An expression (not a method body) so EF Core translates the projection into the SELECT column list. It takes the
     // context because the member count is a correlated subquery over the member table: a schedule's whole meaning is
     // what it runs, so a list that could not say how many flows that is would be answering the wrong question.
+    // It reads two collections, the members and the parents, so a page runs it split (one statement per collection,
+    // over the same ordered page) rather than multiplying each schedule's members by its parents; one schedule reads it
+    // as a single query, since one row's handful of members and parents is cheaper in one round trip.
     private static Expression<Func<CatalogSchedule, ScheduleRow>> Project(CatalogDbContext db) => s => new ScheduleRow(
         s.Id, s.RepoId, s.Name,
         db.ScheduleMembers.Where(m => m.ScheduleId == s.Id).Select(m => m.PipelineId).ToList(),
