@@ -1055,13 +1055,13 @@ public class ProtocolTests
     }
 
     [Fact]
-    public async Task Verifying_many_records_is_one_batched_read_that_separates_drift_from_absence_from_refusal()
+    public async Task Verifying_many_records_is_one_batched_read_that_separates_a_match_from_drift_and_absence()
     {
         var handler = new FakeHttpHandler().On(
             HttpMethod.Post,
             "/query/records",
             HttpStatusCode.OK,
-            """{"records":[{"id":"dev:x:match","version":3},{"id":"dev:x:drifted","version":9}],"invalidRecords":["dev:x:refused"]}""");
+            """{"records":[{"id":"dev:x:match","version":3},{"id":"dev:x:drifted","version":9}],"invalidRecords":["dev:x:listed"]}""");
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
@@ -1072,7 +1072,7 @@ public class ProtocolTests
             [
                 new VerifyRequest("dev:x:match", 3),
                 new VerifyRequest("dev:x:drifted", 3),
-                new VerifyRequest("dev:x:refused", 3),
+                new VerifyRequest("dev:x:listed", 3),
                 new VerifyRequest("dev:x:absent", 3),
                 new VerifyRequest("dev:x:adopted", null),
             ]);
@@ -1082,8 +1082,9 @@ public class ProtocolTests
             Assert.Equal(VerifyOutcome.Drifted, results[1].Outcome);
             Assert.Equal(9, results[1].ObservedVersion);
             Assert.Contains("observed version 9", results[1].Detail, StringComparison.Ordinal);
-            Assert.Equal(VerifyOutcome.Error, results[2].Outcome);
-            Assert.Contains("invalid or unreadable", results[2].Detail, StringComparison.Ordinal);
+            // Storage names a record it does not hold under invalidRecords: that is an absence like any other.
+            Assert.Equal(VerifyOutcome.Missing, results[2].Outcome);
+            Assert.Contains("invalidRecords", results[2].Detail, StringComparison.Ordinal);
             Assert.Equal(VerifyOutcome.Missing, results[3].Outcome);
             Assert.Equal(VerifyOutcome.Missing, results[4].Outcome);
 

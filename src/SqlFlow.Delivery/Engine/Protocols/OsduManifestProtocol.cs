@@ -162,7 +162,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                     continue;
                 }
 
-                var missing = await SettleAsync(group, run, outcomes, ct).ConfigureAwait(false);
+                var (missing, _) = await SettleAsync(group, run, outcomes, ct).ConfigureAwait(false);
                 if (missing.Count > 0)
                 {
                     _logger.LogWarning("Workflow run {RunId} of {Workflow} finished {Status} without {Count} of its {Total} record(s); they go into a new run.", runId, _options.WorkflowName, run.Status, missing.Count, group.Count);
@@ -195,9 +195,13 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                 }
                 else
                 {
-                    foreach (var staged in await SettleAsync(fresh, run, outcomes, ct).ConfigureAwait(false))
+                    var (missing, listedInvalid) = await SettleAsync(fresh, run, outcomes, ct).ConfigureAwait(false);
+                    foreach (var staged in missing)
                     {
-                        var reason = $"workflow run {run.RunId} of {_options.WorkflowName} finished {run.Status} but {staged.Work.TargetId} is not in storage; the run's log names what it rejected, and the next try triggers a new run";
+                        var listed = listedInvalid.Contains(staged.Work.TargetId)
+                            ? " (storage names the id under invalidRecords, which is how it answers for a record it does not hold)"
+                            : string.Empty;
+                        var reason = $"workflow run {run.RunId} of {_options.WorkflowName} finished {run.Status} but {staged.Work.TargetId} is not in storage{listed}; the workflow did not write it and its run log names why, and the next try triggers a new run";
                         staged.Steps.Add(RecordsStep, run.Started, null, null, reason);
                         outcomes[staged.Index] = DeliveryOutcome.Failed(new DeliveryException(reason), staged.Steps.Steps);
                     }
@@ -462,7 +466,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     /// delivered with their version; the ones storage asked to retry fail for this try; the rest are returned to
     /// the caller, which decides whether they go into a new run now or on the next try.
     /// </summary>
-    private async Task<List<Staged>> SettleAsync(List<Staged> group, WorkflowRun run, DeliveryOutcome[] outcomes, CancellationToken ct)
+    private async Task<(List<Staged> Missing, HashSet<string> ListedInvalid)> SettleAsync(List<Staged> group, WorkflowRun run, DeliveryOutcome[] outcomes, CancellationToken ct)
     {
         var url = _client.Url(_options.RecordQueryPath ?? DefaultRecordQueryPath);
         var versions = new Dictionary<string, long?>(StringComparer.Ordinal);
@@ -549,22 +553,17 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                 staged.Steps.Add(RecordsStep, completed, status, null, reason);
                 outcomes[staged.Index] = DeliveryOutcome.Failed(new DeliveryException(reason), staged.Steps.Steps);
             }
-            else if (invalid.Contains(id))
-            {
-                // Storage naming the id under invalidRecords is a verdict, not an absence: the id is malformed or
-                // this caller may not read it. Triggering another workflow run would not change either, so the
-                // record fails with what storage actually said instead of going round again.
-                var reason = $"storage rejected {id} as invalid or unreadable when it was read back after workflow run {run.RunId}; the id or the caller's entitlements are the problem, not the run";
-                staged.Steps.Add(RecordsStep, completed, status, null, reason);
-                outcomes[staged.Index] = DeliveryOutcome.Failed(new DeliveryException(reason), staged.Steps.Steps);
-            }
             else
             {
+                // Not returned. Storage answers a read of a record it does not hold by naming the id under
+                // invalidRecords (a live M26 service does; the OpenAPI description does not say what the list means),
+                // so after a finished run a listed id is a record the workflow did not write, like one not named at
+                // all: it goes into a new run rather than reading the same finished run back on every try.
                 missing.Add(staged);
             }
         }
 
-        return missing;
+        return (missing, invalid);
     }
 
     private sealed record Staged(int Index, DeliveryWork Work, JsonObject Document, string Section, List<JsonObject> Datasets, List<string> Ids, DeliverySteps Steps, int Files);

@@ -60,8 +60,8 @@ a workflow run id. See [design.md](design.md) section 16.3.
 - Verify, one record: `GET {endpoint}{verifyPath}` (default `/api/storage/v2/records/{id}`), compare `version`.
 - Verify, a pass: `POST {verifyBatchPath}` (default `/api/storage/v2/query/records`) with up to 100 ids and
   the attributes projected down, so a drift pass over a large estate costs a handful of requests rather than
-  one per record. The records it returns carry their observed version, the ids it names under `invalidRecords`
-  are reported as errors (the id or the caller's entitlements, not an absence), and the rest are missing.
+  one per record. The records it returns carry their observed version, and the rest are missing, whether or not
+  the response names them under `invalidRecords`, which is how storage answers for a record it does not hold.
   `osduFile` and `osduManifest` verify through the same read, because their records live in storage too.
 - Remove: `POST {id}:delete` stops the record resolving and is revertible in OSDU; `DELETE {id}/versions`
   purges the earlier versions and leaves the latest live; `DELETE {id}` purges the record and every version.
@@ -154,8 +154,8 @@ The files go first, then the record that references them (openapi file v2, stora
    record: `datasetKind` (default `osdu:wks:dataset--File.Generic:1.0.0`), the record's own `acl` and `legal`
    copied, and `data.DatasetProperties.FileSourceInfo` with the file source, name and size. Step
    `register-{i}` returns `datasetId`.
-3. The record, with `data.{datasetsProperty}` (default `Datasets`) pointing at the registered ids (any ids the
-   mapping rendered are kept), goes through the storage array endpoint exactly as `osduRecord`, batched with
+3. The record, with `data.{datasetsProperty}` (default `Datasets`) referencing the registered datasets as `{id}:`
+   (the form the work product component schemas require; any references the mapping rendered are kept), goes through the storage array endpoint exactly as `osduRecord`, batched with
    the rest of the batch. Step `records`.
 
 A metadata-only change rewrites the record with the dataset ids of its earlier delivery (from the target
@@ -174,7 +174,9 @@ workflow run.
    dataset entry of the manifest with an id derived from its record's id
    (`dev:work-product-component--WellLog:abc` with the default dataset kind gives
    `dev:dataset--File.Generic:abc-0`), so a redelivery overwrites its datasets instead of leaking new ones,
-   and the record's dataset list is complete before the workflow registers them.
+   and the record's dataset list is complete before the workflow registers them. The list references each
+   dataset as `{id}:`: manifest ingestion validates the schemas' reference pattern and drops a record that
+   breaks it, while still creating its datasets.
 2. One manifest (`manifestKind`, default `osdu:wks:Manifest:1.0.0`) carries every record of the batch in the
    section its kind names (`ReferenceData`, `MasterData`, `Data.WorkProduct`, `Data.WorkProductComponents`,
    `Data.Datasets`; `manifestSection` overrides) and the dataset entries. `POST {workflowRunPath}` (default
@@ -192,9 +194,10 @@ workflow run.
    the status and timestamps.
 4. The records are read back from storage (`POST {recordQueryPath}`, default
    `/api/storage/v2/query/records`, a hundred ids per request, projected to the dataset list) so each settles
-   on its own evidence: present with a version, delivered; named under `retryRecords` or `invalidRecords`,
-   failed saying which (an id storage rejects will not be helped by another run, so it is not re-submitted);
-   absent, failed with the run named, and re-submitted in a new run on the next try. Step `records` returns
+   on its own evidence: present with a version, delivered; named under `retryRecords`, failed saying so; not
+   returned, failed with the run named and re-submitted in a new run on the next try. Storage names a record it
+   does not hold under `invalidRecords` (a live M26 service does), so a listed id is a record the workflow did
+   not write, not a verdict on the id. Step `records` returns
    the record id and version.
 
 Verify, read back and removal go to storage, and a purge of everything deletes the datasets and their files through the file

@@ -378,9 +378,9 @@ internal static class RecordWriter
     /// Verifies a set of records in batched reads (openapi storage v2, <c>POST /query/records</c>, which takes up
     /// to <see cref="OsduRecordProtocol.MaxVerifyBatch"/> ids per request), rather than one read per record.
     /// Attributes are projected down so the service does not return whole data blocks for a pass that only compares
-    /// versions. The response names three groups and each becomes an outcome of its own: the records it returned
-    /// carry their observed version, the ones it lists under <c>invalidRecords</c> are refusals to report as errors
-    /// rather than as absences, and anything it neither returned nor named is missing from the target.
+    /// versions. The records the response returns carry their observed version; a record it does not return is missing
+    /// from the target, whether or not it names the id under <c>invalidRecords</c>, which is how storage answers for a
+    /// record it does not hold (observed on a live M26 service; the OpenAPI description does not say what the list means).
     ///
     /// Every protocol that writes through the storage service verifies through this, which is what keeps a drift
     /// pass over a large estate to a handful of requests whichever of them delivered the records.
@@ -439,14 +439,14 @@ internal static class RecordWriter
         return results;
     }
 
-    /// <summary>What one record's batched read means for it: its version, a refusal, or an absence.</summary>
+    /// <summary>What one record's batched read means for it: its version, or an absence.</summary>
     private static VerifyResult SettleVerify(VerifyRequest request, IReadOnlyDictionary<string, long?> versions, IReadOnlySet<string> invalid)
     {
         if (!versions.TryGetValue(request.TargetId, out var observed))
         {
-            return invalid.Contains(request.TargetId)
-                ? new VerifyResult(VerifyOutcome.Error, null, "the storage service rejected the id as invalid or unreadable")
-                : new VerifyResult(VerifyOutcome.Missing, null, "record not found");
+            return new VerifyResult(VerifyOutcome.Missing, null, invalid.Contains(request.TargetId)
+                ? "record not found (storage names the id under invalidRecords, as it does for a record it does not hold)"
+                : "record not found");
         }
 
         if (observed is null)

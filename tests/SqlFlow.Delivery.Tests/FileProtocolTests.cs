@@ -131,8 +131,22 @@ public class FileProtocolTests
             Assert.Null(register["id"]);
             var record = JsonNode.Parse(handler.Calls[6].Body!)!.AsArray();
             Assert.Equal(HttpMethod.Put, handler.Calls[6].Method);
-            Assert.Equal(["dev:dataset--File.Generic:ds-0", "dev:dataset--File.Generic:ds-1"], record[0]!["data"]!["Datasets"]!.AsArray().Select(n => n!.GetValue<string>()));
+            Assert.Equal(["dev:dataset--File.Generic:ds-0:", "dev:dataset--File.Generic:ds-1:"], record[0]!["data"]!["Datasets"]!.AsArray().Select(n => n!.GetValue<string>()));
         }
+    }
+
+    [Fact]
+    public void A_record_references_its_datasets_in_the_form_the_schemas_require_without_repeating_a_rendered_one()
+    {
+        // Work product component schemas take dataset references: the id, a colon and an optional version. Manifest
+        // ingestion validates that pattern and drops a record that breaks it while still creating its datasets.
+        var document = TestSchema.Doc("""{"data":{"Datasets":["dev:dataset--File.Generic:kept:","dev:dataset--File.Generic:pinned:7"]}}""");
+        FileUploads.SetDatasets(document, "Datasets", ["dev:dataset--File.Generic:kept", "dev:dataset--File.Generic:new"]);
+        var datasets = document["data"]!["Datasets"]!.AsArray().Select(n => n!.GetValue<string>()).ToList();
+        Assert.Equal(["dev:dataset--File.Generic:kept:", "dev:dataset--File.Generic:pinned:7", "dev:dataset--File.Generic:new:"], datasets);
+        Assert.All(datasets, d => Assert.Matches(@"^[\w\-\.]+:dataset\-\-[\w\-\.]+:[\w\-\.\:\%]+:[0-9]*$", d));
+        Assert.Equal("dev:dataset--File.Generic:x:", FileUploads.DatasetReference("dev:dataset--File.Generic:x"));
+        Assert.Equal("dev:dataset--File.Generic:x:", FileUploads.DatasetReference("dev:dataset--File.Generic:x:"));
     }
 
     [Fact]
@@ -164,7 +178,7 @@ public class FileProtocolTests
             Assert.Equal(4, handler.Calls.Count);
             Assert.Equal("dev:dataset--File.Generic:old-0,dev:dataset--File.Generic:ds-0", outcome.Returned["datasetIds"]);
             var record = JsonNode.Parse(handler.Calls[3].Body!)!.AsArray();
-            Assert.Equal(["dev:dataset--File.Generic:old-0", "dev:dataset--File.Generic:ds-0"], record[0]!["data"]!["Datasets"]!.AsArray().Select(n => n!.GetValue<string>()));
+            Assert.Equal(["dev:dataset--File.Generic:old-0:", "dev:dataset--File.Generic:ds-0:"], record[0]!["data"]!["Datasets"]!.AsArray().Select(n => n!.GetValue<string>()));
         }
     }
 
@@ -189,7 +203,7 @@ public class FileProtocolTests
             Assert.Equal("ds-a,ds-b", outcome.Returned["datasetIds"]);
             Assert.Single(handler.Calls);
             var record = JsonNode.Parse(handler.Calls[0].Body!)!.AsArray();
-            Assert.Equal(["ds-a", "ds-b"], record[0]!["data"]!["Datasets"]!.AsArray().Select(n => n!.GetValue<string>()));
+            Assert.Equal(["ds-a:", "ds-b:"], record[0]!["data"]!["Datasets"]!.AsArray().Select(n => n!.GetValue<string>()));
 
             var logical = await protocol.DeleteAsync(RecordId, RemovalScope.Record, state);
             Assert.True(logical.Deleted);
@@ -254,7 +268,7 @@ public class FileProtocolTests
             Assert.Equal(2, data["Datasets"]!.AsArray().Count);
             Assert.Equal("dev:dataset--File.Generic:abc-0", data["Datasets"]![0]!["id"]!.GetValue<string>());
             Assert.Equal("/landing/blob-0", data["Datasets"]![0]!["data"]!["DatasetProperties"]!["FileSourceInfo"]!["FileSource"]!.GetValue<string>());
-            Assert.Equal("dev:dataset--File.Generic:abc-0", data["WorkProductComponents"]![0]!["data"]!["Datasets"]![0]!.GetValue<string>());
+            Assert.Equal("dev:dataset--File.Generic:abc-0:", data["WorkProductComponents"]![0]!["data"]!["Datasets"]![0]!.GetValue<string>());
             Assert.Equal(RecordId, data["WorkProductComponents"]![0]!["id"]!.GetValue<string>());
 
             var query = JsonNode.Parse(handler.Calls.Single(c => c.Uri.AbsolutePath.EndsWith("/query/records", StringComparison.Ordinal)).Body!)!.AsObject();
@@ -320,8 +334,9 @@ public class FileProtocolTests
             Assert.NotNull(outcomes[1].Steps[2].Error);
         }
 
-        // A record storage names under invalidRecords is a verdict on the id or the caller's entitlements, so it
-        // fails saying that rather than reading as a record the run merely left out.
+        // Storage answers a read of a record it does not hold by naming the id under invalidRecords (a live M26 service
+        // does), so after a finished run that is a record the workflow did not write. It fails naming the run, and the
+        // next try, finding that run already finished, sends the record in a new run instead of reading the same one back.
         var rejecting = new FakeHttpHandler()
             .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-4","runId":"run-4","status":"SUCCESS"}""")
             .OnMatch(r => RunStatus(r, "run-4"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"workflowId":"wf-4","status":"SUCCESS"}"""))
@@ -330,13 +345,20 @@ public class FileProtocolTests
         using (runtime4)
         {
             var protocol = new OsduManifestProtocol(client4, new ProtocolOptions { WorkflowPollSeconds = 1 }, Samples.Logger<OsduManifestProtocol>());
-            var outcomes = await protocol.DeliverBatchAsync([Work(true, false, 0)]);
-            Assert.False(outcomes[0].Succeeded);
-            Assert.Contains("invalid or unreadable", outcomes[0].Failure!.Message, StringComparison.Ordinal);
-            Assert.Contains("run-4", outcomes[0].Failure!.Message, StringComparison.Ordinal);
-
-            // One run, one read-back: the record is not sent round again, because a second run would not help.
+            var first = await protocol.DeliverBatchAsync([Work(true, false, 0)]);
+            Assert.False(first[0].Succeeded);
+            Assert.Contains("not in storage", first[0].Failure!.Message, StringComparison.Ordinal);
+            Assert.Contains("invalidRecords", first[0].Failure!.Message, StringComparison.Ordinal);
+            Assert.Contains("run-4", first[0].Failure!.Message, StringComparison.Ordinal);
             Assert.Equal(3, rejecting.Calls.Count);
+
+            var earlier = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
+            {
+                ["manifest"] = new Dictionary<string, string>(StringComparer.Ordinal) { ["runId"] = "run-4" },
+            };
+            var second = await protocol.DeliverBatchAsync([Work(true, false, 0, completed: earlier)]);
+            Assert.False(second[0].Succeeded);
+            Assert.Equal(2, rejecting.Calls.Count(c => c.Method == HttpMethod.Post && c.Uri.AbsolutePath.EndsWith("/workflowRun", StringComparison.Ordinal)));
         }
 
         var reported = new List<string>();

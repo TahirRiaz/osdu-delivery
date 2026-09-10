@@ -445,11 +445,12 @@ public sealed class RetrievalRunner
 
         if (invalid.Count > 0)
         {
-            // The index found these but storage would not hand them over. That is a different thing from a record
-            // that has since been deleted, and saying so is what keeps the run's missing count from reading as data
-            // loss when it is really an entitlements gap.
+            // The index found these but storage did not hand them over. Storage names an id under invalidRecords for a
+            // record it does not hold (observed on a live M26 service), so the likeliest reading is a record deleted
+            // after it was indexed; one this caller may not read is listed the same way. Named so the missing count
+            // can be traced to the ids.
             _logger.LogWarning(
-                "retrieve: storage rejected {Count} id(s) as invalid or unreadable, so they are counted as missing. First: {Ids}",
+                "retrieve: storage did not return {Count} id(s) the search index listed and names them under invalidRecords (deleted since they were indexed, or not readable by this caller); they are counted as missing. First: {Ids}",
                 invalid.Count, string.Join(", ", invalid.Take(5)));
         }
 

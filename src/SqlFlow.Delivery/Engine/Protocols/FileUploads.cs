@@ -171,7 +171,14 @@ internal static class FileUploads
         return record;
     }
 
-    /// <summary>Points the record's dataset list at the given ids, keeping any the mapping rendered first, without duplicates.</summary>
+    /// <summary>
+    /// Points the record's dataset list at the given dataset records, keeping any the mapping rendered first, without
+    /// duplicates. The list holds references, not record ids: the work product component schemas require each entry to
+    /// be the id followed by a colon and an optional version (<c>^[\w\-\.]+:dataset\-\-[\w\-\.]+:[\w\-\.\:\%]+:[0-9]*$</c>).
+    /// Storage keeps whatever it is given, but manifest ingestion validates the pattern and drops a record that breaks
+    /// it while still creating its datasets (observed on a live M26 service), so the reference form is what is written.
+    /// A rendered entry naming the same dataset, with the colon or without, is not repeated.
+    /// </summary>
     public static void SetDatasets(JsonObject document, string property, IReadOnlyList<string> ids)
     {
         if (document["data"] is not JsonObject data)
@@ -186,7 +193,7 @@ internal static class FileUploads
         {
             foreach (var node in existing)
             {
-                if (node is JsonValue value && value.TryGetValue<string>(out var text) && seen.Add(text))
+                if (node is JsonValue value && value.TryGetValue<string>(out var text) && seen.Add(text.TrimEnd(':')))
                 {
                     merged.Add(text);
                 }
@@ -195,13 +202,20 @@ internal static class FileUploads
 
         foreach (var id in ids)
         {
-            if (seen.Add(id))
+            if (seen.Add(id.TrimEnd(':')))
             {
-                merged.Add(id);
+                merged.Add(DatasetReference(id));
             }
         }
 
         data[property] = new JsonArray(merged.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray());
+    }
+
+    /// <summary>A dataset record as a record's dataset list references it: the id and a colon, which leaves the version open.</summary>
+    public static string DatasetReference(string id)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        return id.EndsWith(':') ? id : id + ":";
     }
 
     /// <summary>The dataset ids the record's earlier deliveries registered, from its target state.</summary>
