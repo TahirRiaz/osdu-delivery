@@ -88,10 +88,12 @@ public class DeterministicGuidTests
 public class ContentHashTests
 {
     [Fact]
-    public void Parts_are_length_prefixed_so_concatenation_cannot_collide()
+    public void Hashes_are_lower_case_sha256_hex_whether_given_text_or_its_bytes()
     {
-        Assert.NotEqual(Hashing.ContentHash.OfParts("ab", "c"), Hashing.ContentHash.OfParts("a", "bc"));
-        Assert.Equal(64, Hashing.ContentHash.Of("x").Length);
+        var hash = Hashing.ContentHash.Of("x");
+        Assert.Equal(Hashing.ContentHash.HexLength, hash.Length);
+        Assert.Equal(hash.ToLowerInvariant(), hash);
+        Assert.Equal(hash, Hashing.ContentHash.Of(System.Text.Encoding.UTF8.GetBytes("x")));
     }
 }
 
@@ -234,14 +236,19 @@ public class MappingRendererTests
     }
 
     [Fact]
-    public void Hash_moves_with_the_render_context_but_not_with_operational_settings()
+    public void Hash_is_of_the_document_so_a_new_render_context_that_renders_the_same_document_does_not_move_it()
     {
+        // Seen live: every cache refresh mints a reference snapshot version, and a hash that took the render context in
+        // re-sent every record rendered against the store, identical documents included.
         var a = Renderer().Render(Record());
         var other = new MappingRenderer(TestSchema.Mapping(), TestSchema.Build(), TestSchema.References(), TestSchema.Context() with { ReferenceSnapshotVersion = "refs-2" });
         var b = other.Render(Record());
         Assert.Equal(a.Canonical, b.Canonical);
-        Assert.NotEqual(a.MetadataHash, b.MetadataHash);
+        Assert.Equal(a.MetadataHash, b.MetadataHash);
         Assert.Equal(a.MetadataHash, Renderer().Render(Record()).MetadataHash);
+
+        // A document that differs is what moves the hash.
+        Assert.NotEqual(a.MetadataHash, Renderer().Render(Record(depth: "13.5")).MetadataHash);
     }
 
     [Fact]

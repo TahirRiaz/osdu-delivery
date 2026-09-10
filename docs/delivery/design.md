@@ -345,7 +345,8 @@ The metadata document and the payload are delivered by different calls and chang
 different rates. Coupling them means a corrected `LogRun` re-uploads a hundred megabytes
 of grid.
 
-- `metadataHash` over the canonical rendered document
+- `metadataHash` over the canonical rendered document alone: the render context decides when a record is rendered
+  again, never whether it is sent, so a new cache or schema version that renders the same document sends nothing
 - `payloadHash` over the **logical** payload content
 
 ### 6.4 Do not hash payload bytes

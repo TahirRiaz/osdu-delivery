@@ -170,7 +170,11 @@ public sealed class MappingRenderer
 
         var normalized = (JsonObject)CanonicalJson.Normalize(document)!;
         var canonical = CanonicalJson.ToString(normalized);
-        var metadataHash = ContentHash.OfParts(canonical, _context.Canonical());
+        // The hash is of the document alone (design.md section 6.3). The render context decides when a record is rendered
+        // again, since a moved mapping version or snapshot re-renders it; the document decides whether it is sent. A hash
+        // that took the context in re-sent every record rendered against a store whenever a new cache version was minted
+        // there, identical documents included.
+        var metadataHash = ContentHash.Of(canonical);
 
         return new RenderResult
         {

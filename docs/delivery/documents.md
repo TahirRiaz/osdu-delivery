@@ -119,8 +119,10 @@ verify: { reconcile: false }       # whether the verify pass re-queues drifted o
 
 ### Render-affecting versus operational
 
-Only `render.*` enters the render context and therefore the content hash. Everything else changes how a
-document gets there. Raising `reliability.concurrency` or changing `target.endpoint` never redelivers a record.
+Only `render.*` enters the render context. Everything else changes how a document gets there: raising
+`reliability.concurrency` or changing `target.endpoint` never redelivers a record. A moved render context (a new
+mapping version, schema snapshot or reference snapshot) renders the record again, and whether it is sent is still
+decided by the hash of the rendered document alone, so a new cache version that renders the same document sends nothing.
 
 ### Incremental drops: what changed since the last run
 
