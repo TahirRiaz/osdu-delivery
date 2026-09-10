@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
@@ -305,6 +306,38 @@ public class ReferenceCacheTests
         Assert.Equal("osdu:wks:master-data--Wellbore:1.0.0", type.Kind);
         Assert.Equal("*", type.Query);
         Assert.Equal(["FacilityName", "Alias"], type.Fields.Select(f => f.Name));
+    }
+
+    [Fact]
+    public void A_platform_run_refuses_to_mint_the_cache_into_the_copy_of_the_repository_it_runs_from()
+    {
+        // Seen live: a refresh ran from the staged copy of its flow, minted a version with no previous one into a
+        // snapshots directory beside that copy, and the deliveries rendering against the cache never saw it.
+        var flow = new DeliveryDocumentLoader().ParseRetrieval("""
+            flowType: retrieval
+            name: osdu-metadata-sync
+            source:
+              endpoint: https://osdu.example.com
+              headers: { data-partition-id: opendes }
+              kinds: [osdu:wks:master-data--Wellbore:1.0.0]
+            target:
+              location: lake/metadata
+            cache:
+              types:
+                - fields: [data.FacilityName]
+            """, "sync.yaml") with { SourcePath = Path.Combine(Path.GetTempPath(), "sqlflow-copy", "flows", "sync.yaml") };
+        var cache = flow.Cache!;
+
+        var problem = ReferenceCacheRefresher.StoreProblem(flow, cache, ephemeralWorkingCopy: true);
+        Assert.NotNull(problem);
+        Assert.Contains("cache.snapshots", problem, StringComparison.Ordinal);
+        Assert.Contains("render.snapshots", problem, StringComparison.Ordinal);
+        Assert.NotNull(ReferenceCacheRefresher.StoreProblem(flow, cache with { SnapshotsDirectory = "../snapshots" }, ephemeralWorkingCopy: true));
+
+        // A durable store is fine from any copy, and a run from a working tree of its own may keep the nearest store.
+        Assert.Null(ReferenceCacheRefresher.StoreProblem(flow, cache with { SnapshotsDirectory = "abfss://lake@account.dfs.core.windows.net/osdu/snapshots" }, ephemeralWorkingCopy: true));
+        Assert.Null(ReferenceCacheRefresher.StoreProblem(flow, cache with { SnapshotsDirectory = Path.Combine(Path.GetTempPath(), "shared-snapshots") }, ephemeralWorkingCopy: true));
+        Assert.Null(ReferenceCacheRefresher.StoreProblem(flow, cache, ephemeralWorkingCopy: false));
     }
 
     [Fact]

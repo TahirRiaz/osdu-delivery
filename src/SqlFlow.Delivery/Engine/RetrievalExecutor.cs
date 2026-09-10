@@ -63,7 +63,7 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
         LogStart(log, flow.Name, operation, parameters.Describe(), actor, runId);
         try
         {
-            result = await ExecuteOperationAsync(context, flow, operation, parameters, runId, actor, log, ct).ConfigureAwait(false);
+            result = await ExecuteOperationAsync(context, flow, operation, parameters, runId, actor, options.EphemeralWorkingCopy, log, ct).ConfigureAwait(false);
             success = true;
             LogDone(log, operation, stopwatch.Elapsed.TotalSeconds);
         }
@@ -109,11 +109,19 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
         };
     }
 
-    private static async Task<object> ExecuteOperationAsync(EngineContext context, RetrievalDefinition flow, string operation, RunParameters parameters, Guid runId, string actor, ILogger log, CancellationToken ct)
+    private static async Task<object> ExecuteOperationAsync(EngineContext context, RetrievalDefinition flow, string operation, RunParameters parameters, Guid runId, string actor, bool ephemeralWorkingCopy, ILogger log, CancellationToken ct)
     {
         if (parameters.SubmissionId is not null || parameters.RecordKeys.Count > 0 || parameters.Partitions.Count > 0 || !string.IsNullOrWhiteSpace(parameters.Drop))
         {
             throw new SqlFlowException("A retrieval flow takes no drop, submission, record or partition scope; only the flow's parameter values and force.");
+        }
+
+        // Refused before anything is retrieved: a cache minted into the run's own copy of the repository is lost with it.
+        if (operation == RunParameters.RetrieveOperation
+            && flow.Cache is { } maintained
+            && ReferenceCacheRefresher.StoreProblem(flow, maintained, ephemeralWorkingCopy) is { } problem)
+        {
+            throw new SqlFlowException(problem);
         }
 
         var values = FlowParameters.Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, parameters.Values);

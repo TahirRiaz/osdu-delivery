@@ -196,7 +196,7 @@ target:
 
 cache:                               # optional: the OSDU cache this flow keeps current for the mappings
   makeCurrent: true                  # the minted snapshot becomes what `references: pinned` resolves to
-  snapshots: ../snapshots            # optional store; the nearest `snapshots` directory by default
+  snapshots: abfss://lake@acct.dfs.core.windows.net/osdu-snapshots   # the store the cache is minted into; the delivery flows name it as render.snapshots. Default: the nearest `snapshots` directory, which a platform run refuses because it runs from a copy of the repository
   onChange: approve                  # default for the types below: approve (wait for a decision) or auto
   types:
     - kind: "osdu:wks:master-data--Wellbore:1.0.0"   # optional when the flow retrieves exactly one kind

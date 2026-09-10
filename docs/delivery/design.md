@@ -268,7 +268,11 @@ maintains (`cache.types` in its document, section 15). A retrieve run sweeps eac
 type in full, merges the result onto the current snapshot and mints a new version, so a
 version always describes the whole cache rather than the slice one run refreshed. The
 capture is deliberately not the retrieval's incremental window: a cache holding only the
-last hour's changes cannot answer a lookup.
+last hour's changes cannot answer a lookup. The store it mints into has to outlive the run: the
+platform runs a flow from a staged or checked-out copy of its repository, so a retrieval flow
+that keeps the cache names a durable store (a storage URI or an absolute path on shared storage)
+that the delivery flows render from as well, and a refresh whose store resolves inside the copy
+is refused before anything is retrieved.
 
 **Where it is visible.** The repository sync carries the definitions and the records of the
 recent snapshot versions into the catalog (`delivery.CacheDefinition`,

@@ -760,6 +760,10 @@ public sealed partial class RunWorker
             }
 
             string flowRoot;
+
+            // A staged version or a commit checkout is a copy made for runs: what a run writes beside its flow there is
+            // seen by no other run, which the executor has to know before it writes state it means to keep.
+            var ephemeralWorkingCopy = false;
             // Snapshot-first: the enqueue stamped the run with the content hash of the exact YAML to execute and
             // staged that version in the catalog, so the node writes it into its local version cache and runs it
             // with no git access at all. This is what keeps a schedule fanning out a whole batch from storming the
@@ -774,6 +778,7 @@ public sealed partial class RunWorker
             if (snapshotRoot is not null)
             {
                 flowRoot = snapshotRoot;
+                ephemeralWorkingCopy = true;
             }
             else if (!string.IsNullOrWhiteSpace(run.CommitSha))
             {
@@ -796,6 +801,7 @@ public sealed partial class RunWorker
                     .ResolveCredentialsAsync(resolver, run.CredentialReference, run.CredentialUsername, ct)
                     .ConfigureAwait(false);
                 flowRoot = _materializer.Materialize(run.RepoRemoteUrl, run.CommitSha, credentials, ct);
+                ephemeralWorkingCopy = true;
                 LogMaterialized(runId, repoName, run.CommitSha);
             }
             else
@@ -849,6 +855,7 @@ public sealed partial class RunWorker
                     // Who asked (the person or client that triggered it, else the schedule or source that did), for
                     // the kinds that keep an audit trail.
                     Actor = run.RequestedBy ?? run.TriggerSource,
+                    EphemeralWorkingCopy = ephemeralWorkingCopy,
                 };
                 // The executor runs under the per-run token: an operator cancel aborts the in-flight work here (and
                 // only here), while the surrounding bookkeeping stays on the shutdown token so a late cancel never

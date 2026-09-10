@@ -74,6 +74,30 @@ public sealed class ReferenceCacheRefresher
         return new ReferenceCacheOutcome(snapshot.Version, previousVersion, snapshot.CapturedUtc.UtcDateTime, cache.MakeCurrent, root, types);
     }
 
+    /// <summary>
+    /// Why this run must not mint the cache into its store, or null. A run executing from a copy of the repository made
+    /// for it (a staged version or a commit checkout) resolves a store named relative to the flow, or found by walking
+    /// up from it, inside that copy: the snapshot would reach no delivery that renders against the cache, and the next
+    /// refresh would find no earlier version to compare with, so no cached change would ever be tagged. Only a store
+    /// named as an absolute path or a storage URI outlives the copy.
+    /// </summary>
+    internal static string? StoreProblem(RetrievalDefinition flow, RetrievalCache cache, bool ephemeralWorkingCopy)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        ArgumentNullException.ThrowIfNull(cache);
+        var declared = cache.SnapshotsDirectory;
+        if (!ephemeralWorkingCopy
+            || (!string.IsNullOrWhiteSpace(declared) && (declared.Contains("://", StringComparison.Ordinal) || Path.IsPathFullyQualified(declared))))
+        {
+            return null;
+        }
+
+        var resolved = DeliveryLayout.ResolveSnapshots(flow.SourcePath, declared);
+        return $"Retrieval flow '{flow.Name}' keeps the OSDU cache current, but this run executes from a copy of the repository made for it, and its snapshot store resolves inside that copy ({resolved}). "
+            + "The snapshot it would mint reaches no delivery that renders against the cache, and the next refresh would have no earlier version to compare with. "
+            + "Name a durable store both sides share, as cache.snapshots here and render.snapshots on the delivery flows that use the cache: an absolute path on shared storage, or a storage URI such as abfss://. Nothing was retrieved.";
+    }
+
     private static string ModeText(CacheChangeMode mode) => mode == CacheChangeMode.Auto ? "auto" : "approve";
 
     /// <summary>The capture spec with the run's parameter values substituted into each type's query.</summary>
