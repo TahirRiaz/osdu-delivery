@@ -221,13 +221,14 @@ public class FileProtocolTests
     }
 
     [Fact]
-    public async Task Manifest_protocol_uploads_hands_one_manifest_per_batch_to_the_workflow_and_reads_the_records_back()
+    public async Task Manifest_protocol_uploads_and_registers_the_files_hands_one_manifest_per_batch_to_the_workflow_and_reads_the_records_back()
     {
         var reported = new List<string>();
         var polls = 0;
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Get, "/files/uploadURL", hit => FakeHttpHandler.Json(HttpStatusCode.OK, UploadLocation(hit)))
             .OnMatch(LandingUpload, _ => FakeHttpHandler.Json(HttpStatusCode.Created, null))
+            .On(HttpMethod.Post, "/files/metadata", hit => FakeHttpHandler.Json(HttpStatusCode.Created, "{\"id\":\"dev:dataset--File.Generic:ds-" + hit.ToString(CultureInfo.InvariantCulture) + "\"}"))
             .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-1","status":"SUBMITTED"}""")
             .OnMatch(AnyRunStatus, _ => FakeHttpHandler.Json(HttpStatusCode.OK, ++polls == 1 ? """{"status":"INPROGRESS"}""" : """{"workflowId":"wf-1","status":"SUCCESS","endTimeStamp":"1700000000000"}"""))
             .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":3},{"id":"dev:work-product-component--WellLog:def","version":4}],"invalidRecords":[],"retryRecords":[]}""");
@@ -244,9 +245,9 @@ public class FileProtocolTests
             Assert.Equal("wf-1", outcomes[0].Returned["workflowId"]);
             Assert.Equal("SUCCESS", outcomes[0].Returned["status"]);
             Assert.Equal("1700000000000", outcomes[0].Returned["endTimeStamp"]);
-            Assert.Equal("dev:dataset--File.Generic:abc-0", outcomes[0].Returned["datasetIds"]);
-            Assert.Equal("dev:dataset--File.Generic:def-0", outcomes[1].Returned["datasetIds"]);
-            Assert.Equal(["upload-0", "manifest", "workflow", "records"], outcomes[0].Steps.Select(s => s.Name));
+            Assert.Equal("dev:dataset--File.Generic:ds-0", outcomes[0].Returned["datasetIds"]);
+            Assert.Equal("dev:dataset--File.Generic:ds-1", outcomes[1].Returned["datasetIds"]);
+            Assert.Equal(["upload-0", "register-0", "manifest", "workflow", "records"], outcomes[0].Steps.Select(s => s.Name));
             var runId = outcomes[0].Returned["runId"];
             Assert.Equal(runId, outcomes[1].Returned["runId"]);
             Assert.Equal(2, reported.Count(r => r.StartsWith("manifest=", StringComparison.Ordinal)));
@@ -265,10 +266,15 @@ public class FileProtocolTests
             Assert.False(manifest.ContainsKey("MasterData"));
             var data = manifest["Data"]!.AsObject();
             Assert.Equal(2, data["WorkProductComponents"]!.AsArray().Count);
-            Assert.Equal(2, data["Datasets"]!.AsArray().Count);
-            Assert.Equal("dev:dataset--File.Generic:abc-0", data["Datasets"]![0]!["id"]!.GetValue<string>());
-            Assert.Equal("/landing/blob-0", data["Datasets"]![0]!["data"]!["DatasetProperties"]!["FileSourceInfo"]!["FileSource"]!.GetValue<string>());
-            Assert.Equal("dev:dataset--File.Generic:abc-0:", data["WorkProductComponents"]![0]!["data"]!["Datasets"]![0]!.GetValue<string>());
+
+            // The files were registered through the file service before the manifest named them, so the manifest carries no
+            // dataset entries of its own: each record references the datasets the service minted for its files.
+            Assert.False(data.ContainsKey("Datasets"));
+            Assert.Equal("dev:dataset--File.Generic:ds-0:", data["WorkProductComponents"]![0]!["data"]!["Datasets"]![0]!.GetValue<string>());
+            Assert.Equal("dev:dataset--File.Generic:ds-1:", data["WorkProductComponents"]![1]!["data"]!["Datasets"]![0]!.GetValue<string>());
+            var register = JsonNode.Parse(handler.Calls.First(c => c.Uri.AbsolutePath.EndsWith("/files/metadata", StringComparison.Ordinal)).Body!)!.AsObject();
+            Assert.Null(register["id"]);
+            Assert.Equal("/landing/blob-0", register["data"]!["DatasetProperties"]!["FileSourceInfo"]!["FileSource"]!.GetValue<string>());
             Assert.Equal(RecordId, data["WorkProductComponents"]![0]!["id"]!.GetValue<string>());
 
             var query = JsonNode.Parse(handler.Calls.Single(c => c.Uri.AbsolutePath.EndsWith("/query/records", StringComparison.Ordinal)).Body!)!.AsObject();
@@ -425,7 +431,7 @@ public class FileProtocolTests
     }
 
     [Fact]
-    public void Manifest_sections_and_dataset_ids_derive_from_the_kinds()
+    public void Manifest_sections_derive_from_the_kinds()
     {
         Assert.Equal("WorkProductComponents", OsduManifestProtocol.SectionOf(TestSchema.Doc(Document)));
         Assert.Equal("MasterData", OsduManifestProtocol.SectionOf(TestSchema.Doc("""{"kind":"osdu:wks:master-data--Wellbore:1.0.0"}""")));
@@ -434,10 +440,6 @@ public class FileProtocolTests
         Assert.Equal("Datasets", OsduManifestProtocol.SectionOf(TestSchema.Doc("""{"kind":"osdu:wks:dataset--File.Generic:1.0.0"}""")));
         var unknown = Assert.Throws<DeliveryException>(() => OsduManifestProtocol.SectionOf(TestSchema.Doc("""{"kind":"nope"}""")));
         Assert.Contains("manifestSection", unknown.Message, StringComparison.Ordinal);
-
-        Assert.Equal("dev:dataset--File.Generic:abc-1", OsduManifestProtocol.DatasetId(RecordId, "osdu:wks:dataset--File.Generic:1.0.0", 1));
-        Assert.Throws<DeliveryException>(() => OsduManifestProtocol.DatasetId("abc", "osdu:wks:dataset--File.Generic:1.0.0", 0));
-        Assert.Throws<DeliveryException>(() => OsduManifestProtocol.DatasetId(RecordId, "dataset--File.Generic", 0));
     }
 
     private sealed class MemoryPayload(int chunks) : IPayloadSource

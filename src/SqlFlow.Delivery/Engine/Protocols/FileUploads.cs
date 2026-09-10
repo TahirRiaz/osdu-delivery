@@ -122,7 +122,7 @@ internal static class FileUploads
         var url = client.Url(options.FileMetadataPath ?? DefaultFileMetadataPath);
         // Not repeated on an unclear outcome: every accepted POST mints another dataset record. The step is
         // resumable, so the next try of the record registers the file once.
-        var result = await client.SendJsonAsync(HttpMethod.Post, url, DatasetRecord(options, work.Document, file, null), null, ct, idempotent: false).ConfigureAwait(false);
+        var result = await client.SendJsonAsync(HttpMethod.Post, url, DatasetRecord(options, work.Document, file), null, ct, idempotent: false).ConfigureAwait(false);
         var datasetId = JsonPathReader.SelectValue(OsduHttpClient.ParseJson(result, url), "id");
         if (string.IsNullOrWhiteSpace(datasetId))
         {
@@ -136,21 +136,17 @@ internal static class FileUploads
     }
 
     /// <summary>
-    /// The dataset record of one uploaded file (openapi file v2, FileMetadata; the same shape the manifest's Datasets
-    /// section takes): the flow's ACL and legal tags copied from the rendered record, never restated, and
+    /// The dataset record of one uploaded file (openapi file v2, FileMetadata): the flow's ACL and legal tags copied
+    /// from the rendered record, never restated, and
     /// FileSourceInfo pointing at the landing-zone path the upload returned.
     /// </summary>
-    public static JsonObject DatasetRecord(ProtocolOptions options, JsonObject document, UploadedFile file, string? id)
+    public static JsonObject DatasetRecord(ProtocolOptions options, JsonObject document, UploadedFile file)
     {
         var acl = document["acl"]?.DeepClone() ?? throw new DeliveryException("the rendered record has no acl block to copy onto its dataset record");
         var legal = document["legal"]?.DeepClone() ?? throw new DeliveryException("the rendered record has no legal block to copy onto its dataset record");
         var size = file.Size.ToString(CultureInfo.InvariantCulture);
+        // No id: the file service mints the dataset id and ignores one the request supplies (observed on a live M26 service).
         var record = new JsonObject();
-        if (id is not null)
-        {
-            record["id"] = id;
-        }
-
         record["kind"] = options.DatasetKind;
         record["acl"] = acl;
         record["legal"] = legal;

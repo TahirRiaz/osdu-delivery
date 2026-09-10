@@ -75,7 +75,7 @@ target:
     uploadUrlPath: /api/file/v2/files/uploadURL      # osduFile, osduManifest: the signed landing-zone location
     uploadUrlExpiry: 12H           # how long the signed URL stays valid (30M, 12H, 2D); default the service's one hour
     uploadHeaders: { x-ms-blob-type: BlockBlob }     # extra headers on the signed-URL upload; the Azure blob type is added for a *.blob.core.* URL anyway
-    fileMetadataPath: /api/file/v2/files/metadata    # osduFile: registers the dataset record
+    fileMetadataPath: /api/file/v2/files/metadata    # osduFile, osduManifest: registers the dataset record
     fileDeletePath: /api/file/v2/files/{id}/metadata # purge: deletes a dataset record and its file
     datasetKind: osdu:wks:dataset--File.Generic:1.0.0
     datasetsProperty: Datasets     # the record's data property listing its dataset ids

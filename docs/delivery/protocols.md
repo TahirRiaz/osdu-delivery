@@ -170,16 +170,17 @@ restored whole, and a history purge touches only the record's own earlier versio
 OSDU's own bulk path (openapi file v2, workflow v1, storage v2): the batch's files, one manifest, one
 workflow run.
 
-1. The batch's files are uploaded as in `osduFile` (steps `upload-{i}`); no registration. Each file becomes a
-   dataset entry of the manifest with an id derived from its record's id
-   (`dev:work-product-component--WellLog:abc` with the default dataset kind gives
-   `dev:dataset--File.Generic:abc-0`), so a redelivery overwrites its datasets instead of leaking new ones,
-   and the record's dataset list is complete before the workflow registers them. The list references each
-   dataset as `{id}:`: manifest ingestion validates the schemas' reference pattern and drops a record that
-   breaks it, while still creating its datasets.
+1. The batch's files are uploaded and registered as in `osduFile` (steps `upload-{i}` and `register-{i}`), and
+   each record's dataset list references the datasets registered for it as `{id}:`. Registration comes first
+   because it is what makes a file retrievable: a dataset the manifest only describes is created with its file
+   left in the landing zone, where the file service's download URL finds nothing (observed on a live M26
+   service). The file service mints the dataset ids and ignores an id the request supplies, so a payload
+   change registers new datasets and the record points at them; the earlier ones stay, as for `osduFile`. The
+   reference form matters as well: manifest ingestion validates the schemas' reference pattern and drops a
+   record that breaks it.
 2. One manifest (`manifestKind`, default `osdu:wks:Manifest:1.0.0`) carries every record of the batch in the
    section its kind names (`ReferenceData`, `MasterData`, `Data.WorkProduct`, `Data.WorkProductComponents`,
-   `Data.Datasets`; `manifestSection` overrides) and the dataset entries. `POST {workflowRunPath}` (default
+   `Data.Datasets`; `manifestSection` overrides). `POST {workflowRunPath}` (default
    `/api/workflow/v1/workflow/{workflow}/workflowRun`, `workflowName` default `Osdu_ingest`) with
    `{ runId, executionContext: { Payload: { AppKey, data-partition-id, ...workflowPayload }, manifest } }`.
    The run id is chosen here, so a request the service accepted before a retry resent it answers 409 and is

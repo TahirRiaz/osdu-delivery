@@ -530,7 +530,7 @@ From the specs already held in `osdu-csharp-client/openapi_specs/`:
 | Plain record | `storage` | One JSON document, upsert by id, batched arrays |
 | Record plus bulk | `wellbore_ddms` | Record, then binary payload, optionally via a session |
 | Record plus file | `file`, `dataset` | Signed upload URL, upload, register metadata |
-| Manifest ingestion | `workflow` | Assemble a manifest, trigger a DAG, poll to completion |
+| Manifest ingestion | `workflow`, `file` | Register the files, assemble a manifest, trigger a DAG, poll to completion |
 
 The last is asynchronous and batch-shaped, and it is OSDU's own preferred bulk path.
 

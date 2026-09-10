@@ -10,15 +10,17 @@ using SqlFlow.Delivery.Protocols;
 namespace SqlFlow.Delivery.Engine.Protocols;
 
 /// <summary>
-/// Manifest ingestion (design.md section 8.1): the batch's files go to the landing zone first; then one manifest
-/// carrying the batch's records, and one dataset entry per uploaded file, is handed to the ingestion workflow
-/// (openapi workflow v1, POST workflow/{name}/workflowRun); the run is polled until it finishes; and the records
-/// are read back from storage (openapi storage v2, POST query/records) so each settles on its own evidence: present
-/// with a version, delivered; absent, failed with the run named. Dataset ids derive from the record id, so a
-/// redelivery overwrites its datasets instead of leaking new ones, and the record's dataset list is complete before
-/// the workflow registers them. The manifest step records the run id before polling starts (section 16.3), so a
-/// retry after a poll timeout resumes the same run; a run that failed, or that finished without writing the record,
-/// is triggered again on the next try, and the failed run stays on the attempt.
+/// Manifest ingestion (design.md section 8.1): the batch's files go to the landing zone and are registered through the
+/// file service (openapi file v2, POST files/metadata), as for the file protocol; then one manifest carrying the batch's
+/// records, each listing the datasets registered for it, is handed to the ingestion workflow (openapi workflow v1, POST
+/// workflow/{name}/workflowRun); the run is polled until it finishes; and the records are read back from storage
+/// (openapi storage v2, POST query/records) so each settles on its own evidence: present with a version, delivered;
+/// absent, failed with the run named. Registration comes first because it is what makes a file retrievable: a dataset
+/// the manifest only describes is created with its file left in the landing zone, where the file service's download
+/// URL finds nothing (observed on a live M26 service). The file service mints the dataset ids, so a payload change
+/// registers new datasets and the record points at them. The manifest step records the run id before polling starts
+/// (section 16.3), so a retry after a poll timeout resumes the same run; a run that failed, or that finished without
+/// writing the record, is triggered again on the next try, and the failed run stays on the attempt.
 /// </summary>
 public sealed class OsduManifestProtocol : IDeliveryProtocol
 {
@@ -92,18 +94,17 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
             var steps = new DeliverySteps(_time);
             try
             {
-                var datasets = new List<JsonObject>();
                 var ids = new List<string>();
                 var files = 0;
                 if (work.DeliverPayload)
                 {
+                    // Every file is registered through the file service before the manifest names it: registration is
+                    // what makes it retrievable, and the register steps resume on a retry, so a file is registered once.
                     var chunks = await FileUploads.ListChunksAsync(work, _requestBodyCeiling, ct).ConfigureAwait(false);
                     var uploaded = await FileUploads.UploadAsync(_client, _options, work, chunks, steps, ct).ConfigureAwait(false);
                     foreach (var file in uploaded)
                     {
-                        var id = DatasetId(work.TargetId, _options.DatasetKind, file.Index);
-                        ids.Add(id);
-                        datasets.Add(FileUploads.DatasetRecord(_options, work.Document, file, id));
+                        ids.Add(await FileUploads.RegisterAsync(_client, _options, work, file, steps, ct).ConfigureAwait(false));
                     }
 
                     files = uploaded.Count;
@@ -120,7 +121,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                 }
 
                 var section = _options.ManifestSection ?? SectionOf(document);
-                var staged = new Staged(i, work, document, section, datasets, ids, steps, files);
+                var staged = new Staged(i, work, document, section, ids, steps, files);
                 if (work.Completed(ManifestStep) is { } earlier && earlier.TryGetValue("runId", out var runId) && !string.IsNullOrEmpty(runId))
                 {
                     steps.Resumed(ManifestStep, earlier);
@@ -297,7 +298,10 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         };
     }
 
-    /// <summary>One manifest for the batch (osdu:wks:Manifest:1.0.0): the records in their sections, the batch's datasets under Data.</summary>
+    /// <summary>
+    /// One manifest for the batch (osdu:wks:Manifest:1.0.0): the records in their sections, a record of a dataset kind
+    /// under Data. The batch's files are registered before it and referenced from the records, never described here.
+    /// </summary>
     private JsonObject BuildManifest(List<Staged> group)
     {
         var manifest = new JsonObject { ["kind"] = _options.ManifestKind };
@@ -333,11 +337,6 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                     break;
                 default:
                     throw new DeliveryException($"'{staged.Section}' is not a manifest section");
-            }
-
-            foreach (var dataset in staged.Datasets)
-            {
-                datasets.Add(dataset.DeepClone());
             }
         }
 
@@ -566,7 +565,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         return (missing, invalid);
     }
 
-    private sealed record Staged(int Index, DeliveryWork Work, JsonObject Document, string Section, List<JsonObject> Datasets, List<string> Ids, DeliverySteps Steps, int Files);
+    private sealed record Staged(int Index, DeliveryWork Work, JsonObject Document, string Section, List<string> Ids, DeliverySteps Steps, int Files);
 
     private sealed record WorkflowRun(string RunId, string? WorkflowId, string Status, string? StartTimeStamp, string? EndTimeStamp, DateTime Started)
     {
