@@ -673,6 +673,7 @@ public class EndToEndTests : IDisposable
             var attempt = Assert.Single(await ledger.ListAttemptsAsync(records[0].Key, 10));
             using var result = System.Text.Json.JsonDocument.Parse(attempt.ResultJson!);
             Assert.Equal(sent, result.RootElement.GetProperty("correlationId").GetString());
+            Assert.Null(attempt.Error);
             Assert.Null(OsduCorrelation.Current);
         }
     }

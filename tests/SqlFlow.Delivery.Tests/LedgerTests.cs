@@ -498,7 +498,8 @@ public class SqlLedgerTests : IDisposable
         var stale = (await Ledger.ListAttemptsAsync(key, 10)).Single(a => a.Phase == AttemptPhases.Stale);
         Assert.Equal(AttemptOutcome.Skipped, stale.Outcome);
         Assert.Equal(s2, stale.SubmissionId);
-        Assert.Contains("older version", stale.Error, StringComparison.Ordinal);
+        Assert.Null(stale.Error);
+        Assert.Contains("older version", stale.ResultJson, StringComparison.Ordinal);
         Assert.Equal(1, await Ledger.CountAttemptsAsync(s2, AttemptOutcome.Skipped, AttemptPhases.Stale));
     }
 

@@ -359,13 +359,16 @@ public sealed class FlowRuntime : IDisposable
                     continue;
                 }
 
+                // One correlation id for the chunk's calls, named on each removal attempt, so a removal can be followed
+                // into OSDU's own logs like a delivery.
+                using var correlation = OsduCorrelation.Begin();
                 var outcomes = await protocol.DeleteBatchAsync(removals, scope, ct).ConfigureAwait(false);
 
                 // The ledger settles the whole chunk in one write, and only for the records the target actually
                 // answered for: a record whose call failed keeps the state it had, so a retry of the removal is
                 // still the removal of a record that is still there.
                 var settled = outcomes.Where(o => o.Succeeded).Select(o => o.Removal.Key).ToList();
-                await ledger.MarkRemovedAsync(settled, scope, Actor, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+                await ledger.MarkRemovedAsync(settled, scope, Actor, _context.Time.GetUtcNow().UtcDateTime, correlation.Id, ct).ConfigureAwait(false);
                 foreach (var outcome in outcomes)
                 {
                     results.Add(await AnnounceRemovalAsync(outcome, scope, records[outcome.Removal.Key], ct).ConfigureAwait(false));

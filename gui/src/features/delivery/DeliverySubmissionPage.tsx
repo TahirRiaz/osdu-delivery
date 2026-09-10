@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "../../api/client";
 import { deliveryApi, type DeliveryAttempt, type DeliveryWorkBatch } from "../../api/delivery";
+import { AttemptDetail } from "./AttemptDetail";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
@@ -92,7 +93,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
     { id: "phase", header: "Phase", render: (row) => <span className="font-mono text-[12px]">{row.phase}</span> },
     { id: "version", header: "Version", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.targetVersion ?? "-"}</span> },
     { id: "worker", header: "Worker", render: (row) => <TruncatedText text={row.worker} mono maxWidth={200} /> },
-    { id: "error", header: "Detail", render: (row) => <TruncatedText text={row.error} maxWidth={360} /> },
+    { id: "error", header: "Detail", render: (row) => <AttemptDetail attempt={row} /> },
   ];
   const batchColumns: Column<DeliveryWorkBatch>[] = [
     { id: "index", header: "Batch", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.index}</span> },

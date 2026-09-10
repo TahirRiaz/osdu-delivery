@@ -888,7 +888,7 @@ public interface ILedger
     /// state is untouched and only the attempt is written. Either way every record gets its own attempt, saying
     /// which scope ran and who asked for it, because that attempt is how the removal is audited afterwards.
     /// </summary>
-    Task MarkRemovedAsync(IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, CancellationToken ct = default);
+    Task MarkRemovedAsync(IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default);
 
     /// <summary>
     /// The keys of every record a listing matches, in key order, up to <paramref name="max"/>. Key order is what

@@ -270,8 +270,24 @@ public class RemovalLedgerTests : IDisposable
 
         var attempt = Assert.Single(await Ledger.ListAttemptsAsync(key, 10), a => a.Phase == "delete");
         Assert.Equal(AttemptOutcome.Deleted, attempt.Outcome);
-        Assert.Contains("gui:tahir", attempt.Error!, StringComparison.Ordinal);
-        Assert.Contains("reversible", attempt.Error!, StringComparison.Ordinal);
+        Assert.Null(attempt.Error);
+        Assert.Contains("gui:tahir", attempt.ResultJson!, StringComparison.Ordinal);
+        Assert.Contains("reversible", attempt.ResultJson!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_removal_attempt_reads_like_any_other_attempt_and_names_its_correlation_id()
+    {
+        // A removed record's page went blank in the GUI: this attempt's result was the record's target state, not the
+        // steps-shaped result every other attempt carries.
+        var key = await DeliveredAsync("a", Guid.NewGuid());
+        await Ledger.MarkRemovedAsync([key], RemovalScope.Record, "gui:tahir", Now, "corr-1");
+
+        var attempt = Assert.Single(await Ledger.ListAttemptsAsync(key, 10), a => a.Phase == "delete");
+        using var result = System.Text.Json.JsonDocument.Parse(attempt.ResultJson!);
+        Assert.Equal("corr-1", result.RootElement.GetProperty("correlationId").GetString());
+        Assert.Equal(System.Text.Json.JsonValueKind.Array, result.RootElement.GetProperty("steps").ValueKind);
+        Assert.Contains("reversible", result.RootElement.GetProperty("detail").GetString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -282,7 +298,8 @@ public class RemovalLedgerTests : IDisposable
 
         Assert.Equal(RecordStatus.Deleted, (await Ledger.GetRecordAsync(_flow, key))!.Status);
         var attempt = Assert.Single(await Ledger.ListAttemptsAsync(key, 10), a => a.Phase == "delete");
-        Assert.Contains("every version", attempt.Error!, StringComparison.Ordinal);
+        Assert.Null(attempt.Error);
+        Assert.Contains("every version", attempt.ResultJson!, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -157,8 +157,13 @@ export interface DeliveryAttemptStep {
 }
 
 export interface DeliveryAttemptResult {
-  steps: DeliveryAttemptStep[];
+  /** The correlation id every OSDU request of the try carried, for finding it in the services' own logs. */
+  correlationId?: string;
+  /** Absent on attempts recorded before every attempt carried a steps array. */
+  steps?: DeliveryAttemptStep[];
   returned?: Record<string, string>;
+  /** What an attempt that did not fail has to say (chunks sent, why nothing was sent, what a removal took). */
+  detail?: string;
 }
 
 /** One delivery try, as the append-only history holds it. */

@@ -165,6 +165,7 @@ public sealed class ReadRecordOperation : DeliveryOperation
         }
 
         var (http, protocol) = await OpenTargetAsync(flow, ct).ConfigureAwait(false);
+        using var correlation = Http.OsduCorrelation.Begin();
         using (http)
         {
             JsonObject? document = await protocol.ReadAsync(targetId, ct).ConfigureAwait(false);
@@ -173,6 +174,7 @@ public sealed class ReadRecordOperation : DeliveryOperation
                 flow = flow.Name,
                 deliveryKey,
                 targetId,
+                correlationId = correlation.Id,
                 found = document is not null,
                 version = document is null ? null : RecordWriter.ParseVersion(Json.JsonPathReader.SelectValue(JsonSerializer.SerializeToElement(document), "version")),
                 record = document,

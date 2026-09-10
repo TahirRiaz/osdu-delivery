@@ -304,7 +304,7 @@ public sealed class CatalogLedger : ILedger
                         CompletedUtc = now,
                         Outcome = StatusText.Of(AttemptOutcome.Skipped),
                         Phase = AttemptPhases.Stale,
-                        Error = Truncate(Http.HeaderRedaction.RedactMessage(skip.Reason), 2000),
+                        ResultJson = AttemptResult.WithDetail(null, Truncate(Http.HeaderRedaction.RedactMessage(skip.Reason), 2000)),
                     });
                     continue;
                 }
@@ -1174,7 +1174,7 @@ public sealed class CatalogLedger : ILedger
         };
     }
 
-    public async Task MarkRemovedAsync(IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, CancellationToken ct = default)
+    public async Task MarkRemovedAsync(IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(keys);
         ArgumentException.ThrowIfNullOrWhiteSpace(worker);
@@ -1206,14 +1206,14 @@ public sealed class CatalogLedger : ILedger
 
             foreach (var entity in entities)
             {
-                MarkRemoved(db, entity, scope, worker, note, nowUtc);
+                MarkRemoved(db, entity, scope, worker, note, nowUtc, correlationId);
             }
 
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
     }
 
-    private static void MarkRemoved(CatalogDbContext db, DeliveryRecord entity, RemovalScope scope, string worker, string note, DateTime nowUtc)
+    private static void MarkRemoved(CatalogDbContext db, DeliveryRecord entity, RemovalScope scope, string worker, string note, DateTime nowUtc, string? correlationId)
     {
         db.DeliveryAttempts.Add(new DeliveryAttempt
         {
@@ -1225,8 +1225,7 @@ public sealed class CatalogLedger : ILedger
             Outcome = StatusText.Of(scope == RemovalScope.History ? AttemptOutcome.HistoryPurged : AttemptOutcome.Deleted),
             Phase = scope == RemovalScope.History ? "purge-history" : "delete",
             TargetVersion = entity.TargetVersion,
-            Error = note,
-            ResultJson = entity.TargetStateJson,
+            ResultJson = AttemptResult.Removal(correlationId, entity.TargetStateJson, note),
         });
 
         // A history purge leaves the record live in OSDU at the version the ledger already holds, so its custody

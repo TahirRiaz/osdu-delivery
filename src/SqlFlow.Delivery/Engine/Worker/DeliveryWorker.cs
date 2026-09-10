@@ -637,8 +637,9 @@ public sealed class DeliveryWorker
                 MetadataHash = record.PendingMetadataHash,
                 PayloadHash = record.PendingPayloadHash,
                 TargetVersion = version,
-                Error = redacted ?? detail,
-                ResultJson = resultJson,
+                // The error column holds errors; what an attempt that did not fail has to say goes with its result.
+                Error = redacted,
+                ResultJson = redacted is null ? AttemptResult.WithDetail(resultJson, detail) : resultJson,
                 WorkBatch = batch?.Index ?? record.WorkBatch,
             },
         };

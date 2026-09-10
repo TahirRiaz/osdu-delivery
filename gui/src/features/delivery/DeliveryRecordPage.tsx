@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "../../api/client";
 import { deliveryApi, type DeliveryActivity, type DeliveryAttempt, type DeliveryAttemptResult } from "../../api/delivery";
+import { AttemptDetail } from "./AttemptDetail";
 import { CodeView } from "../../components/CodeView";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -29,13 +30,14 @@ import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
 /** The steps of one try, compactly: name, status, duration, and whether an earlier try had completed it. */
 function AttemptSteps({ result }: { result: DeliveryAttemptResult | null }) {
-  if (result === null || result.steps.length === 0) {
+  const steps = result?.steps ?? [];
+  if (steps.length === 0) {
     return <span className="text-muted-foreground">-</span>;
   }
 
   return (
     <div className="flex flex-wrap gap-1">
-      {result.steps.map((step, index) => (
+      {steps.map((step, index) => (
         <Badge
           key={`${step.name}-${index}`}
           variant="outline"
@@ -73,7 +75,7 @@ const attemptColumns: Column<DeliveryAttempt>[] = [
   { id: "worker", header: "Worker", render: (row) => <TruncatedText text={row.worker} mono maxWidth={200} /> },
   { id: "run", header: "Run", render: (row) => (row.runId ? <RunLink runId={row.runId} /> : <span className="text-muted-foreground">-</span>) },
   { id: "submission", header: "Submission", render: (row) => (row.submissionId ? <SubmissionLink submissionId={row.submissionId} /> : <span className="text-muted-foreground">-</span>) },
-  { id: "error", header: "Detail", render: (row) => <TruncatedText text={row.error} maxWidth={360} /> },
+  { id: "error", header: "Detail", render: (row) => <AttemptDetail attempt={row} /> },
 ];
 
 const activityColumns: Column<DeliveryActivity>[] = [

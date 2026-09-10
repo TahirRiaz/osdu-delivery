@@ -50,13 +50,15 @@ the runs that carried it.
 Worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`), the
 phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `none`), the hashes
 established, the version returned,
-the redacted error, the platform `RunId` the attempt happened in, the `WorkBatch` it was drained from, and
+the redacted error (for a held or failed try only: a try that did not fail keeps its note, chunks sent or why nothing
+was sent or what a removal took, as `detail` in its result), the platform `RunId` the attempt happened in, the `WorkBatch` it was drained from, and
 `ResultJson`: every step the protocol took (name, timing, status, what the target returned, whether an earlier
 try had completed it) and the values returned. Render-time holds are written by the intake with worker
 `intake`; deletions by the actor who asked for them.
 
 An attempt's result names the `correlationId` every OSDU request of that try carried in the `correlation-id` header,
-so the attempt can be found in the services' own logs, and the error of a refused or failed request quotes the id the
+so the attempt can be found in the services' own logs (a removal names the id its chunk's calls carried, with what OSDU
+held for the record under `returned`), and the error of a refused or failed request quotes the id the
 service answered with. The OpenAPI descriptions do not declare the header; the storage service answers with the id it
 is sent, and with one of its own when it is sent none.
 
