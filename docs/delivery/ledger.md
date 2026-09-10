@@ -132,9 +132,11 @@ until either the source row changes (its fingerprint moves, or its last-modified
 at) or an operator releases it. That is what "do not retry without intervention" means in practice: a re-run of the
 same data never re-attempts a known problem, while a corrected source row flows through on its own.
 
-A released record that still holds its rendered document goes back to pending in its submission. The next deliver run
-of that submission's drop sends it, although its plan finds nothing new for it (the row is what the record already
-queues), and a `drain` run sends it at any time.
+A released record that still holds its rendered document goes back to pending in its submission, and the flow's next
+deliver run sends it, whichever drop that run is for. A run of the record's own drop sends it although its plan finds
+nothing new for it (the row is what the record already queues); a run of another drop, once its own records are sent,
+takes the due records of up to ten completed or failed submissions and recomputes their totals. A `drain` run sends it
+at any time.
 
 Versions never go backwards. A row older than the version a record holds, delivered or queued, is skipped with an
 attempt (`skipped`, phase `stale`) naming both versions, and staging refuses work older than what the ledger holds,

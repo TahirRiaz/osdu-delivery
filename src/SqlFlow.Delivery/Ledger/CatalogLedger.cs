@@ -701,6 +701,29 @@ public sealed class CatalogLedger : ILedger
             .ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, Guid? except, DateTime nowUtc, int max, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var pending = StatusText.Of(RecordStatus.Pending);
+        var completed = StatusText.Of(SubmissionStatus.Completed);
+        var failed = StatusText.Of(SubmissionStatus.Failed);
+        var settled = db.DeliverySubmissions.AsNoTracking()
+            .Where(s => s.FlowId == flowId && (s.Status == completed || s.Status == failed) && (except == null || s.SubmissionId != except))
+            .Select(s => s.SubmissionId);
+        return await db.DeliveryRecords.AsNoTracking()
+            .Where(r => r.FlowId == flowId
+                && r.Status == pending
+                && r.PendingDocumentRef != null
+                && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc)
+                && r.LastSubmissionId != null
+                && settled.Contains(r.LastSubmissionId.Value))
+            .Select(r => r.LastSubmissionId!.Value)
+            .Distinct()
+            .Take(Math.Clamp(max, 1, 100))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
     public async Task AddWorkBatchAsync(WorkBatchState batch, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(batch);

@@ -68,6 +68,9 @@ public sealed class FlowRuntime : IDisposable
 
     private static readonly TimeSpan LeaseSettle = TimeSpan.FromSeconds(30);
 
+    /// <summary>Settled submissions whose released records one deliver run sends after its own.</summary>
+    private const int SettledSubmissionsPerRun = 10;
+
     private readonly EngineContext _context;
     private readonly ResolvedMapping? _mapping;
     private readonly string? _drop;
@@ -211,32 +214,26 @@ public sealed class FlowRuntime : IDisposable
                     // skips it because the drop's row is exactly what it already queues. What is due now is sent; a record
                     // in backoff is not waited for, because a run that planned nothing must not sit out a retry's wait.
                     var worker = await WorkerAsync(ct).ConfigureAwait(false);
-                    var sent = WorkerSummary.Empty;
-                    while (true)
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        var pass = await worker.PassAsync(intake.Submission.SubmissionId, ct).ConfigureAwait(false);
-                        if (pass.Processed == 0 && pass.Batches == 0)
-                        {
-                            break;
-                        }
-
-                        sent = sent.Add(pass);
-                    }
-
-                    if (sent.Processed == 0)
+                    var sent = await PassUntilNothingClaimableAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
+                    var leftovers = await SendSettledLeftoversAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
+                    if (sent.Processed == 0 && leftovers.Processed == 0)
                     {
                         return (new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers), SubmissionIntake.Summarize(intake.Submission), intake.Submission.SubmissionId);
                     }
 
-                    var settled = await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false);
-                    return (new RunResult(intake, sent, settled, intakeMembers), SubmissionIntake.Summarize(settled), settled.SubmissionId);
+                    var settled = sent.Processed > 0
+                        ? await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false)
+                        : intake.Submission;
+                    return (new RunResult(intake, sent.Add(leftovers), settled, intakeMembers), SubmissionIntake.Summarize(settled), settled.SubmissionId);
                 }
 
                 var (work, drainMembers) = await DrainWithFanOutAsync(intake.Submission, h => handle = h, ct).ConfigureAwait(false);
                 handle = null;
                 var submission = await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false);
-                return (new RunResult(intake, work, submission, intakeMembers, drainMembers), SubmissionIntake.Summarize(submission), submission.SubmissionId);
+
+                // Its own records sent, the run takes what settled submissions still hold (records released after their run).
+                var settledLeftovers = await SendSettledLeftoversAsync(await WorkerAsync(ct).ConfigureAwait(false), intake.Submission.SubmissionId, ct).ConfigureAwait(false);
+                return (new RunResult(intake, work.Add(settledLeftovers), submission, intakeMembers, drainMembers), SubmissionIntake.Summarize(submission), submission.SubmissionId);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested && handle is not null)
             {
@@ -245,6 +242,52 @@ public sealed class FlowRuntime : IDisposable
                 throw;
             }
         }, ct);
+
+    /// <summary>Claim passes over one submission until nothing of it is claimable, without waiting for records in backoff.</summary>
+    private static async Task<WorkerSummary> PassUntilNothingClaimableAsync(DeliveryWorker worker, Guid submissionId, CancellationToken ct)
+    {
+        var total = WorkerSummary.Empty;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var pass = await worker.PassAsync(submissionId, ct).ConfigureAwait(false);
+            if (pass.Processed == 0 && pass.Batches == 0)
+            {
+                return total;
+            }
+
+            total = total.Add(pass);
+        }
+    }
+
+    /// <summary>
+    /// Sends what settled submissions of the flow still hold. A record released back to pending with its rendered document
+    /// after its submission completed or failed belongs to no run: its own run is over, and a newer drop's plan skips it
+    /// because its row is what the record already queues. The run takes the due records of up to
+    /// <see cref="SettledSubmissionsPerRun"/> such submissions, passes over each until nothing of it is claimable (records
+    /// in backoff are not waited for) and recomputes the totals of each one it sent anything from.
+    /// </summary>
+    private async Task<WorkerSummary> SendSettledLeftoversAsync(DeliveryWorker worker, Guid current, CancellationToken ct)
+    {
+        var ledger = RequireLedger();
+        var settled = await ledger.ListSettledSubmissionsWithDueWorkAsync(Flow.Id, current, _context.Time.GetUtcNow().UtcDateTime, SettledSubmissionsPerRun, ct).ConfigureAwait(false);
+        var total = WorkerSummary.Empty;
+        foreach (var submissionId in settled)
+        {
+            var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
+            if (sent.Processed > 0)
+            {
+                await Intake.CompleteAsync(submissionId, Flow.Id, ct).ConfigureAwait(false);
+                _log.LogInformation(
+                    "Sent {Count} record(s) that submission {SubmissionId} still held after it settled (released back to pending with their rendered documents).",
+                    sent.Processed, submissionId);
+            }
+
+            total = total.Add(sent);
+        }
+
+        return total;
+    }
 
     /// <summary>
     /// Asks the legal service about the mapping's legal tags before a run plans or sends anything. Every record the

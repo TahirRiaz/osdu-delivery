@@ -864,6 +864,13 @@ public interface ILedger
     /// <summary>The earliest retry time among pending records that are not yet due, or null when nothing waits.</summary>
     Task<DateTime?> NextDueAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default);
 
+    /// <summary>
+    /// The completed or failed submissions of the flow, other than <paramref name="except"/>, that still hold records due
+    /// for delivery with their rendered documents: records released back to pending after their run was over. At most
+    /// <paramref name="max"/>. It reads the flow's pending records, which a run leaves few of once its own are sent.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, Guid? except, DateTime nowUtc, int max, CancellationToken ct = default);
+
     /// <summary>Registers a work batch the intake wrote (idempotent on submission and index).</summary>
     Task AddWorkBatchAsync(WorkBatchState batch, CancellationToken ct = default);
 

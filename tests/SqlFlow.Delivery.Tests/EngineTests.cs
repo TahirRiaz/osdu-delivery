@@ -296,6 +296,40 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_record_released_from_a_settled_submission_is_sent_by_the_next_run_of_the_flow_whose_plan_skips_it()
+    {
+        // Submission 1 ends with one record held at the worker, and that record keeps its rendered document. Submission 2
+        // carries the same rows, so its plan finds the released record's row to be what it already queues and skips it:
+        // the record belongs to no run but the flow's next one.
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var first = await DropAsync("settled-1", records, Submission1, 1);
+        var second = await DropAsync("settled-2", records, Submission2, 2);
+        var ledger = _db.Ledger(_clock);
+        var protocol = new FakeProtocol();
+        var engine = Samples.Engine(ledger, _clock) with { Protocols = new FakeProtocolFactory(protocol) };
+        var parameters = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" };
+
+        var target = records[0].Key.Value.ToString("N");
+        protocol.FailWith = work => work.TargetId.EndsWith(target, StringComparison.Ordinal) ? new RecordHeldException("held by the test") : null;
+        using (var runtime = await FlowRuntime.CreateAsync(engine, Samples.LocalFlow(first), parameters, first))
+        {
+            Assert.Equal(2, (await runtime.RunAsync(force: false)).Work.Delivered);
+        }
+
+        protocol.FailWith = null;
+        using var next = await FlowRuntime.CreateAsync(engine, Samples.LocalFlow(second), parameters, second);
+        Assert.Equal(1, await next.ReleaseAsync([records[0].Key]));
+        var run = await next.RunAsync(force: false);
+        Assert.Equal(1, run.Work.Delivered);
+        var record = await ledger.GetRecordAsync(next.Flow.Id, records[0].Key);
+        Assert.Equal(RecordStatus.Delivered, record!.Status);
+        Assert.Equal(Submission1, record.LastSubmissionId);
+        var settled = await ledger.GetSubmissionAsync(Submission1);
+        Assert.Equal(SubmissionStatus.Completed, settled!.Status);
+        Assert.Equal(0, settled.Held);
+    }
+
+    [Fact]
     public async Task A_record_the_service_asked_to_wait_on_is_not_attempted_again_sooner()
     {
         // The transport does not sit through a long Retry-After; it hands the wait up with the failure, and the
