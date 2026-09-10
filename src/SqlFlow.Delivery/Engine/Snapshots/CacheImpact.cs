@@ -64,18 +64,21 @@ public sealed class CacheImpactAnalyzer
         }
 
         // One tag per changed value, whatever the number of sets or records behind it: an operator decides about a
-        // corrected unit once, not once per record.
+        // corrected unit once, not once per record. Each set is judged by the value it holds, because sets built against
+        // different versions of the cache hold different values of the same path: a set already holding the new value is
+        // not touched, and one still holding an older value is, whichever of them the lookup lists first.
         var tags = new List<UpdateTag>();
         long records = 0;
-        foreach (var change in holders.GroupBy(h => (h.ItemId, h.Path, h.Kind)))
+        var touched = holders
+            .Select(use => (Use: use, Outcome: Describe(use, after.GetValueOrDefault(use.ItemId), current)))
+            .Where(held => held.Outcome is not null)
+            .GroupBy(held => (held.Use.ItemId, held.Use.Path, held.Use.Kind));
+        foreach (var change in touched)
         {
-            var sample = change.First();
-            if (Describe(sample, after.GetValueOrDefault(sample.ItemId), current) is not { } outcome)
-            {
-                continue;
-            }
-
-            var sets = change.Select(h => h.SetId).Distinct().ToList();
+            // The outcome depends on the item, the path and the kind alone, so every set in the group shares it.
+            var sample = change.First().Use;
+            var outcome = change.First().Outcome!.Value;
+            var sets = change.Select(held => held.Use.SetId).Distinct().ToList();
             var affected = await _ledger.CountRecordsInSetsAsync(sets, ct).ConfigureAwait(false);
             if (affected == 0)
             {
@@ -90,7 +93,7 @@ public sealed class CacheImpactAnalyzer
                 ItemId = sample.ItemId,
                 Path = sample.Path,
                 Change = outcome.Change,
-                OldValue = sample.ValueText,
+                OldValue = OldValue(sample, change.Select(held => held.Use), previous, before),
                 NewValue = outcome.NewValue,
                 FromVersion = fromVersion,
                 ToVersion = toVersion,
@@ -130,6 +133,24 @@ public sealed class CacheImpactAnalyzer
         return Hashing.ContentHash.Of(value.Text) == use.ValueHash || string.Equals(value.Text, use.ValueText, StringComparison.Ordinal)
             ? null
             : ("changed", value.Text);
+    }
+
+    /// <summary>
+    /// The value a change moved away from. For a written value, what the version being replaced held, so a tag reads from
+    /// its <c>FromVersion</c> to its <c>ToVersion</c> even while some of its sets were built against an older version; a
+    /// path that version did not hold falls back to the value of the most recently built set. For a match, the terms the
+    /// sources resolved by that no longer resolve.
+    /// </summary>
+    private static string OldValue(CacheSetUse sample, IEnumerable<CacheSetUse> uses, ReferenceType previous, Dictionary<string, ReferenceItem> before)
+    {
+        if (sample.Kind == CacheUsageKind.Match)
+        {
+            return string.Join(", ", uses.Select(u => u.ValueText).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase));
+        }
+
+        return before.TryGetValue(sample.ItemId, out var item) && previous.Value(item, sample.Path) is { } held
+            ? held.Text
+            : uses.MaxBy(u => u.SetId)!.ValueText;
     }
 
     /// <summary>True when any cached path of the item reads differently in the new version.</summary>

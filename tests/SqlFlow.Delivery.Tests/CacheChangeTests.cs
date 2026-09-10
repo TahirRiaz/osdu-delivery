@@ -45,7 +45,10 @@ public sealed class CacheChangeTests : IDisposable
         => new("UnitOfMeasure", "dev:reference-data--UnitOfMeasure:m", path, value, kind);
 
     /// <summary>Delivers <paramref name="count"/> records that all read the same cached values.</summary>
-    private async Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(int count, params CacheUsage[] usages)
+    private Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(int count, params CacheUsage[] usages) => DeliveredAsync("WELL", count, usages);
+
+    /// <summary>Delivers <paramref name="count"/> records keyed under <paramref name="prefix"/> that all read the same cached values.</summary>
+    private async Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(string prefix, int count, params CacheUsage[] usages)
     {
         var submission = Guid.NewGuid();
         await Ledger.RegisterSubmissionAsync(new SubmissionState
@@ -66,15 +69,15 @@ public sealed class CacheChangeTests : IDisposable
         var records = new List<RecordState>();
         for (var i = 0; i < count; i++)
         {
-            var key = DeliveryKey.Derive("test", [$"WELL-{i}"]);
+            var key = DeliveryKey.Derive("test", [$"{prefix}-{i}"]);
             keys.Add(key);
             records.Add(new RecordState
             {
                 DeliveryKey = key,
                 FlowId = _flow,
-                SourceKey = $"WELL-{i}",
+                SourceKey = $"{prefix}-{i}",
                 MappingName = "Thing",
-                TargetId = $"dev:x:WELL-{i}",
+                TargetId = $"dev:x:{prefix}-{i}",
                 LastSubmissionId = submission,
                 PendingDocumentRef = "0:0:10",
                 PendingRenderContext = "{}",
@@ -154,6 +157,40 @@ public sealed class CacheChangeTests : IDisposable
 
         // The gate is on the set, so holding five million records back would cost the same as holding five.
         Assert.Equal(tag.SetIds, await Ledger.GatedCacheSetsAsync());
+    }
+
+    [Fact]
+    public async Task A_change_names_the_value_the_replaced_version_held_not_one_a_set_left_from_an_earlier_render_holds()
+    {
+        // Seen live: a set built before the last change still holds the value before last, and the tag named that one.
+        await Ledger.EnsureCacheSetAsync([Reads("Name", "metre")]);
+        await DeliveredAsync(2, Reads("Name", "meter"));
+
+        var impact = await AnalyzeAsync(Units("meter"), Units("metres"), CacheChangeMode.Approve);
+        Assert.Equal(1, impact.Changes);
+        Assert.Equal(2, impact.AffectedRecords);
+        var tag = Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0));
+        Assert.Equal("meter", tag.OldValue);
+        Assert.Contains("Name changed from 'meter' to 'metres'", tag.Describe(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Each_set_is_judged_by_the_value_it_holds_so_one_already_holding_the_new_value_hides_no_other()
+    {
+        // Records rendered against two versions of the cache: one set already holds the new value, the other still holds
+        // the old one. Only the second is touched, and it is not missed because the lookup lists the first ahead of it.
+        await DeliveredAsync("NEWER", 3, Reads("Name", "meter"));
+        var older = await DeliveredAsync("OLDER", 2, Reads("Name", "metre"));
+        var olderSet = (await Ledger.GetRecordAsync(_flow, older[0]))!.CacheSetId!.Value;
+
+        var impact = await AnalyzeAsync(Units("metre"), Units("meter"), CacheChangeMode.Approve);
+        Assert.Equal(1, impact.Changes);
+        Assert.Equal(2, impact.AffectedRecords);
+        var tag = Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0));
+        Assert.Equal("metre", tag.OldValue);
+        Assert.Equal(2, tag.AffectedRecords);
+        Assert.Equal(olderSet, Assert.Single(tag.SetIds));
+        Assert.Equal(olderSet, Assert.Single(await Ledger.GatedCacheSetsAsync()));
     }
 
     [Fact]

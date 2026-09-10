@@ -312,10 +312,13 @@ A refresh compares the new version against the one it replaces, and for the item
 moved it asks which sets hold their values. A set is touched when a value a record wrote
 into its document now reads differently, when the cached record it used is gone, or when
 the value it matched by no longer resolves; anything else the change does not touch,
-including a record that only ever read the id of an item whose name changed.
+including a record that only ever read the id of an item whose name changed. Each set is
+judged by the value it holds, since sets built against different cache versions can hold
+different values of one path: a set already holding the new value is not touched.
 
 **Who decides.** Each changed value becomes one tag (`delivery.UpdateTag`): the cached
-record, the path, the value before and after, and how many delivered records it reaches.
+record, the path, the value the replaced version held and the one the new version holds,
+and how many delivered records it reaches.
 One decision covers all of them, because asking an operator to approve twelve million rows
 is not asking anything. The cached type's `onChange` says what the tag means: `auto`
 approves it as it is written; `approve` holds the affected sets until an operator decides.
