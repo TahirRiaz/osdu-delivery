@@ -437,6 +437,16 @@ public sealed record ProtocolOptions
     /// <summary>Manifest protocol: how long a workflow run may take before the record is retried. Default 60 minutes.</summary>
     public int WorkflowTimeoutMinutes { get; init; } = 60;
 
+    /// <summary>
+    /// Manifest protocol: how long to wait, after registering a record's files, for the search index to list the new
+    /// datasets before the manifest names them. Ingestion checks references against the index and drops a record whose
+    /// dataset it cannot find yet (observed on a live M26 service). 0 does not wait. Default 120 seconds.
+    /// </summary>
+    public int DatasetIndexWaitSeconds { get; init; } = 120;
+
+    /// <summary>Manifest protocol: the search query path the wait for registered datasets asks. Default /api/search/v2/query.</summary>
+    public string? SearchQueryPath { get; init; }
+
     /// <summary>Manifest protocol: the manifest kind. Default osdu:wks:Manifest:1.0.0.</summary>
     public string ManifestKind { get; init; } = "osdu:wks:Manifest:1.0.0";
 

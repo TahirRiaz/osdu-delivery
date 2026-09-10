@@ -84,6 +84,8 @@ target:
     workflowStatusPath: /api/workflow/v1/workflow/{workflow}/workflowRun/{runId}
     workflowPollSeconds: 10
     workflowTimeoutMinutes: 60     # a run still going after this fails the try; the next try resumes polling it
+    datasetIndexWaitSeconds: 120   # osduManifest: how long to wait for the search index to list the registered datasets before the manifest names them (0 = no wait)
+    searchQueryPath: /api/search/v2/query            # osduManifest: where that wait asks
     workflowAppKey: osdu-delivery  # executionContext.Payload.AppKey
     workflowPayload: {}            # extra executionContext.Payload entries
     manifestKind: osdu:wks:Manifest:1.0.0

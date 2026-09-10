@@ -18,7 +18,10 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// absent, failed with the run named. Registration comes first because it is what makes a file retrievable: a dataset
 /// the manifest only describes is created with its file left in the landing zone, where the file service's download
 /// URL finds nothing (observed on a live M26 service). The file service mints the dataset ids, so a payload change
-/// registers new datasets and the record points at them. The manifest step records the run id before polling starts
+/// registers new datasets and the record points at them. Registered datasets are waited for until the search index
+/// lists them, because ingestion checks a record's references against the index; and each record's version is read before
+/// the run, because a run that drops a record still finishes and a record that existed is still present afterwards, so
+/// only a version that moved counts as written. The manifest step records the run id before polling starts
 /// (section 16.3), so a retry after a poll timeout resumes the same run; a run that failed, or that finished without
 /// writing the record, is triggered again on the next try, and the failed run stays on the attempt.
 /// </summary>
@@ -32,6 +35,14 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     public const string ManifestStep = "manifest";
     public const string WorkflowStep = "workflow";
     public const string RecordsStep = "records";
+    public const string IndexedStep = "indexed";
+    public const string DefaultSearchQueryPath = "/api/search/v2/query";
+
+    /// <summary>The manifest step value carrying the version storage held of the record before the run was triggered.</summary>
+    public const string PriorVersionValue = "priorVersion";
+
+    /// <summary>Dataset ids per search query while waiting for the index to list them.</summary>
+    private const int SearchBatch = 50;
 
     /// <summary>Records per storage read-back request (openapi storage v2, MultiRecordIds takes at most 100).</summary>
     public const int QueryBatch = 100;
@@ -125,6 +136,9 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                 if (work.Completed(ManifestStep) is { } earlier && earlier.TryGetValue("runId", out var runId) && !string.IsNullOrEmpty(runId))
                 {
                     steps.Resumed(ManifestStep, earlier);
+                    staged.PriorVersion = earlier.TryGetValue(PriorVersionValue, out var prior) && long.TryParse(prior, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                        ? parsed
+                        : null;
                     if (!resumed.TryGetValue(runId, out var group))
                     {
                         group = [];
@@ -183,6 +197,8 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         {
             try
             {
+                await WaitForDatasetsAsync(fresh, ct).ConfigureAwait(false);
+                await ReadPriorVersionsAsync(fresh, ct).ConfigureAwait(false);
                 var triggered = await TriggerAsync(fresh, ct).ConfigureAwait(false);
                 var run = await PollAsync(triggered.RunId, triggered.Started, ct).ConfigureAwait(false);
                 if (run.Status == "FAILED")
@@ -196,13 +212,10 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                 }
                 else
                 {
-                    var (missing, listedInvalid) = await SettleAsync(fresh, run, outcomes, ct).ConfigureAwait(false);
+                    var (missing, notes) = await SettleAsync(fresh, run, outcomes, ct).ConfigureAwait(false);
                     foreach (var staged in missing)
                     {
-                        var listed = listedInvalid.Contains(staged.Work.TargetId)
-                            ? " (storage names the id under invalidRecords, which is how it answers for a record it does not hold)"
-                            : string.Empty;
-                        var reason = $"workflow run {run.RunId} of {_options.WorkflowName} finished {run.Status} but {staged.Work.TargetId} is not in storage{listed}; the workflow did not write it and its run log names why, and the next try triggers a new run";
+                        var reason = $"workflow run {run.RunId} of {_options.WorkflowName} finished {run.Status} but {notes[staged.Work.TargetId]}; the workflow did not write it and its run log names why, and the next try triggers a new run";
                         staged.Steps.Add(RecordsStep, run.Started, null, null, reason);
                         outcomes[staged.Index] = DeliveryOutcome.Failed(new DeliveryException(reason), staged.Steps.Steps);
                     }
@@ -418,8 +431,14 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         values["records"] = group.Count.ToString(CultureInfo.InvariantCulture);
         foreach (var staged in group)
         {
-            staged.Steps.Add(ManifestStep, started, (int)result.Status, values);
-            await staged.Work.ReportStepAsync(ManifestStep, values, ct).ConfigureAwait(false);
+            var mine = new Dictionary<string, string>(values, StringComparer.Ordinal);
+            if (staged.PriorVersion is { } prior)
+            {
+                mine[PriorVersionValue] = prior.ToString(CultureInfo.InvariantCulture);
+            }
+
+            staged.Steps.Add(ManifestStep, started, (int)result.Status, mine);
+            await staged.Work.ReportStepAsync(ManifestStep, mine, ct).ConfigureAwait(false);
         }
 
         _logger.LogInformation("Workflow run {RunId} of {Workflow} triggered for {Count} record(s) ({Status}).", runId, _options.WorkflowName, group.Count, run.Status);
@@ -465,52 +484,20 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     /// delivered with their version; the ones storage asked to retry fail for this try; the rest are returned to
     /// the caller, which decides whether they go into a new run now or on the next try.
     /// </summary>
-    private async Task<(List<Staged> Missing, HashSet<string> ListedInvalid)> SettleAsync(List<Staged> group, WorkflowRun run, DeliveryOutcome[] outcomes, CancellationToken ct)
+    private async Task<(List<Staged> Missing, Dictionary<string, string> Notes)> SettleAsync(List<Staged> group, WorkflowRun run, DeliveryOutcome[] outcomes, CancellationToken ct)
     {
-        var url = _client.Url(_options.RecordQueryPath ?? DefaultRecordQueryPath);
-        var versions = new Dictionary<string, long?>(StringComparer.Ordinal);
-        var retry = new HashSet<string>(StringComparer.Ordinal);
-        var invalid = new HashSet<string>(StringComparer.Ordinal);
-        var status = 0;
-        foreach (var chunk in group.Chunk(QueryBatch))
-        {
-            var body = new JsonObject
-            {
-                ["records"] = new JsonArray(chunk.Select(s => (JsonNode?)JsonValue.Create(s.Work.TargetId)).ToArray()),
-                ["attributes"] = new JsonArray(JsonValue.Create("data." + _options.DatasetsProperty)),
-            };
-            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
-            status = (int)result.Status;
-            var root = OsduHttpClient.ParseJson(result, url);
-            foreach (var record in JsonPathReader.SelectElements(root, "records[*]"))
-            {
-                if (record.ValueKind == JsonValueKind.Object && record.TryGetProperty("id", out var idNode) && idNode.ValueKind == JsonValueKind.String)
-                {
-                    versions[idNode.GetString()!] = record.TryGetProperty("version", out var versionNode) && versionNode.ValueKind == JsonValueKind.Number && versionNode.TryGetInt64(out var version)
-                        ? version
-                        : null;
-                }
-            }
-
-            foreach (var id in JsonPathReader.SelectValues(root, "retryRecords[*]"))
-            {
-                retry.Add(id);
-            }
-
-            foreach (var id in JsonPathReader.SelectValues(root, "invalidRecords[*]"))
-            {
-                invalid.Add(id);
-            }
-        }
-
+        var read = await ReadRecordsAsync(group, "data." + _options.DatasetsProperty, ct).ConfigureAwait(false);
         var runValues = run.Values();
         var completed = _time.GetUtcNow().UtcDateTime;
         var missing = new List<Staged>();
+        var notes = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var staged in group)
         {
             var id = staged.Work.TargetId;
             staged.Steps.Add(WorkflowStep, run.Started, 200, runValues);
-            if (versions.TryGetValue(id, out var version))
+            var present = read.Versions.TryGetValue(id, out var version);
+            var unchanged = present && version is { } observed && staged.PriorVersion == observed;
+            if (present && !unchanged)
             {
                 var recordValues = new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = id };
                 if (version is { } v)
@@ -518,7 +505,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                     recordValues["version"] = v.ToString(CultureInfo.InvariantCulture);
                 }
 
-                staged.Steps.Add(RecordsStep, completed, status, recordValues);
+                staged.Steps.Add(RecordsStep, completed, read.Status, recordValues);
                 var returned = new Dictionary<string, string>(runValues, StringComparer.Ordinal);
                 foreach (var (name, value) in recordValues)
                 {
@@ -546,26 +533,179 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                     Steps = staged.Steps.Steps,
                 };
             }
-            else if (retry.Contains(id))
+            else if (!present && read.Retry.Contains(id))
             {
                 var reason = $"storage asked for a retry when {id} was read back after workflow run {run.RunId}";
-                staged.Steps.Add(RecordsStep, completed, status, null, reason);
+                staged.Steps.Add(RecordsStep, completed, read.Status, null, reason);
                 outcomes[staged.Index] = DeliveryOutcome.Failed(new DeliveryException(reason), staged.Steps.Steps);
             }
             else
             {
-                // Not returned. Storage answers a read of a record it does not hold by naming the id under
-                // invalidRecords (a live M26 service does; the OpenAPI description does not say what the list means),
-                // so after a finished run a listed id is a record the workflow did not write, like one not named at
-                // all: it goes into a new run rather than reading the same finished run back on every try.
+                // Not written by this run: absent; named under invalidRecords, which is how storage answers a read of a
+                // record it does not hold (a live M26 service does; the OpenAPI description does not say what the list
+                // means); or still at the version it held before the run was triggered, which is what a finished run that
+                // dropped the record leaves (observed live: a record whose dataset the search index did not list yet).
+                // Each goes into a new run rather than reading the same finished run back on every try.
                 missing.Add(staged);
+                notes[id] = unchanged
+                    ? string.Create(CultureInfo.InvariantCulture, $"storage still holds version {version} of {id}, the one it held before the run was triggered")
+                    : read.Invalid.Contains(id)
+                        ? $"{id} is not in storage (storage names the id under invalidRecords, which is how it answers for a record it does not hold)"
+                        : $"{id} is not in storage";
             }
         }
 
-        return (missing, invalid);
+        return (missing, notes);
     }
 
-    private sealed record Staged(int Index, DeliveryWork Work, JsonObject Document, string Section, List<string> Ids, DeliverySteps Steps, int Files);
+    /// <summary>
+    /// The version storage holds of each record before its run is triggered, carried on the manifest step so that a run
+    /// a later try resumes is judged against it too. Ingestion finishes a run that dropped a record, and a record that
+    /// already existed is still present afterwards, so only a version that moved shows the run wrote it.
+    /// </summary>
+    private async Task ReadPriorVersionsAsync(List<Staged> group, CancellationToken ct)
+    {
+        var read = await ReadRecordsAsync(group, "id", ct).ConfigureAwait(false);
+        foreach (var staged in group)
+        {
+            staged.PriorVersion = read.Versions.TryGetValue(staged.Work.TargetId, out var version) ? version : null;
+        }
+    }
+
+    /// <summary>One batched read of the group's records from storage (openapi storage v2, POST query/records), projected to <paramref name="attribute"/>.</summary>
+    private async Task<RecordRead> ReadRecordsAsync(List<Staged> group, string attribute, CancellationToken ct)
+    {
+        var url = _client.Url(_options.RecordQueryPath ?? DefaultRecordQueryPath);
+        var read = new RecordRead();
+        foreach (var chunk in group.Chunk(QueryBatch))
+        {
+            var body = new JsonObject
+            {
+                ["records"] = new JsonArray(chunk.Select(s => (JsonNode?)JsonValue.Create(s.Work.TargetId)).ToArray()),
+                ["attributes"] = new JsonArray(JsonValue.Create(attribute)),
+            };
+            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
+            read.Status = (int)result.Status;
+            var root = OsduHttpClient.ParseJson(result, url);
+            foreach (var record in JsonPathReader.SelectElements(root, "records[*]"))
+            {
+                if (record.ValueKind == JsonValueKind.Object && record.TryGetProperty("id", out var idNode) && idNode.ValueKind == JsonValueKind.String)
+                {
+                    read.Versions[idNode.GetString()!] = record.TryGetProperty("version", out var versionNode) && versionNode.ValueKind == JsonValueKind.Number && versionNode.TryGetInt64(out var version)
+                        ? version
+                        : null;
+                }
+            }
+
+            foreach (var id in JsonPathReader.SelectValues(root, "retryRecords[*]"))
+            {
+                read.Retry.Add(id);
+            }
+
+            foreach (var id in JsonPathReader.SelectValues(root, "invalidRecords[*]"))
+            {
+                read.Invalid.Add(id);
+            }
+        }
+
+        return read;
+    }
+
+    /// <summary>
+    /// Waits, up to <see cref="ProtocolOptions.DatasetIndexWaitSeconds"/>, until the search index lists the datasets
+    /// registered for the group's records (openapi search v2, POST query), asking every <c>workflowPollSeconds</c>.
+    /// Ingestion checks a record's references against the index and drops a record whose dataset it cannot find yet,
+    /// while the run still finishes: on a live M26 service a manifest sent a second after registration lost its record,
+    /// and the same manifest sent once the index listed the dataset wrote it. A wait that runs out is recorded on the
+    /// step and the run goes ahead; the read-back decides what the run wrote.
+    /// </summary>
+    private async Task WaitForDatasetsAsync(List<Staged> group, CancellationToken ct)
+    {
+        var waiting = group.Where(s => s.Work.DeliverPayload && s.Ids.Count > 0).ToList();
+        if (waiting.Count == 0 || _options.DatasetIndexWaitSeconds <= 0)
+        {
+            return;
+        }
+
+        var ids = waiting.SelectMany(s => s.Ids).Distinct(StringComparer.Ordinal).ToList();
+        var url = _client.Url(_options.SearchQueryPath ?? DefaultSearchQueryPath);
+        var started = _time.GetUtcNow();
+        var deadline = started + TimeSpan.FromSeconds(_options.DatasetIndexWaitSeconds);
+        var interval = TimeSpan.FromSeconds(Math.Max(1, _options.WorkflowPollSeconds));
+        var listed = new HashSet<string>(StringComparer.Ordinal);
+        var status = 0;
+        while (true)
+        {
+            foreach (var chunk in ids.Where(id => !listed.Contains(id)).Chunk(SearchBatch))
+            {
+                var body = new JsonObject
+                {
+                    ["kind"] = _options.DatasetKind,
+                    ["query"] = "id:(" + string.Join(" OR ", chunk.Select(id => "\"" + id + "\"")) + ")",
+                    ["limit"] = chunk.Length,
+                    ["returnedFields"] = new JsonArray(JsonValue.Create("id")),
+                };
+                var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
+                status = (int)result.Status;
+                foreach (var hit in JsonPathReader.SelectElements(OsduHttpClient.ParseJson(result, url), "results[*]"))
+                {
+                    if (hit.ValueKind == JsonValueKind.Object && hit.TryGetProperty("id", out var idNode) && idNode.ValueKind == JsonValueKind.String)
+                    {
+                        listed.Add(idNode.GetString()!);
+                    }
+                }
+            }
+
+            if (ids.All(listed.Contains) || _time.GetUtcNow() + interval > deadline)
+            {
+                break;
+            }
+
+            await Task.Delay(interval, _time, ct).ConfigureAwait(false);
+        }
+
+        var waited = (long)(_time.GetUtcNow() - started).TotalSeconds;
+        foreach (var staged in waiting)
+        {
+            var notListed = staged.Ids.Count(id => !listed.Contains(id));
+            var values = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["datasets"] = staged.Ids.Count.ToString(CultureInfo.InvariantCulture),
+                ["listed"] = (staged.Ids.Count - notListed).ToString(CultureInfo.InvariantCulture),
+                ["waitedSeconds"] = waited.ToString(CultureInfo.InvariantCulture),
+            };
+            var note = notListed == 0
+                ? null
+                : string.Create(CultureInfo.InvariantCulture, $"{notListed} registered dataset(s) not listed by the search index after {waited}s; the manifest goes ahead and the read-back decides what the run wrote");
+            staged.Steps.Add(IndexedStep, started.UtcDateTime, status, values, note);
+        }
+
+        var unlisted = ids.Where(id => !listed.Contains(id)).ToList();
+        if (unlisted.Count > 0)
+        {
+            _logger.LogWarning(
+                "The search index did not list {Count} registered dataset(s) within {Seconds}s; the manifest goes ahead. First: {Ids}",
+                unlisted.Count, waited, string.Join(", ", unlisted.Take(5)));
+        }
+    }
+
+    /// <summary>What one batched read of records returned: versions by id, the ids storage asked to retry and the ids it listed as invalid.</summary>
+    private sealed class RecordRead
+    {
+        public Dictionary<string, long?> Versions { get; } = new(StringComparer.Ordinal);
+
+        public HashSet<string> Retry { get; } = new(StringComparer.Ordinal);
+
+        public HashSet<string> Invalid { get; } = new(StringComparer.Ordinal);
+
+        public int Status { get; set; }
+    }
+
+    private sealed record Staged(int Index, DeliveryWork Work, JsonObject Document, string Section, List<string> Ids, DeliverySteps Steps, int Files)
+    {
+        /// <summary>The version storage held of the record before its run was triggered; null when it held none or it is not known.</summary>
+        public long? PriorVersion { get; set; }
+    }
 
     private sealed record WorkflowRun(string RunId, string? WorkflowId, string Status, string? StartTimeStamp, string? EndTimeStamp, DateTime Started)
     {

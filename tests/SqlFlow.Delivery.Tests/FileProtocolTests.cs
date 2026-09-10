@@ -229,9 +229,12 @@ public class FileProtocolTests
             .On(HttpMethod.Get, "/files/uploadURL", hit => FakeHttpHandler.Json(HttpStatusCode.OK, UploadLocation(hit)))
             .OnMatch(LandingUpload, _ => FakeHttpHandler.Json(HttpStatusCode.Created, null))
             .On(HttpMethod.Post, "/files/metadata", hit => FakeHttpHandler.Json(HttpStatusCode.Created, "{\"id\":\"dev:dataset--File.Generic:ds-" + hit.ToString(CultureInfo.InvariantCulture) + "\"}"))
+            .On(HttpMethod.Post, "/search/v2/query", HttpStatusCode.OK, """{"results":[{"id":"dev:dataset--File.Generic:ds-0"},{"id":"dev:dataset--File.Generic:ds-1"}],"totalCount":2}""")
             .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-1","status":"SUBMITTED"}""")
             .OnMatch(AnyRunStatus, _ => FakeHttpHandler.Json(HttpStatusCode.OK, ++polls == 1 ? """{"status":"INPROGRESS"}""" : """{"workflowId":"wf-1","status":"SUCCESS","endTimeStamp":"1700000000000"}"""))
-            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":3},{"id":"dev:work-product-component--WellLog:def","version":4}],"invalidRecords":[],"retryRecords":[]}""");
+            .On(HttpMethod.Post, "/query/records", hit => FakeHttpHandler.Json(HttpStatusCode.OK, hit == 0
+                ? """{"records":[],"invalidRecords":["dev:work-product-component--WellLog:abc","dev:work-product-component--WellLog:def"]}"""
+                : """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":3},{"id":"dev:work-product-component--WellLog:def","version":4}],"invalidRecords":[],"retryRecords":[]}"""));
         var (client, runtime, _) = Client(handler);
         using (runtime)
         {
@@ -247,7 +250,8 @@ public class FileProtocolTests
             Assert.Equal("1700000000000", outcomes[0].Returned["endTimeStamp"]);
             Assert.Equal("dev:dataset--File.Generic:ds-0", outcomes[0].Returned["datasetIds"]);
             Assert.Equal("dev:dataset--File.Generic:ds-1", outcomes[1].Returned["datasetIds"]);
-            Assert.Equal(["upload-0", "register-0", "manifest", "workflow", "records"], outcomes[0].Steps.Select(s => s.Name));
+            Assert.Equal(["upload-0", "register-0", "indexed", "manifest", "workflow", "records"], outcomes[0].Steps.Select(s => s.Name));
+            Assert.Null(outcomes[0].Steps[2].Error);
             var runId = outcomes[0].Returned["runId"];
             Assert.Equal(runId, outcomes[1].Returned["runId"]);
             Assert.Equal(2, reported.Count(r => r.StartsWith("manifest=", StringComparison.Ordinal)));
@@ -277,7 +281,15 @@ public class FileProtocolTests
             Assert.Equal("/landing/blob-0", register["data"]!["DatasetProperties"]!["FileSourceInfo"]!["FileSource"]!.GetValue<string>());
             Assert.Equal(RecordId, data["WorkProductComponents"]![0]!["id"]!.GetValue<string>());
 
-            var query = JsonNode.Parse(handler.Calls.Single(c => c.Uri.AbsolutePath.EndsWith("/query/records", StringComparison.Ordinal)).Body!)!.AsObject();
+            var search = JsonNode.Parse(handler.Calls.Single(c => c.Uri.AbsolutePath.EndsWith("/search/v2/query", StringComparison.Ordinal)).Body!)!.AsObject();
+            Assert.Equal("osdu:wks:dataset--File.Generic:1.0.0", search["kind"]!.GetValue<string>());
+            Assert.Contains("\"dev:dataset--File.Generic:ds-1\"", search["query"]!.GetValue<string>(), StringComparison.Ordinal);
+
+            // One read before the run (the versions storage held) and one after it.
+            var reads = handler.Calls.Where(c => c.Uri.AbsolutePath.EndsWith("/query/records", StringComparison.Ordinal)).ToList();
+            Assert.Equal(2, reads.Count);
+            Assert.Equal("id", JsonNode.Parse(reads[0].Body!)!["attributes"]![0]!.GetValue<string>());
+            var query = JsonNode.Parse(reads[1].Body!)!.AsObject();
             Assert.Equal([RecordId, OtherId], query["records"]!.AsArray().Select(n => n!.GetValue<string>()));
             Assert.Equal("data.Datasets", query["attributes"]![0]!.GetValue<string>());
         }
@@ -295,7 +307,9 @@ public class FileProtocolTests
             .OnMatch(r => RunStatus(r, "run-old"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"workflowId":"wf-1","status":"FAILED"}"""))
             .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.Conflict, """{"message":"run already exists"}""")
             .OnMatch(AnyRunStatus, _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"workflowId":"wf-1","status":"SUCCESS"}"""))
-            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":5}]}""");
+            .On(HttpMethod.Post, "/query/records", hit => FakeHttpHandler.Json(HttpStatusCode.OK, hit == 0
+                ? """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":4}]}"""
+                : """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":5}]}"""));
         var (client, runtime, _) = Client(handler);
         using (runtime)
         {
@@ -311,10 +325,12 @@ public class FileProtocolTests
             var manifestReport = Assert.Single(reported);
             Assert.StartsWith("manifest=", manifestReport, StringComparison.Ordinal);
             Assert.DoesNotContain("run-old", manifestReport, StringComparison.Ordinal);
-            Assert.Equal(4, handler.Calls.Count);
+            Assert.Contains("priorVersion:4", manifestReport, StringComparison.Ordinal);
+            Assert.Equal(5, handler.Calls.Count);
             Assert.EndsWith("/workflowRun/run-old", handler.Calls[0].Uri.AbsolutePath, StringComparison.Ordinal);
-            Assert.Equal(HttpMethod.Post, handler.Calls[1].Method);
-            Assert.EndsWith("/query/records", handler.Calls[3].Uri.AbsolutePath, StringComparison.Ordinal);
+            Assert.EndsWith("/query/records", handler.Calls[1].Uri.AbsolutePath, StringComparison.Ordinal);
+            Assert.EndsWith("/workflowRun", handler.Calls[2].Uri.AbsolutePath, StringComparison.Ordinal);
+            Assert.EndsWith("/query/records", handler.Calls[4].Uri.AbsolutePath, StringComparison.Ordinal);
         }
     }
 
@@ -324,7 +340,9 @@ public class FileProtocolTests
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-2","runId":"run-2","status":"SUBMITTED"}""")
             .OnMatch(r => RunStatus(r, "run-2"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"workflowId":"wf-2","status":"PARTIAL_SUCCESS"}"""))
-            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":6}]}""");
+            .On(HttpMethod.Post, "/query/records", hit => FakeHttpHandler.Json(HttpStatusCode.OK, hit == 0
+                ? """{"records":[]}"""
+                : """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":6}]}"""));
         var (client, runtime, _) = Client(handler);
         using (runtime)
         {
@@ -356,7 +374,7 @@ public class FileProtocolTests
             Assert.Contains("not in storage", first[0].Failure!.Message, StringComparison.Ordinal);
             Assert.Contains("invalidRecords", first[0].Failure!.Message, StringComparison.Ordinal);
             Assert.Contains("run-4", first[0].Failure!.Message, StringComparison.Ordinal);
-            Assert.Equal(3, rejecting.Calls.Count);
+            Assert.Equal(4, rejecting.Calls.Count);
 
             var earlier = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
             {
@@ -369,6 +387,7 @@ public class FileProtocolTests
 
         var reported = new List<string>();
         var slow = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[]}""")
             .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"runId":"run-3","status":"SUBMITTED"}""");
         var (client2, runtime2, clock) = Client(slow);
         slow.OnMatch(r => RunStatus(r, "run-3"), _ =>
@@ -383,7 +402,7 @@ public class FileProtocolTests
             Assert.Contains("run-3", ex.Message, StringComparison.Ordinal);
             Assert.Contains("resumes polling", ex.Message, StringComparison.Ordinal);
             Assert.Contains(reported, r => r.StartsWith("manifest=", StringComparison.Ordinal) && r.Contains("runId:run-3", StringComparison.Ordinal));
-            Assert.Equal(2, slow.Calls.Count);
+            Assert.Equal(3, slow.Calls.Count);
         }
     }
 
@@ -401,7 +420,9 @@ public class FileProtocolTests
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-5","runId":"run-5","status":"SUBMITTED"}""")
             .OnMatch(r => RunStatus(r, "run-5"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, $$"""{"workflowId":"wf-5","status":"{{status}}"}"""))
-            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":11}]}""");
+            .On(HttpMethod.Post, "/query/records", hit => FakeHttpHandler.Json(HttpStatusCode.OK, hit == 0
+                ? """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":10}]}"""
+                : """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":11}]}"""));
         var (client, runtime, _) = Client(handler);
         using (runtime)
         {
@@ -418,6 +439,7 @@ public class FileProtocolTests
     public async Task A_workflow_status_the_service_has_never_reported_is_named_rather_than_polled_forever()
     {
         var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[]}""")
             .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"runId":"run-6","status":"SUBMITTED"}""")
             .OnMatch(r => RunStatus(r, "run-6"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"status":"WEDGED"}"""));
         var (client, runtime, _) = Client(handler);
@@ -427,6 +449,75 @@ public class FileProtocolTests
             var ex = await Assert.ThrowsAsync<DeliveryException>(() => protocol.DeliverAsync(Work(true, false, 0)));
 
             Assert.Contains("unknown status 'WEDGED'", ex.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Manifest_protocol_does_not_take_a_version_that_was_there_before_the_run_as_written_and_waits_for_the_index()
+    {
+        // Seen live: a finished run that dropped a record which already existed leaves the old version in place, and a
+        // read-back that only asked whether the record was there settled it as delivered.
+        var reported = new List<string>();
+        var unchanged = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/query/records", HttpStatusCode.OK, """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":7}]}""")
+            .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-5","runId":"run-5","status":"SUBMITTED"}""")
+            .OnMatch(r => RunStatus(r, "run-5"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"workflowId":"wf-5","status":"FINISHED"}"""));
+        var (client, runtime, _) = Client(unchanged);
+        using (runtime)
+        {
+            var protocol = new OsduManifestProtocol(client, new ProtocolOptions { WorkflowPollSeconds = 1 }, Samples.Logger<OsduManifestProtocol>());
+            var outcomes = await protocol.DeliverBatchAsync([Work(true, false, 0, existing: 7, reported: reported)]);
+            Assert.False(outcomes[0].Succeeded);
+            Assert.Contains("still holds version 7", outcomes[0].Failure!.Message, StringComparison.Ordinal);
+            Assert.Contains("next try triggers a new run", outcomes[0].Failure!.Message, StringComparison.Ordinal);
+            Assert.Contains(reported, r => r.StartsWith("manifest=", StringComparison.Ordinal) && r.Contains("priorVersion:7", StringComparison.Ordinal));
+        }
+
+        // Ingestion checks references against the search index, so the manifest waits until the index lists the dataset
+        // registered for the record: here it appears on the second ask.
+        var asks = 0;
+        var indexed = new FakeHttpHandler()
+            .On(HttpMethod.Get, "/files/uploadURL", hit => FakeHttpHandler.Json(HttpStatusCode.OK, UploadLocation(hit)))
+            .OnMatch(LandingUpload, _ => FakeHttpHandler.Json(HttpStatusCode.Created, null))
+            .On(HttpMethod.Post, "/files/metadata", HttpStatusCode.Created, """{"id":"dev:dataset--File.Generic:ds-new"}""")
+            .On(HttpMethod.Post, "/search/v2/query", _ => FakeHttpHandler.Json(HttpStatusCode.OK, ++asks == 1 ? """{"results":[],"totalCount":0}""" : """{"results":[{"id":"dev:dataset--File.Generic:ds-new"}],"totalCount":1}"""))
+            .On(HttpMethod.Post, "/query/records", hit => FakeHttpHandler.Json(HttpStatusCode.OK, hit == 0 ? """{"records":[]}""" : """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":1}]}"""))
+            .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-6","runId":"run-6","status":"SUBMITTED"}""")
+            .OnMatch(r => RunStatus(r, "run-6"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"workflowId":"wf-6","status":"SUCCESS"}"""));
+        var (client2, runtime2, _) = Client(indexed);
+        using (runtime2)
+        {
+            var protocol = new OsduManifestProtocol(client2, new ProtocolOptions { WorkflowPollSeconds = 1 }, Samples.Logger<OsduManifestProtocol>());
+            var outcome = await protocol.DeliverAsync(Work(true, true, 1));
+            Assert.True(outcome.Succeeded);
+            Assert.Equal(2, asks);
+            var step = outcome.Steps.Single(s => s.Name == OsduManifestProtocol.IndexedStep);
+            Assert.Null(step.Error);
+            var first = indexed.Calls.FindIndex(c => c.Uri.AbsolutePath.EndsWith("/workflowRun", StringComparison.Ordinal));
+            Assert.True(indexed.Calls.FindLastIndex(c => c.Uri.AbsolutePath.EndsWith("/search/v2/query", StringComparison.Ordinal)) < first);
+        }
+
+        // A wait that runs out is named on the step, and the manifest goes ahead: the read-back decides what the run wrote.
+        var late = new FakeHttpHandler()
+            .On(HttpMethod.Get, "/files/uploadURL", hit => FakeHttpHandler.Json(HttpStatusCode.OK, UploadLocation(hit)))
+            .OnMatch(LandingUpload, _ => FakeHttpHandler.Json(HttpStatusCode.Created, null))
+            .On(HttpMethod.Post, "/files/metadata", HttpStatusCode.Created, """{"id":"dev:dataset--File.Generic:ds-late"}""")
+            .On(HttpMethod.Post, "/query/records", hit => FakeHttpHandler.Json(HttpStatusCode.OK, hit == 0 ? """{"records":[]}""" : """{"records":[{"id":"dev:work-product-component--WellLog:abc","version":1}]}"""))
+            .On(HttpMethod.Post, "/workflow/Osdu_ingest/workflowRun", HttpStatusCode.OK, """{"workflowId":"wf-7","runId":"run-7","status":"SUBMITTED"}""")
+            .OnMatch(r => RunStatus(r, "run-7"), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"workflowId":"wf-7","status":"SUCCESS"}"""));
+        var (client3, runtime3, clock3) = Client(late);
+        late.On(HttpMethod.Post, "/search/v2/query", _ =>
+        {
+            clock3.Advance(TimeSpan.FromSeconds(6));
+            return FakeHttpHandler.Json(HttpStatusCode.OK, """{"results":[],"totalCount":0}""");
+        });
+        using (runtime3)
+        {
+            var protocol = new OsduManifestProtocol(client3, new ProtocolOptions { WorkflowPollSeconds = 1, DatasetIndexWaitSeconds = 10 }, Samples.Logger<OsduManifestProtocol>(), time: clock3);
+            var outcome = await protocol.DeliverAsync(Work(true, true, 1));
+            Assert.True(outcome.Succeeded);
+            var step = outcome.Steps.Single(s => s.Name == OsduManifestProtocol.IndexedStep);
+            Assert.Contains("not listed by the search index", step.Error, StringComparison.Ordinal);
         }
     }
 

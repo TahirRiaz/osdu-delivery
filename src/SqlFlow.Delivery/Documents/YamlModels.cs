@@ -219,6 +219,10 @@ internal sealed class ProtocolOptionsYaml
 
     public int? WorkflowTimeoutMinutes { get; set; }
 
+    public int? DatasetIndexWaitSeconds { get; set; }
+
+    public string? SearchQueryPath { get; set; }
+
     public string? ManifestKind { get; set; }
 
     public string? UploadUrlExpiry { get; set; }

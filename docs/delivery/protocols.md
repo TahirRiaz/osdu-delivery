@@ -178,7 +178,15 @@ workflow run.
    change registers new datasets and the record points at them; the earlier ones stay, as for `osduFile`. The
    reference form matters as well: manifest ingestion validates the schemas' reference pattern and drops a
    record that breaks it.
-2. One manifest (`manifestKind`, default `osdu:wks:Manifest:1.0.0`) carries every record of the batch in the
+2. Before the manifest, the registered datasets are waited for until the search index lists them
+   (`POST {searchQueryPath}`, default `/api/search/v2/query`, asked every `workflowPollSeconds` for up to
+   `datasetIndexWaitSeconds`, default 120; 0 does not wait). Ingestion checks a record's references against the
+   index and drops a record whose dataset it cannot find yet while the run still finishes: on a live M26 service
+   a manifest sent a second after registration lost its record, and the same manifest sent once the index
+   listed the dataset wrote it. A wait that runs out is named on step `indexed` and the manifest goes ahead.
+   Then each record's version is read from storage, as in step 5, and carried on the manifest step as
+   `priorVersion`.
+3. One manifest (`manifestKind`, default `osdu:wks:Manifest:1.0.0`) carries every record of the batch in the
    section its kind names (`ReferenceData`, `MasterData`, `Data.WorkProduct`, `Data.WorkProductComponents`,
    `Data.Datasets`; `manifestSection` overrides). `POST {workflowRunPath}` (default
    `/api/workflow/v1/workflow/{workflow}/workflowRun`, `workflowName` default `Osdu_ingest`) with
@@ -186,19 +194,21 @@ workflow run.
    The run id is chosen here, so a request the service accepted before a retry resent it answers 409 and is
    polled, not run twice. Step `manifest` is reported on every record of the batch, with the run id, before
    polling starts.
-3. `GET {workflowStatusPath}` every `workflowPollSeconds` until the run reaches a terminal status, or
+4. `GET {workflowStatusPath}` every `workflowPollSeconds` until the run reaches a terminal status, or
    `workflowTimeoutMinutes` pass. The terminal statuses are `SUCCESS`, `PARTIAL_SUCCESS`, `FINISHED` and
    `FAILED`, compared upper case because the service reports them in both cases (openapi workflow v1:
    `WorkflowRunResponse` is upper, `WorkflowRun` is lower). A timeout fails the try; the next try resumes
    polling the same run. A failed run fails the batch; the next try triggers a new run. A status the service
    has never been known to report is named in the error rather than polled forever. Step `workflow` returns
    the status and timestamps.
-4. The records are read back from storage (`POST {recordQueryPath}`, default
+5. The records are read back from storage (`POST {recordQueryPath}`, default
    `/api/storage/v2/query/records`, a hundred ids per request, projected to the dataset list) so each settles
    on its own evidence: present with a version, delivered; named under `retryRecords`, failed saying so; not
    returned, failed with the run named and re-submitted in a new run on the next try. Storage names a record it
    does not hold under `invalidRecords` (a live M26 service does), so a listed id is a record the workflow did
-   not write, not a verdict on the id. Step `records` returns
+   not write, not a verdict on the id. A record still at the version it held before the run (`priorVersion`)
+   was not written by it either, because a finished run that dropped a record leaves an existing one in place,
+   and it goes into a new run the same way. Step `records` returns
    the record id and version.
 
 Verify, read back and removal go to storage, and a purge of everything deletes the datasets and their files through the file

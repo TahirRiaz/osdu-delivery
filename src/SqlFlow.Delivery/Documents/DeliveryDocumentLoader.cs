@@ -328,6 +328,11 @@ internal static partial class FlowMapper
             throw new FlowValidationException($"{source}: target.protocolOptions.workflowPollSeconds and workflowTimeoutMinutes must be at least 1.");
         }
 
+        if (flow.Target.ProtocolOptions.DatasetIndexWaitSeconds < 0)
+        {
+            throw new FlowValidationException($"{source}: target.protocolOptions.datasetIndexWaitSeconds must not be negative (0 does not wait).");
+        }
+
         if (flow.Target.ProtocolOptions.UploadUrlExpiry is { } expiry && !ValidExpiry(expiry))
         {
             throw new FlowValidationException($"{source}: target.protocolOptions.uploadUrlExpiry '{expiry}' must be a whole number of minutes, hours or days, such as 30M, 12H or 2D.");
@@ -478,6 +483,7 @@ internal static partial class FlowMapper
             WorkflowStatusPath = o.WorkflowStatusPath,
             WorkflowPollSeconds = o.WorkflowPollSeconds ?? 10,
             WorkflowTimeoutMinutes = o.WorkflowTimeoutMinutes ?? 60,
+            DatasetIndexWaitSeconds = o.DatasetIndexWaitSeconds ?? 120,
             ManifestKind = string.IsNullOrWhiteSpace(o.ManifestKind) ? "osdu:wks:Manifest:1.0.0" : o.ManifestKind!.Trim(),
             UploadUrlExpiry = string.IsNullOrWhiteSpace(o.UploadUrlExpiry) ? null : o.UploadUrlExpiry!.Trim(),
             FileDeletePath = o.FileDeletePath,
@@ -485,6 +491,7 @@ internal static partial class FlowMapper
             WorkflowAppKey = string.IsNullOrWhiteSpace(o.WorkflowAppKey) ? "osdu-delivery" : o.WorkflowAppKey!.Trim(),
             WorkflowPayload = new Dictionary<string, string>(o.WorkflowPayload ?? [], StringComparer.Ordinal),
             RecordQueryPath = o.RecordQueryPath,
+            SearchQueryPath = o.SearchQueryPath,
         };
     }
 
