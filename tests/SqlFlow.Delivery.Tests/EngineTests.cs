@@ -666,15 +666,21 @@ public class ProtocolTests
     {
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Post, "/ddms/v3/welllogs", HttpStatusCode.OK, """{"recordCount":1,"recordIds":["dev:work-product-component--WellLog:abc"],"recordIdVersions":["dev:work-product-component--WellLog:abc:1699999"]}""")
-            .On(HttpMethod.Post, "/data", HttpStatusCode.OK, "{}");
+            .On(HttpMethod.Post, "/data", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Get, "/welllogs/dev:work-product-component--WellLog:abc", HttpStatusCode.OK, """{"id":"dev:work-product-component--WellLog:abc","version":1700001}""");
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
             var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
             var outcome = await protocol.DeliverAsync(Work(true, true, 1));
-            Assert.Equal(1699999, outcome.TargetVersion);
+
+            // The metadata write made version 1699999 and the bulk write made 1700001, which is what OSDU serves: a live
+            // wellbore DDMS answered a verify straight after a delivery recorded at the first with "drifted".
+            Assert.Equal(1700001, outcome.TargetVersion);
+            Assert.Equal("1700001", outcome.Returned["version"]);
             Assert.Equal(1, outcome.ChunksSent);
-            Assert.Equal(2, handler.Calls.Count);
+            Assert.Equal(3, handler.Calls.Count);
+            Assert.Equal(HttpMethod.Get, handler.Calls[2].Method);
             Assert.StartsWith("[{", handler.Calls[0].Body, StringComparison.Ordinal);
             Assert.Equal("dev", handler.Calls[0].Headers["data-partition-id"]);
             Assert.Equal("application/x-parquet", handler.Calls[1].ContentType);
@@ -691,7 +697,8 @@ public class ProtocolTests
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Post, "/sessions", HttpStatusCode.OK, """{"id":"sess-9"}""")
             .On(HttpMethod.Post, "/sessions/sess-9/data", HttpStatusCode.OK, "{}")
-            .On(HttpMethod.Patch, "/sessions/sess-9", HttpStatusCode.OK, "{}");
+            .On(HttpMethod.Patch, "/sessions/sess-9", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Get, "/welllogs/dev:work-product-component--WellLog:abc", HttpStatusCode.OK, """{"id":"dev:work-product-component--WellLog:abc","version":1700001}""");
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
@@ -700,6 +707,7 @@ public class ProtocolTests
 
             Assert.Equal(3, outcome.ChunksSent);
             Assert.Equal("sess-9", outcome.Returned["sessionId"]);
+            Assert.Equal(1700001, outcome.TargetVersion);
             Assert.DoesNotContain(handler.Calls, c => c.Uri.AbsolutePath.EndsWith("/welllogs/dev:work-product-component--WellLog:abc/data", StringComparison.Ordinal));
             Assert.Equal(3, handler.Calls.Count(c => c.Uri.AbsolutePath.EndsWith("/sessions/sess-9/data", StringComparison.Ordinal)));
         }
@@ -711,7 +719,8 @@ public class ProtocolTests
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Post, "/sessions", HttpStatusCode.OK, """{"id":"sess-0"}""")
             .On(HttpMethod.Post, "/sessions/sess-0/data", HttpStatusCode.OK, "{}")
-            .On(HttpMethod.Patch, "/sessions/sess-0", HttpStatusCode.OK, "{}");
+            .On(HttpMethod.Patch, "/sessions/sess-0", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Get, "/welllogs/dev:work-product-component--WellLog:abc", HttpStatusCode.OK, """{"id":"dev:work-product-component--WellLog:abc","version":1700001}""");
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
@@ -732,7 +741,8 @@ public class ProtocolTests
             .On(HttpMethod.Post, "/sessions", HttpStatusCode.OK, """{"id":"sess-c"}""")
             .On(HttpMethod.Post, "/sessions/sess-c/data", HttpStatusCode.OK, "{}")
             .On(HttpMethod.Patch, "/sessions/sess-c", HttpStatusCode.Conflict, """{"detail":"session is not open"}""")
-            .On(HttpMethod.Get, "/sessions/sess-c", HttpStatusCode.OK, """{"id":"sess-c","state":"committed"}""");
+            .On(HttpMethod.Get, "/sessions/sess-c", HttpStatusCode.OK, """{"id":"sess-c","state":"committed"}""")
+            .On(HttpMethod.Get, "/welllogs/dev:work-product-component--WellLog:abc", HttpStatusCode.OK, """{"id":"dev:work-product-component--WellLog:abc","version":1700001}""");
         var (client, _, runtime) = Client(committed);
         using (runtime)
         {
@@ -740,7 +750,8 @@ public class ProtocolTests
             var outcome = await protocol.DeliverAsync(Work(false, true, 2));
 
             Assert.Equal(2, outcome.ChunksSent);
-            Assert.Single(committed.Calls, c => c.Method == HttpMethod.Get);
+            Assert.Single(committed.Calls, c => c.Method == HttpMethod.Get && c.Uri.AbsolutePath.EndsWith("/sessions/sess-c", StringComparison.Ordinal));
+            Assert.Equal(1700001, outcome.TargetVersion);
         }
 
         // A session that is not committed is a real failure, and the payload is reported as not landed.
@@ -784,7 +795,8 @@ public class ProtocolTests
         var ok = new FakeHttpHandler()
             .On(HttpMethod.Post, "/sessions", HttpStatusCode.OK, """{"id":"sess-2"}""")
             .On(HttpMethod.Post, "/sessions/sess-2/data", HttpStatusCode.OK, "{}")
-            .On(HttpMethod.Patch, "/sessions/sess-2", HttpStatusCode.OK, "{}");
+            .On(HttpMethod.Patch, "/sessions/sess-2", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Get, "/welllogs/dev:work-product-component--WellLog:abc", HttpStatusCode.OK, """{"id":"dev:work-product-component--WellLog:abc","version":1700001}""");
         var (client2, _, runtime2) = Client(ok);
         using (runtime2)
         {
@@ -795,7 +807,8 @@ public class ProtocolTests
             Assert.Equal(3, sent.Count);
             Assert.All(sent, body => Assert.StartsWith("PAR1", body, StringComparison.Ordinal));
             Assert.Equal(3, sent.Distinct(StringComparer.Ordinal).Count());
-            Assert.Contains("commit", ok.Calls.Last().Body, StringComparison.Ordinal);
+            Assert.Contains("commit", ok.Calls.Last(c => c.Method == HttpMethod.Patch).Body, StringComparison.Ordinal);
+            Assert.Equal(HttpMethod.Get, ok.Calls.Last().Method);
         }
     }
 
@@ -829,7 +842,9 @@ public class ProtocolTests
     [Fact]
     public async Task WellLog_checks_the_shape_only_for_parquet_payloads_and_only_when_a_ceiling_is_in_force()
     {
-        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/data", HttpStatusCode.OK, "{}");
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/data", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Get, "/welllogs/dev:work-product-component--WellLog:abc", HttpStatusCode.OK, """{"id":"dev:work-product-component--WellLog:abc","version":1700001}""");
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
@@ -843,6 +858,24 @@ public class ProtocolTests
             var second = await new OsduWellLogProtocol(client, off, Samples.Logger<OsduWellLogProtocol>())
                 .DeliverAsync(Work(false, true, 1, source: new MemoryPayload(1, columns: 8, rowsPerChunk: 8)));
             Assert.Equal(1, second.ChunksSent);
+        }
+    }
+
+    [Fact]
+    public async Task A_bulk_write_whose_record_cannot_be_read_back_fails_naming_the_record()
+    {
+        // The bulk landed but the version OSDU serves is unknown. Recording the metadata write's version would be a
+        // ledger that disagrees with OSDU, so the try fails; the retry resumes past the metadata write and sends the
+        // whole bulk again, which replaces rather than adds.
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/data", HttpStatusCode.OK, "{}");
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var ex = await Assert.ThrowsAsync<DeliveryException>(() => protocol.DeliverAsync(Work(false, true, 1)));
+
+            Assert.Contains("dev:work-product-component--WellLog:abc", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("could not be read back", ex.Message, StringComparison.Ordinal);
         }
     }
 

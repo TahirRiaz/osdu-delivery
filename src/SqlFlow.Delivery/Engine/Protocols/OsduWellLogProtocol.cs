@@ -131,6 +131,19 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
                 returned["sessionId"] = sessionId;
             }
 
+            // Writing the bulk creates a new version of the record ("It creates a new version", openapi wellbore_ddms,
+            // POST /ddms/v3/welllogs/{record_id}/data; a session commit creates one too), and the direct write documents
+            // no response body to read it from. The ledger has to hold the version OSDU now serves: the metadata write's
+            // version makes every verify report the record drifted, and opens the next session from a version that is
+            // no longer the latest. So the record is read back.
+            var verifyPath = _options.VerifyPath ?? Ddms(DefaultVerifyPath);
+            var landed = await RecordWriter.VerifyAsync(_client, verifyPath, work.TargetId, null, ct).ConfigureAwait(false);
+            var landedVersion = landed.ObservedVersion
+                ?? throw new DeliveryException(
+                    $"The bulk data for {work.TargetId} was written, but the record's version could not be read back from {verifyPath}: {landed.Detail}.");
+            version = landedVersion;
+            returned["version"] = landedVersion.ToString(CultureInfo.InvariantCulture);
+
             steps.Add(PayloadStep, started, null, returned);
             payloadDelivered = true;
         }
