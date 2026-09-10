@@ -143,7 +143,7 @@ public class PartitionedDropTests
         foreach (var record in records)
         {
             var read = all.Single(r => r.DeclaredDeliveryKey == record.Key.Value);
-            Assert.Equal(record.Curves.Select(c => c.CurveId), read.ScopeRows("curves").Select(c => c.GetString("curve_id")));
+            Assert.Equal(record.Curves.Select(c => c.CurveId).Prepend(SampleDropBuilder.IndexCurveId), read.ScopeRows("curves").Select(c => c.GetString("curve_id")));
         }
 
         var first = await ReadAllAsync(reader, drop, [0]);

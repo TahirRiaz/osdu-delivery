@@ -50,6 +50,12 @@ public static class SampleDropBuilder
     public const string MappingReference = "WellLog@1.4.0";
     public const string SourceTable = "wl_pipelines_dsis_intermediate.recall_logcurve_enriched";
 
+    /// <summary>
+    /// The index curve: the first column of every chunk's grid, and the curve a WellLog names as its ReferenceCurveID.
+    /// The wellbore DDMS refuses a log whose Curves hold no curve with that id, so it is described like any other curve.
+    /// </summary>
+    public const string IndexCurveId = "MD";
+
     public static IReadOnlyList<SampleRecord> DefaultRecords(string logSource = "STAT_COMP") =>
     [
         new(
@@ -151,7 +157,21 @@ public static class SampleDropBuilder
                 ["chunkCount"] = 1L,
             });
 
-            var ordinal = 0L;
+            curveRows.Add(new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["deliveryKey"] = key,
+                ["curve_ordinal"] = 0L,
+                ["curve_id"] = IndexCurveId,
+                ["curve_unit"] = record.IndexUnit,
+                ["index_unit"] = record.IndexUnit,
+                ["index_min"] = record.IndexMin,
+                ["index_max"] = record.IndexMax,
+                ["curve_description"] = "Measured depth",
+                ["curve_version"] = "1",
+                ["business_value"] = null,
+            });
+
+            var ordinal = 1L;
             foreach (var curve in record.Curves)
             {
                 curveRows.Add(new Dictionary<string, object?>(StringComparer.Ordinal)
@@ -239,12 +259,12 @@ public static class SampleDropBuilder
 
     private static (IReadOnlyList<string> Columns, IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows) BuildGrid(SampleRecord record, IReadOnlyList<double> depths)
     {
-        var columns = new List<string> { "MD" };
+        var columns = new List<string> { IndexCurveId };
         columns.AddRange(record.Curves.Select(c => c.CurveId).OrderBy(c => c, StringComparer.Ordinal));
         var rows = new List<IReadOnlyDictionary<string, object?>>();
         for (var i = 0; i < depths.Count; i++)
         {
-            var row = new Dictionary<string, object?>(StringComparer.Ordinal) { ["MD"] = depths[i] };
+            var row = new Dictionary<string, object?>(StringComparer.Ordinal) { [IndexCurveId] = depths[i] };
             foreach (var curve in record.Curves)
             {
                 row[curve.CurveId] = i < curve.Values.Length ? curve.Values[i] : null;

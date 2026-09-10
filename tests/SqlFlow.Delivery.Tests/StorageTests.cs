@@ -120,7 +120,7 @@ public class DropReaderTests
         Assert.Equal(3, read.Count);
         var first = read.Single(r => r.Row.GetString("log_id") == "L-1001");
         Assert.Equal(records[0].Key.Value, first.DeclaredDeliveryKey);
-        Assert.Equal(["GR", "RHOB"], first.ScopeRows("curves").Select(c => c.GetString("curve_id")));
+        Assert.Equal([SampleDropBuilder.IndexCurveId, "GR", "RHOB"], first.ScopeRows("curves").Select(c => c.GetString("curve_id")));
         Assert.Equal(1000d, first.Row.Get("index_min"));
 
         var chunks = await reader.ListPayloadChunksAsync(drop, "curves", records[0].Key.Value);
