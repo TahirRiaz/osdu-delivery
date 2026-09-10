@@ -35,6 +35,8 @@ export interface TriggerRunDialogProps {
   flowId?: string;
   /** Prior-run parameters to prefill (Re-run, or a record page asking for a scoped redelivery or verify). */
   initialParameters?: RunParameters;
+  /** The worker pool the prior run was routed to, so a Re-run goes back to the same workers rather than any node. */
+  initialPool?: string | null;
 }
 
 const OPERATION_LABELS: Record<RunOperation, string> = {
@@ -107,7 +109,7 @@ interface ComboOption {
  * source is run as a whole.
  */
 export function TriggerRunDialog({
-  open, onClose, repoId, flowName, flowId, flowKind, initialParameters,
+  open, onClose, repoId, flowName, flowId, flowKind, initialParameters, initialPool,
 }: TriggerRunDialogProps) {
   const navigate = useNavigate();
   const idPrefix = useId();
@@ -127,6 +129,7 @@ export function TriggerRunDialog({
   // Seed the form once per open, so a Re-run opens with the prior run's parameters and a fresh launch opens clean.
   useEffect(() => {
     if (open) {
+      setPool(initialPool ?? "");
       setOperation(initialParameters?.operation ?? (flowKind === "retrieval" ? "retrieve" : "deliver"));
       setForce(initialParameters?.force ?? false);
       setValuesText(Object.entries(initialParameters?.values ?? {}).map(([name, value]) => `${name}=${value}`).join("\n"));

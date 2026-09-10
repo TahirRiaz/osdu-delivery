@@ -358,6 +358,7 @@ function RunDetailContent({ runId }: { runId: string }) {
           flowName={run.flowName}
           flowId={run.pipelineId}
           initialParameters={{ ...(parameters ?? {}), operation: run.operation, force: run.force }}
+          initialPool={run.targetPool}
         />
       )}
     </Page>
