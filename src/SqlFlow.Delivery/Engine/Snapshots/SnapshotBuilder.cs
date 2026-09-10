@@ -302,28 +302,61 @@ public sealed class OsduConnection : IDisposable
     private readonly TargetAuth _auth;
     private readonly IReadOnlyDictionary<string, string> _headers;
 
+    private OsduConnection(
+        string endpoint,
+        TargetAuth auth,
+        IReadOnlyDictionary<string, string> headers,
+        FlowReliability reliability,
+        ISecretResolver secrets,
+        HttpMessageHandler? handler,
+        bool allowLoopback)
+    {
+        Endpoint = endpoint;
+        _auth = auth;
+        _headers = headers;
+        _http = new HttpRuntime(reliability, secrets, handler: handler, allowLoopback: allowLoopback);
+    }
+
+    /// <summary>
+    /// A connection over an endpoint and headers as a flow declares them, every <c>${env:...}</c> and
+    /// <c>${keyvault:...}</c> reference in them resolved here, the way <see cref="Protocols.ProtocolFactory.ClientAsync"/>
+    /// resolves a delivery target's. A declared value is never used as a URL or a header unresolved.
+    /// </summary>
     /// <remarks>
     /// <paramref name="handler"/> replaces the built transport (null builds the configured one) and
     /// <paramref name="allowLoopback"/> lets the URL guard accept a loopback endpoint; both exist for tests.
     /// </remarks>
-    public OsduConnection(
+    /// <exception cref="DeliveryException">The endpoint does not resolve to an absolute http or https URL.</exception>
+    public static async Task<OsduConnection> CreateAsync(
         string endpoint,
         TargetAuth auth,
         IReadOnlyDictionary<string, string> headers,
         FlowReliability reliability,
         ISecretResolver secrets,
         HttpMessageHandler? handler = null,
-        bool allowLoopback = false)
+        bool allowLoopback = false,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
         ArgumentNullException.ThrowIfNull(auth);
         ArgumentNullException.ThrowIfNull(headers);
         ArgumentNullException.ThrowIfNull(reliability);
         ArgumentNullException.ThrowIfNull(secrets);
-        Endpoint = endpoint.TrimEnd('/');
-        _auth = auth;
-        _headers = headers;
-        _http = new HttpRuntime(reliability, secrets, handler: handler, allowLoopback: allowLoopback);
+
+        var resolved = (await secrets.ResolveAsync(endpoint, ct).ConfigureAwait(false)).Trim().TrimEnd('/');
+        if (!Uri.TryCreate(resolved, UriKind.Absolute, out var url) || (url.Scheme != Uri.UriSchemeHttps && url.Scheme != Uri.UriSchemeHttp))
+        {
+            // The declared value is named, never what it resolved to: a reference is safe to show, its value may not be.
+            throw new DeliveryException($"The OSDU endpoint '{endpoint}' does not resolve to an absolute http or https URL.");
+        }
+
+        var resolvedHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in headers)
+        {
+            resolvedHeaders[name] = await secrets.ResolveAsync(value, ct).ConfigureAwait(false);
+        }
+
+        return new OsduConnection(resolved, auth, resolvedHeaders, reliability, secrets, handler, allowLoopback);
     }
 
     public string Endpoint { get; }

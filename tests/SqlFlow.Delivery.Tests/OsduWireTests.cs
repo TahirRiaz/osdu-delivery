@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Snapshots;
@@ -101,7 +102,7 @@ public class OsduContentTypeTests
     public async Task The_capture_connection_sends_the_header_on_bodiless_calls_too()
     {
         var handler = new FakeHttpHandler().On(HttpMethod.Get, "/schema/osdu:wks:Thing:1.0.0", HttpStatusCode.OK, "{}");
-        using var osdu = new OsduConnection(
+        using var osdu = await OsduConnection.CreateAsync(
             "http://localhost/osdu", new TargetAuth { Type = TargetAuthType.None },
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" },
             new FlowReliability(), new SecretResolver([new EnvSecretProvider()]), handler, allowLoopback: true);
@@ -612,5 +613,69 @@ public class SkipDuplicatesOptionTests
     {
         var flow = new SqlFlow.Delivery.Documents.DeliveryDocumentLoader().ParseFlow(Flow.Replace("__OPTIONS__", "skipDuplicates: true", StringComparison.Ordinal), "inline.yaml");
         Assert.True(flow.Target.ProtocolOptions.SkipDuplicates);
+    }
+}
+
+/// <summary>
+/// The connection schema snapshots, reference captures and a retrieval flow's cache refresh reach OSDU through. A flow
+/// declares its endpoint and headers as references; the connection resolves them, so no caller can hand it a
+/// reference to use as a URL. A live retrieval flow whose endpoint was <c>${env:PETRODB_URL}</c> crashed its run on the
+/// first capture request because the cache refresh passed the declared value straight through.
+/// </summary>
+public class CaptureConnectionTests
+{
+    private static Task<OsduConnection> ConnectAsync(string endpoint, IReadOnlyDictionary<string, string> headers, FakeHttpHandler? handler = null)
+        => OsduConnection.CreateAsync(
+            endpoint, new TargetAuth { Type = TargetAuthType.None }, headers, new FlowReliability(),
+            new SecretResolver([new EnvSecretProvider()]), handler, allowLoopback: true);
+
+    [Fact]
+    public async Task The_endpoint_and_headers_are_resolved_before_anything_is_sent()
+    {
+        var endpointVariable = "SQLFLOW_TEST_CAPTURE_ENDPOINT_" + Guid.NewGuid().ToString("N");
+        var partitionVariable = "SQLFLOW_TEST_CAPTURE_PARTITION_" + Guid.NewGuid().ToString("N");
+        Environment.SetEnvironmentVariable(endpointVariable, "http://localhost/osdu/");
+        Environment.SetEnvironmentVariable(partitionVariable, "dev");
+        try
+        {
+            var handler = new FakeHttpHandler().On(HttpMethod.Get, "/schema/osdu:wks:Thing:1.0.0", HttpStatusCode.OK, "{}");
+            using var osdu = await ConnectAsync(
+                "${env:" + endpointVariable + "}",
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "${env:" + partitionVariable + "}" },
+                handler);
+
+            await osdu.GetJsonAsync("/api/schema-service/v1/schema/osdu:wks:Thing:1.0.0", CancellationToken.None);
+
+            var call = Assert.Single(handler.Calls);
+            Assert.Equal("http://localhost/osdu/api/schema-service/v1/schema/osdu:wks:Thing:1.0.0", call.Uri.AbsoluteUri);
+            Assert.Equal("dev", call.Headers["data-partition-id"]);
+            Assert.Equal("http://localhost/osdu", osdu.Endpoint);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(endpointVariable, null);
+            Environment.SetEnvironmentVariable(partitionVariable, null);
+        }
+    }
+
+    [Theory]
+    [InlineData("not a url")]
+    [InlineData("ftp://osdu.example.com")]
+    [InlineData("/api/storage/v2")]
+    public async Task An_endpoint_that_is_not_an_http_url_is_refused_naming_what_the_flow_declared(string endpoint)
+    {
+        var ex = await Assert.ThrowsAsync<DeliveryException>(() => ConnectAsync(endpoint, new Dictionary<string, string>()));
+
+        Assert.Contains($"'{endpoint}'", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task An_endpoint_reference_that_does_not_resolve_fails_naming_the_variable()
+    {
+        var missing = "SQLFLOW_TEST_UNSET_" + Guid.NewGuid().ToString("N");
+
+        var ex = await Assert.ThrowsAsync<SqlFlowException>(() => ConnectAsync("${env:" + missing + "}", new Dictionary<string, string>()));
+
+        Assert.Contains(missing, ex.Message, StringComparison.Ordinal);
     }
 }

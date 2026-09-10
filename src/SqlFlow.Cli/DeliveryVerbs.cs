@@ -109,7 +109,7 @@ internal static class DeliveryVerbs
                 }
                 else
                 {
-                    using var osdu = Connect(flow, args, engine);
+                    using var osdu = await ConnectAsync(flow, args, engine, ct).ConfigureAwait(false);
                     snapshot = await builder.SchemaFromOsduAsync(osdu, kind, ct).ConfigureAwait(false);
                 }
 
@@ -130,7 +130,7 @@ internal static class DeliveryVerbs
                     var specPath = Program.GetOption(args, "--spec")
                         ?? throw new FlowValidationException("Usage: sqlflow snapshot <flow.yaml> references (--from-dir <dir> | --spec <spec.json> [--endpoint <url>]) [--no-current]");
                     var spec = ReferenceCaptureSpec.Parse(await File.ReadAllTextAsync(specPath, ct).ConfigureAwait(false), specPath);
-                    using var osdu = Connect(flow, args, engine);
+                    using var osdu = await ConnectAsync(flow, args, engine, ct).ConfigureAwait(false);
                     snapshot = await builder.ReferencesFromOsduAsync(osdu, spec, makeCurrent, ct).ConfigureAwait(false);
                 }
 
@@ -167,11 +167,11 @@ internal static class DeliveryVerbs
         }
     }
 
-    /// <summary>The flow's target as a capture connection: its endpoint (or an explicit <c>--endpoint</c>), auth and headers.</summary>
-    private static OsduConnection Connect(FlowDefinition flow, string[] args, EngineContext engine)
-    {
-        var endpoint = Program.GetOption(args, "--endpoint") ?? flow.Target.Endpoint;
-        var headers = flow.Target.Headers.ToDictionary(kv => kv.Key, kv => engine.Secrets.Resolve(kv.Value), StringComparer.OrdinalIgnoreCase);
-        return new OsduConnection(engine.Secrets.Resolve(endpoint), flow.Target.Auth, headers, flow.Reliability, engine.Secrets);
-    }
+    /// <summary>
+    /// The flow's target as a capture connection: its endpoint (or an explicit <c>--endpoint</c>), auth and headers,
+    /// their references resolved by <see cref="OsduConnection.CreateAsync"/> like every other capture's.
+    /// </summary>
+    private static Task<OsduConnection> ConnectAsync(FlowDefinition flow, string[] args, EngineContext engine, CancellationToken ct)
+        => OsduConnection.CreateAsync(
+            Program.GetOption(args, "--endpoint") ?? flow.Target.Endpoint, flow.Target.Auth, flow.Target.Headers, flow.Reliability, engine.Secrets, ct: ct);
 }

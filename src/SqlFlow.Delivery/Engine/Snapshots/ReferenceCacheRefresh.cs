@@ -45,7 +45,7 @@ public sealed class ReferenceCacheRefresher
         var previousVersion = await store.CurrentReferenceVersionAsync(ct).ConfigureAwait(false);
         var previous = previousVersion is null ? null : await store.LoadReferencesAsync(previousVersion, ct).ConfigureAwait(false);
 
-        using var osdu = new OsduConnection(flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, flow.Reliability, _context.Secrets);
+        using var osdu = await OsduConnection.CreateAsync(flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, flow.Reliability, _context.Secrets, ct: ct).ConfigureAwait(false);
         var snapshot = await builder.ReferencesFromOsduAsync(osdu, spec, cache.MakeCurrent, ct).ConfigureAwait(false);
 
         var types = new List<CachedTypeOutcome>();

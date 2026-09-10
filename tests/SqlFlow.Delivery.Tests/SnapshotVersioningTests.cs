@@ -122,11 +122,11 @@ public class ReferenceCaptureCursorTests
         Fields = [new ReferenceFieldSpec("data.Code", "Code")],
     };
 
-    private static (SnapshotBuilder Builder, OsduConnection Osdu) Build(FakeHttpHandler handler)
+    private static async Task<(SnapshotBuilder Builder, OsduConnection Osdu)> BuildAsync(FakeHttpHandler handler)
     {
         var store = new FileSnapshotStore(Samples.NewTempDirectory(), Samples.Stores());
         var builder = new SnapshotBuilder(store, new TestClock(), Samples.Logger<SnapshotBuilder>());
-        var osdu = new OsduConnection(
+        var osdu = await OsduConnection.CreateAsync(
             "http://localhost/osdu",
             new TargetAuth { Type = TargetAuthType.None },
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" },
@@ -148,7 +148,7 @@ public class ReferenceCaptureCursorTests
             // Elasticsearch keeps handing out a scroll id past the end. The page is empty, and that is the end.
             _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c3","results":[]}"""),
         });
-        var (builder, osdu) = Build(handler);
+        var (builder, osdu) = await BuildAsync(handler);
         using (osdu)
         {
             var captured = await builder.CaptureTypeAsync(osdu, Spec);
@@ -166,7 +166,7 @@ public class ReferenceCaptureCursorTests
             "/query_with_cursor",
             HttpStatusCode.OK,
             """{"cursor":"stuck","results":[{"id":"opendes:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}""");
-        var (builder, osdu) = Build(handler);
+        var (builder, osdu) = await BuildAsync(handler);
         using (osdu)
         {
             var ex = await Assert.ThrowsAsync<DeliveryException>(() => builder.CaptureTypeAsync(osdu, Spec));
