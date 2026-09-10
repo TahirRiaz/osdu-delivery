@@ -1199,7 +1199,10 @@ public static class RunQueueStore
         target.WrittenUtc = projected.WrittenUtc == default ? nowUtc : projected.WrittenUtc;
         target.StartUtc = projected.StartUtc ?? target.StartUtc;
         target.EndUtc = projected.EndUtc ?? nowUtc;
-        target.DurationSeconds = projected.DurationSeconds;
+        // A kind whose result carries no timing (the delivery and retrieval kinds) still ran from its claim to this
+        // completion, and the queue timed exactly that, so the run is never left without a duration.
+        target.DurationSeconds = projected.DurationSeconds
+            ?? (target.StartUtc is { } start && target.EndUtc is { } end && end >= start ? (end - start).TotalSeconds : null);
         target.RowsLoaded = projected.RowsLoaded;
         target.RowsInserted = projected.RowsInserted;
         target.RowsUpdated = projected.RowsUpdated;

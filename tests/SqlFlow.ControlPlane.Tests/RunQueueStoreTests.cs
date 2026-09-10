@@ -76,6 +76,51 @@ public sealed class RunQueueStoreTests
     }
 
     [SkippableFact]
+    public async Task Complete_WithoutTimingInTheArtifact_RecordsTheDurationTheQueueObserved()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        var (repoId, flowName) = NewIds();
+        var dir = NewTempDir();
+
+        try
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            var runId = await RunQueueStore.EnqueueAsync(db, new RunEnqueueRequest(repoId, flowName, "delivery"), DateTime.UtcNow);
+            var claimedAt = DateTime.UtcNow;
+            var claimed = await RunQueueStore.ClaimNextAsync(db, Node, [], claimedAt);
+            Assert.NotNull(claimed);
+
+            // A delivery run's result names its counts and no timing, like every run.json the delivery kinds write;
+            // live runs on the fleet completed with no duration because of it.
+            var runJson = Path.Combine(dir, "run.json");
+            await File.WriteAllTextAsync(runJson, JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                flowKind = "delivery",
+                flowName,
+                runId,
+                success = true,
+                writtenUtc = claimedAt.AddSeconds(2),
+                result = new { operation = "deliver", delivered = 3 },
+            }));
+            var completedAt = claimedAt.AddSeconds(2);
+            Assert.Equal(
+                RunCompletionOutcome.Recorded,
+                await RunQueueStore.CompleteFromArtifactAsync(db, runId, repoId, runJson, completedAt, Node, claimed.Value.Attempt));
+
+            var done = await Reload(db, runId);
+            Assert.NotNull(done.DurationSeconds);
+            Assert.Equal((done.EndUtc!.Value - done.StartUtc!.Value).TotalSeconds, done.DurationSeconds!.Value, 3);
+            Assert.InRange(done.DurationSeconds!.Value, 1.5, 2.5);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId, dir);
+        }
+    }
+
+    [SkippableFact]
     public async Task ClaimNext_ConcurrentClaims_NeverGiveTheSameRunToTwoWorkers()
     {
         var cs = CatalogTestDb.Require();
