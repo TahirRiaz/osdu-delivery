@@ -84,6 +84,15 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             }
             else
             {
+                // The wellbore DDMS refuses a log whose ReferenceCurveID names no curve of its own ("WellLog[0] should
+                // have a curve with a curveID value equal to the ReferenceCurveID value", HTTP 400 from a live M26 service;
+                // the OpenAPI description does not state the rule). Holding it here names the curves the log does
+                // describe and saves a write that can only be refused.
+                if (ReferenceCurveProblem(work.Document) is { } problem)
+                {
+                    throw new RecordHeldException(problem);
+                }
+
                 var started = steps.Now;
                 var (written, status) = await RecordWriter.WriteAsync(_client, _options, _options.RecordPath ?? Ddms(DefaultRecordPath), _options.RecordMethod ?? "POST", _options.VerifyPath ?? Ddms(DefaultVerifyPath), work, ct).ConfigureAwait(false);
                 version = written ?? version;
@@ -165,6 +174,35 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             Returned = all,
             Steps = steps.Steps,
         };
+    }
+
+    /// <summary>
+    /// Why a log's <c>data.ReferenceCurveID</c> names no curve among its <c>data.Curves</c>, or null when it names one of
+    /// them or names none at all. Curve ids are compared exactly, as the service compares them.
+    /// </summary>
+    internal static string? ReferenceCurveProblem(JsonObject document)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        if (document["data"] is not JsonObject data
+            || data["ReferenceCurveID"] is not JsonValue reference
+            || !reference.TryGetValue<string>(out var id)
+            || string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        var curves = (data["Curves"] as JsonArray ?? [])
+            .OfType<JsonObject>()
+            .Select(curve => curve["CurveID"] is JsonValue value && value.TryGetValue<string>(out var curveId) ? curveId : null)
+            .OfType<string>()
+            .ToList();
+        if (curves.Contains(id, StringComparer.Ordinal))
+        {
+            return null;
+        }
+
+        var described = curves.Count == 0 ? "describes no curve" : "describes only " + string.Join(", ", curves);
+        return $"data.ReferenceCurveID is '{id}' but data.Curves {described}; the wellbore DDMS refuses a log whose reference curve is not one of its curves";
     }
 
     public Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default)

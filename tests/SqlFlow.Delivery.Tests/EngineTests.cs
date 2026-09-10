@@ -707,11 +707,11 @@ public class ProtocolTests
         return (client, handler, runtime);
     }
 
-    private static DeliveryWork Work(bool metadata, bool payload, int chunks, long? existing = null, IPayloadSource? source = null) => new()
+    private static DeliveryWork Work(bool metadata, bool payload, int chunks, long? existing = null, IPayloadSource? source = null, string? document = null) => new()
     {
         Key = SqlFlow.Delivery.Identity.DeliveryKey.Derive("test", ["abc"]),
         TargetId = "dev:work-product-component--WellLog:abc",
-        Document = TestSchema.Doc("""{"id":"dev:work-product-component--WellLog:abc","kind":"k","data":{"Name":"n"}}"""),
+        Document = TestSchema.Doc(document ?? """{"id":"dev:work-product-component--WellLog:abc","kind":"k","data":{"Name":"n"}}"""),
         DeliverMetadata = metadata,
         DeliverPayload = payload,
         Payload = source ?? new MemoryPayload(chunks),
@@ -934,6 +934,29 @@ public class ProtocolTests
             Assert.Contains("dev:work-product-component--WellLog:abc", ex.Message, StringComparison.Ordinal);
             Assert.Contains("could not be read back", ex.Message, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public async Task WellLog_holds_a_log_whose_reference_curve_is_not_one_of_its_curves_before_writing_it()
+    {
+        // A live wellbore DDMS refused exactly this with HTTP 400; the OpenAPI description does not state the rule.
+        var handler = new FakeHttpHandler();
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var held = await Assert.ThrowsAsync<RecordHeldException>(() => protocol.DeliverAsync(Work(true, true, 1,
+                document: """{"id":"dev:work-product-component--WellLog:abc","kind":"k","data":{"ReferenceCurveID":"MD","Curves":[{"CurveID":"GR"},{"CurveID":"RHOB"}]}}""")));
+
+            Assert.Contains("data.ReferenceCurveID is 'MD'", held.Message, StringComparison.Ordinal);
+            Assert.Contains("describes only GR, RHOB", held.Message, StringComparison.Ordinal);
+            Assert.Empty(handler.Calls);
+        }
+
+        // A reference curve that is one of the log's curves, or none named at all, is not the protocol's concern.
+        Assert.Null(OsduWellLogProtocol.ReferenceCurveProblem(TestSchema.Doc("""{"data":{"ReferenceCurveID":"MD","Curves":[{"CurveID":"MD"},{"CurveID":"GR"}]}}""")));
+        Assert.Null(OsduWellLogProtocol.ReferenceCurveProblem(TestSchema.Doc("""{"data":{"Curves":[{"CurveID":"GR"}]}}""")));
+        Assert.Contains("describes no curve", OsduWellLogProtocol.ReferenceCurveProblem(TestSchema.Doc("""{"data":{"ReferenceCurveID":"MD"}}""")), StringComparison.Ordinal);
     }
 
     [Fact]

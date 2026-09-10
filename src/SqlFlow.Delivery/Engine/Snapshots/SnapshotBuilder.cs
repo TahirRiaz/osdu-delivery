@@ -238,12 +238,22 @@ public sealed partial class SnapshotBuilder
             }
         }
 
-        foreach (var field in typeSpec.Fields.Where(f => coverage[f.Name] == 0))
+        if (items.Count == 0)
         {
-            // Silence here used to look like bad source data at render time, so an empty path is reported at capture.
+            // Nothing matched at all: the paths are not the question, the kind and the query are.
             _logger.LogWarning(
-                "Reference type {Type}: no item carried '{Path}', so nothing is cached under '{Name}'. Check the path against the kind {Kind}.",
-                typeSpec.Name, field.Path, field.Name, typeSpec.Kind);
+                "Reference type {Type}: the search matched no record of kind {Kind} for query {Query}, so nothing is cached for it. Check the kind and the query.",
+                typeSpec.Name, typeSpec.Kind, typeSpec.Query);
+        }
+        else
+        {
+            foreach (var field in typeSpec.Fields.Where(f => coverage[f.Name] == 0))
+            {
+                // Silence here used to look like bad source data at render time, so an empty path is reported at capture.
+                _logger.LogWarning(
+                    "Reference type {Type}: no item carried '{Path}', so nothing is cached under '{Name}'. Check the path against the kind {Kind}.",
+                    typeSpec.Name, field.Path, field.Name, typeSpec.Kind);
+            }
         }
 
         _logger.LogInformation(
