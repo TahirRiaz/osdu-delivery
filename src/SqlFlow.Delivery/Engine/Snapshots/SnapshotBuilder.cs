@@ -410,6 +410,10 @@ public sealed class OsduConnection : IDisposable
         }
 
         auth.ApplyTo(request);
+        if (OsduCorrelation.Current is { } correlation)
+        {
+            request.Headers.TryAddWithoutValidation(OsduCorrelation.HeaderName, correlation);
+        }
 
         // A bodiless request still carries Content-Type: application/json, as every OSDU call from this system does
         // (see OsduHttpClient.JsonBody for why the services insist).

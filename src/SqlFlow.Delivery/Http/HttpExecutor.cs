@@ -109,7 +109,7 @@ public sealed class HttpExecutor
                 if (!decision.ShouldRetry)
                 {
                     var preview = await PreviewAsync(response, ct).ConfigureAwait(false);
-                    throw new HttpStatusException(code, $"HTTP {code} {status} from {request.Method} {Describe(request.RequestUri)}: {preview}", decision.RetryAfter);
+                    throw new HttpStatusException(code, $"HTTP {code} {status} from {request.Method} {Describe(request.RequestUri)}{CorrelationNote(response, request)}: {preview}", decision.RetryAfter);
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
@@ -119,7 +119,7 @@ public sealed class HttpExecutor
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
-                    throw new DeliveryException($"HTTP transport failure calling {request.Method} {Describe(request.RequestUri)}: {ex.Message}", ex);
+                    throw new DeliveryException($"HTTP transport failure calling {request.Method} {Describe(request.RequestUri)}{CorrelationNote(null, request)}: {ex.Message}", ex);
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
@@ -160,6 +160,26 @@ public sealed class HttpExecutor
     internal static bool IsIdempotent(HttpMethod method)
         => method == HttpMethod.Get || method == HttpMethod.Head || method == HttpMethod.Put
             || method == HttpMethod.Delete || method == HttpMethod.Options || method == HttpMethod.Trace;
+
+    /// <summary>
+    /// The correlation id to quote for a failed call, so it can be found in the service's logs: the id the service
+    /// answered with, else the one the call sent; nothing when there is neither.
+    /// </summary>
+    private static string CorrelationNote(HttpResponseMessage? response, HttpRequestMessage request)
+    {
+        string? id = null;
+        if (response is not null && response.Headers.TryGetValues(OsduCorrelation.HeaderName, out var answered))
+        {
+            id = answered.FirstOrDefault();
+        }
+
+        if (string.IsNullOrWhiteSpace(id) && request.Headers.TryGetValues(OsduCorrelation.HeaderName, out var sent))
+        {
+            id = sent.FirstOrDefault();
+        }
+
+        return string.IsNullOrWhiteSpace(id) ? string.Empty : $" (correlation-id {id})";
+    }
 
     /// <summary>The request URL without its query string: a signed upload URL carries its credential there.</summary>
     private static string Describe(Uri? uri)

@@ -77,6 +77,9 @@ public sealed class FakeProtocol : IDeliveryProtocol
 
     public List<DeliveryWork> Deliveries { get; } = [];
 
+    /// <summary>The correlation id in effect when each delivery was made, in the order of <see cref="Deliveries"/>.</summary>
+    public List<string?> Correlations { get; } = [];
+
     public List<(string TargetId, long? Expected)> Verifies { get; } = [];
 
     public Func<DeliveryWork, Exception?>? FailWith { get; set; }
@@ -91,6 +94,7 @@ public sealed class FakeProtocol : IDeliveryProtocol
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {
         Deliveries.Add(work);
+        Correlations.Add(OsduCorrelation.Current);
         if (Before is { } before)
         {
             await before(work, ct);

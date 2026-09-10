@@ -55,6 +55,11 @@ the redacted error, the platform `RunId` the attempt happened in, the `WorkBatch
 try had completed it) and the values returned. Render-time holds are written by the intake with worker
 `intake`; deletions by the actor who asked for them.
 
+An attempt's result names the `correlationId` every OSDU request of that try carried in the `correlation-id` header,
+so the attempt can be found in the services' own logs, and the error of a refused or failed request quotes the id the
+service answered with. The OpenAPI descriptions do not declare the header; the storage service answers with the id it
+is sent, and with one of its own when it is sent none.
+
 ### `delivery.WorkBatch`: one file of rendered documents
 
 | Column | Purpose |

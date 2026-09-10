@@ -659,6 +659,25 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Each_attempt_names_the_correlation_id_its_requests_carried()
+    {
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var drop = await DropAsync("correlation", records, Submission1, 1);
+        var (runtime, protocol, ledger) = await RuntimeAsync(drop);
+        using (runtime)
+        {
+            await RunAsync(runtime, protocol, ledger, Submission1);
+
+            var sent = protocol.Correlations[protocol.Deliveries.FindIndex(w => w.Key == records[0].Key)];
+            Assert.True(Guid.TryParse(sent, out _));
+            var attempt = Assert.Single(await ledger.ListAttemptsAsync(records[0].Key, 10));
+            using var result = System.Text.Json.JsonDocument.Parse(attempt.ResultJson!);
+            Assert.Equal(sent, result.RootElement.GetProperty("correlationId").GetString());
+            Assert.Null(OsduCorrelation.Current);
+        }
+    }
+
+    [Fact]
     public async Task Drop_prepared_for_another_mapping_or_flow_is_refused()
     {
         var drop = await DropAsync("mismatch", SampleDropBuilder.DefaultRecords("STAT_COMP"), Submission1, 1);

@@ -224,5 +224,9 @@ public sealed class OsduHttpClient
 
         auth.ApplyTo(request);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        if (OsduCorrelation.Current is { } correlation)
+        {
+            request.Headers.TryAddWithoutValidation(OsduCorrelation.HeaderName, correlation);
+        }
     }
 }

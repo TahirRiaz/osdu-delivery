@@ -478,6 +478,9 @@ public sealed class DeliveryWorker
             return;
         }
 
+        // One id for the try: every OSDU request the protocol sends for these records carries it, and each attempt names
+        // it, so what happened can be followed into the services' own logs.
+        using var correlation = OsduCorrelation.Begin();
         IReadOnlyList<DeliveryOutcome> outcomes;
         try
         {
@@ -506,7 +509,7 @@ public sealed class DeliveryWorker
         {
             var (index, state, work) = works[i];
             var latestSteps = reportedSteps.TryGetValue(state.DeliveryKey.Value, out var reported) ? reported : state.PendingStepJson;
-            var (completion, evt, summary) = Classify(state, batch, started, work, outcomes[i], latestSteps);
+            var (completion, evt, summary) = Classify(state, batch, started, work, outcomes[i], latestSteps, correlation.Id);
             await record(index, completion, evt, summary).ConfigureAwait(false);
         }
     }
@@ -524,9 +527,9 @@ public sealed class DeliveryWorker
     }
 
     /// <summary>Turns a protocol outcome into the record's next state, its attempt and its event.</summary>
-    private (RecordCompletion Completion, DeliveryEvent Event, WorkerSummary Summary) Classify(RecordState record, WorkBatchState? batch, DateTime started, DeliveryWork work, DeliveryOutcome outcome, string? latestSteps)
+    private (RecordCompletion Completion, DeliveryEvent Event, WorkerSummary Summary) Classify(RecordState record, WorkBatchState? batch, DateTime started, DeliveryWork work, DeliveryOutcome outcome, string? latestSteps, string correlationId)
     {
-        var resultJson = ResultJson(outcome, work.CompletedSteps, latestSteps);
+        var resultJson = ResultJson(outcome, work.CompletedSteps, latestSteps, correlationId);
         record = record with { PendingStepJson = latestSteps };
         if (outcome.Succeeded)
         {
@@ -677,8 +680,11 @@ public sealed class DeliveryWorker
         return (completion, evt, summary);
     }
 
-    /// <summary>The attempt's result: every step (including the ones resumed from an earlier try) and what came back.</summary>
-    internal static string? ResultJson(DeliveryOutcome outcome, IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> completedBefore, string? reportedDuringTry = null)
+    /// <summary>
+    /// The attempt's result: the correlation id its OSDU requests carried, every step (including the ones resumed from an
+    /// earlier try) and what came back.
+    /// </summary>
+    internal static string? ResultJson(DeliveryOutcome outcome, IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> completedBefore, string? reportedDuringTry = null, string? correlationId = null)
     {
         var steps = new JsonArray();
         foreach (var (name, returned) in completedBefore)
@@ -730,12 +736,18 @@ public sealed class DeliveryWorker
             steps.Add(node);
         }
 
-        if (steps.Count == 0 && outcome.Returned.Count == 0)
+        if (steps.Count == 0 && outcome.Returned.Count == 0 && correlationId is null)
         {
             return null;
         }
 
-        var result = new JsonObject { ["steps"] = steps };
+        var result = new JsonObject();
+        if (correlationId is not null)
+        {
+            result["correlationId"] = correlationId;
+        }
+
+        result["steps"] = steps;
         if (outcome.Returned.Count > 0)
         {
             result["returned"] = ToNode(outcome.Returned);

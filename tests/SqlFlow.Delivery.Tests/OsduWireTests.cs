@@ -679,3 +679,80 @@ public class CaptureConnectionTests
         Assert.Contains(missing, ex.Message, StringComparison.Ordinal);
     }
 }
+
+/// <summary>
+/// The correlation id that ties a delivery attempt to OSDU's own logs. Storage answered a live request with the
+/// correlation-id it was sent; the OpenAPI descriptions of the services this system calls do not declare the header.
+/// </summary>
+public class CorrelationIdTests
+{
+    private static (OsduHttpClient Client, HttpRuntime Runtime) Client(FakeHttpHandler handler)
+    {
+        var runtime = new HttpRuntime(
+            new FlowReliability { Retry = new FlowRetry { Attempts = 1, BaseDelayMs = 1, MaxDelayMs = 1 } },
+            new SecretResolver([new EnvSecretProvider()]), new TestClock(), handler, allowLoopback: true);
+        var client = new OsduHttpClient(
+            runtime, "http://localhost/osdu", new TargetAuth { Type = TargetAuthType.None },
+            new Dictionary<string, string> { ["data-partition-id"] = "dev" });
+        return (client, runtime);
+    }
+
+    [Fact]
+    public async Task Every_request_of_a_unit_of_work_carries_its_correlation_id_and_none_outside_one()
+    {
+        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/records/r1", HttpStatusCode.OK, "{}");
+        var (client, runtime) = Client(handler);
+        using (runtime)
+        {
+            await client.SendJsonAsync(HttpMethod.Get, client.Url("/records/{id}", "r1"), null, null, CancellationToken.None);
+            string id;
+            using (var scope = OsduCorrelation.Begin())
+            {
+                id = scope.Id;
+                await client.SendJsonAsync(HttpMethod.Get, client.Url("/records/{id}", "r1"), null, null, CancellationToken.None);
+                await client.SendJsonAsync(HttpMethod.Get, client.Url("/records/{id}", "r1"), null, null, CancellationToken.None);
+            }
+
+            Assert.False(handler.Calls[0].Headers.ContainsKey(OsduCorrelation.HeaderName));
+            Assert.Equal(id, handler.Calls[1].Headers[OsduCorrelation.HeaderName]);
+            Assert.Equal(id, handler.Calls[2].Headers[OsduCorrelation.HeaderName]);
+            Assert.Null(OsduCorrelation.Current);
+        }
+    }
+
+    [Fact]
+    public async Task A_signed_upload_url_is_not_sent_the_correlation_id()
+    {
+        // The landing zone is blob storage, not an OSDU service: the URL carries its own authorisation and nothing else.
+        var handler = new FakeHttpHandler().On(HttpMethod.Put, "/landing/file.las", HttpStatusCode.Created, null);
+        var (client, runtime) = Client(handler);
+        using (runtime)
+        using (OsduCorrelation.Begin())
+        {
+            await client.SendToSignedUrlAsync(
+                HttpMethod.Put, new Uri("http://localhost/landing/file.las?sig=abc"), () => new MemoryStream([1, 2, 3]),
+                "application/octet-stream", 3, new Dictionary<string, string>(), CancellationToken.None);
+        }
+
+        Assert.False(Assert.Single(handler.Calls).Headers.ContainsKey(OsduCorrelation.HeaderName));
+    }
+
+    [Fact]
+    public async Task A_refused_request_names_the_correlation_id_the_service_answered_with()
+    {
+        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/records/r1", _ =>
+        {
+            var response = FakeHttpHandler.Json(HttpStatusCode.BadRequest, """{"code":400,"reason":"Bad Request","message":"refused"}""");
+            response.Headers.TryAddWithoutValidation(OsduCorrelation.HeaderName, "osdu-assigned-7");
+            return response;
+        });
+        var (client, runtime) = Client(handler);
+        using (runtime)
+        {
+            var ex = await Assert.ThrowsAsync<HttpStatusException>(
+                () => client.SendJsonAsync(HttpMethod.Get, client.Url("/records/{id}", "r1"), null, null, CancellationToken.None));
+
+            Assert.Contains("(correlation-id osdu-assigned-7)", ex.Message, StringComparison.Ordinal);
+        }
+    }
+}
