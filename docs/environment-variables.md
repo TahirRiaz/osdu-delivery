@@ -27,6 +27,7 @@ only convention that survives a mixed estate. The `SQLFLOW_` prefix is kept from
 | Variable | Read by | Meaning |
 | --- | --- | --- |
 | `SQLFLOW_CATALOG_DB` | control plane, `sqlflow worker`, `sqlflow db`, `sqlflow runs cancel` | The catalog connection string. The control plane also accepts it as `ControlPlane:Catalog:ConnectionReference`, which may itself be a `${keyvault:...}` reference. |
+| `SQLFLOW_NODE_NAME` | control plane (in-process worker), `sqlflow worker` | The name a compute node registers, claims runs and recovers under, when `ControlPlane:Worker:NodeName` or `--node-name` does not give one; the machine name when unset. Two node processes on one host need different names, or the startup recovery of either requeues the runs the other is executing. |
 | `SQLFLOW_URL` | the remote CLI verbs | The control plane base URL (`https://controlplane.example.com`); `--url` overrides it. |
 | `SQLFLOW_TOKEN` | the remote CLI verbs | A personal access token or session token; `--token` overrides it, and `sqlflow login` stores one in the credentials file instead. |
 | `SQLFLOW_CREDENTIALS_FILE` | `sqlflow login`, `logout`, and the remote verbs | Where the CLI keeps stored credentials (default: under the user profile). |

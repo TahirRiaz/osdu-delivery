@@ -3,7 +3,7 @@
 ## Synopsis
 
 ```bash
-sqlflow worker [--db <conn-ref>] [--poll-seconds N] [--pool a,b] [--drain-seconds N] [-v]
+sqlflow worker [--db <conn-ref>] [--poll-seconds N] [--pool a,b] [--node-name NAME] [--drain-seconds N] [-v]
 ```
 
 ## Description
@@ -18,7 +18,7 @@ The command runs until it receives a stop signal (SIGINT from Ctrl+C, or the SIG
 
 ## Arguments
 
-The worker verb takes no positional argument. `worker` is in the parser's no-file verb list (src/SqlFlow.Cli/Program.cs), so a bare `sqlflow worker` starts the drain loop with the default `--db` reference; it never prints usage or exits 1 for a missing file. `--db`, `--pool`, `--poll-seconds` and `--drain-seconds` are registered value-taking options (`ValueTakingOptions` in the same file), so their values are consumed as option values, never as positionals, and can appear anywhere on the command line.
+The worker verb takes no positional argument. `worker` is in the parser's no-file verb list (src/SqlFlow.Cli/Program.cs), so a bare `sqlflow worker` starts the drain loop with the default `--db` reference; it never prints usage or exits 1 for a missing file. `--db`, `--pool`, `--node-name`, `--poll-seconds` and `--drain-seconds` are registered value-taking options (`ValueTakingOptions` in the same file), so their values are consumed as option values, never as positionals, and can appear anywhere on the command line.
 
 ## Options
 
@@ -27,6 +27,7 @@ The worker verb takes no positional argument. `worker` is in the parser's no-fil
 | `--db <conn-ref>` | connection reference | `${env:SQLFLOW_CATALOG_DB}` | The catalog connection as a secret reference (`${env:NAME}`, `${keyvault:vault/secret}`), resolved through the secret resolver. A resolution failure prints `ERROR  <redacted message>` to stderr and exits 1. |
 | `--poll-seconds N` | integer | `5` | How long the loop waits after finding the queue empty, with a floor of 1: `0` is raised to 1, and a negative or non-numeric value falls back to 5. |
 | `--pool a,b` | comma-separated list | empty | The pools this node serves. The node always drains untargeted runs; with `--pool` it additionally drains runs routed to any of the listed pools. Entries are trimmed and empty entries are dropped. The first entry is the pool the node's heartbeat is attributed to in the fleet view. |
+| `--node-name NAME` | string | `${env:SQLFLOW_NODE_NAME}`, else the machine name | The name this node registers in the fleet, stamps on the runs it claims and recovers its orphans under. Give each node process on one host a name of its own (a worker beside a control plane that hosts its in-process worker, or two workers on one VM): nodes sharing a name share a fleet row, and the startup recovery of either requeues the runs the other is executing. Trimmed; at most 256 characters and no control characters, or the process prints `ERROR` and exits 1. |
 | `--drain-seconds N` | integer | `540` | How long a stopping node keeps executing the runs it already claimed before severing them (`RunWorker.DefaultDrainTimeout`, nine minutes), with a floor of 0. Keep it BELOW the orchestrator's termination grace period, or the platform's kill lands mid-drain and severs the work anyway. `0` severs at once; a negative or non-numeric value falls back to 540. |
 | `-v`, `--verbose` | flag | off | Sets the console minimum log level to Debug (default Information). Every log line goes to stderr; stdout carries only the banner and the stop line. |
 
@@ -35,7 +36,7 @@ The worker verb takes no positional argument. `worker` is in the parser's no-fil
 ### Startup
 
 1. The nearest git-ignored `.sqlflow/env` file (searched from the current directory upward) is applied to the process environment, the process environment winning. The `--db` reference is then resolved; on failure the process exits 1 before anything else happens.
-2. The node's identity is its machine name (`Environment.MachineName`). It is stamped onto every run this node claims (`ClaimedByNode`) so work is attributable and recoverable, and it keys the node's row in the fleet registry (`[catalog].[Node]`).
+2. The node's identity is `--node-name`, else `SQLFLOW_NODE_NAME`, else its machine name (`NodeIdentity.Resolve`, src/SqlFlow.Node/NodeIdentity.cs). It is stamped onto every run this node claims (`ClaimedByNode`) so work is attributable and recoverable, and it keys the node's row in the fleet registry (`[catalog].[Node]`). The startup recovery in step 4 matches runs by this name, so two node processes on one host must not share it: a worker beside a control plane that hosts its in-process worker (`ControlPlane:Worker:NodeName`), or two workers on one VM, would each requeue the runs the other is executing.
 3. The worker prints its banner and starts the drain loop:
 
    ```text

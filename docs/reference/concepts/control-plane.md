@@ -141,6 +141,7 @@ All settings bind from the `ControlPlane` configuration section (environment var
 | `Worker:Pools` | `[]` | Empty claims only untargeted runs |
 | `Worker:MaxConcurrentRuns` | `4` | How many claimed runs the in-process node executes at once; a saturated node stops claiming. At least 1 |
 | `Worker:PollMilliseconds` | `2000` | The drain loop's poll fallback (a triggered run starts at once via the in-process nudge). At least 250 |
+| `Worker:NodeName` | empty | The name the in-process node registers, claims and recovers under; empty takes `SQLFLOW_NODE_NAME`, else the machine name. Set it when a standalone `sqlflow worker` runs on the same host, or either one's startup recovery requeues the other's runs. At most 256 characters |
 | `Reaper:PollSeconds` / `Reaper:StaleAfterSeconds` / `Reaper:NodeRetentionHours` | `30` / `180` / `24` | See the orphan-run reaper above |
 | `ManagedSync:Enabled` | `true` | `false` opts this instance out of the managed sync loop entirely (a local dev instance sharing a production catalog must never steal claims) |
 | `ManagedSync:PollSeconds` | `30` | Repo-source scan cadence |

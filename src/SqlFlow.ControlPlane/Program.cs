@@ -77,6 +77,9 @@ builder.Services.AddSingleton<IRunDispatcher>(sp => sp.GetRequiredService<InProc
 // The shared node runtime (also run standalone by `sqlflow worker`); hosted here as a background service that
 // idles on the in-process nudge. API-only replicas (Worker:Enabled=false) skip hosting it so the HTTP tier can
 // scale on request load behind an ingress while compute scales on queue depth as separate worker processes.
+// The name the node registers, claims and recovers under (Worker:NodeName, else SQLFLOW_NODE_NAME, else the machine
+// name), so a standalone worker on the same host can be told apart from this one.
+builder.Services.AddSingleton(NodeIdentity.Resolve(options.Worker.NodeName));
 builder.Services.AddSingleton<RunWorker>();
 if (options.Worker.Enabled)
 {

@@ -323,6 +323,20 @@ internal static class Program
         var pools = (GetOption(args, "--pool") ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
+        // The name this node registers, claims and recovers under: --node-name, else SQLFLOW_NODE_NAME, else the
+        // machine name. A second node on the same host (the control plane's in-process worker, another worker) needs
+        // a name of its own, or either one's startup recovery requeues the runs the other is executing.
+        NodeIdentity identity;
+        try
+        {
+            identity = NodeIdentity.Resolve(GetOption(args, "--node-name"));
+        }
+        catch (ArgumentException ex)
+        {
+            Console.Error.WriteLine($"ERROR  {ex.Message}");
+            return 1;
+        }
+
         // A dedicated host for the node: the shared engine (so a worker run is byte-for-byte a CLI run), a scoped
         // catalog context per claim, and the shared RunWorker drain loop. The DocumentExecutor gets the stderr
         // warning sink exactly as the CLI's own runs do (a later registration wins over the engine's sink-less one).
@@ -345,6 +359,7 @@ internal static class Program
         services.AddDeliveryLedger(_ => () => CatalogDatabase.Create(catalogConnection));
         services.AddSingleton(TimeProvider.System);
         services.AddScoped(_ => CatalogDatabase.Create(catalogConnection));
+        services.AddSingleton(identity);
         services.AddSingleton<RunWorker>();
         await using var workerProvider = services.BuildServiceProvider();
 
@@ -900,7 +915,7 @@ internal static class Program
                                                    projects the estate and run.json artifacts under [path] into it,
                                                    attributed to --repo (default: the folder name). 'status' lists
                                                    applied vs pending migrations. --db defaults to ${env:SQLFLOW_CATALOG_DB}.
-              sqlflow worker   [--db <conn-ref>] [--poll-seconds N] [--pool a,b] [--drain-seconds N]
+              sqlflow worker   [--db <conn-ref>] [--poll-seconds N] [--pool a,b] [--node-name NAME] [--drain-seconds N]
                                                    Run as a self-hosted compute node: drain the catalog's durable run
                                                    queue on THIS host, resolving every credential from this node's own
                                                    environment and recording each outcome. Runs until Ctrl+C or SIGTERM,
@@ -989,7 +1004,7 @@ internal static class Program
         "--log-level", "--db", "--repo", "--repo-url",
         // The control-plane verbs (health/login/logout/trigger/runs/groups and the estate family).
         "--url", "--token", "--username", "--token-name", "--expires-days", "--scopes",
-        "--scope", "--batch", "--pool", "--poll-seconds", "--drain-seconds", "--commit", "--flow", "--status", "--kind", "--group",
+        "--scope", "--batch", "--pool", "--node-name", "--poll-seconds", "--drain-seconds", "--commit", "--flow", "--status", "--kind", "--group",
         "--page", "--page-size", "--operation", "--set", "--drop", "--submission", "--record", "--redeliver", "--publish-to",
         "--kind", "--from-dir", "--spec", "--endpoint",
         "--cron", "--interval", "--timezone", "--max-concurrency",

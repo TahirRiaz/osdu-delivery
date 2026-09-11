@@ -63,7 +63,7 @@ public sealed partial class RunWorker
     private readonly DocumentExecutor _executor;
     private readonly TimeProvider _clock;
     private readonly ILogger<RunWorker> _logger;
-    private readonly string _node = Environment.MachineName;
+    private readonly string _node;
     private readonly string? _version = typeof(RunWorker).Assembly.GetName().Version?.ToString();
     private readonly GitMaterializer _materializer = new();
 
@@ -96,7 +96,11 @@ public sealed partial class RunWorker
     // different store calls.
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _runningTasks = new();
 
-    public RunWorker(IServiceProvider services, DocumentExecutor executor, TimeProvider clock, ILogger<RunWorker> logger)
+    /// <summary>
+    /// A node draining the run queue under <paramref name="identity"/>, or, when none is given, under the name
+    /// <see cref="NodeIdentity.Resolve"/> finds (<c>SQLFLOW_NODE_NAME</c>, else the machine name).
+    /// </summary>
+    public RunWorker(IServiceProvider services, DocumentExecutor executor, TimeProvider clock, ILogger<RunWorker> logger, NodeIdentity? identity = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(executor);
@@ -106,10 +110,11 @@ public sealed partial class RunWorker
         _executor = executor;
         _clock = clock;
         _logger = logger;
+        _node = (identity ?? NodeIdentity.Resolve(null)).Name;
     }
 
-    /// <summary>This node's identity (its machine name), stamped on a claimed run so its work is attributable and
-    /// recoverable.</summary>
+    /// <summary>This node's identity (its configured name, else its machine name), stamped on a claimed run so its
+    /// work is attributable and recoverable.</summary>
     public string NodeName => _node;
 
     /// <summary>

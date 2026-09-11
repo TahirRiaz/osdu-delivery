@@ -112,6 +112,15 @@ public sealed class ControlPlaneOptions
                 "ControlPlane:Worker:PollMilliseconds must be at least 250, so a misconfigured value cannot spin the drain loop against the catalog.");
         }
 
+        try
+        {
+            _ = SqlFlow.Node.NodeIdentity.Resolve(Worker.NodeName);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidOperationException("ControlPlane:Worker:NodeName (or SQLFLOW_NODE_NAME) is not a usable node name: " + ex.Message, ex);
+        }
+
         CacheRollout.Validate();
 
         if (Reaper.PollSeconds < 1)
@@ -376,6 +385,12 @@ public sealed class WorkerOptions
     /// nudge; this only bounds how long schedule- and other-node-enqueued runs (and recovery) wait to be picked
     /// up. Minimum 250, so a misconfigured value cannot spin-loop the worker against the catalog.</summary>
     public int PollMilliseconds { get; set; } = 2000;
+
+    /// <summary>The name the in-process node registers, claims and recovers under. Empty (the default) takes
+    /// <c>SQLFLOW_NODE_NAME</c>, else the machine name. Give it a name of its own when a standalone
+    /// <c>sqlflow worker</c> runs on the same host: two nodes sharing a name share a fleet row, and the startup recovery
+    /// of either requeues the runs the other is executing. At most 256 characters.</summary>
+    public string? NodeName { get; set; }
 }
 
 /// <summary>The orphan-run reaper: the control plane sweeps for runs left <c>running</c> by a node that has stopped
