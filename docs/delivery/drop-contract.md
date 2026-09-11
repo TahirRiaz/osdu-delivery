@@ -120,6 +120,21 @@ Slicing by rows keeps every curve in every chunk and is what the ceilings are us
 more curves than the column ceiling cannot be fixed by row slicing at all: those curves have to be split across
 chunks, which the session commit aggregates back into one version.
 
+The chunks of one record have to say which rows they hold, because the session aggregates them by row label (the
+index a dataframe reader such as pandas gives each file): a chunk whose labels another chunk already used replaces
+those rows instead of adding its own, and the commit still succeeds. Seen live on an M26 service, two chunks of five
+and four rows that both numbered their rows from zero committed a log of five rows. So:
+
+- chunks that split a log's rows carry a row index that continues from one chunk to the next, either stored as an
+  index column (an explicit integer or depth index written with `to_parquet(index=True)`) or as a pandas `RangeIndex`
+  whose start is where the previous chunk ended. A file written without pandas metadata numbers its rows from zero,
+  which only a record with a single chunk can afford;
+- chunks that split a log's curves carry the same index for the same rows.
+
+The delivery side reads every chunk's labels from its footer before a session opens and holds the record when two
+chunks give the same labels to different rows, naming both files. After the commit it reads the log's description
+back and holds the record when the log lacks rows or curves the chunks carried.
+
 ## The payload hash
 
 Hash the logical grid, never the parquet bytes ([design.md](design.md) section 6.4). Computed inside the

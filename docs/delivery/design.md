@@ -837,8 +837,12 @@ independent of anything in this design.
 
 Fix by moving the split before the pivot: group on wellbore plus depth bucket so each
 window pivots independently. Peak memory becomes one window rather than one wellbore, and
-a large wellbore parallelises instead of pinning one executor. Chunks already carry an
-index and the session sends them in order, so the protocol accommodates this unchanged.
+a large wellbore parallelises instead of pinning one executor. The session aggregates
+chunks by row label, so each window's chunk has to carry an index that continues from the
+previous window's (a window that restarts at zero replaces rows instead of adding them, and
+the commit still succeeds). The delivery side checks the labels before a session opens and
+the committed log after it ([protocols.md](protocols.md)), so such a window holds the record
+instead of losing rows.
 
 ### 13.3 Budget it explicitly
 

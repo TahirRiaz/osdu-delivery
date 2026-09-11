@@ -38,6 +38,69 @@ public class AzureBlobLocationTests
     }
 }
 
+/// <summary>
+/// The row labels a dataframe reader gives a parquet file, read from its footer. The wellbore DDMS aggregates a
+/// session's chunks by these labels, so they decide whether two chunks add rows or replace each other's.
+/// </summary>
+public class ParquetRowLabelTests
+{
+    private static readonly (string, Type)[] Curves = [("MD", typeof(double)), ("GR", typeof(double))];
+
+    private static async Task<ParquetShape> ShapeAsync(IReadOnlyList<(string, Type)> columns, int rows, string? pandas, long firstLabel = 0)
+    {
+        var data = Enumerable.Range(0, rows)
+            .Select(i => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
+            {
+                ["MD"] = 1000.0 + i,
+                ["GR"] = 40.0 + i,
+                ["__index_level_0__"] = firstLabel + i,
+            })
+            .ToList();
+        using var buffer = new MemoryStream();
+        await ParquetScopeReader.WriteAsync(buffer, columns, data, pandas is null ? null : new Dictionary<string, string> { [ParquetScopeReader.PandasMetadataKey] = pandas });
+        buffer.Position = 0;
+        return await ParquetScopeReader.ReadShapeAsync(buffer);
+    }
+
+    [Fact]
+    public async Task A_file_without_pandas_metadata_numbers_its_rows_from_zero()
+    {
+        var shape = await ShapeAsync(Curves, 4, pandas: null);
+
+        Assert.Equal(new ParquetRowIndex(0, 3, ParquetRowIndexSource.Implicit), shape.RowIndex);
+        Assert.Equal(["MD", "GR"], shape.ColumnNames);
+    }
+
+    [Fact]
+    public async Task A_range_index_starts_where_its_metadata_says()
+    {
+        // What pyarrow writes for a frame whose RangeIndex starts at 5 (to_parquet with index=None).
+        var shape = await ShapeAsync(Curves, 4, """{"index_columns": [{"kind": "range", "name": null, "start": 5, "stop": 9, "step": 1}]}""");
+
+        Assert.Equal(new ParquetRowIndex(5, 8, ParquetRowIndexSource.Range), shape.RowIndex);
+    }
+
+    [Fact]
+    public async Task A_stored_index_column_gives_its_lowest_and_highest_label_and_is_not_a_curve()
+    {
+        // What pyarrow writes for a frame with an explicit integer index (to_parquet with index=True).
+        var columns = new (string, Type)[] { ("MD", typeof(double)), ("GR", typeof(double)), ("__index_level_0__", typeof(long)) };
+        var shape = await ShapeAsync(columns, 4, """{"index_columns": ["__index_level_0__"]}""", firstLabel: 5);
+
+        Assert.Equal(new ParquetRowIndex(5, 8, ParquetRowIndexSource.Column), shape.RowIndex);
+        Assert.Equal(["MD", "GR"], shape.ColumnNames);
+        Assert.Equal(3, shape.Columns);
+    }
+
+    [Fact]
+    public async Task Labels_the_footer_cannot_tell_are_left_unknown()
+    {
+        Assert.Null((await ShapeAsync(Curves, 4, """{"index_columns": ["level_0", "level_1"]}""")).RowIndex);
+        Assert.Null((await ShapeAsync(Curves, 4, """{"index_columns": ["__index_level_0__"]}""")).RowIndex);
+        Assert.Null((await ShapeAsync(Curves, 4, "{ this is not json")).RowIndex);
+    }
+}
+
 public class ParquetAndLocalStoreTests
 {
     [Fact]

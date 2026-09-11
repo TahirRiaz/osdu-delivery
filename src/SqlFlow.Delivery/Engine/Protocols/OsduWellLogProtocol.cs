@@ -60,10 +60,13 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         var metadataDelivered = false;
 
         IReadOnlyList<Drops.PayloadChunk> chunks = [];
+        IReadOnlyList<ParquetShape>? shapes = null;
+        var session = false;
         if (work.DeliverPayload)
         {
-            // Check the payload against the ceilings before anything is sent, so an oversized chunk holds the
-            // record instead of failing mid-session after the metadata write (design.md section 14.3).
+            // Check the payload against the ceilings, and a session's chunks against each other, before anything is
+            // sent, so a chunk the target cannot take whole holds the record instead of failing or losing rows
+            // mid-session after the metadata write (design.md section 14.3).
             var payload = work.Payload ?? throw new RecordHeldException("the record needs a payload but none is attached");
             chunks = await payload.ListChunksAsync(ct).ConfigureAwait(false);
             if (chunks.Count == 0)
@@ -71,7 +74,8 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
                 throw new RecordHeldException("no payload chunk files were found for the record");
             }
 
-            await PreflightAsync(payload, chunks, ct).ConfigureAwait(false);
+            session = chunks.Count > 1 || _options.SessionThresholdChunks < 1;
+            shapes = await PreflightAsync(payload, chunks, session, ct).ConfigureAwait(false);
         }
 
         if (work.DeliverMetadata)
@@ -122,7 +126,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             // POST /ddms/v3/welllogs/{record_id}/data). Posting several chunks to it in turn would leave the record
             // holding the last one and report every one of them as delivered. Aggregating chunks is what a session
             // is for, so anything past the first uses one.
-            if (chunks.Count == 1 && _options.SessionThresholdChunks >= 1)
+            if (!session)
             {
                 var chunk = chunks[0];
                 var url = _client.Url(_options.DataPath ?? Ddms(DefaultDataPath), work.TargetId);
@@ -138,6 +142,14 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             if (sessionId is not null)
             {
                 returned["sessionId"] = sessionId;
+
+                // The labels read before the session opened keep its chunks from colliding where the footers can tell
+                // them; the committed log is read back as well, because a collision the footers cannot show loses rows
+                // just as silently.
+                if (shapes is not null && await CommittedRowsAsync(work.TargetId, sessionId, shapes, ct).ConfigureAwait(false) is { } rows)
+                {
+                    returned["rows"] = rows.ToString(CultureInfo.InvariantCulture);
+                }
             }
 
             // Writing the bulk creates a new version of the record ("It creates a new version", openapi wellbore_ddms,
@@ -276,16 +288,21 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     }
 
     /// <summary>
-    /// Two ceilings bound a chunk, and both are checked before the first request. The estate's request body size is
-    /// declared as <c>reliability.maxRequestBodyBytes</c> and can be raised where it is configured. The wellbore
-    /// DDMS bulk shape (<see cref="WellboreDdmsBulkLimits"/>) cannot: it is the frame the service materialises, so
-    /// a chunk can be small enough to send and still be too large to accept. The shape is read from the parquet
-    /// footer, never from the chunk's contents, and only when the payload is parquet and a ceiling is in force.
+    /// What a payload is checked for before its first request. Two ceilings bound a chunk. The estate's request body
+    /// size is declared as <c>reliability.maxRequestBodyBytes</c> and can be raised where it is configured. The
+    /// wellbore DDMS bulk shape (<see cref="WellboreDdmsBulkLimits"/>) cannot: it is the frame the service
+    /// materialises, so a chunk can be small enough to send and still be too large to accept. A session's chunks are
+    /// also checked against each other, because the session aggregates them by row label and two chunks that give the
+    /// same labels to different rows lose rows while the commit still succeeds (<see cref="WellboreDdmsSessionChunks"/>).
+    /// Shapes are read from the parquet footers, never from the chunks' contents, when the payload is parquet and a
+    /// ceiling is in force or a session opens. They are returned so the committed log can be checked against them, and
+    /// are null when they were not read.
     /// </summary>
-    private async Task PreflightAsync(IPayloadSource payload, IReadOnlyList<Drops.PayloadChunk> chunks, CancellationToken ct)
+    private async Task<IReadOnlyList<ParquetShape>?> PreflightAsync(IPayloadSource payload, IReadOnlyList<Drops.PayloadChunk> chunks, bool session, CancellationToken ct)
     {
-        var checksShape = (_options.MaxChunkValues > 0 || _options.MaxChunkColumns > 0)
-            && _options.PayloadContentType.Contains("parquet", StringComparison.OrdinalIgnoreCase);
+        var parquet = _options.PayloadContentType.Contains("parquet", StringComparison.OrdinalIgnoreCase);
+        var readsShape = parquet && (session || _options.MaxChunkValues > 0 || _options.MaxChunkColumns > 0);
+        var measured = readsShape ? new List<WellboreDdmsSessionChunks.Chunk>(chunks.Count) : null;
 
         foreach (var chunk in chunks)
         {
@@ -295,7 +312,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
                     $"payload chunk {chunk.Index.ToString(CultureInfo.InvariantCulture)} is {chunk.Size.ToString(CultureInfo.InvariantCulture)} bytes, above the target's declared request body ceiling of {_requestBodyCeiling.ToString(CultureInfo.InvariantCulture)} bytes (reliability.maxRequestBodyBytes); re-chunk in prepare");
             }
 
-            if (!checksShape)
+            if (measured is null)
             {
                 continue;
             }
@@ -305,8 +322,87 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             {
                 throw new RecordHeldException(held);
             }
+
+            measured.Add(new WellboreDdmsSessionChunks.Chunk(chunk.Index, chunk.Path, shape));
         }
+
+        if (measured is null)
+        {
+            return null;
+        }
+
+        if (session && WellboreDdmsSessionChunks.Conflict(measured) is { } conflict)
+        {
+            throw new RecordHeldException(conflict);
+        }
+
+        return measured.Select(m => m.Shape).ToList();
     }
+
+    /// <summary>
+    /// Reads the log a session committed back (openapi wellbore_ddms, GET /ddms/v3/welllogs/{record_id}/data with
+    /// <c>describe=true</c>, which answers the number of rows and the column names) and holds the record when the log
+    /// lacks rows or curves its chunks carried. Returns the rows the log holds, or null when the target cannot describe
+    /// its bulk (a facade without the describe query, for instance): the delivery then stands unchecked, with a
+    /// warning, rather than failing a log that did land.
+    /// </summary>
+    private async Task<long?> CommittedRowsAsync(string targetId, string sessionId, IReadOnlyList<ParquetShape> shapes, CancellationToken ct)
+    {
+        var dataUrl = _client.Url(_options.DataPath ?? Ddms(DefaultDataPath), targetId);
+        var url = new Uri(dataUrl + (string.IsNullOrEmpty(dataUrl.Query) ? "?describe=true" : "&describe=true"));
+        long rows;
+        List<string>? columns = null;
+        try
+        {
+            var result = await _client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 400, 404, 405, 422, 501 }, ct).ConfigureAwait(false);
+            if ((int)result.Status is < 200 or >= 300 || result.Body.Length == 0)
+            {
+                LogUnchecked(targetId, sessionId, "HTTP " + ((int)result.Status).ToString(CultureInfo.InvariantCulture));
+                return null;
+            }
+
+            var described = OsduHttpClient.ParseJson(result, url);
+            if (described.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !described.TryGetProperty("numberOfRows", out var count)
+                || !count.TryGetInt64(out rows))
+            {
+                LogUnchecked(targetId, sessionId, "the description carries no numberOfRows");
+                return null;
+            }
+
+            if (described.TryGetProperty("columns", out var names) && names.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                columns = names.EnumerateArray()
+                    .Where(name => name.ValueKind == System.Text.Json.JsonValueKind.String)
+                    .Select(name => name.GetString()!)
+                    .ToList();
+            }
+        }
+        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
+        {
+            LogUnchecked(targetId, sessionId, HeaderRedaction.RedactMessage(ex.Message));
+            return null;
+        }
+
+        var shortfall = WellboreDdmsSessionChunks.Shortfall(
+            targetId,
+            sessionId,
+            WellboreDdmsSessionChunks.ExpectedRows(shapes),
+            columns is null ? [] : WellboreDdmsSessionChunks.ExpectedColumns(shapes),
+            rows,
+            (IReadOnlyCollection<string>?)columns ?? []);
+        if (shortfall is not null)
+        {
+            throw new RecordHeldException(shortfall);
+        }
+
+        return rows;
+    }
+
+    private void LogUnchecked(string targetId, string sessionId, string reason)
+        => _logger.LogWarning(
+            "The log session {SessionId} committed for {TargetId} could not be described, so its rows were not checked against its chunks: {Reason}",
+            sessionId, targetId, reason);
 
     /// <summary>Reads one chunk's shape from its footer. A chunk that does not parse holds the record: the service would refuse it too.</summary>
     private static async Task<ParquetShape> ShapeAsync(IPayloadSource payload, Drops.PayloadChunk chunk, CancellationToken ct)

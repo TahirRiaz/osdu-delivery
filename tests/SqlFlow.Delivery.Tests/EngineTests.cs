@@ -836,7 +836,8 @@ public class ProtocolTests
             Assert.Equal(3, outcome.ChunksSent);
             Assert.Equal("sess-9", outcome.Returned["sessionId"]);
             Assert.Equal(1700001, outcome.TargetVersion);
-            Assert.DoesNotContain(handler.Calls, c => c.Uri.AbsolutePath.EndsWith("/welllogs/dev:work-product-component--WellLog:abc/data", StringComparison.Ordinal));
+            // Nothing is posted to the bulk endpoint; the only request there is the read of the committed log's description.
+            Assert.DoesNotContain(handler.Calls, c => c.Method == HttpMethod.Post && c.Uri.AbsolutePath.EndsWith("/welllogs/dev:work-product-component--WellLog:abc/data", StringComparison.Ordinal));
             Assert.Equal(3, handler.Calls.Count(c => c.Uri.AbsolutePath.EndsWith("/sessions/sess-9/data", StringComparison.Ordinal)));
         }
     }
@@ -931,12 +932,140 @@ public class ProtocolTests
             var protocol = new OsduWellLogProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
             var outcome = await protocol.DeliverAsync(Work(false, true, 3));
             Assert.Equal(3, outcome.ChunksSent);
-            var sent = ok.Calls.Where(c => c.Uri.AbsolutePath.EndsWith("/data", StringComparison.Ordinal)).Select(c => c.Body).ToList();
+            var sent = ok.Calls.Where(c => c.Method == HttpMethod.Post && c.Uri.AbsolutePath.EndsWith("/data", StringComparison.Ordinal)).Select(c => c.Body).ToList();
             Assert.Equal(3, sent.Count);
             Assert.All(sent, body => Assert.StartsWith("PAR1", body, StringComparison.Ordinal));
             Assert.Equal(3, sent.Distinct(StringComparer.Ordinal).Count());
             Assert.Contains("commit", ok.Calls.Last(c => c.Method == HttpMethod.Patch).Body, StringComparison.Ordinal);
             Assert.Equal(HttpMethod.Get, ok.Calls.Last().Method);
+        }
+    }
+
+    /// <summary>A wellbore DDMS that takes one session, and describes the log it committed when given a description.</summary>
+    private static FakeHttpHandler SessionHandler(string sessionId, string? describe)
+    {
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/sessions", HttpStatusCode.OK, $$"""{"id":"{{sessionId}}"}""")
+            .On(HttpMethod.Post, $"/sessions/{sessionId}/data", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Patch, $"/sessions/{sessionId}", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Get, "/welllogs/dev:work-product-component--WellLog:abc", HttpStatusCode.OK, """{"id":"dev:work-product-component--WellLog:abc","version":1700001}""");
+        return describe is null ? handler : handler.On(HttpMethod.Get, "/data", HttpStatusCode.OK, describe);
+    }
+
+    [Fact]
+    public async Task Chunks_that_restart_their_row_numbers_hold_the_record_before_anything_is_sent()
+    {
+        // Seen live on an M26 service: chunks of five and four rows that both numbered their rows from zero committed a
+        // log of five rows, because a session aggregates its chunks by row label, and the commit reported nothing wrong.
+        var handler = new FakeHttpHandler();
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var held = await Assert.ThrowsAsync<RecordHeldException>(
+                () => protocol.DeliverAsync(Work(true, true, 2, source: new MemoryPayload(2, rowsPerChunk: 5, labels: ChunkLabels.Restarting))));
+
+            Assert.Contains(
+                "payload chunks 0 (chunk_0.parquet: no row index, so a reader numbers its rows 0 to 4) and 1 (chunk_1.parquet: no row index, so a reader numbers its rows 0 to 4)",
+                held.Message, StringComparison.Ordinal);
+            Assert.Contains("silently lose rows", held.Message, StringComparison.Ordinal);
+
+            // Held before the metadata write, so the log is never left with a payload that lost rows.
+            Assert.Empty(handler.Calls);
+        }
+    }
+
+    [Fact]
+    public async Task Chunks_whose_stored_index_overlaps_hold_the_record()
+    {
+        var handler = new FakeHttpHandler();
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var held = await Assert.ThrowsAsync<RecordHeldException>(
+                () => protocol.DeliverAsync(Work(false, true, 2, source: new MemoryPayload(2, rowsPerChunk: 3, labels: ChunkLabels.OverlappingColumn))));
+
+            Assert.Contains("(chunk_0.parquet: a stored index from 0 to 2) and 1 (chunk_1.parquet: a stored index from 2 to 4)", held.Message, StringComparison.Ordinal);
+            Assert.Empty(handler.Calls);
+        }
+    }
+
+    [Fact]
+    public async Task Chunks_that_split_a_logs_curves_share_one_index_and_go_into_one_session()
+    {
+        // A wellbore with more curves than the column ceiling splits its curves across chunks, each with the same rows.
+        var handler = SessionHandler("sess-s", """{"numberOfRows":4,"columns":["CURVE_0","CURVE_1","MD"]}""");
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var outcome = await protocol.DeliverAsync(Work(false, true, 2, source: new MemoryPayload(2, rowsPerChunk: 4, labels: ChunkLabels.CurvesSplit)));
+
+            Assert.Equal(2, outcome.ChunksSent);
+            Assert.Equal("4", outcome.Returned["rows"]);
+        }
+    }
+
+    [Fact]
+    public async Task A_committed_log_holding_fewer_rows_than_its_chunks_carried_holds_the_record_naming_both_counts()
+    {
+        // The footers cannot show every collision (labels repeated inside one chunk, a multi-level index), so what the
+        // log holds after the commit is read back.
+        var handler = SessionHandler("sess-f", """{"numberOfRows":5,"columns":["CURVE_1","MD"]}""");
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var held = await Assert.ThrowsAsync<RecordHeldException>(
+                () => protocol.DeliverAsync(Work(false, true, 3, source: new MemoryPayload(3, rowsPerChunk: 3))));
+
+            Assert.Contains(
+                "session sess-f for dev:work-product-component--WellLog:abc was committed, but the log holds 5 rows where its chunks carried 9",
+                held.Message, StringComparison.Ordinal);
+            Assert.Contains("release the record to send them again", held.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task A_committed_log_missing_a_curve_its_chunks_carried_holds_the_record()
+    {
+        var handler = SessionHandler("sess-m", """{"numberOfRows":4,"columns":["CURVE_0","MD"]}""");
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var held = await Assert.ThrowsAsync<RecordHeldException>(
+                () => protocol.DeliverAsync(Work(false, true, 2, source: new MemoryPayload(2, rowsPerChunk: 4, labels: ChunkLabels.CurvesSplit))));
+
+            Assert.Contains("the log lacks the curves CURVE_1 that its chunks carried", held.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task A_whole_committed_log_reports_its_rows_and_a_target_that_cannot_describe_it_leaves_the_delivery_unchecked()
+    {
+        var described = SessionHandler("sess-w", """{"numberOfRows":9,"columns":["CURVE_1","MD"]}""");
+        var (client, _, runtime) = Client(described);
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var outcome = await protocol.DeliverAsync(Work(false, true, 3, source: new MemoryPayload(3, rowsPerChunk: 3)));
+
+            Assert.Equal("9", outcome.Returned["rows"]);
+            Assert.Contains(described.Calls, c => c.Method == HttpMethod.Get && c.Uri.Query.Contains("describe=true", StringComparison.Ordinal));
+        }
+
+        // A facade without the describe query answers 404: the delivery stands, unchecked, rather than failing a log that landed.
+        var silent = SessionHandler("sess-u", describe: null);
+        var (client2, _, runtime2) = Client(silent);
+        using (runtime2)
+        {
+            var protocol = new OsduWellLogProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var outcome = await protocol.DeliverAsync(Work(false, true, 3, source: new MemoryPayload(3, rowsPerChunk: 3)));
+
+            Assert.Equal(3, outcome.ChunksSent);
+            Assert.False(outcome.Returned.ContainsKey("rows"));
         }
     }
 
@@ -1209,11 +1338,28 @@ public class ProtocolTests
             => Task.FromResult<Stream>(new MemoryStream(System.Text.Encoding.UTF8.GetBytes("chunk-0")));
     }
 
+    /// <summary>How a test chunk labels its rows, as a dataframe writer would.</summary>
+    private enum ChunkLabels
+    {
+        /// <summary>A pandas RangeIndex that continues from the previous chunk: what a correct prepare writes.</summary>
+        Continuing,
+
+        /// <summary>No pandas metadata, so every chunk numbers its rows from zero.</summary>
+        Restarting,
+
+        /// <summary>A stored index column whose labels overlap the previous chunk's.</summary>
+        OverlappingColumn,
+
+        /// <summary>The same RangeIndex in every chunk, with one curve each: a log whose curves were split.</summary>
+        CurvesSplit,
+    }
+
     /// <summary>
     /// Real parquet chunks, because the protocol reads each chunk's footer to check it against the wellbore DDMS
-    /// bulk ceilings before sending it. Each chunk carries one row per chunk index so the requests stay distinct.
+    /// bulk ceilings, and a session's chunks against each other, before sending them. Each chunk carries values from
+    /// its own chunk index so the requests stay distinct.
     /// </summary>
-    private sealed class MemoryPayload(int chunks, int columns = 2, int rowsPerChunk = 1) : IPayloadSource
+    private sealed class MemoryPayload(int chunks, int columns = 2, int rowsPerChunk = 1, ChunkLabels labels = ChunkLabels.Continuing) : IPayloadSource
     {
         public Task<IReadOnlyList<Drops.PayloadChunk>> ListChunksAsync(CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<Drops.PayloadChunk>>(
@@ -1224,28 +1370,58 @@ public class ProtocolTests
 
         private byte[] Bytes(int index)
         {
+            var culture = System.Globalization.CultureInfo.InvariantCulture;
             var names = new List<(string Name, Type ClrType)> { ("MD", typeof(double)) };
-            for (var c = 1; c < columns; c++)
+            if (labels == ChunkLabels.CurvesSplit)
             {
-                names.Add(("CURVE_" + c.ToString(System.Globalization.CultureInfo.InvariantCulture), typeof(double)));
+                names.Add(("CURVE_" + index.ToString(culture), typeof(double)));
+            }
+            else
+            {
+                for (var c = 1; c < columns; c++)
+                {
+                    names.Add(("CURVE_" + c.ToString(culture), typeof(double)));
+                }
             }
 
+            var stored = labels == ChunkLabels.OverlappingColumn;
             var rows = new List<IReadOnlyDictionary<string, object?>>(rowsPerChunk);
             for (var r = 0; r < rowsPerChunk; r++)
             {
                 var row = new Dictionary<string, object?>(StringComparer.Ordinal);
                 foreach (var (name, _) in names)
                 {
-                    row[name] = (double)((index * rowsPerChunk) + r);
+                    row[name] = labels == ChunkLabels.CurvesSplit ? (double)r : (double)((index * rowsPerChunk) + r);
+                }
+
+                if (stored)
+                {
+                    // Each chunk starts one label before the previous chunk ended.
+                    row["__index_level_0__"] = (long)((index * Math.Max(rowsPerChunk - 1, 0)) + r);
                 }
 
                 rows.Add(row);
             }
 
+            if (stored)
+            {
+                names.Add(("__index_level_0__", typeof(long)));
+            }
+
+            var metadata = labels switch
+            {
+                ChunkLabels.Continuing => Pandas($$"""{"index_columns": [{"kind": "range", "name": null, "start": {{(index * rowsPerChunk).ToString(culture)}}, "stop": {{((index + 1) * rowsPerChunk).ToString(culture)}}, "step": 1}]}"""),
+                ChunkLabels.CurvesSplit => Pandas($$"""{"index_columns": [{"kind": "range", "name": null, "start": 0, "stop": {{rowsPerChunk.ToString(culture)}}, "step": 1}]}"""),
+                ChunkLabels.OverlappingColumn => Pandas("""{"index_columns": ["__index_level_0__"]}"""),
+                _ => null,
+            };
+
             using var buffer = new MemoryStream();
-            SqlFlow.Delivery.Storage.ParquetScopeReader.WriteAsync(buffer, names, rows).GetAwaiter().GetResult();
+            SqlFlow.Delivery.Storage.ParquetScopeReader.WriteAsync(buffer, names, rows, metadata).GetAwaiter().GetResult();
             return buffer.ToArray();
         }
+
+        private static Dictionary<string, string> Pandas(string json) => new() { [SqlFlow.Delivery.Storage.ParquetScopeReader.PandasMetadataKey] = json };
     }
 }
 

@@ -101,6 +101,15 @@ a workflow run id. See [design.md](design.md) section 16.3.
   `POST {sessionPath}` with `{ mode: overwrite, fromVersion, timeToLive }`, one `POST {sessionDataPath}` per chunk
   in order, then `PATCH {sessionCommitPath}` with `{ state: commit }`, which is what aggregates the chunks into one
   new version. Any failure abandons the session (best effort) and surfaces the error. The session id is returned.
+- A session aggregates its chunks by row label, and a chunk whose labels another chunk already used replaces those
+  rows while the commit still succeeds (seen live on M26: chunks of five and four rows that both started at zero
+  committed a log of five rows). So before a session opens, every parquet chunk's labels are read from its footer
+  (a stored index column's statistics, a pandas `RangeIndex`, or the rows numbered from zero when the file carries no
+  pandas metadata), and two chunks that give the same labels to different rows hold the record, naming both files.
+  Chunks with exactly the same labels and different curves (a log whose curves were split) go together. After the
+  commit, `GET {dataPath}?describe=true` reads the log back: fewer rows or curves than the chunks carried holds the
+  record, naming both counts, and step `payload` returns `rows`. A target that cannot describe its bulk leaves the
+  delivery unchecked with a warning, and a JSON payload is not measured, because the payload itself is never parsed.
 - The commit is a PATCH and is never resent blind, so its outcome can be unclear: the connection went, a gateway
   answered 5xx after the service had acted, or an intermediary resent it and the copy met a session that is no
   longer open (409 or 412). The session's own state is read (`GET {sessionCommitPath}`) rather than guessed:
