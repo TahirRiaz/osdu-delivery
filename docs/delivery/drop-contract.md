@@ -56,16 +56,20 @@ When the drop has child scopes or payloads, the root scope must carry a `deliver
 
 ## The notification
 
-One HTTP call per run, after the manifest is written:
+One authenticated HTTP call per run, after the manifest is written, with a token that has the `operate` scope:
 
 ```http
-POST /submissions
+POST /api/v1/delivery/submissions
 Content-Type: application/json
 
-{ "submissionId": "7d5a2d4c-...", "flow": "recall-welllog", "drop": "abfss://lake@acct.dfs.core.windows.net/osdu-prepare/STAT_COMP", "parameters": { "logSource": "STAT_COMP" } }
+{ "flow": "recall-welllog", "drop": "abfss://lake@acct.dfs.core.windows.net/osdu-prepare/STAT_COMP", "parameters": { "logSource": "STAT_COMP" } }
 ```
 
-The service answers `202 Accepted` with `Location: /submissions/{id}`.
+The flow is named by `flow` (with `repoId` when the name exists in more than one repository) or by `pipelineId`;
+`force` and `pool` are optional. The submission id is the manifest's, read from the drop. The service answers
+`202 Accepted` with `{ "runId", "pipelineId", "flowName", "status" }` and `Location: /api/v1/runs/{runId}`. A scheduled
+flow needs no call: its runs read the flow's `source.location`. [preparing-a-drop.md](preparing-a-drop.md) is the
+practical guide for the preparing side.
 
 ## The delivery key
 

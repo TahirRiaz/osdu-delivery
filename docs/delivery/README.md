@@ -10,6 +10,7 @@ behind them.
 | [design.md](design.md) | The design: why the drop is a storage handoff, the four render inputs and the render context, identity, change detection, the ledger, the delivery protocols, the document model, the preflight gate, streaming, the retrieval kind (section 15), the streaming intake, work batches, returned values and fan-out (section 16). Section numbers are referenced from the code. |
 | [documents.md](documents.md) | The delivery flow, retrieval flow and mapping documents key by key. |
 | [drop-contract.md](drop-contract.md) | What the preparing side writes: the manifest, the parquet scopes, the payload chunks, the delivery key and the payload hash it must derive. |
+| [preparing-a-drop.md](preparing-a-drop.md) | The practical guide for the preparing side: what a drop folder must contain, the manifest field by field, well log files (one file per log, unique and continuing row labels when split), document files, how to hand a drop over, incremental prepare, what each mistake leads to, and a checklist. |
 | [ledger.md](ledger.md) | The ledger tables in the catalog's `delivery` schema, the record lifecycle, leasing, the indexes behind every listing, retention. |
 | [protocols.md](protocols.md) | The named delivery protocols (`osduRecord`, `osduWellLog`, `osduFile`, `osduManifest`), their steps and returned values, and how to add one. |
 | [operations.md](operations.md) | Running it: the API and the GUI surfaces, the CLI verbs, first deployment, the runbook. |
