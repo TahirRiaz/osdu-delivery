@@ -865,6 +865,12 @@ public interface ILedger
     Task<DateTime?> NextDueAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
+    /// When the earliest lease on a record being delivered runs out, or null when no record is leased. Expired leases
+    /// are included, so a lease a stopped worker left behind stays visible until it is reclaimed.
+    /// </summary>
+    Task<DateTime?> NextLeaseExpiryAsync(Guid flowId, Guid? submissionId, CancellationToken ct = default);
+
+    /// <summary>
     /// The completed or failed submissions of the flow, other than <paramref name="except"/>, that still hold records due
     /// for delivery with their rendered documents: records released back to pending after their run was over. At most
     /// <paramref name="max"/>. It reads the flow's pending records, which a run leaves few of once its own are sent.

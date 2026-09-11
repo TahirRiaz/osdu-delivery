@@ -701,6 +701,16 @@ public sealed class CatalogLedger : ILedger
             .ConfigureAwait(false);
     }
 
+    public async Task<DateTime?> NextLeaseExpiryAsync(Guid flowId, Guid? submissionId, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var delivering = StatusText.Of(RecordStatus.Delivering);
+        return await db.DeliveryRecords
+            .Where(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == delivering && r.LeaseExpiresUtc != null)
+            .MinAsync(r => r.LeaseExpiresUtc, ct)
+            .ConfigureAwait(false);
+    }
+
     public async Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, Guid? except, DateTime nowUtc, int max, CancellationToken ct = default)
     {
         await using var db = Open();

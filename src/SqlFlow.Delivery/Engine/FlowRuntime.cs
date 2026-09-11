@@ -68,6 +68,9 @@ public sealed class FlowRuntime : IDisposable
 
     private static readonly TimeSpan LeaseSettle = TimeSpan.FromSeconds(30);
 
+    /// <summary>How long past a stopped run's lease a run waits before reclaiming it, so the lease has run out by then.</summary>
+    private static readonly TimeSpan LeaseExpiryMargin = TimeSpan.FromSeconds(1);
+
     /// <summary>Settled submissions whose released records one deliver run sends after its own.</summary>
     private const int SettledSubmissionsPerRun = 10;
 
@@ -215,6 +218,7 @@ public sealed class FlowRuntime : IDisposable
                     // in backoff is not waited for, because a run that planned nothing must not sit out a retry's wait.
                     var worker = await WorkerAsync(ct).ConfigureAwait(false);
                     var sent = await PassUntilNothingClaimableAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
+                    sent = sent.Add(await SendOrphanedLeasesAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false));
                     var leftovers = await SendSettledLeftoversAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
                     if (sent.Processed == 0 && leftovers.Processed == 0)
                     {
@@ -242,6 +246,63 @@ public sealed class FlowRuntime : IDisposable
                 throw;
             }
         }, ct);
+
+    /// <summary>
+    /// Sends what a stopped run left leased in a submission. The platform runs one execution of a flow at a time, so a
+    /// record still leased when a run of that flow starts belongs to a worker that is gone: a control plane or node
+    /// stopped mid-delivery, whose run was recovered and requeued. Seen live, the recovered run found its submission
+    /// already planned, passed over it while the stopped worker's lease still held the record, and finished with the
+    /// record left delivering. Each such lease is waited out, reclaimed (the ledger notes why) and the record sent, its
+    /// completed steps resumed. A lease running out further ahead than the flow's own lease is not a stopped run's, so it
+    /// is left alone with a warning, and records in backoff are not waited for.
+    /// </summary>
+    private async Task<WorkerSummary> SendOrphanedLeasesAsync(DeliveryWorker worker, Guid submissionId, CancellationToken ct)
+    {
+        var ledger = RequireLedger();
+        var longest = TimeSpan.FromSeconds(Flow.Reliability.LeaseSeconds) + LeaseExpiryMargin;
+        var total = WorkerSummary.Empty;
+        while (await ledger.NextLeaseExpiryAsync(Flow.Id, submissionId, ct).ConfigureAwait(false) is { } expiry)
+        {
+            ct.ThrowIfCancellationRequested();
+            var now = _context.Time.GetUtcNow().UtcDateTime;
+            if (expiry >= now)
+            {
+                var wait = expiry - now + LeaseExpiryMargin;
+                if (wait > longest)
+                {
+                    _log.LogWarning(
+                        "A record of submission {SubmissionId} is leased until {Expiry:o}, further ahead than this flow's lease of {Seconds}s, so a running worker holds it and it is left alone.",
+                        submissionId, expiry, Flow.Reliability.LeaseSeconds);
+                    break;
+                }
+
+                _log.LogInformation(
+                    "A record of submission {SubmissionId} is still leased by a run that stopped; waiting {Seconds}s for the lease to run out.",
+                    submissionId, (int)Math.Ceiling(wait.TotalSeconds));
+                await Task.Delay(wait, _context.Time, ct).ConfigureAwait(false);
+            }
+
+            var reclaimed = await ledger.ReclaimExpiredLeasesAsync(Flow.Id, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
+            total = total.Add(sent);
+            if (reclaimed == 0 && sent.Processed == 0)
+            {
+                // The wait ended without the lease running out, or the lease was reclaimed elsewhere and nothing of it is
+                // left to send: either way there is nothing this run can take over.
+                _log.LogWarning(
+                    "The lease on a record of submission {SubmissionId} (due to run out at {Expiry:o}) could not be reclaimed, so the record is left for a later run.",
+                    submissionId, expiry);
+                break;
+            }
+
+            if (reclaimed > 0)
+            {
+                _log.LogInformation("Reclaimed {Count} record(s) whose lease a stopped run left behind, and sent {Sent}.", reclaimed, sent.Processed);
+            }
+        }
+
+        return total;
+    }
 
     /// <summary>Claim passes over one submission until nothing of it is claimable, without waiting for records in backoff.</summary>
     private static async Task<WorkerSummary> PassUntilNothingClaimableAsync(DeliveryWorker worker, Guid submissionId, CancellationToken ct)

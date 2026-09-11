@@ -330,6 +330,44 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_run_recovered_after_its_worker_stopped_waits_out_the_stopped_lease_and_sends_the_record()
+    {
+        // Seen live: a control plane killed mid-delivery left a record leased by its dead process. Its run was recovered
+        // and requeued, found the submission already planned, passed over it while that lease still held the record, and
+        // finished succeeded with the record left delivering.
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var drop = await DropAsync("stopped", records, Submission1, 1);
+        var ledger = _db.Ledger(_clock);
+        var protocol = new FakeProtocol();
+        var engine = Samples.Engine(ledger, _clock) with { Protocols = new FakeProtocolFactory(protocol) };
+        var parameters = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" };
+        using var runtime = await FlowRuntime.CreateAsync(engine, Samples.LocalFlow(drop), parameters, drop);
+        await runtime.IntakeAsync(force: false);
+
+        // The stopped worker's claim: one record leased to a process that is gone, for one more second.
+        var stopped = Assert.Single(await ledger.ClaimAsync(runtime.Flow.Id, Submission1, "stopped-node/4242/lease", 1, TimeSpan.FromSeconds(1), _clock.GetUtcNow().UtcDateTime));
+
+        var running = runtime.RunAsync(force: false);
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (protocol.Deliveries.Count < records.Count - 1 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        // The rest is sent and the run is waiting for the stopped lease, rather than finishing with the record leased.
+        await Task.Delay(500);
+        Assert.False(running.IsCompleted);
+
+        _clock.Advance(TimeSpan.FromSeconds(5));
+        var run = await running;
+
+        Assert.Equal(records.Count, run.Work.Delivered);
+        var record = await ledger.GetRecordAsync(runtime.Flow.Id, stopped.DeliveryKey);
+        Assert.Equal(RecordStatus.Delivered, record!.Status);
+        Assert.Null(record.LeaseOwner);
+    }
+
+    [Fact]
     public async Task A_record_the_service_asked_to_wait_on_is_not_attempted_again_sooner()
     {
         // The transport does not sit through a long Retry-After; it hands the wait up with the failure, and the

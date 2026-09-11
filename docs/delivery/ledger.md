@@ -187,6 +187,14 @@ several nodes share the ledger safely. A crashed worker's lease expires and the 
 up. A stopping worker releases its records at once without charging the interrupted attempt. Long payload
 uploads renew the lease at half its length.
 
+A run recovered after its worker stopped (a control plane or node killed mid-delivery, whose run the reaper
+requeued) finds its submission already planned, and the records its dead worker was sending still leased. The
+platform runs one execution of a flow at a time, so such a lease belongs to nobody alive: the run waits until it
+runs out, reclaims it (`LastError` says the lease expired mid-attempt) and sends the record, resuming the steps the
+dead attempt had reported. Seen live, a recovered run that only passed over the submission finished `succeeded` with
+the record left `delivering` and its change never recorded. A lease running out further ahead than the flow's own
+`reliability.leaseSeconds` is left alone with a warning, because only a running worker renews a lease that far.
+
 ## Indexes and search
 
 Listings are index-backed so the GUI answers in milliseconds at any estate size:

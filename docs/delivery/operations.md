@@ -164,7 +164,7 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 | Submission `failed` with a validation message | The submission page; the run's trace | Fix the drop or the documents; submit the drop again (the same id is fine). |
 | Records `held` | The Records tab filtered to held | Read the last error. Fix the data (reference miss, empty key) or the mapping; then Release (one record, or all blocked). |
 | Records `failed` | The record's History tab | The retry budget is spent; the last error is redacted but specific. Release after fixing the cause. |
-| Records stuck `delivering` | `Lease` on the record page in the past | The next claim reclaims them; nothing to do unless a node is wedged. |
+| Records stuck `delivering` | `Lease` on the record page in the past | A worker stopped mid-delivery. The next deliver run of the record's drop (the recovered run, a re-run of the submission, or `drain`) waits out the lease, reclaims it and sends the record; nothing else to do unless a node is wedged. |
 | A verify run reports drift | The Records tab with Drifted only | Decide whether the edit in OSDU was legitimate. Redeliver the record, or set `verify.reconcile: true` so verify runs queue redelivery. |
 | Everything re-renders after a change | The render context on the record | Only `render.*` enters the render context; a moved mapping version or snapshot renders every record that uses it again. Only a record whose rendered document differs is sent; the rest are skipped as unchanged and take the new context. |
 | Is OSDU reachable with the flow's credentials? | Probe target on the flow's Delivery tab | The probe runs on a node and reports the status of the service's info endpoint. |
