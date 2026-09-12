@@ -63,6 +63,19 @@ public sealed class DeliverySubmissionApiTests
         scopes = new Dictionary<string, object> { ["aliases"] = aliases.Select(a => new { alias_name = a }).ToArray() },
     };
 
+    /// <summary>A wellbore that points at where its payload files already sit, the way a source sends one to a file flow.</summary>
+    private static object PayloadWellbore(string name, string location, string? hash = null) => new
+    {
+        record = new Dictionary<string, object?>
+        {
+            ["facility_name"] = name,
+            ["facility_description"] = "with files",
+            ["facility_id"] = "srn:master-data/Wellbore:" + name,
+            ["update_date"] = "2026-09-12T10:00:00Z",
+        },
+        files = new Dictionary<string, object> { ["files"] = hash is null ? location : new { location, hash } },
+    };
+
     [SkippableFact]
     public async Task Records_are_stored_with_their_run_and_a_repeat_answers_with_that_run()
     {
@@ -283,7 +296,21 @@ public sealed class DeliverySubmissionApiTests
                 new { flow = estate.RecordsFlow, parameters = new { site = "north" }, records = Enumerable.Range(0, 1001).Select(i => Wellbore($"WB-API-{i}")).ToArray() },
                 HttpStatusCode.BadRequest,
                 "at most 1000");
-            await ExpectAsync(new { flow = estate.PayloadFlow, parameters = new { site = "north" }, records = one }, HttpStatusCode.BadRequest, "delivers payload files");
+            // A flow that streams files takes records too, but each says where its files are, inside what the flow allows.
+            await ExpectAsync(new { flow = estate.PayloadFlow, parameters = new { site = "north" }, records = one }, HttpStatusCode.BadRequest, "points at no files");
+            await ExpectAsync(
+                new { flow = estate.PayloadFlow, parameters = new { site = "north" }, records = new[] { PayloadWellbore("WB-API-OUTSIDE", "C:/somewhere/else") } },
+                HttpStatusCode.BadRequest,
+                "outside what flow");
+            await ExpectAsync(
+                new { flow = estate.PayloadFlow, parameters = new { site = "north" }, records = new[] { PayloadWellbore("WB-API-DOTS", Estate.FileRoot + "/../escape") } },
+                HttpStatusCode.BadRequest,
+                "must not contain '..'");
+            // A flow that streams nothing has nowhere to read files from, so a record that points at some is refused.
+            await ExpectAsync(
+                new { flow = estate.RecordsFlow, parameters = new { site = "north" }, records = new[] { PayloadWellbore("WB-API-NOSTREAM", Estate.FileRoot + "/x") } },
+                HttpStatusCode.BadRequest,
+                "streams no payload files");
             await ExpectAsync(new { flow = estate.NoManualFlow, parameters = new { site = "north" }, records = one }, HttpStatusCode.BadRequest, "source.manualSubmission");
             await ExpectAsync(new { flow = "no-such-flow-" + Guid.NewGuid().ToString("N"), records = one }, HttpStatusCode.NotFound, "No active delivery flow");
             await ExpectAsync(new { pipelineId = Guid.NewGuid(), records = one }, HttpStatusCode.NotFound, "pipeline");
@@ -417,6 +444,45 @@ public sealed class DeliverySubmissionApiTests
         }
     }
 
+    /// <summary>
+    /// A submission to a flow that streams payload files: what is stored is where the files already sit, never the bytes,
+    /// so the records ride in the catalog exactly as a metadata submission does and the node reads the files when it runs.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_submission_to_a_flow_that_streams_files_carries_where_they_are()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        var estate = await Estate.SeedAsync(cs);
+        try
+        {
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+            var location = Estate.FileRoot + "/WB-API-FILES";
+
+            using var response = await PostAsync(client, token, new
+            {
+                flow = estate.PayloadFlow,
+                parameters = new { site = "north" },
+                records = new[] { PayloadWellbore("WB-API-FILES", location, "sha256:abc") },
+            });
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            var accepted = (await response.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!;
+
+            await using var db = CatalogDatabase.Create(cs);
+            var stored = await db.DeliveryInlineSubmissions.AsNoTracking().SingleAsync(s => s.SubmissionId == accepted.SubmissionId);
+            Assert.Equal(estate.PayloadFlow, stored.FlowName);
+            Assert.Equal(1, stored.RecordCount);
+            Assert.Contains(location, stored.RecordsJson, StringComparison.Ordinal);
+            Assert.Contains("sha256:abc", stored.RecordsJson, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await estate.CleanupAsync(cs);
+        }
+    }
+
     [SkippableFact]
     public async Task The_listing_names_the_flows_that_offer_manual_submission()
     {
@@ -439,14 +505,16 @@ public sealed class DeliverySubmissionApiTests
             Assert.Equal("OsduRecord", records.Protocol);
             Assert.Equal(estate.RecordsPipeline, records.PipelineId);
             Assert.Equal("site", Assert.Single(records.Parameters).Name);
+            Assert.Null(records.PayloadName);
+            // A flow that streams files offers manual submission on the same terms, and names the payload its records point at.
+            var streaming = Assert.Single(flows, f => f.FlowName == estate.PayloadFlow);
+            Assert.True(streaming.AcceptsRecords);
+            Assert.Equal("files", streaming.PayloadName);
             // A flow that offers none is not on the list at all.
-            Assert.DoesNotContain(flows, f => f.FlowName == estate.PayloadFlow || f.FlowName == estate.NoManualFlow);
+            Assert.DoesNotContain(flows, f => f.FlowName == estate.NoManualFlow);
 
             using var all = await GetAsync(client, token, "/api/v1/delivery/manual-submission/flows?all=true");
             var everything = (await all.Content.ReadFromJsonAsync<List<DeliveryManualFlowDto>>())!;
-            var payload = Assert.Single(everything, f => f.FlowName == estate.PayloadFlow);
-            Assert.False(payload.AcceptsRecords);
-            Assert.Contains("delivers payload files", payload.RecordsRefusal, StringComparison.Ordinal);
             var noManual = Assert.Single(everything, f => f.FlowName == estate.NoManualFlow);
             Assert.False(noManual.AcceptsRecords);
             Assert.Contains("source.manualSubmission", noManual.RecordsRefusal, StringComparison.Ordinal);
@@ -489,11 +557,19 @@ public sealed class DeliverySubmissionApiTests
             Assert.True(site.Required);
             Assert.Null(site.Default);
             Assert.Equal(1000, contract.MaxRecords);
+            // A flow that streams nothing says so, and a caller filling in a submission carries no files.
+            Assert.Null(contract.PayloadName);
+            Assert.False(contract.PayloadHashRequired);
+            Assert.Empty(contract.PayloadRoots);
 
             using var payload = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.PayloadPipeline}/source-contract");
-            var refused = (await payload.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
-            Assert.False(refused.AcceptsRecords);
-            Assert.Contains("delivers payload files", refused.RecordsRefusal, StringComparison.Ordinal);
+            var streaming = (await payload.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
+            Assert.True(streaming.AcceptsRecords);
+            Assert.Null(streaming.RecordsRefusal);
+            Assert.Equal("files", streaming.PayloadName);
+            // The flow watches the files' modified times, so a record carries a hash only when its source has one.
+            Assert.False(streaming.PayloadHashRequired);
+            Assert.Equal([Estate.FileRoot], streaming.PayloadRoots);
 
             // A flow whose pinned mapping the catalog has not synced says so instead of guessing the columns.
             using var unsynced = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.UnsyncedMappingPipeline}/source-contract");
@@ -566,6 +642,9 @@ public sealed class DeliverySubmissionApiTests
         string NoManualFlow,
         Guid NoManualPipeline)
     {
+        /// <summary>The one place the file flow lets a submission point at: what is inside is allowed, what is outside is not.</summary>
+        public const string FileRoot = "C:/lake/wellbore";
+
         public static async Task<Estate> SeedAsync(string cs)
         {
             var suffix = Guid.NewGuid().ToString("N")[..10];
@@ -600,6 +679,11 @@ public sealed class DeliverySubmissionApiTests
                   payloads:
                     files: files/{deliveryKey}/*.csv
                   lastModified: update_date
+                  manualSubmission: true
+                  manualSubmissionFileRoots:
+                    - {{FileRoot}}
+                change:
+                  payloadDetect: lastModified
                 render:
                   mapping: {{MappingReference}}
                   references: pinned

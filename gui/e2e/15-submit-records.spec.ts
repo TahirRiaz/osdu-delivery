@@ -1,8 +1,8 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./helpers";
 
-// Records sent by hand: the Submit records dialog reads the flow's source contract, refuses a flow whose protocol streams
-// payload files, validates before it sends, and a preview of one wellbore lands on a plan run that renders it. Manual
+// Records sent by hand: the Submit records dialog reads the flow's source contract, refuses a flow whose document offers
+// no manual submission, validates before it sends, and a preview of one wellbore lands on a plan run that renders it. Manual
 // submission is wellbore master data, so the flow it runs against is the wellbore one. A plan needs no OSDU target, so
 // the spec runs on any machine.
 
@@ -29,10 +29,10 @@ async function openDialog(page: Page, flow: string) {
 }
 
 test.describe.serial("submit records", () => {
-  test("a flow that streams payload files refuses records", async ({ adminPage }) => {
+  test("a flow whose document offers no manual submission refuses records", async ({ adminPage }) => {
     const dialog = await openDialog(adminPage, "recall-welllog");
 
-    await expect(dialog.getByTestId("submit-records-refusal")).toContainText("delivers payload files", { timeout: 15_000 });
+    await expect(dialog.getByTestId("submit-records-refusal")).toContainText("manualSubmission", { timeout: 15_000 });
     await expect(dialog.getByTestId("submit-records-submit")).toBeDisabled();
     await expect(dialog.getByTestId("submit-records-tab-form")).toHaveCount(0);
   });

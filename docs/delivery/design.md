@@ -139,8 +139,17 @@ path, because the run turns the records into a drop before it reads anything.
 A flow offers this or it does not: `source.manualSubmission` says so in the document, and
 a request to a flow that declares nothing is refused naming the key. It is opt-in because
 a flow fed by a prepared drop should not also accept hand-written records unless the
-estate decided it should, and it cannot be set on a flow whose protocol streams payload
-files, which a request cannot carry: that document is refused when it is read.
+estate decided it should.
+
+A submission is metadata plus, for a flow that streams payload files, **where those files
+already are**. Nothing is uploaded through the API and nothing is staged: a record carries
+the location of its files, the drop written from it declares the payload by
+`locationColumn` rather than a path template, and the node opens that location with its
+own identity when it delivers, re-opening it on every retry, exactly as section 3.2
+describes for a prepared drop. Because the node's identity can read whatever it has been
+granted, a record may only point inside `source.manualSubmissionFileRoots`, or, when the
+flow declares none, inside the fixed part of its own `source.location`; anything else is
+refused when the request is accepted, and again before the drop is written.
 [submitting-records.md](submitting-records.md) is the contract for the source side.
 
 ## 4. The four inputs and the render context

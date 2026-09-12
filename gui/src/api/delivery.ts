@@ -340,10 +340,18 @@ export interface DeliverySnapshot {
 /** A value of an inline record's column: a JSON scalar. A collection is a child scope, never a nested value. */
 export type DeliveryInlineValue = string | number | boolean | null;
 
-/** One inline record: its root row and the rows of each child scope, in the shape of a mapping fixture. */
+/** Where one record's payload files already sit: the location alone, or with the content hash the flow decides changes by. */
+export type DeliveryInlineFile = string | { location: string; hash?: string };
+
+/**
+ * One inline record: its root row, the rows of each child scope (the shape of a mapping fixture), and where the files of
+ * each payload the flow streams already sit. Files are pointed at, never uploaded: the node opens the location with its
+ * own identity when the run delivers.
+ */
 export interface DeliveryInlineRecord {
   record: Record<string, DeliveryInlineValue>;
   scopes?: Record<string, Array<Record<string, DeliveryInlineValue>>>;
+  files?: Record<string, DeliveryInlineFile>;
 }
 
 export type DeliverySubmissionOperation = "deliver" | "plan";
@@ -403,6 +411,12 @@ export interface DeliverySourceContract {
   maxRecords: number;
   maxChildRows: number;
   maxContentBytes: number;
+  /** The payload the flow streams, which every record then points at under `files`; null when it streams none. */
+  payloadName: string | null;
+  /** True when each record has to carry the payload's content hash: the flow decides payload changes by hash. */
+  payloadHashRequired: boolean;
+  /** Where a record's payload files may sit: the roots the flow allows. */
+  payloadRoots: string[];
 }
 
 /** One delivery flow on the manual submission page: whether its document offers manual submission, and what it needs. */
@@ -417,6 +431,8 @@ export interface DeliveryManualFlow {
   /** Why the flow takes no records; null when it does. */
   recordsRefusal: string | null;
   parameters: DeliveryFlowParameter[];
+  /** The payload its records point at; null when the flow streams no files. */
+  payloadName: string | null;
 }
 
 /** An inline submission's records as the ledger holds them, with who sent them and where a run wrote them. */

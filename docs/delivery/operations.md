@@ -56,8 +56,8 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, and the path each removal scope calls. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
-| `GET /manual-submission/flows` | read | The flows records can be submitted to by hand (those declaring `source.manualSubmission`), with what each renders with and the parameters a submission carries. `all=true` lists the other delivery flows too, each with the reason it takes none. |
-| `GET /flows/{pipelineId}/source-contract` | read | What a source sends the flow: the parameters it declares, the columns its pinned mapping reads from the root row and each child scope, the natural key's columns, the version column, and whether it takes records inline (and why not). |
+| `GET /manual-submission/flows` | read | The flows records can be submitted to by hand (those declaring `source.manualSubmission`), with what each renders with, the parameters a submission carries and the payload its records point at. `all=true` lists the other delivery flows too, each with the reason it takes none. |
+| `GET /flows/{pipelineId}/source-contract` | read | What a source sends the flow: the parameters it declares, the columns its pinned mapping reads from the root row and each child scope, the natural key's columns, the version column, the payload its records point at (with whether a content hash is required and the roots a location may sit inside), and whether it takes records inline (and why not). |
 | `GET /records/{key}`, `/attempts`, `/activities` | read | One record, its delivery history, its interventions. |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |

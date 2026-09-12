@@ -32,18 +32,41 @@ public class YamlDocumentLoaderTests
         """;
 
     [Fact]
-    public void Manual_submission_is_opt_in_and_never_on_a_flow_that_streams_payload_files()
+    public void Manual_submission_is_opt_in_and_bounded_by_where_its_files_may_sit()
     {
         var loader = new DeliveryDocumentLoader();
 
         // Opt-in: a flow that says nothing takes no records sent in a submission request.
         Assert.False(loader.ParseFlow(Flow, "inline.yaml").Source.ManualSubmission);
 
-        // A flow whose protocol streams payload files cannot offer it: a request carries metadata only.
+        // A flow whose protocol streams payload files offers it too: a submission points at the files where they
+        // already are, it never carries them, so the protocol is no reason to refuse the document.
         var streaming = Flow.Replace("  fingerprint: update_date", "  fingerprint: update_date\n  manualSubmission: true", StringComparison.Ordinal);
-        var ex = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(streaming, "inline.yaml"));
-        Assert.Contains("manualSubmission", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("payload files", ex.Message, StringComparison.Ordinal);
+        var parsed = loader.ParseFlow(streaming, "inline.yaml");
+        Assert.True(parsed.Source.ManualSubmission);
+        Assert.Empty(parsed.Source.ManualSubmissionFileRoots);
+
+        // The roots it declares are kept in the order declared: they are where such a record may point.
+        var rooted = loader.ParseFlow(
+            streaming.Replace(
+                "  manualSubmission: true",
+                "  manualSubmission: true\n  manualSubmissionFileRoots:\n    - abfss://lake@acct.dfs.core.windows.net/recall\n    - drops/archive",
+                StringComparison.Ordinal),
+            "inline.yaml");
+        Assert.Equal(["abfss://lake@acct.dfs.core.windows.net/recall", "drops/archive"], rooted.Source.ManualSubmissionFileRoots);
+
+        // Roots mean nothing on a flow that takes no submissions, and a root is a prefix, never a pattern or a climb.
+        foreach (var (yaml, names) in new[]
+        {
+            (Flow.Replace("  fingerprint: update_date", "  fingerprint: update_date\n  manualSubmissionFileRoots:\n    - drops/archive", StringComparison.Ordinal), "source.manualSubmission accepts"),
+            (streaming.Replace("  manualSubmission: true", "  manualSubmission: true\n  manualSubmissionFileRoots:\n    - drops/*", StringComparison.Ordinal), "no wildcard"),
+            (streaming.Replace("  manualSubmission: true", "  manualSubmission: true\n  manualSubmissionFileRoots:\n    - drops/../etc", StringComparison.Ordinal), "no wildcard"),
+        })
+        {
+            var refused = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(yaml, "inline.yaml"));
+            Assert.Contains("source.manualSubmissionFileRoots", refused.Message, StringComparison.Ordinal);
+            Assert.Contains(names, refused.Message, StringComparison.Ordinal);
+        }
 
         // A metadata-only flow declares it and keeps it.
         var metadata = streaming

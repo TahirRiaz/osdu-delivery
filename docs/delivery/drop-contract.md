@@ -49,7 +49,7 @@ File names are free; the manifest lists them. Parquet scope files need only top-
 | `partitioned` | When true, root file i and each child scope's file i hold the same records, every scope declares the same number of files, and every file is sorted by the delivery key's text: the intake joins them partition by partition without a spill, and a fan-out spreads the partitions over member runs. An unsorted file is refused. Without it, child scopes are joined through a disk spill, which works for any layout. |
 | `scopes.record` | The root scope. Must declare every column the mapping binds (the preflight gate checks). |
 | `scopes.<child>` | Child scopes: `parentKey` names the column holding the parent's delivery key; `orderBy` orders rows within a parent. |
-| `payloads.<name>` | Where the chunks live and which root column carries the logical payload hash. The `hashColumn` may be left out only when the flow takes the chunk files' modified times as the payload watermark (`change.payloadDetect: lastModified`). |
+| `payloads.<name>` | Where the chunks live and which root column carries the logical payload hash. `pathTemplate` is drop-relative and must contain `{deliveryKey}`; a drop written from a submission declares `locationColumn` instead, naming the root column that holds each record's own payload location ([submitting-records.md](submitting-records.md)). One of the two is required. The `hashColumn` may be left out only when the flow takes the chunk files' modified times as the payload watermark (`change.payloadDetect: lastModified`). |
 
 When the drop has child scopes or payloads, the root scope must carry a `deliveryKey` column
 (the lower-case, hyphenated UUID).
@@ -71,9 +71,10 @@ The flow is named by `flow` (with `repoId` when the name exists in more than one
 flow needs no call: its runs read the flow's `source.location`. [preparing-a-drop.md](preparing-a-drop.md) is the
 practical guide for the preparing side.
 
-A source with a handful of records and no payload files need not write a drop at all: the same call takes the records
-themselves under `records`, and the run writes them out as a drop before it reads anything, so everything below still
-describes what is delivered. See [submitting-records.md](submitting-records.md).
+A source with a handful of records need not write a drop at all: the same call takes the records themselves under
+`records`, and the run writes them out as a drop before it reads anything, so everything below still describes what is
+delivered. Payload files are not written by such a submission either; each record points at where its files already sit,
+and the delivery side reads them from there. See [submitting-records.md](submitting-records.md).
 
 ## The delivery key
 

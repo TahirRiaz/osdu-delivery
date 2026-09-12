@@ -134,6 +134,26 @@ driven through `POST /api/v1/delivery/submissions` exactly as a source system wo
 | Traceability | Each submission's page shows the records as sent, who sent them and where the run wrote them; `GET /delivery/submissions/{id}/content` returns them from the ledger. |
 | Cleanup | The record was removed at the reversible `record` scope; the ledger says deleted and a read-back finds nothing. |
 
+The refusal reason in the first row is what that build gave: a flow whose protocol streamed payload files could not offer
+manual submission at all. That restriction is gone, and section 2.9 is the pass that replaced it.
+
+### 2.9 Records sent with their payload files
+
+A submission is metadata plus where the payload files already are. Nothing is uploaded through the API and nothing is
+staged: the record points at its files and the node opens that location with its own identity when the run delivers.
+Proven against `e2e-file` (`osduFile`, one document with one attached file) on 2026-09-12, marker `ODLIVE20260912C`,
+after opting the flow in with `source.manualSubmission` and a `manualSubmissionFileRoots` bounding it to this estate's
+own file area:
+
+| Stage | What was proven |
+| --- | --- |
+| The contract | `GET /delivery/manual-submission/flows` lists `e2e-file` with payload `files`; its source contract reports the payload, that a content hash is required (the flow decides payload changes by hash) and the one root a record may point inside. |
+| The boundary | Five refusals, all 400 at accept time with nothing sent and nothing stored: a record pointing at no files, a location outside the flow's roots, a location containing `..`, no hash where the flow needs one, and files named for a payload the flow does not stream. |
+| Preview | `operation: plan` planned one delivery with no holds and no issues, so the location resolved and its chunk files were listed. Nothing reached OSDU. |
+| Delivery | The run uploaded the file it pointed at to the landing zone, registered `test:dataset--File.Generic:25899a0b-528c-4b37-a9f4-a8d232e567eb` and wrote `test:work-product-component--Document:d1f669f0ff525046bd5bcc798199b4a4` at version 1789204329562243, carrying the hash of a file the request never contained. |
+| Read back | The record read back from storage with `data.Datasets` naming the registered dataset. |
+| Cleanup | The document was removed through the ledger at the reversible `record` scope and the dataset soft-deleted directly (204); both then answer 404. |
+
 ## 3. Defects the live tests found
 
 Each is fixed on `main`, and the live runs after each fix are in the action log.

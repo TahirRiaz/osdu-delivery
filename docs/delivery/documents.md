@@ -20,7 +20,9 @@ source:
   lastModified: update_date        # root-scope column saying when the row last changed (optional; or fingerprint: <column>, never both)
   knownState: abfss://lake@acct.dfs.core.windows.net/osdu-prepare/{logSource}/known-state   # where a known-state run publishes when the run names no location (optional)
   work: abfss://lake@acct.dfs.core.windows.net/osdu-work/{logSource}   # where the intake writes its work batches (default {location}/.work)
-  manualSubmission: true           # the flow also takes records sent in a submission request (default false; never with payloads)
+  manualSubmission: true           # the flow also takes records sent in a submission request (default false)
+  manualSubmissionFileRoots:       # where such a record may point at its payload files (default: the fixed part of location)
+    - abfss://lake@acct.dfs.core.windows.net/recall
   scopes:                          # optional overrides of the manifest's child scopes
     curves: { records: curves-meta/*.parquet, key: deliveryKey }
 

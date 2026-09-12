@@ -56,6 +56,13 @@ export default function ManualSubmissionPage() {
     { id: "mapping", header: "Renders with", render: (row) => <Badge variant="outline" className="font-mono text-[11px]">{row.mappingReference}</Badge> },
     { id: "protocol", header: "Protocol", render: (row) => <span className="font-mono text-[12px]">{row.protocol}</span> },
     {
+      id: "payload",
+      header: "Payload",
+      render: (row) => (row.payloadName === null
+        ? <span className="text-muted-foreground">-</span>
+        : <Badge variant="secondary" className="font-mono text-[11px]">{row.payloadName}</Badge>),
+    },
+    {
       id: "parameters",
       header: "Parameters",
       render: (row) => (row.parameters.length === 0
@@ -110,7 +117,7 @@ export default function ManualSubmissionPage() {
         <EmptyState
           icon={<FileJson />}
           title="No flow offers manual submission"
-          description="A flow takes records sent from here once its document declares source.manualSubmission. A flow whose protocol streams payload files cannot: its records are delivered as a drop."
+          description="A flow takes records sent from here once its document declares source.manualSubmission. A flow that streams payload files takes them too: its records say where the files already sit, and the node reads them from there."
           data-testid="manual-submission-empty"
         />
       ) : (

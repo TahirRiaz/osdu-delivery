@@ -561,10 +561,23 @@ public sealed class Planner
             int? chunkCount = null;
             if (payload is not null)
             {
+                // A payload that names a location column says where each record's files are, rather than implying it
+                // from the drop's own folders: that is what lets a submission point at files already on the lake
+                // (design.md section 3.4). The node opens the location with its own identity when it delivers.
+                if (payload.LocationColumn is { } locationColumn)
+                {
+                    payloadLocation = record.Row.GetString(locationColumn);
+                    if (string.IsNullOrWhiteSpace(payloadLocation))
+                    {
+                        entries.Add(basis with { Reason = $"payload '{payloadName}' takes its location from column '{locationColumn}', which this row leaves empty; there is nowhere to read its files from" });
+                        continue;
+                    }
+                }
+
                 if (fileWatermark)
                 {
                     // The chunk files are the payload's watermark: listing them is the only way to see a rewrite.
-                    payloadLocation = _drops.PayloadLocation(drop, payloadName!, key.Value.Value);
+                    payloadLocation ??= _drops.PayloadLocation(drop, payloadName!, key.Value.Value);
                     var files = PayloadFiles.Of(await _drops.ListPayloadChunksAsync(payloadLocation, ct).ConfigureAwait(false));
                     if (files.Count == 0)
                     {
@@ -806,6 +819,11 @@ public sealed class Planner
             if (payload.ChunkCountColumn is { } chunkColumn && !root.Contains(chunkColumn))
             {
                 throw new FlowValidationException($"{where}: payload '{payloadName}' chunkCountColumn '{chunkColumn}' is not declared in the drop's root scope.");
+            }
+
+            if (payload.LocationColumn is { } locationColumn && !root.Contains(locationColumn))
+            {
+                throw new FlowValidationException($"{where}: payload '{payloadName}' locationColumn '{locationColumn}' is not declared in the drop's root scope.");
             }
         }
 

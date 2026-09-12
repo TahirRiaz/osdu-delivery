@@ -138,6 +138,13 @@ public sealed record FlowSource
     /// </summary>
     public bool ManualSubmission { get; init; }
 
+    /// <summary>
+    /// Where a submission may point at payload files: prefixes (a container, a folder) the node opens with its own
+    /// identity. A submission names locations rather than uploading bytes, so without a bound a caller could have any
+    /// file the node can read shipped to OSDU. Empty means the flow's own drop location is the only root allowed.
+    /// </summary>
+    public IReadOnlyList<string> ManualSubmissionFileRoots { get; init; } = [];
+
     /// <summary>The resolved work root for a drop location: the declared one, or the drop's own <c>.work</c> folder.</summary>
     public static string WorkRoot(string? declaredWork, string dropLocation)
     {

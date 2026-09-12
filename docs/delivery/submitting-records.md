@@ -6,7 +6,13 @@ the OSDU document; and the run delivers it through the regular process: the mani
 detection, the ledger, the drain and the record history. Nothing about delivery is different from a drop, which is the
 point: a record sent this way is traceable in exactly the same way ([design.md](design.md) section 3.4).
 
-[preparing-a-drop.md](preparing-a-drop.md) is the other way in, for larger sets and for records with payload files.
+[preparing-a-drop.md](preparing-a-drop.md) is the other way in, for larger sets and for sets prepared in bulk.
+
+A submission has two parts: the **metadata**, which the request carries, and, for a flow that streams files, **where the
+payload files already are**, which the request points at. Files are never uploaded through the API and never staged: the
+record says where its files sit, and the node opens that location with its own identity when the run delivers, and again
+on every retry. That is the same "the payload goes past, not through" handling a prepared drop gets ([design.md](design.md)
+section 3.2), and it is what lets a submission deliver through the protocols that stream files.
 
 ## 1. When to use it
 
@@ -16,17 +22,24 @@ point: a record sent this way is traceable in exactly the same way ([design.md](
 source:
   location: abfss://lake@acct.dfs.core.windows.net/osdu-prepare/{site}
   lastModified: update_date
-  manualSubmission: true      # this flow also takes records sent in a submission request
+  manualSubmission: true            # this flow also takes records sent in a submission request
+  manualSubmissionFileRoots:        # where such a record may point at its payload files
+    - abfss://lake@acct.dfs.core.windows.net/recall
 ```
 
-It is opt-in, because a flow fed by a prepared drop should not also accept hand-written records unless the estate
-decided it should, and it cannot be set on a flow whose protocol streams payload files: the document is refused when it
-is. A request to a flow that does not declare it is refused, naming the key.
+It is opt-in, because a flow fed by a prepared drop should not also accept hand-written records unless the estate decided
+it should. A request to a flow that does not declare it is refused, naming the key.
+
+**`manualSubmissionFileRoots` is what keeps a submission honest about files.** The node reads the files with its own
+identity, which can read whatever it has been granted, so an unguarded location would let a caller have any readable file
+shipped to OSDU. A record may only point inside one of the declared roots; a flow that declares none allows the fixed
+part of its own `source.location` (everything before its first `{parameter}` token), so every drop of that flow is
+inside. A location outside them, or one containing `..`, is refused when the request is accepted.
 
 | Use a submission of records when | Use a drop when |
 | --- | --- |
-| The flow declares `source.manualSubmission` and delivers metadata only: `osduRecord`, or `osduManifest` without a payload. | The flow streams payload files (`osduWellLog` bulk data, `osduFile` and `osduManifest` files). A flow like that cannot offer manual submission at all. |
-| A handful of records at a time: at most 1,000 records, 100,000 child rows and 8 MB per submission. | The set is larger, or is prepared in bulk (Databricks). |
+| The flow declares `source.manualSubmission`. A flow that streams payload files (`osduWellLog` bulk data, `osduFile`, `osduManifest`) offers it on the same terms: each record says where its files are. | The set is larger, or is prepared in bulk (Databricks). |
+| A handful of records at a time: at most 1,000 records, 100,000 child rows and 8 MB of metadata per submission. | The payload files still have to be written, and the prepare run is what writes them. |
 | The source reacts to a change as it happens (an edit, an approval, a correction). | The source works in scheduled batches. |
 
 ## 2. What happens to a submission
@@ -78,7 +91,7 @@ Content-Type: application/json
 | Field | Rule |
 | --- | --- |
 | `flow`, `repoId`, `pipelineId` | The flow, named by `flow` (with `repoId` when the name exists in more than one repository) or by `pipelineId`. |
-| `records` | The records: 1 to 1,000, each in the shape of section 4. A submission carries `records` or `drop`, never both. |
+| `records` | The records: 1 to 1,000, each in the shape of section 4, with `files` for a flow that streams them. A submission carries `records` or `drop`, never both. |
 | `parameters` | The flow parameter values, as for a run. A required parameter without a default must be given; an undeclared one is refused. |
 | `submissionId` | Optional. The idempotency key (section 6): a UUID the source mints for each change it sends. Without one a new id is minted. |
 | `operation` | `deliver` (the default), or `plan` to render the records and report what a delivery would do without sending anything. |
@@ -121,8 +134,36 @@ Each record has the shape of a mapping fixture:
   record carrying a moment older than the version already delivered is recorded as stale and never sent, and the same
   moment with the same content is skipped, so a change needs a later moment.
 
-Which columns a flow reads, which are the natural key, which parameters it declares and whether it takes records at all
-is answered by `GET /api/v1/delivery/flows/{pipelineId}/source-contract` (scope `read`).
+### Payload files
+
+A flow that streams payload files takes them the same way, by pointing at them. The payload the flow streams is named
+under `files`:
+
+```json
+{
+  "record": { "source_project": "NO_15_9", "log_id": "L-1001", "update_date": "2026-09-11T12:00:00Z" },
+  "files": { "curves": "abfss://lake@acct.dfs.core.windows.net/recall/L-1001/chunk_*.parquet" }
+}
+```
+
+- **The value** is where the files are: a folder, or a glob over the chunk files. `{ "location": ..., "hash": ... }` is
+  the longer form, carrying the payload's content hash with it.
+- **Every record points at the payload the flow streams**, under that payload's name. A record that points at nothing,
+  or at a payload the flow does not stream, is refused; so is a record carrying `files` for a flow that streams none.
+- **The location must sit inside the flow's `manualSubmissionFileRoots`** (section 1), and may not contain `..`.
+- **The hash is required when the flow decides payload changes by content hash** (`change.payloadDetect: contentHash`,
+  the default). A flow declaring `change.payloadDetect: lastModified` takes the files' modified times, names and sizes
+  as the payload's watermark instead, and a hash is then optional. Which one applies is in the source contract.
+- **Nothing is read at submission time.** The request is checked for shape and roots only; whether the files exist and
+  are readable is decided by the run, which reports a record whose files cannot be listed or read as held or failed, with
+  the location in the message.
+- The written drop carries the location (and the hash) in a reserved root column per payload, and its manifest declares
+  the payload by `locationColumn` rather than a path template, so the delivery side reads each record's files from where
+  that record said they are ([drop-contract.md](drop-contract.md)).
+
+Which columns a flow reads, which are the natural key, which parameters it declares, which payload its records point at
+(with whether a hash is required and the roots allowed) and whether it takes records at all is answered by
+`GET /api/v1/delivery/flows/{pipelineId}/source-contract` (scope `read`).
 
 ## 5. The answers
 
@@ -130,7 +171,7 @@ is answered by `GET /api/v1/delivery/flows/{pipelineId}/source-contract` (scope 
 | --- | --- | --- |
 | `202 Accepted` | The records were stored and a run queued. `Location: /api/v1/runs/{runId}`. | `{ "runId", "pipelineId", "flowName", "status", "submissionId", "replayed": false }` |
 | `200 OK` | The same request was accepted before under this `submissionId`: nothing new is queued. | The same body, with the run that request started and `"replayed": true`. |
-| `400 Bad Request` | The request is malformed (`Invalid request`), a parameter does not resolve (`Invalid run parameters`), a record breaks section 4 (`Invalid records`, naming the record, scope and column), or the flow streams payload files (`Records not accepted by this flow`). | Problem details. |
+| `400 Bad Request` | The request is malformed (`Invalid request`), a parameter does not resolve (`Invalid run parameters`), a record breaks section 4 (`Invalid records`, naming the record, scope and column), a record points at files the flow does not allow or leaves them out (`Invalid records`, naming the record and the roots), or the flow offers no manual submission (`Records not accepted by this flow`). | Problem details. |
 | `404 Not Found` | No active delivery flow by that name or id. | Problem details. |
 | `409 Conflict` | The flow name is ambiguous, or the `submissionId` was used before for a different request (naming what differs) or by a drop. | Problem details. |
 
@@ -156,16 +197,23 @@ and no record enters the ledger. A delivery afterwards is a new request with a n
 
 ## 8. From the GUI
 
-A delivery flow's page has **Submit records**. It builds a form from the flow's source contract for one record (the
-natural key and version columns marked, a Now button for the version column), or takes any number of records as JSON in
-the shape of section 4. It offers the flow parameters, the preview, `force` and an optional submission id, and opens the
-run it queued. A submission of records has a **Records sent** tab on its page.
+A delivery flow's page has **Submit records**, and **Manual submission** in the navigation lists every flow that offers
+it (with the payload each streams, and, on request, the flows that offer none and why). The dialog builds a form from the
+flow's source contract for one record (the natural key and version columns marked, a Now button for the version column),
+or takes any number of records as JSON in the shape of section 4. For a flow that streams files it also asks where the
+record's files are, and for the hash when the flow needs one, showing the roots the flow allows. It offers the flow
+parameters, the preview, `force` and an optional submission id, and opens the run it queued. A submission of records has
+a **Records sent** tab on its page.
 
 ## 9. What each mistake leads to
 
 | What you see | Why | What to do |
 | --- | --- | --- |
-| `400 Records not accepted by this flow` | The flow declares no `source.manualSubmission`, or its protocol streams payload files | Add `manualSubmission: true` to the flow's source block, or deliver those records as a drop. |
+| `400 Records not accepted by this flow` | The flow declares no `source.manualSubmission` | Add `manualSubmission: true` to the flow's source block, or deliver those records as a drop. |
+| `400 records[0] points at no files: flow ... streams the payload 'curves'` | The flow streams files and the record named none | Add `"files": { "curves": "..." }` to every record. |
+| `400 payload location '...' is outside what flow ... allows` | The location is not inside the flow's roots | Point inside a declared root, or add the root to `source.manualSubmissionFileRoots`. |
+| `400 records[0] gives no hash for payload ...` | The flow decides payload changes by content hash | Send the hash with the location, or let the flow watch the files' modified times (`change.payloadDetect: lastModified`). |
+| A record is held: no payload chunk files under ... | The location is empty, or the node cannot see it | Check the files are there and the node's identity may read them. |
 | `400 Invalid records: records[3].record.depth is a string, but records[0].record.depth is a number` | A column holds two types | Send one type per column. |
 | `409 ... differs from it in the records` | A `submissionId` was reused for a changed request | Use a new id for a new change. |
 | The run fails: "the drop was prepared for mapping ..." | The flow was promoted to another mapping between the request and the run | Send the records again under a new id. |

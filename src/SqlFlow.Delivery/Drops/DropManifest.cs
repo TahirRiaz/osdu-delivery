@@ -160,9 +160,21 @@ public sealed record DropManifest
 
         foreach (var (name, payload) in Payloads)
         {
-            if (string.IsNullOrWhiteSpace(payload.PathTemplate) || !payload.PathTemplate.Contains("{deliveryKey}", StringComparison.Ordinal))
+            // A payload says where its chunks are in one of two ways: the template every record follows, or a column
+            // each record carries. One of them is required; a template that is given is checked either way.
+            if (payload.PathTemplate is null && payload.LocationColumn is null)
+            {
+                throw new FlowValidationException($"{source}: payload '{name}' must declare a pathTemplate, or a locationColumn naming the root-scope column that holds each record's payload location.");
+            }
+
+            if (payload.PathTemplate is { } template && !template.Contains("{deliveryKey}", StringComparison.Ordinal))
             {
                 throw new FlowValidationException($"{source}: payload '{name}' pathTemplate must contain '{{deliveryKey}}'.");
+            }
+
+            if (payload.LocationColumn is { } locationColumn && string.IsNullOrWhiteSpace(locationColumn))
+            {
+                throw new FlowValidationException($"{source}: payload '{name}' locationColumn must name a root-scope column when it is given.");
             }
 
             // Whether a hash column is required depends on how the flow detects payload changes, which the manifest
@@ -211,9 +223,21 @@ public sealed record ManifestColumn
 
 public sealed record ManifestPayload
 {
-    /// <summary>Drop-relative template with <c>{deliveryKey}</c>; the last segment is a glob over chunk files.</summary>
+    /// <summary>
+    /// Drop-relative template with <c>{deliveryKey}</c>; the last segment is a glob over chunk files. Optional only when
+    /// <see cref="LocationColumn"/> says where each record's payload is instead.
+    /// </summary>
     [JsonPropertyName("pathTemplate")]
-    public required string PathTemplate { get; init; }
+    public string? PathTemplate { get; init; }
+
+    /// <summary>
+    /// Root-scope column holding the location of a record's payload: a folder or a glob, inside the drop or anywhere the
+    /// node can read with its own identity. A drop that names one says where each record's payload is rather than
+    /// implying it from <see cref="PathTemplate"/>, which is what lets a submission point at files already on the lake
+    /// instead of copying them anywhere (design.md section 3.4).
+    /// </summary>
+    [JsonPropertyName("locationColumn")]
+    public string? LocationColumn { get; init; }
 
     /// <summary>
     /// Root-scope column carrying the hash of the logical payload content (design.md section 6.4). Required unless

@@ -104,7 +104,13 @@ public sealed class DropReader : IDropReader
             throw new FlowValidationException($"manifest: payload '{payloadName}' is not declared.");
         }
 
-        var relative = payload.PathTemplate.Replace("{deliveryKey}", deliveryKey.ToString("D"), StringComparison.Ordinal);
+        if (payload.PathTemplate is not { } template)
+        {
+            throw new FlowValidationException(
+                $"manifest: payload '{payloadName}' declares no pathTemplate; each record's payload location comes from its '{payload.LocationColumn}' column.");
+        }
+
+        var relative = template.Replace("{deliveryKey}", deliveryKey.ToString("D"), StringComparison.Ordinal);
         return drop.Resolve(relative);
     }
 

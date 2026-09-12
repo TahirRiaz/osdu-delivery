@@ -9,11 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A flow says whether it takes records sent in a request: `source.manualSubmission` in the flow document, opt-in, and
-  refused on a flow whose protocol streams payload files. The GUI's Manual submission page (Operate) lists every flow
-  that offers it, with what it renders with and the parameters a submission carries, and submits to the one chosen;
+- A flow says whether it takes records sent in a request: `source.manualSubmission` in the flow document, opt-in. The
+  GUI's Manual submission page (Operate) lists every flow that offers it, with what it renders with, the parameters a
+  submission carries and the payload its records point at, and submits to the one chosen;
   `GET /api/v1/delivery/manual-submission/flows` is the same list (`all=true` adds the flows that take none, with the
   reason).
+- A submission can deliver payload files without carrying them: a record names where its files already sit
+  (`"files": { "curves": "abfss://.../L-1001/chunk_*.parquet" }`, or `{ "location", "hash" }`), the drop written from it
+  declares the payload by `locationColumn` instead of a path template, and the node opens that location with its own
+  identity when it delivers and on every retry. Nothing is uploaded through the API and nothing is staged. A flow limits
+  where a submission may point with `source.manualSubmissionFileRoots`, defaulting to the fixed part of its own
+  `source.location`; a location outside them, one containing `..`, a record that points at nothing, and a missing content
+  hash where the flow decides payload changes by hash are all refused when the request is accepted. This is what lets the
+  wellbore DDMS, file and manifest flows take manual submissions, which were previously refused outright.
 - Records can be submitted to a flow directly, instead of being prepared as a drop: `POST /api/v1/delivery/submissions`
   takes `records` (each in the shape of a mapping fixture) in place of `drop`, with the caller's own `submissionId` as
   the idempotency key and `operation: plan` for a preview. The control plane stores the records in the ledger in the

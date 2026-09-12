@@ -135,6 +135,17 @@ public class InlineRecordsTests
     [InlineData("""[{"record":{"a":1},"scopes":{"aliases":[1]}}]""", "records[0].scopes.aliases[0] must be an object")]
     [InlineData("""[{"record":{" a":1}}]""", "padded with spaces")]
     [InlineData("""[{"record":{"":1}}]""", "empty")]
+    [InlineData("""[{"record":{"a":1},"files":[]}]""", "records[0].files must be an object of payload names")]
+    [InlineData("""[{"record":{"a":1},"files":{"curves":1}}]""", "records[0].files.curves must be where the payload's files are")]
+    [InlineData("""[{"record":{"a":1},"files":{"curves":""}}]""", "records[0].files.curves must name where the payload's files are")]
+    [InlineData("""[{"record":{"a":1},"files":{"curves":"  "}}]""", "records[0].files.curves must name where the payload's files are")]
+    [InlineData("""[{"record":{"a":1},"files":{"1curves":"x"}}]""", "records[0].files names a payload that is not an identifier")]
+    [InlineData("""[{"record":{"a":1},"files":{"curves":{"location":"x","nope":1}}}]""", "has a key other than \"location\" and \"hash\"")]
+    [InlineData("""[{"record":{"a":1},"files":{"curves":{"location":7}}}]""", "records[0].files.curves.location must be the folder or glob")]
+    [InlineData("""[{"record":{"a":1},"files":{"curves":{"location":"x","hash":7}}}]""", "records[0].files.curves.hash must be the payload's content hash")]
+    [InlineData("""[{"record":{"a":1},"files":{"curves":{"location":"x","hash":""}}}]""", "records[0].files.curves.hash must be 1 to")]
+    [InlineData("""[{"record":{"a":1},"files":{"curves":"x","CURVES":"y"}}]""", "records[0].files.CURVES is named twice")]
+    [InlineData("""[{"record":{"a":1},"files":{"curves":"x"},"files":{"curves":"y"}}]""", "records[0] names \"files\" twice")]
     public void Malformed_records_are_refused_naming_where(string json, string message)
     {
         var ex = Assert.Throws<FlowValidationException>(() => InlineRecords.Parse(json));
@@ -166,6 +177,68 @@ public class InlineRecordsTests
         // The content ceiling counts the canonical form's bytes, whatever whitespace the request carried.
         var big = JsonSerializer.Serialize(Enumerable.Range(0, 20).Select(i => new { record = new Dictionary<string, object?> { ["n"] = i, ["blob"] = new string('y', 500_000) } }));
         Assert.Contains("at most", Assert.Throws<FlowValidationException>(() => InlineRecords.Parse(big)).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_record_points_at_where_its_payload_files_already_are()
+    {
+        var records = InlineRecords.Parse("""
+            [ { "record": { "log_id": "L-1" }, "files": { "curves": "abfss://lake@acct.dfs.core.windows.net/recall/L-1/*.parquet" } },
+              { "record": { "log_id": "L-2" }, "files": { "curves": { "location": "abfss://lake@acct.dfs.core.windows.net/recall/L-2", "hash": "sha256:abc" } } },
+              { "record": { "log_id": "L-3" } },
+              { "record": { "log_id": "L-4" }, "files": null } ]
+            """);
+
+        Assert.Equal(["curves"], records.FileSets);
+        Assert.Equal("abfss://lake@acct.dfs.core.windows.net/recall/L-1/*.parquet", records.Records[0].Files["curves"].Location);
+        Assert.Null(records.Records[0].Files["curves"].Hash);
+        Assert.Equal("sha256:abc", records.Records[1].Files["curves"].Hash);
+        // A record that points at nothing carries no files at all, which is what lets a flow hold it instead of guessing.
+        Assert.Empty(records.Records[2].Files);
+        Assert.Empty(records.Records[3].Files);
+
+        // The stored form writes both spellings the same way, and reads back as the same records.
+        Assert.Contains("""{"location":"abfss://lake@acct.dfs.core.windows.net/recall/L-1/*.parquet"}""", records.Json, StringComparison.Ordinal);
+        var stored = InlineRecords.Parse(records.Json);
+        Assert.Equal(records.Json, stored.Json);
+        Assert.Equal(records.ContentHash, stored.ContentHash);
+        Assert.Equal("sha256:abc", stored.Records[1].Files["curves"].Hash);
+    }
+
+    [Fact]
+    public void Where_the_files_are_is_part_of_what_the_content_hash_covers()
+    {
+        var at = InlineRecords.Parse("""[{"record":{"log_id":"L-1"},"files":{"curves":"lake/one"}}]""");
+        var elsewhere = InlineRecords.Parse("""[{"record":{"log_id":"L-1"},"files":{"curves":"lake/two"}}]""");
+        var hashed = InlineRecords.Parse("""[{"record":{"log_id":"L-1"},"files":{"curves":{"location":"lake/one","hash":"sha256:abc"}}}]""");
+        var none = InlineRecords.Parse("""[{"record":{"log_id":"L-1"}}]""");
+
+        Assert.Equal(at.ContentHash, InlineRecords.Parse("""[{"record":{"log_id":"L-1"},"files":{"curves":{"location":"lake/one"}}}]""").ContentHash);
+        Assert.NotEqual(at.ContentHash, elsewhere.ContentHash);
+        Assert.NotEqual(at.ContentHash, hashed.ContentHash);
+        Assert.NotEqual(at.ContentHash, none.ContentHash);
+    }
+
+    [Fact]
+    public void A_submission_points_at_a_bounded_number_of_payloads_with_bounded_locations()
+    {
+        var sets = string.Join(",", Enumerable.Range(0, InlineRecords.MaxFileSets + 1).Select(i => $"\"s{i}\":\"lake/{i}\""));
+        Assert.Contains(
+            $"at most {InlineRecords.MaxFileSets}",
+            Assert.Throws<FlowValidationException>(() => InlineRecords.Parse($"[{{\"record\":{{\"a\":1}},\"files\":{{{sets}}}}}]")).Message,
+            StringComparison.Ordinal);
+
+        var long_ = new string('x', InlineRecords.MaxLocationLength + 1);
+        Assert.Contains(
+            $"1 to {InlineRecords.MaxLocationLength} characters",
+            Assert.Throws<FlowValidationException>(() => InlineRecords.Parse($"[{{\"record\":{{\"a\":1}},\"files\":{{\"curves\":\"{long_}\"}}}}]")).Message,
+            StringComparison.Ordinal);
+
+        var hash = new string('h', InlineRecords.MaxHashLength + 1);
+        Assert.Contains(
+            $"1 to {InlineRecords.MaxHashLength} characters",
+            Assert.Throws<FlowValidationException>(() => InlineRecords.Parse($"[{{\"record\":{{\"a\":1}},\"files\":{{\"curves\":{{\"location\":\"lake/one\",\"hash\":\"{hash}\"}}}}}}]")).Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]

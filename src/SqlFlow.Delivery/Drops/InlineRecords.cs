@@ -35,10 +35,19 @@ public static class InlineColumnTypes
 /// <summary>One column of an inline scope: its name as the submission first spelled it, and its type across every row.</summary>
 public sealed record InlineColumn(string Name, string Type);
 
-/// <summary>One record of an inline submission: its root row and the rows of each child scope, values as JSON scalars.</summary>
+/// <summary>
+/// Where one record's payload files already are, and what says whether they changed. The location is a folder or a glob
+/// the node opens with its own identity when the run delivers: nothing is uploaded and nothing is copied (design.md
+/// section 3.4). The hash is the payload's content hash for a flow that decides payload changes by hash; a flow that
+/// takes the files' modified times as the watermark needs none.
+/// </summary>
+public sealed record InlineFile(string Location, string? Hash);
+
+/// <summary>One record of an inline submission: its root row, the rows of each child scope, and where its files are.</summary>
 public sealed record InlineRecord(
     IReadOnlyDictionary<string, object?> Row,
-    IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, object?>>> Scopes);
+    IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, object?>>> Scopes,
+    IReadOnlyDictionary<string, InlineFile> Files);
 
 /// <summary>
 /// The records a source sends in a submission request instead of a drop (design.md section 3.4). Each record has the
@@ -70,14 +79,26 @@ public sealed partial class InlineRecords
     /// <summary>The largest request body the submission route reads: the content ceiling with room for whitespace and the other fields.</summary>
     public const long MaxRequestBytes = 16L * 1024 * 1024;
 
+    /// <summary>Payload sets one submission points at.</summary>
+    public const int MaxFileSets = 8;
+
+    public const int MaxLocationLength = 2000;
+
+    public const int MaxHashLength = 200;
+
     public const string RecordProperty = "record";
 
     public const string ScopesProperty = "scopes";
+
+    public const string FilesProperty = "files";
+
+    private static readonly IReadOnlyDictionary<string, InlineFile> NoFiles = new Dictionary<string, InlineFile>(StringComparer.OrdinalIgnoreCase);
 
     private InlineRecords(
         IReadOnlyList<InlineRecord> records,
         IReadOnlyList<InlineColumn> rootColumns,
         IReadOnlyList<KeyValuePair<string, IReadOnlyList<InlineColumn>>> scopeColumns,
+        IReadOnlyList<string> fileSets,
         long childRows,
         string json,
         int bytes,
@@ -86,6 +107,7 @@ public sealed partial class InlineRecords
         Records = records;
         RootColumns = rootColumns;
         ScopeColumns = scopeColumns;
+        FileSets = fileSets;
         ChildRowCount = childRows;
         Json = json;
         ContentBytes = bytes;
@@ -99,6 +121,9 @@ public sealed partial class InlineRecords
 
     /// <summary>Each child scope the records carry, in the order they first name it, with its columns.</summary>
     public IReadOnlyList<KeyValuePair<string, IReadOnlyList<InlineColumn>>> ScopeColumns { get; }
+
+    /// <summary>The payload sets the records point at, in the order they first name one.</summary>
+    public IReadOnlyList<string> FileSets { get; }
 
     public long ChildRowCount { get; }
 
@@ -151,6 +176,7 @@ public sealed partial class InlineRecords
         var root = new ColumnSet(DropManifest.RootScope);
         var scopes = new Dictionary<string, ColumnSet>(StringComparer.OrdinalIgnoreCase);
         var scopeOrder = new List<ColumnSet>();
+        var fileSets = new List<string>();
         var parsed = new List<InlineRecord>(count);
         long childRows = 0;
         var index = 0;
@@ -164,6 +190,7 @@ public sealed partial class InlineRecords
 
             JsonElement? rowElement = null;
             JsonElement? scopesElement = null;
+            JsonElement? filesElement = null;
             foreach (var property in item.EnumerateObject())
             {
                 switch (property.Name)
@@ -174,10 +201,13 @@ public sealed partial class InlineRecords
                     case ScopesProperty when scopesElement is null:
                         scopesElement = property.Value;
                         break;
-                    case RecordProperty or ScopesProperty:
+                    case FilesProperty when filesElement is null:
+                        filesElement = property.Value;
+                        break;
+                    case RecordProperty or ScopesProperty or FilesProperty:
                         throw Invalid(at, $"names \"{property.Name}\" twice.");
                     default:
-                        throw Invalid(at, "has a key other than \"record\" and \"scopes\"; a record carries only those two.");
+                        throw Invalid(at, "has a key other than \"record\", \"scopes\" and \"files\"; a record carries only those three.");
                 }
             }
 
@@ -246,7 +276,7 @@ public sealed partial class InlineRecords
                 }
             }
 
-            parsed.Add(new InlineRecord(row, recordScopes));
+            parsed.Add(new InlineRecord(row, recordScopes, ReadFiles(filesElement, at, fileSets)));
             index++;
         }
 
@@ -260,6 +290,7 @@ public sealed partial class InlineRecords
             parsed,
             root.Columns(),
             scopeOrder.Select(s => new KeyValuePair<string, IReadOnlyList<InlineColumn>>(s.Scope, s.Columns())).ToList(),
+            fileSets,
             childRows,
             System.Text.Encoding.UTF8.GetString(bytes),
             bytes.Length,
@@ -306,6 +337,97 @@ public sealed partial class InlineRecords
         }
 
         return row;
+    }
+
+    /// <summary>
+    /// Where a record's files are: <c>{ "curves": "abfss://..." }</c>, or <c>{ "curves": { "location": ..., "hash": ... } }</c>
+    /// when the flow decides payload changes by content hash. Nothing is uploaded; the node opens the location when the
+    /// run delivers, so what is checked here is the shape, and the flow's own roots are checked when the request is accepted.
+    /// </summary>
+    private static IReadOnlyDictionary<string, InlineFile> ReadFiles(JsonElement? element, string at, List<string> fileSets)
+    {
+        if (element is not { ValueKind: not JsonValueKind.Null } value)
+        {
+            return NoFiles;
+        }
+
+        var filesAt = at + "." + FilesProperty;
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            throw Invalid(filesAt, "must be an object of payload names to where that payload's files are.");
+        }
+
+        var files = new Dictionary<string, InlineFile>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in value.EnumerateObject())
+        {
+            if (!ScopeName().IsMatch(property.Name))
+            {
+                throw Invalid(filesAt, $"names a payload that is not an identifier of at most {MaxNameLength} characters (letters, digits, '_' and '-').");
+            }
+
+            var setAt = filesAt + "." + property.Name;
+            if (files.ContainsKey(property.Name))
+            {
+                throw Invalid(setAt, "is named twice in the record (payload names are compared without case).");
+            }
+
+            string? location;
+            string? hash = null;
+            switch (property.Value.ValueKind)
+            {
+                case JsonValueKind.String:
+                    location = property.Value.GetString();
+                    break;
+                case JsonValueKind.Object:
+                    location = null;
+                    foreach (var field in property.Value.EnumerateObject())
+                    {
+                        switch (field.Name)
+                        {
+                            case "location" when location is null:
+                                location = field.Value.ValueKind == JsonValueKind.String
+                                    ? field.Value.GetString()
+                                    : throw Invalid(setAt + ".location", "must be the folder or glob the payload's files are in.");
+                                break;
+                            case "hash" when hash is null:
+                                hash = field.Value.ValueKind == JsonValueKind.String
+                                    ? field.Value.GetString()
+                                    : throw Invalid(setAt + ".hash", "must be the payload's content hash as a string.");
+                                break;
+                            default:
+                                throw Invalid(setAt, "has a key other than \"location\" and \"hash\".");
+                        }
+                    }
+
+                    break;
+                default:
+                    throw Invalid(setAt, "must be where the payload's files are, as a location or as { \"location\": ..., \"hash\": ... }.");
+            }
+
+            if (string.IsNullOrWhiteSpace(location) || location.Length > MaxLocationLength || location.Any(char.IsControl))
+            {
+                throw Invalid(setAt, $"must name where the payload's files are: 1 to {MaxLocationLength} characters without control characters.");
+            }
+
+            if (hash is not null && (hash.Length == 0 || hash.Length > MaxHashLength || hash.Any(char.IsControl)))
+            {
+                throw Invalid(setAt + ".hash", $"must be 1 to {MaxHashLength} characters without control characters.");
+            }
+
+            if (!fileSets.Contains(property.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                if (fileSets.Count >= MaxFileSets)
+                {
+                    throw Invalid(setAt, string.Create(CultureInfo.InvariantCulture, $"names payload {MaxFileSets + 1}; a submission carries at most {MaxFileSets} payloads."));
+                }
+
+                fileSets.Add(property.Name);
+            }
+
+            files[fileSets.First(s => s.Equals(property.Name, StringComparison.OrdinalIgnoreCase))] = new InlineFile(location.Trim(), hash);
+        }
+
+        return files;
     }
 
     private static object? Scalar(JsonElement value, string at) => value.ValueKind switch
@@ -365,6 +487,26 @@ public sealed partial class InlineRecords
                         }
 
                         writer.WriteEndArray();
+                    }
+
+                    writer.WriteEndObject();
+                }
+
+                if (record.Files.Count > 0)
+                {
+                    writer.WritePropertyName(FilesProperty);
+                    writer.WriteStartObject();
+                    foreach (var (name, file) in record.Files.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                    {
+                        writer.WritePropertyName(name);
+                        writer.WriteStartObject();
+                        writer.WriteString("location", file.Location);
+                        if (file.Hash is { } hash)
+                        {
+                            writer.WriteString("hash", hash);
+                        }
+
+                        writer.WriteEndObject();
                     }
 
                     writer.WriteEndObject();

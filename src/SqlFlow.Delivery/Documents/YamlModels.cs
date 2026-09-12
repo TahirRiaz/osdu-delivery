@@ -73,6 +73,8 @@ internal sealed class FlowSourceYaml
     public string? Work { get; set; }
 
     public bool? ManualSubmission { get; set; }
+
+    public List<string>? ManualSubmissionFileRoots { get; set; }
 }
 
 internal sealed class FlowScopeYaml

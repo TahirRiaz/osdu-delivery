@@ -259,6 +259,40 @@ public sealed class InlineSubmissionEngineTests : IDisposable
         Assert.Equal(250, registered!.Delivered);
     }
 
+    /// <summary>
+    /// The whole point of pointing at files rather than carrying them: the run delivers a payload the submission never
+    /// uploaded, read from where the source said it already was.
+    /// </summary>
+    [Fact]
+    public async Task Records_that_point_at_payload_files_deliver_them_from_where_they_already_are()
+    {
+        var (flow, file) = PayloadFlow();
+        var location = _estate.WritePayloadFiles("WB-PAYLOAD", "depth,value\n0,1\n", "depth,value\n1,2\n");
+        var submission = await AcceptAsync(
+            WellboreEstate.Records(WellboreEstate.WellboreWithFiles("WB-PAYLOAD", "with files", "2026-09-12T10:00:00Z", location)),
+            definition: flow);
+
+        var outcome = await DeliverAsync(submission, flow, file);
+        Assert.Equal(1, outcome.Delivered);
+        var work = Assert.Single(_protocol.Deliveries);
+        Assert.True(work.DeliverPayload);
+        Assert.NotNull(work.Payload);
+        Assert.Equal(WellboreEstate.Key("WB-PAYLOAD"), work.Key);
+    }
+
+    [Fact]
+    public async Task A_record_whose_files_are_not_where_it_said_is_held_rather_than_delivered()
+    {
+        var (flow, file) = PayloadFlow();
+        var submission = await AcceptAsync(
+            WellboreEstate.Records(WellboreEstate.WellboreWithFiles("WB-EMPTY", "nothing there", "2026-09-12T10:00:00Z", _estate.Lake + "/WB-EMPTY")),
+            definition: flow);
+
+        var outcome = await DeliverAsync(submission, flow, file);
+        Assert.Equal(0, outcome.Delivered);
+        Assert.Empty(_protocol.Deliveries);
+    }
+
     [Fact]
     public async Task A_submission_id_that_is_not_in_the_ledger_fails_the_run()
     {
@@ -281,9 +315,17 @@ public sealed class InlineSubmissionEngineTests : IDisposable
         return db.DeliveryRecords.Count(r => r.FlowId == flowId);
     }
 
-    private async Task<InlineSubmissionState> AcceptAsync(string records, string operation = RunParameters.DeliverOperation, bool force = false)
+    /// <summary>A wellbore flow that streams payload files, with where its document sits so a run can execute it.</summary>
+    private (FlowDefinition Definition, string File) PayloadFlow(string name = WellboreEstate.PayloadFlowName, bool hashDetect = false)
     {
-        var flow = _estate.Definition;
+        var file = _estate.WriteFlow(name, _estate.PayloadFlow(name, hashDetect: hashDetect));
+        return (WellboreEstate.Load(file), file);
+    }
+
+    private async Task<InlineSubmissionState> AcceptAsync(
+        string records, string operation = RunParameters.DeliverOperation, bool force = false, FlowDefinition? definition = null)
+    {
+        var flow = definition ?? _estate.Definition;
         var submission = InlineSubmissionState.Accept(
             Guid.CreateVersion7(), flow, operation, force, FlowParameters.Resolve(flow, WellboreEstate.Values),
             InlineRecords.Parse(records), DateTime.UtcNow, "api:test-source");
@@ -293,17 +335,18 @@ public sealed class InlineSubmissionEngineTests : IDisposable
         return submission;
     }
 
-    private async Task<DeliverOutcome> DeliverAsync(InlineSubmissionState submission, bool force = false)
+    private async Task<DeliverOutcome> DeliverAsync(
+        InlineSubmissionState submission, FlowDefinition? definition = null, string? flowFile = null, bool force = false)
     {
-        var result = await RunAsync(new RunParameters { SubmissionId = submission.SubmissionId, Force = force });
+        var result = await RunAsync(new RunParameters { SubmissionId = submission.SubmissionId, Force = force }, definition, flowFile);
         Assert.True(result.Success, result.Error);
         return Assert.IsType<DeliverOutcome>(result.Result);
     }
 
-    private Task<DocumentExecutionResult> RunAsync(RunParameters parameters)
+    private Task<DocumentExecutionResult> RunAsync(RunParameters parameters, FlowDefinition? definition = null, string? flowFile = null)
         => new DeliveryExecutor(_services).ExecuteAsync(
-            new DeliveryFlowDocument { Flow = _estate.Definition },
-            _estate.FlowFile,
+            new DeliveryFlowDocument { Flow = definition ?? _estate.Definition },
+            flowFile ?? _estate.FlowFile,
             new DocumentExecutionOptions { RunId = Guid.CreateVersion7(), Parameters = parameters, Actor = "test:operator" },
             CancellationToken.None);
 }

@@ -200,35 +200,27 @@ public sealed class InlineDropTests : IDisposable
     [Fact]
     public async Task A_flow_takes_records_only_when_its_document_offers_manual_submission()
     {
-        // A flow whose protocol streams payload files cannot offer manual submission, so its document declares none.
-        var payloadFlow = WellboreEstate.Load(_estate.WriteFlow("wellbore-files", _estate.Flow(
-            "wellbore-files",
-            WellboreEstate.MappingReference,
-            sourceExtra: "  payloads:\n    files: files/{deliveryKey}/*.csv",
-            protocol: "osduFile",
-            targetExtra: "  protocolOptions:\n    payload: files\n    payloadContentType: text/csv",
-            manualSubmission: false)));
-
-        var refusal = InlineDrop.Refusal(payloadFlow);
-        Assert.NotNull(refusal);
-        Assert.Contains("delivers payload files", refusal, StringComparison.Ordinal);
-        Assert.Contains("OsduFile", refusal, StringComparison.OrdinalIgnoreCase);
         Assert.Null(InlineDrop.Refusal(_estate.Definition));
 
-        // A metadata flow that simply does not offer it says so, naming the key that turns it on.
+        // A flow that simply does not offer it says so, naming the key that turns it on.
         var notOffered = WellboreEstate.Load(_estate.WriteFlow(
             "wellbore-no-manual",
             _estate.Flow("wellbore-no-manual", WellboreEstate.MappingReference, manualSubmission: false)));
-        Assert.Contains("source.manualSubmission", InlineDrop.Refusal(notOffered), StringComparison.Ordinal);
+        var refusal = InlineDrop.Refusal(notOffered);
+        Assert.Contains("source.manualSubmission", refusal, StringComparison.Ordinal);
+
+        // A flow that streams payload files offers it on the same terms: what its records carry is where the files are,
+        // never the bytes, so the protocol it delivers through is no reason to refuse the submission.
+        var payloadFlow = WellboreEstate.Load(_estate.WriteFlow(WellboreEstate.PayloadFlowName, _estate.PayloadFlow()));
+        Assert.Null(InlineDrop.Refusal(payloadFlow));
+        var payloadNotOffered = WellboreEstate.Load(_estate.WriteFlow("wellbore-files-off", _estate.PayloadFlow("wellbore-files-off", manualSubmission: false)));
+        Assert.Contains("source.manualSubmission", InlineDrop.Refusal(payloadNotOffered), StringComparison.Ordinal);
 
         var submission = await AcceptAsync(WellboreEstate.Records(WellboreEstate.Wellbore("WB-FILES", "files", "2026-09-12T10:00:00Z")));
         var mapping = await MappingAsync();
-        foreach (var refused in new[] { payloadFlow, notOffered })
-        {
-            var ex = await Assert.ThrowsAsync<DeliveryException>(() => InlineDrop.WriteAsync(
-                _engine.Drops, _engine.Stores, Path.Combine(_estate.Root, "nowhere"), refused, mapping, submission));
-            Assert.Equal(InlineDrop.Refusal(refused), ex.Message);
-        }
+        var ex = await Assert.ThrowsAsync<DeliveryException>(() => InlineDrop.WriteAsync(
+            _engine.Drops, _engine.Stores, Path.Combine(_estate.Root, "nowhere"), notOffered, mapping, submission));
+        Assert.Equal(refusal, ex.Message);
     }
 
     [Fact]
@@ -261,15 +253,142 @@ public sealed class InlineDropTests : IDisposable
             records.Select(r => r.Row.GetString("facility_name")));
     }
 
+    [Fact]
+    public async Task A_record_points_at_its_payload_files_and_the_drop_declares_where_to_read_them()
+    {
+        var flow = PayloadFlow();
+        var location = _estate.WritePayloadFiles("WB-FILES-1");
+        var written = await WriteAsync(await AcceptAsync(RecordsWithFiles("WB-FILES-1", location), flow), flow);
+
+        var payload = Assert.Single(written.Manifest.Payloads);
+        Assert.Equal(WellboreEstate.PayloadName, payload.Key);
+        // The location travels with the record, so the drop's own folders say nothing about where the files are.
+        Assert.Equal(InlineDrop.LocationColumnPrefix + WellboreEstate.PayloadName, payload.Value.LocationColumn);
+        Assert.Null(payload.Value.PathTemplate);
+        Assert.Null(payload.Value.HashColumn);
+        Assert.Equal("text/csv", payload.Value.ContentType);
+
+        var record = Assert.Single(await ReadAsync(written.Location));
+        Assert.Equal(location, record.Row.GetString(InlineDrop.LocationColumnPrefix + WellboreEstate.PayloadName));
+    }
+
+    [Fact]
+    public async Task A_flow_that_decides_payload_changes_by_hash_carries_the_hash_of_every_record()
+    {
+        var flow = PayloadFlow("wellbore-files-hash", hashDetect: true);
+        var location = _estate.WritePayloadFiles("WB-FILES-HASH");
+        Assert.Contains(
+            "content hash",
+            InlineDrop.FilesRefusal(flow, InlineRecords.Parse(RecordsWithFiles("WB-FILES-HASH", location))),
+            StringComparison.Ordinal);
+
+        var written = await WriteAsync(await AcceptAsync(RecordsWithFiles("WB-FILES-HASH", location, "sha256:abc"), flow), flow);
+        Assert.Equal(InlineDrop.HashColumnPrefix + WellboreEstate.PayloadName, written.Manifest.Payloads[WellboreEstate.PayloadName].HashColumn);
+        var record = Assert.Single(await ReadAsync(written.Location));
+        Assert.Equal("sha256:abc", record.Row.GetString(InlineDrop.HashColumnPrefix + WellboreEstate.PayloadName));
+    }
+
+    [Fact]
+    public void Where_a_submission_may_point_at_files_is_what_the_flow_allows()
+    {
+        var flow = PayloadFlow();
+        var inside = InlineRecords.Parse(RecordsWithFiles("WB-INSIDE", _estate.Lake + "/WB-INSIDE"));
+        Assert.Null(InlineDrop.FilesRefusal(flow, inside));
+
+        foreach (var (records, fragment) in new[]
+        {
+            (RecordsWithFiles("WB-OUT", "C:/somewhere/else"), "outside what flow"),
+            (RecordsWithFiles("WB-DOTS", _estate.Lake + "/../escape"), "must not contain '..'"),
+            (WellboreEstate.Records(WellboreEstate.Wellbore("WB-NONE", "no files", "2026-09-12T10:00:00Z")), "points at no files"),
+        })
+        {
+            Assert.Contains(fragment, InlineDrop.FilesRefusal(flow, InlineRecords.Parse(records)), StringComparison.Ordinal);
+        }
+
+        // A flow that streams nothing has nowhere to read files from, and a payload it does not stream is named as such.
+        Assert.Contains("streams no payload files", InlineDrop.FilesRefusal(_estate.Definition, inside), StringComparison.Ordinal);
+        var other = InlineRecords.Parse(WellboreEstate.Records(new
+        {
+            record = WellboreEstate.Row("WB-OTHERSET", "x", "2026-09-12T10:00:00Z"),
+            files = new Dictionary<string, object> { ["curves"] = _estate.Lake + "/x" },
+        }));
+        Assert.Contains("which it does not stream", InlineDrop.FilesRefusal(flow, other), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A flow that streams files whose mapping iterates no child scope at all: the drop still has to be keyed, because
+    /// the payload is joined to its record by the delivery key and the reader refuses a payload drop whose root rows
+    /// carry none. The live estate's document mapping has exactly this shape, and this is what it found.
+    /// </summary>
+    [Fact]
+    public async Task A_payload_drop_is_keyed_even_when_the_mapping_iterates_no_child_scope()
+    {
+        _estate.WriteMapping(FlatMappingReference, FlatMapping);
+        var flow = PayloadFlow("wellbore-files-flat", mapping: FlatMappingReference);
+        var location = _estate.WritePayloadFiles("WB-FLAT");
+        var written = await WriteAsync(await AcceptAsync(RecordsWithFiles("WB-FLAT", location), flow), flow);
+
+        Assert.True(written.Manifest.Partitioned);
+        Assert.Single(written.Manifest.Scopes);
+        Assert.Contains(written.Manifest.Root.Columns, c => c.Name == DropReader.DeliveryKeyColumn);
+
+        var record = Assert.Single(await ReadAsync(written.Location));
+        Assert.Equal(WellboreEstate.Key("WB-FLAT").Value, record.DeclaredDeliveryKey);
+        Assert.Equal(location, record.Row.GetString(InlineDrop.LocationColumnPrefix + WellboreEstate.PayloadName));
+    }
+
+    [Fact]
+    public async Task A_record_may_not_carry_the_column_reserved_for_where_its_files_are()
+    {
+        var flow = PayloadFlow();
+        var row = WellboreEstate.Row("WB-RESERVED", "x", "2026-09-12T10:00:00Z");
+        row[InlineDrop.LocationColumnPrefix + WellboreEstate.PayloadName] = "C:/elsewhere";
+        var submission = await AcceptAsync(
+            WellboreEstate.Records(new { record = row, files = new Dictionary<string, object> { [WellboreEstate.PayloadName] = _estate.Lake + "/WB-RESERVED" } }),
+            flow);
+
+        var ex = await Assert.ThrowsAsync<DeliveryException>(() => WriteAsync(submission, flow));
+        Assert.Contains("is reserved for where the payload", ex.Message, StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
         _estate.Dispose();
     }
 
-    private async Task<InlineSubmissionState> AcceptAsync(string records)
+    private const string FlatMappingReference = "WellboreFlat@1.0.0";
+
+    /// <summary>The wellbore mapping with no child scope at all, which is the shape a document mapping has.</summary>
+    private const string FlatMapping = """
+        documentType: mapping
+        name: WellboreFlat
+        version: 1.0.0
+        kind: osdu:wks:master-data--Wellbore:1.3.0
+        source: { system: recall }
+        identity: { naturalKey: [data.FacilityName], label: "{facility_name}" }
+        envelope:
+          legalTags: [opendes-reference-data-default]
+          otherRelevantDataCountries: [NO]
+          acl:
+            owners: [data.default.owners@opendes.dataservices.energy]
+            viewers: [data.default.viewers@opendes.dataservices.energy]
+        parameters:
+          dataPartition: { required: true }
+        properties:
+          - { target: data.FacilityName, source: facility_name, transform: trim }
+          - { target: data.FacilityDescription, source: facility_description }
+        """;
+
+    private static string RecordsWithFiles(string name, string location, string? hash = null)
+        => WellboreEstate.Records(WellboreEstate.WellboreWithFiles(name, "with files", "2026-09-12T10:00:00Z", location, hash));
+
+    private FlowDefinition PayloadFlow(string name = WellboreEstate.PayloadFlowName, bool hashDetect = false, string? mapping = null)
+        => WellboreEstate.Load(_estate.WriteFlow(name, _estate.PayloadFlow(name, hashDetect: hashDetect, mapping: mapping)));
+
+    private async Task<InlineSubmissionState> AcceptAsync(string records, FlowDefinition? definition = null)
     {
-        var flow = _estate.Definition;
+        var flow = definition ?? _estate.Definition;
         var submission = InlineSubmissionState.Accept(
             Guid.CreateVersion7(), flow, "deliver", false, FlowParameters.Resolve(flow, WellboreEstate.Values),
             InlineRecords.Parse(records), DateTime.UtcNow, "api:test-source");
@@ -285,9 +404,9 @@ public sealed class InlineDropTests : IDisposable
         return runtime.Mapping;
     }
 
-    private async Task<InlineDropResult> WriteAsync(InlineSubmissionState submission)
+    private async Task<InlineDropResult> WriteAsync(InlineSubmissionState submission, FlowDefinition? definition = null)
     {
-        var flow = _estate.Definition;
+        var flow = definition ?? _estate.Definition;
         var location = InlineDrop.Location(flow, FlowParameters.Resolve(flow, WellboreEstate.Values), submission.SubmissionId);
         using var runtime = await FlowRuntime.CreateAsync(_engine, flow, WellboreEstate.Values, location);
         return await runtime.WriteInlineDropAsync(submission);

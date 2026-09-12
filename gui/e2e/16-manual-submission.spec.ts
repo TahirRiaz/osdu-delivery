@@ -2,7 +2,7 @@ import { expect, test } from "./helpers";
 
 // The manual submission page: every flow whose document offers manual submission, the reason a flow offers none, and
 // the submission sheet opened for the flow chosen. The fixture estate has one flow that offers it (wellbore-records,
-// wellbore master data) and two that do not (the well log flow streams payload files; the cache sync is a retrieval).
+// wellbore master data) and two that do not (the well log flow declares none; the cache sync is a retrieval).
 
 test.describe.serial("manual submission", () => {
   test("the page lists the flows that offer manual submission", async ({ adminPage }) => {
@@ -11,7 +11,7 @@ test.describe.serial("manual submission", () => {
 
     const rows = adminPage.getByTestId("manual-submission-flows").getByTestId("table-row");
     await expect(rows.filter({ hasText: "wellbore-records" })).toHaveCount(1, { timeout: 30_000 });
-    // A flow that streams payload files is not on the list at all.
+    // A flow whose document offers no manual submission is not on the list at all.
     await expect(rows.filter({ hasText: "recall-welllog" })).toHaveCount(0);
     // What it renders with and the parameter a submission carries are on the row.
     const wellbore = rows.filter({ hasText: "wellbore-records" });
@@ -27,7 +27,7 @@ test.describe.serial("manual submission", () => {
     const rows = adminPage.getByTestId("manual-submission-flows").getByTestId("table-row");
     const welllog = rows.filter({ hasText: "recall-welllog" });
     await expect(welllog).toHaveCount(1, { timeout: 30_000 });
-    await expect(welllog).toContainText("payload files");
+    await expect(welllog).toContainText("manualSubmission");
     await expect(welllog.getByRole("button", { name: /submit records/i })).toHaveCount(0);
   });
 

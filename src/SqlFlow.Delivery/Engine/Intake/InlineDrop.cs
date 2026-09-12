@@ -12,23 +12,29 @@ using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Engine.Intake;
 
-/// <summary>What writing an inline submission's drop did: where the drop is, its manifest, whether this call wrote it, and what to tell the operator.</summary>
+/// <summary>What writing a submission's drop did: where the drop is, its manifest, whether this call wrote it, and what to tell the operator.</summary>
 public sealed record InlineDropResult(string Location, DropManifest Manifest, bool Written, IReadOnlyList<string> Warnings);
 
 /// <summary>
-/// Writes an inline submission out as a drop (design.md section 3.4), so the records a source sent in a request take the
-/// path a prepared drop takes: the manifest check, the preflight gate, the change gates, the ledger and the drain. The
-/// drop lives under the flow's work location, <c>{work}/inline/{submissionId}</c>, never at the flow's declared source
+/// Writes a submission out as a drop (design.md section 3.4), so the records a source sent in a request take the path a
+/// prepared drop takes: the manifest check, the preflight gate, the change gates, the ledger and the drain. The drop
+/// lives under the flow's work location, <c>{work}/inline/{submissionId}</c>, never at the flow's declared source
 /// location, which belongs to the preparing side. It is written from the ledger's copy of the records whenever a run
 /// takes the submission and finds no manifest there, the data files first and the manifest last, so a re-run after the
 /// work location was cleaned up writes it again and no run reads a half-written one.
 /// <para>
+/// Payload files are never copied here. A record says where its files already are, and the drop's manifest declares a
+/// location column carrying it, so the node opens them with its own identity when it delivers and re-opens them on every
+/// retry. That is the same "past, not through" handling a prepared drop gets (design.md section 3.2), and it is what
+/// lets a submission deliver through the protocols that stream files: the wellbore DDMS, the file service and manifest
+/// ingestion.
+/// </para>
+/// <para>
 /// JSON leaves a column out where a drop writes a null, so the drop declares every column the mapping reads and every
 /// column the flow names, and a column no record sent is null in every row. When the mapping iterates child scopes the
-/// drop is keyed: each root row carries its delivery key (the one the record sent, or the one derived from its natural
-/// key) and each child row its record's key, sorted, so the intake merge-joins them. A record whose natural key is
-/// incomplete gets a key of its own for that join only; the renderer derives none, so the intake reports the record as
-/// untracked exactly as it would for such a row in a prepared drop.
+/// drop is keyed: each root row carries its delivery key and each child row its record's key, sorted, so the intake
+/// merge-joins them. A record whose natural key is incomplete gets a key of its own for that join only; the renderer
+/// derives none, so the intake reports the record as untracked exactly as it would for such a row in a prepared drop.
 /// </para>
 /// </summary>
 public static class InlineDrop
@@ -37,10 +43,16 @@ public static class InlineDrop
 
     public const string RecordFile = "record/part-00000.parquet";
 
+    /// <summary>The root-scope column a submission's drop carries each record's payload location in.</summary>
+    public const string LocationColumnPrefix = "payloadLocation__";
+
+    /// <summary>The root-scope column a submission's drop carries each record's payload content hash in.</summary>
+    public const string HashColumnPrefix = "payloadHash__";
+
     /// <summary>The namespace of the join keys given to records whose natural key is incomplete.</summary>
     private static readonly Guid UntrackedKeys = DeterministicGuid.Namespace("inline-submission-untracked-record");
 
-    /// <summary>The drop location of an inline submission: under the flow's work location for these parameter values.</summary>
+    /// <summary>The drop location of a submission: under the flow's work location for these parameter values.</summary>
     public static string Location(FlowDefinition flow, IReadOnlyDictionary<string, string> values, Guid submissionId)
     {
         ArgumentNullException.ThrowIfNull(flow);
@@ -49,21 +61,82 @@ public static class InlineDrop
         return FileStoreRegistry.Join(FileStoreRegistry.Join(work, Folder), submissionId.ToString("D"));
     }
 
-    /// <summary>
-    /// Why <paramref name="flow"/> cannot take records sent in the request, or null when it can: a flow says so itself
-    /// with <c>source.manualSubmission</c>, and a flow whose protocol streams payload files cannot say it at all.
-    /// </summary>
+    /// <summary>Why <paramref name="flow"/> takes no records sent in a request, or null when it does: its document says so.</summary>
     public static string? Refusal(FlowDefinition flow)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        if (Planner.PayloadName(flow) is { } payload)
-        {
-            return $"Flow '{flow.Name}' delivers payload files ('{payload}') through the {flow.Target.Protocol} protocol, and a submission of records carries metadata only; its records and their files are delivered as a drop.";
-        }
-
         return flow.Source.ManualSubmission
             ? null
             : $"Flow '{flow.Name}' does not take records sent in the request: its document declares no 'source.manualSubmission'. Add 'manualSubmission: true' to the flow's source block to let records be submitted for it, or deliver them as a drop.";
+    }
+
+    /// <summary>
+    /// What a submission to a flow says about files: the payload the flow streams (null when it streams none, and then a
+    /// record carries no files at all), whether each record has to carry a content hash for it, and the roots a record
+    /// may point inside.
+    /// </summary>
+    public sealed record InlinePayloadContract(string? PayloadName, bool HashRequired, IReadOnlyList<string> Roots);
+
+    /// <summary>What <paramref name="flow"/> expects a submission to say about files, for a caller filling one in.</summary>
+    public static InlinePayloadContract PayloadContract(FlowDefinition flow)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        var payloadName = Planner.PayloadName(flow);
+        return new InlinePayloadContract(
+            payloadName,
+            payloadName is not null && flow.Change.PayloadDetect != ChangeDetection.LastModified,
+            payloadName is null ? [] : PayloadRoots.Of(flow));
+    }
+
+    /// <summary>
+    /// Why the records cannot be delivered by <paramref name="flow"/> as they stand, or null when they can: the payload
+    /// the flow streams has to be pointed at, by every record, somewhere the flow allows, and with a hash when the flow
+    /// decides payload changes by hash. Checked when a request is accepted, and again here before anything is written.
+    /// </summary>
+    public static string? FilesRefusal(FlowDefinition flow, InlineRecords records)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        ArgumentNullException.ThrowIfNull(records);
+        var payloadName = Planner.PayloadName(flow);
+        if (payloadName is null)
+        {
+            return records.FileSets.Count == 0
+                ? null
+                : $"Flow '{flow.Name}' streams no payload files, so its records carry none; 'files' names {string.Join(", ", records.FileSets)}.";
+        }
+
+        foreach (var set in records.FileSets)
+        {
+            if (!set.Equals(payloadName, StringComparison.OrdinalIgnoreCase))
+            {
+                return $"Flow '{flow.Name}' streams the payload '{payloadName}'; a record names files under '{set}', which it does not stream.";
+            }
+        }
+
+        var needsHash = flow.Change.PayloadDetect != ChangeDetection.LastModified;
+        for (var i = 0; i < records.Records.Count; i++)
+        {
+            if (!records.Records[i].Files.TryGetValue(payloadName, out var file))
+            {
+                return string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"records[{i}] points at no files: flow '{flow.Name}' streams the payload '{payloadName}', so every record says where its files are under files.{payloadName}.");
+            }
+
+            if (PayloadRoots.Refusal(flow, file.Location) is { } refusal)
+            {
+                return string.Create(CultureInfo.InvariantCulture, $"records[{i}]: {refusal}");
+            }
+
+            if (needsHash && string.IsNullOrWhiteSpace(file.Hash))
+            {
+                return string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"records[{i}] gives no hash for payload '{payloadName}': flow '{flow.Name}' decides payload changes by content hash, so each record carries one under files.{payloadName}.hash, or the flow takes the files' modified times instead (change.payloadDetect: lastModified).");
+            }
+        }
+
+        return null;
     }
 
     public static string ScopeFile(string scope)
@@ -94,7 +167,7 @@ public static class InlineDrop
 
         if (submission.FlowId != flow.Id)
         {
-            throw new DeliveryException($"Inline submission {submission.SubmissionId:D} belongs to flow '{submission.FlowName}', not '{flow.Name}'.");
+            throw new DeliveryException($"Submission {submission.SubmissionId:D} belongs to flow '{submission.FlowName}', not '{flow.Name}'.");
         }
 
         var root = new Drop(location.TrimEnd('/', '\\'), null!);
@@ -105,13 +178,18 @@ public static class InlineDrop
             if (existing.Manifest.SubmissionId != submission.SubmissionId)
             {
                 throw new DeliveryException(
-                    $"{manifestPath} is the manifest of submission {existing.Manifest.SubmissionId:D}, not {submission.SubmissionId:D}; an inline submission's drop is written only by the runs that take it.");
+                    $"{manifestPath} is the manifest of submission {existing.Manifest.SubmissionId:D}, not {submission.SubmissionId:D}; a submission's drop is written only by the runs that take it.");
             }
 
             return new InlineDropResult(root.Location, existing.Manifest, Written: false, []);
         }
 
         var records = InlineRecords.Parse(submission.RecordsJson);
+        if (FilesRefusal(flow, records) is { } filesRefusal)
+        {
+            throw new DeliveryException($"Submission {submission.SubmissionId:D}: {filesRefusal}");
+        }
+
         var read = MappingColumns.Read(mapping.Mapping);
         var warnings = new List<string>();
         var where = string.Create(CultureInfo.InvariantCulture, $"Inline submission {submission.SubmissionId:D}");
@@ -123,10 +201,28 @@ public static class InlineDrop
             warnings.Add($"{where}: scope '{ignored}' is not one the mapping iterates, so its rows are not written to the drop.");
         }
 
-        var keyed = read.Scopes.Count > 0;
+        var payloadName = Planner.PayloadName(flow);
+        var payload = payloadName is null ? null : PayloadColumns.Of(payloadName, records);
+        // A payload is joined to its record by the delivery key, so a drop that declares one is keyed even when the
+        // mapping iterates no child scope at all: the reader refuses root rows without a key whenever the drop has
+        // child scopes or payloads.
+        var keyed = read.Scopes.Count > 0 || payloadName is not null;
         var keys = Keys(records, mapping.Renderer, submission, keyed);
         var flowColumns = new[] { flow.Source.LastModified, flow.Source.Fingerprint }.OfType<string>().ToList();
         var rootColumns = Declare(DropManifest.RootScope, records.RootColumns, read.Record, flowColumns, keyed, warnings, where);
+        if (payload is not null)
+        {
+            foreach (var reserved in payload.Columns)
+            {
+                if (rootColumns.Any(c => c.Name.Equals(reserved.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new DeliveryException(
+                        $"{where}: column '{reserved.Name}' is reserved for where the payload '{payloadName}' is; a record must not carry a column of that name.");
+                }
+
+                rootColumns.Add(reserved);
+            }
+        }
 
         var order = Enumerable.Range(0, records.Records.Count).ToList();
         if (keyed)
@@ -138,7 +234,7 @@ public static class InlineDrop
         var scopes = new Dictionary<string, ManifestScope>(StringComparer.Ordinal);
         await WriteFileAsync(
             stores, root.Resolve(RecordFile), rootColumns,
-            order.Select(i => Row(records.Records[i].Row, rootColumns, keyed ? keys[i] : null)).ToList(), ct).ConfigureAwait(false);
+            order.Select(i => Row(records.Records[i], rootColumns, keyed ? keys[i] : null, payload)).ToList(), ct).ConfigureAwait(false);
         scopes[DropManifest.RootScope] = new ManifestScope { Files = [RecordFile], Columns = Manifest(rootColumns) };
 
         foreach (var scope in read.Scopes)
@@ -169,6 +265,17 @@ public static class InlineDrop
             RecordCount = records.Records.Count,
             Partitioned = keyed,
             Scopes = scopes,
+            Payloads = payload is null
+                ? new Dictionary<string, ManifestPayload>(StringComparer.Ordinal)
+                : new Dictionary<string, ManifestPayload>(StringComparer.Ordinal)
+                {
+                    [payloadName!] = new()
+                    {
+                        LocationColumn = payload.Location.Name,
+                        HashColumn = payload.Hash?.Name,
+                        ContentType = flow.Target.ProtocolOptions.PayloadContentType,
+                    },
+                },
         };
         manifest.Validate(manifestPath);
 
@@ -179,6 +286,20 @@ public static class InlineDrop
         }
 
         return new InlineDropResult(root.Location, manifest, Written: true, warnings);
+    }
+
+    /// <summary>The reserved root-scope columns a submission's drop carries its payload location (and hash) in.</summary>
+    private sealed record PayloadColumns(InlineColumn Location, InlineColumn? Hash)
+    {
+        public IEnumerable<InlineColumn> Columns => Hash is null ? [Location] : [Location, Hash];
+
+        public static PayloadColumns Of(string payloadName, InlineRecords records) => new(
+            new InlineColumn(LocationColumnPrefix + payloadName, InlineColumnTypes.Text),
+            records.Records.Any(r => r.Files.TryGetValue(payloadName, out var file) && file.Hash is not null)
+                ? new InlineColumn(HashColumnPrefix + payloadName, InlineColumnTypes.Text)
+                : null);
+
+        public string PayloadName => Location.Name[LocationColumnPrefix.Length..];
     }
 
     /// <summary>
@@ -255,7 +376,23 @@ public static class InlineDrop
         return columns;
     }
 
-    private static IReadOnlyDictionary<string, object?> Row(IReadOnlyDictionary<string, object?> sent, IReadOnlyList<InlineColumn> columns, string? key)
+    private static IReadOnlyDictionary<string, object?> Row(InlineRecord record, IReadOnlyList<InlineColumn> columns, string? key, PayloadColumns? payload)
+    {
+        var row = Row(record.Row, columns, key);
+        if (payload is not null && record.Files.TryGetValue(payload.PayloadName, out var file))
+        {
+            var writable = (Dictionary<string, object?>)row;
+            writable[payload.Location.Name] = file.Location;
+            if (payload.Hash is { } hash)
+            {
+                writable[hash.Name] = file.Hash;
+            }
+        }
+
+        return row;
+    }
+
+    private static Dictionary<string, object?> Row(IReadOnlyDictionary<string, object?> sent, IReadOnlyList<InlineColumn> columns, string? key)
     {
         var row = new Dictionary<string, object?>(columns.Count, StringComparer.Ordinal);
         foreach (var column in columns)

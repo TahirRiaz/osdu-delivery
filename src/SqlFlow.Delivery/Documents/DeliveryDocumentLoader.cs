@@ -183,6 +183,10 @@ internal static partial class FlowMapper
                 KnownState = string.IsNullOrWhiteSpace(src.KnownState) ? null : src.KnownState!.Trim(),
                 Work = string.IsNullOrWhiteSpace(src.Work) ? null : src.Work!.Trim(),
                 ManualSubmission = src.ManualSubmission ?? false,
+                ManualSubmissionFileRoots = (src.ManualSubmissionFileRoots ?? [])
+                    .Where(r => !string.IsNullOrWhiteSpace(r))
+                    .Select(r => r.Trim())
+                    .ToList(),
             },
             Render = new FlowRender
             {
@@ -282,12 +286,22 @@ internal static partial class FlowMapper
             throw new FlowValidationException($"{source}: target.headers.{PartitionHeader} must not be empty.");
         }
 
-        // Records sent in a submission request carry metadata only (design.md section 3.4), so a flow whose protocol
-        // streams payload files cannot offer manual submission at all: its records arrive with their files, in a drop.
-        if (flow.Source.ManualSubmission && DeliveryProtocols.CarriesPayload(flow.Target.Protocol))
+        // A submission carries its records, and points at its payload files where they already are (design.md section
+        // 3.4): the node opens them with its own identity when the run delivers. Roots bound what it may be pointed at,
+        // so they are only meaningful on a flow that takes submissions at all.
+        if (flow.Source.ManualSubmissionFileRoots.Count > 0 && !flow.Source.ManualSubmission)
         {
             throw new FlowValidationException(
-                $"{source}: source.manualSubmission cannot be set on a flow whose {flow.Target.Protocol} protocol streams payload files; records sent in a request carry metadata only, so this flow takes a drop.");
+                $"{source}: source.manualSubmissionFileRoots bounds where a submission may point at payload files, which only a flow declaring source.manualSubmission accepts.");
+        }
+
+        foreach (var root in flow.Source.ManualSubmissionFileRoots)
+        {
+            if (root.Contains('*', StringComparison.Ordinal) || root.Contains("..", StringComparison.Ordinal))
+            {
+                throw new FlowValidationException(
+                    $"{source}: source.manualSubmissionFileRoots entry '{root}' must be a plain prefix (a container or folder), with no wildcard and no '..'.");
+            }
         }
 
         if (flow.Target.ProtocolOptions.BatchSize is < 1 or > ProtocolOptions.MaxBatchSize)

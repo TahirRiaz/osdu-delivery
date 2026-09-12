@@ -148,12 +148,13 @@ public sealed record DeliveryFlowParameterDto(string Name, bool Required, string
 
 /// <summary>
 /// One delivery flow as the manual submission page lists it: whether its document offers manual submission
-/// (<c>source.manualSubmission</c>), what it renders with, and the parameter values a submission has to carry. A flow
-/// that does not offer it is listed only when the caller asks for all of them, and says why.
+/// (<c>source.manualSubmission</c>), what it renders with, the parameter values a submission has to carry, and the
+/// payload its records point at when it streams one. A flow that does not offer it is listed only when the caller asks
+/// for all of them, and says why.
 /// </summary>
 public sealed record DeliveryManualFlowDto(
     Guid PipelineId, Guid RepoId, string FlowName, string? Batch, string MappingReference, string Protocol,
-    bool AcceptsRecords, string? RecordsRefusal, IReadOnlyList<DeliveryFlowParameterDto> Parameters);
+    bool AcceptsRecords, string? RecordsRefusal, IReadOnlyList<DeliveryFlowParameterDto> Parameters, string? PayloadName);
 
 /// <summary>The columns a flow's mapping reads from one child scope.</summary>
 public sealed record DeliveryScopeColumnsDto(string Scope, IReadOnlyList<string> Columns);
@@ -162,13 +163,16 @@ public sealed record DeliveryScopeColumnsDto(string Scope, IReadOnlyList<string>
 /// What a source sends a flow (design.md section 3.4): whether the flow takes records inline and why not, the parameters
 /// it declares, the columns its pinned mapping reads from the root row and from each child scope, the natural key's
 /// columns, the column the flow versions rows by, and the ceilings of one inline submission. <c>MappingProblem</c> says
-/// why the columns are unknown when the catalog cannot read the pinned mapping.
+/// why the columns are unknown when the catalog cannot read the pinned mapping. <c>PayloadName</c> is the payload the
+/// flow streams, which every record then points at under <c>files</c>, with <c>PayloadHashRequired</c> saying whether
+/// each has to carry a content hash and <c>PayloadRoots</c> where the files may sit.
 /// </summary>
 public sealed record DeliverySourceContractDto(
     Guid PipelineId, string FlowName, string MappingReference, string Protocol, bool AcceptsRecords, string? RecordsRefusal,
     IReadOnlyList<DeliveryFlowParameterDto> Parameters, IReadOnlyList<string> RecordColumns, IReadOnlyList<DeliveryScopeColumnsDto> Scopes,
     IReadOnlyList<string> NaturalKey, string? LastModifiedColumn, string? FingerprintColumn, string? MappingProblem,
-    int MaxRecords, int MaxChildRows, int MaxContentBytes);
+    int MaxRecords, int MaxChildRows, int MaxContentBytes,
+    string? PayloadName, bool PayloadHashRequired, IReadOnlyList<string> PayloadRoots);
 
 /// <summary>A run was queued for a record-scoped operation (redeliver, verify).</summary>
 public sealed record DeliveryRunAccepted(Guid RunId, string Status);
@@ -930,6 +934,14 @@ public static class DeliveryEndpoints
             return InvalidSubmission(ex.Message, "Invalid records");
         }
 
+        // Where the records say their files are is checked before anything is stored: the node opens those locations with
+        // its own identity when the run delivers, so the flow's roots are what keeps a submission from having any file
+        // that identity can read shipped to OSDU (design.md section 3.4).
+        if (InlineDrop.FilesRefusal(flow.Flow, records) is { } filesRefusal)
+        {
+            return InvalidSubmission(filesRefusal, "Invalid records");
+        }
+
         var submissionId = request.SubmissionId ?? Guid.CreateVersion7();
         var accepted = InlineSubmissionState.Accept(submissionId, flow.Flow, operation, request.Force, values, records, clock.GetUtcNow().UtcDateTime, RequestActor.Label(user));
         var stored = await ledger.GetInlineSubmissionAsync(submissionId, ct).ConfigureAwait(false);
@@ -1033,7 +1045,8 @@ public static class DeliveryEndpoints
                 refusal is null, refusal,
                 flow.Parameters.OrderBy(kv => kv.Key, StringComparer.Ordinal)
                     .Select(kv => new DeliveryFlowParameterDto(kv.Key, kv.Value.Required, kv.Value.Default, kv.Value.Description))
-                    .ToList()));
+                    .ToList(),
+                InlineDrop.PayloadContract(flow).PayloadName));
         }
 
         return TypedResults.Ok<IReadOnlyList<DeliveryManualFlowDto>>(flows);
@@ -1076,6 +1089,7 @@ public static class DeliveryEndpoints
         }
 
         var refusal = InlineDrop.Refusal(definition);
+        var payload = InlineDrop.PayloadContract(definition);
         return TypedResults.Ok(new DeliverySourceContractDto(
             flow.Pipeline.Id, flow.Pipeline.Name, reference, definition.Target.Protocol.ToString(), refusal is null, refusal,
             definition.Parameters.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => new DeliveryFlowParameterDto(kv.Key, kv.Value.Required, kv.Value.Default, kv.Value.Description)).ToList(),
@@ -1083,7 +1097,8 @@ public static class DeliveryEndpoints
             columns?.Scopes.Select(s => new DeliveryScopeColumnsDto(s.Scope, s.Columns)).ToList() ?? [],
             columns?.NaturalKey ?? [],
             definition.Source.LastModified, definition.Source.Fingerprint, mappingProblem,
-            InlineRecords.MaxRecords, InlineRecords.MaxChildRows, InlineRecords.MaxContentBytes));
+            InlineRecords.MaxRecords, InlineRecords.MaxChildRows, InlineRecords.MaxContentBytes,
+            payload.PayloadName, payload.HashRequired, payload.Roots));
     }
 
     /// <summary>The records an inline submission carried, as the ledger holds them.</summary>
