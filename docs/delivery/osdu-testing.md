@@ -135,6 +135,9 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 | 13 | Two chunks that both numbered their rows from zero committed a log of 5 rows instead of 9, and the commit succeeded. | Colliding row labels hold the record before a session opens; the committed log is read back and checked. | 1b70fbc |
 | 14 | A run recovered after a crash finished while the dead worker's lease still held the record, leaving it delivering although OSDU held the new version. | The recovered run waits out the stopped lease and sends the record. | 64a5e57 |
 | 15 | A standalone worker on the control plane's host took the same node name as the control plane's own worker. | A node can run under a configured name. | 525b485 |
+| 16 | Every neutron porosity curve was published as a hundredth of its value: the mapping declared the source unit `V/V` as `%`. | `V/V` maps to `m3/m3`, which is what OSDU's reference data calls volume per volume, and the sample snapshot caches it. | 215bee2 |
+| 17 | Records a cache change held back for approval were reported as unchanged, so a run said nothing was waiting while the estate waited on a decision. | They are counted apart as awaiting approval, from the plan through the submission, the run result, the API and the GUI. | 215bee2 |
+| 18 | A registration whose answer never reached the ledger left a dataset record with nothing referencing it, because the step was marked only after the service answered. | The step is marked with its landing-zone path before the request, and a try that finds the mark asks which dataset that path became and takes it over. | 215bee2 |
 
 ## 4. What is missing
 
@@ -162,11 +165,14 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 
 ### 4.3 Known defects not yet fixed
 
-| Defect | Effect | State |
-| --- | --- | --- |
-| Neutron porosity unit | [WellLog@1.4.0.yaml line 142](../../samples/recall-welllog/mappings/WellLog@1.4.0.yaml#L142) (and the live estate's `WellLog@1.4.1`) maps the source unit `V/V` to `%`, while NPHI holds fractions (0.19 to 0.22), so OSDU consumers read porosity 100 times too small. | Waiting on the choice between a volume fraction unit from the reference data and a conversion in prepare. |
-| Approval-held records in run counts | Records held behind a cache change waiting for approval are counted as `skippedUnchanged`, so a run report does not show that they wait. | Needs a ledger column, which means re-minting the catalog. |
-| Registration between a crash and its step report | If a process dies after registering a dataset but before the ledger records that step, the recovered run registers a second dataset and the first stays in OSDU unreferenced. Not observed in either crash test. | Open. |
+None stand open. The three that did (the porosity unit, approval-held records counted as unchanged, and a
+registration whose answer was lost) are fixed in 215bee2, and are rows 16 to 18 of section 3.
+
+How far each was proven: rows 17 and 18 carry tests that fail on the code before them, and the re-minted live
+catalog reports the new count on every run and submission. Row 16 is proven by the sample estate, which renders
+and validates with the corrected unit, and by the live cache, which now holds `m3/m3`; the live well logs were
+not re-rendered with it, because the catalog re-mint left the ledger without the versions OSDU holds, and the
+wellbore DDMS refuses to create a log it already has.
 
 ### 4.4 Deferred by decision
 
@@ -178,7 +184,9 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 
 ## 5. What the tests left in the partition
 
-All live, all carrying the marker, with every write in the action log:
+Nothing, as of 2026-09-12: every id below was soft-deleted (reversible, `POST /records/{id}:delete`) and then
+checked, and none of them resolves. OSDU can restore any of them, and a drop can send them again. They carried
+the run marker, and every write and the cleanup itself are in the action log:
 
 - `test:master-data--Wellbore:8caec6614b605fe6809175534f9c9a1c` and `test:master-data--Wellbore:250b474c3f1550c59dc7a11c81ca63c3`;
 - `test:work-product-component--WellLog:1f2c3bd61925503cad8694c176cd81b5` (L-1001),
