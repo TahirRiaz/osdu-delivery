@@ -20,14 +20,14 @@
     <PackageVersion Include="LibGit2Sharp" Version="0.32.0" />
     <!-- The EF-managed catalog (SqlFlow.Catalog): the estate read-model, the run queue, schedules, users, and the
          delivery ledger. EF lives ONLY here, never in the engine. -->
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.17" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.17" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.20" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.20" />
     <!-- The delivery ledger tests run the catalog model on an in-memory SQLite database. -->
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.17" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.20" />
     <!-- The control plane (SqlFlow.ControlPlane): the API + coordination host over the catalog. JWT bearer auth,
          the built-in .NET 9 OpenAPI document, and the EF health-check probe for readiness. -->
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.20" />
-    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="9.0.17" />
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="9.0.20" />
     <!-- Identity for the control plane's user store: PasswordHasher (PBKDF2) for local users, and the OpenID
          Connect protocol stack for validating Microsoft Entra ID tokens on the /auth/exchange endpoint. The
          OpenIdConnect version matches what JwtBearer already resolves transitively. -->
