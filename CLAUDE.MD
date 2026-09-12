@@ -56,6 +56,16 @@ The SQLFlow history is reachable through the `upstream` remote (the local SQLFlo
 
 The declared endpoints of a flow ARE the design. When a flow finds no files or seems to point at the wrong place: diagnose and report what the flow declares, what actually exists there, and where the data really is; propose the change as an option and STOP. Fixing anything else about the flow (options, patterns, schedule, comments) is fine when asked.
 
+## Live OSDU: Log Every Id, Clean Up When Done
+
+**Every id a test or a verification run creates in the live OSDU partition is logged when it is created, and removed when the work is done.** The log is `.sqlflow/live-e2e/actions.log`, and it, not the ledger, is the authority on what exists: a catalog re-mint empties the ledger, and anything created before it would otherwise be untraceable. Cleanup is only possible because the log is complete, so an unlogged id is a defect even when nothing goes wrong.
+
+- **Log the intent before sending, and the ids straight after.** One UTC-stamped line saying what the call will write and to which partition, then a line naming every id it created. Log every id, including the ones a protocol mints on your behalf: a file or manifest delivery creates a `dataset--File.Generic` as well as the document, and a dataset the ledger never holds is exactly the one a later cleanup misses.
+- **Clean up before handing the work back.** Remove every id this work created, at the reversible scope: the ledger's `record` scope, or `POST /records/{id}:delete` directly for an id the ledger does not hold. Never `DELETE /records/{id}`, never a purge, and never anything the log does not attribute to this work.
+- **Verify, then say so.** A GET on each id must answer 404 before cleanup counts as done. Report what was created and what was removed; "I deleted it" without the check is not a result.
+- **Local artifacts count too**: drop-off uploads, staged payload files, temp drops and work folders this work put on disk.
+- A task that wrote to the live partition is not finished until this is done, however complete the feature work is.
+
 ## Single Code Path Principle
 
 **Never create multiple execution pathways for the same feature.** Before implementing something, verify whether an existing path already handles it. Extend or modify the existing path rather than creating a parallel one. This applies at all layers: backend execution, API routes, GUI commands, and frontend data flows.
