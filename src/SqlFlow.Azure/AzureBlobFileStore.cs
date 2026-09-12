@@ -187,7 +187,8 @@ public sealed class AzureBlobFileStore : IFileStore
         await gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var pageable = container.GetBlobsByHierarchyAsync(delimiter: "/", prefix: prefix, cancellationToken: ct);
+            // Traits and states are named because the SDK stopped defaulting them; None is what this call always asked for.
+            var pageable = container.GetBlobsByHierarchyAsync(traits: BlobTraits.None, states: BlobStates.None, delimiter: "/", prefix: prefix, cancellationToken: ct);
             await foreach (var entry in pageable.ConfigureAwait(false))
             {
                 ct.ThrowIfCancellationRequested();
@@ -259,7 +260,7 @@ public sealed class AzureBlobFileStore : IFileStore
         List<FileRef> sink,
         CancellationToken ct)
     {
-        var pageable = container.GetBlobsAsync(prefix: prefix, cancellationToken: ct);
+        var pageable = container.GetBlobsAsync(traits: BlobTraits.None, states: BlobStates.None, prefix: prefix, cancellationToken: ct);
         await foreach (var blob in pageable.ConfigureAwait(false))
         {
             ct.ThrowIfCancellationRequested();

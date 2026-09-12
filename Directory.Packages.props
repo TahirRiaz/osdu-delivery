@@ -9,15 +9,15 @@
     <!-- Azure (SqlFlow.Azure): the credential factory (service principal, managed identity, Azure CLI,
          DefaultAzureCredential), Key Vault secret references, and blob storage. -->
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
-    <PackageVersion Include="Azure.Security.KeyVault.Secrets" Version="4.11.0" />
-    <PackageVersion Include="Azure.Storage.Blobs" Version="12.24.0" />
+    <PackageVersion Include="Azure.Security.KeyVault.Secrets" Version="4.11.1" />
+    <PackageVersion Include="Azure.Storage.Blobs" Version="12.29.2" />
     <!-- The drop reader (SqlFlow.Delivery): parquet source rows, one row group at a time; pure managed. -->
     <PackageVersion Include="Parquet.Net" Version="5.6.1" />
     <!-- Flow documents (SqlFlow.Yaml): the envelope probe and every registered document kind parse with it. -->
     <PackageVersion Include="YamlDotNet" Version="16.3.0" />
     <!-- Git (SqlFlow.SourceControl, SqlFlow.Node): LibGit2Sharp materializes SHA-pinned flow repositories, reads
          their history, and pushes proposals. Fully managed; runs on every platform .NET supports. -->
-    <PackageVersion Include="LibGit2Sharp" Version="0.31.0" />
+    <PackageVersion Include="LibGit2Sharp" Version="0.32.0" />
     <!-- The EF-managed catalog (SqlFlow.Catalog): the estate read-model, the run queue, schedules, users, and the
          delivery ledger. EF lives ONLY here, never in the engine. -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.17" />
@@ -26,27 +26,27 @@
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.17" />
     <!-- The control plane (SqlFlow.ControlPlane): the API + coordination host over the catalog. JWT bearer auth,
          the built-in .NET 9 OpenAPI document, and the EF health-check probe for readiness. -->
-    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.17" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.20" />
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="9.0.17" />
     <!-- Identity for the control plane's user store: PasswordHasher (PBKDF2) for local users, and the OpenID
          Connect protocol stack for validating Microsoft Entra ID tokens on the /auth/exchange endpoint. The
          OpenIdConnect version matches what JwtBearer already resolves transitively. -->
     <PackageVersion Include="Microsoft.Extensions.Identity.Core" Version="9.0.8" />
-    <PackageVersion Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.0.1" />
+    <PackageVersion Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.19.2" />
     <!-- Cronos: standard-cron parsing with correct time-zone / DST handling, for the control-plane scheduler. -->
     <PackageVersion Include="Cronos" Version="0.13.0" />
     <!-- The control plane's notification email channel: MailKit is the maintained, fully-async SMTP client the
          .NET team recommends over the legacy System.Net.Mail.SmtpClient (which lacks implicit TLS and modern
          auth). Only the SMTP provider uses it; the Graph provider is plain HTTP against Microsoft Graph. -->
     <PackageVersion Include="MailKit" Version="4.17.0" />
-    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="9.0.17" />
-    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.17" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.9" />
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.9" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.9" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
-    <PackageVersion Include="System.Diagnostics.DiagnosticSource" Version="10.0.9" />
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="9.0.20" />
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.20" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
+    <PackageVersion Include="System.Diagnostics.DiagnosticSource" Version="10.0.12" />
   </ItemGroup>
 
   <!-- Test stack -->
