@@ -11,7 +11,7 @@ Testing runs at three levels.
 
 | Level | What runs | OSDU involved |
 | --- | --- | --- |
-| Automated suites | `tests/SqlFlow.Delivery.Tests` (340 test methods: the domain, the ledger on SQLite, the engine end to end over the sample estate with a fake protocol, the HTTP runtime against stub handlers), `tests/SqlFlow.ControlPlane.Tests` (328), `tests/SqlFlow.Core.Tests` (131). The database suites run against the disposable `SQLFLOW_TEST_DB` catalog. A `[Theory]` counts once. | No |
+| Automated suites | 1,042 tests on 2026-09-12, all passing: `tests/SqlFlow.Delivery.Tests` (476: the domain, the ledger on SQLite, the engine end to end over the sample estate with a fake protocol, the HTTP runtime against stub handlers), `tests/SqlFlow.ControlPlane.Tests` (376), `tests/SqlFlow.Core.Tests` (190). These are executed tests, so a `[Theory]` counts once per case. The database suites need `SQLFLOW_TEST_DB` exported into the environment: without it 181 control plane tests skip and the run still reports success. | No |
 | GUI e2e suite | `gui/e2e`, 14 specs, 61 tests, all passing on 2026-09-12. Flows run with the `plan` operation. | No |
 | Live tests | An estate delivered into an Azure Data Manager for Energy test instance (an M26 service, data partition `test`) by a local control plane, driven through the control plane's API and GUI. | Yes |
 
@@ -169,6 +169,19 @@ against `e2e-file` on 2026-09-12, marker `ODLIVE20260912D`, with `SQLFLOW_DROPOF
 | Read back | The record read back from storage with `data.Datasets` naming the registered dataset. |
 | Cleanup | The document was removed through the ledger at the reversible `record` scope, the dataset soft-deleted directly (204), and both then answered 404. `DELETE /delivery/dropoffs/{id}` removed the uploaded file and the row says deleted. |
 
+### 2.11 A drop the prepare side notifies
+
+The other form of `POST /api/v1/delivery/submissions`: the drop is already written, and the request only says it is
+there. Driven on 2026-09-12 against `e2e-wellbore` and the existing drop `drops/wellbore/ODLIVE20260910`:
+
+| Stage | What was proven |
+| --- | --- |
+| Preview | `operation: plan` rendered the drop's records and reported them; nothing reached OSDU. |
+| Delivery | The run delivered both wellbores (`delivered=2 held=0 failed=0`) under the submission id the drop manifest carries (`b54ec551-e320-564b-9647-7df0d0a32f87`), landing `test:master-data--Wellbore:8caec6614b605fe6809175534f9c9a1c` and `test:master-data--Wellbore:250b474c3f1550c59dc7a11c81ca63c3`, both at version 1789209164941463. |
+| Repeat | A second notification of the same drop was started, expecting nothing sent and both records unchanged. Its result is not in the action log, so the repeat is not proven. |
+
+The two records this left in the partition are in section 5.
+
 ## 3. Defects the live tests found
 
 Each is fixed on `main`, and the live runs after each fix are in the action log.
@@ -210,7 +223,6 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 
 | Item | Why it matters | What it takes |
 | --- | --- | --- |
-| The drop notification endpoint | `POST /api/v1/delivery/submissions` with a `drop` is how the prepare side starts a run. `DeliverySubmissionApiTests` covers the route in both forms, and one live notification of `drops/wellbore/ODLIVE20260910` on `e2e-wellbore` was planned on 2026-09-12, so the route, the drop lookup and the render are proven live. No live notification has delivered: every live delivery was started through `POST /api/v1/runs` or with inline records. | One live notification run with `operation: deliver`. |
 | Curves that do not match the bulk columns | A log whose record declares a curve its bulk data lacks, or the reverse, is delivered as it is. Only the reference curve is checked. | A preflight check comparing the declared curves with each chunk's columns, and one live log that trips it. |
 | Sessions that split a log's curves | Chunks sharing row labels with different columns are allowed by the preflight and covered by engine tests, but never committed live. | One log re-prepared as two column chunks. |
 | Payloads near the ceilings | Live chunks held 9 rows. The 10,000,000-value and 3,000-column ceilings are checked from parquet footers in tests only, and the largest body ADME accepts on a single `POST /data` is not known. | One larger log. It leaves a larger bulk version in a partition that cannot be purged, which the small-dataset rule weighs against. |
@@ -218,7 +230,10 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 | OSDU error paths | Throttling (429), server errors and refusals are exercised against stub handlers (`HttpTests`, `EngineTests`). Live, only the DDMS 422 and the reference curve refusal were provoked. | Cases that can be provoked without writing data, such as an unknown legal tag or a missing ACL group. |
 | Other OSDU kinds | Only Wellbore, WellLog, Document and `dataset--File.Generic` were delivered live. | A mapping and a small drop per further kind. |
 | A crash inside a registration call | Defect 19's fix marks the step with its landing-zone path before the request and takes over the dataset that path became. Four tests in `FileProtocolTests` cover the mark, the takeover, the re-registration when search lists nothing and the hold when it lists two, but neither live crash test landed inside the call. | A crash injected between the request going out and its answer reaching the ledger, on a flow whose file is already staged. |
-| A well log rendered with the corrected porosity unit | Defect 17 is fixed in the sample estate and the live cache holds `m3/m3`, but no live record carries it: the catalog re-mint left the ledger without the versions OSDU holds, and the DDMS refuses to create a log it already has. | The ledger re-established against what OSDU holds (a known-state or verify run), then one metadata redelivery of L-2001. |
+| A well log rendered with the corrected porosity unit | Defect 17 is fixed in the sample estate, pinned by a regression test that renders the sample mapping's own curve-unit property against the sample snapshot, and the live cache holds `m3/m3`. No live record carries it: the catalog re-mint left the ledger without the versions OSDU holds, and the DDMS refuses to create a log it already has. | The ledger re-established against what OSDU holds (a known-state or verify run), then one metadata redelivery of L-2001. |
+| Reserved drop-off uploads | A file of a few gigabytes is reserved, written straight to storage with a user delegation SAS, and the reservation completed (`POST /dropoffs/reserve`, `POST /dropoffs/{id}/complete`). `DeliveryDropOffReserveApiTests` covers the route, the refusals and the completion checks, but no reserved upload has run live: every live drop-off carried its bytes through the control plane. | The drop-off area on Azure Storage and the control plane's identity holding Storage Blob Delegator on the account, plus CORS for a browser writing directly. |
+| A submission's own reference | A submission carries the caller's name for the work (a filename, a ticket, a job id), stored, indexed and searchable, and a repeat that relabels the work is refused. Covered by `SubmissionReferenceTests` and `DeliverySubmissionApiTests`. Never sent live. | One live submission carrying a reference, and one repeat that changes it. |
+| Folded reference names | A mapping can match a name against the cache with punctuation and spacing folded away, opt-in per property, running only after exact and case-insensitive comparison find nothing. Covered by `ReferenceFoldTests` against a built cache. Never resolved against the live partition's own names. | One live mapping property opted in, against a facility whose name OSDU spells differently from the drop. |
 | Repeatable live tests | The live drivers are scripts outside the repository, so nobody else can re-run them, and the suites have no live integration tests. | The drivers moved into the repository, keeping the action log and marker rules. |
 
 ### 4.3 Known defects not yet fixed
@@ -227,10 +242,10 @@ None stand open. The three that did (the porosity unit, approval-held records co
 registration whose answer was lost) are fixed in 215bee2, and are rows 17 to 19 of section 3.
 
 How far each was proven: rows 18 and 19 carry tests that fail on the code before them, and the re-minted live
-catalog reports the new count on every run and submission. Row 17 is proven by the sample estate, which renders
-and validates with the corrected unit, and by the live cache, which now holds `m3/m3`; the live well logs were
-not re-rendered with it, because the catalog re-mint left the ledger without the versions OSDU holds, and the
-wellbore DDMS refuses to create a log it already has.
+catalog reports the new count on every run and submission. Row 17 is pinned by a regression test that renders
+the sample mapping's own curve-unit property against the sample snapshot, and by the live cache, which now
+holds `m3/m3`. The live well logs were not re-rendered with it, because the catalog re-mint left the ledger
+without the versions OSDU holds, and the wellbore DDMS refuses to create a log it already has.
 
 Two of them are fixed without live proof, and section 4.2 carries what that would take: a crash inside a
 registration call for row 19, and a well log rendered again with the corrected unit for row 17.
@@ -245,11 +260,20 @@ registration call for row 19, and a well log rendered again with the corrected u
 
 ## 5. What the tests left in the partition
 
-Nothing, as of 2026-09-12: every id below was soft-deleted (reversible, `POST /records/{id}:delete`) and then
-checked, and none of them resolves. OSDU can restore any of them, and a drop can send them again. They carried
-the run marker, and every write and the cleanup itself are in the action log:
+Two records, as of the last entry in the action log on 2026-09-12. The drop notification run of section 2.11
+delivered both wellbores again at 10:33 UTC, and the log records no removal after it:
 
-- `test:master-data--Wellbore:8caec6614b605fe6809175534f9c9a1c` and `test:master-data--Wellbore:250b474c3f1550c59dc7a11c81ca63c3`;
+- `test:master-data--Wellbore:8caec6614b605fe6809175534f9c9a1c` and
+  `test:master-data--Wellbore:250b474c3f1550c59dc7a11c81ca63c3`, both at version 1789209164941463.
+
+They are this estate's own logged ids, so they are removable at the reversible `record` scope, and the work that
+created them is not finished until they are removed and each one checked.
+
+Everything else this estate ever created was soft-deleted (reversible, `POST /records/{id}:delete`) and then
+checked, and none of it resolves, including the earlier versions of those same two wellbores. OSDU can restore
+any of it, and a drop can send it again. It carried the run marker, and every write and the cleanup itself are
+in the action log:
+
 - `test:work-product-component--WellLog:1f2c3bd61925503cad8694c176cd81b5` (L-1001),
   `test:work-product-component--WellLog:b1bf9310a1d65a1a83085d675c355c47` (L-1002) and
   `test:work-product-component--WellLog:27d8b3f959b552758cacd54907871c49` (L-2001), with their bulk data versions;

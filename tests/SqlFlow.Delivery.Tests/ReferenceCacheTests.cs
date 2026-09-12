@@ -1,11 +1,13 @@
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Storage;
 using SqlFlow.Delivery.Validation;
 using Xunit;
 
@@ -359,6 +361,41 @@ public class ReferenceCacheTests
                 - fields: [data.FacilityName]
             """, "sync.yaml"));
         Assert.Contains("needs a kind", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The sample mapping declared the source unit `V/V` as `%`, so a neutron porosity of 0.21 was published as
+    /// 0.21 percent, a hundredth of what the curve carries. `V/V` is a volume fraction, which OSDU's reference data
+    /// calls `m3/m3`. The sample mapping's own curve-unit property is rendered here against the sample snapshot, so
+    /// the mapping and the cached reference data have to agree for this to pass. The snapshot caches `%` as well as
+    /// `m3/m3`, so mapping it back to `%` would resolve rather than hold: only the rendered id catches it.
+    /// </summary>
+    [Fact]
+    public async Task The_sample_mapping_renders_the_porosity_unit_as_a_volume_fraction()
+    {
+        var mapping = new MappingCatalog(Samples.Mappings, new DeliveryDocumentLoader()).Load("WellLog@1.4.0");
+        var curveUnit = mapping.Definitions["Curve"].Single(p => p.Target == "CurveUnit");
+        Assert.Equal("m3/m3", curveUnit.Config!.ValueMap["V/V"]);
+
+        var store = new FileSnapshotStore(Samples.Snapshots, Samples.Stores());
+        var version = await store.CurrentReferenceVersionAsync();
+        Assert.NotNull(version);
+        var references = await store.LoadReferencesAsync(version);
+        Assert.NotNull(references);
+
+        var renderer = new MappingRenderer(
+            TestSchema.Mapping(curveUnit with { Target = "data.Unit", Source = "unit" }),
+            TestSchema.Build(),
+            references,
+            TestSchema.Context());
+
+        var porosity = renderer.Render(new SourceRecord
+        {
+            Row = SourceRow.FromStrings(new Dictionary<string, string?> { ["name"] = "well-1", ["depth"] = "12.5", ["unit"] = "V/V" }),
+            Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase),
+        });
+        Assert.False(porosity.IsHeld);
+        Assert.Equal("opendes:reference-data--UnitOfMeasure:m3%2Fm3:", porosity.Document["data"]!["Unit"]!.GetValue<string>());
     }
 }
 
