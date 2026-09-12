@@ -73,6 +73,8 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /cache` | read | The OSDU cache as the retrieval flows declare it: each cached type, the paths it captures, and how many records it holds at `version` (the current snapshot when none is named). |
 | `GET /cache/items` | read | The cached records at one snapshot `version` (the current one when none is named), paged, filtered by `type` and searched with `search` over every value they hold. |
 | `GET /cache/versions` | read | The snapshot versions of the cache, newest capture first, each with whether it is current, whether the catalog still carries its records, and how many. |
+| `GET /cache/history` | read | Every snapshot version, newest capture first, with the version of the same repository captured before it and, when the catalog carries both, how many records it changed, added and removed; `type` narrows the counts to one cached type, `repoId` to one repository. |
+| `GET /cache/diff` | read | What changed between two carried snapshot versions: `from` (required) and `to` (the current version when omitted), counts per type, the repositories that could not be compared and why, and a page of the records that changed, were added or were removed, with the captured values on each side. Narrowed by `repoId`, `type`, `search`, and `change` (the items only). |
 | `GET /cache/tags` | read | The cache changes delivered records were built from, paged, by `status` (pending, approved, rolling, rejected, applied), each with what it reaches and how far the rollout has carried it. |
 | `POST /cache/tags/decide` | operate | Approves or rejects changes (`tagIds`, `approve`). Approving hands the change to the batched rollout; rejecting leaves OSDU as it is. |
 | `GET /records/{key}/cache` | read | What one record read out of the cache when it was rendered: the cached item, the path and the value. |
@@ -148,14 +150,27 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 - **Mappings** (Workspace): the mapping documents and snapshots the repositories hold.
 - **OSDU cache** (Workspace): the reference and master data every delivered document is built from. What each
   retrieval flow declares it caches and at which paths, how many records it holds, a search over the cached values
-  by id, code, name or alias, and the Updates tab: the delivered records whose cached values have moved, each with
+  by id, code, name or alias, the Version history tab (below), and the Approvals tab: the cache changes that reach
+  records already delivered, each with
   the value before and after, how many delivered records it reaches and how far the rollout has carried it,
   approved or rejected in bulk. The definitions are read-only because they live in the flow document in git; the
   decision on a change is the one thing made here.
-- **Reading the cache as it stood.** The version picker reads the whole page (the type counts and the records
-  alike) at one snapshot version. It opens on the current version, the one deliveries resolve against; picking an
+- **Reading the cache as it stood.** The version picker on the Cached records tab reads the records and the type
+  counts at one snapshot version. It opens on the current version, the one deliveries resolve against; picking an
   earlier one says so on the page, because nothing shown then is what a render would read today. Versions the
   catalog no longer carries the records of are listed but cannot be picked; the snapshot files still hold them.
+- **Version history.** Every snapshot version, newest first, each saying what it changed compared with the
+  version of the same repository captured before it (so many changed, added, removed, or no changes). Picking a
+  type in the sidebar narrows the history to the versions that changed that type, with the counts for that type
+  alone; the other versions fold under a toggle. Picking one
+  lists those changes: changed records with the captured values that moved, before and after, records the version
+  added, and records it no longer holds, narrowed by the type picked in the sidebar, a change kind and a search. A
+  row opens both sides. A version whose records, or whose predecessor's records, the catalog no longer carries says
+  so rather than reading as empty. History covers the whole cache, which is what separates it from Approvals:
+  Approvals holds only the changes that reach records already delivered, so a refresh that moved values nothing was
+  built from shows in the history and leaves Approvals empty.
+  `GET /api/v1/delivery/cache/diff?from=<version>[&to=<version>][&repoId=][&type=][&change=changed|added|removed][&search=]`
+  compares any two carried versions over the API.
 - **Runs**: a delivery run is a platform run; its trace streams live and its parameters, record counts and
   result show on the run page; a fan-out member shows its root and slot. Re-run repeats the same parameters.
   The trigger dialog offers the operations the flow's kind runs.

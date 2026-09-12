@@ -71,10 +71,24 @@ test.describe.serial("osdu cache", () => {
     await expect(adminPage.getByTestId("delivery-cache-item-version")).toContainText(/\d{8}T\d{6}Z/);
   });
 
-  test("the updates tab is empty until a cached value moves", async ({ adminPage }) => {
+  test("version history lists the captured versions and what the one picked changed", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
-    await adminPage.getByTestId("delivery-cache-tab-updates").click();
+    await adminPage.getByTestId("delivery-cache-tab-history").click();
+
+    const versions = adminPage.getByTestId("delivery-cache-history-version");
+    await expect(versions.first()).toContainText(/\d{8}T\d{6}Z/, { timeout: 30_000 });
+
+    // The newest version is picked and its changes are shown, or the reason they cannot be (the fixture's first capture
+    // has nothing before it).
+    const detail = adminPage.getByTestId("delivery-cache-history-detail");
+    await expect(detail).toContainText("Changes in");
+    await expect(detail.getByTestId("delivery-cache-history-table").or(detail.getByTestId("delivery-cache-history-uncomparable"))).toBeVisible();
+  });
+
+  test("approvals say plainly that nothing needs a decision", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-delivery-cache").click();
+    await adminPage.getByTestId("delivery-cache-tab-approvals").click();
     await expect(adminPage.getByTestId("delivery-cache-tag-status")).toBeVisible();
-    await expect(adminPage.getByText("Nothing is waiting")).toBeVisible({ timeout: 30_000 });
+    await expect(adminPage.getByTestId("delivery-cache-approvals-empty")).toContainText("Nothing needs approval", { timeout: 30_000 });
   });
 });

@@ -284,6 +284,80 @@ export interface DeliveryCacheVersion {
   items: number;
 }
 
+/** How one cached record differs between two snapshot versions. */
+export type DeliveryCacheChange = "changed" | "added" | "removed";
+
+/** A comparison of two cache versions: `from` is required, `to` defaults to the current version, `change` narrows the items only. */
+export type DeliveryCacheDiffQuery = {
+  from: string;
+  to?: string;
+  repoId?: string;
+  type?: string;
+  change?: DeliveryCacheChange;
+  search?: string;
+  page?: number;
+  pageSize?: number;
+};
+
+/** One cached record that differs between two snapshot versions, with what it held on each side. */
+export interface DeliveryCacheDiffItem {
+  repoId: string;
+  typeName: string;
+  entityType: string;
+  recordId: string;
+  change: DeliveryCacheChange;
+  /** The captured values at the earlier version; null for a record the later version added. */
+  before: Record<string, unknown> | null;
+  /** The captured values at the later version; null for a record the later version no longer holds. */
+  after: Record<string, unknown> | null;
+  /** The captured names whose value differs; empty unless the record changed. */
+  changedFields: string[];
+}
+
+/** How many records of one cached type changed, arrived and left between the two versions. */
+export interface DeliveryCacheDiffType {
+  typeName: string;
+  changed: number;
+  added: number;
+  removed: number;
+}
+
+/** A repository in scope whose cache could not be compared, and why. */
+export interface DeliveryCacheDiffGap {
+  repoId: string;
+  repoName: string;
+  reason: string;
+}
+
+/**
+ * What changed in the cache between two snapshot versions. The counts follow the type and search filters but not the
+ * change filter, so they describe every kind of change while the items show the one picked.
+ */
+export interface DeliveryCacheDiff {
+  fromVersion: string;
+  /** The later version as asked for; null when it is each repository's current version. */
+  toVersion: string | null;
+  changed: number;
+  added: number;
+  removed: number;
+  types: DeliveryCacheDiffType[];
+  gaps: DeliveryCacheDiffGap[];
+  items: PagedResult<DeliveryCacheDiffItem>;
+}
+
+/**
+ * One version in the cache's history: the version of the same repository captured before it and, when the catalog
+ * carries both (`compared`), how many records it changed, added and removed. The counts are null otherwise.
+ */
+export interface DeliveryCacheHistoryEntry {
+  version: DeliveryCacheVersion;
+  previousVersion: string | null;
+  compared: boolean;
+  changed: number | null;
+  added: number | null;
+  removed: number | null;
+}
+
 /** One cache change and what happens about it: it covers every delivered record built from the value that moved. */
 export interface DeliveryUpdateTag {
   tagId: number;
@@ -734,6 +808,12 @@ export const deliveryApi = {
   /** The cached records themselves at one snapshot version (the current one when none is named). */
   cachedItems: (query: PageQuery & { repoId?: string; type?: string; search?: string; version?: string }) =>
     get<PagedResult<DeliveryCachedItem>>("/api/v1/delivery/cache/items", query as QueryParams),
+  /** What changed in the cache between two snapshot versions (`to` defaults to the current one), a page of records at a time. */
+  cacheDiff: (query: DeliveryCacheDiffQuery) =>
+    get<DeliveryCacheDiff>("/api/v1/delivery/cache/diff", query),
+  /** Every version, newest first, with what it changed against the one before it; `type` narrows the counts to one cached type. */
+  cacheHistory: (repoId?: string, type?: string) =>
+    get<DeliveryCacheHistoryEntry[]>("/api/v1/delivery/cache/history", { repoId, type }),
   /** The cache changes delivered records were built from, by status: pending, approved, rolling, rejected, applied. */
   updateTags: (query: PageQuery & { status?: string }) =>
     get<PagedResult<DeliveryUpdateTag>>("/api/v1/delivery/cache/tags", query as QueryParams),

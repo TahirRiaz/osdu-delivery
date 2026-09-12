@@ -8,6 +8,7 @@ using SqlFlow.Core;
 using SqlFlow.Core.Compute;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery;
+using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Engine;
@@ -119,6 +120,36 @@ public sealed record DeliveryCachedItemDto(
 /// </summary>
 public sealed record DeliveryCacheVersionDto(
     Guid RepoId, string RepoName, string Version, DateTime? CapturedUtc, bool Current, bool Carried, long Items);
+
+/// <summary>
+/// What changed in the cache between two snapshot versions: counts per type, the repositories that could not be
+/// compared, and a page of the records that differ. <c>ToVersion</c> is null when the later side is each repository's
+/// current version. The counts follow the type and search filters but not the change filter.
+/// </summary>
+public sealed record DeliveryCacheDiffDto(
+    string FromVersion, string? ToVersion, long Changed, long Added, long Removed, IReadOnlyList<DeliveryCacheDiffTypeDto> Types,
+    IReadOnlyList<DeliveryCacheDiffGapDto> Gaps, PagedResult<DeliveryCacheDiffItemDto> Items);
+
+/// <summary>How many records of one cached type changed, arrived and left between the two versions.</summary>
+public sealed record DeliveryCacheDiffTypeDto(string TypeName, long Changed, long Added, long Removed);
+
+/// <summary>A repository in scope whose cache could not be compared, and why.</summary>
+public sealed record DeliveryCacheDiffGapDto(Guid RepoId, string RepoName, string Reason);
+
+/// <summary>
+/// One cached record that differs between the two versions: changed, added or removed, the captured values on each side
+/// (null on the side that does not hold it), and the captured names whose value moved.
+/// </summary>
+public sealed record DeliveryCacheDiffItemDto(
+    Guid RepoId, string TypeName, string EntityType, string RecordId, string Change, JsonElement? Before, JsonElement? After,
+    IReadOnlyList<string> ChangedFields);
+
+/// <summary>
+/// One version in the cache's history: the version of the same repository captured before it and, when the catalog
+/// carries both (<c>Compared</c>), how many records it changed, added and removed. The counts are null otherwise.
+/// </summary>
+public sealed record DeliveryCacheHistoryEntryDto(
+    DeliveryCacheVersionDto Version, string? PreviousVersion, bool Compared, long? Changed, long? Added, long? Removed);
 
 /// <summary>
 /// A submission. Either the manifest notification (<c>drop</c>: the preparing side has finished a drop and asks for it to
@@ -244,9 +275,6 @@ public static class DeliveryEndpoints
     /// <summary>Delivery flows the manual submission listing parses at once.</summary>
     private const int MaxManualSubmissionFlows = 500;
 
-    /// <summary>Reference snapshot versions a cache listing will consider at once, across every repository in scope.</summary>
-    private const int MaxCacheVersions = 500;
-
     public static RouteGroupBuilder MapDeliveryReadEndpoints(this RouteGroupBuilder group)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -273,6 +301,8 @@ public static class DeliveryEndpoints
         delivery.MapGet("/cache", ListCacheDefinitionsAsync).WithName("ListDeliveryCacheDefinitions");
         delivery.MapGet("/cache/items", ListCachedItemsAsync).WithName("ListDeliveryCachedItems");
         delivery.MapGet("/cache/versions", ListCacheVersionsAsync).WithName("ListDeliveryCacheVersions");
+        delivery.MapGet("/cache/diff", CompareCacheVersionsAsync).WithName("CompareDeliveryCacheVersions");
+        delivery.MapGet("/cache/history", ListCacheHistoryAsync).WithName("ListDeliveryCacheHistory");
         delivery.MapGet("/cache/tags", ListUpdateTagsAsync).WithName("ListDeliveryUpdateTags");
         delivery.MapGet("/records/{key:guid}/cache", ListRecordCacheUsesAsync).WithName("ListDeliveryRecordCacheUses");
         return group;
@@ -641,7 +671,7 @@ public static class DeliveryEndpoints
         // What the cache holds at the version being read: each repository's snapshot for it, and its items per type.
         // The counts follow the version picker, so the declaration list never describes a version other than the one
         // the records table is showing.
-        var resolved = await ResolveCacheSnapshotsAsync(db, repoId, version, ct).ConfigureAwait(false);
+        var resolved = await CacheVersions.ResolveAsync(db, repoId, version, ct).ConfigureAwait(false);
         var current = resolved.Where(s => repos.Contains(s.RepoId)).ToList();
         var snapshots = current.ToDictionary(s => s.RepoId, s => s);
         var snapshotIds = current.Select(s => s.Id).ToList();
@@ -674,7 +704,7 @@ public static class DeliveryEndpoints
         Guid? repoId, string? type, string? search, string? version, int? page, int? pageSize, CatalogDbContext db, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
-        var snapshots = await ResolveCacheSnapshotsAsync(db, repoId, version, ct).ConfigureAwait(false);
+        var snapshots = await CacheVersions.ResolveAsync(db, repoId, version, ct).ConfigureAwait(false);
         if (snapshots.Count == 0)
         {
             return TypedResults.Ok(new PagedResult<DeliveryCachedItemDto>([], p, size, 0));
@@ -714,75 +744,106 @@ public static class DeliveryEndpoints
     private static async Task<Ok<IReadOnlyList<DeliveryCacheVersionDto>>> ListCacheVersionsAsync(
         Guid? repoId, CatalogDbContext db, CancellationToken ct)
     {
-        var query = db.DeliverySnapshots.AsNoTracking().Where(s => s.Kind == "references");
-        if (repoId is { } r)
-        {
-            query = query.Where(s => s.RepoId == r);
-        }
-
-        var snapshots = await query
-            .OrderByDescending(s => s.CapturedUtc)
-            .ThenByDescending(s => s.Version)
-            .Take(MaxCacheVersions)
-            .ToListAsync(ct).ConfigureAwait(false);
-        if (snapshots.Count == 0)
-        {
-            return TypedResults.Ok<IReadOnlyList<DeliveryCacheVersionDto>>([]);
-        }
-
-        var ids = snapshots.Select(s => s.Id).ToList();
-        var counts = (await db.DeliverySnapshotItems.AsNoTracking()
-            .Where(i => ids.Contains(i.SnapshotId))
-            .GroupBy(i => i.SnapshotId)
-            .Select(g => new { SnapshotId = g.Key, Items = g.LongCount() })
-            .ToListAsync(ct).ConfigureAwait(false))
-            .ToDictionary(c => c.SnapshotId, c => c.Items);
-        var repoIds = snapshots.Select(s => s.RepoId).Distinct().ToList();
-        var names = await db.Repos.AsNoTracking()
-            .Where(x => repoIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, x => x.Name, ct).ConfigureAwait(false);
-
-        return TypedResults.Ok<IReadOnlyList<DeliveryCacheVersionDto>>(snapshots.Select(s =>
-        {
-            var items = counts.GetValueOrDefault(s.Id);
-            return new DeliveryCacheVersionDto(
-                s.RepoId, names.GetValueOrDefault(s.RepoId, string.Empty), s.Version, s.CapturedUtc, s.Current, items > 0, items);
-        }).ToList());
+        var versions = await CacheVersions.ListAsync(db, repoId, ct).ConfigureAwait(false);
+        var names = await RepoNamesAsync(db, versions.Select(v => v.RepoId), ct).ConfigureAwait(false);
+        return TypedResults.Ok<IReadOnlyList<DeliveryCacheVersionDto>>(versions.Select(v => ToVersionDto(v, names)).ToList());
     }
 
-    /// <summary>One reference snapshot a cache read is scoped to.</summary>
-    private sealed record CacheSnapshotRef(Guid Id, Guid RepoId, string Version, DateTime? CapturedUtc, bool Current);
+    /// <summary>
+    /// The cache's version history, newest capture first: each version with the version of the same repository captured
+    /// before it and, when the catalog carries both, how many records it changed, added and removed. Naming a
+    /// <paramref name="type"/> narrows the counts to that cached type, so the versions that changed it can be told apart.
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<DeliveryCacheHistoryEntryDto>>> ListCacheHistoryAsync(
+        Guid? repoId, string? type, CatalogDbContext db, CancellationToken ct)
+    {
+        var history = await CacheVersions.HistoryAsync(db, repoId, string.IsNullOrWhiteSpace(type) ? null : type.Trim(), ct).ConfigureAwait(false);
+        var names = await RepoNamesAsync(db, history.Select(h => h.Version.RepoId), ct).ConfigureAwait(false);
+        return TypedResults.Ok<IReadOnlyList<DeliveryCacheHistoryEntryDto>>(history
+            .Select(h => new DeliveryCacheHistoryEntryDto(
+                ToVersionDto(h.Version, names), h.Previous?.Version, h.Changes is not null, h.Changes?.Changed, h.Changes?.Added, h.Changes?.Removed))
+            .ToList());
+    }
+
+    private static DeliveryCacheVersionDto ToVersionDto(CacheVersionInfo version, Dictionary<Guid, string> repoNames)
+        => new(
+            version.RepoId, repoNames.GetValueOrDefault(version.RepoId, string.Empty), version.Version, version.CapturedUtc, version.Current,
+            version.Carried, version.Items);
+
+    /// <summary>The names of the repositories a cache answer mentions, by id.</summary>
+    private static async Task<Dictionary<Guid, string>> RepoNamesAsync(CatalogDbContext db, IEnumerable<Guid> repoIds, CancellationToken ct)
+    {
+        var ids = repoIds.Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            return new Dictionary<Guid, string>();
+        }
+
+        return await db.Repos.AsNoTracking()
+            .Where(x => ids.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct).ConfigureAwait(false);
+    }
 
     /// <summary>
-    /// The snapshot rows a cache read is scoped to: the named version of each repository in scope, or each
-    /// repository's current version when none is named. A version label is minted from the capture instant rather
-    /// than owned by one repository, so naming one selects that version wherever it exists. Every read of the cache
-    /// goes through this, because the catalog carries several versions and their items are otherwise
-    /// indistinguishable from one another.
+    /// What changed in the cache between two snapshot versions: per type, the records whose captured values moved, the
+    /// records the later version added and the ones it no longer holds, a page at a time. <paramref name="to"/> defaults
+    /// to each repository's current version. A repository lacking a version, or whose records of it the catalog no longer
+    /// carries, is reported as a gap rather than compared as empty.
     /// </summary>
-    private static async Task<IReadOnlyList<CacheSnapshotRef>> ResolveCacheSnapshotsAsync(
-        CatalogDbContext db, Guid? repoId, string? version, CancellationToken ct)
+    private static async Task<Results<Ok<DeliveryCacheDiffDto>, ProblemHttpResult>> CompareCacheVersionsAsync(
+        string? from, string? to, Guid? repoId, string? type, string? change, string? search, int? page, int? pageSize,
+        CatalogDbContext db, CancellationToken ct)
     {
-        var query = db.DeliverySnapshots.AsNoTracking().Where(s => s.Kind == "references");
-        if (repoId is { } r)
+        if (string.IsNullOrWhiteSpace(from))
         {
-            query = query.Where(s => s.RepoId == r);
+            return TypedResults.Problem(
+                title: "No version", detail: "Name the earlier cache version to compare with 'from'.", statusCode: StatusCodes.Status400BadRequest);
         }
 
-        if (string.IsNullOrWhiteSpace(version))
+        CacheItemChange? kind = null;
+        if (!string.IsNullOrWhiteSpace(change))
         {
-            query = query.Where(s => s.Current);
-        }
-        else
-        {
-            var v = version.Trim();
-            query = query.Where(s => s.Version == v);
+            var text = change.Trim();
+            if (!text.All(char.IsLetter) || !Enum.TryParse<CacheItemChange>(text, ignoreCase: true, out var parsed))
+            {
+                return TypedResults.Problem(
+                    title: "Unknown change", detail: $"'change' is changed, added or removed, not '{text}'.", statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            kind = parsed;
         }
 
-        return await query
-            .Select(s => new CacheSnapshotRef(s.Id, s.RepoId, s.Version, s.CapturedUtc, s.Current))
-            .Take(MaxCacheVersions)
-            .ToListAsync(ct).ConfigureAwait(false);
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        var query = new CacheComparisonQuery(from.Trim())
+        {
+            ToVersion = string.IsNullOrWhiteSpace(to) ? null : to.Trim(),
+            RepoId = repoId,
+            Type = string.IsNullOrWhiteSpace(type) ? null : type.Trim(),
+            Change = kind,
+            Search = string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
+            Skip = (int)Math.Min(int.MaxValue, (long)(p - 1) * size),
+            Take = size,
+        };
+        var diff = await CacheVersions.CompareAsync(db, query, ct).ConfigureAwait(false);
+        if (diff is null)
+        {
+            var named = query.ToVersion is null ? $"'{query.FromVersion}'" : $"'{query.FromVersion}' or '{query.ToVersion}'";
+            return TypedResults.Problem(
+                title: "Unknown version", detail: $"No repository in scope holds cache version {named}.", statusCode: StatusCodes.Status404NotFound);
+        }
+
+        var names = await RepoNamesAsync(db, diff.Gaps.Select(g => g.RepoId), ct).ConfigureAwait(false);
+        return TypedResults.Ok(new DeliveryCacheDiffDto(
+            diff.FromVersion, diff.ToVersion, diff.Changed, diff.Added, diff.Removed,
+            diff.Types.Select(t => new DeliveryCacheDiffTypeDto(t.TypeName, t.Changed, t.Added, t.Removed)).ToList(),
+            diff.Gaps.Select(g => new DeliveryCacheDiffGapDto(g.RepoId, names.GetValueOrDefault(g.RepoId, string.Empty), g.Reason)).ToList(),
+            new PagedResult<DeliveryCacheDiffItemDto>(
+                diff.Items.Select(i => new DeliveryCacheDiffItemDto(
+                    i.RepoId, i.TypeName, i.EntityType, i.RecordId, i.Change.ToString().ToLowerInvariant(),
+                    i.BeforeJson is null ? null : ParseJson(i.BeforeJson),
+                    i.AfterJson is null ? null : ParseJson(i.AfterJson),
+                    i.ChangedFields)).ToList(),
+                p, size, diff.Total)));
     }
 
     /// <summary>
