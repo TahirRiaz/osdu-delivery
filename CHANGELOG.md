@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A drop-off area, the pre-step to a submission: `POST /api/v1/delivery/dropoffs` uploads files (multipart) into a place
+  the compute nodes can read, and answers with the location a submission then points at, so the two steps are upload and
+  submit rather than one request carrying everything. `GET /dropoffs` lists what has been dropped off with who uploaded
+  it, when, and each file's size and SHA-256; `DELETE /dropoffs/{id}` takes one back; `GET /dropoff-area` says whether
+  the deployment offers one at all. The GUI has a Drop-off page (upload, list, copy the location, delete) next to Manual
+  submission. Where uploads land is `SQLFLOW_DROPOFF_ROOT`, read by the control plane (which writes there) and by every
+  node (which reads there), and a submission may point inside it whatever its flow's own roots allow. Nothing is removed
+  automatically, because re-processing a submission reads its files again; a deployment whose uploads are single-use sets
+  `ControlPlane:DropOff:RetentionDays` and a sweep then removes drop-offs that completed longer ago than that, never one
+  that failed or stopped halfway.
 - A flow says whether it takes records sent in a request: `source.manualSubmission` in the flow document, opt-in. The
   GUI's Manual submission page (Operate) lists every flow that offers it, with what it renders with, the parameters a
   submission carries and the payload its records point at, and submits to the one chosen;

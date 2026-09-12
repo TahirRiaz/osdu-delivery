@@ -57,6 +57,10 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
 | `GET /manual-submission/flows` | read | The flows records can be submitted to by hand (those declaring `source.manualSubmission`), with what each renders with, the parameters a submission carries and the payload its records point at. `all=true` lists the other delivery flows too, each with the reason it takes none. |
+| `POST /dropoffs` | operate | Uploads files (multipart) into the deployment's drop-off area, for a submission to point at afterwards. Answers with the location they landed under, each file's size and SHA-256, and the drop-off's id. Refused when no drop-off area is configured (`SQLFLOW_DROPOFF_ROOT`). |
+| `GET /dropoffs`, `GET /dropoffs/{id}` | read | The drop-offs, newest first (filterable by `status` and `search`), and one of them with its files. |
+| `DELETE /dropoffs/{id}` | operate | Removes a drop-off's files from storage; the row stays, saying when they went. Re-processing a submission that pointed at them will no longer find its payload. |
+| `GET /dropoff-area` | read | Whether this deployment offers a drop-off area, where it is, what one upload may carry, and how long a completed drop-off is kept (0 for indefinitely). |
 | `GET /flows/{pipelineId}/source-contract` | read | What a source sends the flow: the parameters it declares, the columns its pinned mapping reads from the root row and each child scope, the natural key's columns, the version column, the payload its records point at (with whether a content hash is required and the roots a location may sit inside), and whether it takes records inline (and why not). |
 | `GET /records/{key}`, `/attempts`, `/activities` | read | One record, its delivery history, its interventions. |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |

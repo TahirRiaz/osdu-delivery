@@ -69,6 +69,9 @@ public sealed class CatalogDbContext : DbContext
     /// <summary>The records sources sent in submission requests rather than in drops.</summary>
     public DbSet<DeliveryInlineSubmission> DeliveryInlineSubmissions => Set<DeliveryInlineSubmission>();
 
+    /// <summary>Files uploaded through the API into the drop-off area, for a submission to point at.</summary>
+    public DbSet<DeliveryDropOff> DeliveryDropOffs => Set<DeliveryDropOff>();
+
     public DbSet<DeliveryRecord> DeliveryRecords => Set<DeliveryRecord>();
 
     /// <summary>The <c>delivery.RecordCount</c> indexed view (SQL Server only): a flow's records counted by status.</summary>

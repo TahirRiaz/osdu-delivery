@@ -2,7 +2,7 @@
 // the mappings and snapshots the repositories hold, and the interventions (release, redeliver, verify, read back,
 // delete). Same conventions as endpoints.ts: one function per endpoint, pages compose them with TanStack Query.
 
-import { get, post, type QueryParams } from "./client";
+import { del, get, post, postForm, type QueryParams } from "./client";
 import type { PagedResult, RunStatus } from "./types";
 import type { PageQuery } from "./endpoints";
 
@@ -435,6 +435,43 @@ export interface DeliveryManualFlow {
   payloadName: string | null;
 }
 
+/** One file in a drop-off, as it landed. */
+export interface DeliveryDropOffFile {
+  name: string;
+  bytes: number;
+  sha256: string;
+}
+
+/**
+ * Files uploaded into the drop-off area, for a submission to point at afterwards. `location` is what goes into a
+ * submission's `files`; the node reads the files from there when the run delivers.
+ */
+export interface DeliveryDropOff {
+  dropOffId: string;
+  location: string;
+  status: "uploading" | "complete" | "failed" | "deleted";
+  fileCount: number;
+  totalBytes: number;
+  label: string | null;
+  uploadedUtc: string;
+  uploadedBy: string;
+  completedUtc: string | null;
+  deletedUtc: string | null;
+  /** Why an upload failed, redacted; null otherwise. */
+  error: string | null;
+  files: DeliveryDropOffFile[];
+}
+
+/** Whether this deployment offers a drop-off area at all, where it is, and what one upload may carry. */
+export interface DeliveryDropOffArea {
+  enabled: boolean;
+  location: string | null;
+  maxFileMegabytes: number;
+  maxFilesPerUpload: number;
+  /** Days a completed drop-off is kept before a sweep removes it; 0 means nothing is removed automatically. */
+  retentionDays: number;
+}
+
 /** An inline submission's records as the ledger holds them, with who sent them and where a run wrote them. */
 export interface DeliveryInlineSubmission {
   submissionId: string;
@@ -653,6 +690,27 @@ export const deliveryApi = {
   /** The flows records can be submitted to by hand; with `all`, the other delivery flows too, each with its reason. */
   manualSubmissionFlows: (all = false) =>
     get<DeliveryManualFlow[]>("/api/v1/delivery/manual-submission/flows", all ? { all: true } : {}),
+  /** Whether this deployment offers a drop-off area, where it is, and what one upload may carry. */
+  dropOffArea: () => get<DeliveryDropOffArea>("/api/v1/delivery/dropoff-area"),
+  /** The drop-offs, newest first. */
+  dropOffs: (query?: { status?: string; search?: string; limit?: number }) =>
+    get<DeliveryDropOff[]>("/api/v1/delivery/dropoffs", query as QueryParams | undefined),
+  dropOff: (dropOffId: string) => get<DeliveryDropOff>(`/api/v1/delivery/dropoffs/${dropOffId}`),
+  /** Uploads files into the drop-off area; the location it answers with is what a submission then points at. */
+  uploadDropOff: (files: File[], label?: string) => {
+    const form = new FormData();
+    for (const file of files) {
+      form.append("files", file, file.name);
+    }
+
+    if (label !== undefined && label !== "") {
+      form.append("label", label);
+    }
+
+    return postForm<DeliveryDropOff>("/api/v1/delivery/dropoffs", form);
+  },
+  /** Removes a drop-off's files; the row stays, saying when they went and who took them. */
+  deleteDropOff: (dropOffId: string) => del<DeliveryDropOff>(`/api/v1/delivery/dropoffs/${dropOffId}`),
   /** The records an inline submission carried (a 404 for a drop submission). */
   submissionContent: (submissionId: string) => get<DeliveryInlineSubmission>(`/api/v1/delivery/submissions/${submissionId}/content`),
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */

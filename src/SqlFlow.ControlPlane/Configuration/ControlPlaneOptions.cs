@@ -40,6 +40,8 @@ public sealed class ControlPlaneOptions
 
     public CacheRolloutOptions CacheRollout { get; set; } = new();
 
+    public DropOffOptions DropOff { get; set; } = new();
+
     /// <summary>The largest request body the API accepts, in megabytes. Set explicitly (never the server default) so a
     /// submission manifest listing many records, or a large scoped request, is bounded on purpose. Default 64.</summary>
     public int MaxRequestBodyMegabytes { get; set; } = 64;
@@ -145,6 +147,50 @@ public sealed class ControlPlaneOptions
         Proxy.Validate();
         Notifications.Validate();
         RunTrace.Validate();
+        DropOff.Validate();
+    }
+}
+
+/// <summary>
+/// The drop-off area: files uploaded through the API for a submission to point at afterwards
+/// (docs/delivery/submitting-records.md). Where they land is named by the <c>SQLFLOW_DROPOFF_ROOT</c> environment
+/// variable rather than by a setting here, because the control plane writes there and the node reads there: one name,
+/// read on both sides, so the two can never disagree about what a submission may point at. With it unset the API
+/// offers no drop-off at all. What is set here is what one upload may weigh and how long uploads are kept.
+/// </summary>
+public sealed class DropOffOptions
+{
+    /// <summary>The largest single file one upload may carry. Default 100.</summary>
+    public int MaxFileMegabytes { get; set; } = 100;
+
+    /// <summary>How many files one upload may carry. Default 20.</summary>
+    public int MaxFilesPerUpload { get; set; } = 20;
+
+    /// <summary>
+    /// How many days a completed drop-off is kept before a sweep removes it, or 0 (the default) to keep it until
+    /// somebody deletes it. Pruning is off by default because re-processing a submission reads its files again, so a
+    /// swept drop-off would quietly break a redelivery. Only drop-offs that uploaded successfully are ever swept: a
+    /// failed or half-finished upload stays until it is dealt with by hand.
+    /// </summary>
+    public int RetentionDays { get; set; }
+
+    public void Validate()
+    {
+        if (MaxFileMegabytes is < 1 or > 4096)
+        {
+            throw new InvalidOperationException("ControlPlane:DropOff:MaxFileMegabytes must be between 1 and 4096.");
+        }
+
+        if (MaxFilesPerUpload is < 1 or > 1000)
+        {
+            throw new InvalidOperationException("ControlPlane:DropOff:MaxFilesPerUpload must be between 1 and 1000.");
+        }
+
+        if (RetentionDays < 0)
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:DropOff:RetentionDays must be zero or positive (0 keeps drop-offs until they are deleted by hand).");
+        }
     }
 }
 

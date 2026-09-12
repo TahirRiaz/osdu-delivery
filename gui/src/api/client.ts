@@ -353,6 +353,35 @@ export async function postBinary<T>(
   return (text.length > 0 ? (JSON.parse(text) as T) : (undefined as T));
 }
 
+/**
+ * POST for a multipart form (the drop-off upload): same auth, rate-limit and error shaping as every other call.
+ * No Content-Type is set here on purpose: the browser writes it itself, with the multipart boundary that a
+ * hand-written header would leave out, and the request would then be unparsable at the other end.
+ */
+export async function postForm<T>(path: string, form: FormData, signal?: AbortSignal): Promise<T> {
+  const base = runtimeConfig().apiBaseUrl;
+  const url = new URL(`${base}${path}`);
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (currentToken) {
+    headers.Authorization = `Bearer ${currentToken}`;
+  }
+
+  const response = await fetch(url, { method: "POST", headers, body: form, signal: signal ?? null });
+  if (response.status === 401 && currentToken) {
+    onUnauthorized?.();
+  }
+  if (response.status === 429) {
+    const retryAfter = response.headers.get("Retry-After");
+    pauseForRateLimit(retryAfter ? Number.parseInt(retryAfter, 10) || null : null);
+  }
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+
+  const text = await response.text();
+  return (text.length > 0 ? (JSON.parse(text) as T) : (undefined as T));
+}
+
 export function put<T>(path: string, body?: unknown): Promise<T> {
   return request<T>({ method: "PUT", path, body });
 }

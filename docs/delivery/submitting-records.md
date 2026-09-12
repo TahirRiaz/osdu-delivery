@@ -161,6 +161,45 @@ under `files`:
   the payload by `locationColumn` rather than a path template, so the delivery side reads each record's files from where
   that record said they are ([drop-contract.md](drop-contract.md)).
 
+### Dropping the files off first
+
+A record points at files that already exist. When they do not exist yet, the drop-off area is the pre-step: upload them
+to a place the compute nodes can read, then submit records pointing at where they landed.
+
+```http
+POST /api/v1/delivery/dropoffs
+Authorization: Bearer <token with the operate scope>
+Content-Type: multipart/form-data
+
+(one or more file parts, and an optional "label" field)
+```
+
+The answer carries the `location` the files landed under, which is what goes into the submission's `files`:
+
+```json
+{ "dropOffId": "0191e0a4-7a1c-7c3e-9b2e-5d0f3c8a1b42",
+  "location": "abfss://lake@acct.dfs.core.windows.net/dropoff/0191e0a4-7a1c-7c3e-9b2e-5d0f3c8a1b42",
+  "status": "complete",
+  "files": [ { "name": "L-1001.csv", "bytes": 20480, "sha256": "d7f848..." } ] }
+```
+
+- **Where it lands** is the deployment's drop-off area, `SQLFLOW_DROPOFF_ROOT`, read by the control plane (which writes
+  there) and by every node (which reads there). Unset, the upload is refused saying so, and there is no drop-off area.
+- **Every flow that takes submissions may point inside it**, in addition to its own `manualSubmissionFileRoots`: the
+  deployment owns that area, everything in it arrived through the API, and the ledger says who put each file there.
+- **The bytes pass through the control plane once, on the way to storage**, which is the one place they do. The delivery
+  itself still streams from storage to OSDU without passing through the control plane. Uploads are bounded for that
+  reason: 100 MB per file and 20 files per upload by default (`ControlPlane:DropOff:MaxFileMegabytes` and
+  `:MaxFilesPerUpload`). A set larger than that is prepared as a drop instead.
+- **Each file's SHA-256 is computed as it streams past**, so a record that needs a payload hash can carry the one the
+  upload reported without reading the files again.
+- **Nothing is removed automatically.** Re-processing a submission (a redelivery, a verify) reads its files again, so a
+  drop-off is kept until somebody deletes it (`DELETE /api/v1/delivery/dropoffs/{id}`). A deployment whose uploads are
+  single-use sets `ControlPlane:DropOff:RetentionDays`, and then a sweep removes drop-offs that **completed** longer ago
+  than that. An upload that failed or stopped halfway is never swept; it stays until it is dealt with.
+- **A file name is a name, not a path.** Names carrying a separator or `..` are refused, so nothing lands outside the
+  drop-off it belongs to.
+
 Which columns a flow reads, which are the natural key, which parameters it declares, which payload its records point at
 (with whether a hash is required and the roots allowed) and whether it takes records at all is answered by
 `GET /api/v1/delivery/flows/{pipelineId}/source-contract` (scope `read`).
@@ -198,7 +237,9 @@ and no record enters the ledger. A delivery afterwards is a new request with a n
 ## 8. From the GUI
 
 A delivery flow's page has **Submit records**, and **Manual submission** in the navigation lists every flow that offers
-it (with the payload each streams, and, on request, the flows that offer none and why). The dialog builds a form from the
+it (with the payload each streams, and, on request, the flows that offer none and why). **Drop-off** next to it is the
+pre-step: it uploads files into the drop-off area, lists what has been dropped off with who uploaded it and when, copies
+a location to paste into a submission, and deletes a drop-off when it is no longer needed. The dialog builds a form from the
 flow's source contract for one record (the natural key and version columns marked, a Now button for the version column),
 or takes any number of records as JSON in the shape of section 4. For a flow that streams files it also asks where the
 record's files are, and for the hash when the flow needs one, showing the roots the flow allows. It offers the flow

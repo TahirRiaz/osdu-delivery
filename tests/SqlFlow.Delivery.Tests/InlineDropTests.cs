@@ -6,6 +6,7 @@ using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Storage;
+using SqlFlow.Delivery.Validation;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -335,6 +336,34 @@ public sealed class InlineDropTests : IDisposable
         var record = Assert.Single(await ReadAsync(written.Location));
         Assert.Equal(WellboreEstate.Key("WB-FLAT").Value, record.DeclaredDeliveryKey);
         Assert.Equal(location, record.Row.GetString(InlineDrop.LocationColumnPrefix + WellboreEstate.PayloadName));
+    }
+
+    /// <summary>
+    /// The deployment's drop-off area is where files uploaded through the API land, so a submission may point inside it
+    /// whatever its own flow allows. What neither the flow nor the drop-off area covers is still refused.
+    /// </summary>
+    [Fact]
+    public void A_submission_may_point_inside_the_deployment_drop_off_area()
+    {
+        var flow = PayloadFlow();
+        var area = Path.Combine(_estate.Root, "dropoff").Replace('\\', '/');
+        var previous = Environment.GetEnvironmentVariable(PayloadRoots.DropOffEnvironmentVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(PayloadRoots.DropOffEnvironmentVariable, area);
+            Assert.Contains(area, PayloadRoots.Of(flow));
+            Assert.Null(InlineDrop.FilesRefusal(flow, InlineRecords.Parse(RecordsWithFiles("WB-DROPOFF", area + "/01a0947c/curves.csv"))));
+            // The flow's own roots still apply, and a location under neither is still outside what it allows.
+            Assert.Null(InlineDrop.FilesRefusal(flow, InlineRecords.Parse(RecordsWithFiles("WB-LAKE", _estate.Lake + "/WB-LAKE"))));
+            Assert.Contains(
+                "outside what flow",
+                InlineDrop.FilesRefusal(flow, InlineRecords.Parse(RecordsWithFiles("WB-OUT", "C:/somewhere/else"))),
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(PayloadRoots.DropOffEnvironmentVariable, previous);
+        }
     }
 
     [Fact]

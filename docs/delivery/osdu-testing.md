@@ -154,6 +154,21 @@ own file area:
 | Read back | The record read back from storage with `data.Datasets` naming the registered dataset. |
 | Cleanup | The document was removed through the ledger at the reversible `record` scope and the dataset soft-deleted directly (204); both then answer 404. |
 
+### 2.10 Files dropped off first, then submitted
+
+The two-step path: upload the files to the drop-off area, then submit records pointing at where they landed. Proven
+against `e2e-file` on 2026-09-12, marker `ODLIVE20260912D`, with `SQLFLOW_DROPOFF_ROOT` set to the estate's own
+`dropoff` folder and the live catalog re-minted for the new `delivery.DropOff` table (backup
+`OsduDeliveryLiveE2E-20260912T101353Z.bak` first, repo source registered again afterwards):
+
+| Stage | What was proven |
+| --- | --- |
+| The area | `GET /delivery/dropoff-area` reports the area enabled, where it is, 100 MB and 20 files per upload, and retention 0 (nothing removed automatically). |
+| Upload | `POST /delivery/dropoffs` (multipart) landed the file, answered with the location and the file's SHA-256, and the ledger row says who uploaded it and when. The file was on disk at the location reported. |
+| Submission | A submission to `e2e-file` pointing at `{location}/*.csv` with that hash was accepted with no file bytes in the request, and the run delivered `test:work-product-component--Document:5a5838b791e35cd6bc5f34812124b2fb` at version 1789208551595739 with dataset `test:dataset--File.Generic:091bd31b-3459-44e1-a336-8339652d6c48`. The flow's own `manualSubmissionFileRoots` names only its drop folder, so this also proved the drop-off area is allowed for every flow that takes submissions. |
+| Read back | The record read back from storage with `data.Datasets` naming the registered dataset. |
+| Cleanup | The document was removed through the ledger at the reversible `record` scope, the dataset soft-deleted directly (204), and both then answered 404. `DELETE /delivery/dropoffs/{id}` removed the uploaded file and the row says deleted. |
+
 ## 3. Defects the live tests found
 
 Each is fixed on `main`, and the live runs after each fix are in the action log.

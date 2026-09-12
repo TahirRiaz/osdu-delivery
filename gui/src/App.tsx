@@ -17,6 +17,7 @@ const DeliveryActivityPage = lazyRoute("DeliveryActivityPage", () => import("./f
 const DeliveryDocumentsPage = lazyRoute("DeliveryDocumentsPage", () => import("./features/delivery/DeliveryDocumentsPage"));
 const DeliveryCachePage = lazyRoute("DeliveryCachePage", () => import("./features/delivery/DeliveryCachePage"));
 const ManualSubmissionPage = lazyRoute("ManualSubmissionPage", () => import("./features/delivery/ManualSubmissionPage"));
+const DropOffPage = lazyRoute("DropOffPage", () => import("./features/delivery/DropOffPage"));
 const RunGroupPage = lazyRoute("RunGroupPage", () => import("./features/runs/RunGroupPage"));
 const NodesPage = lazyRoute("NodesPage", () => import("./features/nodes/NodesPage"));
 const ReposPage = lazyRoute("ReposPage", () => import("./features/repos/ReposPage"));
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="/runs/:runId" element={<RunDetailPage />} />
           <Route path="/delivery" element={<DeliveryOverviewPage />} />
           <Route path="/delivery/submit" element={<ManualSubmissionPage />} />
+          <Route path="/delivery/dropoff" element={<DropOffPage />} />
           <Route path="/delivery/records/:key" element={<DeliveryRecordPage />} />
           <Route path="/delivery/submissions/:submissionId" element={<DeliverySubmissionPage />} />
           <Route path="/delivery/activity" element={<DeliveryActivityPage />} />

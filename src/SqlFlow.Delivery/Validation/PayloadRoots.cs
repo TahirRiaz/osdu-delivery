@@ -11,16 +11,43 @@ namespace SqlFlow.Delivery.Validation;
 /// </summary>
 public static class PayloadRoots
 {
+    /// <summary>
+    /// The deployment's drop-off area, where files uploaded through the API are put for a later submission to point
+    /// at. It is named by one environment variable read on both sides, because the control plane writes there and the
+    /// node reads there: a second place to set it would let the two disagree and refuse every upload. Unset means the
+    /// deployment offers no drop-off area, and only a flow's own roots apply.
+    /// </summary>
+    public const string DropOffEnvironmentVariable = "SQLFLOW_DROPOFF_ROOT";
+
+    /// <summary>Where uploads land, or null when the deployment configures none.</summary>
+    public static string? DropOffRoot()
+    {
+        var configured = Environment.GetEnvironmentVariable(DropOffEnvironmentVariable);
+        return string.IsNullOrWhiteSpace(configured) ? null : Normalize(configured);
+    }
+
     /// <summary>The prefixes a submission to <paramref name="flow"/> may point inside, in the order they were declared.</summary>
     public static IReadOnlyList<string> Of(FlowDefinition flow)
     {
         ArgumentNullException.ThrowIfNull(flow);
+        var roots = new List<string>();
         if (flow.Source.ManualSubmissionFileRoots.Count > 0)
         {
-            return flow.Source.ManualSubmissionFileRoots.Select(Normalize).ToList();
+            roots.AddRange(flow.Source.ManualSubmissionFileRoots.Select(Normalize));
+        }
+        else if (DropRoot(flow.Source.Location) is { } root)
+        {
+            roots.Add(root);
         }
 
-        return DropRoot(flow.Source.Location) is { } root ? [root] : [];
+        // The drop-off area is allowed for every flow that takes submissions at all: the deployment owns that area,
+        // what is in it arrived through the API, and the ledger says who put each file there.
+        if (DropOffRoot() is { } dropOff && !roots.Contains(dropOff, StringComparer.OrdinalIgnoreCase))
+        {
+            roots.Add(dropOff);
+        }
+
+        return roots;
     }
 
     /// <summary>

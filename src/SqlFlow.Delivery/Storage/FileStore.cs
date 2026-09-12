@@ -28,6 +28,13 @@ public interface IFileWriter
     Task<Stream> OpenWriteAsync(string location, CancellationToken ct = default);
 
     Task<bool> ExistsAsync(string location, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes a location and everything under it (a file, or a folder and its contents). A location that is not
+    /// there is not an error: the caller asked for it to be gone, and it is. Used to take back a drop-off upload,
+    /// which is the only thing the delivery side deletes from storage.
+    /// </summary>
+    Task DeleteAsync(string location, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -94,6 +101,9 @@ public sealed class FileStoreRegistry
 
     public Task<bool> ExistsAsync(string location, CancellationToken ct = default)
         => Writer(location).ExistsAsync(location, ct);
+
+    public Task DeleteAsync(string location, CancellationToken ct = default)
+        => Writer(location).DeleteAsync(location, ct);
 
     /// <summary>
     /// A seekable stream over a file: the reader's own when one is registered for the location, otherwise the
@@ -285,6 +295,21 @@ public sealed class LocalFileWriter : IFileWriter
     public Task<bool> ExistsAsync(string location, CancellationToken ct = default)
         => Task.FromResult(File.Exists(location) || Directory.Exists(location));
 
+    public Task DeleteAsync(string location, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(location);
+        if (Directory.Exists(location))
+        {
+            Directory.Delete(location, recursive: true);
+        }
+        else if (File.Exists(location))
+        {
+            File.Delete(location);
+        }
+
+        return Task.CompletedTask;
+    }
+
     /// <summary>The temp file becomes the target when the stream closes, so a reader never sees a half-written file.</summary>
     private sealed class MoveOnDisposeStream : Stream
     {
@@ -425,6 +450,28 @@ public sealed class AzureBlobFileWriter : IFileWriter
         catch (RequestFailedException ex)
         {
             throw new DeliveryException($"Could not check '{location}' (status {ex.Status}): {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Removes the blob at the location and every blob under it as a prefix, so a drop-off folder goes in one call.
+    /// A blob that is not there is not an error.
+    /// </summary>
+    public async Task DeleteAsync(string location, CancellationToken ct = default)
+    {
+        var parsed = AzureBlobLocation.Parse(location);
+        var container = new BlobServiceClient(parsed.BlobServiceEndpoint, _credentials.Create()).GetBlobContainerClient(parsed.Container);
+        try
+        {
+            await container.GetBlobClient(parsed.BlobPath).DeleteIfExistsAsync(DeleteSnapshotsOption.IncludeSnapshots, cancellationToken: ct).ConfigureAwait(false);
+            await foreach (var blob in container.GetBlobsAsync(BlobTraits.None, BlobStates.None, parsed.BlobPath.TrimEnd('/') + "/", ct).ConfigureAwait(false))
+            {
+                await container.GetBlobClient(blob.Name).DeleteIfExistsAsync(DeleteSnapshotsOption.IncludeSnapshots, cancellationToken: ct).ConfigureAwait(false);
+            }
+        }
+        catch (RequestFailedException ex)
+        {
+            throw new DeliveryException($"Could not delete '{location}' (status {ex.Status}): {ex.Message}", ex);
         }
     }
 

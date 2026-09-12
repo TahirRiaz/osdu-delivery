@@ -126,6 +126,13 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
     enabled: open,
   });
 
+  // What has been dropped off already, so a record can point at an upload instead of a hand-typed path.
+  const dropOffs = useQuery({
+    queryKey: ["delivery", "dropoffs", "complete"],
+    queryFn: () => deliveryApi.dropOffs({ status: "complete", limit: 25 }),
+    enabled: open,
+  });
+
   useEffect(() => {
     if (open) {
       setMode("form");
@@ -339,6 +346,25 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                           when the run delivers, and again on every retry.
                         </p>
                       </div>
+                      {(dropOffs.data ?? []).length > 0 && (
+                        <div className="flex flex-col gap-1">
+                          <Label htmlFor={`${idPrefix}-payload-dropoff`}>Use a drop-off</Label>
+                          <select
+                            id={`${idPrefix}-payload-dropoff`}
+                            className="h-8 rounded-md border border-input bg-transparent px-2 text-[13px]"
+                            value=""
+                            onChange={(event) => { if (event.target.value !== "") { setPayloadLocation(event.target.value); } }}
+                            data-testid="submit-records-payload-dropoff"
+                          >
+                            <option value="">Pick an upload to fill the location</option>
+                            {(dropOffs.data ?? []).map((d) => (
+                              <option key={d.dropOffId} value={d.location}>
+                                {d.label ?? d.dropOffId.slice(0, 8)} ({d.fileCount} file{d.fileCount === 1 ? "" : "s"})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
                       <div className="flex flex-col gap-1">
                         <Label htmlFor={`${idPrefix}-payload-location`} className="font-mono text-[12px]">location (required)</Label>
                         <Input

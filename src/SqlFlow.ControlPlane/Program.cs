@@ -107,6 +107,12 @@ builder.Services.AddHostedService<SchedulerService>();
 // because a node heartbeats on a cadence independent of its draining (a busy node is never mistaken for a dead one).
 builder.Services.AddHostedService<OrphanRunReaper>();
 
+// ---- Drop-off retention: files uploaded for a submission to point at are kept until somebody removes them, because
+// re-processing a submission reads them again. A deployment that knows its uploads are single-use sets
+// ControlPlane:DropOff:RetentionDays, and this sweep then removes the drop-offs that completed longer ago than that.
+// It does nothing at all while retention is zero, which is the default.
+builder.Services.AddHostedService<DropOffRetentionService>();
+
 // ---- Run-trace retention: the heaviest per-run table (RunEvent, every line of every run's trace) grows without
 // bound and is almost never read once a run is old and green. This service
 // prunes it on a cadence to each pipeline's latest run + every failed run + anything still recent, keeping the
@@ -359,7 +365,8 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
     .MapNotificationEndpoints()
     .MapMaintenanceEndpoints()
     .MapComputeTaskEndpoints()
-    .MapDeliveryReadEndpoints();
+    .MapDeliveryReadEndpoints()
+    .MapDropOffReadEndpoints();
 
 // The operate surface: triggering/cancelling a run and managing schedules are privileged operations, so they live
 // under the "operate" scope rather than the read group.
@@ -370,7 +377,8 @@ v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapRepoSourceWriteEndpoints()
     .MapNodeControlEndpoints()
     .MapComputeTaskControlEndpoints()
-    .MapDeliveryWriteEndpoints();
+    .MapDeliveryWriteEndpoints()
+    .MapDropOffWriteEndpoints();
 
 // The author surface: proposing pipelines to a source repo as a pull request pushes a branch under the source's own
 // credential, so it lives under the "author" scope rather than "operate".

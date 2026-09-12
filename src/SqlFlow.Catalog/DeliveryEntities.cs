@@ -118,6 +118,46 @@ public sealed class DeliveryInlineSubmission
     public DateTime? WrittenUtc { get; set; }
 }
 
+/// <summary>
+/// One drop-off: files uploaded through the API into the deployment's drop-off area, for a submission to point at
+/// afterwards. The files themselves live in storage, which the node reads when it delivers; this row is what makes them
+/// traceable, saying who uploaded what, when, how large each was and what its content hash is. Files are kept after a
+/// delivery on purpose, because re-processing a submission (a redelivery, a verify) reads them again.
+/// </summary>
+public sealed class DeliveryDropOff
+{
+    public Guid DropOffId { get; set; }
+
+    /// <summary>The folder the files were written to: what a submission points at.</summary>
+    public string Location { get; set; } = string.Empty;
+
+    /// <summary>uploading, complete, failed or deleted.</summary>
+    public string Status { get; set; } = string.Empty;
+
+    public int FileCount { get; set; }
+
+    public long TotalBytes { get; set; }
+
+    /// <summary>Each file as [{ name, bytes, sha256 }], in the order uploaded.</summary>
+    public string FilesJson { get; set; } = "[]";
+
+    /// <summary>What the uploader called this drop-off, for finding it again.</summary>
+    public string? Label { get; set; }
+
+    public DateTime UploadedUtc { get; set; }
+
+    /// <summary>Who uploaded: the caller's actor label.</summary>
+    public string UploadedBy { get; set; } = string.Empty;
+
+    /// <summary>When every file had landed; null while uploading, and for an upload that failed.</summary>
+    public DateTime? CompletedUtc { get; set; }
+
+    public DateTime? DeletedUtc { get; set; }
+
+    /// <summary>Why the upload failed, redacted; null otherwise.</summary>
+    public string? Error { get; set; }
+}
+
 /// <summary>The current state of one deliverable, keyed by its deterministic delivery key.</summary>
 public sealed class DeliveryRecord
 {
@@ -731,6 +771,20 @@ public static class DeliveryModel
             e.Property(s => s.ReceivedBy).HasMaxLength(200).IsRequired();
             e.Property(s => s.DropLocation).HasMaxLength(2000);
             e.HasIndex(s => new { s.FlowId, s.ReceivedUtc });
+        });
+
+        modelBuilder.Entity<DeliveryDropOff>(e =>
+        {
+            e.ToTable("DropOff", SchemaName);
+            e.HasKey(d => d.DropOffId);
+            e.Property(d => d.Location).HasMaxLength(2000).IsRequired();
+            e.Property(d => d.Status).HasMaxLength(16).IsRequired();
+            e.Property(d => d.FilesJson).IsRequired();
+            e.Property(d => d.Label).HasMaxLength(200);
+            e.Property(d => d.UploadedBy).HasMaxLength(200).IsRequired();
+            e.Property(d => d.Error).HasMaxLength(4000);
+            e.HasIndex(d => d.UploadedUtc);
+            e.HasIndex(d => new { d.Status, d.CompletedUtc });
         });
 
         modelBuilder.Entity<DeliveryRecord>(e =>
