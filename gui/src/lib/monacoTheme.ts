@@ -7,6 +7,12 @@ import type { Monaco } from "@monaco-editor/react";
 /** The registered theme name. Both surfaces pass this to Monaco's `theme` prop. */
 export const sqlflowEditorTheme = "sqlflow";
 
+const hexPattern = /^#?([0-9a-fA-F]{3,8})$/;
+const rgbPattern = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+%?))?\s*\)$/;
+
+/** A canvas 2d context used only to normalise colour syntax; created once, null where there is no DOM. */
+let colorProbe: CanvasRenderingContext2D | null | undefined;
+
 /** Resolves a design token to its current value, honouring light/dark; falls back if unset. */
 function cssVar(name: string, fallback: string): string {
   if (typeof document === "undefined") {
@@ -16,6 +22,67 @@ function cssVar(name: string, fallback: string): string {
   return value || fallback;
 }
 
+function byte(value: number): string {
+  return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0");
+}
+
+/**
+ * Normalises whatever the browser reports for a colour (`#rrggbb`, `#rrggbbaa`, `rgb()`, `rgba()`) into the
+ * long hex form Monaco demands. Returns null for anything that is not a colour.
+ */
+function normalizeColor(value: string): string | null {
+  const hex = hexPattern.exec(value);
+  if (hex) {
+    const digits = hex[1];
+    // The production stylesheet is minified, which shortens #ffffff to #fff. Monaco's token theme rejects
+    // three- and four-digit hex outright ("Illegal value for token color"), so expand it here.
+    if (digits.length === 3 || digits.length === 4) {
+      return `#${Array.from(digits, (digit) => digit + digit).join("")}`;
+    }
+    return digits.length === 6 || digits.length === 8 ? `#${digits}` : null;
+  }
+
+  const rgb = rgbPattern.exec(value);
+  if (rgb) {
+    const alpha = rgb[4] === undefined
+      ? ""
+      : byte(rgb[4].endsWith("%") ? (Number.parseFloat(rgb[4]) / 100) * 255 : Number.parseFloat(rgb[4]) * 255);
+    return `#${byte(Number.parseFloat(rgb[1]))}${byte(Number.parseFloat(rgb[2]))}${byte(Number.parseFloat(rgb[3]))}${alpha}`;
+  }
+
+  return null;
+}
+
+/**
+ * Resolves a token written in any other CSS colour syntax (a named colour, `oklch()`, `color-mix()`) by letting
+ * the browser parse it: an unparseable value leaves `fillStyle` untouched, so probing from two different
+ * starting colours tells a real colour apart from a rejected one.
+ */
+function probeColor(value: string): string | null {
+  if (colorProbe === undefined) {
+    colorProbe = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
+  }
+  if (!colorProbe) {
+    return null;
+  }
+
+  colorProbe.fillStyle = "#000000";
+  colorProbe.fillStyle = value;
+  const fromBlack = colorProbe.fillStyle;
+  colorProbe.fillStyle = "#ffffff";
+  colorProbe.fillStyle = value;
+  return colorProbe.fillStyle === fromBlack ? normalizeColor(String(fromBlack)) : null;
+}
+
+/**
+ * Reads a design token as a Monaco-safe `#rrggbb`/`#rrggbbaa` colour, falling back to the literal when the
+ * token is unset or holds something the browser will not parse as a colour.
+ */
+function themeColor(name: string, fallback: string): string {
+  const value = cssVar(name, fallback);
+  return normalizeColor(value) ?? probeColor(value) ?? fallback;
+}
+
 /**
  * Defines the editor theme from the workbench tokens (index.css is the single colour source, so the code
  * view matches every other surface; DESIGN.md 7.6). Read live via getComputedStyle so it reflects the
@@ -23,7 +90,7 @@ function cssVar(name: string, fallback: string): string {
  * colours keep it.
  */
 export function defineSqlflowTheme(monaco: Monaco, mode: "light" | "dark"): void {
-  const color = (name: string, fallback: string) => cssVar(name, fallback);
+  const color = (name: string, fallback: string) => themeColor(name, fallback);
   const rule = (name: string, fallback: string) => color(name, fallback).replace("#", "");
 
   monaco.editor.defineTheme(sqlflowEditorTheme, {
