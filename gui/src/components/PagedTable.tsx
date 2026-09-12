@@ -31,6 +31,8 @@ interface PagedTableProps<T> {
   toolbar?: ReactNode;
   /** Called with the rows and total of each page as it arrives, for pages that act on the whole match; a capped total is a floor. */
   onPageLoaded?: (rows: T[], total: number, totalCapped: boolean) => void;
+  /** The width below which the table scrolls instead of crushing its columns; see DataTable. */
+  minWidth?: number;
   "data-testid"?: string;
 }
 
@@ -42,7 +44,7 @@ interface PagedTableProps<T> {
  */
 export function PagedTable<T>({
   queryKey, fetchPage, columns, rowKey, onRowClick, pollMs, rowSx, emptyMessage, grouping, selection, toolbar,
-  onPageLoaded, "data-testid": testId,
+  onPageLoaded, minWidth, "data-testid": testId,
 }: PagedTableProps<T>) {
   const [page, setPage] = useState(0); // rendered 0-based; the API is 1-based
   const [pageSize, setPageSize] = useState(50);
@@ -99,6 +101,7 @@ export function PagedTable<T>({
       grouping={grouping}
       selection={selection}
       toolbar={toolbar}
+      minWidth={minWidth}
       data-testid={testId ?? "paged-table"}
       footer={(
         <div className="flex items-center justify-between gap-4 border-t border-border px-3 py-1.5">

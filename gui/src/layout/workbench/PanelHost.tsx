@@ -12,7 +12,13 @@ export function PanelHost() {
   }
 
   return (
-    <section className="flex h-full flex-col bg-panel" aria-label={content.title}>
+    // Keyed by content id, so new content slides up from the bottom edge (DESIGN.md 9) instead of swapping in
+    // place, and a detail view's own state starts afresh for each thing it is opened on.
+    <section
+      key={content.id}
+      className="flex h-full flex-col bg-panel animate-in fade-in-0 slide-in-from-bottom-4 duration-200"
+      aria-label={content.title}
+    >
       {/* The window titlebar: a distinct accent surface with a primary accent strip, so the panel reads as its own
           surface rather than blending into the page/editor behind it. */}
       <header className="flex h-8 shrink-0 items-center justify-between border-b border-border bg-accent px-3 shadow-sm">

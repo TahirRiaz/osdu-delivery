@@ -33,9 +33,11 @@ interface TruncatedTextProps {
 /**
  * Tracks whether an element's content overflows the width it is allowed, re-measuring whenever the element or
  * the column it sits in is resized. A callback ref rather than a `useRef`, so the observer follows the node
- * across the remount that attaching a tooltip trigger causes.
+ * across the remount that attaching a tooltip trigger causes. Exported for the cells that clip a value in a
+ * shape of their own (an id whose repeated prefix gives way before its tail) and still owe the reader the hover
+ * panel only when something is actually hidden.
  */
-function useClipped(text: string): [(node: HTMLSpanElement | null) => void, boolean] {
+export function useClipped(text: string): [(node: HTMLSpanElement | null) => void, boolean] {
   const [node, setNode] = useState<HTMLSpanElement | null>(null);
   const [clipped, setClipped] = useState(false);
 

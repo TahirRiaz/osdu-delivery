@@ -1,90 +1,87 @@
 import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Database, History, X } from "lucide-react";
-import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
+import { useQuery } from "@tanstack/react-query";
+import { History, Pin, PinOff, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
-import { cn } from "@/lib/utils";
-import {
-  deliveryApi, type DeliveryCacheDefinition, type DeliveryCachedItem, type DeliveryUpdateTag,
-} from "../../api/delivery";
+import { deliveryApi, type DeliveryCacheVersion } from "../../api/delivery";
 import { repoApi } from "../../api/endpoints";
-import { CodeView } from "../../components/CodeView";
 import { FilterBar } from "../../components/FilterBar";
-import { KpiCard } from "../../components/KpiCard";
+import { FilterCombobox, type FilterOption } from "../../components/FilterCombobox";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
-import { PagedTable } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { SearchInput } from "../../components/SearchInput";
-import { TruncatedText } from "../../components/TruncatedText";
-import { cachedFieldsText, versionLabel } from "./cacheFormat";
+import { StatePill } from "../../components/StatusBadge";
+import { SummaryStrip, type SummaryCell } from "../../components/SummaryStrip";
+import { summarizeTypes, type CachedTypeSummary } from "./cacheFormat";
+import { DeliveryCacheApprovals } from "./DeliveryCacheApprovals";
 import { DeliveryCacheHistory } from "./DeliveryCacheHistory";
+import { CacheVersionPicker, CURRENT, DeliveryCacheRecords } from "./DeliveryCacheRecords";
 
 const ALL = "all";
 
-/** The picker's value for "whichever version is current", which is what the page opens on. */
-const CURRENT = "current";
+type Tab = "records" | "history" | "approvals";
 
-/** One cached type: what it holds, where it comes from, and what a change to it does. */
-function CachedTypeCard({ definition, selected, onSelect }: {
-  definition: DeliveryCacheDefinition;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const auto = definition.makeCurrent;
+/**
+ * The type in scope, on one line above the tabs: what it captures, who keeps it current, how many records of it the
+ * version being read holds. Rendered only while a type is picked, since the whole cache needs no such line.
+ */
+function CacheScope({ type, onClear }: { type: CachedTypeSummary; onClear: () => void }) {
   return (
-    <Card
-      onClick={onSelect}
-      className={cn(
-        "cursor-pointer gap-2 rounded-lg p-3 transition-colors hover:border-primary/40",
-        selected && "border-primary bg-primary/5",
-      )}
-      data-testid="delivery-cache-type-card"
+    <div
+      className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border bg-muted/30 px-3 py-1.5 text-[12px] text-muted-foreground"
+      data-testid="delivery-cache-scope"
     >
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="font-mono text-[13px] font-medium">{definition.name}</span>
-        <span className="font-mono text-[13px] tabular-nums text-muted-foreground">{definition.items.toLocaleString()}</span>
-      </div>
-      <TruncatedText text={definition.entityType} mono maxWidth={240} />
-      <div className="flex flex-wrap gap-1">
-        {definition.fields.map((field) => (
-          <Badge key={field.as} variant="outline" className="font-mono text-[10px]" title={field.path}>
-            {field.as}
-          </Badge>
+      <span className="inline-flex items-baseline gap-2">
+        <span className="font-mono text-[13px] font-medium text-foreground">{type.name}</span>
+        <span className="font-mono">{type.entityType}</span>
+      </span>
+      <span className="inline-flex flex-wrap items-center gap-1.5">
+        captures
+        {type.fields.map((field) => (
+          <span key={field.as} className="inline-flex items-baseline gap-1 rounded-sm border border-border/60 bg-muted/40 px-1.5 font-mono text-[11px]">
+            <span className="text-foreground">{field.as}</span>
+            <span>{field.path}</span>
+          </span>
         ))}
-      </div>
-      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-        <span>{definition.flowName}</span>
-        {!auto && <Badge variant="secondary" className="text-[10px]">not current</Badge>}
-      </div>
-    </Card>
+      </span>
+      <span>
+        kept current by <span className="font-mono text-foreground">{type.flows.join(", ")}</span>
+      </span>
+      {!type.movesPin && (
+        <span className="inline-flex items-center gap-1">
+          <PinOff className="size-3.5" /> a refresh does not move the pin
+        </span>
+      )}
+      <span className="ml-auto font-mono tabular-nums">
+        {type.items.toLocaleString()} record{type.items === 1 ? "" : "s"}
+      </span>
+      <Button variant="ghost" size="icon-xs" aria-label="Show every type" onClick={onClear} data-testid="delivery-cache-clear-type">
+        <X />
+      </Button>
+    </div>
   );
 }
 
 /**
- * The OSDU cache: the reference and master data every delivered document is built from. Read-only over what the
- * repositories declare, because a cache is defined in the retrieval flow that keeps it current, with one thing an
- * operator does decide here: whether a changed cached value goes out to OSDU, for the types whose changes wait for
- * approval.
+ * The OSDU cache: the reference and master data every delivered document is built from, as the retrieval flows
+ * capture it. One line of facts across the top (which version is read, how much it holds, what waits for a
+ * decision), one filter row under it (search, type, repository, version), and the records, the version history and
+ * the approvals across the full width below; a version or a change picked there opens in the workbench bottom
+ * panel. Read-only
+ * over what the repositories declare, because a cache is defined in the retrieval flow that keeps it current; the
+ * decision on a change that reaches delivered records is the one thing an operator does here.
  */
 export default function DeliveryCachePage() {
-  const queryClient = useQueryClient();
   const [repoFilter, setRepoFilter] = useLocalStorageState("sqlflow.filters.delivery-cache.repo", ALL);
-  const [type, setType] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
+  const [type, setType] = useState<string>("");
   // The picker holds a version label, not a snapshot id: a label identifies the same capture across repositories,
   // and CURRENT follows the pinned version rather than freezing on whichever one happens to be pinned right now.
   const [versionFilter, setVersionFilter] = useState<string>(CURRENT);
-  const [tagStatus, setTagStatus] = useLocalStorageState("sqlflow.filters.delivery-cache.tag-status", "pending");
-  const [selectedTags, setSelectedTags] = useState<ReadonlySet<string>>(new Set());
-  const [item, setItem] = useState<DeliveryCachedItem | null>(null);
+  const [search, setSearch] = useState("");
+  const [tab, setTab] = useState<Tab>("records");
 
   const repos = useQuery({ queryKey: ["repos", "all-for-delivery-cache"], queryFn: () => repoApi.list({ page: 1, pageSize: 200 }) });
   const repoId = repoFilter === ALL ? undefined : repoFilter;
@@ -101,319 +98,166 @@ export default function DeliveryCachePage() {
     queryKey: ["delivery", "cache", "tags", "pending-count"],
     queryFn: () => deliveryApi.updateTags({ page: 1, pageSize: 100, status: "pending" }),
   });
+  const pendingTotal = pending.data?.total;
   const pendingRecords = (pending.data?.items ?? []).reduce((sum, tag) => sum + tag.affectedRecords, 0);
 
   // Narrowing the repo, or a version leaving the store, can strand the picker on a version that no longer exists,
   // which would read as an empty cache rather than as a stale selection. Fall back to the current version.
-  const known = versions.data;
+  const known: DeliveryCacheVersion[] | undefined = versions.data;
   if (versionFilter !== CURRENT && known !== undefined && !known.some((v) => v.version === versionFilter)) {
     setVersionFilter(CURRENT);
   }
 
-  const selected = known?.find((v) => (versionFilter === CURRENT ? v.current : v.version === versionFilter));
-  const historic = selected !== undefined && !selected.current;
+  const reading = known?.find((v) => (versionFilter === CURRENT ? v.current : v.version === versionFilter));
+  const historic = reading !== undefined && !reading.current ? reading : null;
 
+  const types = useMemo(() => summarizeTypes(definitions.data ?? []), [definitions.data]);
+  // The same guard for the type: a repository change can leave the scope on a type that repository does not declare.
+  if (type !== "" && definitions.data !== undefined && !types.some((t) => t.name === type)) {
+    setType("");
+  }
+
+  const scoped = type === "" ? null : types.find((t) => t.name === type) ?? null;
+  const typeOptions: FilterOption[] = types.map((t) => ({
+    value: t.name,
+    label: t.name,
+    hint: `${t.family.toLowerCase()} · ${t.items.toLocaleString()} record${t.items === 1 ? "" : "s"} · ${t.fields.map((f) => f.as).join(", ")}`,
+  }));
+  const totals = { types: types.length, records: types.reduce((sum, t) => sum + t.items, 0) };
+
+  // What the definitions were read at: one version, or one per repository when the scope spans several.
   const rows = definitions.data ?? [];
-  const snapshot = rows.find((d) => d.version)?.version ?? null;
+  const readVersions = [...new Set(rows.map((d) => d.version).filter((v): v is string => v !== null))];
+  const readVersion = readVersions.length === 1 ? readVersions[0] : null;
   const capturedUtc = rows.find((d) => d.capturedUtc)?.capturedUtc ?? null;
-  const totals = useMemo(() => ({
-    types: rows.length,
-    records: rows.reduce((sum, d) => sum + d.items, 0),
-  }), [rows]);
 
-  const decide = useMutation({
-    mutationFn: ({ ids, approve }: { ids: number[]; approve: boolean }) => deliveryApi.decideTags(ids, approve),
-    onSuccess: (result) => {
-      toast.success(result.approved
-        ? `${result.decided} change(s) approved; the rollout carries the records in batches.`
-        : `${result.decided} change(s) rejected; OSDU keeps what it holds.`);
-      setSelectedTags(new Set());
-      void queryClient.invalidateQueries({ queryKey: ["delivery", "cache"] });
+  const cells: SummaryCell[] = [
+    {
+      label: "Reading",
+      value: readVersions.length === 0
+        ? <span className="text-muted-foreground">no version</span>
+        : readVersion !== null
+          ? (
+            <>
+              <span className="truncate">{readVersion}</span>
+              {historic !== null
+                ? <StatePill tone="warning" label="historic" icon={History} testId="delivery-cache-reading-state" />
+                : <StatePill tone="success" label="current" icon={Pin} testId="delivery-cache-reading-state" />}
+            </>
+          )
+          : <span>{readVersions.length} versions</span>,
+      caption: readVersions.length === 0
+        ? "never captured"
+        : readVersion === null
+          ? "one per repository in scope"
+          : historic !== null
+            ? "not the version deliveries resolve against"
+            : capturedUtc
+              ? <>captured <RelativeTime value={capturedUtc} absolute={false} /></>
+              : "capture time unknown",
+      testId: "cache-kpi-snapshot",
     },
-    onError: () => toast.error("The decision could not be recorded."),
-  });
-
-  const decideSelected = (approve: boolean) =>
-    decide.mutate({ ids: [...selectedTags].map(Number), approve });
+    { label: "Cached types", value: totals.types, caption: "declared by the retrieval flows in scope", testId: "cache-kpi-types" },
+    {
+      label: "Cached records",
+      value: totals.records.toLocaleString(),
+      caption: historic !== null ? "as the version being read held them" : "at the current version",
+      testId: "cache-kpi-records",
+    },
+    {
+      label: "Awaiting approval",
+      value: pendingTotal ?? 0,
+      tone: (pendingTotal ?? 0) > 0 ? "warning" : undefined,
+      caption: pendingRecords > 0 ? `${pendingRecords.toLocaleString()} delivered record${pendingRecords === 1 ? "" : "s"} held back` : "no changes waiting",
+      onClick: () => setTab("approvals"),
+      testId: "cache-kpi-pending",
+    },
+  ];
 
   return (
     <Page data-testid="page-delivery-cache">
       <PageHeader
         title="OSDU cache"
-        subtitle="The reference and master data every delivered document is built from, as the retrieval flows capture it. Each capture is a version: Version history shows what each one changed, and Approvals holds the changes that reach records already delivered."
+        subtitle="The reference and master data every delivered document is built from, one version per capture. Deliveries resolve against the current one."
       />
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4" data-testid="delivery-cache-kpis">
-        <KpiCard label="Cached types" value={totals.types} testId="cache-kpi-types" />
-        <KpiCard label="Cached records" value={totals.records.toLocaleString()} testId="cache-kpi-records" />
-        <KpiCard
-          label="Snapshot"
-          value={snapshot ?? "none"}
-          color={historic ? "warning" : undefined}
-          caption={historic
-            ? "an earlier version, not the one deliveries resolve against"
-            : capturedUtc ? `captured ${new Date(capturedUtc).toLocaleString()}` : "never captured"}
-          testId="cache-kpi-snapshot"
-        />
-        <KpiCard
-          label="Awaiting approval"
-          value={pending.data?.total ?? 0}
-          color={(pending.data?.total ?? 0) > 0 ? "warning" : undefined}
-          caption={pendingRecords > 0 ? `${pendingRecords.toLocaleString()} record(s) held back` : "no changes waiting"}
-          testId="cache-kpi-pending"
-        />
-      </div>
+
+      <SummaryStrip cells={cells} data-testid="delivery-cache-kpis" />
 
       <FilterBar>
+        <SearchInput
+          value={search}
+          onChange={(value) => {
+            setSearch(value);
+            // The search is over the records, so typing one brings them forward from whichever tab is open.
+            if (value !== "") {
+              setTab("records");
+            }
+          }}
+          placeholder="Search values, ids and aliases"
+          label="Search cached records"
+          className="sm:w-72"
+          testId="delivery-cache-search"
+        />
+        <FilterCombobox
+          options={typeOptions}
+          value={type}
+          onChange={setType}
+          placeholder="All types"
+          searchPlaceholder="Type name, family or captured name"
+          emptyText={definitions.isPending ? "Loading the cached types." : "No cached type matches."}
+          ariaLabel="Cached type"
+          testId="delivery-cache-type"
+          className="w-full sm:w-52"
+        />
         <Select value={repoFilter} onValueChange={setRepoFilter}>
-          <SelectTrigger size="sm" className="h-8 w-56" data-testid="delivery-cache-repo"><SelectValue /></SelectTrigger>
+          <SelectTrigger size="sm" className="h-8 w-full sm:w-48" active={repoFilter !== ALL} aria-label="Repository" data-testid="delivery-cache-repo">
+            <SelectValue />
+          </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL}>All repos</SelectItem>
+            <SelectItem value={ALL}>All repositories</SelectItem>
             {(repos.data?.items ?? []).map((repo) => <SelectItem key={repo.id} value={repo.id}>{repo.name}</SelectItem>)}
           </SelectContent>
         </Select>
-        {type && (
-          <Button variant="ghost" size="sm" className="h-8" onClick={() => setType(null)} data-testid="delivery-cache-clear-type">
-            Showing {type} <X className="ml-1 size-3" />
-          </Button>
-        )}
+        <CacheVersionPicker versions={known ?? []} value={versionFilter} onChange={setVersionFilter} className="w-full sm:w-72" />
       </FilterBar>
 
-      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="flex flex-col gap-2" data-testid="delivery-cache-types">
-          <h2 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">What is cached</h2>
-          {definitions.isPending && <Skeleton className="h-24 w-full rounded-lg" />}
-          {!definitions.isPending && rows.length === 0 && (
-            <Card className="gap-2 p-3 text-[13px] text-muted-foreground">
-              <Database className="size-4" />
-              No cache declared yet. A retrieval flow declares one with a cache.types section naming the OSDU types and the paths to cache.
-            </Card>
-          )}
-          {rows.map((definition) => (
-            <CachedTypeCard
-              key={definition.id}
-              definition={definition}
-              selected={type === definition.name}
-              onSelect={() => setType(type === definition.name ? null : definition.name)}
-            />
-          ))}
-        </aside>
+      {scoped !== null && <CacheScope type={scoped} onClear={() => setType("")} />}
 
-        <Tabs defaultValue="records">
-          <TabsList data-testid="delivery-cache-tabs">
-            <TabsTrigger value="records" data-testid="delivery-cache-tab-records">Cached records</TabsTrigger>
-            <TabsTrigger value="history" data-testid="delivery-cache-tab-history">Version history</TabsTrigger>
+      <Tabs value={tab} onValueChange={(value) => setTab(value as Tab)}>
+        <div className="border-b border-border">
+          <TabsList variant="line" data-testid="delivery-cache-tabs">
+            <TabsTrigger value="records" data-testid="delivery-cache-tab-records">Records</TabsTrigger>
+            <TabsTrigger value="history" data-testid="delivery-cache-tab-history">History</TabsTrigger>
             <TabsTrigger value="approvals" data-testid="delivery-cache-tab-approvals">
-              Approvals{(pending.data?.total ?? 0) > 0 ? ` (${pending.data?.total})` : ""}
+              Approvals
+              {(pendingTotal ?? 0) > 0 && (
+                <span className="rounded-full bg-warning/15 px-1.5 font-mono text-[11px] tabular-nums text-warning">{pendingTotal}</span>
+              )}
             </TabsTrigger>
           </TabsList>
+        </div>
 
-          <TabsContent value="records" className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <SearchInput
-                value={search}
-                onChange={setSearch}
-                placeholder="Search cached values, ids and aliases"
-                label="Search cached records"
-                className="w-full max-w-md"
-                testId="delivery-cache-search"
-              />
-              <Select value={versionFilter} onValueChange={setVersionFilter} disabled={(versions.data?.length ?? 0) === 0}>
-                <SelectTrigger size="sm" className="h-8 w-[26rem]" data-testid="delivery-cache-version">
-                  <History className="size-3.5 shrink-0 text-muted-foreground" />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={CURRENT}>Current version</SelectItem>
-                  {(versions.data ?? []).map((v) => (
-                    <SelectItem key={`${v.repoId}:${v.version}`} value={v.version} disabled={!v.carried}>
-                      {versionLabel(v)}{v.carried ? "" : " · not carried"}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {historic && (
-              <Card className="flex-row items-center gap-2 rounded-lg border-warning/40 bg-warning/5 p-3 text-[13px]" data-testid="delivery-cache-historic">
-                <History className="size-4 shrink-0 text-warning" />
-                <span>
-                  Reading the cache as it stood at <span className="font-mono">{selected!.version}</span>. Deliveries resolve
-                  against the current version; nothing here is what a render would read today.
-                </span>
-                <Button variant="outline" size="sm" className="ml-auto h-7" onClick={() => setVersionFilter(CURRENT)} data-testid="delivery-cache-back-to-current">
-                  Back to current
-                </Button>
-              </Card>
-            )}
-            <PagedTable
-              queryKey={["delivery", "cache", "items", repoId, type, search, version]}
-              fetchPage={(page, pageSize) => deliveryApi.cachedItems({
-                page, pageSize, repoId, type: type ?? undefined, search: search || undefined, version,
-              })}
-              columns={[
-                { id: "type", header: "Type", render: (row) => <Badge variant="outline">{row.typeName}</Badge> },
-                { id: "recordId", header: "OSDU id", render: (row) => <TruncatedText text={row.recordId} mono maxWidth={380} /> },
-                {
-                  id: "values",
-                  header: "Cached values",
-                  render: (row) => (
-                    <span className="font-mono text-[12px]">{cachedFieldsText(row.fields)}</span>
-                  ),
-                },
-              ]}
-              rowKey={(row) => row.itemId}
-              onRowClick={(row) => setItem(row)}
-              emptyMessage="No cached records match. A cache is filled by running the retrieval flow that declares it, then syncing the repository."
-              data-testid="delivery-cache-items-table"
-            />
-          </TabsContent>
+        <TabsContent value="records">
+          <DeliveryCacheRecords
+            repoId={repoId}
+            type={scoped?.name ?? null}
+            fields={scoped?.fields.map((field) => field.as) ?? []}
+            search={search}
+            version={version}
+            historic={historic}
+            onBackToCurrent={() => setVersionFilter(CURRENT)}
+          />
+        </TabsContent>
 
-          <TabsContent value="history" className="flex flex-col gap-2">
-            <DeliveryCacheHistory repoId={repoId} type={type} />
-          </TabsContent>
+        <TabsContent value="history">
+          <DeliveryCacheHistory repoId={repoId} type={scoped?.name ?? null} />
+        </TabsContent>
 
-          <TabsContent value="approvals" className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <Select value={tagStatus} onValueChange={(v) => { setTagStatus(v); setSelectedTags(new Set()); }}>
-                <SelectTrigger size="sm" className="h-8 w-44" data-testid="delivery-cache-tag-status"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="pending">Awaiting approval</SelectItem>
-                  <SelectItem value="approved">Approved</SelectItem>
-                  <SelectItem value="rolling">Rolling out</SelectItem>
-                  <SelectItem value="applied">Rolled out</SelectItem>
-                  <SelectItem value="rejected">Rejected</SelectItem>
-                </SelectContent>
-              </Select>
-              {tagStatus === "pending" && selectedTags.size > 0 && (
-                <div className="flex items-center gap-2">
-                  <Button size="sm" className="h-8" disabled={decide.isPending} onClick={() => decideSelected(true)} data-testid="delivery-cache-approve">
-                    <Check className="mr-1 size-3" /> Approve {selectedTags.size}
-                  </Button>
-                  <Button size="sm" variant="outline" className="h-8" disabled={decide.isPending} onClick={() => decideSelected(false)} data-testid="delivery-cache-reject">
-                    <X className="mr-1 size-3" /> Reject
-                  </Button>
-                </div>
-              )}
-            </div>
-            {tagStatus === "pending" && pending.data?.total === 0
-              ? (
-                <Card className="gap-1 p-3 text-[13px]" data-testid="delivery-cache-approvals-empty">
-                  <span className="font-medium">Nothing needs approval.</span>
-                  <span className="text-muted-foreground">
-                    A cache change waits here only when a record already delivered to OSDU was built from the value that
-                    changed. Every change a version made, delivered or not, is under Version history.
-                  </span>
-                </Card>
-              )
-              : (
-                <PagedTable
-                  queryKey={["delivery", "cache", "tags", tagStatus]}
-                  fetchPage={(page, pageSize) => deliveryApi.updateTags({ page, pageSize, status: tagStatus })}
-                  columns={tagColumns}
-                  rowKey={(row) => String(row.tagId)}
-                  selection={tagStatus === "pending"
-                    ? { selected: selectedTags, onChange: setSelectedTags }
-                    : undefined}
-                  emptyMessage={tagStatus === "pending" ? "Nothing needs approval." : "No changes in this state."}
-                  data-testid="delivery-cache-tags-table"
-                />
-              )}
-          </TabsContent>
-        </Tabs>
-      </div>
-
-      <Sheet open={item !== null} onOpenChange={(open) => { if (!open) { setItem(null); } }}>
-        <SheetContent className="w-full gap-0 sm:max-w-2xl" data-testid="delivery-cache-item-detail">
-          <SheetHeader>
-            <SheetTitle>{item?.typeName ?? "Cached record"}</SheetTitle>
-            <SheetDescription>
-              {item ? `${item.entityType} · ${item.recordId}` : "Loading."}
-            </SheetDescription>
-            {item && (
-              <p className="px-4 text-[12px] text-muted-foreground" data-testid="delivery-cache-item-version">
-                As cached at version <span className="font-mono">{item.version}</span>.
-              </p>
-            )}
-          </SheetHeader>
-          {item && (
-            <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
-              <CodeView value={JSON.stringify(item.fields, null, 2)} language="json" height={480} data-testid="delivery-cache-item-json" />
-            </div>
-          )}
-        </SheetContent>
-      </Sheet>
+        <TabsContent value="approvals">
+          <DeliveryCacheApprovals pendingTotal={pendingTotal} />
+        </TabsContent>
+      </Tabs>
     </Page>
   );
 }
-
-const changeTone: Record<string, string> = {
-  changed: "bg-info/15 text-info",
-  removed: "bg-destructive/15 text-destructive",
-  unmatched: "bg-warning/15 text-warning",
-};
-
-const tagColumns = [
-  {
-    id: "change",
-    header: "Change",
-    render: (row: DeliveryUpdateTag) => (
-      <Badge variant="secondary" className={changeTone[row.change] ?? ""}>{row.change}</Badge>
-    ),
-  },
-  {
-    id: "what",
-    header: "Cached value",
-    render: (row: DeliveryUpdateTag) => (
-      <span className="flex flex-col">
-        <span className="font-mono text-[12px]">{row.typeName}.{row.path}</span>
-        <TruncatedText text={row.itemId} mono maxWidth={300} />
-      </span>
-    ),
-  },
-  {
-    id: "values",
-    header: "Was / is now",
-    render: (row: DeliveryUpdateTag) => (
-      <span className="font-mono text-[12px]">
-        <span className="text-muted-foreground line-through">{row.oldValue ?? "-"}</span>
-        <span className="px-1">to</span>
-        <span>{row.newValue ?? "gone"}</span>
-      </span>
-    ),
-  },
-  {
-    id: "records",
-    header: "Records",
-    align: "right" as const,
-    render: (row: DeliveryUpdateTag) => (
-      <span className="font-mono tabular-nums">{row.affectedRecords.toLocaleString()}</span>
-    ),
-  },
-  {
-    id: "progress",
-    header: "Rollout",
-    render: (row: DeliveryUpdateTag) => {
-      if (row.status === "pending") {
-        return <span className="text-[12px] text-muted-foreground">waiting for a decision</span>;
-      }
-
-      if (row.status === "rejected") {
-        return <span className="text-[12px] text-muted-foreground">not sent</span>;
-      }
-
-      const done = row.affectedRecords === 0 ? 1 : row.processed / row.affectedRecords;
-      return (
-        <span className="flex items-center gap-2">
-          <span className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
-            <span className="block h-full bg-primary" style={{ width: `${Math.round(done * 100)}%` }} />
-          </span>
-          <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-            {row.processed.toLocaleString()} / {row.affectedRecords.toLocaleString()}
-          </span>
-        </span>
-      );
-    },
-  },
-  { id: "mode", header: "Mode", render: (row: DeliveryUpdateTag) => <Badge variant="outline">{row.mode}</Badge> },
-  { id: "detected", header: "Detected", render: (row: DeliveryUpdateTag) => <RelativeTime value={row.detectedUtc} /> },
-];
