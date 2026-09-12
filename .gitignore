@@ -15,6 +15,7 @@ gui/node_modules/**
 gui/dist/
 gui/.env.local
 gui/playwright-report/
+.playwright-mcp/
 gui/test-results/
 gui/e2e/.fixtures/
 gui/.tsbuild/
