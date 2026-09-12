@@ -10,7 +10,7 @@
          DefaultAzureCredential), Key Vault secret references, and blob storage. -->
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
     <PackageVersion Include="Azure.Security.KeyVault.Secrets" Version="4.11.0" />
-    <PackageVersion Include="Azure.Storage.Blobs" Version="12.24.0" />
+    <PackageVersion Include="Azure.Storage.Blobs" Version="12.29.2" />
     <!-- The drop reader (SqlFlow.Delivery): parquet source rows, one row group at a time; pure managed. -->
     <PackageVersion Include="Parquet.Net" Version="5.6.1" />
     <!-- Flow documents (SqlFlow.Yaml): the envelope probe and every registered document kind parse with it. -->
