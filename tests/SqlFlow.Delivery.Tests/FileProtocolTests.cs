@@ -104,7 +104,9 @@ public class FileProtocolTests
             Assert.Equal("12", outcome.Returned["version"]);
             Assert.Equal("2", outcome.Returned["files"]);
             Assert.Equal(["upload-0", "upload-1", "register-0", "register-1", "records"], outcome.Steps.Select(s => s.Name));
-            Assert.Equal(["upload-0", "upload-1", "register-0", "register-1", "records"], Names(reported));
+
+            // Each registration is reported twice: the mark before the request, then what the service returned.
+            Assert.Equal(["upload-0", "upload-1", "register-0", "register-0", "register-1", "register-1", "records"], Names(reported));
             Assert.Contains("fileSource:/landing/blob-0", reported[0], StringComparison.Ordinal);
             Assert.DoesNotContain("SECRET", string.Join("\n", reported), StringComparison.Ordinal);
 
@@ -174,11 +176,131 @@ public class FileProtocolTests
             Assert.False(outcome.Steps[1].Resumed);
             Assert.True(outcome.Steps[2].Resumed);
             Assert.False(outcome.Steps[3].Resumed);
-            Assert.Equal(["upload-1", "register-1", "records"], Names(reported));
+            Assert.Equal(["upload-1", "register-1", "register-1", "records"], Names(reported));
             Assert.Equal(4, handler.Calls.Count);
             Assert.Equal("dev:dataset--File.Generic:old-0,dev:dataset--File.Generic:ds-0", outcome.Returned["datasetIds"]);
             var record = JsonNode.Parse(handler.Calls[3].Body!)!.AsArray();
             Assert.Equal(["dev:dataset--File.Generic:old-0:", "dev:dataset--File.Generic:ds-0:"], record[0]!["data"]!["Datasets"]!.AsArray().Select(n => n!.GetValue<string>()));
+        }
+    }
+
+    [Fact]
+    public async Task A_registration_is_marked_with_its_file_source_before_the_request_goes_out()
+    {
+        // Every accepted POST files/metadata mints another dataset record, so the mark has to exist before the
+        // request does: a try that stops between the response and the report is what leaves a dataset nothing
+        // references. The mark carries no dataset id, so it never counts as a completed step.
+        var reported = new List<string>();
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Get, "/files/uploadURL", hit => FakeHttpHandler.Json(HttpStatusCode.OK, UploadLocation(hit)))
+            .OnMatch(LandingUpload, _ => FakeHttpHandler.Json(HttpStatusCode.Created, null))
+            .On(HttpMethod.Post, "/files/metadata", HttpStatusCode.Created, """{"id":"dev:dataset--File.Generic:ds-0"}""")
+            .On(HttpMethod.Put, "/records", HttpStatusCode.Created, """{"recordIdVersions":["dev:work-product-component--WellLog:abc:12"]}""");
+        var (client, runtime, _) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduFileProtocol(client, new ProtocolOptions());
+            var outcome = await protocol.DeliverAsync(Work(true, true, 1, reported: reported));
+
+            Assert.True(outcome.Succeeded);
+            Assert.Equal(["upload-0", "register-0", "register-0", "records"], Names(reported));
+            Assert.Contains("state:" + FileUploads.RegisteringState, reported[1], StringComparison.Ordinal);
+            Assert.Contains("fileSource:/landing/blob-0", reported[1], StringComparison.Ordinal);
+            Assert.DoesNotContain("datasetId", reported[1], StringComparison.Ordinal);
+            Assert.Contains("datasetId:dev:dataset--File.Generic:ds-0", reported[2], StringComparison.Ordinal);
+
+            // The mark is progress, not a step of the attempt: the attempt names the registration once.
+            Assert.Equal(["upload-0", "register-0", "records"], outcome.Steps.Select(s => s.Name));
+        }
+    }
+
+    [Fact]
+    public async Task A_registration_whose_outcome_was_never_reported_takes_over_the_dataset_it_created()
+    {
+        // The mark says a registration was in flight when the earlier try stopped. The file service mints the
+        // dataset id and reads metadata back by that id alone, so the landing-zone path is the only way back to
+        // what it created: search answers by it, and the dataset is taken over instead of registering the file
+        // again and leaving the first one behind.
+        var reported = new List<string>();
+        var completed = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
+        {
+            ["upload-0"] = new Dictionary<string, string>(StringComparer.Ordinal) { ["fileSource"] = "/landing/blob-0", ["fileId"] = "file-0", ["name"] = "curve_0.parquet", ["size"] = "7" },
+            ["register-0"] = new Dictionary<string, string>(StringComparer.Ordinal) { ["fileSource"] = "/landing/blob-0", ["state"] = FileUploads.RegisteringState },
+        };
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/search/v2/query", HttpStatusCode.OK, """{"results":[{"id":"dev:dataset--File.Generic:ds-lost"}],"totalCount":1}""")
+            .On(HttpMethod.Put, "/records", HttpStatusCode.Created, """{"recordIdVersions":["dev:work-product-component--WellLog:abc:13"]}""");
+        var (client, runtime, _) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduFileProtocol(client, new ProtocolOptions());
+            var outcome = await protocol.DeliverAsync(Work(true, true, 1, completed: completed, reported: reported));
+
+            Assert.True(outcome.Succeeded);
+            Assert.Equal("dev:dataset--File.Generic:ds-lost", outcome.Returned["datasetIds"]);
+            Assert.Equal(["upload-0", "register-0", "records"], outcome.Steps.Select(s => s.Name));
+            Assert.True(outcome.Steps[1].Resumed);
+            Assert.Equal(["register-0", "records"], Names(reported));
+            Assert.Contains("adopted:true", reported[0], StringComparison.Ordinal);
+
+            // Nothing was uploaded and nothing was registered: the lookup and the record write are the only calls.
+            Assert.Equal(2, handler.Calls.Count);
+            Assert.DoesNotContain(handler.Calls, c => c.Uri.AbsolutePath.EndsWith("/files/metadata", StringComparison.Ordinal));
+            var query = JsonNode.Parse(handler.Calls[0].Body!)!.AsObject();
+            Assert.Contains("/landing/blob-0", query["query"]!.GetValue<string>(), StringComparison.Ordinal);
+            Assert.Equal("osdu:wks:dataset--File.Generic:1.0.0", query["kind"]!.GetValue<string>());
+        }
+    }
+
+    [Fact]
+    public async Task A_registration_the_service_never_accepted_is_sent_again()
+    {
+        // The other reading of an unreported registration: the request never landed. Nothing is registered for the
+        // path, so the file is registered now, and the record carries that dataset.
+        var completed = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
+        {
+            ["upload-0"] = new Dictionary<string, string>(StringComparer.Ordinal) { ["fileSource"] = "/landing/blob-0", ["name"] = "curve_0.parquet", ["size"] = "7" },
+            ["register-0"] = new Dictionary<string, string>(StringComparer.Ordinal) { ["fileSource"] = "/landing/blob-0", ["state"] = FileUploads.RegisteringState },
+        };
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/search/v2/query", HttpStatusCode.OK, """{"results":[],"totalCount":0}""")
+            .On(HttpMethod.Post, "/files/metadata", HttpStatusCode.Created, """{"id":"dev:dataset--File.Generic:ds-new"}""")
+            .On(HttpMethod.Put, "/records", HttpStatusCode.Created, """{"recordIdVersions":["dev:work-product-component--WellLog:abc:14"]}""");
+        var (client, runtime, _) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduFileProtocol(client, new ProtocolOptions { DatasetIndexWaitSeconds = 0 });
+            var outcome = await protocol.DeliverAsync(Work(true, true, 1, completed: completed));
+
+            Assert.True(outcome.Succeeded);
+            Assert.Equal("dev:dataset--File.Generic:ds-new", outcome.Returned["datasetIds"]);
+            Assert.Equal(3, handler.Calls.Count);
+            Assert.EndsWith("/files/metadata", handler.Calls[1].Uri.AbsolutePath, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Two_datasets_for_one_landing_zone_path_hold_the_record()
+    {
+        // Which of the two the record should point at is not something the delivery can decide: an operator deletes
+        // the one nothing references, or releases the record.
+        var completed = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
+        {
+            ["upload-0"] = new Dictionary<string, string>(StringComparer.Ordinal) { ["fileSource"] = "/landing/blob-0", ["name"] = "curve_0.parquet", ["size"] = "7" },
+            ["register-0"] = new Dictionary<string, string>(StringComparer.Ordinal) { ["fileSource"] = "/landing/blob-0", ["state"] = FileUploads.RegisteringState },
+        };
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/search/v2/query", HttpStatusCode.OK, """{"results":[{"id":"dev:dataset--File.Generic:ds-one"},{"id":"dev:dataset--File.Generic:ds-two"}],"totalCount":2}""");
+        var (client, runtime, _) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduFileProtocol(client, new ProtocolOptions());
+            var held = await Assert.ThrowsAsync<RecordHeldException>(() => protocol.DeliverAsync(Work(true, true, 1, completed: completed)));
+
+            Assert.Contains("curve_0.parquet", held.Message, StringComparison.Ordinal);
+            Assert.Contains("ds-one", held.Message, StringComparison.Ordinal);
+            Assert.Contains("ds-two", held.Message, StringComparison.Ordinal);
+            Assert.Single(handler.Calls);
         }
     }
 

@@ -15,15 +15,15 @@ namespace SqlFlow.Delivery.Engine.Intake;
 /// What one intake pass produced: the counts of what it planned and the batches it wrote. <c>Stale</c> counts the
 /// records the drop carried in a version older than the ledger holds, delivered or queued, which are never sent.
 /// </summary>
-public sealed record IntakeCounts(long Records, long Planned, long Skipped, long Held, long Blocked, long Untracked, int Batches, long Stale = 0)
+public sealed record IntakeCounts(long Records, long Planned, long Skipped, long Held, long Blocked, long Untracked, int Batches, long Stale = 0, long AwaitingApproval = 0)
 {
     public static IntakeCounts Empty { get; } = new(0, 0, 0, 0, 0, 0, 0);
 
     public IntakeCounts Add(IntakeCounts other) => new(
-        Records + other.Records, Planned + other.Planned, Skipped + other.Skipped, Held + other.Held, Blocked + other.Blocked, Untracked + other.Untracked, Batches + other.Batches, Stale + other.Stale);
+        Records + other.Records, Planned + other.Planned, Skipped + other.Skipped, Held + other.Held, Blocked + other.Blocked, Untracked + other.Untracked, Batches + other.Batches, Stale + other.Stale, AwaitingApproval + other.AwaitingApproval);
 
     public override string ToString()
-        => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Planned} to deliver in {Batches} batch(es), {Skipped} unchanged, {Stale} stale, {Held} held, {Blocked} blocked, {Untracked} untracked");
+        => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Planned} to deliver in {Batches} batch(es), {Skipped} unchanged, {AwaitingApproval} awaiting approval, {Stale} stale, {Held} held, {Blocked} blocked, {Untracked} untracked");
 }
 
 public sealed record IntakeResult(SubmissionState Submission, PlanHeader? Header, IntakeCounts Counts, bool AlreadyProcessed)
@@ -186,6 +186,7 @@ public sealed class SubmissionIntake
             CompletedUtc = counts.Planned == 0 ? now : null,
             Planned = counts.Planned,
             SkippedUnchanged = counts.Skipped,
+            AwaitingApproval = counts.AwaitingApproval,
             SkippedStale = counts.Stale,
             UnchangedAtPush = 0,
             Blocked = counts.Blocked,
@@ -323,7 +324,7 @@ public sealed class SubmissionIntake
             await FlushHeldAsync(flow, submission, held, ct).ConfigureAwait(false);
         }
 
-        return new IntakeCounts(summary.Records, staged, summary.Skips, summary.Holds, summary.Blocked, summary.Untracked, batches, summary.Stale + refused);
+        return new IntakeCounts(summary.Records, staged, summary.Skips, summary.Holds, summary.Blocked, summary.Untracked, batches, summary.Stale + refused, summary.AwaitingApproval);
     }
 
     /// <summary>What the ledger is told about one skipped plan entry.</summary>
@@ -489,7 +490,7 @@ public sealed class SubmissionIntake
     public static string Summarize(SubmissionState s)
     {
         ArgumentNullException.ThrowIfNull(s);
-        return string.Create(CultureInfo.InvariantCulture, $"{s.Status.ToString().ToLowerInvariant()}: {s.Planned} planned in {s.BatchCount} batch(es), {s.Delivered} delivered, {s.SkippedUnchanged + s.UnchangedAtPush} unchanged, {s.SkippedStale} stale, {s.Blocked} blocked, {s.Held} held, {s.Failed} failed");
+        return string.Create(CultureInfo.InvariantCulture, $"{s.Status.ToString().ToLowerInvariant()}: {s.Planned} planned in {s.BatchCount} batch(es), {s.Delivered} delivered, {s.SkippedUnchanged + s.UnchangedAtPush} unchanged, {s.AwaitingApproval} awaiting approval, {s.SkippedStale} stale, {s.Blocked} blocked, {s.Held} held, {s.Failed} failed");
     }
 
     /// <summary>The batch numbers a partition subset writes: a namespace per first partition, so fan-out members never collide.</summary>

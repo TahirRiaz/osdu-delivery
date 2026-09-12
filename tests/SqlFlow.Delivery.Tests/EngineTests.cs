@@ -13,8 +13,11 @@ using SqlFlow.Delivery.Engine.Worker;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using Microsoft.Extensions.Logging.Abstractions;
+using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.SampleDrop;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Tests;
@@ -797,6 +800,57 @@ public class EndToEndTests : IDisposable
         using var runtime = await FlowRuntime.CreateAsync(engine, Samples.LocalFlow(drop), new Dictionary<string, string> { ["logSource"] = "STAT_COMP" }, drop);
         var ex = await Assert.ThrowsAsync<FlowValidationException>(() => runtime.PlanAsync());
         Assert.Contains("prepared for mapping 'WellLog@1.5.0'", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>The captured gamma ray unit, with the code a mapping matches it by.</summary>
+    private static ReferenceType GammaRayUnit(string code) => new(
+        "UnitOfMeasure", "reference-data--UnitOfMeasure",
+        [
+            new ReferenceItem("opendes:reference-data--UnitOfMeasure:gAPI", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Code"] = ReferenceValue.Of(code),
+                ["ID"] = ReferenceValue.Of(code),
+                ["Name"] = ReferenceValue.Of("API gamma ray unit"),
+            }),
+        ]);
+
+    [Fact]
+    public async Task Records_a_cache_change_holds_back_are_counted_as_awaiting_approval_not_as_unchanged()
+    {
+        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
+        var drop = await DropAsync("gated1", records, Submission1, 1);
+        var (runtime, protocol, ledger) = await RuntimeAsync(drop);
+        using (runtime)
+        {
+            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger, Submission1)).Delivered);
+        }
+
+        // The unit the two gamma ray logs matched by moves, and the change waits for a decision, so their sets are
+        // gated. The third log does not read it.
+        var impact = await new CacheImpactAnalyzer(ledger, _clock, NullLogger.Instance)
+            .AnalyzeAsync(GammaRayUnit("gAPI"), GammaRayUnit("gAPI-2"), CacheChangeMode.Approve, "20260908T212727Z", "20260909T000000Z");
+        Assert.NotEqual(0, impact.Changes);
+        Assert.NotEmpty(await ledger.GatedCacheSetsAsync());
+
+        var moved = await DropAsync("gated2", records, Submission2, sourceVersion: 2);
+        var (runtime2, protocol2, ledger2) = await RuntimeAsync(moved);
+        using (runtime2)
+        {
+            var plan = await runtime2.PlanAsync();
+            Assert.Equal(2, plan.AwaitingApproval);
+            Assert.All(plan.Entries.Where(e => e.SkipTier == SkipTier.Approval), e => Assert.Equal(PlannedAction.Skip, e.Action));
+
+            // The held-back records are not unchanged: their document moved with the cache, and an approval is what
+            // decides whether it is sent. Only the third log is unchanged.
+            Assert.Equal(1, plan.Skips);
+
+            await RunAsync(runtime2, protocol2, ledger2, Submission2);
+            var submission = await ledger2.GetSubmissionAsync(Submission2);
+            Assert.Equal(2, submission!.AwaitingApproval);
+            Assert.Equal(1, submission.SkippedUnchanged);
+            Assert.Equal(0, submission.Delivered);
+            Assert.Empty(protocol2.Deliveries);
+        }
     }
 
     public void Dispose()

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Drops;
@@ -28,6 +29,12 @@ internal static class FileUploads
 
     /// <summary>The target-state value listing the dataset record ids the record's files became, comma separated.</summary>
     public const string DatasetIdsValue = "datasetIds";
+
+    /// <summary>
+    /// What a registration step holds while its request is in flight: the landing-zone path it is registering, and
+    /// no dataset id, so the step never counts as completed and the next try knows what to look the dataset up by.
+    /// </summary>
+    public const string RegisteringState = "registering";
 
     public static string UploadStep(int index) => "upload-" + index.ToString(CultureInfo.InvariantCulture);
 
@@ -108,17 +115,50 @@ internal static class FileUploads
         return files;
     }
 
-    /// <summary>Registers the dataset record of an uploaded file (openapi file v2, POST files/metadata) and returns its id.</summary>
-    public static async Task<string> RegisterAsync(OsduHttpClient client, ProtocolOptions options, DeliveryWork work, UploadedFile file, DeliverySteps steps, CancellationToken ct)
+    /// <summary>
+    /// Registers the dataset record of an uploaded file (openapi file v2, POST files/metadata) and returns its id.
+    /// The step is marked before the request goes out, because the service mints a new dataset record for every
+    /// accepted POST: a try that dies between the response and the report would otherwise register the same file
+    /// again and leave the first dataset in OSDU with nothing referencing it.
+    /// </summary>
+    public static async Task<string> RegisterAsync(OsduHttpClient client, ProtocolOptions options, DeliveryWork work, UploadedFile file, DeliverySteps steps, TimeProvider time, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(work);
+        ArgumentNullException.ThrowIfNull(file);
+        ArgumentNullException.ThrowIfNull(steps);
         var step = RegisterStep(file.Index);
-        if (work.Completed(step) is { } done && done.TryGetValue("datasetId", out var known) && !string.IsNullOrEmpty(known))
+        if (work.Completed(step) is { } done)
         {
-            steps.Resumed(step, done);
-            return known;
+            if (done.TryGetValue("datasetId", out var known) && !string.IsNullOrEmpty(known))
+            {
+                steps.Resumed(step, done);
+                return known;
+            }
+
+            // Marked but never completed: an earlier try was sending this registration when it stopped, and whether
+            // the service accepted it is unknown. Ask what it registered for this landing-zone path instead of
+            // registering a second dataset for the same file.
+            if (done.TryGetValue("fileSource", out var attempted)
+                && string.Equals(attempted, file.FileSource, StringComparison.Ordinal)
+                && await RegisteredForAsync(client, options, time, file, ct).ConfigureAwait(false) is { } adopted)
+            {
+                var recovered = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["datasetId"] = adopted,
+                    ["fileSource"] = file.FileSource,
+                    ["adopted"] = "true",
+                };
+                steps.Resumed(step, recovered);
+                await work.ReportStepAsync(step, recovered, ct).ConfigureAwait(false);
+                return adopted;
+            }
         }
 
         var started = steps.Now;
+        await work.ReportStepAsync(
+            step,
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["fileSource"] = file.FileSource, ["state"] = RegisteringState },
+            ct).ConfigureAwait(false);
         var url = client.Url(options.FileMetadataPath ?? DefaultFileMetadataPath);
         // Not repeated on an unclear outcome: every accepted POST mints another dataset record. The step is
         // resumable, so the next try of the record registers the file once.
@@ -133,6 +173,67 @@ internal static class FileUploads
         steps.Add(step, started, (int)result.Status, returned);
         await work.ReportStepAsync(step, returned, ct).ConfigureAwait(false);
         return datasetId;
+    }
+
+    /// <summary>
+    /// The dataset record the file service holds for a landing-zone path, asked of the search service (openapi
+    /// search v2, POST query), or null when it lists none.
+    ///
+    /// The file service mints the dataset id itself and reads metadata back by that id alone (openapi file v2,
+    /// GET files/{id}/metadata), so a registration whose response was lost leaves the landing-zone path as the only
+    /// way back to it, and only search can answer by it. A dataset reaches the index a moment after it is
+    /// registered, so the ask is repeated until <see cref="ProtocolOptions.DatasetIndexWaitSeconds"/> runs out, as
+    /// the manifest protocol's wait for its own datasets does. Nothing listed means the registration never landed
+    /// (or is still not indexed) and the file is registered again. Two datasets for one path is not something this
+    /// can choose between: the record is held, naming both.
+    /// </summary>
+    private static async Task<string?> RegisteredForAsync(OsduHttpClient client, ProtocolOptions options, TimeProvider time, UploadedFile file, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(time);
+        var url = client.Url(options.SearchQueryPath ?? OsduManifestProtocol.DefaultSearchQueryPath);
+        var body = new JsonObject
+        {
+            ["kind"] = options.DatasetKind,
+            ["query"] = "data.DatasetProperties.FileSourceInfo.FileSource:\"" + file.FileSource + "\"",
+            ["limit"] = 2,
+            ["returnedFields"] = new JsonArray(JsonValue.Create("id")),
+        };
+        var deadline = time.GetUtcNow() + TimeSpan.FromSeconds(Math.Max(0, options.DatasetIndexWaitSeconds));
+        var interval = TimeSpan.FromSeconds(Math.Max(1, options.WorkflowPollSeconds));
+        while (true)
+        {
+            var result = await client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
+            var ids = new List<string>();
+            foreach (var hit in JsonPathReader.SelectElements(OsduHttpClient.ParseJson(result, url), "results[*]"))
+            {
+                if (hit.ValueKind == JsonValueKind.Object
+                    && hit.TryGetProperty("id", out var id)
+                    && id.ValueKind == JsonValueKind.String
+                    && id.GetString() is { Length: > 0 } text
+                    && !ids.Contains(text, StringComparer.Ordinal))
+                {
+                    ids.Add(text);
+                }
+            }
+
+            if (ids.Count > 1)
+            {
+                throw new RecordHeldException(
+                    $"the landing zone path of {file.Name} is registered as {ids.Count.ToString(CultureInfo.InvariantCulture)} dataset records ({string.Join(", ", ids)}); delete the ones the record does not reference, then release the record");
+            }
+
+            if (ids.Count == 1)
+            {
+                return ids[0];
+            }
+
+            if (time.GetUtcNow() + interval > deadline)
+            {
+                return null;
+            }
+
+            await Task.Delay(interval, time, ct).ConfigureAwait(false);
+        }
     }
 
     /// <summary>

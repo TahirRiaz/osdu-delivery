@@ -163,6 +163,13 @@ The files go first, then the record that references them (openapi file v2, stora
    record: `datasetKind` (default `osdu:wks:dataset--File.Generic:1.0.0`), the record's own `acl` and `legal`
    copied, and `data.DatasetProperties.FileSourceInfo` with the file source, name and size. Step
    `register-{i}` returns `datasetId`.
+   The step is marked with its `fileSource` before the request goes out, because the service mints a dataset
+   record per accepted registration: a try that stops between the response and the report would otherwise
+   register the same file again and leave the first dataset with nothing referencing it. A try that finds such a
+   mark asks the search index which dataset that landing-zone path became
+   (`POST {searchQueryPath}`, for up to `datasetIndexWaitSeconds`) and takes it over, returning it with
+   `adopted`; nothing listed means the registration never landed and the file is registered again. Two datasets
+   for one path hold the record, naming both. `osduManifest` registers through the same step.
 3. The record, with `data.{datasetsProperty}` (default `Datasets`) referencing the registered datasets as `{id}:`
    (the form the work product component schemas require; any references the mapping rendered are kept), goes through the storage array endpoint exactly as `osduRecord`, batched with
    the rest of the batch. Step `records`.

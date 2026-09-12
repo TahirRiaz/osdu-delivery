@@ -2247,6 +2247,7 @@ public sealed class CatalogLedger : ILedger
         entity.CompletedUtc = s.CompletedUtc;
         entity.Planned = s.Planned;
         entity.SkippedUnchanged = s.SkippedUnchanged;
+        entity.AwaitingApproval = s.AwaitingApproval;
         entity.SkippedStale = s.SkippedStale;
         entity.UnchangedAtPush = s.UnchangedAtPush;
         entity.Blocked = s.Blocked;
@@ -2275,6 +2276,7 @@ public sealed class CatalogLedger : ILedger
         CompletedUtc = e.CompletedUtc,
         Planned = e.Planned,
         SkippedUnchanged = e.SkippedUnchanged,
+        AwaitingApproval = e.AwaitingApproval,
         SkippedStale = e.SkippedStale,
         UnchangedAtPush = e.UnchangedAtPush,
         Blocked = e.Blocked,

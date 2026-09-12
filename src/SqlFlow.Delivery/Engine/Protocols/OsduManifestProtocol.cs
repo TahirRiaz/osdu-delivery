@@ -115,7 +115,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                     var uploaded = await FileUploads.UploadAsync(_client, _options, work, chunks, steps, ct).ConfigureAwait(false);
                     foreach (var file in uploaded)
                     {
-                        ids.Add(await FileUploads.RegisterAsync(_client, _options, work, file, steps, ct).ConfigureAwait(false));
+                        ids.Add(await FileUploads.RegisterAsync(_client, _options, work, file, steps, _time, ct).ConfigureAwait(false));
                     }
 
                     files = uploaded.Count;

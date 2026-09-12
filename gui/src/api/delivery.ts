@@ -52,6 +52,8 @@ export interface DeliverySubmission {
   completedUtc: string | null;
   planned: number;
   skippedUnchanged: number;
+  /** Records a cache change waiting for approval holds back: rendered and ready, not sent until it is decided. */
+  awaitingApproval: number;
   /** Records the drop carried in a version older than the one delivered or queued: skipped, never sent. */
   skippedStale: number;
   /** Records whose queued document OSDU already held when the worker came to send it: nothing was sent. */

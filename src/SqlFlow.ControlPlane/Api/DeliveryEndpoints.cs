@@ -28,7 +28,7 @@ public sealed record DeliveryFlowStatsDto(
 public sealed record DeliverySubmissionDto(
     Guid SubmissionId, Guid FlowId, string FlowName, string MappingReference, string RenderContext, string DropLocation,
     string ParametersJson, long RecordCount, string Status, DateTime ReceivedUtc, DateTime? StartedUtc, DateTime? CompletedUtc,
-    long Planned, long SkippedUnchanged, long SkippedStale, long UnchangedAtPush, long Blocked, long Delivered, long Held, long Failed, string? Error,
+    long Planned, long SkippedUnchanged, long AwaitingApproval, long SkippedStale, long UnchangedAtPush, long Blocked, long Delivered, long Held, long Failed, string? Error,
     string? WorkLocation, int BatchCount, int Partitions);
 
 /// <summary>One retrieval run of a retrieval flow: the window it covered, where its files went, and its outcome.</summary>
@@ -1294,7 +1294,7 @@ public static class DeliveryEndpoints
 
     private static DeliverySubmissionDto ToDto(SubmissionState s) => new(
         s.SubmissionId, s.FlowId, s.FlowName, s.MappingReference, s.RenderContext, s.DropLocation, s.ParametersJson, s.RecordCount,
-        s.Status.ToString().ToLowerInvariant(), s.ReceivedUtc, s.StartedUtc, s.CompletedUtc, s.Planned, s.SkippedUnchanged, s.SkippedStale, s.UnchangedAtPush, s.Blocked,
+        s.Status.ToString().ToLowerInvariant(), s.ReceivedUtc, s.StartedUtc, s.CompletedUtc, s.Planned, s.SkippedUnchanged, s.AwaitingApproval, s.SkippedStale, s.UnchangedAtPush, s.Blocked,
         s.Delivered, s.Held, s.Failed, s.Error, s.WorkLocation, s.BatchCount, s.Partitions);
 
     private static DeliveryWorkBatchDto ToDto(WorkBatchState b) => new(

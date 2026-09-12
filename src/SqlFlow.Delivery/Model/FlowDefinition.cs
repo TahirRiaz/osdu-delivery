@@ -441,10 +441,17 @@ public sealed record ProtocolOptions
     /// Manifest protocol: how long to wait, after registering a record's files, for the search index to list the new
     /// datasets before the manifest names them. Ingestion checks references against the index and drops a record whose
     /// dataset it cannot find yet (observed on a live M26 service). 0 does not wait. Default 120 seconds.
+    /// <para>
+    /// File and manifest protocols: it also bounds how long a registration resumed after an interrupted try waits for
+    /// the index to list the dataset that try may have created, before registering the file again.
+    /// </para>
     /// </summary>
     public int DatasetIndexWaitSeconds { get; init; } = 120;
 
-    /// <summary>Manifest protocol: the search query path the wait for registered datasets asks. Default /api/search/v2/query.</summary>
+    /// <summary>
+    /// File and manifest protocols: the search query path the waits for registered datasets ask (the manifest's wait
+    /// for its own datasets, and a resumed registration's lookup by landing-zone path). Default /api/search/v2/query.
+    /// </summary>
     public string? SearchQueryPath { get; init; }
 
     /// <summary>Manifest protocol: the manifest kind. Default osdu:wks:Manifest:1.0.0.</summary>

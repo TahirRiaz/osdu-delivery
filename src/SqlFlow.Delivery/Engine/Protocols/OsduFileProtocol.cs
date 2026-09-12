@@ -71,7 +71,7 @@ public sealed class OsduFileProtocol : IDeliveryProtocol
                     var ids = new List<string>(uploaded.Count);
                     foreach (var file in uploaded)
                     {
-                        ids.Add(await FileUploads.RegisterAsync(_client, _options, work, file, steps, ct).ConfigureAwait(false));
+                        ids.Add(await FileUploads.RegisterAsync(_client, _options, work, file, steps, _time, ct).ConfigureAwait(false));
                     }
 
                     datasets = ids;

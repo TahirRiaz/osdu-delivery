@@ -322,6 +322,8 @@ and how many delivered records it reaches.
 One decision covers all of them, because asking an operator to approve twelve million rows
 is not asking anything. The cached type's `onChange` says what the tag means: `auto`
 approves it as it is written; `approve` holds the affected sets until an operator decides.
+A run counts what the gate holds back as awaiting approval, never as unchanged: the change
+is rendered and ready, and a decision is what the estate is waiting on.
 The gate is real, and it has to be: the render context moved with the cache version, so
 tier 1 would otherwise re-render and send exactly the update being held back. A plan reads
 the gated set ids once (a handful of numbers), sees a record whose set is gated ahead of
@@ -1003,7 +1005,11 @@ target returned: record ids and versions, file sources and dataset ids, a sessio
 workflow run id. A completed step is persisted on the record before the next step starts,
 so a retry resumes after the last step that succeeded instead of repeating it: a file
 uploaded and registered by the previous try is referenced, not uploaded again; a workflow
-run triggered by the previous try is polled, not triggered again. The values the target
+run triggered by the previous try is polled, not triggered again. A step whose repetition
+would create a second thing is marked before its request goes out, not only after it
+returns: the file service mints a dataset record per accepted registration, so a try that
+stops between the response and the report leaves a mark carrying the landing-zone path,
+and the next try asks which dataset that path became instead of registering it again. The values the target
 returned merge into the record's target state, and every attempt carries the full step
 list and the returned values, so the ledger reconstructs what the target holds for a
 record and how it got there.

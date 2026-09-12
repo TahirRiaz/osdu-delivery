@@ -139,11 +139,14 @@ definitions:
       config:
         type: UnitOfMeasure
         matchBy: [Code, Name, id]
-        valueMap: { M: m, METRE: m, METER: m, FT: ft, FEET: ft, GAPI: gAPI, "G/CM3": g/cm3, "V/V": "%" }
+        # V/V is a volume fraction, which OSDU's reference data calls m3/m3. Mapping it to % would declare values
+        # that are hundredths of what the curve actually carries (a 0.21 neutron porosity read as 0.21 percent).
+        valueMap: { M: m, METRE: m, METER: m, FT: ft, FEET: ft, GAPI: gAPI, "G/CM3": g/cm3, "V/V": m3/m3 }
         onMiss: hold
       examples:
         - { source: GAPI, target: "opendes:reference-data--UnitOfMeasure:gAPI:" }
         - { source: M, target: "opendes:reference-data--UnitOfMeasure:m:" }
+        - { source: "V/V", target: "opendes:reference-data--UnitOfMeasure:m3%2Fm3:" }
     - target: DepthUnit
       source: index_unit
       transform: reference

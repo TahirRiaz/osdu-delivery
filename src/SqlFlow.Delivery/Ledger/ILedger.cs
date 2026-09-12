@@ -101,6 +101,13 @@ public sealed record SubmissionState
     public long SkippedUnchanged { get; init; }
 
     /// <summary>
+    /// Records a cache change waiting for approval held back: rendered, ready, and not sent until an operator
+    /// approves or rejects the change. They are not unchanged, and a run that reports them as such hides the fact
+    /// that a decision is what the estate is waiting on.
+    /// </summary>
+    public long AwaitingApproval { get; init; }
+
+    /// <summary>
     /// Records the drop carried in a version older than the one already delivered or queued: skipped and never sent,
     /// each with an attempt saying which version it was and which one stands.
     /// </summary>

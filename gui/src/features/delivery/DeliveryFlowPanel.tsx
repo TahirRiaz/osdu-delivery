@@ -388,6 +388,7 @@ export function SubmissionCounts({ submission }: { submission: DeliverySubmissio
     { label: "planned", value: submission.planned },
     { label: "delivered", value: submission.delivered, className: "text-success" },
     { label: "unchanged", value: submission.skippedUnchanged + submission.unchangedAtPush },
+    { label: "awaiting approval", value: submission.awaitingApproval, className: submission.awaitingApproval > 0 ? "text-warning" : undefined },
     { label: "stale", value: submission.skippedStale },
     { label: "blocked", value: submission.blocked },
     { label: "held", value: submission.held, className: submission.held > 0 ? "text-warning" : undefined },

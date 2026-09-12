@@ -91,6 +91,7 @@ public sealed class PlanSummary
     private long _records;
     private long _deliveries;
     private long _skips;
+    private long _awaitingApproval;
     private long _stale;
     private long _holds;
     private long _blocked;
@@ -100,8 +101,15 @@ public sealed class PlanSummary
 
     public long Deliveries => Interlocked.Read(ref _deliveries);
 
-    /// <summary>Records skipped because nothing about them changed (or an approval holds them back).</summary>
+    /// <summary>Records skipped because nothing about them changed.</summary>
     public long Skips => Interlocked.Read(ref _skips);
+
+    /// <summary>
+    /// Records a cache change waiting for approval holds back. They are not unchanged: the change is rendered and
+    /// ready, and an approval (or a rejection) is what decides whether it is sent, so a run says how many wait
+    /// rather than counting them with the records it had no reason to send.
+    /// </summary>
+    public long AwaitingApproval => Interlocked.Read(ref _awaitingApproval);
 
     /// <summary>Records skipped because the drop carries an older version than the ledger already holds.</summary>
     public long Stale => Interlocked.Read(ref _stale);
@@ -128,6 +136,9 @@ public sealed class PlanSummary
             case PlannedAction.Skip when entry.SkipTier == SkipTier.Stale:
                 Interlocked.Increment(ref _stale);
                 break;
+            case PlannedAction.Skip when entry.SkipTier == SkipTier.Approval:
+                Interlocked.Increment(ref _awaitingApproval);
+                break;
             case PlannedAction.Skip:
                 Interlocked.Increment(ref _skips);
                 break;
@@ -148,7 +159,7 @@ public sealed class PlanSummary
     }
 
     public override string ToString()
-        => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Deliveries} to deliver, {Skips} unchanged, {Stale} stale, {Holds} held, {Blocked} blocked, {Untracked} untracked");
+        => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Deliveries} to deliver, {Skips} unchanged, {AwaitingApproval} awaiting approval, {Stale} stale, {Holds} held, {Blocked} blocked, {Untracked} untracked");
 }
 
 /// <summary>What a run would do (design.md section 11: plan changes nothing), with every entry collected. For the
@@ -179,7 +190,10 @@ public sealed record DeliveryPlan
 
     public int Deliveries => Entries.Count(e => e.IsDelivery);
 
-    public int Skips => Entries.Count(e => e.Action == PlannedAction.Skip);
+    public int Skips => Entries.Count(e => e.Action == PlannedAction.Skip && e.SkipTier != SkipTier.Approval);
+
+    /// <summary>Records a cache change waiting for approval holds back, counted apart from the unchanged.</summary>
+    public int AwaitingApproval => Entries.Count(e => e.Action == PlannedAction.Skip && e.SkipTier == SkipTier.Approval);
 
     public int Holds => Entries.Count(e => e.Action == PlannedAction.Hold);
 

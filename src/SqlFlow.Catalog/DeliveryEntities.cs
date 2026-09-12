@@ -48,6 +48,9 @@ public sealed class DeliverySubmission
 
     public long SkippedUnchanged { get; set; }
 
+    /// <summary>Records a cache change waiting for approval held back; rendered and ready, not sent until it is decided.</summary>
+    public long AwaitingApproval { get; set; }
+
     /// <summary>Records the drop carried in a version older than the one delivered or queued; skipped, never sent.</summary>
     public long SkippedStale { get; set; }
 
