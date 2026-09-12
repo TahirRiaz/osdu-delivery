@@ -71,6 +71,8 @@ internal sealed class FlowSourceYaml
     public string? KnownState { get; set; }
 
     public string? Work { get; set; }
+
+    public bool? ManualSubmission { get; set; }
 }
 
 internal sealed class FlowScopeYaml

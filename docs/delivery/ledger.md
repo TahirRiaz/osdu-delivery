@@ -26,6 +26,24 @@ The platform's run row carries the submission too: `Run.SubmissionId` when a run
 `Run.ResultSubmissionId` for the submission a deliver run registered or completed, so a submission page lists
 the runs that carried it.
 
+### `delivery.InlineSubmission`: the records a source sent in the request
+
+The submissions whose records came in the request rather than in a drop ([design.md](design.md) section 3.4). The row is
+written by the control plane in the same transaction as the run that takes the records, and read by that run, which
+writes them out as a drop; the `delivery.Submission` row of the same id is registered by that run's intake, as for any
+drop.
+
+| Column | Purpose |
+| --- | --- |
+| `SubmissionId` | Primary key and idempotency key, the id the caller chose or the one minted for it. |
+| `FlowId`, `FlowName`, `MappingReference` | The flow, and the mapping it pinned when the records were accepted: a flow promoted since refuses them, as it refuses a drop prepared for an earlier mapping. |
+| `Operation`, `Force` | What the submission asked for: `deliver` or `plan`, and whether it forces past the change gates. |
+| `ParametersJson` | The flow parameter values, resolved against the flow's declarations. |
+| `RecordsJson`, `ContentHash`, `RecordCount`, `ChildRowCount`, `ContentBytes` | The records in canonical form and their size: what was sent, and what a repeat is compared against. |
+| `RequestHash` | The hash a repeat of the request matches: flow, mapping, operation, force, parameter values and records. A different request under the same id is refused. |
+| `ReceivedUtc`, `ReceivedBy` | When the records arrived and who sent them. |
+| `DropLocation`, `WrittenUtc` | Where the last run wrote them as a drop, and when. Empty until a run has. |
+
 ### `delivery.Record`: the current state of one deliverable
 
 | Column | Purpose |

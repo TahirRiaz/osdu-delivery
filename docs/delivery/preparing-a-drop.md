@@ -250,7 +250,9 @@ holds the record when the log holds fewer rows or curves than the files carried.
 
 ## 7. Handing the drop over
 
-Two ways, depending on how the flow is run.
+Two ways, depending on how the flow is run. (A third way in needs no drop: a source with a handful of metadata records
+and no payload files sends them in the call itself, and the run writes them out as a drop. See
+[submitting-records.md](submitting-records.md).)
 
 **Notify the service** (a drop per folder). After the manifest is written, one authenticated call with a token that has
 the `operate` scope:

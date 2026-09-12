@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A flow says whether it takes records sent in a request: `source.manualSubmission` in the flow document, opt-in, and
+  refused on a flow whose protocol streams payload files. The GUI's Manual submission page (Operate) lists every flow
+  that offers it, with what it renders with and the parameters a submission carries, and submits to the one chosen;
+  `GET /api/v1/delivery/manual-submission/flows` is the same list (`all=true` adds the flows that take none, with the
+  reason).
+- Records can be submitted to a flow directly, instead of being prepared as a drop: `POST /api/v1/delivery/submissions`
+  takes `records` (each in the shape of a mapping fixture) in place of `drop`, with the caller's own `submissionId` as
+  the idempotency key and `operation: plan` for a preview. The control plane stores the records in the ledger in the
+  same transaction as the run that takes them, so a repeat of a request answers with the run it started and a different
+  request under the same id is refused; the run writes them out as a drop under the flow's work location and delivers
+  them through the regular intake, change detection, ledger and drain. A flow whose protocol streams payload files takes
+  a drop as before. `GET /delivery/flows/{pipelineId}/source-contract` says what a source sends a flow, and
+  `GET /delivery/submissions/{id}/content` returns the records one carried. The GUI has Submit records on a flow's
+  Delivery tab (a form for one record, or JSON for many) and a Records sent tab on the submission. Documented in
+  [docs/delivery/submitting-records.md](docs/delivery/submitting-records.md).
+
 - A version picker on the OSDU cache page: the type counts and the cached records are read at one reference
   snapshot version, the current one unless another is named, so the cache can be read as it stood at an earlier
   capture. `GET /api/v1/delivery/cache/versions` lists the versions; `GET /cache` and `GET /cache/items` take

@@ -337,12 +337,29 @@ export interface DeliverySnapshot {
   lastSeenUtc: string;
 }
 
-/** The manifest notification: a drop is ready and asks to be delivered. */
+/** A value of an inline record's column: a JSON scalar. A collection is a child scope, never a nested value. */
+export type DeliveryInlineValue = string | number | boolean | null;
+
+/** One inline record: its root row and the rows of each child scope, in the shape of a mapping fixture. */
+export interface DeliveryInlineRecord {
+  record: Record<string, DeliveryInlineValue>;
+  scopes?: Record<string, Array<Record<string, DeliveryInlineValue>>>;
+}
+
+export type DeliverySubmissionOperation = "deliver" | "plan";
+
+/**
+ * A submission: the manifest notification for a finished drop (`drop`), or the records themselves (`records`), never
+ * both. `operation` is deliver (the default) or plan; `submissionId` is the idempotency key of inline records.
+ */
 export interface DeliverySubmissionRequest {
   pipelineId?: string | null;
   repoId?: string | null;
   flow?: string | null;
-  drop: string;
+  drop?: string | null;
+  records?: DeliveryInlineRecord[] | null;
+  submissionId?: string | null;
+  operation?: DeliverySubmissionOperation;
   parameters?: Record<string, string> | null;
   force?: boolean;
   pool?: string | null;
@@ -353,6 +370,75 @@ export interface DeliverySubmissionAccepted {
   pipelineId: string;
   flowName: string;
   status: RunStatus;
+  /** The inline submission's id; null for a drop, whose id is its manifest's. */
+  submissionId: string | null;
+  /** True when this answered a repeat of a request already accepted: the run is the one that request started. */
+  replayed: boolean;
+}
+
+/** A parameter a flow declares. */
+export interface DeliveryFlowParameter {
+  name: string;
+  required: boolean;
+  default: string | null;
+  description: string | null;
+}
+
+/** What a source sends a flow: its parameters, the columns its mapping reads, and whether it takes records inline. */
+export interface DeliverySourceContract {
+  pipelineId: string;
+  flowName: string;
+  mappingReference: string;
+  protocol: string;
+  acceptsRecords: boolean;
+  recordsRefusal: string | null;
+  parameters: DeliveryFlowParameter[];
+  recordColumns: string[];
+  scopes: Array<{ scope: string; columns: string[] }>;
+  naturalKey: string[];
+  lastModifiedColumn: string | null;
+  fingerprintColumn: string | null;
+  /** Why the columns are unknown, when the catalog cannot read the flow's pinned mapping. */
+  mappingProblem: string | null;
+  maxRecords: number;
+  maxChildRows: number;
+  maxContentBytes: number;
+}
+
+/** One delivery flow on the manual submission page: whether its document offers manual submission, and what it needs. */
+export interface DeliveryManualFlow {
+  pipelineId: string;
+  repoId: string;
+  flowName: string;
+  batch: string | null;
+  mappingReference: string;
+  protocol: string;
+  acceptsRecords: boolean;
+  /** Why the flow takes no records; null when it does. */
+  recordsRefusal: string | null;
+  parameters: DeliveryFlowParameter[];
+}
+
+/** An inline submission's records as the ledger holds them, with who sent them and where a run wrote them. */
+export interface DeliveryInlineSubmission {
+  submissionId: string;
+  flowId: string;
+  flowName: string;
+  pipelineId: string | null;
+  mappingReference: string;
+  operation: DeliverySubmissionOperation;
+  force: boolean;
+  parametersJson: string;
+  recordCount: number;
+  childRowCount: number;
+  contentBytes: number;
+  contentHash: string;
+  receivedUtc: string;
+  receivedBy: string;
+  dropLocation: string | null;
+  writtenUtc: string | null;
+  runIds: string[];
+  records: DeliveryInlineRecord[];
 }
 
 export interface DeliveryRunAccepted {
@@ -544,8 +630,15 @@ export const deliveryApi = {
     post<{ decided: number; approved: boolean }>("/api/v1/delivery/cache/tags/decide", { tagIds, approve }),
   /** What one record read out of the cache when it was rendered. */
   recordCacheUses: (key: string) => get<DeliveryCacheUse[]>(`/api/v1/delivery/records/${key}/cache`),
-  /** The manifest notification: queues the deliver run for a drop. */
+  /** A submission, of a drop or of records: queues the run that takes it (or answers with the run of a repeated request). */
   submit: (request: DeliverySubmissionRequest) => post<DeliverySubmissionAccepted>("/api/v1/delivery/submissions", request),
+  /** What a source sends the flow: parameters, the columns the mapping reads, and whether it takes records inline. */
+  sourceContract: (pipelineId: string) => get<DeliverySourceContract>(`/api/v1/delivery/flows/${pipelineId}/source-contract`),
+  /** The flows records can be submitted to by hand; with `all`, the other delivery flows too, each with its reason. */
+  manualSubmissionFlows: (all = false) =>
+    get<DeliveryManualFlow[]>("/api/v1/delivery/manual-submission/flows", all ? { all: true } : {}),
+  /** The records an inline submission carried (a 404 for a drop submission). */
+  submissionContent: (submissionId: string) => get<DeliveryInlineSubmission>(`/api/v1/delivery/submissions/${submissionId}/content`),
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */
   releaseFlow: (pipelineId: string, keys?: string[]) =>
     post<DeliveryReleaseResult>(`/api/v1/delivery/flows/${pipelineId}/release`, { keys: keys ?? null }),

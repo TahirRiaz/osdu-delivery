@@ -804,6 +804,12 @@ public interface ILedger
 
     Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, CancellationToken ct = default);
 
+    /// <summary>The records a source sent inline under this submission id (design.md section 3.4); null when the id names none.</summary>
+    Task<InlineSubmissionState?> GetInlineSubmissionAsync(Guid submissionId, CancellationToken ct = default);
+
+    /// <summary>Records where a run wrote an inline submission's drop, and when.</summary>
+    Task MarkInlineSubmissionWrittenAsync(Guid submissionId, string dropLocation, CancellationToken ct = default);
+
     Task<IReadOnlyDictionary<DeliveryKey, RecordState>> GetRecordsAsync(Guid flowId, IEnumerable<DeliveryKey> keys, CancellationToken ct = default);
 
     Task<RecordState?> GetRecordAsync(Guid flowId, DeliveryKey key, CancellationToken ct = default);

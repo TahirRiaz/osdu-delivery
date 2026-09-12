@@ -118,21 +118,40 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
         // A submission re-run (or an intake member's share of one) executes that submission's drop with the
         // parameters it was received with, plus any override the trigger carried; the intake's idempotency then
-        // re-plans it. A drain works on the submission's batches and never opens the drop.
+        // re-plans it. A drain works on the submission's batches and never opens the drop. A submission whose records
+        // came inline reads the drop the run writes from the ledger's copy of them (design.md section 3.4).
         SubmissionState? submission = null;
+        InlineSubmissionState? inline = null;
         if (parameters.SubmissionId is { } submissionId && operation is not RunParameters.DrainOperation)
         {
             var ledger = context.Ledger ?? throw new DeliveryException("Working on a submission needs the ledger, which lives in the catalog database.");
-            submission = await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false)
-                ?? throw new DeliveryException($"Submission {submissionId:D} is not in the ledger.");
-            if (submission.FlowId != flow.Id)
+            submission = await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false);
+            inline = await ledger.GetInlineSubmissionAsync(submissionId, ct).ConfigureAwait(false);
+            var (ownerId, ownerName) = submission is not null ? (submission.FlowId, submission.FlowName)
+                : inline is not null ? (inline.FlowId, inline.FlowName)
+                : throw new DeliveryException($"Submission {submissionId:D} is not in the ledger.");
+            if (ownerId != flow.Id)
             {
-                throw new DeliveryException($"Submission {submissionId:D} belongs to flow '{submission.FlowName}', not '{flow.Name}'.");
+                throw new DeliveryException($"Submission {submissionId:D} belongs to flow '{ownerName}', not '{flow.Name}'.");
             }
 
-            drop ??= submission.DropLocation;
-            values = Merge(ParseValues(submission.ParametersJson), parameters.Values);
-            LogSubmission(log, submissionId, submission.DropLocation);
+            if (inline is not null)
+            {
+                if (!string.IsNullOrWhiteSpace(parameters.Drop))
+                {
+                    throw new DeliveryException($"Submission {submissionId:D} carries its records inline: a run on it writes its drop, and takes no drop location.");
+                }
+
+                values = Merge(inline.Parameters(), parameters.Values);
+                drop = InlineDrop.Location(flow, FlowParameters.Resolve(flow, values), submissionId);
+                LogInlineSubmission(log, submissionId, inline.RecordCount, inline.ReceivedBy);
+            }
+            else
+            {
+                drop ??= submission!.DropLocation;
+                values = Merge(ParseValues(submission!.ParametersJson), parameters.Values);
+                LogSubmission(log, submissionId, submission.DropLocation);
+            }
         }
 
         // Deliver, plan and intake read the drop and render; verify, known-state and drain only touch the target
@@ -143,6 +162,10 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         runtime.Actor = actor;
         runtime.RunId = runId;
         runtime.ActivityLog = runLogger.Render;
+        if (inline is not null && runtime.HasDrop)
+        {
+            await runtime.WriteInlineDropAsync(inline, ct).ConfigureAwait(false);
+        }
         var keys = parameters.RecordKeys.Select(k => new DeliveryKey(k)).ToList();
         var partitions = parameters.Partitions.Count > 0 ? parameters.Partitions : null;
 
@@ -282,6 +305,9 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
     private static void LogSubmission(ILogger log, Guid submissionId, string drop)
         => log.LogInformation("working on submission {SubmissionId} from its drop {Drop}", submissionId, drop);
+
+    private static void LogInlineSubmission(ILogger log, Guid submissionId, int records, string receivedBy)
+        => log.LogInformation("working on inline submission {SubmissionId}: {Records} record(s) sent by {ReceivedBy}", submissionId, records, receivedBy);
 
     private static void LogRedeliver(ILogger log, int marked, int requested)
         => log.LogInformation("marked {Marked} of {Requested} record(s) for redelivery", marked, requested);

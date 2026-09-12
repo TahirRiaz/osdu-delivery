@@ -54,6 +54,13 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
     queryFn: () => deliveryApi.submissionBatches(submissionId, { page: 1, pageSize: 500 }),
     refetchInterval: 10000,
   });
+  // The records a source sent inline. A drop submission answers 404, which leaves the records tab out.
+  const content = useQuery({
+    queryKey: ["delivery", "submission", submissionId, "content"],
+    queryFn: () => deliveryApi.submissionContent(submissionId),
+    retry: false,
+  });
+  const inline = content.data;
   useTabTitle(query.data ? `Submission ${submissionId.slice(0, 8)}` : undefined);
 
   if (query.isError) {
@@ -141,6 +148,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
           <>
             <SubmissionStatusBadge status={s.status} />
             <Badge variant="outline" data-testid="submission-mapping">{s.mappingReference}</Badge>
+            {inline !== undefined && <Badge variant="secondary" data-testid="submission-inline">records sent by {inline.receivedBy}</Badge>}
           </>
         )}
         actions={detail.pipelineId ? (
@@ -182,6 +190,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
         <TabsList data-testid="submission-tabs">
           <TabsTrigger value="attempts" data-testid="submission-tab-attempts">Attempts</TabsTrigger>
           <TabsTrigger value="batches" data-testid="submission-tab-batches">Batches</TabsTrigger>
+          {inline !== undefined && <TabsTrigger value="records" data-testid="submission-tab-records">Records sent</TabsTrigger>}
           <TabsTrigger value="parameters" data-testid="submission-tab-parameters">Parameters</TabsTrigger>
           <TabsTrigger value="context" data-testid="submission-tab-context">Render context</TabsTrigger>
         </TabsList>
@@ -204,6 +213,29 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
             data-testid="submission-batches"
           />
         </TabsContent>
+        {inline !== undefined && (
+          <TabsContent value="records" className="flex flex-col gap-3">
+            <Card className="gap-2 rounded-lg p-3" data-testid="submission-inline-summary">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <DetailPair label="Sent by">{inline.receivedBy}</DetailPair>
+                <DetailPair label="Received"><RelativeTime value={inline.receivedUtc} absolute /></DetailPair>
+                <DetailPair label="Operation">{inline.force ? `${inline.operation}, forced` : inline.operation}</DetailPair>
+                <DetailPair label="Records">
+                  <span className="font-mono tabular-nums">{inline.recordCount} ({inline.childRowCount} child rows)</span>
+                </DetailPair>
+                <DetailPair label="Written as a drop">
+                  {inline.dropLocation !== null
+                    ? <TruncatedText text={inline.dropLocation} mono maxWidth={320} copy copyTestId="copy-submission-inline-drop" />
+                    : <span className="text-muted-foreground">not yet</span>}
+                </DetailPair>
+                <DetailPair label="Content hash">
+                  <TruncatedText text={inline.contentHash} mono maxWidth={220} copy copyTestId="copy-submission-content-hash" />
+                </DetailPair>
+              </div>
+            </Card>
+            <CodeView value={JSON.stringify(inline.records, null, 2)} language="json" height={420} data-testid="submission-inline-records" />
+          </TabsContent>
+        )}
         <TabsContent value="parameters">
           <CodeView value={prettyJson(s.parametersJson)} language="json" height={200} data-testid="submission-parameters" />
         </TabsContent>

@@ -1,0 +1,2990 @@
+{
+  "$id": "https://schema.osdu.opengroup.org/json/master-data/Wellbore.1.3.0.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "osdu:wks:AbstractAccessControlList:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractAccessControlList.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "description": "The access control tags associated with this entity. This structure is included by the SystemProperties \"acl\", which is part of all OSDU records. Not extensible.",
+      "properties": {
+        "owners": {
+          "description": "The list of owners of this data record formatted as an email (core.common.model.storage.validation.ValidationDoc.EMAIL_REGEX).",
+          "items": {
+            "pattern": "^[a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*@(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,7}$",
+            "type": "string"
+          },
+          "title": "List of Owners",
+          "type": "array"
+        },
+        "viewers": {
+          "description": "The list of viewers to which this data record is accessible/visible/discoverable formatted as an email (core.common.model.storage.validation.ValidationDoc.EMAIL_REGEX).",
+          "items": {
+            "pattern": "^[a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*@(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,7}$",
+            "type": "string"
+          },
+          "title": "List of Viewers",
+          "type": "array"
+        }
+      },
+      "required": [
+        "owners",
+        "viewers"
+      ],
+      "title": "Access Control List",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-schema-source": "osdu:wks:AbstractAccessControlList:1.0.0"
+    },
+    "osdu:wks:AbstractAliasNames:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractAliasNames.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A list of alternative names for an object.  The preferred name is in a separate, scalar property.  It may or may not be repeated in the alias list, though a best practice is to include it if the list is present, but to omit the list if there are no other names.  Note that the abstract entity is an array so the $ref to it is a simple property reference.",
+      "properties": {
+        "AliasName": {
+          "description": "Alternative Name value of defined name type for an object.",
+          "type": "string"
+        },
+        "AliasNameTypeID": {
+          "description": "A classification of alias names such as by role played or type of source, such as regulatory name, regulatory code, company code, international standard name, etc.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-AliasNameType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "AliasNameType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "DefinitionOrganisationID": {
+          "description": "The StandardsOrganisation (reference-data) or Organisation (master-data) that provided the name (the source).",
+          "pattern": "^[\\w\\-\\.]+:(reference-data\\-\\-StandardsOrganisation|master-data\\-\\-Organisation):[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "StandardsOrganisation",
+              "GroupType": "reference-data"
+            },
+            {
+              "EntityType": "Organisation",
+              "GroupType": "master-data"
+            }
+          ]
+        },
+        "EffectiveDateTime": {
+          "description": "The date and time when an alias name becomes effective.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "TerminationDateTime": {
+          "description": "The data and time when an alias name is no longer in effect.",
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "title": "AbstractAliasNames",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractAliasNames:1.0.0"
+    },
+    "osdu:wks:AbstractAnyCrsFeatureCollection:1.1.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractAnyCrsFeatureCollection.1.1.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A schema like GeoJSON FeatureCollection with a non-WGS 84 CRS context; based on https://geojson.org/schema/FeatureCollection.json. Attention: the coordinate order is fixed: Longitude/Easting/Westing/X first, followed by Latitude/Northing/Southing/Y, optionally height as third coordinate.",
+      "properties": {
+        "CoordinateReferenceSystemID": {
+          "description": "The CRS reference into the CoordinateReferenceSystem catalog.",
+          "example": "namespace:reference-data--CoordinateReferenceSystem:BoundProjected:EPSG::32021_EPSG::15851:",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-CoordinateReferenceSystem:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Coordinate Reference System ID",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "CoordinateReferenceSystem",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "VerticalCoordinateReferenceSystemID": {
+          "description": "The explicit VerticalCRS reference into the CoordinateReferenceSystem catalog. This property stays empty for 2D geometries. Absent or empty values for 3D geometries mean the context may be provided by a CompoundCRS in 'CoordinateReferenceSystemID' or implicitly EPSG:5714 MSL height",
+          "example": "namespace:reference-data--CoordinateReferenceSystem:Vertical:EPSG::5714:",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-CoordinateReferenceSystem:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Vertical Coordinate Reference System ID",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "CoordinateReferenceSystem",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "VerticalUnitID": {
+          "description": "The explicit vertical unit ID, referring to a reference-data--UnitOfMeasure record; this is only required for features containing 3-dimensional coordinates and undefined vertical CoordinateReferenceSystems; if a VerticalCoordinateReferenceSystemID is populated, the VerticalUnitID is given by the VerticalCoordinateReferenceSystemID's data.CoordinateSystem.VerticalAxisUnitID. The VerticalUnitID definition overrides any self-contained definition in persistableReferenceUnitZ.",
+          "example": "namespace:reference-data--UnitOfMeasure:m:",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-UnitOfMeasure:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Vertical Unit ID",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "UnitOfMeasure",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "bbox": {
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "type": "array"
+        },
+        "features": {
+          "items": {
+            "properties": {
+              "bbox": {
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 4,
+                "type": "array"
+              },
+              "geometry": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 2,
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "AnyCrsPoint"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "AnyCrsGeoJSON Point",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "minItems": 2,
+                          "type": "array"
+                        },
+                        "minItems": 2,
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "AnyCrsLineString"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "AnyCrsGeoJSON LineString",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "items": {
+                            "items": {
+                              "type": "number"
+                            },
+                            "minItems": 2,
+                            "type": "array"
+                          },
+                          "minItems": 4,
+                          "type": "array"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "AnyCrsPolygon"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "AnyCrsGeoJSON Polygon",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "minItems": 2,
+                          "type": "array"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "AnyCrsMultiPoint"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "AnyCrsGeoJSON MultiPoint",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "items": {
+                            "items": {
+                              "type": "number"
+                            },
+                            "minItems": 2,
+                            "type": "array"
+                          },
+                          "minItems": 2,
+                          "type": "array"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "AnyCrsMultiLineString"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "AnyCrsGeoJSON MultiLineString",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "items": {
+                            "items": {
+                              "items": {
+                                "type": "number"
+                              },
+                              "minItems": 2,
+                              "type": "array"
+                            },
+                            "minItems": 4,
+                            "type": "array"
+                          },
+                          "type": "array"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "AnyCrsMultiPolygon"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "AnyCrsGeoJSON MultiPolygon",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "geometries": {
+                        "items": {
+                          "oneOf": [
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 2,
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "AnyCrsPoint"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "AnyCrsGeoJSON Point",
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "items": {
+                                      "type": "number"
+                                    },
+                                    "minItems": 2,
+                                    "type": "array"
+                                  },
+                                  "minItems": 2,
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "AnyCrsLineString"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "AnyCrsGeoJSON LineString",
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "items": {
+                                      "items": {
+                                        "type": "number"
+                                      },
+                                      "minItems": 2,
+                                      "type": "array"
+                                    },
+                                    "minItems": 4,
+                                    "type": "array"
+                                  },
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "AnyCrsPolygon"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "AnyCrsGeoJSON Polygon",
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "items": {
+                                      "type": "number"
+                                    },
+                                    "minItems": 2,
+                                    "type": "array"
+                                  },
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "AnyCrsMultiPoint"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "AnyCrsGeoJSON MultiPoint",
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "items": {
+                                      "items": {
+                                        "type": "number"
+                                      },
+                                      "minItems": 2,
+                                      "type": "array"
+                                    },
+                                    "minItems": 2,
+                                    "type": "array"
+                                  },
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "AnyCrsMultiLineString"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "AnyCrsGeoJSON MultiLineString",
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "items": {
+                                      "items": {
+                                        "items": {
+                                          "type": "number"
+                                        },
+                                        "minItems": 2,
+                                        "type": "array"
+                                      },
+                                      "minItems": 4,
+                                      "type": "array"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "AnyCrsMultiPolygon"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "AnyCrsGeoJSON MultiPolygon",
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "AnyCrsGeometryCollection"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "geometries"
+                    ],
+                    "title": "AnyCrsGeoJSON GeometryCollection",
+                    "type": "object"
+                  }
+                ]
+              },
+              "properties": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "AnyCrsFeature"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "properties",
+              "geometry"
+            ],
+            "title": "AnyCrsGeoJSON Feature",
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "persistableReferenceCrs": {
+          "description": "The CRS reference as persistableReference string. If populated, the CoordinateReferenceSystemID takes precedence.",
+          "example": "{\"authCode\":{\"auth\":\"OSDU\",\"code\":\"32021079\"},\"lateBoundCRS\":{\"authCode\":{\"auth\":\"EPSG\",\"code\":\"32021\"},\"name\":\"NAD_1927_StatePlane_North_Dakota_South_FIPS_3302\",\"type\":\"LBC\",\"ver\":\"PE_10_9_1\",\"wkt\":\"PROJCS[\\\"NAD_1927_StatePlane_North_Dakota_South_FIPS_3302\\\",GEOGCS[\\\"GCS_North_American_1927\\\",DATUM[\\\"D_North_American_1927\\\",SPHEROID[\\\"Clarke_1866\\\",6378206.4,294.9786982]],PRIMEM[\\\"Greenwich\\\",0.0],UNIT[\\\"Degree\\\",0.0174532925199433]],PROJECTION[\\\"Lambert_Conformal_Conic\\\"],PARAMETER[\\\"False_Easting\\\",2000000.0],PARAMETER[\\\"False_Northing\\\",0.0],PARAMETER[\\\"Central_Meridian\\\",-100.5],PARAMETER[\\\"Standard_Parallel_1\\\",46.18333333333333],PARAMETER[\\\"Standard_Parallel_2\\\",47.48333333333333],PARAMETER[\\\"Latitude_Of_Origin\\\",45.66666666666666],UNIT[\\\"Foot_US\\\",0.3048006096012192],AUTHORITY[\\\"EPSG\\\",32021]]\"},\"name\":\"NAD27 * OGP-Usa Conus / North Dakota CS27 South zone [32021,15851]\",\"singleCT\":{\"authCode\":{\"auth\":\"EPSG\",\"code\":\"15851\"},\"name\":\"NAD_1927_To_WGS_1984_79_CONUS\",\"type\":\"ST\",\"ver\":\"PE_10_9_1\",\"wkt\":\"GEOGTRAN[\\\"NAD_1927_To_WGS_1984_79_CONUS\\\",GEOGCS[\\\"GCS_North_American_1927\\\",DATUM[\\\"D_North_American_1927\\\",SPHEROID[\\\"Clarke_1866\\\",6378206.4,294.9786982]],PRIMEM[\\\"Greenwich\\\",0.0],UNIT[\\\"Degree\\\",0.0174532925199433]],GEOGCS[\\\"GCS_WGS_1984\\\",DATUM[\\\"D_WGS_1984\\\",SPHEROID[\\\"WGS_1984\\\",6378137.0,298.257223563]],PRIMEM[\\\"Greenwich\\\",0.0],UNIT[\\\"Degree\\\",0.0174532925199433]],METHOD[\\\"NADCON\\\"],PARAMETER[\\\"Dataset_conus\\\",0.0],OPERATIONACCURACY[5.0],AUTHORITY[\\\"EPSG\\\",15851]]\"},\"type\":\"EBC\",\"ver\":\"PE_10_9_1\"}",
+          "title": "CRS Reference",
+          "type": "string"
+        },
+        "persistableReferenceUnitZ": {
+          "description": "The unit of measure for the Z-axis (only for 3-dimensional coordinates, where the CRS does not describe the vertical unit). Note that the direction is upwards positive, i.e. Z means height.",
+          "example": "{\"scaleOffset\":{\"scale\":1.0,\"offset\":0.0},\"symbol\":\"m\",\"baseMeasurement\":{\"ancestry\":\"Length\",\"type\":\"UM\"},\"type\":\"USO\"}",
+          "title": "Z-Unit Reference",
+          "type": "string"
+        },
+        "persistableReferenceVerticalCrs": {
+          "description": "The VerticalCRS reference as persistableReference string. If populated, the VerticalCoordinateReferenceSystemID takes precedence. The property is null or empty for 2D geometries. For 3D geometries and absent or null persistableReferenceVerticalCrs the vertical CRS is either provided via persistableReferenceCrs's CompoundCRS or it is implicitly defined as EPSG:5714 MSL height.",
+          "example": "{\"authCode\":{\"auth\":\"EPSG\",\"code\":\"5714\"},\"name\":\"MSL_Height\",\"type\":\"LBC\",\"ver\":\"PE_10_9_1\",\"wkt\":\"VERTCS[\\\"MSL_Height\\\",VDATUM[\\\"Mean_Sea_Level\\\"],PARAMETER[\\\"Vertical_Shift\\\",0.0],PARAMETER[\\\"Direction\\\",1.0],UNIT[\\\"Meter\\\",1.0],AUTHORITY[\\\"EPSG\\\",5714]]\"}",
+          "title": "Vertical CRS Reference",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "AnyCrsFeatureCollection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "persistableReferenceCrs",
+        "features"
+      ],
+      "title": "AbstractAnyCrsFeatureCollection",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-schema-source": "osdu:wks:AbstractAnyCrsFeatureCollection:1.1.0"
+    },
+    "osdu:wks:AbstractCommonResources:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractCommonResources.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Common resources to be injected at root 'data' level for every entity, which is persistable in Storage. The insertion is performed by the OsduSchemaComposer script.",
+      "properties": {
+        "ExistenceKind": {
+          "description": "Where does this data resource sit in the cradle-to-grave span of its existence?",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-ExistenceKind:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Existence Kind",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "ExistenceKind",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "ResourceCurationStatus": {
+          "description": "Describes the current Curation status.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-ResourceCurationStatus:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Resource Curation Status",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "ResourceCurationStatus",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "ResourceHomeRegionID": {
+          "description": "The name of the home [cloud environment] region for this OSDU resource object.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-OSDURegion:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Resource Home Region ID",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "OSDURegion",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "ResourceHostRegionIDs": {
+          "description": "The name of the host [cloud environment] region(s) for this OSDU resource object.",
+          "items": {
+            "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-OSDURegion:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+            "type": "string",
+            "x-osdu-relationship": [
+              {
+                "EntityType": "OSDURegion",
+                "GroupType": "reference-data"
+              }
+            ]
+          },
+          "title": "Resource Host Region ID",
+          "type": "array"
+        },
+        "ResourceLifecycleStatus": {
+          "description": "Describes the current Resource Lifecycle status.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-ResourceLifecycleStatus:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Resource Lifecycle Status",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "ResourceLifecycleStatus",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "ResourceSecurityClassification": {
+          "description": "Classifies the security level of the resource.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-ResourceSecurityClassification:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Resource Security Classification",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "ResourceSecurityClassification",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "Source": {
+          "description": "The entity that produced the record, or from which it is received; could be an organization, agency, system, internal team, or individual. For informational purposes only, the list of sources is not governed.",
+          "title": "Data Source",
+          "type": "string"
+        },
+        "TechnicalAssuranceID": {
+          "description": "DEPRECATED: Describes a record's overall suitability for general business consumption based on data quality. Clarifications: Since Certified is the highest classification of suitable quality, any further change or versioning of a Certified record should be carefully considered and justified. If a Technical Assurance value is not populated then one can assume the data has not been evaluated or its quality is unknown (=Unevaluated). Technical Assurance values are not intended to be used for the identification of a single \"preferred\" or \"definitive\" record by comparison with other records.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-TechnicalAssuranceType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Technical Assurance ID",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "TechnicalAssuranceType",
+              "GroupType": "reference-data"
+            }
+          ]
+        }
+      },
+      "title": "OSDU Common Resources",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractCommonResources:1.0.0"
+    },
+    "osdu:wks:AbstractFacility:1.1.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractFacility.1.1.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "The schema fragment included by facilities. A facility is a grouping of equipment that is located within a specific geographic boundary or site and that is used in the context of energy-related activities such as exploration, extraction, generation, storage, processing, disposal, supply, or transfer. Clarifications: (1) A facility may be surface or subsurface located. (2) Usually facility equipment is commonly owned or operated. (3) Industry definitions may vary and differ from this one. This schema fragment is included by Well, Wellbore, Rig, as well as Tank Batteries, Compression Stations, Storage Facilities, Wind Farms, Wind Turbines, Mining Facilities, etc., once these types are included in to the OSDU.",
+      "properties": {
+        "CurrentOperatorID": {
+          "description": "The current operator organization ID; the organization ID may also be found in the FacilityOperatorOrganisationID of the FacilityOperator array providing the actual dates.",
+          "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Organisation:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Current Operator ID",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "Organisation",
+              "GroupType": "master-data"
+            }
+          ]
+        },
+        "DataSourceOrganisationID": {
+          "description": "The main source of the header information.",
+          "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Organisation:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "Organisation",
+              "GroupType": "master-data"
+            }
+          ]
+        },
+        "FacilityDescription": {
+          "description": "A descriptive text or remark about the Facility.",
+          "title": "Facility Description",
+          "type": "string"
+        },
+        "FacilityEvents": {
+          "description": "A list of key facility events.",
+          "items": {
+            "$ref": "#/definitions/osdu:wks:AbstractFacilityEvent:1.1.0"
+          },
+          "type": "array",
+          "x-osdu-indexing": {
+            "type": "nested"
+          }
+        },
+        "FacilityID": {
+          "description": "Native identifier from a Master Data Management System or other trusted source external to OSDU - stored here in order to allow for multi-system connection and synchronization. If used, the \"Source\" property should identify that source system.",
+          "title": "External Facility Identifier",
+          "type": "string"
+        },
+        "FacilityName": {
+          "description": "Name of the Facility.",
+          "type": "string"
+        },
+        "FacilityNameAliases": {
+          "description": "DEPRECATED: please use data.NameAliases. Alternative names, including historical, by which this facility is/has been known.",
+          "items": {
+            "$ref": "#/definitions/osdu:wks:AbstractAliasNames:1.0.0"
+          },
+          "type": "array"
+        },
+        "FacilityOperators": {
+          "description": "The history of operator organizations of the facility.",
+          "items": {
+            "$ref": "#/definitions/osdu:wks:AbstractFacilityOperator:1.1.0"
+          },
+          "type": "array",
+          "x-osdu-indexing": {
+            "type": "nested"
+          }
+        },
+        "FacilitySpecifications": {
+          "description": "facilitySpecification maintains the specification like slot name, wellbore drilling permit number, rig name etc.",
+          "items": {
+            "$ref": "#/definitions/osdu:wks:AbstractFacilitySpecification:1.0.0"
+          },
+          "type": "array",
+          "x-osdu-indexing": {
+            "type": "flattened"
+          }
+        },
+        "FacilityStates": {
+          "description": "The history of life cycle states the facility has been through.",
+          "items": {
+            "$ref": "#/definitions/osdu:wks:AbstractFacilityState:1.1.0"
+          },
+          "type": "array",
+          "x-osdu-indexing": {
+            "type": "nested"
+          }
+        },
+        "FacilityTypeID": {
+          "description": "The definition of a kind of capability to perform a business function or a service.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-FacilityType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "FacilityType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "InitialOperatorID": {
+          "description": "A initial operator organization ID; the organization ID may also be found in the FacilityOperatorOrganisationID of the FacilityOperator array providing the actual dates.",
+          "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Organisation:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Initial Operator ID",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "Organisation",
+              "GroupType": "master-data"
+            }
+          ]
+        },
+        "OperatingEnvironmentID": {
+          "description": "Identifies the Facility's general location as being onshore vs. offshore.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-OperatingEnvironment:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "OperatingEnvironment",
+              "GroupType": "reference-data"
+            }
+          ]
+        }
+      },
+      "title": "AbstractFacility",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractFacility:1.1.0"
+    },
+    "osdu:wks:AbstractFacilityEvent:1.1.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractFacilityEvent.1.1.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A significant occurrence in the life of a facility, which often changes its state, or the state of one of its components. It can describe a point-in-time (event) or a time interval of a specific type (FacilityEventType).",
+      "properties": {
+        "EffectiveDateTime": {
+          "description": "The date and time at which the event took place or takes effect.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "FacilityEventTypeID": {
+          "description": "The facility event type is a picklist. Examples: 'Permit', 'Spud', 'Abandon', etc.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-FacilityEventType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "FacilityEventType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "Remark": {
+          "description": "A comment or remark about the facility event.",
+          "type": "string"
+        },
+        "TerminationDateTime": {
+          "description": "The date and time at which the event is no longer in effect. For point-in-time events the 'TerminationDateTime' must be set equal to 'EffectiveDateTime'. Open time intervals have an absent 'TerminationDateTime'.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        }
+      },
+      "title": "AbstractFacilityEvent",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractFacilityEvent:1.1.0"
+    },
+    "osdu:wks:AbstractFacilityOperator:1.1.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractFacilityOperator.1.1.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "The organisation that was responsible for a facility at some point in time.",
+      "properties": {
+        "EffectiveDateTime": {
+          "description": "The date and time at which the facility operator becomes effective.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "FacilityOperatorID": {
+          "description": "Internal, unique identifier for an item 'AbstractFacilityOperator'. This identifier is used by 'AbstractFacility.CurrentOperatorID' and 'AbstractFacility.InitialOperatorID'.",
+          "title": "Facility Operator ID",
+          "type": "string"
+        },
+        "FacilityOperatorOrganisationID": {
+          "description": "The company that currently operates, or previously operated the facility",
+          "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Organisation:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "Organisation",
+              "GroupType": "master-data"
+            }
+          ]
+        },
+        "Remark": {
+          "description": "A comment or remark about the facility operator.",
+          "type": "string"
+        },
+        "TerminationDateTime": {
+          "description": "The date and time at which the facility operator is no longer in effect. If the operator is still effective, the 'TerminationDateTime' is left absent.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        }
+      },
+      "title": "AbstractFacilityOperator",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractFacilityOperator:1.1.0"
+    },
+    "osdu:wks:AbstractFacilitySpecification:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractFacilitySpecification.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A property, characteristic, or attribute about a facility that is not described explicitly elsewhere.",
+      "properties": {
+        "EffectiveDateTime": {
+          "description": "The date and time at which the facility specification instance becomes effective.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "FacilitySpecificationDateTime": {
+          "description": "The actual date and time value of the parameter.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "FacilitySpecificationIndicator": {
+          "description": "The actual indicator value of the parameter.",
+          "type": "boolean"
+        },
+        "FacilitySpecificationQuantity": {
+          "description": "The value for the specified parameter type.",
+          "type": "number",
+          "x-osdu-frame-of-reference": "UOM_via_property:UnitOfMeasureID"
+        },
+        "FacilitySpecificationText": {
+          "description": "The actual text value of the parameter.",
+          "type": "string"
+        },
+        "ParameterTypeID": {
+          "description": "Parameter type of property or characteristic.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-ParameterType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "ParameterType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "TerminationDateTime": {
+          "description": "The date and time at which the facility specification instance is no longer in effect.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "UnitOfMeasureID": {
+          "description": "The unit for the quantity parameter, like metre (m in SI units system) for quantity Length.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-UnitOfMeasure:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "UnitOfMeasure",
+              "GroupType": "reference-data"
+            }
+          ]
+        }
+      },
+      "title": "AbstractFacilitySpecification",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-schema-source": "osdu:wks:AbstractFacilitySpecification:1.0.0"
+    },
+    "osdu:wks:AbstractFacilityState:1.1.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractFacilityState.1.1.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "The life cycle status of a facility at some point in time.",
+      "properties": {
+        "EffectiveDateTime": {
+          "description": "The date and time at which the facility state becomes effective.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "FacilityStateTypeID": {
+          "description": "Life Cycle [Facility State Type] is a set of major phases that are significant to regulators and/or business stakeholders. Life Cycle may apply to a well or its components [or other facility].",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-FacilityStateType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "FacilityStateType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "Remark": {
+          "description": "A comment or remark about the facility state.",
+          "type": "string"
+        },
+        "TerminationDateTime": {
+          "description": "The date and time at which the facility state is no longer in effect.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        }
+      },
+      "title": "AbstractFacilityState",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractFacilityState:1.1.0"
+    },
+    "osdu:wks:AbstractFacilityVerticalMeasurement:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractFacilityVerticalMeasurement.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A location along a wellbore, _usually_ associated with some aspect of the drilling of the wellbore, but not with any intersecting _subsurface_ natural surfaces.",
+      "properties": {
+        "EffectiveDateTime": {
+          "description": "The date and time at which a vertical measurement instance becomes effective.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "TerminationDateTime": {
+          "description": "The date and time at which a vertical measurement instance is no longer in effect.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "VerticalCRSID": {
+          "description": "A vertical coordinate reference system defines the origin for height or depth values. It is expected that either VerticalCRSID or VerticalReferenceID reference is provided in a given vertical measurement array object, but not both.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-CoordinateReferenceSystem:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "CoordinateReferenceSystem",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "VerticalMeasurement": {
+          "description": "The value of the elevation or depth. Depth is positive downwards from a vertical reference or geodetic datum along a path, which can be vertical; elevation is positive upwards from a geodetic datum along a vertical path. Either can be negative.",
+          "type": "number",
+          "x-osdu-frame-of-reference": "UOM_via_property:VerticalMeasurementUnitOfMeasureID"
+        },
+        "VerticalMeasurementDescription": {
+          "description": "Text which describes a vertical measurement in detail.",
+          "type": "string"
+        },
+        "VerticalMeasurementPathID": {
+          "description": "Specifies Measured Depth, True Vertical Depth, or Elevation.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-VerticalMeasurementPath:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "VerticalMeasurementPath",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "VerticalMeasurementSourceID": {
+          "description": "Specifies Driller vs Logger.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-VerticalMeasurementSource:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "VerticalMeasurementSource",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "VerticalMeasurementTypeID": {
+          "description": "Specifies the type of vertical measurement (TD, Plugback, Kickoff, Drill Floor, Rotary Table...).",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-VerticalMeasurementType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "VerticalMeasurementType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "VerticalMeasurementUnitOfMeasureID": {
+          "description": "The unit of measure for the vertical measurement. If a unit of measure and a vertical CRS are provided, the unit of measure provided is taken over the unit of measure from the CRS.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-UnitOfMeasure:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "UnitOfMeasure",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "VerticalReferenceEntityID": {
+          "description": "This relationship identifies the entity (aka record) in which the VerticalReferenceID is found; It could be a different OSDU entity or a self-reference. For example, a Wellbore VerticalMeasurement may reference a member of a VerticalMeasurements[] array in its parent Well record. Alternatively, VerticalReferenceEntityID may be populated with the ID of its own Wellbore record to make explicit that VerticalReferenceID is intended to be found in this record, not another.",
+          "pattern": "^[\\w\\-\\.]+:(master-data\\-\\-Wellbore|master-data\\-\\-Well|master-data\\-\\-Rig):[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "Wellbore",
+              "GroupType": "master-data"
+            },
+            {
+              "EntityType": "Well",
+              "GroupType": "master-data"
+            },
+            {
+              "EntityType": "Rig",
+              "GroupType": "master-data"
+            }
+          ]
+        },
+        "VerticalReferenceID": {
+          "description": "The reference point from which the relative vertical measurement is made. This is only populated if the measurement has no VerticalCRSID specified. The value entered must match the VerticalMeasurementID for another vertical measurement array element in Wellbore or Well or in a related parent facility. The relationship should be  declared explicitly in VerticalReferenceEntityID. Any chain of measurements must ultimately resolve to a Vertical CRS. It is expected that a VerticalCRSID or a VerticalReferenceID is provided in a given vertical measurement array object, but not both.",
+          "type": "string"
+        },
+        "WellboreTVDTrajectoryID": {
+          "description": "Specifies what directional survey or wellpath was used to calculate the TVD.",
+          "pattern": "^[\\w\\-\\.]+:work-product-component\\-\\-WellboreTrajectory:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "WellboreTrajectory",
+              "GroupType": "work-product-component"
+            }
+          ]
+        }
+      },
+      "title": "AbstractFacilityVerticalMeasurement",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractFacilityVerticalMeasurement:1.0.0"
+    },
+    "osdu:wks:AbstractFeatureCollection:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractFeatureCollection.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "GeoJSON feature collection as originally published in https://geojson.org/schema/FeatureCollection.json. Attention: the coordinate order is fixed: Longitude first, followed by Latitude, optionally height above MSL (EPSG:5714) as third coordinate.",
+      "properties": {
+        "bbox": {
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "type": "array"
+        },
+        "features": {
+          "items": {
+            "properties": {
+              "bbox": {
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 4,
+                "type": "array"
+              },
+              "geometry": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 2,
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "Point"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "GeoJSON Point",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "minItems": 2,
+                          "type": "array"
+                        },
+                        "minItems": 2,
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "LineString"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "GeoJSON LineString",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "items": {
+                            "items": {
+                              "type": "number"
+                            },
+                            "minItems": 2,
+                            "type": "array"
+                          },
+                          "minItems": 4,
+                          "type": "array"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "Polygon"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "GeoJSON Polygon",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "minItems": 2,
+                          "type": "array"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "MultiPoint"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "GeoJSON MultiPoint",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "items": {
+                            "items": {
+                              "type": "number"
+                            },
+                            "minItems": 2,
+                            "type": "array"
+                          },
+                          "minItems": 2,
+                          "type": "array"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "MultiLineString"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "GeoJSON MultiLineString",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "coordinates": {
+                        "items": {
+                          "items": {
+                            "items": {
+                              "items": {
+                                "type": "number"
+                              },
+                              "minItems": 2,
+                              "type": "array"
+                            },
+                            "minItems": 4,
+                            "type": "array"
+                          },
+                          "type": "array"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "MultiPolygon"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "coordinates"
+                    ],
+                    "title": "GeoJSON MultiPolygon",
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "bbox": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "type": "array"
+                      },
+                      "geometries": {
+                        "items": {
+                          "oneOf": [
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 2,
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "Point"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "GeoJSON Point",
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "items": {
+                                      "type": "number"
+                                    },
+                                    "minItems": 2,
+                                    "type": "array"
+                                  },
+                                  "minItems": 2,
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "LineString"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "GeoJSON LineString",
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "items": {
+                                      "items": {
+                                        "type": "number"
+                                      },
+                                      "minItems": 2,
+                                      "type": "array"
+                                    },
+                                    "minItems": 4,
+                                    "type": "array"
+                                  },
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "Polygon"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "GeoJSON Polygon",
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "items": {
+                                      "type": "number"
+                                    },
+                                    "minItems": 2,
+                                    "type": "array"
+                                  },
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "MultiPoint"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "GeoJSON MultiPoint",
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "items": {
+                                      "items": {
+                                        "type": "number"
+                                      },
+                                      "minItems": 2,
+                                      "type": "array"
+                                    },
+                                    "minItems": 2,
+                                    "type": "array"
+                                  },
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "MultiLineString"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "GeoJSON MultiLineString",
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "bbox": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 4,
+                                  "type": "array"
+                                },
+                                "coordinates": {
+                                  "items": {
+                                    "items": {
+                                      "items": {
+                                        "items": {
+                                          "type": "number"
+                                        },
+                                        "minItems": 2,
+                                        "type": "array"
+                                      },
+                                      "minItems": 4,
+                                      "type": "array"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "type": "array"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "MultiPolygon"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "title": "GeoJSON MultiPolygon",
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "enum": [
+                          "GeometryCollection"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "geometries"
+                    ],
+                    "title": "GeoJSON GeometryCollection",
+                    "type": "object"
+                  }
+                ]
+              },
+              "properties": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "Feature"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "properties",
+              "geometry"
+            ],
+            "title": "GeoJSON Feature",
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "FeatureCollection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "features"
+      ],
+      "title": "GeoJSON FeatureCollection",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-schema-source": "osdu:wks:AbstractFeatureCollection:1.0.0"
+    },
+    "osdu:wks:AbstractGeoBasinContext:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractGeoBasinContext.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A single, typed basin entity reference, which is 'abstracted' to AbstractGeoContext and then aggregated by GeoContexts properties.",
+      "properties": {
+        "BasinID": {
+          "description": "Reference to Basin.",
+          "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Basin:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "Basin",
+              "GroupType": "master-data"
+            }
+          ]
+        },
+        "GeoTypeID": {
+          "description": "The BasinType reference of the Basin (via BasinID) for application convenience.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-BasinType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-is-derived": {
+            "RelationshipPropertyName": "BasinID",
+            "TargetPropertyName": "BasinTypeID"
+          },
+          "x-osdu-relationship": [
+            {
+              "EntityType": "BasinType",
+              "GroupType": "reference-data"
+            }
+          ]
+        }
+      },
+      "title": "AbstractGeoBasinContext",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractGeoBasinContext:1.0.0"
+    },
+    "osdu:wks:AbstractGeoContext:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractGeoContext.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A geographic context to an entity. It can be either a reference to a GeoPoliticalEntity, Basin, Field, Play or Prospect.",
+      "oneOf": [
+        {
+          "$ref": "#/definitions/osdu:wks:AbstractGeoPoliticalContext:1.0.0"
+        },
+        {
+          "$ref": "#/definitions/osdu:wks:AbstractGeoBasinContext:1.0.0"
+        },
+        {
+          "$ref": "#/definitions/osdu:wks:AbstractGeoFieldContext:1.0.0"
+        },
+        {
+          "$ref": "#/definitions/osdu:wks:AbstractGeoPlayContext:1.0.0"
+        },
+        {
+          "$ref": "#/definitions/osdu:wks:AbstractGeoProspectContext:1.0.0"
+        }
+      ],
+      "title": "AbstractGeoContext",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-schema-source": "osdu:wks:AbstractGeoContext:1.0.0"
+    },
+    "osdu:wks:AbstractGeoFieldContext:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractGeoFieldContext.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A single, typed field entity reference, which is 'abstracted' to AbstractGeoContext and then aggregated by GeoContexts properties.",
+      "properties": {
+        "FieldID": {
+          "description": "Reference to Field.",
+          "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Field:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "Field",
+              "GroupType": "master-data"
+            }
+          ]
+        },
+        "GeoTypeID": {
+          "const": "Field",
+          "description": "The fixed type 'Field' for this AbstractGeoFieldContext.",
+          "type": "string"
+        }
+      },
+      "title": "AbstractGeoFieldContext",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-schema-source": "osdu:wks:AbstractGeoFieldContext:1.0.0"
+    },
+    "osdu:wks:AbstractGeoPlayContext:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractGeoPlayContext.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A single, typed Play entity reference, which is 'abstracted' to AbstractGeoContext and then aggregated by GeoContexts properties.",
+      "properties": {
+        "GeoTypeID": {
+          "description": "The PlayType reference of the Play (via PlayID) for application convenience.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-PlayType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-is-derived": {
+            "RelationshipPropertyName": "PlayID",
+            "TargetPropertyName": "PlayTypeID"
+          },
+          "x-osdu-relationship": [
+            {
+              "EntityType": "PlayType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "PlayID": {
+          "description": "Reference to the play.",
+          "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Play:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "Play",
+              "GroupType": "master-data"
+            }
+          ]
+        }
+      },
+      "title": "AbstractGeoPlayContext",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractGeoPlayContext:1.0.0"
+    },
+    "osdu:wks:AbstractGeoPoliticalContext:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractGeoPoliticalContext.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A single, typed geo-political entity reference, which is 'abstracted' to AbstractGeoContext and then aggregated by GeoContexts properties.",
+      "properties": {
+        "GeoPoliticalEntityID": {
+          "description": "Reference to GeoPoliticalEntity.",
+          "pattern": "^[\\w\\-\\.]+:master-data\\-\\-GeoPoliticalEntity:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "GeoPoliticalEntity",
+              "GroupType": "master-data"
+            }
+          ]
+        },
+        "GeoTypeID": {
+          "description": "The GeoPoliticalEntityType reference of the GeoPoliticalEntity (via GeoPoliticalEntityID) for application convenience.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-GeoPoliticalEntityType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-is-derived": {
+            "RelationshipPropertyName": "GeoPoliticalEntityID",
+            "TargetPropertyName": "GeoPoliticalEntityTypeID"
+          },
+          "x-osdu-relationship": [
+            {
+              "EntityType": "GeoPoliticalEntityType",
+              "GroupType": "reference-data"
+            }
+          ]
+        }
+      },
+      "title": "AbstractGeoPoliticalContext",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractGeoPoliticalContext:1.0.0"
+    },
+    "osdu:wks:AbstractGeoProspectContext:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractGeoProspectContext.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A single, typed Prospect entity reference, which is 'abstracted' to AbstractGeoContext and then aggregated by GeoContexts properties.",
+      "properties": {
+        "GeoTypeID": {
+          "description": "The ProspectType reference of the Prospect (via ProspectID) for application convenience.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-ProspectType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-is-derived": {
+            "RelationshipPropertyName": "ProspectID",
+            "TargetPropertyName": "ProspectTypeID"
+          },
+          "x-osdu-relationship": [
+            {
+              "EntityType": "ProspectType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "ProspectID": {
+          "description": "Reference to the prospect.",
+          "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Prospect:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "Prospect",
+              "GroupType": "master-data"
+            }
+          ]
+        }
+      },
+      "title": "AbstractGeoProspectContext",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractGeoProspectContext:1.0.0"
+    },
+    "osdu:wks:AbstractLegalParentList:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractLegalParentList.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "description": "A list of entity id:version references to record instances recorded in the data platform, from which the current record is derived and from which the legal tags must be derived. This structure is included by the SystemProperties \"ancestry\", which is part of all OSDU records. Not extensible.",
+      "properties": {
+        "parents": {
+          "description": "An array of none, one or many entity references of 'direct parents' in the data platform, which mark the current record as a derivative. In contrast to other relationships, the source record version is required. During record creation or update the ancestry.parents[] relationships are used to collect the legal tags from the sources and aggregate them in the legal.legaltags[] array. As a consequence, should e.g., one or more of the legal tags of the source data expire, the access to the derivatives is also terminated. For details, see ComplianceService tutorial, 'Creating derivative Records'.",
+          "example": [],
+          "items": {
+            "pattern": "^[\\w\\-\\.]+:[\\w\\-\\.]+:[\\w\\-\\.\\:\\%]+:[0-9]+$",
+            "type": "string",
+            "x-osdu-relationship": []
+          },
+          "title": "Parents",
+          "type": "array"
+        }
+      },
+      "title": "Parent List",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-schema-source": "osdu:wks:AbstractLegalParentList:1.0.0"
+    },
+    "osdu:wks:AbstractLegalTags:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractLegalTags.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "description": "Legal meta data like legal tags, relevant other countries, legal status. This structure is included by the SystemProperties \"legal\", which is part of all OSDU records. Not extensible.",
+      "properties": {
+        "legaltags": {
+          "description": "The list of legal tags, which resolve to legal properties (like country of origin, export classification code, etc.) and rules with the help of the Compliance Service.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Legal Tags",
+          "type": "array"
+        },
+        "otherRelevantDataCountries": {
+          "description": "The list of other relevant data countries as an array of two-letter country codes, see https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2.",
+          "items": {
+            "pattern": "^[A-Z]{2}$",
+            "type": "string"
+          },
+          "title": "Other Relevant Data Countries",
+          "type": "array"
+        },
+        "status": {
+          "description": "The legal status. Set by the system after evaluation against the compliance rules associated with the \"legaltags\" using the Compliance Service.",
+          "pattern": "^(compliant|uncompliant)$",
+          "title": "Legal Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "legaltags",
+        "otherRelevantDataCountries"
+      ],
+      "title": "Legal Meta Data",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-schema-source": "osdu:wks:AbstractLegalTags:1.0.0"
+    },
+    "osdu:wks:AbstractMaster:1.1.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractMaster.1.1.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Properties shared with all master-data schema instances.",
+      "properties": {
+        "GeoContexts": {
+          "description": "List of geographic entities which provide context to the master data. This may include multiple types or multiple values of the same type.",
+          "items": {
+            "$ref": "#/definitions/osdu:wks:AbstractGeoContext:1.0.0"
+          },
+          "type": "array",
+          "x-osdu-indexing": {
+            "type": "nested"
+          }
+        },
+        "NameAliases": {
+          "description": "Alternative names, including historical, by which this master data is/has been known (it should include all the identifiers).",
+          "items": {
+            "$ref": "#/definitions/osdu:wks:AbstractAliasNames:1.0.0"
+          },
+          "type": "array",
+          "x-osdu-indexing": {
+            "type": "nested"
+          }
+        },
+        "SpatialLocation": {
+          "$ref": "#/definitions/osdu:wks:AbstractSpatialLocation:1.1.0",
+          "description": "The spatial location information such as coordinates, CRS information (left empty when not appropriate)."
+        },
+        "TechnicalAssuranceTypeID": {
+          "description": "Describes a master-data record's overall suitability for general business consumption based on data quality. Clarifications: Since Certified is the highest classification of suitable quality, any further change or versioning of a Certified record should be carefully considered and justified. If a Technical Assurance value is not populated then one can assume the data has not been evaluated or its quality is unknown (=Unevaluated). Technical Assurance values are not intended to be used for the identification of a single \"preferred\" or \"definitive\" record by comparison with other records.",
+          "example": "namespace:reference-data--TechnicalAssuranceType:Certified:",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-TechnicalAssuranceType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Technical Assurance Type ID",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "TechnicalAssuranceType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "VersionCreationReason": {
+          "description": "This describes the reason that caused the creation of a new version of this master data.",
+          "type": "string"
+        }
+      },
+      "title": "Abstract Master",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractMaster:1.1.0"
+    },
+    "osdu:wks:AbstractMetaItem:1.0.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractMetaItem.1.0.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A meta data item, which allows the association of named properties or property values to a Unit/Measurement/CRS/Azimuth/Time context.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "Unit",
+              "description": "The kind of reference, 'Unit' for FrameOfReferenceUOM.",
+              "title": "UOM Reference Kind",
+              "type": "string"
+            },
+            "name": {
+              "description": "The unit symbol or name of the unit.",
+              "example": "ft[US]",
+              "title": "UOM Unit Symbol",
+              "type": "string"
+            },
+            "persistableReference": {
+              "description": "The self-contained, persistable reference string uniquely identifying the Unit.",
+              "example": "{\"abcd\":{\"a\":0.0,\"b\":1200.0,\"c\":3937.0,\"d\":0.0},\"symbol\":\"ft[US]\",\"baseMeasurement\":{\"ancestry\":\"L\",\"type\":\"UM\"},\"type\":\"UAD\"}",
+              "title": "UOM Persistable Reference",
+              "type": "string"
+            },
+            "propertyNames": {
+              "description": "The list of property names, to which this meta data item provides Unit context to. A full path like \"StructureA.PropertyB\" is required to define a unique context; \"data\" is omitted since frame-of reference normalization only applies to the data block.",
+              "example": [
+                "HorizontalDeflection.EastWest",
+                "HorizontalDeflection.NorthSouth"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "title": "UOM Property Names",
+              "type": "array"
+            },
+            "unitOfMeasureID": {
+              "description": "SRN to unit of measure reference.",
+              "example": "namespace:reference-data--UnitOfMeasure:ftUS:",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-UnitOfMeasure:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "UnitOfMeasure",
+                  "GroupType": "reference-data"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "persistableReference"
+          ],
+          "title": "FrameOfReferenceUOM",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "coordinateReferenceSystemID": {
+              "description": "SRN to CRS reference.",
+              "example": "namespace:reference-data--CoordinateReferenceSystem:Projected:EPSG::32615:",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-CoordinateReferenceSystem:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "CoordinateReferenceSystem",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "kind": {
+              "const": "CRS",
+              "description": "The kind of reference, constant 'CRS' for FrameOfReferenceCRS.",
+              "title": "CRS Reference Kind",
+              "type": "string"
+            },
+            "name": {
+              "description": "The name of the CRS.",
+              "example": "WGS 84 / UTM zone 15N",
+              "title": "CRS Name",
+              "type": "string"
+            },
+            "persistableReference": {
+              "description": "The self-contained, persistable reference string uniquely identifying the CRS.",
+              "example": "{\"authCode\":{\"auth\":\"EPSG\",\"code\":\"32615\"},\"name\":\"WGS_1984_UTM_Zone_15N\",\"type\":\"LBC\",\"ver\":\"PE_10_9_1\",\"wkt\":\"PROJCS[\\\"WGS_1984_UTM_Zone_15N\\\",GEOGCS[\\\"GCS_WGS_1984\\\",DATUM[\\\"D_WGS_1984\\\",SPHEROID[\\\"WGS_1984\\\",6378137.0,298.257223563]],PRIMEM[\\\"Greenwich\\\",0.0],UNIT[\\\"Degree\\\",0.0174532925199433]],PROJECTION[\\\"Transverse_Mercator\\\"],PARAMETER[\\\"False_Easting\\\",500000.0],PARAMETER[\\\"False_Northing\\\",0.0],PARAMETER[\\\"Central_Meridian\\\",-93.0],PARAMETER[\\\"Scale_Factor\\\",0.9996],PARAMETER[\\\"Latitude_Of_Origin\\\",0.0],UNIT[\\\"Meter\\\",1.0],AUTHORITY[\\\"EPSG\\\",32615]]\"}",
+              "title": "CRS Persistable Reference",
+              "type": "string"
+            },
+            "propertyNames": {
+              "description": "The list of property names, to which this meta data item provides CRS context to. A full path like \"StructureA.PropertyB\" is required to define a unique context; \"data\" is omitted since frame-of reference normalization only applies to the data block.",
+              "example": [
+                "KickOffPosition.X",
+                "KickOffPosition.Y"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "title": "CRS Property Names",
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "persistableReference"
+          ],
+          "title": "FrameOfReferenceCRS",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "DateTime",
+              "description": "The kind of reference, constant 'DateTime', for FrameOfReferenceDateTime.",
+              "title": "DateTime Reference Kind",
+              "type": "string"
+            },
+            "name": {
+              "description": "The name of the DateTime format and reference.",
+              "example": "UTC",
+              "title": "DateTime Name",
+              "type": "string"
+            },
+            "persistableReference": {
+              "description": "The self-contained, persistable reference string uniquely identifying DateTime reference.",
+              "example": "{\"format\":\"yyyy-MM-ddTHH:mm:ssZ\",\"timeZone\":\"UTC\",\"type\":\"DTM\"}",
+              "title": "DateTime Persistable Reference",
+              "type": "string"
+            },
+            "propertyNames": {
+              "description": "The list of property names, to which this meta data item provides DateTime context to. A full path like \"StructureA.PropertyB\" is required to define a unique context; \"data\" is omitted since frame-of reference normalization only applies to the data block.",
+              "example": [
+                "Acquisition.StartTime",
+                "Acquisition.EndTime"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "title": "DateTime Property Names",
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "persistableReference"
+          ],
+          "title": "FrameOfReferenceDateTime",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "AzimuthReference",
+              "description": "The kind of reference, constant 'AzimuthReference', for FrameOfReferenceAzimuthReference.",
+              "title": "AzimuthReference Reference Kind",
+              "type": "string"
+            },
+            "name": {
+              "description": "The name of the CRS or the symbol/name of the unit.",
+              "example": "TrueNorth",
+              "title": "AzimuthReference Name",
+              "type": "string"
+            },
+            "persistableReference": {
+              "description": "The self-contained, persistable reference string uniquely identifying AzimuthReference.",
+              "example": "{\"code\":\"TrueNorth\",\"type\":\"AZR\"}",
+              "title": "AzimuthReference Persistable Reference",
+              "type": "string"
+            },
+            "propertyNames": {
+              "description": "The list of property names, to which this meta data item provides AzimuthReference context to. A full path like \"StructureA.PropertyB\" is required to define a unique context; \"data\" is omitted since frame-of reference normalization only applies to the data block.",
+              "example": [
+                "Bearing"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "title": "AzimuthReference Property Names",
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "persistableReference"
+          ],
+          "title": "FrameOfReferenceAzimuthReference",
+          "type": "object"
+        }
+      ],
+      "title": "Frame of Reference Meta Data Item",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-schema-source": "osdu:wks:AbstractMetaItem:1.0.0"
+    },
+    "osdu:wks:AbstractSpatialLocation:1.1.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractSpatialLocation.1.1.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A geographic object which can be described by a set of points.",
+      "properties": {
+        "AppliedOperations": {
+          "description": "The audit trail of operations applied to the coordinates from the original state to the current state. The list may contain operations applied prior to ingestion as well as the operations applied to produce the Wgs84Coordinates. The text elements refer to ESRI style CRS and Transformation names, which may have to be translated to EPSG standard names.",
+          "example": [
+            "conversion from ED_1950_UTM_Zone_31N to GCS_European_1950; 1 points converted",
+            "transformation GCS_European_1950 to GCS_WGS_1984 using ED_1950_To_WGS_1984_24; 1 points successfully transformed"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Operations Applied",
+          "type": "array"
+        },
+        "AsIngestedCoordinates": {
+          "$ref": "#/definitions/osdu:wks:AbstractAnyCrsFeatureCollection:1.1.0",
+          "description": "The original or 'as ingested' coordinates (Point, MultiPoint, LineString, MultiLineString, Polygon or MultiPolygon). The name 'AsIngestedCoordinates' was chosen to contrast it to 'OriginalCoordinates', which carries the uncertainty whether any coordinate operations took place before ingestion. In cases where the original CRS is different from the as-ingested CRS, the AppliedOperations can also contain the list of operations applied to the coordinate prior to ingestion. The data structure is similar to GeoJSON FeatureCollection, however in a CRS context explicitly defined within the AbstractAnyCrsFeatureCollection. The coordinate sequence follows GeoJSON standard, i.e. 'eastward/longitude', 'northward/latitude' {, 'upward/height' unless overridden by an explicit direction in the AsIngestedCoordinates.VerticalCoordinateReferenceSystemID}.",
+          "title": "As Ingested Coordinates",
+          "x-osdu-frame-of-reference": "CRS:"
+        },
+        "CoordinateQualityCheckDateTime": {
+          "description": "The date of the Quality Check.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "CoordinateQualityCheckPerformedBy": {
+          "description": "The user who performed the Quality Check.",
+          "type": "string"
+        },
+        "CoordinateQualityCheckRemarks": {
+          "description": "Freetext remarks on Quality Check.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "QualitativeSpatialAccuracyTypeID": {
+          "description": "A qualitative description of the quality of a spatial location, e.g. unverifiable, not verified, basic validation.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-QualitativeSpatialAccuracyType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "QualitativeSpatialAccuracyType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "QuantitativeAccuracyBandID": {
+          "description": "An approximate quantitative assessment of the quality of a location (accurate to > 500 m (i.e. not very accurate)), to < 1 m, etc.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-QuantitativeAccuracyBand:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "QuantitativeAccuracyBand",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "SpatialGeometryTypeID": {
+          "description": "Indicates the expected look of the SpatialParameterType, e.g. Point, MultiPoint, LineString, MultiLineString, Polygon, MultiPolygon. The value constrains the type of geometries in the GeoJSON Wgs84Coordinates and AsIngestedCoordinates.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-SpatialGeometryType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "SpatialGeometryType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "SpatialLocationCoordinatesDate": {
+          "description": "Date when coordinates were measured or retrieved.",
+          "format": "date-time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "SpatialParameterTypeID": {
+          "description": "A type of spatial representation of an object, often general (e.g. an Outline, which could be applied to Field, Reservoir, Facility, etc.) or sometimes specific (e.g. Onshore Outline, State Offshore Outline, Federal Offshore Outline, 3 spatial representations that may be used by Countries).",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-SpatialParameterType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "SpatialParameterType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "Wgs84Coordinates": {
+          "$ref": "#/definitions/osdu:wks:AbstractFeatureCollection:1.0.0",
+          "description": "The normalized coordinates (Point, MultiPoint, LineString, MultiLineString, Polygon or MultiPolygon) based on WGS 84 (EPSG:4326 for 2-dimensional coordinates, EPSG:4326 + EPSG:5714 (MSL) for 3-dimensional coordinates). This derived coordinate representation is intended for global discoverability only. The schema of this substructure is identical to the GeoJSON FeatureCollection https://geojson.org/schema/FeatureCollection.json. The coordinate sequence follows GeoJSON standard, i.e. longitude, latitude {, height}",
+          "title": "WGS 84 Coordinates"
+        }
+      },
+      "title": "AbstractSpatialLocation",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractSpatialLocation:1.1.0"
+    },
+    "osdu:wks:AbstractWellboreDrillingReason:1.1.0": {
+      "$id": "https://schema.osdu.opengroup.org/json/abstract/AbstractWellboreDrillingReason.1.1.0.json",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Purpose for drilling a wellbore, which often is an indication of the level of risk.",
+      "properties": {
+        "DrillingReasonTypeID": {
+          "description": "DEPRECATED: Superseded by LaheeClassID. Identifier of the drilling reason type for the corresponding time period.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-DrillingReasonType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Drilling Reason Type ID",
+          "type": "string",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "DrillingReasonType",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "EffectiveDateTime": {
+          "description": "The date and time at which the event becomes effective.",
+          "format": "date-time",
+          "title": "Effective Date Time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        },
+        "LaheeClassID": {
+          "description": "The Lahee classification, based on the traditional, commonly accepted, scheme to categorize wells by the general degree of risk assumed by the operator at the time of drilling.",
+          "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-LaheeClass:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+          "title": "Lahee Class ID",
+          "type": "string",
+          "x-osdu-attribution-authority": "PPDM",
+          "x-osdu-relationship": [
+            {
+              "EntityType": "LaheeClass",
+              "GroupType": "reference-data"
+            }
+          ]
+        },
+        "Remark": {
+          "description": "A remark or comment explaining the drilling reason or LaheeClass assignment.",
+          "title": "Remark",
+          "type": "string"
+        },
+        "TerminationDateTime": {
+          "description": "The date and time at which the event is no longer in effect.",
+          "format": "date-time",
+          "title": "Termination Date Time",
+          "type": "string",
+          "x-osdu-frame-of-reference": "DateTime"
+        }
+      },
+      "title": "AbstractWellboreDrillingReason",
+      "type": "object",
+      "x-osdu-inheriting-from-kind": [],
+      "x-osdu-license": "Copyright 2022, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+      "x-osdu-review-status": "Accepted",
+      "x-osdu-schema-source": "osdu:wks:AbstractWellboreDrillingReason:1.1.0"
+    }
+  },
+  "description": "A hole in the ground extending from a point at the earth's surface to the maximum point of penetration.",
+  "properties": {
+    "acl": {
+      "$ref": "#/definitions/osdu:wks:AbstractAccessControlList:1.0.0",
+      "description": "The access control tags associated with this entity.",
+      "title": "Access Control List"
+    },
+    "ancestry": {
+      "$ref": "#/definitions/osdu:wks:AbstractLegalParentList:1.0.0",
+      "description": "The links to data, which constitute the inputs, from which this record instance is derived.",
+      "title": "Ancestry"
+    },
+    "createTime": {
+      "description": "Timestamp of the time at which initial version of this OSDU resource object was created. Set by the System. The value is a combined date-time string in ISO-8601 given in UTC.",
+      "example": "2020-12-16T11:46:20.163Z",
+      "format": "date-time",
+      "title": "Resource Object Creation DateTime",
+      "type": "string"
+    },
+    "createUser": {
+      "description": "The user reference, which created the first version of this resource object. Set by the System.",
+      "example": "some-user@some-company-cloud.com",
+      "title": "Resource Object Creation User Reference",
+      "type": "string"
+    },
+    "data": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/osdu:wks:AbstractCommonResources:1.0.0"
+        },
+        {
+          "$ref": "#/definitions/osdu:wks:AbstractMaster:1.1.0"
+        },
+        {
+          "$ref": "#/definitions/osdu:wks:AbstractFacility:1.1.0"
+        },
+        {
+          "properties": {
+            "BusinessIntentionID": {
+              "description": "Business Intention [Well Business Intention] is the general purpose for which resources are approved for drilling a new well or subsequent wellbore(s).",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellBusinessIntention:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellBusinessIntention",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "ConditionID": {
+              "description": "Condition [Well Condition] is the operational state of a wellbore component relative to the Role [Well Role].",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellCondition:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellCondition",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "DefaultVerticalMeasurementID": {
+              "description": "The default datum reference point, or zero depth point, used to determine other points vertically in a wellbore.  References an entry in the Vertical Measurements array of this wellbore.",
+              "type": "string"
+            },
+            "DefinitiveTrajectoryID": {
+              "description": "SRN of Wellbore Trajectory which is considered the authoritative or preferred version.",
+              "pattern": "^[\\w\\-\\.]+:work-product-component\\-\\-WellboreTrajectory:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellboreTrajectory",
+                  "GroupType": "work-product-component"
+                }
+              ]
+            },
+            "DrillingReasons": {
+              "description": "The history of drilling reasons of the wellbore.",
+              "items": {
+                "$ref": "#/definitions/osdu:wks:AbstractWellboreDrillingReason:1.1.0"
+              },
+              "type": "array"
+            },
+            "FluidDirectionID": {
+              "description": "Fluid Direction [Well Fluid Direction] is the flow direction of the wellhead stream. The facet value can change over the life of the wellbore.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellFluidDirection:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellFluidDirection",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "FormationNameAtTotalDepth": {
+              "description": "The name of the formation encountered at total depth. The value is not controlled by any reference value list.",
+              "type": "string"
+            },
+            "GeographicBottomHoleLocation": {
+              "$ref": "#/definitions/osdu:wks:AbstractSpatialLocation:1.1.0",
+              "description": "The bottom hole location of the wellbore denoted by a specified geographic horizontal coordinate reference system (Horizontal CRS), such as WGS84, NAD27, or ED50. If both GeographicBottomHoleLocation and ProjectedBottomHoleLocation properties are populated on this wellbore, they must identify the same point, just in different CRSs."
+            },
+            "HistoricalInterests": {
+              "description": "The list of past and present interests associated with the time period they were/are valid",
+              "items": {
+                "description": "A 'well interest' at some time period as defined by effective and termination date.",
+                "properties": {
+                  "EffectiveDateTime": {
+                    "description": "The date and time at which the well interest type becomes effective.",
+                    "format": "date",
+                    "title": "Effective Date Time",
+                    "type": "string",
+                    "x-osdu-frame-of-reference": "DateTime"
+                  },
+                  "InterestTypeID": {
+                    "description": "Business Interest [Well Interest Type] describes whether a company currently considers a wellbore or its data to be a real or planned asset, and if so, the nature of and motivation for that company's interest.",
+                    "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellInterestType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+                    "title": "Interest Type ID",
+                    "type": "string",
+                    "x-osdu-attribution-authority": "PPDM Association",
+                    "x-osdu-attribution-publication": "Well Status and Classification",
+                    "x-osdu-attribution-revision": "v3 (June 2020)",
+                    "x-osdu-relationship": [
+                      {
+                        "EntityType": "WellInterestType",
+                        "GroupType": "reference-data"
+                      }
+                    ]
+                  },
+                  "TerminationDateTime": {
+                    "description": "The date and time at which the well interest type is no longer in effect.",
+                    "format": "date",
+                    "title": "Termination Date Time",
+                    "type": "string",
+                    "x-osdu-frame-of-reference": "DateTime"
+                  }
+                },
+                "title": "HistoricalInterest",
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "InterestTypeID": {
+              "description": "Business Interest [Well Interest Type] describes whether a company currently considers a wellbore entity or its data to be a real or planned asset, and if so, the nature of and motivation for that company's interest.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellInterestType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellInterestType",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "KickOffWellbore": {
+              "description": "This is a pointer to the parent wellbore. The wellbore that starts from top has no parent.",
+              "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Wellbore:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "Wellbore",
+                  "GroupType": "master-data"
+                }
+              ]
+            },
+            "OutcomeID": {
+              "description": "Outcome [Well Drilling Outcome] is the result of attempting to accomplish the Business Intention [Well Business Intention].",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellBusinessIntentionOutcome:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellBusinessIntentionOutcome",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "PrimaryMaterialID": {
+              "description": "DEPRECATED: Please use PrimaryProductTypeID instead, which refers to the narrower WellProductType. The primary material injected/produced from the wellbore.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-MaterialType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "MaterialType",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "PrimaryProductTypeID": {
+              "description": "Product Type [Well Product Type] is the physical product(s) that can be attributed to any wellbore component. A Primary Product Significance identifies the Product Type that is most significant.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellProductType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellProductType",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "ProjectedBottomHoleLocation": {
+              "$ref": "#/definitions/osdu:wks:AbstractSpatialLocation:1.1.0",
+              "description": "The bottom hole location of the wellbore denoted by a projected horizontal coordinate reference system (Horizontal CRS), such a UTM zone. 'Projected' in this property does not mean 'planned' or 'projected-to-bit'. If both GeographicBottomHoleLocation and ProjectedBottomHoleLocation properties are populated on this wellbore, they must identify the same point, just in different CRSs."
+            },
+            "RoleID": {
+              "description": "Role [Well Role] is the current purpose, whether planned or actual. If there are multiple Roles among a wellbore's components, the well may be assigned the facet value with the highest significance. The value of Role may change over the Life Cycle.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellRole:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellRole",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "SecondaryProductTypeID": {
+              "description": "Product Type [Well Product Type] is the physical product(s) that can be attributed to any wellbore component. A Secondary Product Significance identifies the Product Type that is the second most significant.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellProductType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellProductType",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "SequenceNumber": {
+              "description": "A number that indicates the order in which wellbores were drilled.",
+              "type": "integer"
+            },
+            "ShowProductTypeID": {
+              "description": "Product Type [Well Product Type] is the physical product(s) that can be attributed to any wellbore component. A Show Product Significance identifies a Product Type present in non-commercial quantity.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellProductType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellProductType",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "StatusSummaryID": {
+              "description": "Identifies the status of a wellbore component in a way that may combine and-or summarize concepts found in other status facets. For example, a Wellbore Status Summary of Gas Injector Shut-in, which contains commonly desired business information, combines concepts from Product Type, Fluid Direction, and Condition.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellStatusSummary:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "OSDU",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellStatusSummary",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "TargetFormation": {
+              "description": "The Formation of interest for which the Wellbore is drilled to interact with. The Wellbore may terminate in a lower formation if the requirement is to drill through the entirety of the target formation, therefore this is not necessarily the Formation at TD.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-GeologicalFormation:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "GeologicalFormation",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "TertiaryProductTypeID": {
+              "description": "Product Type [Well Product Type] is the physical product(s) that can be attributed to any wellbore component. A Tertiary Product Significance identifies the Product Type that is the third most significant.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellProductType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellProductType",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "TrajectoryTypeID": {
+              "description": "Profile Type [Wellbore Trajectory Type] is the general geometry of the wellbore relative to the vertical plane. The specific criteria for Profile Type may vary by operator or regulator. The facet value may change if conditions encountered during drilling are not what was planned or permitted.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellboreTrajectoryType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellboreTrajectoryType",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "VerticalMeasurements": {
+              "description": "List of all depths and elevations pertaining to the wellbore, like, plug back measured depth, total measured depth, KB elevation",
+              "items": {
+                "allOf": [
+                  {
+                    "properties": {
+                      "RigID": {
+                        "description": "The relationship to the rig, which was used while this vertical measurement was in active use.",
+                        "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Rig:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+                        "title": "Rig ID",
+                        "type": "string",
+                        "x-osdu-relationship": [
+                          {
+                            "EntityType": "Rig",
+                            "GroupType": "master-data"
+                          }
+                        ]
+                      },
+                      "VerticalMeasurementID": {
+                        "description": "The ID for a distinct vertical measurement within the Wellbore VerticalMeasurements array so that it may be referenced by other vertical measurements if necessary.",
+                        "type": "string"
+                      }
+                    },
+                    "title": "Vertical Measurement ID",
+                    "type": "object"
+                  },
+                  {
+                    "$ref": "#/definitions/osdu:wks:AbstractFacilityVerticalMeasurement:1.0.0"
+                  }
+                ],
+                "title": "Vertical Measurement ID"
+              },
+              "type": "array",
+              "x-osdu-indexing": {
+                "type": "nested"
+              }
+            },
+            "WasBusinessInterestFinancialNonOperated": {
+              "description": "Identifies, for the purpose of current use, if the Business Interest [Well Interest Type] for this Well has ever been FinancialNonOperated in the past.",
+              "type": "boolean",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)"
+            },
+            "WasBusinessInterestFinancialOperated": {
+              "description": "Identifies, for the purpose of current use, if the Business Interest [Well Interest Type] for this Well has ever been FinancialOperated in the past.",
+              "type": "boolean",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)"
+            },
+            "WasBusinessInterestObligatory": {
+              "description": "Identifies, for the purpose of current use, if the Business Interest [Well Interest Type] for this Well has ever been Obligatory in the past.",
+              "type": "boolean",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)"
+            },
+            "WasBusinessInterestTechnical": {
+              "description": "Identifies, for the purpose of current use, if the Business Interest [Well Interest Type] for this Well has ever been Technical in the past.",
+              "type": "boolean",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)"
+            },
+            "WellID": {
+              "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Well:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "Well",
+                  "GroupType": "master-data"
+                }
+              ]
+            },
+            "WellboreCosts": {
+              "description": "The array of WellActivityPhaseType and associated Cost values.",
+              "items": {
+                "description": "A cost value associated to a WellActivityPhaseType value.",
+                "properties": {
+                  "ActivityTypeID": {
+                    "description": "The activity phase to which the Cost property is attributed to.",
+                    "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellActivityPhaseType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+                    "title": "Well Activity Phase Type ID",
+                    "type": "string",
+                    "x-osdu-relationship": [
+                      {
+                        "EntityType": "WellActivityPhaseType",
+                        "GroupType": "reference-data"
+                      }
+                    ]
+                  },
+                  "Cost": {
+                    "description": "The cost value associated with the WellActivityPhaseType.",
+                    "title": "Cost",
+                    "type": "number",
+                    "x-osdu-frame-of-reference": "UOM:cost"
+                  }
+                },
+                "title": "WellboreCost",
+                "type": "object"
+              },
+              "type": "array",
+              "x-osdu-indexing": {
+                "type": "nested"
+              }
+            },
+            "WellboreReasonID": {
+              "description": "The relationship to a reference-data record explaining the reason why this wellbore was drilled.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellboreReason:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellboreReason",
+                  "GroupType": "reference-data"
+                }
+              ]
+            },
+            "WellboreTrajectoryTypeID": {
+              "description": "DEPRECATED: Added accidentally in version 1.1.0. Please use the original TrajectoryTypeID instead. Profile Type [Wellbore Trajectory Type] is the general geometry of the wellbore relative to the vertical plane. The specific criteria for Profile Type may vary by operator or regulator. The facet value may change if conditions encountered during drilling are not what was planned or permitted.",
+              "pattern": "^[\\w\\-\\.]+:reference-data\\-\\-WellboreTrajectoryType:[\\w\\-\\.\\:\\%]+:[0-9]*$",
+              "type": "string",
+              "x-osdu-attribution-authority": "PPDM Association",
+              "x-osdu-attribution-publication": "Well Status and Classification",
+              "x-osdu-attribution-revision": "v3 (June 2020)",
+              "x-osdu-relationship": [
+                {
+                  "EntityType": "WellboreTrajectoryType",
+                  "GroupType": "reference-data"
+                }
+              ]
+            }
+          },
+          "title": "IndividualProperties",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "ExtensionProperties": {
+              "type": "object"
+            }
+          },
+          "title": "ExtensionProperties",
+          "type": "object"
+        }
+      ]
+    },
+    "id": {
+      "description": "Previously called ResourceID or SRN which identifies this OSDU resource object without version.",
+      "example": "namespace:master-data--Wellbore:c7c421a7-f496-5aef-8093-298c32bfdea9",
+      "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Wellbore:[\\w\\-\\.\\:\\%]+$",
+      "title": "Entity ID",
+      "type": "string"
+    },
+    "kind": {
+      "description": "The schema identification for the OSDU resource object following the pattern {Namespace}:{Source}:{Type}:{VersionMajor}.{VersionMinor}.{VersionPatch}. The versioning scheme follows the semantic versioning, https://semver.org/.",
+      "example": "osdu:wks:master-data--Wellbore:1.3.0",
+      "pattern": "^[\\w\\-\\.]+:[\\w\\-\\.]+:[\\w\\-\\.]+:[0-9]+.[0-9]+.[0-9]+$",
+      "title": "Entity Kind",
+      "type": "string"
+    },
+    "legal": {
+      "$ref": "#/definitions/osdu:wks:AbstractLegalTags:1.0.0",
+      "description": "The entity's legal tags and compliance status. The actual contents associated with the legal tags is managed by the Compliance Service.",
+      "title": "Legal Tags"
+    },
+    "meta": {
+      "description": "The Frame of Reference meta data section linking the named properties to self-contained definitions.",
+      "items": {
+        "$ref": "#/definitions/osdu:wks:AbstractMetaItem:1.0.0"
+      },
+      "title": "Frame of Reference Meta Data",
+      "type": "array"
+    },
+    "modifyTime": {
+      "description": "Timestamp of the time at which this version of the OSDU resource object was created. Set by the System. The value is a combined date-time string in ISO-8601 given in UTC.",
+      "example": "2020-12-16T11:52:24.477Z",
+      "format": "date-time",
+      "title": "Resource Object Version Creation DateTime",
+      "type": "string"
+    },
+    "modifyUser": {
+      "description": "The user reference, which created this version of this resource object. Set by the System.",
+      "example": "some-user@some-company-cloud.com",
+      "title": "Resource Object Version Creation User Reference",
+      "type": "string"
+    },
+    "tags": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "A generic dictionary of string keys mapping to string value. Only strings are permitted as keys and values.",
+      "example": {
+        "NameOfKey": "String value"
+      },
+      "title": "Tag Dictionary",
+      "type": "object"
+    },
+    "version": {
+      "description": "The version number of this OSDU resource; set by the framework.",
+      "example": 1562066009929332,
+      "format": "int64",
+      "title": "Version Number",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "kind",
+    "acl",
+    "legal"
+  ],
+  "title": "Wellbore",
+  "type": "object",
+  "x-osdu-inheriting-from-kind": [],
+  "x-osdu-license": "Copyright 2023, The Open Group \\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 . Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+  "x-osdu-review-status": "Accepted",
+  "x-osdu-schema-source": "osdu:wks:master-data--Wellbore:1.3.0",
+  "x-osdu-virtual-properties": {
+    "data.VirtualProperties.DefaultLocation": {
+      "priority": [
+        {
+          "path": "data.ProjectedBottomHoleLocation"
+        },
+        {
+          "path": "data.GeographicBottomHoleLocation"
+        },
+        {
+          "path": "data.SpatialLocation"
+        }
+      ],
+      "type": "object"
+    },
+    "data.VirtualProperties.DefaultName": {
+      "priority": [
+        {
+          "path": "data.FacilityName"
+        }
+      ],
+      "type": "string"
+    }
+  }
+}

@@ -32,6 +32,28 @@ public class YamlDocumentLoaderTests
         """;
 
     [Fact]
+    public void Manual_submission_is_opt_in_and_never_on_a_flow_that_streams_payload_files()
+    {
+        var loader = new DeliveryDocumentLoader();
+
+        // Opt-in: a flow that says nothing takes no records sent in a submission request.
+        Assert.False(loader.ParseFlow(Flow, "inline.yaml").Source.ManualSubmission);
+
+        // A flow whose protocol streams payload files cannot offer it: a request carries metadata only.
+        var streaming = Flow.Replace("  fingerprint: update_date", "  fingerprint: update_date\n  manualSubmission: true", StringComparison.Ordinal);
+        var ex = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(streaming, "inline.yaml"));
+        Assert.Contains("manualSubmission", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("payload files", ex.Message, StringComparison.Ordinal);
+
+        // A metadata-only flow declares it and keeps it.
+        var metadata = streaming
+            .Replace("  payloads: { curves: \"curves/{deliveryKey}/chunk_*.parquet\" }\n", string.Empty, StringComparison.Ordinal)
+            .Replace("  protocolOptions: { payload: curves, recordMethod: POST }\n", string.Empty, StringComparison.Ordinal)
+            .Replace("osduWellLog", "osduRecord", StringComparison.Ordinal);
+        Assert.True(loader.ParseFlow(metadata, "inline.yaml").Source.ManualSubmission);
+    }
+
+    [Fact]
     public void A_flow_without_the_partition_header_is_refused_when_read()
     {
         var yaml = Flow.Replace("headers: { data-partition-id: opendes }", "headers: { }", StringComparison.Ordinal);

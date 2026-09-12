@@ -179,6 +179,33 @@ public sealed class FlowRuntime : IDisposable
 
     public SubmissionIntake Intake => new(RequireLedger(), Planner, _context.Stores, _context.Time, _context.Listener, _context.Loggers.CreateLogger<SubmissionIntake>()) { RunId = RunId };
 
+    /// <summary>
+    /// Writes an inline submission's records out as this runtime's drop (design.md section 3.4) unless a run already did,
+    /// and records in the ledger where it went. The runtime is opened on <see cref="InlineDrop.Location"/> of the
+    /// submission, so everything after this reads the drop as it would any other.
+    /// </summary>
+    public async Task<InlineDropResult> WriteInlineDropAsync(InlineSubmissionState submission, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(submission);
+        var result = await InlineDrop.WriteAsync(_context.Drops, _context.Stores, DropLocation, Flow, Mapping, submission, ct).ConfigureAwait(false);
+        foreach (var warning in result.Warnings)
+        {
+            _log.LogWarning("{Warning}", warning);
+        }
+
+        if (!result.Written)
+        {
+            _log.LogInformation("Inline submission {SubmissionId}: its drop is already written at {Drop}.", submission.SubmissionId, result.Location);
+            return result;
+        }
+
+        _log.LogInformation(
+            "Inline submission {SubmissionId}: wrote {Records} record(s) sent by {ReceivedBy} at {ReceivedUtc:o} as a drop at {Drop}.",
+            submission.SubmissionId, submission.RecordCount, submission.ReceivedBy, submission.ReceivedUtc, result.Location);
+        await RequireLedger().MarkInlineSubmissionWrittenAsync(submission.SubmissionId, result.Location, ct).ConfigureAwait(false);
+        return result;
+    }
+
     public async Task<IDeliveryProtocol> ProtocolAsync(CancellationToken ct = default)
     {
         if (_protocol is not null)

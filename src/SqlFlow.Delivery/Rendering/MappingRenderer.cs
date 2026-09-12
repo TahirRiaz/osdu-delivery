@@ -66,6 +66,9 @@ public sealed class MappingRenderer
     /// <summary>Source columns of the natural key, in order, so callers can derive the key without rendering.</summary>
     public IReadOnlyList<string> NaturalKeyColumns => _keyProperties.Select(p => p.Source!).ToList();
 
+    /// <summary>A <c>{column}</c> token of the identity label template.</summary>
+    public const string LabelTokenPattern = @"\{(?<name>[A-Za-z0-9_\-\.]+)\}";
+
     /// <summary>
     /// The human-readable label for a row from the mapping's identity.label template ("{wellbore_uwi} {log_name}").
     /// Display only: it is stored on the ledger record for search and never enters the document or the hash.
@@ -80,7 +83,7 @@ public sealed class MappingRenderer
 
         var label = System.Text.RegularExpressions.Regex.Replace(
             _mapping.Identity.Label,
-            @"\{(?<name>[A-Za-z0-9_\-\.]+)\}",
+            LabelTokenPattern,
             m => row.GetString(m.Groups["name"].Value) ?? string.Empty).Trim();
         return label.Length == 0 ? null : label.Length <= 400 ? label : label[..400];
     }

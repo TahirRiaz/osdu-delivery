@@ -66,6 +66,9 @@ public sealed class CatalogDbContext : DbContext
     // The delivery ledger (schema delivery): see DeliveryEntities.cs.
     public DbSet<DeliverySubmission> DeliverySubmissions => Set<DeliverySubmission>();
 
+    /// <summary>The records sources sent in submission requests rather than in drops.</summary>
+    public DbSet<DeliveryInlineSubmission> DeliveryInlineSubmissions => Set<DeliveryInlineSubmission>();
+
     public DbSet<DeliveryRecord> DeliveryRecords => Set<DeliveryRecord>();
 
     /// <summary>The <c>delivery.RecordCount</c> indexed view (SQL Server only): a flow's records counted by status.</summary>

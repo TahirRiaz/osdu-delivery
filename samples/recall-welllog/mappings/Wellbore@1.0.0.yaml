@@ -1,0 +1,96 @@
+# Mapping: a source system's wellbore -> osdu:wks:master-data--Wellbore:1.3.0
+#
+# The master data the well logs hang off, and the shape a source sends when it submits records through the API rather
+# than preparing a drop (docs/delivery/submitting-records.md): scalars a source system holds about a wellbore, plus its
+# alternative names as a child scope. Nothing here streams payload files, so a flow that renders with this mapping takes
+# records inline as well as from a drop.
+documentType: mapping
+name: Wellbore
+version: 1.0.0
+kind: osdu:wks:master-data--Wellbore:1.3.0
+description: Wellbore master data (one record per wellbore) with its alternative names.
+
+source:
+  system: recall
+  scopes: [aliases]
+
+# The wellbore's name is what the source system knows it by and what every well log references, so it is the natural key
+# (design.md section 5.1). Both halves derive the same delivery key from it with no coordination.
+identity:
+  naturalKey: [data.FacilityName]
+  label: "{facility_name}"
+
+envelope:
+  legalTags: [opendes-reference-data-default]
+  otherRelevantDataCountries: [NO]
+  acl:
+    owners: [data.default.owners@opendes.dataservices.energy]
+    viewers: [data.default.viewers@opendes.dataservices.energy]
+  tags:
+    DeliveredBy: osdu-delivery
+
+parameters:
+  dataPartition:
+    required: true
+    description: The OSDU data partition record ids are minted in.
+
+properties:
+  - target: data.FacilityName
+    source: facility_name
+    transform: trim
+    description: The wellbore's name (the natural key).
+    examples:
+      - { source: " SAMPLE-WELLBORE-A ", target: SAMPLE-WELLBORE-A }
+  - target: data.FacilityDescription
+    source: facility_description
+    transform: trim
+  - target: data.FacilityID
+    source: facility_id
+    description: The source system's own identifier for the wellbore, carried as provenance.
+  - target: data.NameAliases
+    collection: true
+    scope: aliases
+    definition: Alias
+
+definitions:
+  Alias:
+    - target: AliasName
+      source: alias_name
+    - target: AliasNameTypeID
+      transform: constant
+      config: { value: "{param:dataPartition}:reference-data--AliasNameType:UniqueIdentifier:" }
+
+# Whole-document fixtures: the per-mapping regression suite the preflight gate runs (design.md section 10.3).
+fixtures:
+  - name: wellbore A with one alias
+    parameters: { dataPartition: opendes }
+    record:
+      facility_name: " SAMPLE-WELLBORE-A "
+      facility_description: Sample wellbore A
+      facility_id: "srn:master-data/Wellbore:A"
+      update_date: 2026-09-08T12:00:00Z
+    scopes:
+      aliases:
+        - { alias_name: WB-A }
+    expected: |
+      {
+        "id": "opendes:master-data--Wellbore:f94750d909185a369bc4e9743d24e74e",
+        "kind": "osdu:wks:master-data--Wellbore:1.3.0",
+        "acl": {
+          "owners": ["data.default.owners@opendes.dataservices.energy"],
+          "viewers": ["data.default.viewers@opendes.dataservices.energy"]
+        },
+        "legal": {
+          "legaltags": ["opendes-reference-data-default"],
+          "otherRelevantDataCountries": ["NO"]
+        },
+        "tags": { "DeliveredBy": "osdu-delivery" },
+        "data": {
+          "FacilityName": "SAMPLE-WELLBORE-A",
+          "FacilityDescription": "Sample wellbore A",
+          "FacilityID": "srn:master-data/Wellbore:A",
+          "NameAliases": [
+            { "AliasName": "WB-A", "AliasNameTypeID": "opendes:reference-data--AliasNameType:UniqueIdentifier:" }
+          ]
+        }
+      }

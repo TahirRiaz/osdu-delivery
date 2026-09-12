@@ -1,6 +1,6 @@
 # OSDU testing: what is done and what is missing
 
-The state of OSDU Delivery's testing against OSDU on 2026-09-11: what has been proven against a live OSDU platform,
+The state of OSDU Delivery's testing against OSDU on 2026-09-12: what has been proven against a live OSDU platform,
 what the automated suites cover without one, which defects the live runs found and how they were fixed, and what is
 still missing. The practical guide for the preparing side is [preparing-a-drop.md](preparing-a-drop.md); the runbook
 is in [operations.md](operations.md).
@@ -11,8 +11,8 @@ Testing runs at three levels.
 
 | Level | What runs | OSDU involved |
 | --- | --- | --- |
-| Automated suites | `tests/SqlFlow.Delivery.Tests` (296 test methods: the domain, the ledger on SQLite, the engine end to end over the sample estate with a fake protocol, the HTTP runtime against stub handlers), `tests/SqlFlow.ControlPlane.Tests` (320), `tests/SqlFlow.Core.Tests` (131). The database suites run against the disposable `SQLFLOW_TEST_DB` catalog. A `[Theory]` counts once. | No |
-| GUI e2e suite | `gui/e2e`, 12 specs, 53 tests, all passing on 2026-09-11. Flows run with the `plan` operation. | No |
+| Automated suites | `tests/SqlFlow.Delivery.Tests` (340 test methods: the domain, the ledger on SQLite, the engine end to end over the sample estate with a fake protocol, the HTTP runtime against stub handlers), `tests/SqlFlow.ControlPlane.Tests` (328), `tests/SqlFlow.Core.Tests` (131). The database suites run against the disposable `SQLFLOW_TEST_DB` catalog. A `[Theory]` counts once. | No |
+| GUI e2e suite | `gui/e2e`, 14 specs, 61 tests, all passing on 2026-09-12. Flows run with the `plan` operation. | No |
 | Live tests | An estate delivered into an Azure Data Manager for Energy test instance (an M26 service, data partition `test`) by a local control plane, driven through the control plane's API and GUI. | Yes |
 
 ### 1.1 The live estate
@@ -21,7 +21,8 @@ The live runs follow three rules, because the partition is shared and the app re
 
 - the dataset stays tiny: two wellbores, three well logs, two documents with one CSV file each;
 - every action that writes to OSDU is appended to `.sqlflow/live-e2e/actions.log` before it is sent, with the ids it
-  can touch, and every record carries the marker `ODLIVE20260910`;
+  can touch, and every record carries a run marker (`ODLIVE20260910`, and `ODLIVE20260912` for the records sent in a
+  submission request);
 - nothing is purged; removal uses only the reversible record scope, and only on this estate's logged ids.
 
 The estate is a git repository the control plane syncs (`.sqlflow/live-e2e/repo`, git-ignored), rendered with a
@@ -36,8 +37,9 @@ secret is the reference `${env:OSDU_CLIENT_SECRET}`.
 | `e2e-file` | delivery, `osduFile` | 1 `work-product-component--Document` with a CSV file, through the file service |
 | `e2e-cache-sync` | retrieval | Wellbore and reference data read into the OSDU cache that `recall-welllog` renders from |
 
-Runs held by the live catalog since its last re-mint on 2026-09-10 (earlier runs are in the ledger export taken before
-the re-mint):
+Runs held by the live catalog between its re-mints on 2026-09-10 and 2026-09-12 (the second re-mint added
+`delivery.InlineSubmission`; a full database backup was taken first, and the runs before the first re-mint are in the
+ledger export taken then):
 
 | Flow | Operation | Runs |
 | --- | --- | --- |
@@ -114,6 +116,24 @@ A walk over the live estate passed 10 of 10 checks: sign-in, the delivery overvi
 with their statistics, a flow's records and statistics, the record page with its OSDU id and attempts, search by OSDU
 id, the runs and nodes pages, and the cache updates tab, with no console errors and no failed or 5xx API calls.
 
+### 2.8 Records sent in the request
+
+Wellbore master data sent to `e2e-wellbore` as records in the request ([submitting-records.md](submitting-records.md)),
+driven through `POST /api/v1/delivery/submissions` exactly as a source system would, on 2026-09-12 (markers
+`ODLIVE20260912` and, after the flow attribute landed, `ODLIVE20260912B`):
+
+| Stage | What was proven |
+| --- | --- |
+| The flow offers it | `e2e-wellbore` declares `source.manualSubmission`; `GET /delivery/manual-submission/flows` names it and no other, and with `all=true` reports `recall-welllog`, `e2e-file` and `e2e-document` as taking none, each saying it streams payload files. |
+| Preview | `operation: plan` rendered the record and reported it; nothing reached OSDU. |
+| Delivery | The run wrote the records as a drop under the flow's work location and delivered them through the ordinary intake: `test:master-data--Wellbore:94a321a3935358d6b059c613aaeb3a4c` at version 1789193436546764, read back from OSDU through the record's read-back task. |
+| Idempotency | The same request under the same `submissionId` answered 200 with the run the first one started, and queued nothing. |
+| Conflict | The same id with a changed record was refused with 409, naming the records as what differs. |
+| Change | A later `update_date` with a changed description delivered one record and moved the OSDU version to 1789193442697039. |
+| Stale | An older `update_date` was recorded as stale, and the delivered version did not move. |
+| Traceability | Each submission's page shows the records as sent, who sent them and where the run wrote them; `GET /delivery/submissions/{id}/content` returns them from the ledger. |
+| Cleanup | The record was removed at the reversible `record` scope; the ledger says deleted and a read-back finds nothing. |
+
 ## 3. Defects the live tests found
 
 Each is fixed on `main`, and the live runs after each fix are in the action log.
@@ -135,9 +155,6 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 | 13 | Two chunks that both numbered their rows from zero committed a log of 5 rows instead of 9, and the commit succeeded. | Colliding row labels hold the record before a session opens; the committed log is read back and checked. | 1b70fbc |
 | 14 | A run recovered after a crash finished while the dead worker's lease still held the record, leaving it delivering although OSDU held the new version. | The recovered run waits out the stopped lease and sends the record. | 64a5e57 |
 | 15 | A standalone worker on the control plane's host took the same node name as the control plane's own worker. | A node can run under a configured name. | 525b485 |
-| 16 | Every neutron porosity curve was published as a hundredth of its value: the mapping declared the source unit `V/V` as `%`. | `V/V` maps to `m3/m3`, which is what OSDU's reference data calls volume per volume, and the sample snapshot caches it. | 215bee2 |
-| 17 | Records a cache change held back for approval were reported as unchanged, so a run said nothing was waiting while the estate waited on a decision. | They are counted apart as awaiting approval, from the plan through the submission, the run result, the API and the GUI. | 215bee2 |
-| 18 | A registration whose answer never reached the ledger left a dataset record with nothing referencing it, because the step was marked only after the service answered. | The step is marked with its landing-zone path before the request, and a try that finds the mark asks which dataset that path became and takes it over. | 215bee2 |
 
 ## 4. What is missing
 
@@ -154,7 +171,7 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 
 | Item | Why it matters | What it takes |
 | --- | --- | --- |
-| The drop notification endpoint | `POST /api/v1/delivery/submissions` is how the prepare side starts a run. The live runs were started through `POST /api/v1/runs`, and no automated test references the submission route. | An API test, and one live notification of an existing drop. |
+| The drop notification endpoint | `POST /api/v1/delivery/submissions` with a `drop` is how the prepare side starts a run. `DeliverySubmissionApiTests` now covers the route (both forms), but the drop form has never been used live: the live runs were started through `POST /api/v1/runs` or with inline records. | One live notification of an existing drop. |
 | Curves that do not match the bulk columns | A log whose record declares a curve its bulk data lacks, or the reverse, is delivered as it is. Only the reference curve is checked. | A preflight check comparing the declared curves with each chunk's columns, and one live log that trips it. |
 | Sessions that split a log's curves | Chunks sharing row labels with different columns are allowed by the preflight and covered by engine tests, but never committed live. | One log re-prepared as two column chunks. |
 | Payloads near the ceilings | Live chunks held 9 rows. The 10,000,000-value and 3,000-column ceilings are checked from parquet footers in tests only, and the largest body ADME accepts on a single `POST /data` is not known. | One larger log. It leaves a larger bulk version in a partition that cannot be purged, which the small-dataset rule weighs against. |
@@ -165,14 +182,11 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 
 ### 4.3 Known defects not yet fixed
 
-None stand open. The three that did (the porosity unit, approval-held records counted as unchanged, and a
-registration whose answer was lost) are fixed in 215bee2, and are rows 16 to 18 of section 3.
-
-How far each was proven: rows 17 and 18 carry tests that fail on the code before them, and the re-minted live
-catalog reports the new count on every run and submission. Row 16 is proven by the sample estate, which renders
-and validates with the corrected unit, and by the live cache, which now holds `m3/m3`; the live well logs were
-not re-rendered with it, because the catalog re-mint left the ledger without the versions OSDU holds, and the
-wellbore DDMS refuses to create a log it already has.
+| Defect | Effect | State |
+| --- | --- | --- |
+| Neutron porosity unit | [WellLog@1.4.0.yaml line 142](../../samples/recall-welllog/mappings/WellLog@1.4.0.yaml#L142) (and the live estate's `WellLog@1.4.1`) maps the source unit `V/V` to `%`, while NPHI holds fractions (0.19 to 0.22), so OSDU consumers read porosity 100 times too small. | Waiting on the choice between a volume fraction unit from the reference data and a conversion in prepare. |
+| Approval-held records in run counts | Records held behind a cache change waiting for approval are counted as `skippedUnchanged`, so a run report does not show that they wait. | Needs a ledger column, which means re-minting the catalog. |
+| Registration between a crash and its step report | If a process dies after registering a dataset but before the ledger records that step, the recovered run registers a second dataset and the first stays in OSDU unreferenced. Not observed in either crash test. | Open. |
 
 ### 4.4 Deferred by decision
 
@@ -184,9 +198,7 @@ wellbore DDMS refuses to create a log it already has.
 
 ## 5. What the tests left in the partition
 
-Nothing, as of 2026-09-12: every id below was soft-deleted (reversible, `POST /records/{id}:delete`) and then
-checked, and none of them resolves. OSDU can restore any of them, and a drop can send them again. They carried
-the run marker, and every write and the cleanup itself are in the action log:
+All live, all carrying the marker, with every write in the action log:
 
 - `test:master-data--Wellbore:8caec6614b605fe6809175534f9c9a1c` and `test:master-data--Wellbore:250b474c3f1550c59dc7a11c81ca63c3`;
 - `test:work-product-component--WellLog:1f2c3bd61925503cad8694c176cd81b5` (L-1001),

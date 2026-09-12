@@ -68,6 +68,56 @@ public sealed class DeliverySubmission
     public string? Error { get; set; }
 }
 
+/// <summary>
+/// The records a source sent in a submission request rather than in a drop (design.md section 3.4), kept as the control
+/// plane accepted them: the run that takes the submission writes them out as a drop from here, a re-run writes them again,
+/// and the ledger says exactly what was sent, for which flow, mapping and parameter values, by whom and when.
+/// </summary>
+public sealed class DeliveryInlineSubmission
+{
+    /// <summary>The idempotency key, and the id of the <see cref="DeliverySubmission"/> the intake registers for it.</summary>
+    public Guid SubmissionId { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public string FlowName { get; set; } = string.Empty;
+
+    /// <summary>The mapping the flow pinned when the records were accepted.</summary>
+    public string MappingReference { get; set; } = string.Empty;
+
+    /// <summary>deliver or plan.</summary>
+    public string Operation { get; set; } = string.Empty;
+
+    public bool Force { get; set; }
+
+    /// <summary>The flow parameter values, resolved against the flow's declarations.</summary>
+    public string ParametersJson { get; set; } = "{}";
+
+    /// <summary>The records in canonical form.</summary>
+    public string RecordsJson { get; set; } = "[]";
+
+    public string ContentHash { get; set; } = string.Empty;
+
+    /// <summary>The hash a repeat of the request matches: flow, mapping, operation, force, parameter values and records.</summary>
+    public string RequestHash { get; set; } = string.Empty;
+
+    public int RecordCount { get; set; }
+
+    public long ChildRowCount { get; set; }
+
+    public int ContentBytes { get; set; }
+
+    public DateTime ReceivedUtc { get; set; }
+
+    /// <summary>Who sent the records: the caller's actor label.</summary>
+    public string ReceivedBy { get; set; } = string.Empty;
+
+    /// <summary>Where the last run that took the submission wrote its drop; null until one has.</summary>
+    public string? DropLocation { get; set; }
+
+    public DateTime? WrittenUtc { get; set; }
+}
+
 /// <summary>The current state of one deliverable, keyed by its deterministic delivery key.</summary>
 public sealed class DeliveryRecord
 {
@@ -665,6 +715,22 @@ public static class DeliveryModel
             e.Property(s => s.Error).HasMaxLength(4000);
             e.HasIndex(s => new { s.FlowId, s.ReceivedUtc });
             e.HasIndex(s => new { s.FlowId, s.Status });
+        });
+
+        modelBuilder.Entity<DeliveryInlineSubmission>(e =>
+        {
+            e.ToTable("InlineSubmission", SchemaName);
+            e.HasKey(s => s.SubmissionId);
+            e.Property(s => s.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(s => s.MappingReference).HasMaxLength(200).IsRequired();
+            e.Property(s => s.Operation).HasMaxLength(16).IsRequired();
+            e.Property(s => s.ParametersJson).IsRequired();
+            e.Property(s => s.RecordsJson).IsRequired();
+            e.Property(s => s.ContentHash).HasMaxLength(64).IsRequired();
+            e.Property(s => s.RequestHash).HasMaxLength(64).IsRequired();
+            e.Property(s => s.ReceivedBy).HasMaxLength(200).IsRequired();
+            e.Property(s => s.DropLocation).HasMaxLength(2000);
+            e.HasIndex(s => new { s.FlowId, s.ReceivedUtc });
         });
 
         modelBuilder.Entity<DeliveryRecord>(e =>

@@ -6,6 +6,7 @@ import {
   CirclePlay,
   DatabaseZap,
   FileCode2,
+  FileJson,
   FolderGit2,
   KeySquare,
   LayoutDashboard,
@@ -49,6 +50,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: "Dashboard", to: "/", icon: LayoutDashboard, testId: "nav-dashboard" },
       { label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery" },
+      { label: "Manual submission", to: "/delivery/submit", icon: FileJson, testId: "nav-delivery-submit" },
       { label: "Runs", to: "/runs", icon: CirclePlay, testId: "nav-runs" },
       { label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity" },
       { label: "Nodes", to: "/nodes", icon: Server, testId: "nav-nodes" },

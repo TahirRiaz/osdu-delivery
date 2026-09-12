@@ -50,15 +50,18 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 
 | Route | Scope | Purpose |
 | --- | --- | --- |
-| `POST /submissions` | operate | The manifest notification: `{ pipelineId or flow (+ repoId), drop, parameters, force }`. Queues the deliver run and answers 202 with its id. |
+| `POST /submissions` | operate | A submission: the manifest notification `{ pipelineId or flow (+ repoId), drop, parameters, force }`, or records sent inline `{ pipelineId or flow (+ repoId), records, parameters, submissionId, operation, force }` ([submitting-records.md](submitting-records.md)). Queues the run and answers 202 with its id; a repeat of an inline request already accepted answers 200 with the run it started, and a different request under the same `submissionId` is 409. |
 | `GET /flows/{pipelineId}/stats` | read | Record counts by state, drift, the last 24 hours, the last submission. |
 | `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId`, `runId` (the records that run touched, through its attempts), `drifted`. |
 | `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, and the path each removal scope calls. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
+| `GET /manual-submission/flows` | read | The flows records can be submitted to by hand (those declaring `source.manualSubmission`), with what each renders with and the parameters a submission carries. `all=true` lists the other delivery flows too, each with the reason it takes none. |
+| `GET /flows/{pipelineId}/source-contract` | read | What a source sends the flow: the parameters it declares, the columns its pinned mapping reads from the root row and each child scope, the natural key's columns, the version column, and whether it takes records inline (and why not). |
 | `GET /records/{key}`, `/attempts`, `/activities` | read | One record, its delivery history, its interventions. |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
+| `GET /submissions/{id}/content` | read | The records an inline submission carried, as the ledger holds them: who sent them and when, the operation, where a run wrote them as a drop, and the runs that took them. 404 for a drop's submission. |
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
 | `GET /mappings`, `/mappings/{id}`, `GET /snapshots` | read | What the repositories hold. |
 | `GET /cache` | read | The OSDU cache as the retrieval flows declare it: each cached type, the paths it captures, and how many records it holds at `version` (the current snapshot when none is named). |
@@ -113,7 +116,7 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 
 - **Delivery** (Operate): every delivery flow with delivered versus total, pending, held, failed, drifted, and
   its last submission.
-- **A flow's page** (Pipelines): the Delivery tab (stats, submit a drop, probe the target, release blocked),
+- **A flow's page** (Pipelines): the Delivery tab (stats, submit a drop, submit records, probe the target, release blocked),
   the Records tab (search and filters, every row opens the record), the Submissions tab. Rows tick: a selection
   bar offers "select all N matching" and Remove from OSDU, so a removal can be aimed at exactly the ticked rows
   or at the whole filtered set. A run page links here filtered to the records that run touched.
@@ -124,7 +127,15 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   with what each destroys, whether it can be undone, what the ledger will do, and the exact call it makes. The
   two permanent scopes ask the operator to type the data partition back before the button enables.
 - **A submission's page**: counts, the runs that carried it, its work batches, its attempts, a link to its
-  records.
+  records, and for records sent inline the Records sent tab: the records as sent, who sent them and when, and where
+  the run wrote them as a drop.
+- **Manual submission** (Operate): every flow whose document offers manual submission, with what it renders with and
+  the parameters a submission carries; Submit records opens the same sheet for the flow chosen. A switch lists the
+  flows that take no records too, each saying why.
+- **Submit records** (a flow's Delivery tab): one record through a form built from the flow's source contract, or
+  any number as JSON in the shape of a mapping fixture, with the flow parameters, a preview (plan) switch, force and
+  an optional submission id. It makes the same `POST /submissions` a source system makes and opens the run it queued;
+  a flow whose protocol streams payload files shows why it takes no records.
 - **A retrieval flow's page** (Pipelines): the Retrievals tab, every run with its window, location, counts and
   outcome; a row opens the platform run.
 - **Audit trail** (Operate): every run and intervention across flows, by actor, with parameters and log.

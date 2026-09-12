@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Radar, Send, Trash2, Unlock } from "lucide-react";
+import { FileJson, Radar, Send, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,7 @@ import { TruncatedText } from "../../components/TruncatedText";
 import { BlockedBadge, RecordStatusBadge, SubmissionStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
 import { SubmitDropDialog } from "./SubmitDropDialog";
+import { SubmitRecordsDialog } from "./SubmitRecordsDialog";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
 const ALL = "all";
@@ -75,6 +76,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const [drifted, setDrifted] = useState(false);
   const [contains, setContains] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
+  const [recordsOpen, setRecordsOpen] = useState(false);
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [probeTaskId, setProbeTaskId] = useState<string | null>(null);
   // Ticked rows survive paging and filter changes because the page owns them, not the table. `allMatching` is the
@@ -173,6 +175,10 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             <Button size="sm" onClick={() => setSubmitOpen(true)} data-testid="delivery-submit-drop">
               <Send />
               Submit drop
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setRecordsOpen(true)} data-testid="delivery-submit-records">
+              <FileJson />
+              Submit records
             </Button>
             <Button variant="outline" size="sm" onClick={() => probeTarget.mutate()} disabled={probeTarget.isPending} data-testid="delivery-probe">
               <Radar />
@@ -342,6 +348,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
       )}
 
       <SubmitDropDialog open={submitOpen} onClose={() => setSubmitOpen(false)} pipelineId={pipelineId} flowName={flowName} />
+      <SubmitRecordsDialog open={recordsOpen} onClose={() => setRecordsOpen(false)} pipelineId={pipelineId} flowName={flowName} />
       <ConfirmDialog
         open={releaseOpen}
         title="Release blocked records"

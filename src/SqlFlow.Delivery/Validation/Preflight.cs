@@ -70,7 +70,7 @@ public static class Preflight
 
             if (dropColumns is not null && property.Transform is MappingTransform.DeliveredReference or MappingTransform.Template)
             {
-                foreach (var column in ColumnsUsed(property))
+                foreach (var column in MappingColumns.UsedBy(property))
                 {
                     if (dropColumns.TryGetValue(scope, out var columns) && !columns.Contains(column))
                     {
@@ -357,23 +357,6 @@ public static class Preflight
         {
             return JsonValue.Create(target);
         }
-    }
-
-    private static IEnumerable<string> ColumnsUsed(MappingProperty property)
-    {
-        if (property.Transform == MappingTransform.DeliveredReference)
-        {
-            return property.Config.Keys.Count > 0 ? property.Config.Keys : property.Source is null ? [] : [property.Source];
-        }
-
-        if (property.Transform == MappingTransform.Template && property.Config.Format is { } format)
-        {
-            return System.Text.RegularExpressions.Regex.Matches(format, @"\{(?<name>[A-Za-z0-9_\-\.]+)\}")
-                .Select(m => m.Groups["name"].Value)
-                .Where(n => !n.StartsWith("param:", StringComparison.Ordinal));
-        }
-
-        return [];
     }
 
     /// <summary>Visits every property with its full dotted path and the scope its row comes from.</summary>

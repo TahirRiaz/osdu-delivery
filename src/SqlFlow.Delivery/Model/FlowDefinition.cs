@@ -130,6 +130,14 @@ public sealed record FlowSource
     /// </summary>
     public string? Work { get; init; }
 
+    /// <summary>
+    /// Whether the flow takes records sent in a submission request rather than prepared as a drop (design.md section
+    /// 3.4): an operator through the GUI, or a source system through the API. It is opt-in, because a flow fed by a
+    /// prepared drop should not also accept hand-written records unless the estate says so, and it cannot be turned on
+    /// for a flow whose protocol streams payload files, which only a drop can carry.
+    /// </summary>
+    public bool ManualSubmission { get; init; }
+
     /// <summary>The resolved work root for a drop location: the declared one, or the drop's own <c>.work</c> folder.</summary>
     public static string WorkRoot(string? declaredWork, string dropLocation)
     {

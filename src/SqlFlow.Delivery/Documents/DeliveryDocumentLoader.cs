@@ -182,6 +182,7 @@ internal static partial class FlowMapper
                 LastModified = string.IsNullOrWhiteSpace(src.LastModified) ? null : src.LastModified!.Trim(),
                 KnownState = string.IsNullOrWhiteSpace(src.KnownState) ? null : src.KnownState!.Trim(),
                 Work = string.IsNullOrWhiteSpace(src.Work) ? null : src.Work!.Trim(),
+                ManualSubmission = src.ManualSubmission ?? false,
             },
             Render = new FlowRender
             {
@@ -279,6 +280,14 @@ internal static partial class FlowMapper
         if (string.IsNullOrWhiteSpace(flow.Target.Headers[PartitionHeader]))
         {
             throw new FlowValidationException($"{source}: target.headers.{PartitionHeader} must not be empty.");
+        }
+
+        // Records sent in a submission request carry metadata only (design.md section 3.4), so a flow whose protocol
+        // streams payload files cannot offer manual submission at all: its records arrive with their files, in a drop.
+        if (flow.Source.ManualSubmission && DeliveryProtocols.CarriesPayload(flow.Target.Protocol))
+        {
+            throw new FlowValidationException(
+                $"{source}: source.manualSubmission cannot be set on a flow whose {flow.Target.Protocol} protocol streams payload files; records sent in a request carry metadata only, so this flow takes a drop.");
         }
 
         if (flow.Target.ProtocolOptions.BatchSize is < 1 or > ProtocolOptions.MaxBatchSize)

@@ -24,10 +24,13 @@ namespace SqlFlow.Catalog;
 /// client asking; the scheduler passes <see cref="RunTriggerSources.Schedule"/> and its schedule id. It is
 /// recorded rather than inferred because nothing else on the row distinguishes the two: a schedule fire and a
 /// GUI Run button take this same path and produce otherwise identical rows.</para>
+/// <para><c>Companions</c> are catalog rows inserted in the same transaction as the run, for a caller whose run is
+/// meaningless without a row of its own: an inline delivery submission's records, which the run reads. Both commit or
+/// neither does, so a second insert of the same row fails the whole enqueue and leaves no run behind it.</para>
 public sealed record RunEnqueueRequest(
     Guid RepoId, string FlowName, string FlowKind, string? TargetPool = null, string? CommitSha = null,
     RunParameters? Parameters = null, string TriggerSource = RunTriggerSources.Manual,
-    Guid? TriggerScheduleId = null, string? RequestedBy = null);
+    Guid? TriggerScheduleId = null, string? RequestedBy = null, IReadOnlyList<object>? Companions = null);
 
 /// <summary>What to enqueue as one multi-flow run group (a Node or Batch execution): the resolved, ordered member
 /// flows (with their waves) plus the shared routing. Every member is enqueued under one <see cref="RunGroupModes"/>
@@ -252,6 +255,11 @@ public static class RunQueueStore
 
         return await CatalogTransaction.InSerializableAsync(catalog, () =>
         {
+            foreach (var companion in request.Companions ?? [])
+            {
+                catalog.Add(companion);
+            }
+
             catalog.Runs.Add(new CatalogRun
             {
                 RunId = runId,

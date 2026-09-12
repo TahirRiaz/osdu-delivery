@@ -11,6 +11,7 @@ behind them.
 | [documents.md](documents.md) | The delivery flow, retrieval flow and mapping documents key by key. |
 | [drop-contract.md](drop-contract.md) | What the preparing side writes: the manifest, the parquet scopes, the payload chunks, the delivery key and the payload hash it must derive. |
 | [preparing-a-drop.md](preparing-a-drop.md) | The practical guide for the preparing side: what a drop folder must contain, the manifest field by field, well log files (one file per log, unique and continuing row labels when split), document files, how to hand a drop over, incremental prepare, what each mistake leads to, and a checklist. |
+| [submitting-records.md](submitting-records.md) | The other way in, for a source system: sending records' metadata in the submission itself instead of preparing a drop. What a record looks like, the request and its answers, idempotency, the preview, and what each mistake leads to. |
 | [osdu-testing.md](osdu-testing.md) | The state of testing against OSDU: how it is tested, what was proven live per protocol and feature, the defects the live runs found and their fixes, and what is still missing. |
 | [ledger.md](ledger.md) | The ledger tables in the catalog's `delivery` schema, the record lifecycle, leasing, the indexes behind every listing, retention. |
 | [protocols.md](protocols.md) | The named delivery protocols (`osduRecord`, `osduWellLog`, `osduFile`, `osduManifest`), their steps and returned values, and how to add one. |
@@ -26,7 +27,7 @@ behind them.
 | `src/SqlFlow.ControlPlane/Api/DeliveryEndpoints.cs` | The delivery API under `/api/v1/delivery`. |
 | `src/SqlFlow.Cli/DeliveryVerbs.cs` | `sqlflow check` and `sqlflow snapshot`. |
 | `gui/src/features/delivery` | The delivery overview, the flow tabs (stats, records, submissions; retrievals for a retrieval flow), the record page, the submission page with its batches, the audit trail, mappings and snapshots. |
-| `samples/recall-welllog` | A complete sample estate: a flow, its mapping, captured snapshots, reference data and a generated drop. |
+| `samples/recall-welllog` | A complete sample estate: a flow, its mappings (the well logs it delivers from a drop, and wellbore master data for the records a source submits through the API), captured snapshots, reference data and a generated drop. |
 | `tools/SampleDrop` | Generates realistic drops for the samples and the tests. |
 | `tests/SqlFlow.Delivery.Tests` | The domain suites: core, documents, storage, HTTP, the ledger on SQLite, and the engine end to end over the sample estate with a fake protocol. |
 

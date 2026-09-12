@@ -63,6 +63,29 @@ public sealed class CatalogLedger : ILedger
         return entity is null ? null : ToState(entity);
     }
 
+    public async Task<InlineSubmissionState?> GetInlineSubmissionAsync(Guid submissionId, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var entity = await db.DeliveryInlineSubmissions.AsNoTracking().FirstOrDefaultAsync(s => s.SubmissionId == submissionId, ct).ConfigureAwait(false);
+        return entity is null ? null : InlineSubmissionRows.ToState(entity);
+    }
+
+    public async Task MarkInlineSubmissionWrittenAsync(Guid submissionId, string dropLocation, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dropLocation);
+        if (dropLocation.Length > 2000)
+        {
+            throw new DeliveryException($"Inline submission {submissionId:D}: the drop location is {dropLocation.Length} characters, and the ledger holds at most 2000.");
+        }
+
+        await using var db = Open();
+        var entity = await db.DeliveryInlineSubmissions.FirstOrDefaultAsync(s => s.SubmissionId == submissionId, ct).ConfigureAwait(false)
+            ?? throw new DeliveryException($"Inline submission {submissionId:D} is not in the ledger.");
+        entity.DropLocation = dropLocation;
+        entity.WrittenUtc = Now;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
     public async Task<(SubmissionState Submission, bool Created)> RegisterSubmissionAsync(SubmissionState submission, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(submission);

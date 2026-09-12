@@ -37,6 +37,41 @@ export default function globalSetup(): void {
     withoutSchedule(readFileSync(join(samplesDir, "flows", "osdu-cache-sync.yaml"), "utf8"), "osdu-cache-sync"),
   );
 
+  // A flow that takes records in the request: wellbore master data through the storage service, which streams no payload
+  // files. Manual submission is wellbore data, so this is what the Submit records spec previews a record against. It
+  // needs no drop of its own, since a run writes the records it is sent as a drop under the flow's work location.
+  writeFileSync(
+    join(repoDir, "flows", "wellbore-records.yaml"),
+    [
+      "flowType: delivery",
+      "name: wellbore-records",
+      "parameters:",
+      "  site:",
+      "    required: true",
+      "    description: The site the wellbores belong to.",
+      "source:",
+      `  location: ${dropRoot.replace(/\\/g, "/")}/{site}`,
+      "  lastModified: update_date",
+      "  manualSubmission: true",
+      "render:",
+      "  mapping: Wellbore@1.0.0",
+      "  references: pinned",
+      "  parameters:",
+      "    dataPartition: opendes",
+      "change:",
+      "  detect: renderedHash",
+      "  onUnchanged: skip",
+      "target:",
+      "  endpoint: https://osdu.example.test",
+      "  headers:",
+      "    data-partition-id: opendes",
+      "  protocol: osduRecord",
+      "reliability:",
+      "  concurrency: 1",
+      "",
+    ].join("\n"),
+  );
+
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: repoDir, stdio: "pipe" }).toString("utf8").trim();
 

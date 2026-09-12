@@ -71,6 +71,10 @@ The flow is named by `flow` (with `repoId` when the name exists in more than one
 flow needs no call: its runs read the flow's `source.location`. [preparing-a-drop.md](preparing-a-drop.md) is the
 practical guide for the preparing side.
 
+A source with a handful of records and no payload files need not write a drop at all: the same call takes the records
+themselves under `records`, and the run writes them out as a drop before it reads anything, so everything below still
+describes what is delivered. See [submitting-records.md](submitting-records.md).
+
 ## The delivery key
 
 Both halves derive the key independently and must agree ([design.md](design.md) section 5.2). The

@@ -110,6 +110,39 @@ race a partial write.
 The preparing side makes exactly one HTTP call per run. A platform schedule can also
 deliver the flow's declared drop on a cadence, as a fallback for a missed notification.
 
+### 3.4 Records sent in the request
+
+A source with a handful of records to deliver, rather than a prepared set, sends them in
+the submission itself: `POST /api/v1/delivery/submissions` with `records` instead of
+`drop`, each record in the shape of a mapping fixture (its root row and its child-scope
+rows, as JSON scalars). It is the same flow and the same mapping, and it takes the same
+path, because the run turns the records into a drop before it reads anything.
+
+- The control plane checks the request's shape and the flow's parameters, and stores the
+  records, the resolved parameter values and the mapping the flow pins in the ledger
+  (`delivery.InlineSubmission`), in the same transaction as the run that takes them. The
+  submission id is the idempotency key: a repeated request answers with the run it
+  started, and a different request under the same id is refused.
+- The run writes the records as a drop under the flow's work location,
+  `{work}/inline/{submissionId}`, never at the declared source location, which belongs to
+  the preparing side. The drop declares every column the mapping reads, so a column the
+  JSON leaves out is null; when the mapping iterates child scopes the drop is keyed and
+  partitioned, each child row carrying its record's delivery key.
+- From there nothing is special: the manifest check (which refuses the records when the
+  flow was promoted to another mapping after they were accepted), the preflight gate, the
+  per-record change gates, the ledger and the drain. The drop carries no source versions,
+  so an inline submission is never skipped by tier 0 and never moves the flow's
+  watermarks.
+- A run that takes the submission again writes the drop again from the ledger when it is
+  gone, so the ledger alone reconstructs what was sent, by whom and when.
+
+A flow offers this or it does not: `source.manualSubmission` says so in the document, and
+a request to a flow that declares nothing is refused naming the key. It is opt-in because
+a flow fed by a prepared drop should not also accept hand-written records unless the
+estate decided it should, and it cannot be set on a flow whose protocol streams payload
+files, which a request cannot carry: that document is refused when it is read.
+[submitting-records.md](submitting-records.md) is the contract for the source side.
+
 ## 4. The four inputs and the render context
 
 A rendered document is a pure function of four inputs. They change on different clocks
@@ -754,7 +787,7 @@ The delivery domain runs on the platform's verbs and API; there is no separate d
 |---|---|---|
 | `check` | CLI: `sqlflow check <flow.yaml>` | Everything checkable without a network: document parse, the mapping against the schema snapshot, the reference snapshot and, when the drop is present, the manifest and the source bindings. |
 | `plan` | CLI: `sqlflow run <flow.yaml> --operation plan`; GUI and API: a run with operation `plan` | Renders documents and reports what would be created, updated, skipped or held. Works offline against pinned snapshots. Changes nothing. |
-| `deliver` | CLI: `sqlflow run <flow.yaml>`; GUI and API: a run, a schedule fire, or `POST /api/v1/delivery/submissions` | Executes a submission: intake, plan into the ledger, deliver what changed. |
+| `deliver` | CLI: `sqlflow run <flow.yaml>`; GUI and API: a run, a schedule fire, or `POST /api/v1/delivery/submissions` with a drop or with records (section 3.4) | Executes a submission: intake, plan into the ledger, deliver what changed. |
 | `verify` | a run with operation `verify` (the record page queues one scoped to the record) | The drift pass: compares OSDU's current version against `targetVersion`. |
 | `known-state` | a run with operation `known-state` | Publishes the compact known state the preparing side reads. |
 | `intake`, `drain` | the fan-out members a deliver run enqueues (section 16.4); also runnable by hand | `intake` registers and plans a drop (or some of its partitions) into work batches without delivering; `drain` delivers the pending batches of a submission (or of the whole flow) without reading the drop. |
