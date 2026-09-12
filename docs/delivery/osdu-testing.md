@@ -175,6 +175,7 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 | 13 | Two chunks that both numbered their rows from zero committed a log of 5 rows instead of 9, and the commit succeeded. | Colliding row labels hold the record before a session opens; the committed log is read back and checked. | 1b70fbc |
 | 14 | A run recovered after a crash finished while the dead worker's lease still held the record, leaving it delivering although OSDU held the new version. | The recovered run waits out the stopped lease and sends the record. | 64a5e57 |
 | 15 | A standalone worker on the control plane's host took the same node name as the control plane's own worker. | A node can run under a configured name. | 525b485 |
+| 16 | A submission to a flow that streams files wrote a drop its own reader refused: the root rows carried no delivery key, because the drop was keyed only when the mapping iterated a child scope, and a document mapping iterates none. | A drop is keyed whenever it declares a payload, and a regression test covers a payload flow whose mapping iterates nothing. | 2b0d740 |
 
 ## 4. What is missing
 
