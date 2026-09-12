@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Identity;
+using SqlFlow.Core.Runs;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -146,30 +147,14 @@ public sealed class RunTriggerApiTests
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoName = "cp_rt_" + suffix;
         var repoId = FlowIdentity.FromName(repoName);
-        var flowName = "cp_rt_orders_" + suffix;
+        var flowName = SampleEstate.FlowName;
         var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
-        var tempTable = "cp_rt_" + suffix;
-        // A per-test environment reference points the flow at the reachable catalog connection, so the worker's
-        // engine resolves it through the normal ${env:...} path and the run genuinely executes. Removed in finally.
-        var connEnvName = "SQLFLOW_CP_RT_" + suffix;
         var now = DateTime.UtcNow;
 
-        var dir = Path.Combine(Path.GetTempPath(), "sqlflow_cp_rt_" + suffix);
-        var flowsDir = Path.Combine(dir, "flows");
-        Directory.CreateDirectory(flowsDir);
-        await File.WriteAllTextAsync(Path.Combine(flowsDir, "data.csv"), "id,name\n1,alpha\n2,beta\n");
-        await File.WriteAllTextAsync(Path.Combine(flowsDir, "orders.flow.yaml"), $$"""
-            name: {{flowName}}
-            source:
-              type: csv
-              location: ./data.csv
-            target:
-              connection: ${env:{{connEnvName}}}
-              schema: dbo
-              table: {{tempTable}}
-            """);
-
-        Environment.SetEnvironmentVariable(connEnvName, cs);
+        // The sample delivery estate, copied to a temp repository: a real flow of the one production kind, with the
+        // mapping and snapshots it renders against. The run operation is 'plan', which renders every record of the
+        // drop and needs no OSDU target, so this exercises the platform's run path end to end without a target.
+        var dir = SampleEstate.CopyTo(Path.Combine(Path.GetTempPath(), "sqlflow_cp_rt_" + suffix));
         await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
 
         try
@@ -190,11 +175,11 @@ public sealed class RunTriggerApiTests
                     Id = pipelineId,
                     RepoId = repoId,
                     Name = flowName,
-                    Kind = "file",
-                    RelativePath = "flows/orders.flow.yaml",
+                    Kind = "delivery",
+                    RelativePath = "flows/recall-welllog.yaml",
                     ContentHash = "0000000000000000000000000000000000000000000000000000000000000000",
                     Yaml = "name: " + flowName + "\n",
-                    DefinitionJson = $$"""{"name":"{{flowName}}","flowKind":"file"}""",
+                    DefinitionJson = $$"""{"name":"{{flowName}}","flowKind":"delivery"}""",
                     Active = true,
                     Wave = 0,
                     FirstSeenUtc = now,
@@ -207,7 +192,10 @@ public sealed class RunTriggerApiTests
             var token = await IssueTokenAsync(client, ["operate"]);
 
             Guid runId;
-            using (var response = await PostTriggerAsync(client, token, new RunTriggerRequest(repoId, flowName)))
+            var trigger = new RunTriggerRequest(
+                repoId, flowName, Operation: RunParameters.PlanOperation,
+                Values: new Dictionary<string, string> { ["logSource"] = SampleEstate.LogSource });
+            using (var response = await PostTriggerAsync(client, token, trigger))
             {
                 Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
                 var accepted = await response.Content.ReadFromJsonAsync<RunTriggerAccepted>();
@@ -278,12 +266,12 @@ public sealed class RunTriggerApiTests
                 $"the triggered run never reached a terminal status at GET /api/v1/runs/{runId} within the timeout. lastHttp={lastHttp}, dbStatus={dbStatus}, lastBody={lastBody}.{Environment.NewLine}Worker log:{Environment.NewLine}{workerLog}");
             // The crux: the recorded run is keyed by the exact id the trigger returned.
             Assert.Equal(runId, recordedRunId);
-            // And the run genuinely executed (the CSV loaded into the temp table), proving the happy path end to end.
-            Assert.Equal("succeeded", status);
+            // And the run genuinely executed, proving the happy path end to end.
+            Assert.True(status == "succeeded", $"the run ended '{status}': {error}{Environment.NewLine}Worker log:{Environment.NewLine}{workerLog}");
 
-            // The executed run also produced its consolidated trace: the engine's canonical events (published
-            // live by the worker's sink, then re-projected from the run.json events array at completion) come back
-            // from GET /runs/{id}/trace, including the per-file progress the file flow emitted.
+            // The executed run also produced its consolidated trace: the engine's canonical events (published live
+            // by the worker's sink, then re-projected from the run.json events array at completion) come back from
+            // GET /runs/{id}/trace, in timeline order, each with the level and message the trace view renders.
             using (var request = new HttpRequestMessage(HttpMethod.Get, new Uri($"/api/v1/runs/{runId}/trace?pageSize=200", UriKind.Relative)))
             {
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -292,31 +280,20 @@ public sealed class RunTriggerApiTests
                 using var timeline = JsonDocument.Parse(await eventsResponse.Content.ReadAsStringAsync());
                 var entries = timeline.RootElement.GetProperty("items").EnumerateArray().ToList();
                 Assert.NotEmpty(entries);
-                var eventEntries = entries.Where(e => e.GetProperty("kind").GetString() == "event").ToList();
-                Assert.NotEmpty(eventEntries);
-                // The file flow's canonical progress is in the feed: it read data.csv (the source.open event).
-                Assert.Contains(eventEntries, e =>
-                    e.GetProperty("message").GetString()!.Contains("data.csv", StringComparison.OrdinalIgnoreCase));
-                Assert.All(eventEntries, e =>
-                    Assert.False(string.IsNullOrWhiteSpace(e.GetProperty("level").GetString())));
+                Assert.All(entries, e => Assert.False(string.IsNullOrWhiteSpace(e.GetProperty("level").GetString())));
+                Assert.All(entries, e => Assert.False(string.IsNullOrWhiteSpace(e.GetProperty("message").GetString())));
+                // The ordinals are the 1-based position in the run's event stream, so the feed is a real timeline
+                // rather than an unordered bag.
+                Assert.Equal(entries.Select(e => e.GetProperty("ordinal").GetInt32()).Order(), entries.Select(e => e.GetProperty("ordinal").GetInt32()));
+                // And the plan's own progress is in it: the records it rendered out of the drop.
+                var messages = entries.Select(e => e.GetProperty("message").GetString()!).ToList();
+                Assert.True(
+                    messages.Exists(m => m.Contains("record", StringComparison.OrdinalIgnoreCase)),
+                    "the plan's trace never mentioned a record: " + string.Join(" | ", messages));
             }
         }
         finally
         {
-            Environment.SetEnvironmentVariable(connEnvName, null);
-            try
-            {
-                await using var clean = new SqlConnection(cs);
-                await clean.OpenAsync();
-                await using var drop = clean.CreateCommand();
-                drop.CommandText = $"DROP TABLE IF EXISTS [dbo].[{tempTable}]";
-                await drop.ExecuteNonQueryAsync();
-            }
-            catch (SqlException)
-            {
-                // Best-effort cleanup: a never-created table (a failed run) leaves nothing to drop.
-            }
-
             await using (var db = CatalogDatabase.Create(cs))
             {
                 await db.RunEvents.Where(e => e.RepoId == repoId).ExecuteDeleteAsync();
