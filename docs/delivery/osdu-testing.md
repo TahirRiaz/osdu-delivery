@@ -191,6 +191,9 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 | 14 | A run recovered after a crash finished while the dead worker's lease still held the record, leaving it delivering although OSDU held the new version. | The recovered run waits out the stopped lease and sends the record. | 64a5e57 |
 | 15 | A standalone worker on the control plane's host took the same node name as the control plane's own worker. | A node can run under a configured name. | 525b485 |
 | 16 | A submission to a flow that streams files wrote a drop its own reader refused: the root rows carried no delivery key, because the drop was keyed only when the mapping iterated a child scope, and a document mapping iterates none. | A drop is keyed whenever it declares a payload, and a regression test covers a payload flow whose mapping iterates nothing. | 2b0d740 |
+| 17 | Every neutron porosity curve was published as a hundredth of its value: the mapping declared the source unit `V/V` as `%`. | `V/V` maps to `m3/m3`, which is what OSDU's reference data calls volume per volume, and the sample snapshot caches it. | 215bee2 |
+| 18 | Records a cache change held back for approval were reported as unchanged, so a run said nothing was waiting while the estate waited on a decision. | They are counted apart as awaiting approval, from the plan through the submission, the run result, the API and the GUI. | 215bee2 |
+| 19 | A registration whose answer never reached the ledger left a dataset record with nothing referencing it, because the step was marked only after the service answered. | The step is marked with its landing-zone path before the request, and a try that finds the mark asks which dataset that path became and takes it over. | 215bee2 |
 
 ## 4. What is missing
 
@@ -207,22 +210,30 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 
 | Item | Why it matters | What it takes |
 | --- | --- | --- |
-| The drop notification endpoint | `POST /api/v1/delivery/submissions` with a `drop` is how the prepare side starts a run. `DeliverySubmissionApiTests` now covers the route (both forms), but the drop form has never been used live: the live runs were started through `POST /api/v1/runs` or with inline records. | One live notification of an existing drop. |
+| The drop notification endpoint | `POST /api/v1/delivery/submissions` with a `drop` is how the prepare side starts a run. `DeliverySubmissionApiTests` covers the route in both forms, and one live notification of `drops/wellbore/ODLIVE20260910` on `e2e-wellbore` was planned on 2026-09-12, so the route, the drop lookup and the render are proven live. No live notification has delivered: every live delivery was started through `POST /api/v1/runs` or with inline records. | One live notification run with `operation: deliver`. |
 | Curves that do not match the bulk columns | A log whose record declares a curve its bulk data lacks, or the reverse, is delivered as it is. Only the reference curve is checked. | A preflight check comparing the declared curves with each chunk's columns, and one live log that trips it. |
 | Sessions that split a log's curves | Chunks sharing row labels with different columns are allowed by the preflight and covered by engine tests, but never committed live. | One log re-prepared as two column chunks. |
 | Payloads near the ceilings | Live chunks held 9 rows. The 10,000,000-value and 3,000-column ceilings are checked from parquet footers in tests only, and the largest body ADME accepts on a single `POST /data` is not known. | One larger log. It leaves a larger bulk version in a partition that cannot be purged, which the small-dataset rule weighs against. |
 | Partitioned drops and fan-out | Every live drop was unpartitioned and every run a single member. Covered by `ScaleStorageTests` and `ScaleEngineTests`. | A partitioned copy of an existing drop, delivered with a fan-out. |
 | OSDU error paths | Throttling (429), server errors and refusals are exercised against stub handlers (`HttpTests`, `EngineTests`). Live, only the DDMS 422 and the reference curve refusal were provoked. | Cases that can be provoked without writing data, such as an unknown legal tag or a missing ACL group. |
 | Other OSDU kinds | Only Wellbore, WellLog, Document and `dataset--File.Generic` were delivered live. | A mapping and a small drop per further kind. |
+| A crash inside a registration call | Defect 19's fix marks the step with its landing-zone path before the request and takes over the dataset that path became. Four tests in `FileProtocolTests` cover the mark, the takeover, the re-registration when search lists nothing and the hold when it lists two, but neither live crash test landed inside the call. | A crash injected between the request going out and its answer reaching the ledger, on a flow whose file is already staged. |
+| A well log rendered with the corrected porosity unit | Defect 17 is fixed in the sample estate and the live cache holds `m3/m3`, but no live record carries it: the catalog re-mint left the ledger without the versions OSDU holds, and the DDMS refuses to create a log it already has. | The ledger re-established against what OSDU holds (a known-state or verify run), then one metadata redelivery of L-2001. |
 | Repeatable live tests | The live drivers are scripts outside the repository, so nobody else can re-run them, and the suites have no live integration tests. | The drivers moved into the repository, keeping the action log and marker rules. |
 
 ### 4.3 Known defects not yet fixed
 
-| Defect | Effect | State |
-| --- | --- | --- |
-| Neutron porosity unit | [WellLog@1.4.0.yaml line 142](../../samples/recall-welllog/mappings/WellLog@1.4.0.yaml#L142) (and the live estate's `WellLog@1.4.1`) maps the source unit `V/V` to `%`, while NPHI holds fractions (0.19 to 0.22), so OSDU consumers read porosity 100 times too small. | Waiting on the choice between a volume fraction unit from the reference data and a conversion in prepare. |
-| Approval-held records in run counts | Records held behind a cache change waiting for approval are counted as `skippedUnchanged`, so a run report does not show that they wait. | Needs a ledger column, which means re-minting the catalog. |
-| Registration between a crash and its step report | If a process dies after registering a dataset but before the ledger records that step, the recovered run registers a second dataset and the first stays in OSDU unreferenced. Not observed in either crash test. | Open. |
+None stand open. The three that did (the porosity unit, approval-held records counted as unchanged, and a
+registration whose answer was lost) are fixed in 215bee2, and are rows 17 to 19 of section 3.
+
+How far each was proven: rows 18 and 19 carry tests that fail on the code before them, and the re-minted live
+catalog reports the new count on every run and submission. Row 17 is proven by the sample estate, which renders
+and validates with the corrected unit, and by the live cache, which now holds `m3/m3`; the live well logs were
+not re-rendered with it, because the catalog re-mint left the ledger without the versions OSDU holds, and the
+wellbore DDMS refuses to create a log it already has.
+
+Two of them are fixed without live proof, and section 4.2 carries what that would take: a crash inside a
+registration call for row 19, and a well log rendered again with the corrected unit for row 17.
 
 ### 4.4 Deferred by decision
 
@@ -234,7 +245,9 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 
 ## 5. What the tests left in the partition
 
-All live, all carrying the marker, with every write in the action log:
+Nothing, as of 2026-09-12: every id below was soft-deleted (reversible, `POST /records/{id}:delete`) and then
+checked, and none of them resolves. OSDU can restore any of them, and a drop can send them again. They carried
+the run marker, and every write and the cleanup itself are in the action log:
 
 - `test:master-data--Wellbore:8caec6614b605fe6809175534f9c9a1c` and `test:master-data--Wellbore:250b474c3f1550c59dc7a11c81ca63c3`;
 - `test:work-product-component--WellLog:1f2c3bd61925503cad8694c176cd81b5` (L-1001),
@@ -244,3 +257,8 @@ All live, all carrying the marker, with every write in the action log:
   `test:work-product-component--Document:b57668a195ad5b129d8f4d51197e4ad8` (`e2e-file`);
 - the `dataset--File.Generic` records their files were registered as. A payload change registers a new dataset and
   leaves the earlier one in OSDU, as [protocols.md](protocols.md) describes.
+
+The records the later submission tests created (sections 2.8, 2.9 and 2.10) are not listed here because each was
+removed and checked within its own test: the inline-submission wellbore, both documents and the two
+`dataset--File.Generic` records registered for their files. The action log carries each creation and each
+verified removal.
