@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using SqlFlow.Core;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Drops;
 
@@ -27,6 +28,14 @@ public sealed record DropManifest
 
     [JsonPropertyName("mapping")]
     public required string Mapping { get; init; }
+
+    /// <summary>
+    /// What the preparing side calls this drop in its own records (a job id, a batch name, a filename): optional, never
+    /// interpreted here, and carried onto the ledger's submission so an operator holding the source's name for the work
+    /// can find what it became. A submission of records puts the caller's <c>reference</c> here.
+    /// </summary>
+    [JsonPropertyName("reference")]
+    public string? Reference { get; init; }
 
     [JsonPropertyName("createdUtc")]
     public DateTimeOffset CreatedUtc { get; init; }
@@ -119,6 +128,11 @@ public sealed record DropManifest
         if (string.IsNullOrWhiteSpace(Mapping) || !Mapping.Contains('@', StringComparison.Ordinal))
         {
             throw new FlowValidationException($"{source}: mapping must be pinned as 'Name@version'.");
+        }
+
+        if (SubmissionReference.Refusal(Reference, "reference") is { } referenceRefusal)
+        {
+            throw new FlowValidationException($"{source}: {referenceRefusal}");
         }
 
         if (!Scopes.ContainsKey(RootScope))

@@ -3,6 +3,7 @@ using SqlFlow.Catalog;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Ledger;
 
@@ -36,6 +37,14 @@ public sealed record InlineSubmissionState
     /// <summary>The flow parameter values resolved against the flow's declarations (defaults applied), a JSON object sorted by name.</summary>
     public required string ParametersJson { get; init; }
 
+    /// <summary>
+    /// What the sending system calls this submission in its own records, trimmed; null when it named none. It travels
+    /// onto the written drop's manifest and from there onto the submission the intake registers, so one search finds a
+    /// submission by the name its source knows it by. Part of the request the id names, so a repeat carrying a different
+    /// one is a conflict rather than a silent relabel.
+    /// </summary>
+    public string? Reference { get; init; }
+
     /// <summary>The records in canonical form (<see cref="InlineRecords.Json"/>).</summary>
     public required string RecordsJson { get; init; }
 
@@ -67,7 +76,7 @@ public sealed record InlineSubmissionState
     /// <summary>The accepted form of a request: the records parsed, the parameters resolved against <paramref name="flow"/>.</summary>
     public static InlineSubmissionState Accept(
         Guid submissionId, FlowDefinition flow, string operation, bool force, IReadOnlyDictionary<string, string> parameters,
-        InlineRecords records, DateTime receivedUtc, string receivedBy)
+        InlineRecords records, DateTime receivedUtc, string receivedBy, string? reference = null)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(operation);
@@ -85,7 +94,13 @@ public sealed record InlineSubmissionState
             throw new ArgumentOutOfRangeException(nameof(operation), operation, $"A submission's operation is {string.Join(" or ", Operations)}.");
         }
 
+        if (SubmissionReference.Refusal(reference) is { } refusal)
+        {
+            throw new ArgumentException(refusal, nameof(reference));
+        }
+
         var parametersJson = SerializeParameters(parameters);
+        var normalizedReference = SubmissionReference.Normalize(reference);
         return new InlineSubmissionState
         {
             SubmissionId = submissionId,
@@ -95,9 +110,10 @@ public sealed record InlineSubmissionState
             Operation = normalized,
             Force = force,
             ParametersJson = parametersJson,
+            Reference = normalizedReference,
             RecordsJson = records.Json,
             ContentHash = records.ContentHash,
-            RequestHash = RequestHashOf(flow.Id, flow.Render.Mapping, normalized, force, parametersJson, records.ContentHash),
+            RequestHash = RequestHashOf(flow.Id, flow.Render.Mapping, normalized, force, parametersJson, records.ContentHash, normalizedReference),
             RecordCount = records.Records.Count,
             ChildRowCount = records.ChildRowCount,
             ContentBytes = records.ContentBytes,
@@ -156,8 +172,15 @@ public sealed record InlineSubmissionState
             differences.Add("the records");
         }
 
+        if (!string.Equals(Reference, other.Reference, StringComparison.Ordinal))
+        {
+            differences.Add($"the reference ({Describe(Reference)}, not {Describe(other.Reference)})");
+        }
+
         return differences;
     }
+
+    private static string Describe(string? reference) => reference is null ? "none" : $"'{reference}'";
 
     public static string SerializeParameters(IReadOnlyDictionary<string, string> values)
     {
@@ -165,13 +188,18 @@ public sealed record InlineSubmissionState
         return JsonSerializer.Serialize(new SortedDictionary<string, string>(values.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal), StringComparer.Ordinal));
     }
 
-    public static string RequestHashOf(Guid flowId, string mappingReference, string operation, bool force, string parametersJson, string contentHash)
+    public static string RequestHashOf(
+        Guid flowId, string mappingReference, string operation, bool force, string parametersJson, string contentHash, string? reference = null)
     {
         ArgumentNullException.ThrowIfNull(mappingReference);
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(parametersJson);
         ArgumentNullException.ThrowIfNull(contentHash);
-        return Hashing.ContentHash.OfParts(flowId.ToString("D"), mappingReference, operation, force ? "force" : "no-force", parametersJson, contentHash);
+        // The reference is part of the request the id names, so it is hashed with the rest: a repeat that relabels the
+        // work is a different request, not the same one. Absence hashes as the empty string, which the length-prefixed
+        // parts keep distinct from a reference that is genuinely empty, since a blank one normalises to absent anyway.
+        return Hashing.ContentHash.OfParts(
+            flowId.ToString("D"), mappingReference, operation, force ? "force" : "no-force", parametersJson, contentHash, reference ?? string.Empty);
     }
 }
 
@@ -190,6 +218,7 @@ public static class InlineSubmissionRows
             Operation = state.Operation,
             Force = state.Force,
             ParametersJson = state.ParametersJson,
+            Reference = state.Reference,
             RecordsJson = state.RecordsJson,
             ContentHash = state.ContentHash,
             RequestHash = state.RequestHash,
@@ -215,6 +244,7 @@ public static class InlineSubmissionRows
             Operation = entity.Operation,
             Force = entity.Force,
             ParametersJson = entity.ParametersJson,
+            Reference = entity.Reference,
             RecordsJson = entity.RecordsJson,
             ContentHash = entity.ContentHash,
             RequestHash = entity.RequestHash,

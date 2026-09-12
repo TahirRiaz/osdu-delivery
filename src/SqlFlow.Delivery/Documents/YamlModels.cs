@@ -406,6 +406,8 @@ internal sealed class TransformConfigYaml
 
     public List<string>? MatchBy { get; set; }
 
+    public bool? IgnoreSeparators { get; set; }
+
     public string? Select { get; set; }
 
     public Dictionary<string, string>? ValueMap { get; set; }

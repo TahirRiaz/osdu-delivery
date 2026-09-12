@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Hashing;
 using SqlFlow.Delivery.Json;
@@ -154,7 +155,8 @@ public sealed class ReferenceType
     /// The item whose <paramref name="field"/> holds <paramref name="value"/>, as <see cref="Find"/> matches it: null
     /// when nothing matches, and when the value names several items only once case is ignored.
     /// </summary>
-    public ReferenceItem? Match(string field, string value) => Find(field, value).Item;
+    public ReferenceItem? Match(string field, string value, bool ignoreSeparators = false)
+        => Find(field, value, ignoreSeparators).Item;
 
     /// <summary>
     /// Matches <paramref name="value"/> (trimmed) against what <paramref name="field"/> holds. A field holding a set
@@ -167,11 +169,18 @@ public sealed class ReferenceType
     /// first. Items holding exactly the same value still resolve to the first in snapshot order, which is stable per
     /// version; <see cref="IsAmbiguous"/> reports where that happened.
     /// </para>
+    /// <para>
+    /// With <paramref name="ignoreSeparators"/> a third and last attempt folds punctuation and spacing away on both
+    /// sides (<see cref="ReferenceKeyFold"/>), so a name a source writes as <c>NO 15/9-19 SR</c> finds the record OSDU
+    /// holds as <c>NO_15_9-19_SR</c>. It is opt-in per mapping property, because a fold that helps a facility name is
+    /// exactly wrong for a unit code, and it keeps the same discipline as the case tier: several items under one folded
+    /// key match none of them and are listed, rather than one being picked.
+    /// </para>
     /// </summary>
-    public ReferenceMatch Find(string field, string value)
+    public ReferenceMatch Find(string field, string value, bool ignoreSeparators = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(field);
-        return value is null ? ReferenceMatch.None : Index(field).Lookup(value.Trim());
+        return value is null ? ReferenceMatch.None : Index(field).Lookup(value.Trim(), ignoreSeparators);
     }
 
     /// <summary>True when two or more items hold exactly the same value under this field, so matching on it is order-dependent.</summary>
@@ -183,6 +192,9 @@ public sealed class ReferenceType
     {
         var exact = new Dictionary<string, ReferenceItem>(StringComparer.Ordinal);
         var folded = new Dictionary<string, List<ReferenceItem>>(StringComparer.OrdinalIgnoreCase);
+        // Built with the other two rather than on demand: it costs one dictionary per indexed field, and building it
+        // later would mean a second pass over every item of a type that can hold hundreds of thousands of them.
+        var separatorFolded = new Dictionary<string, List<ReferenceItem>>(StringComparer.Ordinal);
         var ambiguous = false;
         foreach (var item in _items)
         {
@@ -212,10 +224,26 @@ public sealed class ReferenceType
                 {
                     variants.Add(item);
                 }
+
+                // A term that folds to nothing (punctuation only) would collect every such term under one empty key and
+                // make the fold tier useless, so it contributes nothing to it.
+                if (ReferenceKeyFold.Separators(term) is { Length: > 0 } key)
+                {
+                    if (!separatorFolded.TryGetValue(key, out var byKey))
+                    {
+                        byKey = [];
+                        separatorFolded[key] = byKey;
+                    }
+
+                    if (!byKey.Contains(item))
+                    {
+                        byKey.Add(item);
+                    }
+                }
             }
         }
 
-        return new FieldIndex(exact, folded, ambiguous);
+        return new FieldIndex(exact, folded, separatorFolded, ambiguous);
     }
 
     public JsonObject ToJson()
@@ -266,11 +294,15 @@ public sealed class ReferenceType
     {
         private readonly Dictionary<string, ReferenceItem> _exact;
         private readonly Dictionary<string, List<ReferenceItem>> _folded;
+        private readonly Dictionary<string, List<ReferenceItem>> _separatorFolded;
 
-        public FieldIndex(Dictionary<string, ReferenceItem> exact, Dictionary<string, List<ReferenceItem>> folded, bool ambiguous)
+        public FieldIndex(
+            Dictionary<string, ReferenceItem> exact, Dictionary<string, List<ReferenceItem>> folded,
+            Dictionary<string, List<ReferenceItem>> separatorFolded, bool ambiguous)
         {
             _exact = exact;
             _folded = folded;
+            _separatorFolded = separatorFolded;
             Ambiguous = ambiguous;
         }
 
@@ -278,20 +310,107 @@ public sealed class ReferenceType
 
         public bool Ambiguous { get; }
 
-        public ReferenceMatch Lookup(string term)
+        public ReferenceMatch Lookup(string term, bool ignoreSeparators)
         {
             if (_exact.TryGetValue(term, out var item))
             {
-                return ReferenceMatch.Of(item);
+                return ReferenceMatch.Of(item, ReferenceMatchKind.Exact);
             }
 
-            if (!_folded.TryGetValue(term, out var variants))
+            if (_folded.TryGetValue(term, out var variants))
+            {
+                return variants.Count == 1
+                    ? ReferenceMatch.Of(variants[0], ReferenceMatchKind.IgnoringCase)
+                    : new ReferenceMatch(null, variants, ReferenceMatchKind.IgnoringCase);
+            }
+
+            // Only now, and only when the mapping asked: the looser a tier is, the later it runs, so a value that
+            // resolves exactly is never decided by a fold.
+            if (!ignoreSeparators || ReferenceKeyFold.Separators(term) is not { Length: > 0 } key)
             {
                 return ReferenceMatch.None;
             }
 
-            return variants.Count == 1 ? ReferenceMatch.Of(variants[0]) : new ReferenceMatch(null, variants);
+            if (!_separatorFolded.TryGetValue(key, out var folded))
+            {
+                return ReferenceMatch.None;
+            }
+
+            return folded.Count == 1
+                ? ReferenceMatch.Of(folded[0], ReferenceMatchKind.IgnoringSeparators)
+                : new ReferenceMatch(null, folded, ReferenceMatchKind.IgnoringSeparators);
         }
+    }
+}
+
+/// <summary>
+/// How a value was matched against a cached field, loosest last. It is reported so a refusal can say which tier could
+/// not decide, and so a caller can tell a name that matched as written from one that matched only after folding.
+/// </summary>
+public enum ReferenceMatchKind
+{
+    /// <summary>Nothing matched.</summary>
+    None,
+
+    /// <summary>The value is what the field holds, character for character.</summary>
+    Exact,
+
+    /// <summary>The value matches what the field holds once case is ignored.</summary>
+    IgnoringCase,
+
+    /// <summary>The value matches once case, punctuation and spacing are ignored. Only ever reached by a mapping that asked for it.</summary>
+    IgnoringSeparators,
+}
+
+/// <summary>
+/// The folded form of a name, for matching one system's spelling of it against another's.
+/// <para>
+/// Source systems and OSDU write the same facility name differently, because each grew its own convention for the
+/// spaces, slashes, underscores and hyphens between the parts that carry the meaning: <c>NO 15/9-19 SR</c>,
+/// <c>NO_15_9-19_SR</c> and <c>no-15-9-19-sr</c> all name one wellbore. Folding keeps the letters and digits, in order,
+/// and replaces every run of anything else with a single separator, so those three fold to one key while two genuinely
+/// different names stay apart.
+/// </para>
+/// <para>
+/// It is not a general normaliser and deliberately does nothing clever: no transliteration, no accent stripping, no
+/// abbreviation. Letters outside ASCII are kept (Norwegian names carry æ, ø and å), lower-cased invariantly, so folding
+/// never depends on the machine's locale.
+/// </para>
+/// </summary>
+public static class ReferenceKeyFold
+{
+    /// <summary>
+    /// The folded key of <paramref name="value"/>, or the empty string when it carries no letter or digit at all (a
+    /// value made only of punctuation folds to nothing, and nothing is not a key anything should match on).
+    /// </summary>
+    public static string Separators(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        var pendingSeparator = false;
+        foreach (var c in value)
+        {
+            if (char.IsLetterOrDigit(c))
+            {
+                if (pendingSeparator && builder.Length > 0)
+                {
+                    builder.Append('-');
+                }
+
+                pendingSeparator = false;
+                builder.Append(char.ToLowerInvariant(c));
+            }
+            else
+            {
+                pendingSeparator = true;
+            }
+        }
+
+        return builder.ToString();
     }
 }
 
@@ -300,13 +419,22 @@ public sealed class ReferenceType
 /// items only once case is ignored, <see cref="Item"/> is null and <see cref="CaseVariants"/> lists them in snapshot
 /// order, so the caller can say which records it could not choose between.
 /// </summary>
-public readonly record struct ReferenceMatch(ReferenceItem? Item, IReadOnlyList<ReferenceItem> CaseVariants)
+public readonly record struct ReferenceMatch(
+    ReferenceItem? Item, IReadOnlyList<ReferenceItem> CaseVariants, ReferenceMatchKind Kind = ReferenceMatchKind.None)
 {
-    public static ReferenceMatch None => new(null, []);
+    public static ReferenceMatch None => new(null, [], ReferenceMatchKind.None);
 
+    /// <summary>Several items answer to the value once a tier loosened the comparison, so none of them is taken.</summary>
     public bool IsCaseAmbiguous => Item is null && CaseVariants.Count > 1;
 
-    public static ReferenceMatch Of(ReferenceItem item) => new(item, []);
+    /// <summary>How the tier that could not decide was comparing, for a refusal that says what it tried.</summary>
+    public string Loosening => Kind switch
+    {
+        ReferenceMatchKind.IgnoringSeparators => "case, punctuation and spacing are ignored",
+        _ => "case is ignored",
+    };
+
+    public static ReferenceMatch Of(ReferenceItem item, ReferenceMatchKind kind = ReferenceMatchKind.Exact) => new(item, [], kind);
 }
 
 /// <summary>

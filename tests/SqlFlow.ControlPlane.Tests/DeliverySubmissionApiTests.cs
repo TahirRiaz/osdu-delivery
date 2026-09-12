@@ -284,6 +284,16 @@ public sealed class DeliverySubmissionApiTests
             await ExpectAsync(new { flow = estate.RecordsFlow, drop = "C:/drops/x", records = one }, HttpStatusCode.BadRequest, "not both");
             await ExpectAsync(new { flow = estate.RecordsFlow, parameters = new { site = "north" }, operation = "verify", records = one }, HttpStatusCode.BadRequest, "operation is deliver or plan");
             await ExpectAsync(new { flow = estate.RecordsFlow, drop = "C:/drops/x", submissionId = Guid.NewGuid() }, HttpStatusCode.BadRequest, "submissionId goes with records");
+            // A drop's own name for itself belongs in the manifest the preparing side writes, where its id already is.
+            await ExpectAsync(new { flow = estate.RecordsFlow, drop = "C:/drops/x", reference = "job-17" }, HttpStatusCode.BadRequest, "on a submission it goes with records");
+            await ExpectAsync(
+                new { flow = estate.RecordsFlow, parameters = new { site = "north" }, reference = new string('x', 201), records = one },
+                HttpStatusCode.BadRequest,
+                "reference is at most 200 characters");
+            await ExpectAsync(
+                new { flow = estate.RecordsFlow, parameters = new { site = "north" }, reference = "line\u0007one", records = one },
+                HttpStatusCode.BadRequest,
+                "control character");
             await ExpectAsync(new { flow = estate.RecordsFlow, records = one }, HttpStatusCode.BadRequest, "parameter 'site' is required");
             await ExpectAsync(new { flow = estate.RecordsFlow, parameters = new { site = "north", other = "y" }, records = one }, HttpStatusCode.BadRequest, "'other' is not declared");
             await ExpectAsync(new { flow = estate.RecordsFlow, parameters = new { site = "north" }, submissionId = Guid.Empty, records = one }, HttpStatusCode.BadRequest, "non-empty UUID");
@@ -580,6 +590,94 @@ public sealed class DeliverySubmissionApiTests
 
             using var unknown = await GetAsync(client, token, $"/api/v1/delivery/flows/{Guid.NewGuid()}/source-contract");
             Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+        }
+        finally
+        {
+            await estate.CleanupAsync(cs);
+        }
+    }
+
+    /// <summary>
+    /// The caller's own name for a submission: stored with the accepted request, read back on the submission's page, and
+    /// part of what a reused id has to match, so a retry that relabels the work is a conflict rather than a silent
+    /// rewrite of what the ledger says the source called it.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_submission_carries_the_name_its_source_knows_it_by()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        var estate = await Estate.SeedAsync(cs);
+        try
+        {
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+            var submissionId = Guid.NewGuid();
+            var records = new[] { Wellbore("WB-API-REF-1") };
+            var body = new { submissionId, flow = estate.RecordsFlow, parameters = new { site = "north" }, reference = "  NO 15/9-19 SR___GR.las  ", records };
+
+            using (var first = await PostAsync(client, token, body))
+            {
+                Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+            }
+
+            // Stored trimmed, which is the form every later comparison and search works against.
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var stored = await db.DeliveryInlineSubmissions.AsNoTracking().SingleAsync(s => s.SubmissionId == submissionId);
+                Assert.Equal("NO 15/9-19 SR___GR.las", stored.Reference);
+            }
+
+            // And read back beside the records it was sent with, where a source goes looking for what it sent.
+            using (var read = await GetAsync(client, token, $"/api/v1/delivery/submissions/{submissionId:D}/content"))
+            {
+                var inline = (await read.Content.ReadFromJsonAsync<DeliveryInlineSubmissionDto>())!;
+                Assert.Equal("NO 15/9-19 SR___GR.las", inline.Reference);
+            }
+
+            // The same request again, however its reference is spaced, is the same submission.
+            using (var repeat = await PostAsync(client, token, body))
+            {
+                Assert.Equal(HttpStatusCode.OK, repeat.StatusCode);
+                Assert.True((await repeat.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!.Replayed);
+            }
+
+            // Relabelling under the same id is a new request wearing an old name, so it is refused saying which.
+            using (var relabelled = await PostAsync(
+                client, token, new { submissionId, flow = estate.RecordsFlow, parameters = new { site = "north" }, reference = "something-else.las", records }))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, relabelled.StatusCode);
+                var text = await relabelled.Content.ReadAsStringAsync();
+                Assert.Contains("the reference", text, StringComparison.Ordinal);
+                Assert.Contains("something-else.las", text, StringComparison.Ordinal);
+            }
+
+            // Dropping it is a change too, not an omission to be filled in from what was stored.
+            using (var dropped = await PostAsync(
+                client, token, new { submissionId, flow = estate.RecordsFlow, parameters = new { site = "north" }, records }))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, dropped.StatusCode);
+                Assert.Contains("the reference (none,", await dropped.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+
+            // A submission with no reference is the ordinary case and stays absent rather than becoming empty.
+            using (var plain = await PostAsync(
+                client, token, new { flow = estate.RecordsFlow, parameters = new { site = "north" }, records = new[] { Wellbore("WB-API-REF-2") } }))
+            {
+                Assert.Equal(HttpStatusCode.Accepted, plain.StatusCode);
+                var accepted = (await plain.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!;
+                await using var db = CatalogDatabase.Create(cs);
+                Assert.Null((await db.DeliveryInlineSubmissions.AsNoTracking().SingleAsync(s => s.SubmissionId == accepted.SubmissionId)).Reference);
+            }
+
+            // The submissions listing narrows by reference, which is how a source finds work it knows by its own name.
+            // Nothing has run, so the ledger holds no registered submission yet and the filter answers on an empty set
+            // rather than on everything: an unfiltered listing and a filtered one must not be the same answer.
+            using (var filtered = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.RecordsPipeline}/submissions?reference=15/9-19"))
+            {
+                Assert.NotNull(await filtered.Content.ReadFromJsonAsync<List<DeliverySubmissionDto>>());
+            }
         }
         finally
         {

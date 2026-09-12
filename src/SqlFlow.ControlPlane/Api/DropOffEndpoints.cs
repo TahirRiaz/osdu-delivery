@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Configuration;
 using SqlFlow.Core;
+using SqlFlow.Core.Model;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery;
 using SqlFlow.Delivery.Engine;
@@ -16,24 +17,65 @@ using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.ControlPlane.Api;
 
-/// <summary>One file in a drop-off, as it landed.</summary>
-public sealed record DeliveryDropOffFileDto(string Name, long Bytes, string Sha256);
+/// <summary>
+/// One file in a drop-off, as it landed. <c>HashSource</c> says where <c>Sha256</c> came from: <c>computed</c> when the
+/// control plane hashed the bytes as they streamed past it, <c>client</c> when the uploader asserted it about a file
+/// written straight to storage, and <c>none</c> when a signed upload asserted nothing. The distinction is kept because a
+/// hash the control plane did not compute is a claim, and a ledger that showed both the same way would imply a check
+/// that never happened.
+/// </summary>
+public sealed record DeliveryDropOffFileDto(string Name, long Bytes, string Sha256, string HashSource = DropOffHashSource.Computed);
 
 /// <summary>
-/// One drop-off: files uploaded through the API into the deployment's drop-off area, for a submission to point at
-/// afterwards. <c>Location</c> is what goes into a submission's <c>files</c>.
+/// One drop-off: files uploaded into the deployment's drop-off area, for a submission to point at afterwards.
+/// <c>Location</c> is what goes into a submission's <c>files</c>. <c>UploadMode</c> is how the bytes got there
+/// (<c>stream</c> through the control plane, <c>signed</c> straight to storage), and <c>ReservedUntilUtc</c> is when a
+/// signed reservation's URLs stop working.
 /// </summary>
 public sealed record DeliveryDropOffDto(
     Guid DropOffId, string Location, string Status, int FileCount, long TotalBytes, string? Label,
     DateTime UploadedUtc, string UploadedBy, DateTime? CompletedUtc, DateTime? DeletedUtc, string? Error,
-    IReadOnlyList<DeliveryDropOffFileDto> Files);
+    IReadOnlyList<DeliveryDropOffFileDto> Files, string UploadMode = DropOffUploadMode.Stream, DateTime? ReservedUntilUtc = null);
 
 /// <summary>
 /// Whether this deployment offers a drop-off area at all, and what one upload may carry. <c>Location</c> is the root
 /// uploads land under, which is also what a submission may point inside; null when the deployment configures none.
+/// <c>SignedUploads</c> says whether a caller can be handed URLs to write straight to storage, which is what a file too
+/// large to send through the control plane needs; where it is false, every upload goes through the control plane and is
+/// bounded by <c>MaxFileMegabytes</c>.
 /// </summary>
 public sealed record DeliveryDropOffAreaDto(
-    bool Enabled, string? Location, int MaxFileMegabytes, int MaxFilesPerUpload, int RetentionDays);
+    bool Enabled, string? Location, int MaxFileMegabytes, int MaxFilesPerUpload, int RetentionDays,
+    bool SignedUploads = false, int MaxSignedFileGigabytes = 0, int SignedUploadExpiryMinutes = 0);
+
+/// <summary>One file a caller asks to upload itself: its name, and how large it will be.</summary>
+public sealed record DeliveryDropOffReserveFile(string? Name, long Bytes);
+
+/// <summary>
+/// A request to upload files straight into the drop-off area rather than through the control plane. The answer carries
+/// one write-only URL per file; the caller writes each one and then completes the reservation.
+/// </summary>
+public sealed record DeliveryDropOffReserveRequest(IReadOnlyList<DeliveryDropOffReserveFile>? Files, string? Label);
+
+/// <summary>One file's write-only URL. The URL carries its own credential and is never stored or logged.</summary>
+public sealed record DeliveryDropOffUploadDto(string Name, string Location, string Url, DateTime ExpiresUtc);
+
+/// <summary>
+/// A reservation: the drop-off it will become, and the URL to write each file to. Nothing has landed yet, and the
+/// drop-off is not usable by a submission until the caller completes it.
+/// </summary>
+public sealed record DeliveryDropOffReservationDto(
+    Guid DropOffId, string Location, string Status, string? Label, DateTime UploadedUtc, string UploadedBy,
+    DateTime ReservedUntilUtc, IReadOnlyList<DeliveryDropOffUploadDto> Uploads);
+
+/// <summary>One file a caller reports having uploaded, with the content hash it computed while writing it, if any.</summary>
+public sealed record DeliveryDropOffCompleteFile(string? Name, string? Sha256);
+
+/// <summary>
+/// The caller reporting that a reservation's files are written. What actually landed is read from storage and is what
+/// the ledger records; the hashes here are the uploader's own, taken as asserted.
+/// </summary>
+public sealed record DeliveryDropOffCompleteRequest(IReadOnlyList<DeliveryDropOffCompleteFile>? Files);
 
 /// <summary>
 /// The drop-off area (docs/delivery/submitting-records.md): a pre-step to a submission, where files are uploaded to a
@@ -73,18 +115,23 @@ public static class DropOffEndpoints
         // authentication, so there is no cross-site request to forge, and form binding would otherwise demand the
         // antiforgery middleware.
         dropOffs.MapPost("/dropoffs", UploadAsync).WithName("UploadDeliveryDropOff").DisableAntiforgery();
+        dropOffs.MapPost("/dropoffs/reserve", ReserveAsync).WithName("ReserveDeliveryDropOff");
+        dropOffs.MapPost("/dropoffs/{dropOffId:guid}/complete", CompleteAsync).WithName("CompleteDeliveryDropOff");
         dropOffs.MapDelete("/dropoffs/{dropOffId:guid}", DeleteAsync).WithName("DeleteDeliveryDropOff");
         return group;
     }
 
     /// <summary>What a caller needs to know before uploading: whether there is anywhere to upload to, and the ceilings.</summary>
-    private static Ok<DeliveryDropOffAreaDto> GetArea(IOptions<ControlPlaneOptions> options)
+    private static Ok<DeliveryDropOffAreaDto> GetArea(IOptions<ControlPlaneOptions> options, EngineContext engine)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(engine);
         var dropOff = options.Value.DropOff;
         var root = PayloadRoots.DropOffRoot();
+        var signed = root is not null && engine.Stores.CanSignUpload(root);
         return TypedResults.Ok(new DeliveryDropOffAreaDto(
-            root is not null, root, dropOff.MaxFileMegabytes, dropOff.MaxFilesPerUpload, dropOff.RetentionDays));
+            root is not null, root, dropOff.MaxFileMegabytes, dropOff.MaxFilesPerUpload, dropOff.RetentionDays,
+            signed, signed ? dropOff.MaxSignedFileGigabytes : 0, signed ? dropOff.SignedUploadExpiryMinutes : 0));
     }
 
     /// <summary>The drop-offs, newest first. A deleted one stays on the list, saying when it went, because the ledger says what happened.</summary>
@@ -195,10 +242,10 @@ public static class DropOffEndpoints
             }
         }
 
-        var label = form.TryGetValue("label", out var given) ? given.ToString().Trim() : null;
-        if (!string.IsNullOrEmpty(label) && label.Length > 200)
+        var label = form.TryGetValue("label", out var given) ? given.ToString() : null;
+        if (LabelRefusal(label) is { } labelRefusal)
         {
-            return Invalid("label is at most 200 characters.");
+            return Invalid(labelRefusal);
         }
 
         var dropOffId = Guid.CreateVersion7();
@@ -209,10 +256,11 @@ public static class DropOffEndpoints
             DropOffId = dropOffId,
             Location = location,
             Status = DropOffStatus.Uploading,
+            UploadMode = DropOffUploadMode.Stream,
             FileCount = files.Count,
             TotalBytes = 0,
             FilesJson = "[]",
-            Label = string.IsNullOrEmpty(label) ? null : label,
+            Label = SubmissionReference.Normalize(label),
             UploadedUtc = now,
             UploadedBy = RequestActor.Label(user),
         };
@@ -227,7 +275,7 @@ public static class DropOffEndpoints
                 var target = FileStoreRegistry.Join(location, file.FileName);
                 await using var source = file.OpenReadStream();
                 var (bytes, hash) = await CopyAsync(engine.Stores, target, source, maxBytes, ct).ConfigureAwait(false);
-                landed.Add(new DeliveryDropOffFileDto(file.FileName, bytes, hash));
+                landed.Add(new DeliveryDropOffFileDto(file.FileName, bytes, hash, DropOffHashSource.Computed));
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -251,6 +299,290 @@ public static class DropOffEndpoints
         row.TotalBytes = landed.Sum(f => f.Bytes);
         row.FilesJson = JsonSerializer.Serialize(landed);
         row.CompletedUtc = clock.GetUtcNow().UtcDateTime;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return TypedResults.Ok(Dto(row));
+    }
+
+    /// <summary>
+    /// Reserves a drop-off the caller uploads into itself: the row is written first, then one write-only URL per file is
+    /// handed out. Nothing has landed when this answers, and the drop-off is not complete (so not something a submission
+    /// should point at) until <see cref="CompleteAsync"/> has read back what actually arrived.
+    /// <para>
+    /// This exists for the files a streamed upload cannot reasonably carry. The bytes never touch the control plane, so
+    /// nothing here can hash them; the caller's own hash is taken as asserted and recorded as such.
+    /// </para>
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryDropOffReservationDto>, ProblemHttpResult>> ReserveAsync(
+        DeliveryDropOffReserveRequest request, CatalogDbContext db, EngineContext engine, IOptions<ControlPlaneOptions> options,
+        TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(engine);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(clock);
+        var limits = options.Value.DropOff;
+        if (PayloadRoots.DropOffRoot() is not { } root)
+        {
+            return Invalid(
+                $"This deployment configures no drop-off area, so there is nowhere to upload to. Set {PayloadRoots.DropOffEnvironmentVariable} on the control plane and on every node to a location both can reach, the control plane to write and the nodes to read.",
+                "No drop-off area");
+        }
+
+        if (!engine.Stores.CanSignUpload(root))
+        {
+            return Invalid(
+                $"The drop-off area '{root}' cannot hand out upload URLs; signed uploads are issued for Azure Storage locations. Upload the files through this API instead (POST /dropoffs), which takes files up to {limits.MaxFileMegabytes} MB each.",
+                "Signed uploads unavailable");
+        }
+
+        if (request?.Files is not { Count: > 0 } requested)
+        {
+            return Invalid("A reservation names the files it will upload: files is a non-empty list of { name, bytes }.");
+        }
+
+        if (requested.Count > limits.MaxFilesPerUpload)
+        {
+            return Invalid(string.Create(CultureInfo.InvariantCulture, $"One reservation carries at most {limits.MaxFilesPerUpload} files; this one names {requested.Count}."));
+        }
+
+        var maxBytes = limits.MaxSignedFileGigabytes * 1024L * 1024L * 1024L;
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in requested)
+        {
+            if (NameRefusal(file.Name) is { } refusal)
+            {
+                return Invalid(refusal);
+            }
+
+            if (file.Bytes <= 0)
+            {
+                return Invalid(string.Create(CultureInfo.InvariantCulture, $"'{file.Name}' declares {file.Bytes} bytes; a reservation says how large each file will be, and an empty file has nothing to deliver."));
+            }
+
+            if (file.Bytes > maxBytes)
+            {
+                return Invalid(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"'{file.Name}' declares {file.Bytes} bytes; one reserved file is at most {limits.MaxSignedFileGigabytes} GB. Prepare a set that large as a drop instead."));
+            }
+
+            if (!names.Add(file.Name!))
+            {
+                return Invalid($"'{file.Name}' is named twice; each file in a drop-off has its own name.");
+            }
+        }
+
+        if (LabelRefusal(request.Label) is { } labelRefusal)
+        {
+            return Invalid(labelRefusal);
+        }
+
+        var dropOffId = Guid.CreateVersion7();
+        var location = FileStoreRegistry.Join(root, dropOffId.ToString("D"));
+        var now = clock.GetUtcNow().UtcDateTime;
+        var lifetime = TimeSpan.FromMinutes(limits.SignedUploadExpiryMinutes);
+        var reservedUntil = now + lifetime;
+
+        // The row goes in before a single URL is handed out. A reservation nobody ever completes is then visible as an
+        // abandoned upload rather than as files in the area that no row accounts for.
+        // The declared files are recorded now, so completion can hold what landed against what was reserved instead of
+        // taking the caller's second word for it. While the row is uploading these are expectations, not facts, which is
+        // exactly what its status says; completion replaces them with what storage actually holds.
+        var declared = requested
+            .Select(f => new DeliveryDropOffFileDto(f.Name!, f.Bytes, string.Empty, DropOffHashSource.None))
+            .ToList();
+        var row = new DeliveryDropOff
+        {
+            DropOffId = dropOffId,
+            Location = location,
+            Status = DropOffStatus.Uploading,
+            UploadMode = DropOffUploadMode.Signed,
+            FileCount = declared.Count,
+            TotalBytes = 0,
+            FilesJson = JsonSerializer.Serialize(declared),
+            Label = SubmissionReference.Normalize(request.Label),
+            UploadedUtc = now,
+            UploadedBy = RequestActor.Label(user),
+            ReservedUntilUtc = reservedUntil,
+        };
+        db.DeliveryDropOffs.Add(row);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        var uploads = new List<DeliveryDropOffUploadDto>(requested.Count);
+        try
+        {
+            foreach (var file in requested)
+            {
+                var target = FileStoreRegistry.Join(location, file.Name!);
+                var signed = await engine.Stores.CreateUploadAsync(target, lifetime, ct).ConfigureAwait(false);
+                uploads.Add(new DeliveryDropOffUploadDto(file.Name!, target, signed.Url.ToString(), signed.ExpiresUtc.UtcDateTime));
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // No URL that was handed out can be un-handed, so the row records the failure and keeps the reservation
+            // visible. Nothing has landed, and the caller is told why it cannot proceed.
+            row.Status = DropOffStatus.Failed;
+            row.Error = SecretHygiene.RedactedMessage(ex);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            return TypedResults.Problem(
+                detail: $"The upload URLs could not be issued: {row.Error}",
+                statusCode: StatusCodes.Status500InternalServerError,
+                title: "Reservation failed");
+        }
+
+        return TypedResults.Ok(new DeliveryDropOffReservationDto(
+            dropOffId, location, row.Status, row.Label, row.UploadedUtc, row.UploadedBy, reservedUntil, uploads));
+    }
+
+    /// <summary>
+    /// Closes a reservation: what actually landed is listed from storage and is what the ledger records, so a file that
+    /// never arrived, or arrived a different size from the one reserved, fails the completion instead of leaving a
+    /// drop-off that looks whole. The caller's hashes are recorded as asserted, because the bytes never came past here.
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryDropOffDto>, ProblemHttpResult>> CompleteAsync(
+        Guid dropOffId, DeliveryDropOffCompleteRequest? request, CatalogDbContext db, EngineContext engine,
+        TimeProvider clock, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(engine);
+        ArgumentNullException.ThrowIfNull(clock);
+        var row = await db.DeliveryDropOffs.FirstOrDefaultAsync(d => d.DropOffId == dropOffId, ct).ConfigureAwait(false);
+        if (row is null)
+        {
+            return TypedResults.Problem(detail: $"No drop-off has the id {dropOffId:D}.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        }
+
+        if (row.UploadMode != DropOffUploadMode.Signed)
+        {
+            return Conflict($"Drop-off {dropOffId:D} was uploaded through the control plane, which completed it as the bytes arrived. There is nothing to complete.");
+        }
+
+        if (row.Status == DropOffStatus.Complete)
+        {
+            // Completing twice is how a caller recovers from an answer it never saw. The second call reports the same
+            // drop-off rather than re-reading storage, so a retry cannot turn a finished upload into a failed one.
+            return TypedResults.Ok(Dto(row));
+        }
+
+        if (row.Status != DropOffStatus.Uploading)
+        {
+            return Conflict($"Drop-off {dropOffId:D} is {row.Status}; only a reservation still uploading can be completed.");
+        }
+
+        var now = clock.GetUtcNow().UtcDateTime;
+        if (row.ReservedUntilUtc is { } until && now > until)
+        {
+            row.Status = DropOffStatus.Failed;
+            row.Error = string.Create(CultureInfo.InvariantCulture, $"The reservation expired at {until:yyyy-MM-dd'T'HH:mm:ss'Z'} before it was completed.");
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            return Conflict(
+                $"Drop-off {dropOffId:D} expired at {until:yyyy-MM-dd'T'HH:mm:ss'Z'}, so its upload URLs no longer work and what landed cannot be trusted to be whole. Reserve again and upload again; this one can be deleted.");
+        }
+
+        var asserted = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in request?.Files ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(file.Name))
+            {
+                return Invalid("Every entry in files names the file it reports on.");
+            }
+
+            if (HashRefusal(file.Sha256) is { } hashRefusal)
+            {
+                return Invalid($"'{file.Name}': {hashRefusal}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(file.Sha256) && !asserted.TryAdd(file.Name.Trim(), file.Sha256.Trim().ToLowerInvariant()))
+            {
+                return Invalid($"'{file.Name}' is reported twice.");
+            }
+        }
+
+        var declared = Files(row);
+        var unreserved = asserted.Keys
+            .Where(n => !declared.Any(d => d.Name.Equals(n, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        if (unreserved.Count > 0)
+        {
+            return Invalid(
+                $"{Join(unreserved)} {(unreserved.Count == 1 ? "was" : "were")} reported but not reserved. A reservation's URLs reach only the files it named, so a hash for anything else describes nothing that can be here.");
+        }
+
+        IReadOnlyList<FileRef> landed;
+        try
+        {
+            landed = await engine.Stores.For(row.Location)
+                .ListAsync(row.Location, new FileDiscovery { Pattern = "*", Recursive = false }, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The row is left as it is: the files may well be there, and failing a reservation over a storage read that
+            // did not answer would throw away an upload that succeeded. The caller completes again.
+            return TypedResults.Problem(
+                detail: $"What landed in the drop-off could not be read: {SecretHygiene.RedactedMessage(ex)}",
+                statusCode: StatusCodes.Status502BadGateway,
+                title: "Storage unreadable");
+        }
+
+        var found = new Dictionary<string, FileRef>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in landed)
+        {
+            // One name can only be reached by one URL, so a second entry under it means storage listed something this
+            // endpoint cannot reason about. Taking the first silently would hide it.
+            if (!found.TryAdd(file.Name, file))
+            {
+                return Invalid($"Storage lists '{file.Name}' more than once under drop-off {dropOffId:D}; it cannot be completed. Delete it and reserve again.", "Drop-off unreadable");
+            }
+        }
+
+        // One check covers both "nothing arrived" and "most of it arrived": either way the answer names exactly the
+        // files that are not there, which is what the caller has to act on.
+        var missing = declared.Where(d => !found.ContainsKey(d.Name)).Select(d => d.Name).ToList();
+        if (missing.Count > 0)
+        {
+            return Invalid(
+                $"{Join(missing)} {(missing.Count == 1 ? "has" : "have")} not landed in drop-off {dropOffId:D}. Write every reserved file to the URL the reservation gave for it, then complete again.",
+                "Upload incomplete");
+        }
+
+        var wrongSize = declared
+            .Where(d => found[d.Name].Size != d.Bytes)
+            .Select(d => string.Create(CultureInfo.InvariantCulture, $"'{d.Name}' is {found[d.Name].Size} bytes, not the {d.Bytes} reserved"))
+            .ToList();
+        if (wrongSize.Count > 0)
+        {
+            // A short file is the ordinary shape of an upload that stopped partway, and a long one is not the file that
+            // was reserved. Either way the drop-off does not hold what a submission would be pointing at, so it is not
+            // completed and the caller is told exactly which file disagrees.
+            return Invalid(
+                $"What landed does not match the reservation: {string.Join("; ", wrongSize)}. Upload the file again, then complete again.",
+                "Upload incomplete");
+        }
+
+        var extra = found.Keys
+            .Where(n => !declared.Any(d => d.Name.Equals(n, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        if (extra.Count > 0)
+        {
+            return Invalid(
+                $"Drop-off {dropOffId:D} holds {Join(extra)}, which {(extra.Count == 1 ? "was" : "were")} never reserved. Nothing this reservation handed out could have written {(extra.Count == 1 ? "it" : "them")}, so the drop-off is not completed. Delete it and reserve again.",
+                "Drop-off unexpected content");
+        }
+
+        var files = declared
+            .Select(d => asserted.TryGetValue(d.Name, out var hash)
+                ? new DeliveryDropOffFileDto(d.Name, found[d.Name].Size, hash, DropOffHashSource.Client)
+                : new DeliveryDropOffFileDto(d.Name, found[d.Name].Size, string.Empty, DropOffHashSource.None))
+            .ToList();
+
+        row.Status = DropOffStatus.Complete;
+        row.FileCount = files.Count;
+        row.TotalBytes = files.Sum(f => f.Bytes);
+        row.FilesJson = JsonSerializer.Serialize(files);
+        row.CompletedUtc = now;
+        row.Error = null;
+        db.Entry(row).State = EntityState.Modified;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(Dto(row));
     }
@@ -352,13 +684,74 @@ public static class DropOffEndpoints
             : null;
     }
 
+    /// <summary>Why a label cannot be taken, or null when it can. A drop-off's label is a name, under the same rules a submission's reference is.</summary>
+    private static string? LabelRefusal(string? label) => SubmissionReference.Refusal(label, "label");
+
+    /// <summary>Why an asserted content hash cannot be taken, or null when it can (including when none was given).</summary>
+    private static string? HashRefusal(string? sha256)
+    {
+        if (string.IsNullOrWhiteSpace(sha256))
+        {
+            return null;
+        }
+
+        var value = sha256.Trim();
+        return value.Length != 64 || !value.All(char.IsAsciiHexDigit)
+            ? "sha256 is a SHA-256 as 64 hexadecimal characters, or left out when the uploader computed none."
+            : null;
+    }
+
+    /// <summary>The files a row records, as stored. A row whose JSON cannot be read holds no files rather than failing the read that showed it.</summary>
+    private static IReadOnlyList<DeliveryDropOffFileDto> Files(DeliveryDropOff row)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<List<DeliveryDropOffFileDto>>(row.FilesJson) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static string Join(IEnumerable<string> names) => string.Join(", ", names.Select(n => $"'{n}'"));
+
     private static DeliveryDropOffDto Dto(DeliveryDropOff row) => new(
         row.DropOffId, row.Location, row.Status, row.FileCount, row.TotalBytes, row.Label, row.UploadedUtc, row.UploadedBy,
-        row.CompletedUtc, row.DeletedUtc, row.Error,
-        JsonSerializer.Deserialize<List<DeliveryDropOffFileDto>>(row.FilesJson) ?? []);
+        row.CompletedUtc, row.DeletedUtc, row.Error, Files(row),
+        string.IsNullOrEmpty(row.UploadMode) ? DropOffUploadMode.Stream : row.UploadMode, row.ReservedUntilUtc);
 
     private static ProblemHttpResult Invalid(string detail, string title = "Invalid upload")
         => TypedResults.Problem(detail: detail, statusCode: StatusCodes.Status400BadRequest, title: title);
+
+    private static ProblemHttpResult Conflict(string detail)
+        => TypedResults.Problem(detail: detail, statusCode: StatusCodes.Status409Conflict, title: "Drop-off state");
+}
+
+/// <summary>How a drop-off's bytes reached storage.</summary>
+public static class DropOffUploadMode
+{
+    /// <summary>Through the control plane, which hashed every byte as it passed on the way to storage.</summary>
+    public const string Stream = "stream";
+
+    /// <summary>Straight to storage under a signed URL. The control plane saw no bytes and computed no hash.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Naming", "CA1720:Identifier contains type name",
+        Justification = "'signed' names how the upload was authorised (a signed URL), not a numeric type. The name matches the value the API answers with, which is the contract callers read.")]
+    public const string Signed = "signed";
+}
+
+/// <summary>Where a drop-off file's recorded content hash came from, so a claim never reads as a check.</summary>
+public static class DropOffHashSource
+{
+    /// <summary>The control plane computed it from the bytes as they streamed past.</summary>
+    public const string Computed = "computed";
+
+    /// <summary>The uploader asserted it about a file the control plane never saw. Nothing here verified it.</summary>
+    public const string Client = "client";
+
+    /// <summary>No hash: a signed upload whose uploader reported none. A flow that decides payload changes by content hash needs one.</summary>
+    public const string None = "none";
 }
 
 /// <summary>What a drop-off row's status can be.</summary>

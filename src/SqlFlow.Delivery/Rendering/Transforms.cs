@@ -284,7 +284,7 @@ public static partial class Transforms
         (string Field, ReferenceMatch Found)? undecided = null;
         foreach (var field in matchBy)
         {
-            var found = type.Find(field, value);
+            var found = type.Find(field, value, config.IgnoreSeparators);
             if (found.Item is { } hit)
             {
                 // The value that matched is a dependency too: if the cache stops holding it, this record
@@ -304,11 +304,12 @@ public static partial class Transforms
             // Codes that differ only by case are different records (ft the foot, fT the femtotesla). Taking the first
             // would deliver the wrong one without a trace, so the value stays unresolved and the reason names both.
             var candidates = string.Join(", ", choice.Found.CaseVariants.Select(c => c.Id));
-            Miss(config.OnMiss, $"{path}: '{text}' matches {choice.Found.CaseVariants.Count} {typeName} records by {ReferenceField.Normalize(choice.Field)} only when case is ignored ({candidates}); map it to the exact value with valueMap. Reference snapshot {renderer.Context.ReferenceSnapshotVersion}", holds, out omit);
+            Miss(config.OnMiss, $"{path}: '{text}' matches {choice.Found.CaseVariants.Count} {typeName} records by {ReferenceField.Normalize(choice.Field)} only when {choice.Found.Loosening} ({candidates}); map it to the exact value with valueMap. Reference snapshot {renderer.Context.ReferenceSnapshotVersion}", holds, out omit);
             return CachedHit.Missed(typeName);
         }
 
-        Miss(config.OnMiss, $"{path}: no {typeName} matches '{text}' by {string.Join("/", matchBy)} in reference snapshot {renderer.Context.ReferenceSnapshotVersion}", holds, out omit);
+        var tried = config.IgnoreSeparators ? ", even with punctuation and spacing ignored" : string.Empty;
+        Miss(config.OnMiss, $"{path}: no {typeName} matches '{text}' by {string.Join("/", matchBy)}{tried} in reference snapshot {renderer.Context.ReferenceSnapshotVersion}", holds, out omit);
         return CachedHit.Missed(typeName);
     }
 

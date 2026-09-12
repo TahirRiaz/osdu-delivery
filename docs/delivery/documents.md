@@ -316,8 +316,8 @@ fixtures:                          # whole-document regression fixtures
 | `split` | `delimiter`, `index` | One segment; a missing segment omits the property. A space delimiter splits on any whitespace. |
 | `equals` | `resolve` | Boolean, case-insensitive. |
 | `map` | `values`, `default`, `onMiss` | Dictionary lookup. |
-| `reference` | `type`, `matchBy`, `valueMap`, `onMiss`, optional `delimiter`/`index` | An OSDU reference (`id:`) resolved from the reference snapshot. Already-formed ids pass through. |
-| `lookup` | `type`, `matchBy`, `select`, `valueMap`, `onMiss`, optional `delimiter`/`index` | A value read out of the cached record the source value matches: the same match as `reference`, but `select` names what to take from it (`Name`, `NameAlias.AliasName`, or `id`, the default). |
+| `reference` | `type`, `matchBy`, `valueMap`, `onMiss`, optional `delimiter`/`index`, `ignoreSeparators` | An OSDU reference (`id:`) resolved from the reference snapshot. Already-formed ids pass through. |
+| `lookup` | `type`, `matchBy`, `select`, `valueMap`, `onMiss`, optional `delimiter`/`index`, `ignoreSeparators` | A value read out of the cached record the source value matches: the same match as `reference`, but `select` names what to take from it (`Name`, `NameAlias.AliasName`, or `id`, the default). |
 | `deliveredReference` | `type` (entity type), `system`, `keys` | The computed id of a record this system also delivers. |
 | `template` | `format` with `{column}` and `{param:name}` tokens | A formatted string. |
 | `dateTime` | `inputFormat` | RFC 3339 UTC. |
@@ -331,7 +331,17 @@ match wins, and case is ignored only when that finds exactly one record: OSDU co
 different records (`ft` is the foot and `fT` the femtotesla, `s/m` second per metre and `S/m` siemens per metre), so
 a value that names several of them once case is ignored is unresolved (`onMiss` decides what that does) with a reason
 naming them, and `valueMap` maps it to the exact code. Two records holding exactly the same value resolve to the first
-in snapshot order, which is stable for a snapshot version. A cached
+in snapshot order, which is stable for a snapshot version.
+
+`ignoreSeparators: true` adds a third and last attempt, for a name rather than a code. Source systems and OSDU write the
+same facility name differently, because each grew its own convention for the spaces, slashes, underscores and hyphens
+between the parts that carry the meaning: with the fold on, `NO 15/9-19 SR`, `NO_15_9-19_SR` and `no-15-9-19-sr` all
+find one wellbore. The fold keeps the letters and digits in order (including æ, ø and å) and replaces every run of
+anything else with one separator, on the cached values as well as on the source value. It is off by default and belongs
+on names, never on codes: `s/m` and `S.M` would fold together and must not. It runs only after exact and case-insensitive
+comparison have both found nothing, so it can never move a value that already resolved, and a folded key several records
+answer to resolves to none of them with a reason naming them, exactly as an ambiguous case fold does. Declared on any
+transform other than `reference` or `lookup`, it is refused when the mapping is read. A cached
 field of its own called `ID` shadows the record id under that name, so `matchBy: [ID]` reads what OSDU calls
 `data.ID` while `matchBy: [id]` on a type caching no such field reads the record id. A `lookup` whose `select`
 yields a set writes an array where the schema takes one, and holds the record where it takes a single value.

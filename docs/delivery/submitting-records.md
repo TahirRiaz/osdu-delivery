@@ -94,6 +94,7 @@ Content-Type: application/json
 | `records` | The records: 1 to 1,000, each in the shape of section 4, with `files` for a flow that streams them. A submission carries `records` or `drop`, never both. |
 | `parameters` | The flow parameter values, as for a run. A required parameter without a default must be given; an undeclared one is refused. |
 | `submissionId` | Optional. The idempotency key (section 6): a UUID the source mints for each change it sends. Without one a new id is minted. |
+| `reference` | Optional. What the sending system calls this submission in its own records: a filename, a ticket, a job id. At most 200 characters on one line, stored trimmed, never interpreted, and searchable (section 5). It is part of the request `submissionId` names, so a repeat that relabels the work is refused. A drop's reference is the one its manifest carries. |
 | `operation` | `deliver` (the default), or `plan` to render the records and report what a delivery would do without sending anything. |
 | `force` | Optional. Plans past the change gates, as for a run. Each record's own hashes still decide what is sent. |
 | `pool` | Optional. Routes the run to a worker pool. |
@@ -180,7 +181,8 @@ The answer carries the `location` the files landed under, which is what goes int
 { "dropOffId": "0191e0a4-7a1c-7c3e-9b2e-5d0f3c8a1b42",
   "location": "abfss://lake@acct.dfs.core.windows.net/dropoff/0191e0a4-7a1c-7c3e-9b2e-5d0f3c8a1b42",
   "status": "complete",
-  "files": [ { "name": "L-1001.csv", "bytes": 20480, "sha256": "d7f848..." } ] }
+  "uploadMode": "stream",
+  "files": [ { "name": "L-1001.csv", "bytes": 20480, "sha256": "d7f848...", "hashSource": "computed" } ] }
 ```
 
 - **Where it lands** is the deployment's drop-off area, `SQLFLOW_DROPOFF_ROOT`, read by the control plane (which writes
@@ -190,15 +192,79 @@ The answer carries the `location` the files landed under, which is what goes int
 - **The bytes pass through the control plane once, on the way to storage**, which is the one place they do. The delivery
   itself still streams from storage to OSDU without passing through the control plane. Uploads are bounded for that
   reason: 100 MB per file and 20 files per upload by default (`ControlPlane:DropOff:MaxFileMegabytes` and
-  `:MaxFilesPerUpload`). A set larger than that is prepared as a drop instead.
+  `:MaxFilesPerUpload`). A file larger than that goes straight to storage instead (below), and a set larger than the
+  drop-off is for is prepared as a drop.
 - **Each file's SHA-256 is computed as it streams past**, so a record that needs a payload hash can carry the one the
-  upload reported without reading the files again.
+  upload reported without reading the files again. Each file says so: `hashSource` is `computed`.
 - **Nothing is removed automatically.** Re-processing a submission (a redelivery, a verify) reads its files again, so a
   drop-off is kept until somebody deletes it (`DELETE /api/v1/delivery/dropoffs/{id}`). A deployment whose uploads are
   single-use sets `ControlPlane:DropOff:RetentionDays`, and then a sweep removes drop-offs that **completed** longer ago
   than that. An upload that failed or stopped halfway is never swept; it stays until it is dealt with.
 - **A file name is a name, not a path.** Names carrying a separator or `..` are refused, so nothing lands outside the
   drop-off it belongs to.
+
+### A file too large to send through the control plane
+
+A file of a few gigabytes has no business travelling through the control plane on its way to a lake the caller can write
+to directly. Such a file is **reserved**, written straight to storage, and the reservation then **completed**.
+
+```http
+POST /api/v1/delivery/dropoffs/reserve
+Authorization: Bearer <token with the operate scope>
+Content-Type: application/json
+
+{ "label": "the wellbore run",
+  "files": [ { "name": "L-1001.dlis", "bytes": 8589934592 } ] }
+```
+
+The answer is the drop-off as it will be, with one write-only URL per file:
+
+```json
+{ "dropOffId": "0191e0a4-7a1c-7c3e-9b2e-5d0f3c8a1b42",
+  "location": "abfss://lake@acct.dfs.core.windows.net/dropoff/0191e0a4-7a1c-7c3e-9b2e-5d0f3c8a1b42",
+  "status": "uploading",
+  "reservedUntilUtc": "2026-09-12T13:00:00Z",
+  "uploads": [ { "name": "L-1001.dlis",
+                 "location": "abfss://lake@acct.dfs.core.windows.net/dropoff/0191e0a4-.../L-1001.dlis",
+                 "url": "https://acct.blob.core.windows.net/lake/dropoff/...?sv=...",
+                 "expiresUtc": "2026-09-12T13:00:00Z" } ] }
+```
+
+Write each file to its URL, then say so:
+
+```http
+POST /api/v1/delivery/dropoffs/{dropOffId}/complete
+Content-Type: application/json
+
+{ "files": [ { "name": "L-1001.dlis", "sha256": "9f2c1b..." } ] }
+```
+
+- **The row exists before the first URL does.** A reservation nobody finishes is an abandoned upload in the listing, not
+  files in the area that no row accounts for.
+- **Each URL writes one file and does nothing else.** It cannot read, list or delete, it cannot reach a second file, and
+  it stops working at `reservedUntilUtc` (`ControlPlane:DropOff:SignedUploadExpiryMinutes`, an hour by default). URLs
+  carry their own credential, so they are used and never stored or logged.
+- **Completion is decided by what storage holds**, not by what the caller says: every reserved file must be there at the
+  size it was reserved at, and nothing else may be. A file that is missing, short, or unexpected fails the completion
+  naming it, and the reservation stays open so the caller can finish and complete again. A drop-off a submission may
+  point at is one that completed.
+- **The hash is the caller's word.** The bytes never came past the control plane, so nothing here computed one: a hash
+  given at completion is recorded with `hashSource: "client"`, and a file reported without one with `hashSource:
+  "none"`. A flow that decides payload changes by content hash (`change.payloadDetect: contentHash`, the default) needs
+  a hash, so a caller on this path supplies the one it computed while writing the file, or the flow watches the files'
+  modified times instead.
+- **The ceiling is its own**, because this path costs the control plane nothing per byte: 64 GB per file by default
+  (`ControlPlane:DropOff:MaxSignedFileGigabytes`), against the 100 MB a streamed upload carries.
+- **It needs a store that can issue a URL.** Only Azure Storage can, and the control plane's identity needs the
+  **Storage Blob Delegator** role on the account on top of the role that lets it write; without either,
+  `GET /api/v1/delivery/dropoff-area` answers `"signedUploads": false` and a reservation is refused saying so.
+- **A browser needs CORS on the storage account**, because the write goes from the page to storage and not through the
+  control plane: allow `PUT` from the GUI's origin, with the `x-ms-blob-type` and `Content-Type` headers. Without it the
+  GUI's upload fails in the browser while the API path keeps working, since a server calling the URL is not subject to
+  CORS at all.
+- **Completing twice answers the same drop-off**, so a caller that lost the first answer retries safely.
+- **In the GUI**, the Drop-off page takes this route on its own for any file past the streamed ceiling. A browser cannot
+  hash a file of this size without reading it all into memory, so it asserts none and says so.
 
 Which columns a flow reads, which are the natural key, which parameters it declares, which payload its records point at
 (with whether a hash is required and the roots allowed) and whether it takes records at all is answered by
@@ -216,6 +282,19 @@ Which columns a flow reads, which are the natural key, which parameters it decla
 
 `GET /api/v1/runs/{runId}` then reports the run's progress and outcome, with the counts of what it planned, delivered,
 skipped, held and failed.
+
+### Finding a submission again
+
+A source that keeps its own records does not have to keep this system's ids as well. The `reference` it sent is on the
+submission and on every page that shows one, and the listing narrows on it:
+
+```http
+GET /api/v1/delivery/flows/{pipelineId}/submissions?reference=L-1001.las
+```
+
+The match is a containment, so a fragment of a filename finds the submission whose reference embeds it. It reaches the
+submissions the ledger registered, which is to say the ones a run has taken; the records as sent, with their reference,
+are at `GET /api/v1/delivery/submissions/{id}/content` from the moment they were accepted.
 
 ## 6. Idempotency
 
@@ -243,8 +322,10 @@ a location to paste into a submission, and deletes a drop-off when it is no long
 flow's source contract for one record (the natural key and version columns marked, a Now button for the version column),
 or takes any number of records as JSON in the shape of section 4. For a flow that streams files it also asks where the
 record's files are, and for the hash when the flow needs one, showing the roots the flow allows. It offers the flow
-parameters, the preview, `force` and an optional submission id, and opens the run it queued. A submission of records has
-a **Records sent** tab on its page.
+parameters, the preview, `force`, an optional submission id and an optional reference, and opens the run it queued. A
+submission of records has a **Records sent** tab on its page, and the submissions list shows each one under the name its
+source gave it. The Drop-off page takes a file past the streamed ceiling straight to storage on its own, and marks such a
+drop-off `direct`, saying for each file whether its hash was computed here, asserted by the uploader, or absent.
 
 ## 9. What each mistake leads to
 
@@ -257,6 +338,10 @@ a **Records sent** tab on its page.
 | A record is held: no payload chunk files under ... | The location is empty, or the node cannot see it | Check the files are there and the node's identity may read them. |
 | `400 Invalid records: records[3].record.depth is a string, but records[0].record.depth is a number` | A column holds two types | Send one type per column. |
 | `409 ... differs from it in the records` | A `submissionId` was reused for a changed request | Use a new id for a new change. |
+| `409 ... differs from it in the reference` | A repeat under one id renamed the work, or left the name off | Send the same reference the first request carried, or use a new id. |
+| `400 reference is at most 200 characters` | The reference carries content rather than a name | Send the name; put the content in the records. |
+| `400 Signed uploads unavailable` | The drop-off area is not on Azure Storage, or the control plane may not delegate | Upload through the API, or grant the control plane Storage Blob Delegator on the account. |
+| `400 ... is 9 bytes, not the 14 reserved` | An upload to a signed URL stopped partway | Write the file again to the same URL, then complete again. |
 | The run fails: "the drop was prepared for mapping ..." | The flow was promoted to another mapping between the request and the run | Send the records again under a new id. |
 | The run fails: "records[0] and records[1] are the same record" | One record twice in one submission | Send each record once. |
 | The run log warns that a column is not read by the mapping | The column is misspelt, or the mapping does not use it | Check the source contract's columns. |

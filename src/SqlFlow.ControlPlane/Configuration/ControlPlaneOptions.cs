@@ -167,6 +167,21 @@ public sealed class DropOffOptions
     public int MaxFilesPerUpload { get; set; } = 20;
 
     /// <summary>
+    /// The largest single file a signed upload may carry, in gigabytes. Default 64. It is separate from
+    /// <see cref="MaxFileMegabytes"/> because the two paths cost different things: a streamed upload spends the control
+    /// plane's own bandwidth and memory on every byte, while a signed one goes straight to storage and costs it nothing,
+    /// so a file far too large to stream through is perfectly reasonable to reserve.
+    /// </summary>
+    public int MaxSignedFileGigabytes { get; set; } = 64;
+
+    /// <summary>
+    /// How long the URLs a reservation hands out stay valid, in minutes. Default 60. It bounds how long an unfinished
+    /// reservation can still be written to, so it wants to be long enough for the largest file a caller will reserve to
+    /// finish uploading over the slowest link they have, and no longer.
+    /// </summary>
+    public int SignedUploadExpiryMinutes { get; set; } = 60;
+
+    /// <summary>
     /// How many days a completed drop-off is kept before a sweep removes it, or 0 (the default) to keep it until
     /// somebody deletes it. Pruning is off by default because re-processing a submission reads its files again, so a
     /// swept drop-off would quietly break a redelivery. Only drop-offs that uploaded successfully are ever swept: a
@@ -184,6 +199,17 @@ public sealed class DropOffOptions
         if (MaxFilesPerUpload is < 1 or > 1000)
         {
             throw new InvalidOperationException("ControlPlane:DropOff:MaxFilesPerUpload must be between 1 and 1000.");
+        }
+
+        if (MaxSignedFileGigabytes is < 1 or > 4096)
+        {
+            throw new InvalidOperationException("ControlPlane:DropOff:MaxSignedFileGigabytes must be between 1 and 4096.");
+        }
+
+        if (SignedUploadExpiryMinutes is < 5 or > 1440)
+        {
+            throw new InvalidOperationException(
+                "ControlPlane:DropOff:SignedUploadExpiryMinutes must be between 5 and 1440 (a window shorter than five minutes cannot finish an upload; one longer than a day outlives the reason it was opened).");
         }
 
         if (RetentionDays < 0)

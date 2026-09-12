@@ -260,6 +260,9 @@ public static class InlineDrop
             SubmissionId = submission.SubmissionId,
             Flow = submission.FlowName,
             Mapping = submission.MappingReference,
+            // The caller's own name for the work travels on the drop, so the intake registers the submission under it
+            // without the intake having to know an inline submission from a prepared one.
+            Reference = submission.Reference,
             Parameters = new Dictionary<string, string>(submission.Parameters(), StringComparer.Ordinal),
             CreatedUtc = new DateTimeOffset(DateTime.SpecifyKind(submission.ReceivedUtc, DateTimeKind.Utc)),
             RecordCount = records.Records.Count,

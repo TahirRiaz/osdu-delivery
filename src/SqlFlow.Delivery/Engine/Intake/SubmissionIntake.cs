@@ -103,6 +103,7 @@ public sealed class SubmissionIntake
             WorkLocation = workRoot,
             Partitions = manifest.PartitionCount,
             ParametersJson = JsonSerializer.Serialize(parameters),
+            Reference = manifest.Reference,
             RecordCount = manifest.RecordCount,
             ReceivedUtc = now,
         }, ct).ConfigureAwait(false);

@@ -202,6 +202,18 @@ public sealed record TransformConfig
     /// <summary>Fields of the reference item compared against the (mapped) source value, in order.</summary>
     public IReadOnlyList<string> MatchBy { get; init; } = [];
 
+    /// <summary>
+    /// For Reference and Lookup: after an exact and a case-insensitive comparison have both found nothing, compare
+    /// again with punctuation and spacing folded away on both sides, so a name a source spells <c>NO 15/9-19</c>
+    /// finds the record OSDU holds as <c>NO_15_9-19</c>.
+    /// <para>
+    /// Off by default, and meant for names rather than codes: a wellbore or a field is one thing however its
+    /// separators are written, while a unit code is not (<c>s/m</c> and <c>S.M</c> would fold together and must not).
+    /// A folded key several records answer to resolves to none of them, as an ambiguous case fold does.
+    /// </para>
+    /// </summary>
+    public bool IgnoreSeparators { get; init; }
+
     /// <summary>For Lookup: the cached path to read out of the matched item (default the record id).</summary>
     public string? Select { get; init; }
 

@@ -123,13 +123,22 @@ public sealed class CatalogLedger : ILedger
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, CancellationToken ct = default)
+    public async Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, string? reference = null, CancellationToken ct = default)
     {
         await using var db = Open();
         var query = db.DeliverySubmissions.AsNoTracking();
         if (flowId is { } f)
         {
             query = query.Where(s => s.FlowId == f);
+        }
+
+        if (!string.IsNullOrWhiteSpace(reference))
+        {
+            // Contains rather than equals: a caller searching by a filename finds the submission whose reference embeds
+            // it, and one holding the exact reference still finds it. The flow narrowing above is what bounds the scan,
+            // as it does for every other search over this ledger.
+            var term = reference.Trim();
+            query = query.Where(s => s.Reference != null && s.Reference.Contains(term));
         }
 
         var list = await query.OrderByDescending(s => s.ReceivedUtc).Take(Math.Clamp(max, 1, 1000)).ToListAsync(ct).ConfigureAwait(false);
@@ -2263,6 +2272,7 @@ public sealed class CatalogLedger : ILedger
         entity.BatchCount = s.BatchCount;
         entity.Partitions = s.Partitions;
         entity.ParametersJson = s.ParametersJson;
+        entity.Reference = Truncate(s.Reference, DeliveryModel.MaxReferenceLength);
         entity.RecordCount = s.RecordCount;
         entity.Status = StatusText.Of(s.Status);
         entity.ReceivedUtc = s.ReceivedUtc;
@@ -2292,6 +2302,7 @@ public sealed class CatalogLedger : ILedger
         BatchCount = e.BatchCount,
         Partitions = e.Partitions,
         ParametersJson = e.ParametersJson,
+        Reference = e.Reference,
         RecordCount = e.RecordCount,
         Status = StatusText.ToSubmissionStatus(e.Status),
         ReceivedUtc = e.ReceivedUtc,

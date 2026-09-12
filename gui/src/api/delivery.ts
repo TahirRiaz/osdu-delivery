@@ -68,6 +68,8 @@ export interface DeliverySubmission {
   batchCount: number;
   /** How many root-scope partitions the drop declared. */
   partitions: number;
+  /** What the sending system calls this submission in its own records; null when it named none. */
+  reference: string | null;
 }
 
 /** One work batch of a submission: a file of rendered documents and how far its drain got. */
@@ -371,6 +373,12 @@ export interface DeliverySubmissionRequest {
   parameters?: Record<string, string> | null;
   force?: boolean;
   pool?: string | null;
+  /**
+   * What the sending system calls this submission in its own records (a filename, a ticket, a job id): stored,
+   * searchable, never interpreted. It is part of the request `submissionId` names, so a repeat carrying a different one
+   * is refused. A drop's reference is the one its manifest carries.
+   */
+  reference?: string | null;
 }
 
 export interface DeliverySubmissionAccepted {
@@ -435,11 +443,22 @@ export interface DeliveryManualFlow {
   payloadName: string | null;
 }
 
+/** Where a drop-off file's content hash came from, so a claim never reads as a check. */
+export type DeliveryDropOffHashSource = "computed" | "client" | "none";
+
+/** How a drop-off's bytes reached storage. */
+export type DeliveryDropOffUploadMode = "stream" | "signed";
+
 /** One file in a drop-off, as it landed. */
 export interface DeliveryDropOffFile {
   name: string;
   bytes: number;
   sha256: string;
+  /**
+   * `computed` when the control plane hashed the bytes as they streamed past it, `client` when the uploader asserted the
+   * hash about a file written straight to storage, `none` when a signed upload asserted none.
+   */
+  hashSource: DeliveryDropOffHashSource;
 }
 
 /**
@@ -460,6 +479,10 @@ export interface DeliveryDropOff {
   /** Why an upload failed, redacted; null otherwise. */
   error: string | null;
   files: DeliveryDropOffFile[];
+  /** How the bytes got here. While a `signed` drop-off is `uploading`, its files are what was reserved, not what landed. */
+  uploadMode: DeliveryDropOffUploadMode;
+  /** When a reservation's upload URLs stop working; null for a streamed upload. */
+  reservedUntilUtc: string | null;
 }
 
 /** Whether this deployment offers a drop-off area at all, where it is, and what one upload may carry. */
@@ -470,6 +493,38 @@ export interface DeliveryDropOffArea {
   maxFilesPerUpload: number;
   /** Days a completed drop-off is kept before a sweep removes it; 0 means nothing is removed automatically. */
   retentionDays: number;
+  /** Whether a caller can be handed URLs to write straight to storage, which is what a file too large to stream needs. */
+  signedUploads: boolean;
+  /** The largest single file a signed upload may carry; 0 when signed uploads are unavailable. */
+  maxSignedFileGigabytes: number;
+  /** How long a reservation's URLs stay valid; 0 when signed uploads are unavailable. */
+  signedUploadExpiryMinutes: number;
+}
+
+/** One file a caller asks to upload itself: its name, and how large it will be. */
+export interface DeliveryDropOffReserveFile {
+  name: string;
+  bytes: number;
+}
+
+/** One file's write-only URL. It carries its own credential, so it is used and not stored. */
+export interface DeliveryDropOffUpload {
+  name: string;
+  location: string;
+  url: string;
+  expiresUtc: string;
+}
+
+/** A reservation: the drop-off it will become, and where to write each file. Nothing has landed yet. */
+export interface DeliveryDropOffReservation {
+  dropOffId: string;
+  location: string;
+  status: "uploading" | "complete" | "failed" | "deleted";
+  label: string | null;
+  uploadedUtc: string;
+  uploadedBy: string;
+  reservedUntilUtc: string;
+  uploads: DeliveryDropOffUpload[];
 }
 
 /** An inline submission's records as the ledger holds them, with who sent them and where a run wrote them. */
@@ -644,8 +699,12 @@ export const deliveryApi = {
   stats: (pipelineId: string) => get<DeliveryFlowStats>(`/api/v1/delivery/flows/${pipelineId}/stats`),
   records: (pipelineId: string, query: DeliveryRecordListQuery = {}) =>
     get<PagedResult<DeliveryRecord>>(`/api/v1/delivery/flows/${pipelineId}/records`, query as QueryParams),
-  submissions: (pipelineId: string, max?: number) =>
-    get<DeliverySubmission[]>(`/api/v1/delivery/flows/${pipelineId}/submissions`, max ? { max } : {}),
+  /** A flow's submissions, newest first; `reference` narrows them to the ones whose caller-supplied reference contains it. */
+  submissions: (pipelineId: string, max?: number, reference?: string) =>
+    get<DeliverySubmission[]>(`/api/v1/delivery/flows/${pipelineId}/submissions`, {
+      ...(max ? { max } : {}),
+      ...(reference ? { reference } : {}),
+    }),
   retrievals: (pipelineId: string, max?: number) =>
     get<DeliveryRetrieval[]>(`/api/v1/delivery/flows/${pipelineId}/retrievals`, max ? { max } : {}),
   record: (key: string) => get<DeliveryRecordDetail>(`/api/v1/delivery/records/${key}`),
@@ -709,6 +768,21 @@ export const deliveryApi = {
 
     return postForm<DeliveryDropOff>("/api/v1/delivery/dropoffs", form);
   },
+  /**
+   * Reserves a drop-off the caller uploads into itself, for files too large to send through the control plane. The
+   * answer carries one write-only URL per file; write each, then complete the reservation.
+   */
+  reserveDropOff: (files: DeliveryDropOffReserveFile[], label?: string) =>
+    post<DeliveryDropOffReservation>("/api/v1/delivery/dropoffs/reserve", {
+      files,
+      label: label !== undefined && label !== "" ? label : null,
+    }),
+  /**
+   * Closes a reservation once its files are written. What actually landed is read from storage and is what the ledger
+   * records; a hash given here is the uploader's own and is recorded as asserted, not as checked.
+   */
+  completeDropOff: (dropOffId: string, files: { name: string; sha256?: string }[]) =>
+    post<DeliveryDropOff>(`/api/v1/delivery/dropoffs/${dropOffId}/complete`, { files }),
   /** Removes a drop-off's files; the row stays, saying when they went and who took them. */
   deleteDropOff: (dropOffId: string) => del<DeliveryDropOff>(`/api/v1/delivery/dropoffs/${dropOffId}`),
   /** The records an inline submission carried (a 404 for a drop submission). */

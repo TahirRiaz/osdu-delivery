@@ -25,6 +25,13 @@ public sealed class DeliverySubmission
 
     public string ParametersJson { get; set; } = "{}";
 
+    /// <summary>
+    /// What the sending system calls this submission in its own records (a filename, a ticket, a job id): the handle an
+    /// operator searches by when they know the source's name for the work and not this ledger's id. Carried from the
+    /// drop manifest, so a prepared drop and a submission of records are found the same way. Null when none was given.
+    /// </summary>
+    public string? Reference { get; set; }
+
     public long RecordCount { get; set; }
 
     /// <summary>The work location the intake wrote its batches under.</summary>
@@ -93,6 +100,13 @@ public sealed class DeliveryInlineSubmission
     /// <summary>The flow parameter values, resolved against the flow's declarations.</summary>
     public string ParametersJson { get; set; } = "{}";
 
+    /// <summary>
+    /// What the sending system calls this submission in its own records: carried onto the drop the run writes, and from
+    /// there onto the <see cref="DeliverySubmission"/> the intake registers, so one search finds both. Null when none
+    /// was given. Part of the accepted request, so a repeat under the same id has to carry the same one.
+    /// </summary>
+    public string? Reference { get; set; }
+
     /// <summary>The records in canonical form.</summary>
     public string RecordsJson { get; set; } = "[]";
 
@@ -134,12 +148,26 @@ public sealed class DeliveryDropOff
     /// <summary>uploading, complete, failed or deleted.</summary>
     public string Status { get; set; } = string.Empty;
 
+    /// <summary>
+    /// How the bytes got here: <c>stream</c> (through the control plane, which hashed them as they passed) or
+    /// <c>signed</c> (straight to storage under a signed URL, which the control plane never saw). The distinction is
+    /// what makes a file's hash readable as computed or as asserted by the uploader, so nothing implies a check that
+    /// did not happen.
+    /// </summary>
+    public string UploadMode { get; set; } = string.Empty;
+
     public int FileCount { get; set; }
 
     public long TotalBytes { get; set; }
 
-    /// <summary>Each file as [{ name, bytes, sha256 }], in the order uploaded.</summary>
+    /// <summary>Each file as [{ name, bytes, sha256, hashSource }], in the order uploaded.</summary>
     public string FilesJson { get; set; } = "[]";
+
+    /// <summary>
+    /// When the signed URLs handed out for this drop-off stop working; null for a streamed upload. A reservation still
+    /// <c>uploading</c> past it was abandoned, which is what tells an operator it can be taken back.
+    /// </summary>
+    public DateTime? ReservedUntilUtc { get; set; }
 
     /// <summary>What the uploader called this drop-off, for finding it again.</summary>
     public string? Label { get; set; }
@@ -735,6 +763,13 @@ public static class DeliveryModel
     /// </summary>
     public const string OsduIdCollation = "Latin1_General_100_BIN2";
 
+    /// <summary>
+    /// The longest caller-supplied reference a submission carries. Long enough for a file path or a ticket URL, short
+    /// enough to index and to read in a listing, and the same ceiling the API and the drop manifest enforce so a
+    /// reference that was accepted never fails to store.
+    /// </summary>
+    public const int MaxReferenceLength = 200;
+
     /// <param name="modelBuilder">The catalog model being built.</param>
     /// <param name="sqlServer">Whether the model is for SQL Server, the provider whose default collation folds case.</param>
     public static void Configure(ModelBuilder modelBuilder, bool sqlServer)
@@ -751,10 +786,14 @@ public static class DeliveryModel
             e.Property(s => s.DropLocation).HasMaxLength(2000).IsRequired();
             e.Property(s => s.WorkLocation).HasMaxLength(2000);
             e.Property(s => s.ParametersJson).IsRequired();
+            e.Property(s => s.Reference).HasMaxLength(MaxReferenceLength);
             e.Property(s => s.Status).HasMaxLength(16).IsRequired();
             e.Property(s => s.Error).HasMaxLength(4000);
             e.HasIndex(s => new { s.FlowId, s.ReceivedUtc });
             e.HasIndex(s => new { s.FlowId, s.Status });
+            // A source looking its own submission up knows its reference and not this ledger's id, so that lookup is
+            // indexed rather than a scan of every submission the flow ever took.
+            e.HasIndex(s => new { s.FlowId, s.Reference });
         });
 
         modelBuilder.Entity<DeliveryInlineSubmission>(e =>
@@ -770,6 +809,7 @@ public static class DeliveryModel
             e.Property(s => s.RequestHash).HasMaxLength(64).IsRequired();
             e.Property(s => s.ReceivedBy).HasMaxLength(200).IsRequired();
             e.Property(s => s.DropLocation).HasMaxLength(2000);
+            e.Property(s => s.Reference).HasMaxLength(MaxReferenceLength);
             e.HasIndex(s => new { s.FlowId, s.ReceivedUtc });
         });
 
@@ -779,12 +819,16 @@ public static class DeliveryModel
             e.HasKey(d => d.DropOffId);
             e.Property(d => d.Location).HasMaxLength(2000).IsRequired();
             e.Property(d => d.Status).HasMaxLength(16).IsRequired();
+            e.Property(d => d.UploadMode).HasMaxLength(16).IsRequired();
             e.Property(d => d.FilesJson).IsRequired();
             e.Property(d => d.Label).HasMaxLength(200);
             e.Property(d => d.UploadedBy).HasMaxLength(200).IsRequired();
             e.Property(d => d.Error).HasMaxLength(4000);
             e.HasIndex(d => d.UploadedUtc);
             e.HasIndex(d => new { d.Status, d.CompletedUtc });
+            // Finding the reservations whose signed URLs have expired while still uploading, which is the one sweep
+            // this table answers and otherwise a scan of every drop-off ever taken.
+            e.HasIndex(d => new { d.Status, d.ReservedUntilUtc });
         });
 
         modelBuilder.Entity<DeliveryRecord>(e =>

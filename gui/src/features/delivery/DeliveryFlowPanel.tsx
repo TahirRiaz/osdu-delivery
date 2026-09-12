@@ -375,7 +375,18 @@ function selectionFor(
 
 const submissionColumns: Column<DeliverySubmission>[] = [
   { id: "status", header: "Status", render: (row) => <SubmissionStatusBadge status={row.status} /> },
-  { id: "id", header: "Submission", render: (row) => <span className="font-mono text-[12px]">{row.submissionId}</span> },
+  {
+    id: "id",
+    header: "Submission",
+    // The sending system's own name for the work sits above this ledger's id, because it is what an operator holding a
+    // filename or a ticket recognises; the id stays, because it is what every other page is keyed by.
+    render: (row) => (
+      <div className="flex min-w-0 flex-col">
+        {row.reference !== null && <TruncatedText text={row.reference} maxWidth={280} />}
+        <span className="font-mono text-[12px] text-muted-foreground">{row.submissionId}</span>
+      </div>
+    ),
+  },
   { id: "received", header: "Received", render: (row) => <RelativeTime value={row.receivedUtc} /> },
   { id: "records", header: "Records", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.recordCount}</span> },
   { id: "planned", header: "Planned", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.planned}</span> },

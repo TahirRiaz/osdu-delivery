@@ -77,6 +77,13 @@ public sealed record SubmissionState
 
     public string ParametersJson { get; init; } = "{}";
 
+    /// <summary>
+    /// What the sending system calls this submission in its own records (a filename, a ticket, a job id), taken from the
+    /// drop's manifest. It is the handle an operator searches by when they know the source's name for the work and not
+    /// this ledger's id. Null when the drop's manifest named none.
+    /// </summary>
+    public string? Reference { get; init; }
+
     public long RecordCount { get; init; }
 
     public SubmissionStatus Status { get; init; } = SubmissionStatus.Received;
@@ -802,7 +809,12 @@ public interface ILedger
 
     Task UpdateSubmissionAsync(SubmissionState submission, CancellationToken ct = default);
 
-    Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, CancellationToken ct = default);
+    /// <summary>
+    /// A flow's submissions, newest first. <paramref name="reference"/> narrows them to the ones whose caller-supplied
+    /// reference contains it, which is how a source finds what became of work it knows by its own name; null takes them
+    /// all. Whether the match folds case is the catalog collation's to decide, as it is for every other search here.
+    /// </summary>
+    Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, string? reference = null, CancellationToken ct = default);
 
     /// <summary>The records a source sent inline under this submission id (design.md section 3.4); null when the id names none.</summary>
     Task<InlineSubmissionState?> GetInlineSubmissionAsync(Guid submissionId, CancellationToken ct = default);

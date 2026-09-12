@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -58,6 +59,21 @@ public sealed class ControlPlaneAppFactory : WebApplicationFactory<Program>
         return this;
     }
 
+    private readonly List<Action<IServiceCollection>> _services = [];
+
+    /// <summary>
+    /// Registers extra services into the host, for the few capabilities a test cannot get from configuration because
+    /// they depend on the environment rather than on a setting (cloud storage issuing an upload URL, say). Applied
+    /// after the host's own registrations, so a test double can stand in front of a real implementation. Must be
+    /// called before the first client, since the container is built with the host.
+    /// </summary>
+    public ControlPlaneAppFactory WithServices(Action<IServiceCollection> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        _services.Add(configure);
+        return this;
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -94,5 +110,16 @@ public sealed class ControlPlaneAppFactory : WebApplicationFactory<Program>
             logging.AddProvider(new CapturingLoggerProvider(Logs));
             logging.SetMinimumLevel(LogLevel.Information);
         });
+
+        if (_services.Count > 0)
+        {
+            builder.ConfigureServices(services =>
+            {
+                foreach (var configure in _services)
+                {
+                    configure(services);
+                }
+            });
+        }
     }
 }

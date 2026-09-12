@@ -720,6 +720,7 @@ internal static class MappingMapper
                 Default = config.Default,
                 Type = config.Type,
                 MatchBy = config.MatchBy ?? [],
+                IgnoreSeparators = config.IgnoreSeparators ?? false,
                 Select = config.Select,
                 ValueMap = new Dictionary<string, string>(config.ValueMap ?? [], StringComparer.OrdinalIgnoreCase),
                 OnMiss = FlowMapper.ParseEnum(config.OnMiss, ReferenceMiss.Hold, $"{where}.config.onMiss", source),
@@ -766,6 +767,15 @@ internal static class MappingMapper
                 throw new FlowValidationException($"{source}: {where} ('{target}') deliveredReference transform needs config.type (the entity type).");
             case MappingTransform.Template when string.IsNullOrWhiteSpace(property.Config.Format):
                 throw new FlowValidationException($"{source}: {where} ('{target}') template transform needs config.format.");
+        }
+
+        // A fold only ever loosens a match against the reference cache, so declaring it anywhere else asks for
+        // something that cannot happen. Refusing it here is what keeps a misplaced key from reading as an active
+        // setting that silently does nothing.
+        if (property.Config.IgnoreSeparators && transform is not (MappingTransform.Reference or MappingTransform.Lookup))
+        {
+            throw new FlowValidationException(
+                $"{source}: {where} ('{target}') sets config.ignoreSeparators on a {transform.ToString().ToLowerInvariant()} transform. It loosens how a value is matched against the reference cache, so it belongs on a reference or lookup transform.");
         }
 
         if (transform is not (MappingTransform.Constant or MappingTransform.Template or MappingTransform.DeliveredReference)

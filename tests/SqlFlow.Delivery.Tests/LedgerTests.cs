@@ -62,6 +62,32 @@ public class SqlLedgerTests : IDisposable
         Assert.Single(await Ledger.ListSubmissionsAsync(_flow, 10));
     }
 
+    /// <summary>
+    /// A submission carries the name its source knows it by, and the listing narrows on it: this is how a source that
+    /// keeps its own records (a filename, a job id) finds what became of the work without holding this ledger's ids.
+    /// </summary>
+    [Fact]
+    public async Task Submissions_are_found_by_the_name_their_source_knows_them_by()
+    {
+        await Ledger.RegisterSubmissionAsync(Submission(Guid.NewGuid()) with { Reference = "NO 15/9-19 SR___GR.las" });
+        await Ledger.RegisterSubmissionAsync(Submission(Guid.NewGuid()) with { Reference = "NO 15/9-20 SR___GR.las" });
+        await Ledger.RegisterSubmissionAsync(Submission(Guid.NewGuid()));
+
+        Assert.Equal(3, (await Ledger.ListSubmissionsAsync(_flow, 10)).Count);
+        Assert.Equal(3, (await Ledger.ListSubmissionsAsync(_flow, 10, "   ")).Count);
+
+        // Part of the name finds it, which is what a caller searching by a fragment of a filename has.
+        var one = Assert.Single(await Ledger.ListSubmissionsAsync(_flow, 10, "15/9-19"));
+        Assert.Equal("NO 15/9-19 SR___GR.las", one.Reference);
+
+        // A fragment both share finds both, and one neither has finds none.
+        Assert.Equal(2, (await Ledger.ListSubmissionsAsync(_flow, 10, "SR___GR")).Count);
+        Assert.Empty(await Ledger.ListSubmissionsAsync(_flow, 10, "15/9-21"));
+
+        // The submission that named none is never an accidental match.
+        Assert.DoesNotContain(await Ledger.ListSubmissionsAsync(_flow, 10, "las"), s => s.Reference is null);
+    }
+
     [Fact]
     public async Task Lookup_answers_by_delivery_key_or_by_prefix_across_flows()
     {

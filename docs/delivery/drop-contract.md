@@ -26,6 +26,7 @@ File names are free; the manifest lists them. Parquet scope files need only top-
   "flow": "recall-welllog",
   "parameters": { "logSource": "STAT_COMP" },
   "mapping": "WellLog@1.4.0",
+  "reference": "prepare-run-4012",
   "createdUtc": "2026-09-07T12:00:00Z",
   "recordCount": 3,
   "partitioned": false,
@@ -44,6 +45,7 @@ File names are free; the manifest lists them. Parquet scope files need only top-
 | --- | --- |
 | `submissionId` | The idempotency key. A UUID minted per prepare run. Re-posting the same id never delivers twice. |
 | `flow`, `mapping` | Must equal the flow's name and pinned mapping, or the drop is refused. |
+| `reference` | Optional. What the preparing side calls this drop in its own records (a job id, a batch name): at most 200 characters on one line, never interpreted here, carried onto the ledger's submission and searchable there, so an operator holding the source's name for the work can find what it became. |
 | `parameters` | The flow parameter values the drop was prepared with. |
 | `sourceVersions` | Delta commit version per source table, for the tier-0 whole-run gate. |
 | `partitioned` | When true, root file i and each child scope's file i hold the same records, every scope declares the same number of files, and every file is sorted by the delivery key's text: the intake joins them partition by partition without a spill, and a fan-out spreads the partitions over member runs. An unsorted file is refused. Without it, child scopes are joined through a disk spill, which works for any layout. |

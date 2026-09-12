@@ -34,6 +34,28 @@ function size(bytes: number): string {
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
 }
 
+/**
+ * The largest file this page writes straight to storage in one request. Azure Storage accepts a single blob write of up
+ * to 5000 MiB and a larger blob only in blocks, which a browser has no business assembling: a file above this is a set
+ * to prepare as a drop, or one for the producing system to upload through the API itself.
+ */
+const MaxDirectMegabytes = 5000;
+
+/**
+ * Writes one file to the URL a reservation handed out. The URL carries its own credential, so nothing else is sent with
+ * it; the blob type header is what Azure Storage refuses a blob write without.
+ */
+async function writeToStorage(url: string, file: File): Promise<void> {
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: { "x-ms-blob-type": "BlockBlob", "Content-Type": file.type === "" ? "application/octet-stream" : file.type },
+    body: file,
+  });
+  if (!response.ok) {
+    throw new Error(`Storage refused '${file.name}' (${response.status} ${response.statusText}).`);
+  }
+}
+
 const statusTone: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   complete: "default",
   uploading: "secondary",
@@ -53,6 +75,8 @@ export default function DropOffPage() {
   const [search, setSearch] = useState("");
   const [label, setLabel] = useState("");
   const [chosen, setChosen] = useState<File[]>([]);
+  /** Which file is being written straight to storage, so a direct upload of several says where it has got to. */
+  const [writing, setWriting] = useState<string | null>(null);
 
   const area = useQuery({ queryKey: ["delivery", "dropoff-area"], queryFn: deliveryApi.dropOffArea });
   const dropOffs = useQuery({ queryKey: ["delivery", "dropoffs"], queryFn: () => deliveryApi.dropOffs() });
@@ -60,19 +84,47 @@ export default function DropOffPage() {
   const reset = () => {
     setChosen([]);
     setLabel("");
+    setWriting(null);
     if (fileInput.current !== null) {
       fileInput.current.value = "";
     }
   };
 
   const upload = useMutation({
-    mutationFn: () => deliveryApi.uploadDropOff(chosen, label.trim() === "" ? undefined : label.trim()),
+    mutationFn: async () => {
+      const named = label.trim() === "" ? undefined : label.trim();
+      if (!direct) {
+        return deliveryApi.uploadDropOff(chosen, named);
+      }
+
+      // Reserved first, so the drop-off exists before a single URL does and an upload nobody finishes is visible as
+      // one. The bytes then go straight to storage, which is the whole point of this path.
+      const reservation = await deliveryApi.reserveDropOff(chosen.map((file) => ({ name: file.name, bytes: file.size })), named);
+      const byName = new Map(chosen.map((file) => [file.name, file]));
+      for (const target of reservation.uploads) {
+        const file = byName.get(target.name);
+        if (file === undefined) {
+          throw new Error(`The reservation named '${target.name}', which is not among the files selected.`);
+        }
+
+        setWriting(target.name);
+        await writeToStorage(target.url, file);
+      }
+
+      setWriting(null);
+      // No hash: the bytes never came past the control plane, and a browser cannot hash a file of this size without
+      // reading it all into memory. The drop-off records that none was asserted rather than implying one was checked.
+      return deliveryApi.completeDropOff(reservation.dropOffId, reservation.uploads.map((u) => ({ name: u.name })));
+    },
     onSuccess: async (dropOff) => {
       reset();
       toast.success(`${dropOff.fileCount} file${dropOff.fileCount === 1 ? "" : "s"} dropped off. Point a submission at the location.`);
       await queryClient.invalidateQueries({ queryKey: ["delivery", "dropoffs"] });
     },
-    onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
+    onError: (error) => {
+      setWriting(null);
+      toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
+    },
   });
 
   const remove = useMutation({
@@ -102,13 +154,23 @@ export default function DropOffPage() {
   const enabled = area.data?.enabled === true;
   const maxFiles = area.data?.maxFilesPerUpload ?? 0;
   const maxMegabytes = area.data?.maxFileMegabytes ?? 0;
+  const signed = area.data?.signedUploads === true;
+  const streamedCap = maxMegabytes * 1024 * 1024;
+  // A file past what the control plane will carry goes straight to storage instead, when this deployment can hand out
+  // a URL for it. One set takes one route: mixing the two would leave two drop-offs where the operator asked for one.
+  const direct = signed && chosen.some((file) => file.size > streamedCap);
+  const directCap = Math.min(area.data?.maxSignedFileGigabytes ?? 0, MaxDirectMegabytes / 1024) * 1024 * 1024 * 1024;
+  const cap = direct ? directCap : streamedCap;
   const tooMany = chosen.length > maxFiles;
-  const tooLarge = chosen.find((file) => file.size > maxMegabytes * 1024 * 1024);
+  const tooLarge = chosen.find((file) => file.size > cap);
   const problem = tooMany
     ? `One upload carries at most ${maxFiles} files; ${chosen.length} are selected.`
-    : tooLarge !== undefined
-      ? `'${tooLarge.name}' is ${size(tooLarge.size)}; one file is at most ${maxMegabytes} MB.`
-      : null;
+    : tooLarge === undefined
+      ? null
+      : direct
+        ? `'${tooLarge.name}' is ${size(tooLarge.size)}, more than the ${size(cap)} this page writes straight to storage. Prepare a set that large as a drop instead.`
+        : `'${tooLarge.name}' is ${size(tooLarge.size)}; one file uploaded through the control plane is at most ${maxMegabytes} MB.`
+          + (signed ? "" : " This deployment cannot hand out upload URLs, so there is no direct route for a file this size.");
 
   const columns: Column<DeliveryDropOff>[] = [
     {
@@ -126,12 +188,35 @@ export default function DropOffPage() {
       header: "Status",
       render: (row) => (
         <div className="flex flex-col gap-1">
-          <Badge variant={statusTone[row.status] ?? "outline"} className="w-fit">{row.status}</Badge>
+          <div className="flex items-center gap-1">
+            <Badge variant={statusTone[row.status] ?? "outline"} className="w-fit">{row.status}</Badge>
+            {row.uploadMode === "signed" && (
+              <Badge variant="outline" className="w-fit" title="Written straight to storage; the control plane saw no bytes and computed no hash.">
+                direct
+              </Badge>
+            )}
+          </div>
           {row.error !== null && <TruncatedText text={row.error} maxWidth={320} />}
         </div>
       ),
     },
-    { id: "files", header: "Files", render: (row) => <span className="tabular-nums">{row.fileCount}</span> },
+    {
+      id: "files",
+      header: "Files",
+      render: (row) => {
+        // A hash the control plane never computed is the uploader's word, and one nobody asserted is absent. Saying so
+        // here is what keeps a reader from taking either for a check that happened.
+        const asserted = row.files.filter((f) => f.hashSource === "client").length;
+        const unhashed = row.files.filter((f) => f.hashSource === "none").length;
+        return (
+          <div className="flex flex-col">
+            <span className="tabular-nums">{row.fileCount}</span>
+            {asserted > 0 && <span className="text-[11px] text-muted-foreground">{asserted} hash asserted</span>}
+            {unhashed > 0 && <span className="text-[11px] text-muted-foreground">{unhashed} without a hash</span>}
+          </div>
+        );
+      },
+    },
     { id: "size", header: "Size", render: (row) => <span className="tabular-nums">{size(row.totalBytes)}</span> },
     {
       id: "uploaded",
@@ -196,7 +281,8 @@ export default function DropOffPage() {
           <div className="flex flex-col gap-1">
             <h2 className="text-[13px] font-medium">Upload files</h2>
             <p className="text-xs text-muted-foreground">
-              Up to {maxFiles} files, each at most {maxMegabytes} MB. They land under{" "}
+              Up to {maxFiles} files. Each at most {maxMegabytes} MB through the control plane
+              {signed ? `, or up to ${size(directCap)} written straight to storage` : ""}. They land under{" "}
               <span className="font-mono">{area.data?.location}</span>, and the run reads them from there when it delivers.
               {area.data !== undefined && area.data.retentionDays > 0
                 ? ` A completed drop-off is removed after ${area.data.retentionDays} days.`
@@ -231,6 +317,14 @@ export default function DropOffPage() {
           {chosen.length > 0 && (
             <p className="text-xs text-muted-foreground">
               {chosen.length} file{chosen.length === 1 ? "" : "s"} selected, {size(chosen.reduce((total, file) => total + file.size, 0))} in total.
+              {direct && " Too large to send through the control plane, so these go straight to storage. Nothing here computes"
+                + " their content hash, so the drop-off will say it has none: a flow that decides payload changes by content"
+                + " hash needs the hash from whatever produced the file."}
+            </p>
+          )}
+          {writing !== null && (
+            <p className="text-xs text-muted-foreground" data-testid="dropoff-writing">
+              Writing <span className="font-mono">{writing}</span> to storage.
             </p>
           )}
           {problem !== null && <p className="text-xs font-medium text-destructive" data-testid="dropoff-error">{problem}</p>}

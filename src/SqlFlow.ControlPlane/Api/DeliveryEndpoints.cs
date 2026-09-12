@@ -32,7 +32,7 @@ public sealed record DeliverySubmissionDto(
     Guid SubmissionId, Guid FlowId, string FlowName, string MappingReference, string RenderContext, string DropLocation,
     string ParametersJson, long RecordCount, string Status, DateTime ReceivedUtc, DateTime? StartedUtc, DateTime? CompletedUtc,
     long Planned, long SkippedUnchanged, long AwaitingApproval, long SkippedStale, long UnchangedAtPush, long Blocked, long Delivered, long Held, long Failed, string? Error,
-    string? WorkLocation, int BatchCount, int Partitions);
+    string? WorkLocation, int BatchCount, int Partitions, string? Reference = null);
 
 /// <summary>One retrieval run of a retrieval flow: the window it covered, where its files went, and its outcome.</summary>
 public sealed record DeliveryRetrievalDto(
@@ -127,9 +127,14 @@ public sealed record DeliveryCacheVersionDto(
 /// alone when it is unique. <c>operation</c> is deliver (the default) or plan. <c>submissionId</c> is the idempotency
 /// key of inline records; a drop's is the one its manifest carries.
 /// </summary>
+/// <remarks>
+/// <c>reference</c> is the caller's own name for this submission (a filename, a ticket, a job id): stored, searchable,
+/// never interpreted, and part of the request the <c>submissionId</c> names, so a repeat carrying a different one is a
+/// conflict. A drop's reference is the one its manifest carries, as its submission id is.
+/// </remarks>
 public sealed record DeliverySubmissionRequest(
     Guid? PipelineId, Guid? RepoId, string? Flow, string? Drop, IReadOnlyDictionary<string, string>? Parameters, bool Force = false, string? Pool = null,
-    JsonElement? Records = null, Guid? SubmissionId = null, string? Operation = null);
+    JsonElement? Records = null, Guid? SubmissionId = null, string? Operation = null, string? Reference = null);
 
 /// <summary>
 /// A submission was accepted: the run that takes it, the submission id when the records came inline, and whether this
@@ -141,7 +146,7 @@ public sealed record DeliverySubmissionAccepted(Guid RunId, Guid PipelineId, str
 public sealed record DeliveryInlineSubmissionDto(
     Guid SubmissionId, Guid FlowId, string FlowName, Guid? PipelineId, string MappingReference, string Operation, bool Force, string ParametersJson,
     int RecordCount, long ChildRowCount, int ContentBytes, string ContentHash, DateTime ReceivedUtc, string ReceivedBy, string? DropLocation,
-    DateTime? WrittenUtc, IReadOnlyList<Guid> RunIds, JsonElement Records);
+    DateTime? WrittenUtc, IReadOnlyList<Guid> RunIds, JsonElement Records, string? Reference = null);
 
 /// <summary>One parameter a flow declares, for a caller filling in a submission.</summary>
 public sealed record DeliveryFlowParameterDto(string Name, bool Required, string? Default, string? Description);
@@ -386,7 +391,7 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliverySubmissionDto>>, ProblemHttpResult>> ListSubmissionsAsync(
-        Guid pipelineId, int? max, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        Guid pipelineId, int? max, string? reference, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
         if (flow is null)
@@ -394,7 +399,7 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        var submissions = await ledger.ListSubmissionsAsync(flow.FlowId, Math.Clamp(max ?? 100, 1, 1000), ct).ConfigureAwait(false);
+        var submissions = await ledger.ListSubmissionsAsync(flow.FlowId, Math.Clamp(max ?? 100, 1, 1000), reference, ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliverySubmissionDto>>(submissions.Select(ToDto).ToList());
     }
 
@@ -863,6 +868,17 @@ public static class DeliveryEndpoints
             return InvalidSubmission("A drop's submission id is the one its manifest carries; submissionId goes with records.");
         }
 
+        if (hasDrop && request.Reference is not null)
+        {
+            return InvalidSubmission(
+                "A drop's reference is the one its manifest carries, as its submission id is. Put 'reference' in the manifest the preparing side writes; on a submission it goes with records.");
+        }
+
+        if (SubmissionReference.Refusal(request.Reference) is { } referenceRefusal)
+        {
+            return InvalidSubmission(referenceRefusal);
+        }
+
         var (flow, problem) = await ResolveSubmissionFlowAsync(db, documents, request, ct).ConfigureAwait(false);
         if (flow is null)
         {
@@ -943,7 +959,8 @@ public static class DeliveryEndpoints
         }
 
         var submissionId = request.SubmissionId ?? Guid.CreateVersion7();
-        var accepted = InlineSubmissionState.Accept(submissionId, flow.Flow, operation, request.Force, values, records, clock.GetUtcNow().UtcDateTime, RequestActor.Label(user));
+        var accepted = InlineSubmissionState.Accept(
+            submissionId, flow.Flow, operation, request.Force, values, records, clock.GetUtcNow().UtcDateTime, RequestActor.Label(user), request.Reference);
         var stored = await ledger.GetInlineSubmissionAsync(submissionId, ct).ConfigureAwait(false);
         if (stored is null && await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false) is { } dropSubmission)
         {
@@ -1124,7 +1141,7 @@ public static class DeliveryEndpoints
         return TypedResults.Ok(new DeliveryInlineSubmissionDto(
             inline.SubmissionId, inline.FlowId, inline.FlowName, pipeline?.Id, inline.MappingReference, inline.Operation, inline.Force, inline.ParametersJson,
             inline.RecordCount, inline.ChildRowCount, inline.ContentBytes, inline.ContentHash, inline.ReceivedUtc, inline.ReceivedBy, inline.DropLocation,
-            inline.WrittenUtc, runIds, records.RootElement.Clone()));
+            inline.WrittenUtc, runIds, records.RootElement.Clone(), inline.Reference));
     }
 
     private static async Task<Results<Ok<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseFlowAsync(
@@ -1621,7 +1638,7 @@ public static class DeliveryEndpoints
     private static DeliverySubmissionDto ToDto(SubmissionState s) => new(
         s.SubmissionId, s.FlowId, s.FlowName, s.MappingReference, s.RenderContext, s.DropLocation, s.ParametersJson, s.RecordCount,
         s.Status.ToString().ToLowerInvariant(), s.ReceivedUtc, s.StartedUtc, s.CompletedUtc, s.Planned, s.SkippedUnchanged, s.AwaitingApproval, s.SkippedStale, s.UnchangedAtPush, s.Blocked,
-        s.Delivered, s.Held, s.Failed, s.Error, s.WorkLocation, s.BatchCount, s.Partitions);
+        s.Delivered, s.Held, s.Failed, s.Error, s.WorkLocation, s.BatchCount, s.Partitions, s.Reference);
 
     private static DeliveryWorkBatchDto ToDto(WorkBatchState b) => new(
         b.SubmissionId, b.Index, b.Location, b.RecordCount, b.Status.ToString().ToLowerInvariant(), b.LeaseOwner, b.LeaseExpiresUtc, b.RunId,

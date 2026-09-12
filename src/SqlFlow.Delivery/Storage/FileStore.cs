@@ -62,14 +62,18 @@ public sealed class FileStoreRegistry
     private readonly IReadOnlyList<IFileStore> _stores;
     private readonly IReadOnlyList<IFileWriter> _writers;
     private readonly IReadOnlyList<IFileReader> _readers;
+    private readonly IReadOnlyList<ISignedUploadIssuer> _signers;
 
-    public FileStoreRegistry(IEnumerable<IFileStore> stores, IEnumerable<IFileWriter> writers, IEnumerable<IFileReader>? readers = null)
+    public FileStoreRegistry(
+        IEnumerable<IFileStore> stores, IEnumerable<IFileWriter> writers, IEnumerable<IFileReader>? readers = null,
+        IEnumerable<ISignedUploadIssuer>? signers = null)
     {
         ArgumentNullException.ThrowIfNull(stores);
         ArgumentNullException.ThrowIfNull(writers);
         _stores = stores.ToList();
         _writers = writers.ToList();
         _readers = (readers ?? []).ToList();
+        _signers = (signers ?? []).ToList();
     }
 
     /// <summary>
@@ -104,6 +108,24 @@ public sealed class FileStoreRegistry
 
     public Task DeleteAsync(string location, CancellationToken ct = default)
         => Writer(location).DeleteAsync(location, ct);
+
+    /// <summary>
+    /// Whether a caller can be handed a URL to write this location itself. False for a location whose storage family
+    /// issues none (a local path in development, say), which the caller answers by taking the bytes itself instead.
+    /// </summary>
+    public bool CanSignUpload(string location)
+        => !string.IsNullOrWhiteSpace(location) && _signers.Any(s => s.CanHandle(location));
+
+    /// <summary>A write-only URL for one file. Call <see cref="CanSignUpload"/> first: a location nothing can sign is an error here.</summary>
+    public Task<SignedUpload> CreateUploadAsync(string location, TimeSpan lifetime, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(location);
+        var signer = _signers.FirstOrDefault(s => s.CanHandle(location))
+            ?? throw new DeliveryException(
+                $"No signed upload can be issued for '{location}'. Signed uploads are issued for Azure Storage locations; "
+                + "somewhere else, the files are uploaded through the control plane.");
+        return signer.CreateUploadAsync(location, lifetime, ct);
+    }
 
     /// <summary>
     /// A seekable stream over a file: the reader's own when one is registered for the location, otherwise the

@@ -21,6 +21,9 @@ import { CorrelationError } from "../../components/CorrelationError";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** The longest reference the API takes; checked here so the dialog says so before the request goes. */
+const MaxReferenceLength = 200;
+
 type Mode = "form" | "json";
 
 /** The columns the form offers: what the mapping reads from the root row, then the flow's version column. */
@@ -117,6 +120,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
   const [preview, setPreview] = useState(false);
   const [force, setForce] = useState(false);
   const [submissionId, setSubmissionId] = useState("");
+  const [reference, setReference] = useState("");
   const [payloadLocation, setPayloadLocation] = useState("");
   const [payloadHash, setPayloadHash] = useState("");
 
@@ -206,6 +210,10 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
     if (error === null && records.length > c.maxRecords) {
       error = `One submission carries at most ${c.maxRecords} records; deliver a larger set as a drop.`;
     }
+
+    if (error === null && reference.trim().length > MaxReferenceLength) {
+      error = `The reference is at most ${MaxReferenceLength} characters; it names the submission in your system, so a name is what belongs there.`;
+    }
   }
 
   // An untouched form is not an error yet; it only keeps the submit button disabled.
@@ -229,6 +237,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
       operation: preview ? "plan" : "deliver",
       force,
       submissionId: submissionId.trim() === "" ? null : submissionId.trim(),
+      reference: reference.trim() === "" ? null : reference.trim(),
     });
   };
 
@@ -433,6 +442,22 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                 <p className="text-xs text-muted-foreground">
                   The idempotency key. The same records under the same id again answer with the run that took them; different
                   records under it are refused.
+                </p>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`${idPrefix}-reference`}>Reference (optional)</Label>
+                <Input
+                  id={`${idPrefix}-reference`}
+                  className="h-8"
+                  placeholder="what you call this: a filename, a ticket, a job id"
+                  value={reference}
+                  onChange={(event) => setReference(event.target.value)}
+                  data-testid="submit-records-reference"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Your own name for this submission. It is stored and searchable and changes nothing about the delivery, so a
+                  submission can be found later by the name the sending system knows it by. It is part of what a reused
+                  submission id has to match.
                 </p>
               </div>
               {shownError !== null && <p className="text-xs font-medium text-destructive" data-testid="submit-records-error">{shownError}</p>}

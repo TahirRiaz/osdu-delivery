@@ -38,7 +38,12 @@ public static class DeliveryServices
         services.AddSingleton<IFileWriter, AzureBlobFileWriter>();
         services.AddSingleton<IFileReader, LocalFileReader>();
         services.AddSingleton<IFileReader, AzureBlobFileReader>();
-        services.AddSingleton(sp => new FileStoreRegistry(sp.GetServices<IFileStore>(), sp.GetServices<IFileWriter>(), sp.GetServices<IFileReader>()));
+        // Signed uploads let a caller put a file into the drop-off area without its bytes passing through the control
+        // plane. Only Azure Storage can issue one; a deployment whose drop-off area is a local path has none, and the
+        // drop-off surface answers that rather than pretending otherwise.
+        services.AddSingleton<ISignedUploadIssuer, AzureBlobSignedUploadIssuer>();
+        services.AddSingleton(sp => new FileStoreRegistry(
+            sp.GetServices<IFileStore>(), sp.GetServices<IFileWriter>(), sp.GetServices<IFileReader>(), sp.GetServices<ISignedUploadIssuer>()));
         services.AddSingleton<IDropReader>(sp => new DropReader(sp.GetRequiredService<FileStoreRegistry>(), sp.GetRequiredService<ILoggerFactory>().CreateLogger<DropReader>()));
 
         // Documents: the delivery loader behind the platform's envelope probe.

@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A file too large to send through the control plane is written straight to storage:
+  `POST /api/v1/delivery/dropoffs/reserve` writes the drop-off row, then hands out one write-only URL per file, and
+  `POST /dropoffs/{id}/complete` closes it once they are written. Completion is decided by what storage holds, not by
+  what the caller says: a reserved file that is missing, a different size than reserved, or an unexpected file present
+  fails it and leaves the reservation open to finish. The bytes never touch the control plane, so nothing here hashes
+  them; a hash given at completion is recorded as the uploader's claim (`hashSource: "client"`, against `"computed"` for
+  a streamed upload and `"none"` for none at all), because a ledger that showed them the same way would imply a check
+  that never happened. One file is at most 64 GB by default (`ControlPlane:DropOff:MaxSignedFileGigabytes`) against a
+  streamed upload's 100 MB, and a reservation's URLs last an hour (`:SignedUploadExpiryMinutes`). Only Azure Storage can
+  issue one, signed as a user delegation SAS so no account key exists anywhere, and the control plane's identity needs
+  **Storage Blob Delegator** on the account; without it `GET /dropoff-area` answers `signedUploads: false` and says so.
+  The GUI's Drop-off page takes this route on its own for any file past the streamed ceiling.
+- A submission carries the caller's own name for it: `reference` on `POST /api/v1/delivery/submissions`, and `reference`
+  in a prepared drop's manifest. It is a filename, a ticket or a job id, at most 200 characters, stored, searchable
+  (`GET /flows/{id}/submissions?reference=...`) and never interpreted, so a source that keeps its own records can find
+  what became of work it sent without holding this system's ids. It is part of the request a `submissionId` names, so a
+  repeat that relabels the work is refused saying so rather than quietly rewriting what the ledger says it was called.
+  The submissions list shows each submission under the name its source gave it, and the submit dialog offers the field.
+- A mapping can match a name against the reference cache with punctuation and spacing folded away: `ignoreSeparators` on
+  a `reference` or `lookup` transform, off by default. Source systems and OSDU write one facility name differently
+  (`NO 15/9-19 SR`, `NO_15_9-19_SR`, `no-15-9-19-sr`), and the fold finds one record for all three. It runs only after
+  exact and case-insensitive comparison have both found nothing, so it never moves a value that already resolved, and a
+  folded key several records answer to resolves to none of them, naming them, as an ambiguous case fold does. It is for
+  names and not codes, which is why it is opt-in: `s/m` and `S.M` would fold together and must not.
 - A drop-off area, the pre-step to a submission: `POST /api/v1/delivery/dropoffs` uploads files (multipart) into a place
   the compute nodes can read, and answers with the location a submission then points at, so the two steps are upload and
   submit rather than one request carrying everything. `GET /dropoffs` lists what has been dropped off with who uploaded
