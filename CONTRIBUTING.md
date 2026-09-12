@@ -35,7 +35,10 @@ contributors:
    path, retry, repair, or GUI action bypasses it.
 3. **Secrets are references.** `${env:NAME}` and `${keyvault:NAME}` only; a literal secret in a flow, a mapping,
    a catalog row, a log line, or a test fixture is a defect.
-4. **Catalog shape changes ship with their EF Core migration.** See `CLAUDE.MD` for the exact procedure.
+4. **The EF model is the catalog schema.** There are no migrations: the database is created from
+   `CatalogEntities.cs` and the model configuration, and both provisioning paths verify the schema against the
+   model afterwards. A shape change therefore means minting the catalog again rather than upgrading it in
+   place, which is a deliberate trade while no production catalog exists. See `CLAUDE.md` for the procedure.
 
 ## Coding standards
 
@@ -45,6 +48,21 @@ contributors:
   `npm run build` in `gui/` must pass the type check.
 - No TODOs, stubs, or placeholders: every change you hand in is finished.
 - Add or update tests for behavior changes.
+
+## Dependencies
+
+Package versions are managed centrally in `Directory.Packages.props`; project files carry none of their own.
+Moving one is a deliberate step someone takes and stands behind:
+
+1. Change the single `PackageVersion` line for the package you mean to move, and nothing else.
+2. Run `dotnet restore SqlFlow.sln`, then `dotnet build SqlFlow.sln -c Release` warning-clean, then
+   `dotnet test SqlFlow.sln`. A bump across a major version usually asks for source changes; make them in the
+   same change, so the history says what the new version needed.
+3. Commit the bump on its own, naming what moved and what it cost.
+
+Automated dependency branches are off on purpose: the repository keeps a single branch, and nothing lands that
+nobody read. The trade is real, and it is the reason step 3 exists: no branch appears when a dependency
+publishes a vulnerability, so watching that surface belongs to whoever looks after the release.
 
 ## Submitting changes
 
