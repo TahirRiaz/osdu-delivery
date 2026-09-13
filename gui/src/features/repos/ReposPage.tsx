@@ -11,11 +11,13 @@ import { repoApi, repoSourceApi } from "../../api/endpoints";
 import type { Repo, RepoSource } from "../../api/types";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
+import { IconAction } from "../../components/IconAction";
 import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
 import { CopyButton } from "../../components/CopyButton";
+import { TruncatedText } from "../../components/TruncatedText";
 import { RegisterSourceDialog } from "./RegisterSourceDialog";
 import { RepoDeleteDialog } from "./RepoDeleteDialog";
 import { useSyncTracePanel } from "./useSyncTracePanel";
@@ -39,7 +41,8 @@ interface MergedRow {
 // parse as a URL (for example scp-style git remotes).
 function remoteHost(url: string): string {
   try {
-    return new URL(url).host;
+    // A local path such as D:/repos/x parses as a URL with a drive-letter scheme and no host; its last folder names it.
+    return new URL(url).host || (url.split(/[\\/]/).filter((segment) => segment !== "").at(-1) ?? url);
   } catch {
     return url;
   }
@@ -170,18 +173,24 @@ export default function ReposPage() {
     {
       id: "name",
       header: "Name",
+      fill: true,
+      floor: 140,
       render: (row) => (
-        <span className="inline-flex items-center gap-2">
-          <span className="font-medium">{row.name}</span>
+        <span className="flex min-w-0 items-center gap-2">
+          <TruncatedText text={row.name} maxWidth={1200} className="min-w-0 font-medium" />
           {row.source !== undefined && row.repo === undefined && (
-            <Badge variant="outline" className="border-warning/50 text-warning">pending first sync</Badge>
+            <Badge variant="outline" className="shrink-0 border-warning/50 text-warning">
+              pending
+              <span className="@max-3xl/table:sr-only"> first sync</span>
+            </Badge>
           )}
         </span>
       ),
     },
     {
       id: "remoteUrl",
-      header: "Remote URL",
+      header: "Remote",
+      // The branch is part of where a repo syncs from, so it reads beside the host rather than in a column of its own.
       render: (row) => {
         const url = row.source?.remoteUrl ?? row.repo?.remoteUrl;
         if (url === null || url === undefined || url === "") {
@@ -192,7 +201,7 @@ export default function ReposPage() {
           <span className="inline-flex items-center gap-1">
             <Tooltip delayDuration={400}>
               <TooltipTrigger asChild>
-                <span className="cursor-default font-mono text-[12px] text-muted-foreground">
+                <span className="inline-block max-w-[160px] cursor-default truncate align-bottom font-mono text-[12px] text-muted-foreground">
                   {remoteHost(url)}
                 </span>
               </TooltipTrigger>
@@ -201,29 +210,37 @@ export default function ReposPage() {
               </TooltipContent>
             </Tooltip>
             <CopyButton iconOnly label="Copy URL" text={url} testId="copy-remote-url" />
+            {row.source !== undefined && <span className="pl-1 font-mono text-[12px]">{row.source.branch}</span>}
           </span>
         );
       },
     },
-    { id: "branch", header: "Branch", render: (row) => row.source?.branch ?? "-" },
     { id: "sync", header: "Sync", render: (row) => renderSync(row.source) },
     {
       id: "lastSync",
       header: "Last sync",
-      render: (row) => <RelativeTime value={row.source?.lastSyncUtc ?? row.repo?.lastSyncUtc ?? null} />,
+      // The commit a sync landed on belongs to the sync, so it reads under when it happened.
+      render: (row) => {
+        const sha = row.source?.lastSyncedSha?.slice(0, 10);
+        return (
+          <div className="flex flex-col">
+            <RelativeTime value={row.source?.lastSyncUtc ?? row.repo?.lastSyncUtc ?? null} />
+            {sha !== undefined && <span className="text-muted-foreground"><Mono>{sha}</Mono></span>}
+          </div>
+        );
+      },
     },
-    { id: "sha", header: "Synced commit", render: (row) => <Mono>{row.source?.lastSyncedSha?.slice(0, 10) ?? "-"}</Mono> },
     { id: "health", header: "Health", render: (row) => renderHealth(row.source) },
     {
       id: "actions",
       header: "",
       align: "right",
       render: (row) => (
-        <span className="inline-flex items-center justify-end gap-1">
+        <span className="inline-flex items-center justify-end gap-0.5">
           {/* Edit a git source in place, or (for a manual repo with no source) attach one so it becomes managed. */}
-          <Button
-            variant="ghost"
-            size="xs"
+          <IconAction
+            label={row.source !== undefined ? "Edit the source" : "Attach a git source"}
+            icon={<Pencil />}
             onClick={(e) => {
               e.stopPropagation();
               if (row.source !== undefined) {
@@ -233,14 +250,13 @@ export default function ReposPage() {
               }
             }}
             data-testid="source-edit"
-          >
-            <Pencil />
-            Edit
-          </Button>
+          />
           {row.source !== undefined && (
-            <Button
-              variant="ghost"
-              size="xs"
+            <IconAction
+              label="Sync now"
+              icon={syncNow.isPending && syncNow.variables === row.source.id
+                ? <Loader2 className="animate-spin" />
+                : <RefreshCw />}
               disabled={!row.source.enabled || syncNow.isPending}
               onClick={(e) => {
                 e.stopPropagation();
@@ -250,26 +266,18 @@ export default function ReposPage() {
                 }
               }}
               data-testid="source-sync-now"
-            >
-              {syncNow.isPending && syncNow.variables === row.source.id
-                ? <Loader2 className="animate-spin" />
-                : <RefreshCw />}
-              Sync now
-            </Button>
+            />
           )}
-          <Button
-            variant="ghost"
-            size="xs"
+          <IconAction
+            label="Delete"
+            icon={<Trash2 />}
             className="text-muted-foreground hover:text-destructive"
             onClick={(e) => {
               e.stopPropagation();
               setDeleteRow(row);
             }}
             data-testid="repo-delete-open"
-          >
-            <Trash2 />
-            Delete
-          </Button>
+          />
           {row.repo !== undefined && <ChevronRight className="size-4 text-muted-foreground" />}
         </span>
       ),

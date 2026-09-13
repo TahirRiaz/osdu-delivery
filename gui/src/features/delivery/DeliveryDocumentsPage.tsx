@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { LayoutTemplate, PencilRuler, Plus } from "lucide-react";
+import { FileCode, LayoutTemplate, PencilRuler, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,10 +15,12 @@ import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
 import { FilterBar } from "../../components/FilterBar";
+import { GlyphRef } from "../../components/GlyphRef";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
 import { TruncatedText } from "../../components/TruncatedText";
+import { KindText } from "./KindText";
 
 const ALL = "all";
 
@@ -39,36 +41,63 @@ function LoadError({ error, testId }: { error: unknown; testId: string }) {
 }
 
 const mappingColumns: Column<DeliveryMapping>[] = [
-  { id: "reference", header: "Mapping", render: (row) => <span className="font-mono text-[12px] font-medium">{row.reference}</span> },
+  {
+    id: "reference",
+    header: "Mapping",
+    // Whether the document is valid is a fact about the mapping, so it reads under its name.
+    render: (row) => (
+      <div className="flex flex-col items-start gap-0.5">
+        <span className="font-mono text-[12px] font-medium">{row.reference}</span>
+        <Badge variant="secondary" className={row.status === "valid" ? "bg-success/15 text-success" : "bg-destructive/15 text-destructive"}>
+          {row.status}
+        </Badge>
+      </div>
+    ),
+  },
   {
     id: "template",
     header: "Template",
+    fill: true,
+    floor: 130,
+    // The pinned version reads under the kind, so the kind keeps the column's whole width.
     render: (row) => (
-      <span className="inline-flex max-w-full items-baseline gap-1.5">
-        <TruncatedText text={row.kind} mono maxWidth={300} />
+      <div className="flex min-w-0 flex-col">
+        <KindText kind={row.kind} />
         <span className="font-mono text-[11px] text-muted-foreground">{summaryText(row.summary, "templateVersion")}</span>
-      </span>
+      </div>
     ),
   },
   {
-    id: "status",
-    header: "Status",
+    id: "source",
+    header: "Source",
+    // The dataset key qualifies the source system, so it reads under it.
     render: (row) => (
-      <Badge variant="secondary" className={row.status === "valid" ? "bg-success/15 text-success" : "bg-destructive/15 text-destructive"}>
-        {row.status}
-      </Badge>
+      <div className="flex flex-col">
+        <TruncatedText text={summaryText(row.summary, "system")} maxWidth={140} title="Source system" />
+        <TruncatedText text={summaryText(row.summary, "key")} mono maxWidth={140} title="Dataset key" className="text-[11px] text-muted-foreground" />
+      </div>
     ),
   },
-  { id: "system", header: "Source system", render: (row) => summaryText(row.summary, "system") },
-  { id: "key", header: "Dataset key", render: (row) => <span className="font-mono text-[12px]">{summaryText(row.summary, "key")}</span> },
-  { id: "entries", header: "Entries", align: "right", render: (row) => <span className="font-mono tabular-nums">{summaryText(row.summary, "entries")}</span> },
-  { id: "fixtures", header: "Fixtures", align: "right", render: (row) => <span className="font-mono tabular-nums">{summaryText(row.summary, "fixtures")}</span> },
-  { id: "path", header: "Path", render: (row) => <TruncatedText text={row.relativePath} mono maxWidth={260} /> },
+  {
+    id: "entries",
+    header: "Entries",
+    align: "right",
+    render: (row) => {
+      const fixtures = summaryText(row.summary, "fixtures");
+      return (
+        <span className="font-mono tabular-nums">
+          {summaryText(row.summary, "entries")}
+          {fixtures !== "-" && <span className="text-muted-foreground @max-3xl/table:sr-only">{` + ${fixtures} fixtures`}</span>}
+        </span>
+      );
+    },
+  },
+  { id: "path", header: "Path", render: (row) => <GlyphRef icon={FileCode} title="Path" body={row.relativePath} mono /> },
   { id: "seen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },
 ];
 
 const snapshotColumns: Column<DeliverySnapshot>[] = [
-  { id: "name", header: "Name", render: (row) => <TruncatedText text={row.name} mono maxWidth={360} /> },
+  { id: "name", header: "Name", fill: true, floor: 140, render: (row) => <TruncatedText text={row.name} mono maxWidth={1200} /> },
   { id: "version", header: "Version", render: (row) => <span className="font-mono text-[12px]">{row.version}</span> },
   {
     id: "current",
@@ -79,9 +108,16 @@ const snapshotColumns: Column<DeliverySnapshot>[] = [
   {
     id: "summary",
     header: "Contents",
-    render: (row) => `${summaryText(row.summary, "items")} item(s) in ${Array.isArray(row.summary.types) ? row.summary.types.length : 0} type(s)`,
+    render: (row) => (
+      <span>
+        {`${summaryText(row.summary, "items")} item(s)`}
+        <span className="@max-3xl/table:sr-only">
+          {` in ${Array.isArray(row.summary.types) ? row.summary.types.length : 0} type(s)`}
+        </span>
+      </span>
+    ),
   },
-  { id: "path", header: "Path", render: (row) => <TruncatedText text={row.relativePath} mono maxWidth={300} /> },
+  { id: "path", header: "Path", render: (row) => <GlyphRef icon={FileCode} title="Path" body={row.relativePath} mono /> },
 ];
 
 /** The mapping documents the synced repositories hold, and the reference snapshots of their cache: what every delivery flow renders with. */
@@ -138,7 +174,6 @@ export default function DeliveryDocumentsPage() {
             rowKey={(row) => row.id}
             onRowClick={(row) => setSelected(row.id)}
             emptyMessage="No mapping documents synced yet. A mapping is a YAML file with documentType: mapping under a repository's mappings directory, and the Mapping builder writes one."
-            minWidth={1100}
             data-testid="delivery-mappings-table"
           />
         </TabsContent>

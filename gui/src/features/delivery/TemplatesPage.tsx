@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { ClipboardPaste, Cloud, FileJson, Trash2, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -12,11 +12,13 @@ import { useAuth } from "../../auth/AuthContext";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { DataTable, type Column } from "../../components/DataTable";
 import { FilterBar } from "../../components/FilterBar";
+import { GlyphRef } from "../../components/GlyphRef";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
 import { SearchInput } from "../../components/SearchInput";
 import { TruncatedText } from "../../components/TruncatedText";
+import { KindText } from "./KindText";
 import { TemplatesBrowseTab } from "./TemplatesBrowseTab";
 import { TemplatesImportTab } from "./TemplatesImportTab";
 import { ProblemView, problemText, TemplateSheet } from "./TemplateSheet";
@@ -25,19 +27,65 @@ type TemplatesTab = "saved" | "browse" | "import";
 
 const TABS: readonly string[] = ["saved", "browse", "import"];
 
+/**
+ * Where a saved version came from, as the import and browse tabs word it, reduced to a glyph and a word so the column
+ * stays narrow; the full origin is on hover. Null for an origin worded some other way, which then shows as text.
+ */
+function originVisual(origin: string): { icon: LucideIcon; label: string } | null {
+  if (origin.startsWith("file ")) {
+    return { icon: FileJson, label: "File" };
+  }
+
+  if (origin.startsWith("OSDU ")) {
+    return { icon: Cloud, label: "OSDU" };
+  }
+
+  return origin === "pasted schema" ? { icon: ClipboardPaste, label: "Pasted" } : null;
+}
+
+function OriginCell({ origin }: { origin: string }) {
+  const visual = originVisual(origin);
+  return visual === null
+    ? <TruncatedText text={origin} maxWidth={180} title="Origin" />
+    : <GlyphRef icon={visual.icon} title="Origin" body={origin} label={visual.label} collapse />;
+}
+
 const savedColumns: Column<DeliveryTemplate>[] = [
-  { id: "kind", header: "Kind", render: (row) => <TruncatedText text={row.kind} mono maxWidth={420} /> },
-  { id: "version", header: "Version", render: (row) => <span className="font-mono text-[12px]">{row.version}</span> },
-  { id: "saved", header: "Saved", render: (row) => <RelativeTime value={row.capturedUtc} /> },
-  { id: "by", header: "Saved by", render: (row) => <TruncatedText text={row.capturedBy} maxWidth={200} /> },
-  { id: "origin", header: "Origin", render: (row) => <TruncatedText text={row.origin} maxWidth={340} /> },
+  { id: "kind", header: "Kind", fill: true, floor: 150, render: (row) => <KindText kind={row.kind} /> },
+  {
+    id: "version",
+    header: "Version",
+    // In a narrow table eight characters of the content hash tell versions apart; the rest stays in the row's text.
+    render: (row) => (
+      <span className="font-mono text-[12px]">
+        {row.version.slice(0, 8)}
+        <span className="@max-3xl/table:sr-only">{row.version.slice(8)}</span>
+      </span>
+    ),
+  },
+  {
+    id: "saved",
+    header: "Saved",
+    render: (row) => (
+      <span className="inline-flex items-baseline gap-1.5">
+        <RelativeTime value={row.capturedUtc} />
+        {/* Who saved it gives way first in a narrow table; the template's sheet names them as well. */}
+        <span className="inline-flex items-baseline gap-1.5 @max-3xl/table:sr-only">
+          <span className="text-muted-foreground">by</span>
+          <TruncatedText text={row.capturedBy} maxWidth={160} />
+        </span>
+      </span>
+    ),
+  },
+  { id: "origin", header: "Origin", render: (row) => <OriginCell origin={row.origin} /> },
   {
     id: "pinned",
     header: "Pinned by",
     align: "right",
     render: (row) => (
       <span className={cn("font-mono tabular-nums", row.pinnedBy === 0 && "text-muted-foreground")}>
-        {row.pinnedBy} mapping{row.pinnedBy === 1 ? "" : "s"}
+        {row.pinnedBy}
+        <span className="@max-3xl/table:sr-only">{` mapping${row.pinnedBy === 1 ? "" : "s"}`}</span>
       </span>
     ),
   },
@@ -153,7 +201,6 @@ export default function TemplatesPage() {
               emptyMessage={templates.data !== undefined && templates.data.length === 0
                 ? "No template is saved yet. Browse OSDU or import a schema file to save one."
                 : "No saved template matches the filter."}
-              minWidth={900}
               data-testid="templates-saved-table"
             />
           )}

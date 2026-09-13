@@ -15,6 +15,7 @@ import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { SearchInput } from "../../components/SearchInput";
 import { TruncatedText } from "../../components/TruncatedText";
+import { KindText } from "./KindText";
 import { SubmitRecordsDialog } from "./SubmitRecordsDialog";
 
 /**
@@ -57,24 +58,29 @@ export default function ManualSubmissionPage() {
     {
       id: "mapping",
       header: "Renders with",
+      fill: true,
+      floor: 170,
       render: (row) => (
         <div className="flex min-w-0 flex-col items-start gap-0.5">
           <Badge variant="outline" className="font-mono text-[11px]">{row.mappingReference}</Badge>
           {row.templateKind !== null && (
-            <span data-testid={`manual-submission-template-${row.flowName}`}>
-              <TruncatedText text={row.templateKind} mono maxWidth={320} className="text-[11px] text-muted-foreground" />
+            <span className="block w-full max-w-[260px]" data-testid={`manual-submission-template-${row.flowName}`}>
+              <KindText kind={row.templateKind} />
             </span>
           )}
         </div>
       ),
     },
-    { id: "protocol", header: "Protocol", render: (row) => <span className="font-mono text-[12px]">{row.protocol}</span> },
     {
-      id: "payload",
-      header: "Payload",
-      render: (row) => (row.payloadName === null
-        ? <span className="text-muted-foreground">-</span>
-        : <Badge variant="secondary" className="font-mono text-[11px]">{row.payloadName}</Badge>),
+      id: "protocol",
+      header: "Protocol",
+      // The payload a protocol carries is part of how the flow delivers, so it sits under the protocol.
+      render: (row) => (
+        <div className="flex flex-col items-start gap-0.5">
+          <span className="font-mono text-[12px]">{row.protocol}</span>
+          {row.payloadName !== null && <Badge variant="secondary" className="font-mono text-[11px]">{row.payloadName}</Badge>}
+        </div>
+      ),
     },
     {
       id: "parameters",
@@ -94,14 +100,16 @@ export default function ManualSubmissionPage() {
     {
       id: "state",
       header: "",
+      fill: true,
+      floor: 120,
       render: (row) => (row.acceptsRecords
         ? (
           <Button size="sm" onClick={() => setChosen(row)} data-testid={`manual-submit-${row.flowName}`}>
             <FileJson />
-            Submit records
+            <span className="@max-3xl/table:sr-only">Submit records</span>
           </Button>
         )
-        : <TruncatedText text={row.recordsRefusal} maxWidth={420} />),
+        : <TruncatedText text={row.recordsRefusal} maxWidth={1200} />),
     },
   ];
 

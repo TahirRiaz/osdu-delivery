@@ -15,7 +15,7 @@ import { LinkRef } from "../../components/LinkRef";
 import { RelativeTime } from "../../components/RelativeTime";
 import { SearchInput } from "../../components/SearchInput";
 import { StatePill } from "../../components/StatusBadge";
-import { TruncatedText } from "../../components/TruncatedText";
+import { KindText } from "./KindText";
 import { ProblemView, problemText, TaskProgress, TemplateSheet } from "./TemplateSheet";
 
 /** The most rows the table renders at once; the search narrows the rest. */
@@ -161,7 +161,7 @@ export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
   };
 
   const columns: Column<BrowseRow>[] = [
-    { id: "kind", header: "Kind", render: (row) => <TruncatedText text={row.schema.kind} mono maxWidth={460} /> },
+    { id: "kind", header: "Kind", fill: true, render: (row) => <KindText kind={row.schema.kind} /> },
     { id: "status", header: "Status", render: (row) => <StatusCell schema={row.schema} /> },
     ...(allVersions ? [] : [{
       id: "versions",
@@ -293,7 +293,6 @@ export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
               {`Showing ${MAX_ROWS.toLocaleString()} of ${rows.length.toLocaleString()}. Narrow the search to see the rest.`}
             </div>
           ) : undefined}
-          minWidth={900}
           data-testid="templates-browse-results"
         />
       )}

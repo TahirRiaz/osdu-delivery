@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Cloud, Cog, Save, TriangleAlert, type LucideIcon } from "lucide-react";
+import { Cloud, Cog, DatabaseZap, Link2, Ruler, Save, TriangleAlert, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -18,10 +18,12 @@ import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
 import { FilterBar } from "../../components/FilterBar";
+import { GlyphRef } from "../../components/GlyphRef";
 import { RelativeTime } from "../../components/RelativeTime";
 import { SearchInput } from "../../components/SearchInput";
 import { StatePill } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
+import { HeadClippedText } from "./HeadClippedText";
 import { pathDepth, roleLabel, shapeText, splitPath } from "./templateFormat";
 
 interface TemplateViewProps {
@@ -96,7 +98,6 @@ export function TemplateView({ detail, previewSchema, actions }: TemplateViewPro
   const [showWritten, setShowWritten] = useState(false);
   const [showNested, setShowNested] = useState(false);
 
-  const hasCacheTypes = detail.variables.some((variable) => variable.cacheTypes.length > 0);
   const rows = useMemo(() => {
     const term = filter.trim().toLowerCase();
     return detail.variables.filter((variable) => (showWritten || variable.role === "Mapping")
@@ -109,18 +110,25 @@ export function TemplateView({ detail, previewSchema, actions }: TemplateViewPro
       {
         id: "path",
         header: "Variable",
+        // The variable and the description share the width the other columns leave; a deep path clips its parents first.
+        fill: true,
+        floor: 260,
         render: (variable) => {
           const { parent, leaf } = splitPath(variable.path);
           const role = roleVisual(variable.role);
           return (
-            <span className="inline-flex items-center gap-1.5" style={{ paddingLeft: pathDepth(variable.path) * 14 }}>
+            <span className="flex min-w-0 items-center gap-1.5" style={{ paddingLeft: pathDepth(variable.path) * 14 }}>
               <span
-                className={cn("font-mono text-[12px]", role?.textClass)}
+                className={cn("flex min-w-0 font-mono text-[12px]", role?.textClass)}
                 data-testid={`templates-view-variable-${variable.path}`}
                 data-role={variable.role}
               >
-                <span className={role === null ? "text-muted-foreground" : "opacity-70"}>{parent}</span>
-                <span className="font-medium">{leaf}</span>
+                <HeadClippedText
+                  head={parent}
+                  body={leaf}
+                  title="Variable"
+                  headClassName={role === null ? "text-muted-foreground" : "opacity-70"}
+                />
               </span>
               {role !== null && (
                 <StatePill tone={role.tone} label={role.label} icon={role.icon} testId={`templates-view-role-${variable.path}`} />
@@ -135,40 +143,46 @@ export function TemplateView({ detail, previewSchema, actions }: TemplateViewPro
         id: "shape",
         header: "Shape",
         render: (variable) => (
-          <span className="font-mono text-[12px]">
-            {shapeText(variable)}
-            {variable.format !== null && <span className="text-muted-foreground"> {variable.format}</span>}
+          <span className="inline-flex items-center gap-1.5">
+            <span className="font-mono text-[12px]">
+              {shapeText(variable)}
+              {variable.format !== null && <span className="text-muted-foreground"> {variable.format}</span>}
+            </span>
+            {variable.required && <Badge variant="secondary" className="text-[10px]" data-testid="templates-view-required">Required</Badge>}
           </span>
         ),
       },
       {
-        id: "required",
-        header: "",
-        render: (variable) => (variable.required
-          ? <Badge variant="secondary" className="text-[10px]" data-testid="templates-view-required">Required</Badge>
-          : null),
+        id: "refers",
+        header: "Refers to",
+        // What a variable points to, its unit context and the cached types that answer it are lists of kinds: a glyph
+        // each says which a variable has, and the hover lists them.
+        render: (variable) => (variable.relationships.length === 0 && variable.unitContext === null && variable.cacheTypes.length === 0
+          ? <span className="text-muted-foreground">-</span>
+          : (
+            <span className="inline-flex items-center gap-2.5">
+              {variable.relationships.length > 0 && (
+                <GlyphRef icon={Link2} title="Points to" body={variable.relationships.join("\n")} label={String(variable.relationships.length)} mono />
+              )}
+              {variable.unitContext !== null && <GlyphRef icon={Ruler} title="Unit context" body={variable.unitContext} mono />}
+              {variable.cacheTypes.length > 0 && (
+                <GlyphRef icon={DatabaseZap} title="Cached types" body={variable.cacheTypes.join("\n")} label={String(variable.cacheTypes.length)} mono />
+              )}
+            </span>
+          )),
       },
-      { id: "relationships", header: "Points to", render: (variable) => <TruncatedText text={variable.relationships.join(", ")} mono maxWidth={260} /> },
-      { id: "unit", header: "Unit context", render: (variable) => <TruncatedText text={variable.unitContext} mono maxWidth={160} /> },
+      {
+        id: "description",
+        header: "Description",
+        fill: true,
+        floor: 160,
+        render: (variable) => (
+          <TruncatedText text={variable.description ?? variable.title} maxWidth={1200} title={variable.title ?? "Description"} />
+        ),
+      },
     ];
-
-    if (hasCacheTypes) {
-      list.push({
-        id: "cache",
-        header: "Cached types",
-        render: (variable) => <TruncatedText text={variable.cacheTypes.join(", ")} mono maxWidth={200} />,
-      });
-    }
-
-    list.push({
-      id: "description",
-      header: "Description",
-      render: (variable) => (
-        <TruncatedText text={variable.description ?? variable.title} maxWidth={380} title={variable.title ?? "Description"} />
-      ),
-    });
     return list;
-  }, [hasCacheTypes]);
+  }, []);
 
   return (
     <div className="flex flex-col gap-3" data-testid="templates-view">
@@ -229,7 +243,6 @@ export function TemplateView({ detail, previewSchema, actions }: TemplateViewPro
             rows={rows}
             rowKey={(variable) => variable.path}
             emptyMessage="No variable matches the filter."
-            minWidth={980}
             skeletonRows={8}
             data-testid="templates-view-variables-table"
           />

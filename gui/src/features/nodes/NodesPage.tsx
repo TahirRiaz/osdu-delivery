@@ -6,6 +6,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { OnlineBadge } from "../../components/StatusBadge";
+import { TruncatedText } from "../../components/TruncatedText";
 import { NodeRestartButton } from "./NodeRestartButton";
 import { NodeDeleteButton } from "./NodeDeleteButton";
 import { PurgeOfflineNodesButton } from "./PurgeOfflineNodesButton";
@@ -15,12 +16,27 @@ const columns: Column<Node>[] = [
   {
     id: "name",
     header: "Name",
-    render: (row) => <span className="font-mono text-[12px] font-medium">{row.name}</span>,
+    fill: true,
+    floor: 140,
+    render: (row) => <TruncatedText text={row.name} mono maxWidth={1200} className="font-medium" />,
   },
   { id: "status", header: "Status", render: (row) => <OnlineBadge online={row.online} /> },
   { id: "version", header: "Version", render: (row) => <Mono>{row.version ?? "-"}</Mono> },
-  { id: "firstSeen", header: "First seen", render: (row) => <RelativeTime value={row.firstSeenUtc} /> },
-  { id: "lastSeen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },
+  {
+    id: "lastSeen",
+    header: "Last seen",
+    // When a node first appeared qualifies how long it has been seen, so it follows the last sighting and gives way
+    // first in a narrow table.
+    render: (row) => (
+      <span className="inline-flex items-baseline gap-1.5">
+        <RelativeTime value={row.lastSeenUtc} />
+        <span className="inline-flex items-baseline gap-1.5 text-muted-foreground @max-3xl/table:sr-only">
+          since
+          <RelativeTime value={row.firstSeenUtc} />
+        </span>
+      </span>
+    ),
+  },
   {
     id: "actions",
     header: "",

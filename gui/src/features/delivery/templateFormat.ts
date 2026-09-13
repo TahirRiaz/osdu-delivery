@@ -47,6 +47,22 @@ export function entityName(kind: string): string {
   return at < 0 ? entityType : entityType.slice(at + 2);
 }
 
+/**
+ * An OSDU kind cut where a reader's eye goes: what leads to the entity name (osdu:wks:master-data--), the name itself
+ * (Wellbore), and the version after it (:1.3.0). The three concatenate back to the kind; a string that is not an
+ * authority:source:entity:version kind is all name.
+ */
+export function splitKind(kind: string): { prefix: string; entity: string; version: string } {
+  const parts = kind.split(":");
+  if (parts.length !== 4) {
+    return { prefix: "", entity: kind, version: "" };
+  }
+
+  const at = parts[2].lastIndexOf("--");
+  const cut = at < 0 ? 0 : at + 2;
+  return { prefix: `${parts[0]}:${parts[1]}:${parts[2].slice(0, cut)}`, entity: parts[2].slice(cut), version: `:${parts[3]}` };
+}
+
 /** One string naming a template version, for a select's value. A kind holds no spaces, so a space separates the two. */
 export function templateKey(kind: string, version: string): string {
   return `${kind} ${version}`;

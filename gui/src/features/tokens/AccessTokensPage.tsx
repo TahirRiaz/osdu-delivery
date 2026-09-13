@@ -252,7 +252,7 @@ function CreateTokenSheet({
   );
 }
 
-const TOKEN_HEADERS = ["Name", "Prefix", "Scopes", "Status", "Last used", "Expires", "Created", "Actions"];
+const TOKEN_HEADERS = ["Name", "Scopes", "Status", "Last used", "Expires", "Created", "Actions"];
 
 /**
  * Self-service management of the signed-in user's personal access tokens: long-lived bearer credentials for headless
@@ -330,7 +330,7 @@ export default function AccessTokensPage() {
             ))}
             {tokens !== undefined && tokens.length === 0 && (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={TOKEN_HEADERS.length} className="border-0 p-0">
+                <TableCell colSpan={TOKEN_HEADERS.length} className="whitespace-normal border-0 p-0">
                   <EmptyState
                     icon={<KeyRound />}
                     title="You have no personal access tokens yet"
@@ -348,11 +348,12 @@ export default function AccessTokensPage() {
               const state = tokenState(token, nowMs);
               return (
                 <TableRow key={token.id} data-testid="token-row">
-                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px] font-medium">
-                    {token.name}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap px-3 py-1.5">
-                    <code className="font-mono text-[12px]">{token.prefix}...</code>
+                  {/* The prefix identifies the token the name labels, so it sits under the name. */}
+                  <TableCell className="whitespace-nowrap px-3 py-1.5 text-[13px]">
+                    <div className="flex flex-col">
+                      <span className="font-medium">{token.name}</span>
+                      <code className="font-mono text-[11px] text-muted-foreground">{token.prefix}...</code>
+                    </div>
                   </TableCell>
                   <TableCell className="px-3 py-1.5">
                     <div className="flex flex-wrap gap-1">

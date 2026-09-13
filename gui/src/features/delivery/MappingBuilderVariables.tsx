@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { DatabaseZap, OctagonAlert, Plus, TriangleAlert } from "lucide-react";
+import { DatabaseZap, Link2, OctagonAlert, Plus, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import type {
 } from "../../api/delivery";
 import { DataTable, type Column } from "../../components/DataTable";
 import { FilterBar } from "../../components/FilterBar";
+import { GlyphRef } from "../../components/GlyphRef";
 import { SearchInput } from "../../components/SearchInput";
 import { TruncatedText } from "../../components/TruncatedText";
 import { keyVariable, type EntryEditorTarget } from "./MappingEntryEditor";
@@ -168,22 +169,37 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
       },
     },
     { id: "shape", header: "Shape", render: (row) => <span className="font-mono text-[12px]">{shapeText(row.variable)}</span> },
-    { id: "relationships", header: "Points to", render: (row) => <TruncatedText text={row.variable.relationships.join(", ")} mono maxWidth={220} /> },
+    {
+      id: "relationships",
+      header: "Points to",
+      render: (row) => (
+        <GlyphRef
+          icon={Link2}
+          title="Points to"
+          body={row.variable.relationships.join("\n")}
+          label={String(row.variable.relationships.length)}
+          mono
+        />
+      ),
+    },
     {
       id: "entry",
       header: "Entry",
+      fill: true,
+      floor: 180,
       render: (row) => {
         const finding = findings.get(row.key);
         return (
-          <span className="inline-flex items-center gap-1.5" data-testid={`mapping-builder-entry-summary-${row.key}`}>
+          <span className="flex min-w-0 items-center gap-1.5" data-testid={`mapping-builder-entry-summary-${row.key}`}>
             {finding === "error" && <OctagonAlert className="size-3.5 shrink-0 text-destructive" aria-label="The check found an error" />}
             {finding === "warning" && <TriangleAlert className="size-3.5 shrink-0 text-warning" aria-label="The check found a warning" />}
             {row.entry === null
               ? <span className="text-muted-foreground">Not filled</span>
-              : <TruncatedText text={entrySummary(row.entry)} mono maxWidth={260} />}
+              : <TruncatedText text={entrySummary(row.entry)} mono maxWidth={1200} className="min-w-0" />}
             {row.entry !== null && row.entry.prefilled && (
-              <Badge variant="secondary" className="bg-info/15 text-[10px] text-info" data-testid="mapping-builder-prefilled">
-                Prefilled from cache
+              <Badge variant="secondary" className="shrink-0 bg-info/15 text-[10px] text-info" data-testid="mapping-builder-prefilled">
+                Prefilled
+                <span className="@max-3xl/table:sr-only"> from cache</span>
               </Badge>
             )}
           </span>
@@ -204,7 +220,7 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
               data-testid={`mapping-builder-use-cache-${row.key}`}
             >
               <DatabaseZap />
-              Use cache
+              <span className="@max-3xl/table:sr-only">Use cache</span>
             </Button>
           )}
           {row.kind === "variable" && row.variable.keyValueType !== null && (
@@ -218,7 +234,7 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
               data-testid={`mapping-builder-add-key-${row.key}`}
             >
               <Plus />
-              Add a key
+              <span className="@max-3xl/table:sr-only">Add a key</span>
             </Button>
           )}
         </span>
@@ -253,7 +269,6 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
         rowKey={(row) => row.key}
         onRowClick={(row) => onOpen({ variable: row.variable, entry: row.entry, keyHolder: null, outside: row.outside })}
         emptyMessage={onlyEntries && term === "" ? "No variable has an entry yet." : "No variable matches the filter."}
-        minWidth={860}
         skeletonRows={8}
         data-testid="mapping-builder-variables"
       />

@@ -62,7 +62,8 @@ export function NodeRestartButton({ node }: { node: Node }) {
         data-testid="node-restart-button"
       >
         <RotateCcw />
-        Restart
+        {/* In a narrow nodes table the glyph stands alone; the word stays the button's name. */}
+        <span className="@max-3xl/table:sr-only">Restart</span>
       </Button>
       <ConfirmDialog
         open={confirmOpen}

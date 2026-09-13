@@ -45,7 +45,8 @@ export function NodeDeleteButton({ node }: { node: Node }) {
         data-testid="node-delete-button"
       >
         <Trash2 />
-        Delete
+        {/* In a narrow nodes table the glyph stands alone; the word stays the button's name. */}
+        <span className="@max-3xl/table:sr-only">Delete</span>
       </Button>
       <ConfirmDialog
         open={confirmOpen}

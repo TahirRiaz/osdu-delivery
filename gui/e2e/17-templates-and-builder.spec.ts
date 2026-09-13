@@ -12,6 +12,7 @@ import { expect, test } from "./helpers";
 const WELLBORE_KIND = "osdu:wks:master-data--Wellbore:1.3.0";
 const WELLBORE_VERSION = "a110ad82c3b60a1e";
 const WELLBORE_FILE = "osdu_wks_master-data--Wellbore_1.3.0.json";
+
 const DATA_DEFINITIONS = "https://community.opengroup.org/osdu/data/data-definitions";
 const RELEASE = {
   name: "v0.30.0",
@@ -61,6 +62,12 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(sheet.getByTestId("templates-view-variable-osdu.id")).toHaveCount(0);
     await sheet.getByTestId("templates-view-show-written").click();
     await expect(sheet.getByTestId("templates-view-variable-osdu.id")).toBeVisible();
+
+    // Each writer is marked apart from what a mapping fills: its own label and glyph, and no marker on a mapping's variable.
+    await expect(sheet.getByTestId("templates-view-role-osdu.createTime")).toHaveText("OSDU sets it");
+    await expect(sheet.getByTestId("templates-view-role-osdu.createTime").locator("svg")).toHaveCount(1);
+    await expect(sheet.getByTestId("templates-view-role-osdu.id")).toHaveText("OSDU Delivery writes it");
+    await expect(sheet.getByTestId("templates-view-role-osdu.data.FacilityName")).toHaveCount(0);
 
     await sheet.getByTestId("templates-view-tab-schema").click();
     await expect(sheet.getByTestId("templates-view-schema-json")).toBeVisible({ timeout: 15_000 });

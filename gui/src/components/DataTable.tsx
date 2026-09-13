@@ -13,6 +13,14 @@ export interface Column<T> {
   render: (row: T) => ReactNode;
   align?: "left" | "right" | "center";
   width?: number | string;
+  /**
+   * Takes the width the other columns leave and clips its content to it, instead of pushing the table wider than its
+   * panel. Meant for a long free-text column (a kind, a path, a description) whose content clips itself (TruncatedText
+   * and the like); several fill columns share what is left. A table with a fill column needs no `minWidth`.
+   */
+  fill?: boolean;
+  /** For a fill column, the width in pixels it never gives up, so a squeezed table keeps enough of it to read. */
+  floor?: number;
 }
 
 /** One nesting level of a {@link TableGrouping}: CONTIGUOUS rows sharing this level's key nest under one
@@ -210,10 +218,19 @@ export function DataTable<T>({
         {columns.map((column, i) => (
           <TableCell
             key={column.id}
-            className={cn("whitespace-nowrap px-3 py-1.5 text-[13px]", alignClass(column.align))}
+            // A fill cell's zero max-width is what lets the column give up width: the table no longer sizes it to its
+            // content, so it takes what remains and its content clips.
+            className={cn(
+              "whitespace-nowrap px-3 py-1.5 text-[13px]",
+              column.fill && "w-full max-w-0 overflow-hidden",
+              alignClass(column.align),
+            )}
             // Only grouped leaves (depth > 0) indent under their node; a flat row keeps the default cell
             // padding so its first column lines up with the header.
-            style={i === 0 && depth > 0 ? { paddingLeft: TREE_INDENT * depth + 12 } : undefined}
+            style={{
+              paddingLeft: i === 0 && depth > 0 ? TREE_INDENT * depth + 12 : undefined,
+              minWidth: column.fill ? column.floor : undefined,
+            }}
           >
             {column.render(row)}
           </TableCell>
@@ -274,7 +291,9 @@ export function DataTable<T>({
     renderLevel(group.transform ? group.transform(items) : items, group.levels, 0, "");
 
   return (
-    <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid={testId}>
+    // A named container, so a cell can let a secondary part give way when the table itself is narrow
+    // (`@max-3xl/table:sr-only`), whatever the viewport.
+    <Card className="@container/table gap-0 overflow-hidden rounded-lg p-0" data-testid={testId}>
       {/* The ui Table brings its own overflow-x container; minWidth is what actually gives a wide table
           something to scroll, since a w-full table would otherwise just compress its columns to fit. */}
       {toolbar}
@@ -299,6 +318,7 @@ export function DataTable<T>({
                   key={column.id}
                   className={cn(
                     "h-8 whitespace-nowrap px-3 text-xs font-medium text-muted-foreground",
+                    column.fill && "w-full",
                     alignClass(column.align),
                   )}
                   style={{ width: column.width }}
@@ -321,7 +341,8 @@ export function DataTable<T>({
             ))}
             {rows !== undefined && rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={columns.length + (selection === undefined ? 0 : 1)} className="border-0 p-0">
+                {/* The empty message wraps: a cell's no-wrap default would make a sentence the table's width. */}
+                <TableCell colSpan={columns.length + (selection === undefined ? 0 : 1)} className="whitespace-normal border-0 p-0">
                   <EmptyState title={emptyMessage} data-testid="empty-message" />
                 </TableCell>
               </TableRow>

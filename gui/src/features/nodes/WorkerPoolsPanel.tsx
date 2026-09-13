@@ -37,7 +37,8 @@ export function WorkerPoolsPanel() {
   });
 
   return (
-    <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid="worker-pools-panel">
+    // The `table` container lets a pool's secondary line give way when the panel is narrow, as in DataTable.
+    <Card className="@container/table gap-0 overflow-hidden rounded-lg p-0" data-testid="worker-pools-panel">
       <div className="flex flex-col gap-1 p-4 pb-3">
         <h2 className="text-base font-medium">Worker pools</h2>
         <p className="text-[13px] text-muted-foreground">
@@ -108,7 +109,7 @@ function WorkerPoolRow({ pool, canOperate }: { pool: WorkerPool; canOperate: boo
         <div className="flex flex-col">
           <span className="font-mono text-[12px] font-medium">{poolLabel(pool.pool)}</span>
           {pool.updatedUtc !== null && (
-            <span className="text-xs text-muted-foreground">
+            <span className="text-xs text-muted-foreground @max-3xl/table:sr-only">
               updated <RelativeTime value={pool.updatedUtc} />{pool.updatedBy !== null ? ` by ${pool.updatedBy}` : ""}
             </span>
           )}

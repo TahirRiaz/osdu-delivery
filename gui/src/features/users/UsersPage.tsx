@@ -505,10 +505,15 @@ export default function UsersPage() {
   const columns: Column<User>[] = [
     {
       id: "username",
-      header: "Username",
-      render: (row) => <span className="font-mono text-[12px] font-medium">{row.username}</span>,
+      header: "User",
+      // The display name labels the account the username signs in as, so it sits under the username.
+      render: (row) => (
+        <div className="flex flex-col">
+          <span className="font-mono text-[12px] font-medium">{row.username}</span>
+          {row.displayName !== null && <span className="text-[11px] text-muted-foreground">{row.displayName}</span>}
+        </div>
+      ),
     },
-    { id: "displayName", header: "Display name", render: (row) => row.displayName ?? "-" },
     { id: "role", header: "Role", render: (row) => <Badge variant="secondary">{row.role}</Badge> },
     { id: "provider", header: "Provider", render: (row) => <Badge variant="outline">{row.provider}</Badge> },
     { id: "status", header: "Status", render: (row) => <ActiveBadge active={row.active} /> },

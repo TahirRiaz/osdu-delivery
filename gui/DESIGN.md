@@ -209,6 +209,21 @@ chevrons (a `levels` list, each an independently expandable node level above the
 board's schedule -> batch -> step); skeleton rows while loading; `EmptyState` inside when empty; numeric
 columns right-aligned mono tabular; status columns render `StatusBadge`.
 
+A table does not scroll sideways to fit a long value. Its long free-text columns (a kind, a path, a
+description) are `fill` columns, which share the width the others leave and clip, with the full value on
+hover (`KindText` keeps an OSDU kind's entity name and version in view and clips the prefix first; a
+variable path keeps its own name and clips its parents, both through `HeadClippedText`). An empty
+message wraps inside the table rather than widening it. A secondary fact shares
+the cell of the fact it qualifies (when, then by whom) instead of taking a column, and a value that reads as
+one of a few sorts (a template's origin) shows a glyph and a word, with the full text on hover. A fill
+column's `floor` is the width it keeps however narrow the table gets. The table card is the `table`
+container, so in a narrow table the secondary parts give way (`@max-3xl/table:sr-only`: the word beside a
+glyph, who beside when) while staying in the row's text for assistive tech. A secondary value that is a
+list or a long string (the kinds a variable points to, a document's path) is a `GlyphRef`: a glyph, at most
+a word or a count, and the value in the hover panel. Row actions are `IconAction`s, a glyph with its label as
+tooltip and accessible name, rather than a column of worded buttons. `minWidth`
+is left for a table whose every column is essential and none can clip.
+
 ### 7.3 StatusBadge
 
 One component maps every domain status (run, node, schedule, user, sync) to {icon, label, status

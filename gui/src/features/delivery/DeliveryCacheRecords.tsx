@@ -48,10 +48,11 @@ function FieldPairs({ fields }: { fields: Record<string, unknown> }) {
     return <span className="text-muted-foreground">-</span>;
   }
 
+  // The pairs share the width the table leaves; the last ones clip, and the record's sheet lists every value.
   return (
-    <span className="inline-flex items-baseline gap-3">
+    <span className="flex min-w-0 items-baseline gap-3 overflow-hidden">
       {entries.map(([name, value]) => (
-        <span key={name} className="inline-flex items-baseline gap-1">
+        <span key={name} className="inline-flex shrink-0 items-baseline gap-1">
           <span className="text-[11px] text-muted-foreground">{name}</span>
           <TruncatedText text={cachedCell(value)} mono maxWidth={160} />
         </span>
@@ -146,25 +147,32 @@ export function DeliveryCacheRecords({ repoId, type, fields, search, version, hi
   const [item, setItem] = useState<DeliveryCachedItem | null>(null);
 
   const columns = useMemo<Column<DeliveryCachedItem>[]>(() => {
-    const id: Column<DeliveryCachedItem> = {
-      id: "recordId",
-      header: "OSDU id",
-      // With a type in scope the prefix repeats down the column, so it gets less room and gives way to the tail.
-      render: (row) => <RecordId id={row.recordId} maxWidth={type === null ? 360 : 280} />,
-    };
     if (type !== null && fields.length > 0) {
+      // One column per captured name: the id takes the width the values leave, its repeated prefix giving way first.
       return [
-        id,
+        {
+          id: "recordId",
+          header: "OSDU id",
+          fill: true,
+          floor: 200,
+          render: (row) => <RecordId id={row.recordId} maxWidth={1200} />,
+        },
         ...fields.map((name): Column<DeliveryCachedItem> => ({
           id: `field:${name}`,
           header: name,
-          render: (row) => <TruncatedText text={cachedCell(row.fields[name])} mono maxWidth={260} />,
+          render: (row) => <TruncatedText text={cachedCell(row.fields[name])} mono maxWidth={200} />,
         })),
       ];
     }
 
+    // The values fold into one column, which takes the width the id leaves.
+    const id: Column<DeliveryCachedItem> = {
+      id: "recordId",
+      header: "OSDU id",
+      render: (row) => <RecordId id={row.recordId} maxWidth={type === null ? 260 : 240} />,
+    };
     const values: Column<DeliveryCachedItem> = {
-      id: "values", header: "Cached values", render: (row) => <FieldPairs fields={row.fields} />,
+      id: "values", header: "Cached values", fill: true, floor: 200, render: (row) => <FieldPairs fields={row.fields} />,
     };
     return type === null
       ? [{ id: "type", header: "Type", render: (row) => <span className="font-mono text-[12px]">{row.typeName}</span> }, id, values]
