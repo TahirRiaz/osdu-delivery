@@ -143,6 +143,7 @@ public sealed class RunTriggerApiTests
         // -> background worker -> shared DocumentExecutor -> catalog write-back -> read API, against the real DB.
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.ProvisionAsync(cs);
+        await SampleEstate.SaveTemplatesAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoName = "cp_rt_" + suffix;

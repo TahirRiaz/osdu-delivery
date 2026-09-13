@@ -17,6 +17,8 @@ test.describe.serial("manual submission", () => {
     const wellbore = rows.filter({ hasText: "wellbore-records" });
     await expect(wellbore).toContainText("Wellbore@1.0.0");
     await expect(wellbore).toContainText("site");
+    // And what the records become: the template kind that mapping fills.
+    await expect(adminPage.getByTestId("manual-submission-template-wellbore-records")).toContainText("osdu:wks:master-data--Wellbore:1.3.0");
   });
 
   test("the switch shows the flows that take no records, with the reason", async ({ adminPage }) => {

@@ -12,8 +12,8 @@ using SqlFlow.Delivery.Snapshots;
 namespace SqlFlow.Delivery.Engine.Snapshots;
 
 /// <summary>
-/// The <c>snapshot</c> verb's engine (design.md section 11): captures schema and reference snapshots from OSDU, or
-/// from local files for offline work, and mints immutable versions in the store.
+/// The cache capture's engine (design.md section 11): captures reference snapshots from OSDU, or from local files for
+/// offline work, and mints immutable versions in the store.
 /// </summary>
 public sealed partial class SnapshotBuilder
 {
@@ -29,36 +29,6 @@ public sealed partial class SnapshotBuilder
         _store = store;
         _time = time;
         _logger = logger;
-    }
-
-    /// <summary>Bundles a kind's schema from a local data-definitions checkout and saves it.</summary>
-    public async Task<SchemaSnapshot> SchemaFromDirectoryAsync(string dataRoot, string kind, CancellationToken ct = default)
-    {
-        var file = SchemaBundler.LocateKindFile(dataRoot, kind);
-        var root = JsonNode.Parse(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false)) as JsonObject
-            ?? throw new DeliveryException($"Schema file '{file}' is not a JSON object.");
-        var bundled = await SchemaBundler.BundleAsync(root, file, SchemaBundler.DirectoryResolver(dataRoot), ct).ConfigureAwait(false);
-        var snapshot = new SchemaSnapshot(kind, bundled, _time.GetUtcNow());
-        await _store.SaveSchemaAsync(snapshot, ct).ConfigureAwait(false);
-        _logger.LogInformation("Schema snapshot {Kind} version {Version} saved from {File}.", kind, snapshot.Version, file);
-        return snapshot;
-    }
-
-    /// <summary>Fetches a kind's schema from the OSDU schema service, bundles its references and saves it.</summary>
-    public async Task<SchemaSnapshot> SchemaFromOsduAsync(OsduConnection osdu, string kind, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(osdu);
-        var root = await osdu.GetJsonAsync($"{SchemaPath}/{Http.UrlPath.EscapeSegment(kind)}", ct).ConfigureAwait(false);
-        var bundled = await SchemaBundler.BundleAsync(root, kind, async (reference, _, token) =>
-        {
-            var id = reference.Replace("#/definitions/", string.Empty, StringComparison.Ordinal);
-            var schema = await osdu.GetJsonAsync($"{SchemaPath}/{Http.UrlPath.EscapeSegment(id)}", token).ConfigureAwait(false);
-            return (id, schema);
-        }, ct).ConfigureAwait(false);
-        var snapshot = new SchemaSnapshot(kind, bundled, _time.GetUtcNow());
-        await _store.SaveSchemaAsync(snapshot, ct).ConfigureAwait(false);
-        _logger.LogInformation("Schema snapshot {Kind} version {Version} saved from {Endpoint}.", kind, snapshot.Version, osdu.Endpoint);
-        return snapshot;
     }
 
     /// <summary>Builds a reference snapshot from local type files ({Name}.json in the store's type format) and mints a version.</summary>
@@ -161,9 +131,6 @@ public sealed partial class SnapshotBuilder
 
     /// <summary>The cursor search the capture pages through (openapi search v2, POST /query_with_cursor).</summary>
     private const string SearchPath = "/api/search/v2/query_with_cursor";
-
-    /// <summary>The schema service's read endpoint (openapi schema_service v1, GET /schema/{id}).</summary>
-    private const string SchemaPath = "/api/schema-service/v1/schema";
 
     /// <summary>Captures one reference type: every hit of its search kind, projected onto the paths it declares.</summary>
     public async Task<ReferenceType> CaptureTypeAsync(OsduConnection osdu, ReferenceTypeSpec typeSpec, CancellationToken ct = default)

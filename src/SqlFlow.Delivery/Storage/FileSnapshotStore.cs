@@ -12,8 +12,6 @@ namespace SqlFlow.Delivery.Storage;
 /// <summary>
 /// The snapshot store as files under one root (a local directory or a blob prefix):
 /// <code>
-/// schemas/{kind-slug}.json           bundled JSON Schema
-/// schemas/{kind-slug}.meta.json      { kind, version, capturedUtc }
 /// references/{version}/manifest.json { version, capturedUtc, contentHash, types }
 /// references/{version}/{Type}.json   { entityType, items: [...] }
 /// references/current                 the version 'pinned' resolves to
@@ -36,41 +34,6 @@ public sealed class FileSnapshotStore : ISnapshotStore
     }
 
     public string Root => _root;
-
-    public async Task<SchemaSnapshot?> LoadSchemaAsync(string kind, CancellationToken ct = default)
-    {
-        var slug = Slug(kind);
-        var schemaPath = Join("schemas", slug + ".json");
-        var metaPath = Join("schemas", slug + ".meta.json");
-        var json = await ReadTextAsync(schemaPath, ct).ConfigureAwait(false);
-        if (json is null)
-        {
-            return null;
-        }
-
-        var captured = DateTimeOffset.UnixEpoch;
-        var meta = await ReadTextAsync(metaPath, ct).ConfigureAwait(false);
-        if (meta is not null && JsonNode.Parse(meta) is JsonObject m && m["capturedUtc"]?.GetValue<string>() is { } c)
-        {
-            captured = DateTimeOffset.Parse(c, CultureInfo.InvariantCulture);
-        }
-
-        return SchemaSnapshot.Parse(kind, json, captured);
-    }
-
-    public async Task SaveSchemaAsync(SchemaSnapshot schema, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(schema);
-        var slug = Slug(schema.Kind);
-        await WriteTextAsync(Join("schemas", slug + ".json"), CanonicalJson.Pretty(schema.Root), ct).ConfigureAwait(false);
-        var meta = new JsonObject
-        {
-            ["kind"] = schema.Kind,
-            ["version"] = schema.Version,
-            ["capturedUtc"] = CanonicalJson.FormatDateTime(schema.CapturedUtc),
-        };
-        await WriteTextAsync(Join("schemas", slug + ".meta.json"), CanonicalJson.Pretty(meta), ct).ConfigureAwait(false);
-    }
 
     public async Task<string?> CurrentReferenceVersionAsync(CancellationToken ct = default)
     {

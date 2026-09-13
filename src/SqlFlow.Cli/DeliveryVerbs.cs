@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -9,19 +10,22 @@ using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Templates;
 using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Cli;
 
 /// <summary>
-/// The delivery kind's own verbs: <c>check</c> (everything checkable offline for one flow: the mapping against
-/// the schema snapshot, the reference snapshot, and the drop's manifest when the drop is present) and
-/// <c>snapshot</c> (capture or list the schema and reference snapshots a flow renders with, into the snapshot
-/// store its repository layout locates). Both work without a catalog; a flow whose snapshots are captured here is
-/// ready for <c>sqlflow run</c>.
+/// The delivery kind's own verbs: <c>check</c> (everything checkable offline for one flow: the mapping against its
+/// pinned template, the reference snapshot, and the drop's manifest when the drop is present), <c>snapshot</c> (capture
+/// or list the reference snapshots of the cache a flow renders against), and <c>template</c> (capture, import, list,
+/// show and delete the templates in the catalog, docs/delivery/mapping-templates.md).
 /// </summary>
 internal static class DeliveryVerbs
 {
+    private const string TemplateUsage =
+        "Usage: sqlflow template (capture <flow.yaml> --kind <kind> [--endpoint <url>] | import <schema.json> --kind <kind> | import --from-dir <dir> --kind <kind> | list | show --kind <kind> [--version <version>] | delete --kind <kind> --version <version>) [--db <conn-ref>] [--json]";
+
     public static async Task<int> CheckAsync(IServiceProvider provider, string flowPath, string[] args, bool json, CancellationToken ct)
     {
         var engine = provider.GetRequiredService<EngineContext>();
@@ -34,7 +38,7 @@ internal static class DeliveryVerbs
             ["flow"] = runtime.Flow.Name,
             ["flowId"] = runtime.Flow.Id.ToString("D"),
             ["mapping"] = runtime.Mapping.Mapping.Reference,
-            ["kind"] = runtime.Mapping.Mapping.Kind,
+            ["template"] = new JsonObject { ["kind"] = runtime.Mapping.Mapping.Template.Kind, ["version"] = runtime.Mapping.Mapping.Template.Version },
             ["renderContext"] = JsonNode.Parse(runtime.Mapping.Context.Canonical()),
             ["drop"] = runtime.DropLocation,
             ["mappings"] = runtime.Layout.MappingsDirectory,
@@ -70,8 +74,8 @@ internal static class DeliveryVerbs
         }
 
         Console.WriteLine($"OK  {runtime.Flow.Name} ({runtime.Flow.Id:D})");
-        Console.WriteLine($"    mapping     {runtime.Mapping.Mapping.Reference} -> {runtime.Mapping.Mapping.Kind}");
-        Console.WriteLine($"    schema      {runtime.Mapping.Schema.Version} (captured {runtime.Mapping.Schema.CapturedUtc:u})");
+        Console.WriteLine($"    mapping     {runtime.Mapping.Mapping.Reference}");
+        Console.WriteLine($"    template    {runtime.Mapping.Mapping.Template} (saved {runtime.Mapping.Schema.CapturedUtc:u})");
         Console.WriteLine($"    references  {runtime.Mapping.References.Version} ({runtime.Mapping.References.Types.Count} type(s))");
         Console.WriteLine($"    context     {runtime.Mapping.Context.Hash()[..16]}");
         Console.WriteLine($"    mappings    {runtime.Layout.MappingsDirectory}");
@@ -98,25 +102,6 @@ internal static class DeliveryVerbs
 
         switch (verb)
         {
-            case "schema":
-            {
-                var kind = Program.GetOption(args, "--kind")
-                    ?? throw new FlowValidationException("Usage: sqlflow snapshot <flow.yaml> schema --kind <authority:source:entityType:version> [--from-dir <dir> | --endpoint <url>]");
-                SchemaSnapshot snapshot;
-                if (Program.GetOption(args, "--from-dir") is { } directory)
-                {
-                    snapshot = await builder.SchemaFromDirectoryAsync(directory, kind, ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    using var osdu = await ConnectAsync(flow, args, engine, ct).ConfigureAwait(false);
-                    snapshot = await builder.SchemaFromOsduAsync(osdu, kind, ct).ConfigureAwait(false);
-                }
-
-                Console.WriteLine($"schema {snapshot.Kind} version {snapshot.Version} -> {layout.SnapshotsRoot}");
-                return 0;
-            }
-
             case "references":
             {
                 var makeCurrent = !args.Contains("--no-current");
@@ -130,7 +115,7 @@ internal static class DeliveryVerbs
                     var specPath = Program.GetOption(args, "--spec")
                         ?? throw new FlowValidationException("Usage: sqlflow snapshot <flow.yaml> references (--from-dir <dir> | --spec <spec.json> [--endpoint <url>]) [--no-current]");
                     var spec = ReferenceCaptureSpec.Parse(await File.ReadAllTextAsync(specPath, ct).ConfigureAwait(false), specPath);
-                    using var osdu = await ConnectAsync(flow, args, engine, ct).ConfigureAwait(false);
+                    using var osdu = await ConnectAsync(flow.Target.Endpoint, flow.Target.Auth, flow.Target.Headers, flow.Reliability, args, engine, ct).ConfigureAwait(false);
                     snapshot = await builder.ReferencesFromOsduAsync(osdu, spec, makeCurrent, ct).ConfigureAwait(false);
                 }
 
@@ -154,24 +139,224 @@ internal static class DeliveryVerbs
                 }
 
                 var mapping = mappings.Load(flow.Render.Mapping);
-                var schema = await store.LoadSchemaAsync(mapping.Kind, ct).ConfigureAwait(false);
-                Console.WriteLine(schema is null
-                    ? $"  schema {mapping.Kind}: not captured (run 'sqlflow snapshot {Path.GetFileName(flowPath)} schema --kind {mapping.Kind}')"
-                    : $"  schema {schema.Kind} version {schema.Version} (captured {schema.CapturedUtc:u})");
+                if (engine.Templates is not { } templates)
+                {
+                    Console.WriteLine($"  template {mapping.Template}: not checked (templates live in the catalog; add --db)");
+                }
+                else
+                {
+                    var template = await templates.LoadAsync(mapping.Template, ct).ConfigureAwait(false);
+                    Console.WriteLine(template is null
+                        ? $"  template {mapping.Template}: not saved (save it on the Templates page, or with 'sqlflow template import')"
+                        : $"  template {mapping.Template} (saved {template.CapturedUtc:u})");
+                }
 
                 return 0;
             }
 
             default:
-                throw new FlowValidationException("Usage: sqlflow snapshot <flow.yaml> (schema | references | list) ...");
+                throw new FlowValidationException("Usage: sqlflow snapshot <flow.yaml> (references | list) ...");
         }
     }
 
+    public static async Task<int> TemplateAsync(IServiceProvider provider, string[] positional, string[] args, bool json, CancellationToken ct)
+    {
+        var engine = provider.GetRequiredService<EngineContext>();
+        var verb = positional.Length > 1 ? positional[1].ToLowerInvariant() : string.Empty;
+        var store = engine.Templates
+            ?? throw new FlowValidationException("Templates live in the catalog. Run 'sqlflow template' with --db <conn-ref>, or set the catalog variable.");
+        var actor = "cli:" + Environment.UserName;
+
+        switch (verb)
+        {
+            case "capture":
+            {
+                var flowPath = positional.Length > 2 ? positional[2] : throw new FlowValidationException(TemplateUsage);
+                var kind = Program.GetOption(args, "--kind") ?? throw new FlowValidationException(TemplateUsage);
+                var text = await File.ReadAllTextAsync(flowPath, ct).ConfigureAwait(false);
+                OsduConnection osdu;
+                string flowName;
+                string endpoint;
+                if (engine.Documents.Probe(text, flowPath).Equals(RetrievalDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
+                {
+                    var retrieval = engine.Documents.ParseRetrieval(text, flowPath);
+                    (flowName, endpoint) = (retrieval.Name, retrieval.Source.Endpoint);
+                    osdu = await ConnectAsync(retrieval.Source.Endpoint, retrieval.Source.Auth, retrieval.Source.Headers, retrieval.Reliability, args, engine, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    var flow = engine.Documents.ParseFlow(text, flowPath);
+                    (flowName, endpoint) = (flow.Name, flow.Target.Endpoint);
+                    osdu = await ConnectAsync(flow.Target.Endpoint, flow.Target.Auth, flow.Target.Headers, flow.Reliability, args, engine, ct).ConfigureAwait(false);
+                }
+
+                using (osdu)
+                {
+                    var schema = await TemplateSources.FetchAsync(osdu, kind, engine.Time, ct).ConfigureAwait(false);
+                    var origin = $"OSDU {Program.GetOption(args, "--endpoint") ?? endpoint} through flow '{flowName}'";
+                    return Report(await store.SaveAsync(schema, origin, actor, ct).ConfigureAwait(false), json);
+                }
+            }
+
+            case "import":
+            {
+                var kind = Program.GetOption(args, "--kind") ?? throw new FlowValidationException(TemplateUsage);
+                SchemaSnapshot schema;
+                string origin;
+                if (Program.GetOption(args, "--from-dir") is { } directory)
+                {
+                    schema = await TemplateSources.FromDirectoryAsync(directory, kind, engine.Time, ct).ConfigureAwait(false);
+                    origin = $"data definitions under {Path.GetFullPath(directory)}";
+                }
+                else
+                {
+                    var file = positional.Length > 2 ? positional[2] : throw new FlowValidationException(TemplateUsage);
+                    schema = TemplateSources.FromBundledJson(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false), kind, engine.Time.GetUtcNow(), file);
+                    origin = $"file {Path.GetFileName(file)}";
+                }
+
+                return Report(await store.SaveAsync(schema, origin, actor, ct).ConfigureAwait(false), json);
+            }
+
+            case "list":
+            {
+                var templates = await store.ListAsync(ct).ConfigureAwait(false);
+                if (json)
+                {
+                    Console.WriteLine(CanonicalJson.Pretty(new JsonArray(templates.Select(t => (JsonNode)Describe(t)).ToArray())));
+                    return 0;
+                }
+
+                if (templates.Count == 0)
+                {
+                    Console.WriteLine("no templates saved yet");
+                }
+
+                foreach (var t in templates)
+                {
+                    Console.WriteLine($"{t.Kind}  {t.Version}  saved {t.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} by {t.CapturedBy}  ({t.Origin})");
+                }
+
+                return 0;
+            }
+
+            case "show":
+            {
+                var kind = Program.GetOption(args, "--kind") ?? throw new FlowValidationException(TemplateUsage);
+                var version = Program.GetOption(args, "--version")
+                    ?? (await store.ListAsync(ct).ConfigureAwait(false)).FirstOrDefault(t => t.Kind == kind)?.Version
+                    ?? throw new FlowValidationException($"There is no saved template for '{kind}'.");
+                var schema = await store.LoadAsync(new TemplateReference(kind, version), ct).ConfigureAwait(false)
+                    ?? throw new FlowValidationException($"There is no template {new TemplateReference(kind, version)}.");
+                var template = OsduTemplate.From(schema);
+                if (json)
+                {
+                    Console.WriteLine(CanonicalJson.Pretty(new JsonObject
+                    {
+                        ["kind"] = template.Kind,
+                        ["version"] = template.Version,
+                        ["variables"] = new JsonArray(template.Variables.Select(v => (JsonNode)Describe(v)).ToArray()),
+                    }));
+                    return 0;
+                }
+
+                Console.WriteLine($"{template.Kind} version {template.Version}: {template.Variables.Count} variable(s)");
+                foreach (var v in template.Variables)
+                {
+                    var notes = new List<string>();
+                    if (v.Required)
+                    {
+                        notes.Add("required");
+                    }
+
+                    if (v.Role != TemplateVariableRole.Mapping)
+                    {
+                        notes.Add(v.Role == TemplateVariableRole.Engine ? "written by OSDU Delivery" : "set by OSDU");
+                    }
+
+                    if (v.Relationships.Count > 0)
+                    {
+                        notes.Add("points to " + string.Join(", ", v.Relationships));
+                    }
+
+                    if (v.UnitContext is not null)
+                    {
+                        notes.Add("unit " + v.UnitContext);
+                    }
+
+                    Console.WriteLine($"  {v.Path.Text,-60} {Shape(v),-22} {string.Join("; ", notes)}");
+                }
+
+                return 0;
+            }
+
+            case "delete":
+            {
+                var kind = Program.GetOption(args, "--kind") ?? throw new FlowValidationException(TemplateUsage);
+                var version = Program.GetOption(args, "--version") ?? throw new FlowValidationException(TemplateUsage);
+                var reference = new TemplateReference(kind, version);
+                await store.DeleteAsync(reference, ct).ConfigureAwait(false);
+                Console.WriteLine($"deleted template {reference}");
+                return 0;
+            }
+
+            default:
+                throw new FlowValidationException(TemplateUsage);
+        }
+    }
+
+    private static int Report(TemplateSaved saved, bool json)
+    {
+        if (json)
+        {
+            var node = Describe(saved.Template);
+            node["outcome"] = saved.Outcome == TemplateSaveOutcome.Created ? "created" : "unchanged";
+            Console.WriteLine(CanonicalJson.Pretty(node));
+            return 0;
+        }
+
+        Console.WriteLine(saved.Outcome == TemplateSaveOutcome.Created
+            ? $"saved template {saved.Template.Reference}"
+            : $"template {saved.Template.Reference} was already saved");
+        return 0;
+    }
+
+    private static JsonObject Describe(TemplateInfo t) => new()
+    {
+        ["kind"] = t.Kind,
+        ["version"] = t.Version,
+        ["capturedUtc"] = t.CapturedUtc.ToString("O", CultureInfo.InvariantCulture),
+        ["capturedBy"] = t.CapturedBy,
+        ["origin"] = t.Origin,
+    };
+
+    private static JsonObject Describe(TemplateVariable v) => new()
+    {
+        ["path"] = v.Path.Text,
+        ["shape"] = v.Shape.ToString(),
+        ["type"] = v.Type,
+        ["itemType"] = v.ItemType,
+        ["required"] = v.Required,
+        ["role"] = v.Role.ToString(),
+        ["relationships"] = new JsonArray(v.Relationships.Select(r => (JsonNode)JsonValue.Create(r)).ToArray()),
+        ["unitContext"] = v.UnitContext,
+        ["description"] = v.Description,
+    };
+
+    private static string Shape(TemplateVariable v) => v.Shape switch
+    {
+        TemplateVariableShape.ValueList => $"list of {v.ItemType}",
+        TemplateVariableShape.Group => "object",
+        TemplateVariableShape.GroupList => "list of objects",
+        TemplateVariableShape.Whole => $"whole {v.Type}",
+        _ => v.Type,
+    };
+
     /// <summary>
-    /// The flow's target as a capture connection: its endpoint (or an explicit <c>--endpoint</c>), auth and headers,
-    /// their references resolved by <see cref="OsduConnection.CreateAsync"/> like every other capture's.
+    /// An OSDU connection over a flow's endpoint (or an explicit <c>--endpoint</c>), auth and headers, their references
+    /// resolved by <see cref="OsduConnection.CreateAsync"/> like every other capture's.
     /// </summary>
-    private static Task<OsduConnection> ConnectAsync(FlowDefinition flow, string[] args, EngineContext engine, CancellationToken ct)
-        => OsduConnection.CreateAsync(
-            Program.GetOption(args, "--endpoint") ?? flow.Target.Endpoint, flow.Target.Auth, flow.Target.Headers, flow.Reliability, engine.Secrets, ct: ct);
+    private static Task<OsduConnection> ConnectAsync(
+        string endpoint, TargetAuth auth, IReadOnlyDictionary<string, string> headers, FlowReliability reliability, string[] args, EngineContext engine, CancellationToken ct)
+        => OsduConnection.CreateAsync(Program.GetOption(args, "--endpoint") ?? endpoint, auth, headers, reliability, engine.Secrets, ct: ct);
 }

@@ -74,6 +74,24 @@ public static class FlowProposalPreflight
                 continue;
             }
 
+            // A companion document (a mapping, say) is not a flow: it validates through the kind that owns it, exactly as
+            // `sqlflow validate` routes it, and declares no flow name or endpoints to compare.
+            try
+            {
+                if (documents.ParseCompanion(file.Content, file.Path) is not null)
+                {
+                    continue;
+                }
+            }
+            catch (SqlFlowException ex)
+            {
+                errors.Add(new ProposalFinding(
+                    file.Path,
+                    "does not parse as the companion document it declares, so the sync would record it as invalid: "
+                    + SecretHygiene.RedactedMessage(ex)));
+                continue;
+            }
+
             FlowDocument document;
             try
             {

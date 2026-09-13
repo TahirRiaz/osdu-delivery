@@ -1,20 +1,19 @@
-using System.Globalization;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
-using SqlFlow.Delivery.Hashing;
-using ContentHash = SqlFlow.Delivery.Hashing.ContentHash;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
+using ContentHash = SqlFlow.Delivery.Hashing.ContentHash;
 
 namespace SqlFlow.Delivery.Rendering;
 
 /// <summary>
-/// Interprets a mapping at render time (design.md section 4.2): walks the declared properties, applies the closed
-/// transform vocabulary, coerces to the pinned schema's types, and assembles the OSDU envelope. The output is a
-/// pure function of the source record and the <see cref="RenderContext"/>.
+/// Renders one record of the incoming dataset into an OSDU record (docs/delivery/mapping-templates.md). The engine writes
+/// <c>id</c> from the dataset key and <c>kind</c> from the template, then writes each entry's value at its template
+/// variable, taking the type from the template. The output is a pure function of the source record and the
+/// <see cref="RenderContext"/>.
 /// </summary>
 public sealed class MappingRenderer
 {
@@ -22,8 +21,9 @@ public sealed class MappingRenderer
     private readonly SchemaSnapshot _schema;
     private readonly ReferenceSnapshot _references;
     private readonly RenderContext _context;
-    private readonly IReadOnlyList<MappingProperty> _keyProperties;
     private readonly IReadOnlyList<string> _requiredData;
+    private readonly IReadOnlyList<MappingEntry> _recordEntries;
+    private readonly IReadOnlyList<(MappingEntry Repeater, IReadOnlyList<MappingEntry> Items)> _repeaters;
 
     public MappingRenderer(MappingDefinition mapping, SchemaSnapshot schema, ReferenceSnapshot references, RenderContext context)
     {
@@ -31,22 +31,16 @@ public sealed class MappingRenderer
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(references);
         ArgumentNullException.ThrowIfNull(context);
+        if (!string.Equals(schema.Kind, mapping.Template.Kind, StringComparison.Ordinal) || !string.Equals(schema.Version, mapping.Template.Version, StringComparison.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"{Where(mapping)}: the mapping fills template {mapping.Template}, but it was given template {schema.Kind} version {schema.Version}.");
+        }
+
         _mapping = mapping;
         _schema = schema;
         _references = references;
         _context = context;
-
-        _keyProperties = mapping.Identity.NaturalKey.Select(path =>
-            mapping.Properties.FirstOrDefault(p => p.Target.Equals(path, StringComparison.Ordinal))
-            ?? throw new FlowValidationException($"{Where(mapping)}: identity.naturalKey names '{path}', which is not a mapped property.")).ToList();
-
-        foreach (var key in _keyProperties)
-        {
-            if (string.IsNullOrWhiteSpace(key.Source))
-            {
-                throw new FlowValidationException($"{Where(mapping)}: natural key property '{key.Target}' has no source binding.");
-            }
-        }
 
         foreach (var (name, parameter) in mapping.Parameters)
         {
@@ -57,61 +51,57 @@ public sealed class MappingRenderer
         }
 
         _requiredData = schema.RequiredAt("data");
+        _recordEntries = mapping.Entries.Where(e => !e.IsRepeater && !e.Target.IsRepeated).ToList();
+        _repeaters = mapping.Entries.Where(e => e.IsRepeater).Select(r => (r, (IReadOnlyList<MappingEntry>)mapping.ItemEntries(r).ToList())).ToList();
     }
 
     public MappingDefinition Mapping => _mapping;
 
     public RenderContext Context => _context;
 
-    /// <summary>Source columns of the natural key, in order, so callers can derive the key without rendering.</summary>
-    public IReadOnlyList<string> NaturalKeyColumns => _keyProperties.Select(p => p.Source!).ToList();
-
-    /// <summary>A <c>{column}</c> token of the identity label template.</summary>
-    public const string LabelTokenPattern = @"\{(?<name>[A-Za-z0-9_\-\.]+)\}";
-
     /// <summary>
-    /// The human-readable label for a row from the mapping's identity.label template ("{wellbore_uwi} {log_name}").
-    /// Display only: it is stored on the ledger record for search and never enters the document or the hash.
+    /// The display label for a row from the mapping's <c>dataset.label</c>. Display only: it is stored on the ledger record
+    /// for search and never enters the record or its hash.
     /// </summary>
     public string? Label(SourceRow row)
     {
         ArgumentNullException.ThrowIfNull(row);
-        if (string.IsNullOrWhiteSpace(_mapping.Identity.Label))
+        if (string.IsNullOrWhiteSpace(_mapping.Dataset.Label))
         {
             return null;
         }
 
-        var label = System.Text.RegularExpressions.Regex.Replace(
-            _mapping.Identity.Label,
-            LabelTokenPattern,
-            m => row.GetString(m.Groups["name"].Value) ?? string.Empty).Trim();
+        var label = MappingMapper.LabelToken().Replace(
+            _mapping.Dataset.Label,
+            m => row.GetString(m.Groups["column"].Value[(DatasetColumn.Prefix.Length + 1)..]) ?? string.Empty).Trim();
         return label.Length == 0 ? null : label.Length <= 400 ? label : label[..400];
     }
 
-    /// <summary>Derives the delivery key from a root row without rendering anything else.</summary>
+    /// <summary>Derives the delivery key from a row without rendering anything else.</summary>
     public DeliveryKey? DeriveKey(SourceRow row, out IReadOnlyList<string?> values)
     {
         ArgumentNullException.ThrowIfNull(row);
-        var list = new List<string?>();
-        foreach (var column in NaturalKeyColumns)
+        var list = new List<string?>(_mapping.Dataset.Key.Count);
+        foreach (var column in _mapping.Dataset.Key)
         {
             list.Add(row.GetString(column));
         }
 
         values = list;
-        return list.Any(string.IsNullOrWhiteSpace) ? null : DeliveryKey.Derive(_mapping.Source.System, list);
+        return list.Any(string.IsNullOrWhiteSpace) ? null : DeliveryKey.Derive(_mapping.Dataset.System, list);
     }
 
     public RenderResult Render(SourceRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
         var holds = new List<string>();
+        var usages = new List<CacheUsage>();
 
         var key = DeriveKey(record.Row, out var keyValues);
-        var sourceKey = SourceKey.Display(_mapping.Source.System, keyValues);
+        var sourceKey = SourceKey.Display(_mapping.Dataset.System, keyValues);
         if (key is null)
         {
-            holds.Add($"natural key incomplete ({sourceKey}): every key column must be non-empty");
+            holds.Add($"dataset key incomplete ({sourceKey}): every key column must be non-empty");
         }
 
         if (key is { } k && record.DeclaredDeliveryKey is { } declared && declared != k.Value)
@@ -119,45 +109,61 @@ public sealed class MappingRenderer
             holds.Add($"drop declares deliveryKey {declared:D} but the mapping derives {k.Value:D} from {sourceKey}; the two halves disagree on identity");
         }
 
-        var partition = _context.DataPartition;
         var document = new JsonObject
         {
             ["kind"] = _mapping.Kind,
-            ["acl"] = new JsonObject
-            {
-                ["owners"] = ToArray(_mapping.Envelope.Acl.Owners),
-                ["viewers"] = ToArray(_mapping.Envelope.Acl.Viewers),
-            },
-            ["legal"] = new JsonObject
-            {
-                ["legaltags"] = ToArray(_mapping.Envelope.LegalTags),
-                ["otherRelevantDataCountries"] = ToArray(_mapping.Envelope.OtherRelevantDataCountries),
-            },
             ["data"] = new JsonObject(),
         };
 
         string? targetId = null;
         if (key is { } dk)
         {
-            targetId = TargetId.Compose(partition, _mapping.EntityType, dk);
+            targetId = TargetId.Compose(_context.DataPartition, _mapping.EntityType, dk);
             document["id"] = targetId;
         }
 
-        if (_mapping.Envelope.Tags.Count > 0)
+        foreach (var entry in _recordEntries)
         {
-            var tags = new JsonObject();
-            foreach (var kv in _mapping.Envelope.Tags)
+            if (EntryValues.Evaluate(entry, record.Row, item: null, this, holds, usages) is { } value)
             {
-                tags[kv.Key] = kv.Value;
+                SetPath(document, entry.Target.Segments.Select(s => s.Name).ToList(), value);
             }
-
-            document["tags"] = tags;
         }
 
-        var usages = new List<CacheUsage>();
-        foreach (var property in _mapping.Properties)
+        foreach (var (repeater, items) in _repeaters)
         {
-            RenderInto(document, property, record.Row, record, string.Empty, holds, usages);
+            if (repeater.AppliesWhen is { } condition && !EntryValues.Applies(condition, record.Row, item: null))
+            {
+                continue;
+            }
+
+            var child = repeater.Source!.Child!;
+            var array = new JsonArray();
+            foreach (var row in record.ScopeRows(child))
+            {
+                var item = new JsonObject();
+                foreach (var entry in items)
+                {
+                    if (EntryValues.Evaluate(entry, record.Row, row, this, holds, usages) is { } value)
+                    {
+                        SetPath(item, entry.Target.WithinItem, value);
+                    }
+                }
+
+                if (item.Count > 0)
+                {
+                    array.Add(item);
+                }
+            }
+
+            if (array.Count > 0)
+            {
+                SetPath(document, repeater.Target.Segments.Select(s => s.Name).ToList(), array);
+            }
+            else if (repeater.Required)
+            {
+                holds.Add($"{repeater.Target.Text}: {repeater.Source} has no rows with values, and the entry is required");
+            }
         }
 
         if (document["data"] is JsonObject data)
@@ -174,9 +180,7 @@ public sealed class MappingRenderer
         var normalized = (JsonObject)CanonicalJson.Normalize(document)!;
         var canonical = CanonicalJson.ToString(normalized);
         // The hash is of the document alone (design.md section 6.3). The render context decides when a record is rendered
-        // again, since a moved mapping version or snapshot re-renders it; the document decides whether it is sent. A hash
-        // that took the context in re-sent every record rendered against a store whenever a new cache version was minted
-        // there, identical documents included.
+        // again, since a moved mapping version or cache version re-renders it; the document decides whether it is sent.
         var metadataHash = ContentHash.Of(canonical);
 
         return new RenderResult
@@ -192,89 +196,11 @@ public sealed class MappingRenderer
         };
     }
 
-    /// <summary>Renders one scalar property against a row, for fixtures and diagnostics. Null means omitted.</summary>
-    public JsonNode? RenderScalar(MappingProperty property, SourceRow row, string pathPrefix, List<string> holds, List<CacheUsage>? usages = null)
-    {
-        ArgumentNullException.ThrowIfNull(property);
-        ArgumentNullException.ThrowIfNull(row);
-        ArgumentNullException.ThrowIfNull(holds);
-        var fullPath = Join(pathPrefix, property.Target);
-        var schemaProperty = _schema.Resolve(fullPath);
-        var raw = Transforms.Apply(property, row, this, fullPath, holds, usages, out var omit);
-        if (omit || raw is null)
-        {
-            return null;
-        }
-
-        var type = schemaProperty?.Type ?? SchemaType.Any;
-        if (raw is JsonArray set)
-        {
-            return CoerceSet(set, type, schemaProperty?.ItemScalarType, fullPath, holds);
-        }
-
-        if (type == SchemaType.Array && schemaProperty?.ItemScalarType is { } itemType)
-        {
-            // A scalar bound to an array of scalars becomes a one-element array.
-            var single = Coerce(raw, itemType, fullPath, holds);
-            return single is null ? null : new JsonArray(single);
-        }
-
-        return Coerce(raw, type, fullPath, holds);
-    }
-
-    /// <summary>
-    /// Writes a set of values (a cached field holding several, say) into the target. An array of scalars takes every
-    /// element; a scalar target takes a set of one and holds the record on a set of more, because silently keeping
-    /// the first would deliver an arbitrary value.
-    /// </summary>
-    private static JsonNode? CoerceSet(JsonArray set, SchemaType type, SchemaType? itemScalarType, string fullPath, List<string> holds)
-    {
-        if (type is SchemaType.Array && itemScalarType is { } itemType)
-        {
-            var items = new JsonArray();
-            foreach (var element in set)
-            {
-                if (element is not null && Coerce(Native(element), itemType, fullPath, holds) is { } coerced)
-                {
-                    items.Add(coerced);
-                }
-            }
-
-            return items.Count > 0 ? items : null;
-        }
-
-        if (type is SchemaType.Array or SchemaType.Object or SchemaType.Any)
-        {
-            return set.DeepClone();
-        }
-
-        if (set.Count == 1 && set[0] is { } only)
-        {
-            return Coerce(Native(only), type, fullPath, holds);
-        }
-
-        holds.Add($"{fullPath}: {set.Count} values were selected but the schema type is {type.ToString().ToLowerInvariant()}; select one value or bind an array");
-        return null;
-    }
-
-    /// <summary>A JSON node as the CLR value the scalar coercions expect, so a cached node coerces like a source value.</summary>
-    private static object Native(JsonNode node) => node is JsonValue value
-        ? value.GetValueKind() switch
-        {
-            JsonValueKind.String => value.GetValue<string>(),
-            JsonValueKind.True or JsonValueKind.False => value.GetValue<bool>(),
-            JsonValueKind.Number => value.GetValue<double>(),
-            _ => node,
-        }
-        : node;
-
     internal ReferenceSnapshot References => _references;
 
     internal SchemaSnapshot Schema => _schema;
 
     internal string DataPartition => _context.DataPartition;
-
-    internal string SourceSystem => _mapping.Source.System;
 
     internal string? ParameterValue(string name)
     {
@@ -286,59 +212,7 @@ public sealed class MappingRenderer
         return _mapping.Parameters.TryGetValue(name, out var declared) ? declared.Default : null;
     }
 
-    private void RenderInto(JsonObject root, MappingProperty property, SourceRow row, SourceRecord record, string pathPrefix, List<string> holds, List<CacheUsage> usages)
-    {
-        var fullPath = Join(pathPrefix, property.Target);
-        if (property.Collection)
-        {
-            var scope = property.Scope ?? property.Source
-                ?? throw new FlowValidationException($"{Where(_mapping)}: collection property '{fullPath}' names no scope.");
-            var rows = record.ScopeRows(scope);
-            var items = new JsonArray();
-            foreach (var itemRow in rows)
-            {
-                var item = new JsonObject();
-                foreach (var child in ChildProperties(property, fullPath))
-                {
-                    RenderInto(item, child, itemRow, record, fullPath, holds, usages);
-                }
-
-                if (item.Count > 0)
-                {
-                    items.Add(item);
-                }
-            }
-
-            if (items.Count > 0)
-            {
-                SetPath(root, property.Target, items);
-            }
-
-            return;
-        }
-
-        if (property.IsObject)
-        {
-            var obj = new JsonObject();
-            foreach (var child in ChildProperties(property, fullPath))
-            {
-                RenderInto(obj, child, row, record, fullPath, holds, usages);
-            }
-
-            if (obj.Count > 0)
-            {
-                SetPath(root, property.Target, obj);
-            }
-
-            return;
-        }
-
-        var value = RenderScalar(property, row, pathPrefix, holds, usages);
-        if (value is not null)
-        {
-            SetPath(root, property.Target, value);
-        }
-    }
+    internal static string Where(MappingDefinition mapping) => mapping.SourcePath ?? mapping.Reference;
 
     /// <summary>One row per cached path a record actually consumed; a value read twice is one dependency.</summary>
     private static IReadOnlyList<CacheUsage> Distinct(List<CacheUsage> usages)
@@ -361,23 +235,10 @@ public sealed class MappingRenderer
         return unique;
     }
 
-    private IReadOnlyList<MappingProperty> ChildProperties(MappingProperty property, string fullPath)
+    private static void SetPath(JsonObject root, IReadOnlyList<string> segments, JsonNode value)
     {
-        if (property.Definition is { } name)
-        {
-            return _mapping.Definitions.TryGetValue(name, out var defined)
-                ? defined
-                : throw new FlowValidationException($"{Where(_mapping)}: property '{fullPath}' references definition '{name}', which does not exist.");
-        }
-
-        return property.Properties;
-    }
-
-    private static void SetPath(JsonObject root, string dottedPath, JsonNode value)
-    {
-        var segments = dottedPath.Split('.', StringSplitOptions.RemoveEmptyEntries);
         var current = root;
-        for (var i = 0; i < segments.Length - 1; i++)
+        for (var i = 0; i < segments.Count - 1; i++)
         {
             if (current[segments[i]] is not JsonObject next)
             {
@@ -390,94 +251,6 @@ public sealed class MappingRenderer
 
         current[segments[^1]] = value;
     }
-
-    private static JsonNode? Coerce(object raw, SchemaType type, string path, List<string> holds)
-    {
-        try
-        {
-            switch (type)
-            {
-                case SchemaType.String:
-                    return JsonValue.Create(SourceRow.Stringify(raw));
-                case SchemaType.Number:
-                    return raw switch
-                    {
-                        double d => JsonValue.Create(d),
-                        float f => JsonValue.Create((double)f),
-                        long l => JsonValue.Create(l),
-                        int i => JsonValue.Create((long)i),
-                        decimal m => JsonValue.Create((double)m),
-                        bool => throw new FormatException("boolean is not a number"),
-                        _ => JsonValue.Create(double.Parse(SourceRow.Stringify(raw)!, NumberStyles.Float, CultureInfo.InvariantCulture)),
-                    };
-                case SchemaType.Integer:
-                    return raw switch
-                    {
-                        long l => JsonValue.Create(l),
-                        int i => JsonValue.Create((long)i),
-                        double d when Math.Floor(d) == d => JsonValue.Create((long)d),
-                        _ => JsonValue.Create(long.Parse(SourceRow.Stringify(raw)!, NumberStyles.Integer, CultureInfo.InvariantCulture)),
-                    };
-                case SchemaType.Boolean:
-                    return raw switch
-                    {
-                        bool b => JsonValue.Create(b),
-                        _ => JsonValue.Create(ParseBool(SourceRow.Stringify(raw)!)),
-                    };
-                case SchemaType.Object:
-                case SchemaType.Array:
-                    return raw as JsonNode ?? throw new FormatException($"a scalar cannot be written to the {type} at {path}");
-                default:
-                    return raw as JsonNode ?? JsonValue.Create(Native(raw));
-            }
-        }
-        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException)
-        {
-            holds.Add($"{path}: value '{SourceRow.Stringify(raw)}' is not a valid {type.ToString().ToLowerInvariant()} ({ex.Message})");
-            return null;
-        }
-    }
-
-    private static object Native(object raw) => raw switch
-    {
-        string or bool or long or double => raw,
-        int i => (long)i,
-        short s => (long)s,
-        float f => (double)f,
-        decimal m => (double)m,
-        _ => SourceRow.Stringify(raw)!,
-    };
-
-    private static bool ParseBool(string text)
-    {
-        var t = text.Trim();
-        if (t.Equals("true", StringComparison.OrdinalIgnoreCase) || t is "1" || t.Equals("yes", StringComparison.OrdinalIgnoreCase) || t.Equals("y", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        if (t.Equals("false", StringComparison.OrdinalIgnoreCase) || t is "0" || t.Equals("no", StringComparison.OrdinalIgnoreCase) || t.Equals("n", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        throw new FormatException($"'{text}' is not a boolean");
-    }
-
-    private static JsonArray ToArray(IEnumerable<string> values)
-    {
-        var arr = new JsonArray();
-        foreach (var v in values)
-        {
-            arr.Add(v);
-        }
-
-        return arr;
-    }
-
-    internal static string Join(string prefix, string target) => string.IsNullOrEmpty(prefix) ? target : prefix + "." + target;
-
-    internal static string Where(MappingDefinition mapping) => mapping.SourcePath ?? mapping.Reference;
 }
 
 /// <summary>The outcome of rendering one record.</summary>
@@ -494,7 +267,7 @@ public sealed record RenderResult
     /// <summary>The canonical JSON of <see cref="Document"/>.</summary>
     public required string Canonical { get; init; }
 
-    /// <summary>H(canonical document, render context).</summary>
+    /// <summary>The hash of the canonical document.</summary>
     public required string MetadataHash { get; init; }
 
     /// <summary>Reasons the record cannot be delivered as it stands. Empty means deliverable.</summary>

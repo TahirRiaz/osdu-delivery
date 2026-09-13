@@ -1,135 +1,158 @@
 using System.Text.RegularExpressions;
-using SqlFlow.Delivery.Drops;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
-using SqlFlow.Delivery.Rendering;
 
 namespace SqlFlow.Delivery.Validation;
 
-/// <summary>The source columns a mapping reads from one scope, in the order the mapping first names them.</summary>
-public sealed record MappingScopeColumns(string Scope, IReadOnlyList<string> Columns);
-
-/// <summary>
-/// The source columns a mapping reads: the root row's, each child scope's, and the natural key's. It is the column half
-/// of a flow's source contract (what a source sends for the flow), the column list an inline submission's drop declares
-/// (design.md section 3.4), and the same walk the preflight gate checks a drop's declared columns with.
-/// </summary>
-public sealed record MappingSourceColumns(IReadOnlyList<string> Record, IReadOnlyList<MappingScopeColumns> Scopes, IReadOnlyList<string> NaturalKey)
+/// <summary>How a mapping entry reads a dataset column.</summary>
+public enum ColumnRole
 {
-    /// <summary>The columns read from <paramref name="scope"/>: the root row's for <c>record</c>, none for a scope the mapping does not iterate.</summary>
-    public IReadOnlyList<string> For(string scope)
-    {
-        ArgumentNullException.ThrowIfNull(scope);
-        return scope.Equals(DropManifest.RootScope, StringComparison.OrdinalIgnoreCase)
-            ? Record
-            : Scopes.FirstOrDefault(s => s.Scope.Equals(scope, StringComparison.OrdinalIgnoreCase))?.Columns ?? [];
-    }
+    /// <summary>The column is the entry's source: its value, after the entry's modifiers, is what the entry writes.</summary>
+    Value,
+
+    /// <summary>The column's value, after the entry's modifiers, is compared with a cached field to find the cached record the entry writes from.</summary>
+    FindBy,
+
+    /// <summary>The column decides whether the entry applies.</summary>
+    AppliesWhen,
 }
 
-public static partial class MappingColumns
+/// <summary>One entry reading a column, and how. <see cref="Find"/> is the findBy line a <see cref="ColumnRole.FindBy"/> use compares the column in.</summary>
+public sealed record MappingColumnUse(MappingEntry Entry, ColumnRole Role, FindBy? Find = null);
+
+/// <summary>A column of the dataset's row or of a child dataset's row: whether the dataset key or the label reads it, and every entry that does.</summary>
+public sealed record MappingColumn(string Name, bool Key, bool Label, IReadOnlyList<MappingColumnUse> Uses);
+
+/// <summary>A child dataset: the repeaters that write one array item per row of it, and the columns read from each row.</summary>
+public sealed record MappingChildDataset(string Name, IReadOnlyList<MappingEntry> Repeaters, IReadOnlyList<MappingColumn> Columns)
+{
+    /// <summary>The names of the columns read from each row, in the order the mapping first reads them.</summary>
+    public IReadOnlyList<string> ColumnNames => Columns.Select(c => c.Name).ToList();
+}
+
+/// <summary>
+/// The source columns a mapping reads (docs/delivery/mapping-templates.md): the dataset row's, each child dataset's, and the
+/// dataset key's, each with what the mapping does with it. It is the column half of a flow's source contract (what a source
+/// sends for the flow, and which template variable each column fills), and the column list an inline submission's drop
+/// declares (design.md section 3.4).
+/// </summary>
+public sealed record MappingSourceColumns(IReadOnlyList<MappingColumn> Record, IReadOnlyList<MappingChildDataset> Datasets, IReadOnlyList<string> Key)
+{
+    /// <summary>The names of the dataset row's columns: the key's first, then in the order the mapping first reads them.</summary>
+    public IReadOnlyList<string> RecordNames => Record.Select(c => c.Name).ToList();
+}
+
+public static class MappingColumns
 {
     /// <summary>
-    /// Every column the mapping reads, per scope: scalar bindings, the columns a template or a delivered reference
-    /// names, the columns the identity label names, and the natural key's source columns. A natural key property that
-    /// names no mapped property is left out here; the renderer refuses the mapping for it.
+    /// Every column the mapping reads, per dataset: the dataset key first, then each entry's source, findBy values and
+    /// condition in document order, then the label's columns. A child dataset a repeater names is listed even when its item
+    /// entries read no column of it. Column names compare without case, and the first spelling is the one kept.
     /// </summary>
     public static MappingSourceColumns Read(MappingDefinition mapping)
     {
         ArgumentNullException.ThrowIfNull(mapping);
-        var byScope = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        var order = new List<string>();
-        List<string> Scope(string name)
+        var root = new ColumnsBuilder();
+        var children = new Dictionary<string, ChildBuilder>(StringComparer.OrdinalIgnoreCase);
+        var childOrder = new List<ChildBuilder>();
+
+        ChildBuilder Child(string name)
         {
-            if (!byScope.TryGetValue(name, out var columns))
+            if (!children.TryGetValue(name, out var child))
             {
-                columns = [];
-                byScope[name] = columns;
-                order.Add(name);
+                child = new ChildBuilder(name);
+                children[name] = child;
+                childOrder.Add(child);
             }
 
-            return columns;
+            return child;
         }
 
-        var root = Scope(DropManifest.RootScope);
-        var naturalKey = NaturalKey(mapping);
-        foreach (var column in naturalKey)
+        ColumnBuilder Column(DatasetColumn column) => (column.Child is null ? root : Child(column.Child).Columns).Get(column.Column);
+
+        foreach (var key in mapping.Dataset.Key)
         {
-            Add(root, column);
+            root.Get(key).Key = true;
         }
 
-        Preflight.WalkProperties(mapping, mapping.Properties, string.Empty, DropManifest.RootScope, (property, _, scope) =>
+        foreach (var entry in mapping.Entries)
         {
-            var columns = Scope(scope);
-            if (property.Source is { } source && !property.Collection && !property.IsObject)
+            if (entry.IsRepeater)
             {
-                Add(columns, source);
+                Child(entry.Source!.Child!).Repeaters.Add(entry);
             }
 
-            foreach (var column in UsedBy(property))
+            if (entry.Source?.Column is { } source)
             {
-                Add(columns, column);
+                Column(source).Uses.Add(new MappingColumnUse(entry, ColumnRole.Value));
             }
 
-            if (property.Collection && (property.Scope ?? property.Source) is { } child)
+            foreach (var find in entry.FindBy)
             {
-                Scope(child);
+                if (find.Column is { } compared)
+                {
+                    Column(compared).Uses.Add(new MappingColumnUse(entry, ColumnRole.FindBy, find));
+                }
             }
-        });
 
-        if (!string.IsNullOrWhiteSpace(mapping.Identity.Label))
+            if (entry.AppliesWhen is { } condition)
+            {
+                Column(condition.Column).Uses.Add(new MappingColumnUse(entry, ColumnRole.AppliesWhen));
+            }
+        }
+
+        if (mapping.Dataset.Label is { } label)
         {
-            foreach (Match match in LabelToken().Matches(mapping.Identity.Label))
+            foreach (Match token in MappingMapper.LabelToken().Matches(label))
             {
-                Add(root, match.Groups["name"].Value);
+                root.Get(token.Groups["column"].Value[(DatasetColumn.Prefix.Length + 1)..]).Label = true;
             }
         }
 
         return new MappingSourceColumns(
-            root,
-            order.Where(n => !n.Equals(DropManifest.RootScope, StringComparison.OrdinalIgnoreCase)).Select(n => new MappingScopeColumns(n, byScope[n])).ToList(),
-            naturalKey);
+            root.Build(),
+            childOrder.Select(c => new MappingChildDataset(c.Name, [.. c.Repeaters], c.Columns.Build())).ToList(),
+            mapping.Dataset.Key);
     }
 
-    /// <summary>The natural key's source columns, in key order (the columns a delivery key is derived from, design.md section 5.2).</summary>
-    public static IReadOnlyList<string> NaturalKey(MappingDefinition mapping)
+    /// <summary>The columns of one dataset in the order they are first read, keyed by name without case.</summary>
+    private sealed class ColumnsBuilder
     {
-        ArgumentNullException.ThrowIfNull(mapping);
-        return mapping.Identity.NaturalKey
-            .Select(path => mapping.Properties.FirstOrDefault(p => p.Target.Equals(path, StringComparison.Ordinal))?.Source)
-            .OfType<string>()
-            .ToList();
-    }
+        private readonly Dictionary<string, ColumnBuilder> _byName = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<ColumnBuilder> _order = [];
 
-    /// <summary>The columns a property reads beyond its own source binding: a delivered reference's key columns, a template's tokens.</summary>
-    public static IEnumerable<string> UsedBy(MappingProperty property)
-    {
-        ArgumentNullException.ThrowIfNull(property);
-        if (property.Transform == MappingTransform.DeliveredReference)
+        public ColumnBuilder Get(string name)
         {
-            return property.Config.Keys.Count > 0 ? property.Config.Keys : property.Source is null ? [] : [property.Source];
+            if (!_byName.TryGetValue(name, out var column))
+            {
+                column = new ColumnBuilder(name);
+                _byName[name] = column;
+                _order.Add(column);
+            }
+
+            return column;
         }
 
-        if (property.Transform == MappingTransform.Template && property.Config.Format is { } format)
-        {
-            return TemplateToken().Matches(format)
-                .Select(m => m.Groups["name"].Value)
-                .Where(n => !n.StartsWith("param:", StringComparison.Ordinal))
-                .ToList();
-        }
-
-        return [];
+        public IReadOnlyList<MappingColumn> Build() => _order.Select(c => new MappingColumn(c.Name, c.Key, c.Label, [.. c.Uses])).ToList();
     }
 
-    private static void Add(List<string> columns, string column)
+    private sealed class ColumnBuilder(string name)
     {
-        if (!columns.Contains(column, StringComparer.OrdinalIgnoreCase))
-        {
-            columns.Add(column);
-        }
+        public string Name { get; } = name;
+
+        public bool Key { get; set; }
+
+        public bool Label { get; set; }
+
+        public List<MappingColumnUse> Uses { get; } = [];
     }
 
-    [GeneratedRegex(MappingRenderer.LabelTokenPattern)]
-    private static partial Regex LabelToken();
+    private sealed class ChildBuilder(string name)
+    {
+        public string Name { get; } = name;
 
-    [GeneratedRegex(@"\{(?<name>[A-Za-z0-9_\-\.]+)\}")]
-    private static partial Regex TemplateToken();
+        public List<MappingEntry> Repeaters { get; } = [];
+
+        public ColumnsBuilder Columns { get; } = new();
+    }
 }

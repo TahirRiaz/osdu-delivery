@@ -11,8 +11,8 @@ ledger keys on the grain, so it has to be settled before anything is delivered.
 
 ## Decision
 
-The sample mapping's natural key is `[data.LogSource, data.LogRun]`, bound to `source_project` and `log_id`:
-one OSDU WellLog per Recall log. The renderer carries both values into the document as provenance.
+The sample mapping's dataset key is `[dataset.source_project, dataset.log_id]`: one OSDU WellLog per Recall log. The
+sample mapping also writes both values into the document (`LogSource` and `LogRun`) as provenance.
 
 ## Consequences
 
@@ -20,6 +20,9 @@ one OSDU WellLog per Recall log. The renderer carries both values into the docum
 - Wellbores with several runs of the same type get several WellLog records in OSDU, each referencing the
   wellbore.
 - If the domain decides the coarser grain is right after all, the change is confined to the mapping's
-  `identity.naturalKey` and to the prepare step's grouping. Because identity is immutable once a mapping
+  `dataset.key` and to the prepare step's grouping. Because identity is immutable once a mapping
   version has delivered, that is a new mapping version and a re-key of the estate, which is why this must be
   confirmed before production delivery.
+
+In the template format the grain is the mapping's `dataset.key`: the dataset columns the delivery key, and so the OSDU
+id, is derived from, declared apart from the entries that fill the record ([mapping-templates.md](../mapping-templates.md)).

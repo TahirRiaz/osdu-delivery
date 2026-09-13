@@ -10,8 +10,8 @@ vendored and whether petrodb-api keeps a mapping at all.
 
 ## Decision
 
-The delivery service interprets the mapping (`MappingRenderer`) against pinned schema and reference
-snapshots, and sends finished OSDU records. petrodb-api, when used, is a pass-through for the record and the
+The delivery service interprets the mapping (`MappingRenderer`) against its pinned template (the OSDU
+schema, saved in the catalog) and reference snapshot, and sends finished OSDU records. petrodb-api, when used, is a pass-through for the record and the
 bulk data; its generated mappers, endpoints and PySpark selects are no longer a contract this system depends
 on.
 

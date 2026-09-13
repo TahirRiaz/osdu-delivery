@@ -48,8 +48,11 @@ test.describe.serial("submit records", () => {
 
     await expect(dialog.getByTestId("submit-records-field-update_date")).toBeVisible();
     await expect(dialog.getByTestId("submit-records-param-site")).toBeVisible();
-    // The alias scope the mapping iterates is named, and the JSON tab is where child rows go.
-    await expect(dialog.getByText(/aliases/)).toBeVisible();
+    // The template version the mapping fills, and what a column fills in it.
+    await expect(dialog.getByTestId("submit-records-template")).toContainText("osdu:wks:master-data--Wellbore:1.3.0");
+    await expect(dialog.getByTestId("submit-records-uses-facility_name")).toContainText("osdu.data.FacilityName");
+    // The aliases child dataset the mapping repeats is named with what it fills, and the JSON tab is where child rows go.
+    await expect(dialog.getByTestId("submit-records-dataset-aliases")).toContainText("aliases");
     await expect(dialog.getByTestId("submit-records-submit")).toBeDisabled();
   });
 
@@ -57,7 +60,7 @@ test.describe.serial("submit records", () => {
     const dialog = await openDialog(adminPage, "wellbore-records");
     await expect(dialog.getByTestId("submit-records-mapping")).toBeVisible({ timeout: 15_000 });
 
-    // A description without the natural key: the record has no id to be delivered under.
+    // A description without the key column: the record has no id to be delivered under.
     await dialog.getByTestId("submit-records-field-facility_description").fill("no name");
     await expect(dialog.getByTestId("submit-records-error")).toContainText("facility_name");
     await expect(dialog.getByTestId("submit-records-submit")).toBeDisabled();
@@ -99,7 +102,8 @@ test.describe.serial("submit records", () => {
     await dialog.getByTestId("submit-records-param-site").fill("demo");
     await dialog.getByTestId("submit-records-tab-json").click();
 
-    // Monaco holds the template the contract produced: the columns the mapping reads and a row for the alias scope.
+    // Monaco holds the starting JSON the contract produced: the columns the mapping reads and a blank row for the aliases
+    // child dataset.
     const editor = dialog.getByTestId("submit-records-json");
     await expect(editor).toBeVisible();
     await expect(editor).toContainText("facility_name");

@@ -5,14 +5,15 @@ using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Storage;
+using SqlFlow.Delivery.Templates;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// A reference snapshot's version enters the render context, so minting one for a capture that found nothing new
-/// would change every record's metadata hash and redeliver the whole estate. Schema snapshots are content-addressed
-/// and already immune; these cover the same property for reference snapshots.
+/// would change every record's metadata hash and redeliver the whole estate. Template versions are content-addressed and
+/// already immune; these cover the same property for reference snapshots.
 /// </summary>
 public class SnapshotVersioningTests
 {
@@ -89,9 +90,9 @@ public class SnapshotVersioningTests
     }
 
     [Fact]
-    public async Task A_schema_snapshot_version_is_the_content_hash_so_recapture_is_already_free()
+    public async Task A_template_version_is_the_content_hash_so_capturing_the_same_schema_again_changes_nothing()
     {
-        var (builder, _, clock) = NewBuilder();
+        var clock = new TestClock();
         var kind = "osdu:wks:work-product-component--WellLog:1.4.0";
         var root = Samples.NewTempDirectory();
         var directory = Path.Combine(root, "work-product-component");
@@ -100,9 +101,9 @@ public class SnapshotVersioningTests
             Path.Combine(directory, "WellLog.1.4.0.json"),
             """{"$id":"WellLog.1.4.0.json","type":"object","properties":{"data":{"type":"object","properties":{"Name":{"type":"string"}}}}}""");
 
-        var first = await builder.SchemaFromDirectoryAsync(root, kind);
+        var first = await TemplateSources.FromDirectoryAsync(root, kind, clock);
         clock.Advance(TimeSpan.FromDays(1));
-        var again = await builder.SchemaFromDirectoryAsync(root, kind);
+        var again = await TemplateSources.FromDirectoryAsync(root, kind, clock);
 
         Assert.Equal(first.Version, again.Version);
     }

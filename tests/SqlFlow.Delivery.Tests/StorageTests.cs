@@ -224,18 +224,10 @@ public class DropReaderTests
 public class FileSnapshotStoreTests
 {
     [Fact]
-    public async Task Schema_and_reference_snapshots_round_trip_and_references_are_immutable()
+    public async Task Reference_snapshots_round_trip_and_are_immutable()
     {
         var root = Samples.NewTempDirectory();
         var store = new FileSnapshotStore(root, Samples.Stores());
-
-        var schema = TestSchema.Build();
-        await store.SaveSchemaAsync(schema);
-        var loaded = await store.LoadSchemaAsync(TestSchema.Kind);
-        Assert.NotNull(loaded);
-        Assert.Equal(schema.Version, loaded!.Version);
-        Assert.Equal(SchemaType.Number, loaded.Resolve("data.Depth")!.Type);
-        Assert.Null(await store.LoadSchemaAsync("x:y:z:1.0.0"));
 
         Assert.Null(await store.CurrentReferenceVersionAsync());
         var references = TestSchema.References();
@@ -264,10 +256,6 @@ public class FileSnapshotStoreTests
     public async Task The_sample_snapshot_store_loads()
     {
         var store = new FileSnapshotStore(Samples.Snapshots, Samples.Stores());
-        var schema = await store.LoadSchemaAsync("osdu:wks:work-product-component--WellLog:1.4.0");
-        Assert.NotNull(schema);
-        Assert.Equal(SchemaType.Array, schema!.Resolve("data.Curves")!.Type);
-        Assert.Equal(SchemaType.String, schema.Resolve("data.Curves.CurveUnit")!.Type);
         var current = await store.CurrentReferenceVersionAsync();
         Assert.NotNull(current);
         var references = await store.LoadReferencesAsync(current!);

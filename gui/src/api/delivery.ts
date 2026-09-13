@@ -1,8 +1,9 @@
 // The delivery ledger's API: what each flow delivered (records, their history, their submissions), the audit trail,
-// the mappings and snapshots the repositories hold, and the interventions (release, redeliver, verify, read back,
-// delete). Same conventions as endpoints.ts: one function per endpoint, pages compose them with TanStack Query.
+// the mappings, templates and snapshots the catalog holds, the mapping builder, and the interventions (release,
+// redeliver, verify, read back, delete). Same conventions as endpoints.ts: one function per endpoint, pages compose them
+// with TanStack Query.
 
-import { del, get, post, postForm, type QueryParams } from "./client";
+import { del, get, getText, post, postForm, type QueryParams } from "./client";
 import type { PagedResult, RunStatus } from "./types";
 import type { PageQuery } from "./endpoints";
 
@@ -398,11 +399,11 @@ export interface DeliveryCacheUse {
   value: string;
 }
 
-/** A schema or reference snapshot version as the sync found it. */
+/** A reference snapshot version (the cache) as the sync found it. */
 export interface DeliverySnapshot {
   id: string;
   repoId: string;
-  kind: "schema" | "references";
+  kind: "references";
   name: string;
   version: string;
   capturedUtc: string | null;
@@ -413,20 +414,20 @@ export interface DeliverySnapshot {
   lastSeenUtc: string;
 }
 
-/** A value of an inline record's column: a JSON scalar. A collection is a child scope, never a nested value. */
+/** A value of an inline record's column: a JSON scalar. A collection is a child dataset, never a nested value. */
 export type DeliveryInlineValue = string | number | boolean | null;
 
 /** Where one record's payload files already sit: the location alone, or with the content hash the flow decides changes by. */
 export type DeliveryInlineFile = string | { location: string; hash?: string };
 
 /**
- * One inline record: its root row, the rows of each child scope (the shape of a mapping fixture), and where the files of
- * each payload the flow streams already sit. Files are pointed at, never uploaded: the node opens the location with its
- * own identity when the run delivers.
+ * One inline record: its dataset row, the rows of each child dataset (the shape of a mapping fixture's `record` and
+ * `datasets`), and where the files of each payload the flow streams already sit. Files are pointed at, never uploaded:
+ * the node opens the location with its own identity when the run delivers.
  */
 export interface DeliveryInlineRecord {
   record: Record<string, DeliveryInlineValue>;
-  scopes?: Record<string, Array<Record<string, DeliveryInlineValue>>>;
+  datasets?: Record<string, Array<Record<string, DeliveryInlineValue>>>;
   files?: Record<string, DeliveryInlineFile>;
 }
 
@@ -474,7 +475,48 @@ export interface DeliveryFlowParameter {
   description: string | null;
 }
 
-/** What a source sends a flow: its parameters, the columns its mapping reads, and whether it takes records inline. */
+/** What a mapping entry does with a dataset column: fills a variable with it, finds a cached record by it, or decides whether the entry applies. */
+export type DeliverySourceColumnRole = "value" | "findBy" | "appliesWhen";
+
+/** One use of a dataset column by the flow's mapping: the entry, and how it reads the column. */
+export interface DeliverySourceColumnUse {
+  /** The template variable the entry fills, such as osdu.data.FacilityName or osdu.data.NameAliases[].AliasName. */
+  target: string;
+  role: DeliverySourceColumnRole;
+  /** The entry's source as the mapping writes it (dataset.facility_name, cache.Wellbore.id); null for a static entry. */
+  source: string | null;
+  required: boolean;
+  /** The entry's modifiers as text (trim, replace(V/V: v/v)); empty for an appliesWhen use. */
+  modifiers: string[];
+  /** The findBy line, for a findBy use (cache.Wellbore.FacilityName = dataset.wellbore_uwi). */
+  findBy: string | null;
+  /** The entry's condition text, when it has one. */
+  appliesWhen: string | null;
+}
+
+/** A column of the dataset row or of a child dataset's rows: whether the key or the label reads it, and what the mapping does with it. */
+export interface DeliverySourceColumn {
+  name: string;
+  key: boolean;
+  label: boolean;
+  uses: DeliverySourceColumnUse[];
+}
+
+/** A child dataset the mapping repeats: the lists of objects it fills, and the columns of its rows. */
+export interface DeliverySourceDataset {
+  name: string;
+  fills: { target: string; required: boolean }[];
+  columns: DeliverySourceColumn[];
+}
+
+/** The template version a mapping fills. `saved` false means runs cannot render with it until it is saved. */
+export interface DeliverySourceTemplate {
+  kind: string;
+  version: string;
+  saved: boolean;
+}
+
+/** What a source sends a flow: its parameters, the dataset columns and child datasets its mapping reads, and whether it takes records inline. */
 export interface DeliverySourceContract {
   pipelineId: string;
   flowName: string;
@@ -483,9 +525,18 @@ export interface DeliverySourceContract {
   acceptsRecords: boolean;
   recordsRefusal: string | null;
   parameters: DeliveryFlowParameter[];
-  recordColumns: string[];
-  scopes: Array<{ scope: string; columns: string[] }>;
-  naturalKey: string[];
+  /** The template version the mapping fills; null when the mapping cannot be read. */
+  template: DeliverySourceTemplate | null;
+  /** The mapping's source system (dataset.system). */
+  system: string | null;
+  /** The dataset columns the record's key is derived from, in order, as bare column names. */
+  key: string[];
+  /** The mapping's label text, with {dataset.column} tokens. */
+  label: string | null;
+  /** The dataset row's columns. */
+  columns: DeliverySourceColumn[];
+  /** The child datasets, each with the columns of its rows. */
+  datasets: DeliverySourceDataset[];
   lastModifiedColumn: string | null;
   fingerprintColumn: string | null;
   /** Why the columns are unknown, when the catalog cannot read the flow's pinned mapping. */
@@ -515,6 +566,10 @@ export interface DeliveryManualFlow {
   parameters: DeliveryFlowParameter[];
   /** The payload its records point at; null when the flow streams no files. */
   payloadName: string | null;
+  /** The template kind the flow's mapping fills; null when the mapping is not synced or is invalid. */
+  templateKind: string | null;
+  /** The template version the flow's mapping pins; null when the mapping is not synced or is invalid. */
+  templateVersion: string | null;
 }
 
 /** Where a drop-off file's content hash came from, so a claim never reads as a check. */
@@ -769,6 +824,257 @@ export interface DeliveryRetrieval {
   error: string | null;
 }
 
+/** The shape of the value a template variable takes. */
+export type DeliveryTemplateShape = "Value" | "ValueList" | "Group" | "GroupList" | "Whole";
+
+/** Who writes a template variable: a mapping, OSDU Delivery itself (the id and the kind), or OSDU when it stores the record. */
+export type DeliveryTemplateRole = "Mapping" | "Engine" | "Osdu";
+
+/** A saved template version: the OSDU kind, its content version, when, by whom and from where it was saved, and how many synced mappings pin it. */
+export interface DeliveryTemplate {
+  kind: string;
+  version: string;
+  capturedUtc: string;
+  capturedBy: string;
+  origin: string;
+  pinnedBy: number;
+}
+
+/** One variable of a template: a property of the OSDU record, with what the schema says about it. */
+export interface DeliveryTemplateVariable {
+  /** The variable's path, such as osdu.data.Name or osdu.data.Curves[].CurveUnit; `[]` steps into an array of objects. */
+  path: string;
+  shape: DeliveryTemplateShape;
+  type: string;
+  itemType: string | null;
+  format: string | null;
+  required: boolean;
+  role: DeliveryTemplateRole;
+  relationships: string[];
+  pattern: string | null;
+  unitContext: string | null;
+  title: string | null;
+  description: string | null;
+  /** For an object with free keys (tags): the type of the value under any key. Entries target `<path>.<name>`. */
+  keyValueType: string | null;
+  /** A list inside a repeated item: listed for reference, never fillable. */
+  nested: boolean;
+  /** The repository's cached types this variable can be read from, when a repository was given. */
+  cacheTypes: string[];
+}
+
+/** A template laid out variable by variable, parents before their children in schema order. `saved` is null for a schema not saved yet. */
+export interface DeliveryTemplateDetail {
+  kind: string;
+  version: string;
+  title: string | null;
+  description: string | null;
+  saved: DeliveryTemplate | null;
+  variables: DeliveryTemplateVariable[];
+}
+
+/** What saving a schema did: `created` for a new version, `unchanged` for one already saved. */
+export interface DeliveryTemplateSaved {
+  template: DeliveryTemplate;
+  outcome: "created" | "unchanged";
+}
+
+/** A search of the schemas OSDU publishes, run on a node through a delivery flow's OSDU connection. */
+export interface DeliverySchemaSearchRequest {
+  pipelineId: string;
+  authority?: string | null;
+  source?: string | null;
+  entityType?: string | null;
+  status?: string | null;
+  latestVersion?: boolean | null;
+  limit?: number | null;
+  offset?: number | null;
+}
+
+/** One schema OSDU publishes, as its search lists it. The node leaves out the values OSDU did not give. */
+export interface DeliveryOsduSchema {
+  kind: string;
+  authority: string;
+  source: string;
+  entityType: string;
+  version: string;
+  status?: string | null;
+  scope?: string | null;
+  createdUtc?: string | null;
+  createdBy?: string | null;
+}
+
+/** A search task's result: one page of schemas, and the flow whose connection found them. */
+export interface DeliverySchemaSearchResult {
+  flow: string;
+  endpoint: string;
+  correlationId: string;
+  schemas: DeliveryOsduSchema[];
+  offset: number;
+  count: number;
+  totalCount: number;
+}
+
+/** A fetch task's result: one kind's bundled schema as OSDU holds it. A fetch saves nothing. */
+export interface DeliverySchemaFetchResult {
+  flow: string;
+  endpoint: string;
+  correlationId: string;
+  kind: string;
+  version: string;
+  schema: Record<string, unknown>;
+}
+
+/** A cached type of a repository's cache: the name mappings read it by, its entity type, and the fields it captures. */
+export interface DeliveryCachedType {
+  name: string;
+  entityType: string;
+  fields: string[];
+}
+
+/** A delivery flow of a repository: its OSDU connection, and the mapping and parameters it renders with. */
+export interface DeliveryBuilderFlow {
+  pipelineId: string;
+  name: string;
+  mapping: string;
+  parameters: Record<string, string>;
+  endpoint: string;
+}
+
+/** A repository as the mapping builder offers it: the git source a proposal opens against, its cache, and its delivery flows. */
+export interface DeliveryBuilderRepo {
+  repoId: string;
+  name: string;
+  sourceId: string | null;
+  sourceBranch: string | null;
+  cacheVersion: string | null;
+  cacheTypes: DeliveryCachedType[];
+  flows: DeliveryBuilderFlow[];
+}
+
+/** Where a draft entry's value comes from: a dataset column, a child dataset's rows, a cached record, or a fixed value. */
+export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static";
+
+export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date";
+
+export type MappingDraftConditionOperator = "is" | "isNot" | "isEmpty" | "isNotEmpty";
+
+/** A parameter the mapping declares, which the flow supplies under render.parameters. */
+export interface MappingDraftParameter {
+  name: string;
+  required: boolean;
+  default: string | null;
+  description: string | null;
+}
+
+/** One findBy line: the cached field, and the dataset column (without `dataset.`) or the fixed text it must equal. */
+export interface MappingDraftFind {
+  field: string;
+  column: string | null;
+  literal: string | null;
+}
+
+export interface MappingDraftReplacement {
+  from: string;
+  to: string;
+}
+
+/** One modifier with its settings: split takes a separator and a part, replace its pairs, equals its text, date an optional format in text. */
+export interface MappingDraftModifier {
+  kind: MappingDraftModifierKind;
+  separator: string | null;
+  part: number | null;
+  replacements: MappingDraftReplacement[] | null;
+  text: string | null;
+}
+
+/** An appliesWhen: the dataset column (without `dataset.`), the operator, and the text for is and isNot. */
+export interface MappingDraftCondition {
+  column: string;
+  operator: MappingDraftConditionOperator;
+  text: string | null;
+}
+
+/** One entry as the builder edits it. */
+export interface MappingDraftEntry {
+  target: string;
+  input: MappingDraftInput;
+  /** Dataset: `column`, or `child.column` for an entry inside a repeater. */
+  column: string | null;
+  /** Repeat: the child dataset whose rows become the items. */
+  child: string | null;
+  /** Cache: the cached type, such as UnitOfMeasure. */
+  cacheType: string | null;
+  /** Cache: the field to read, usually id. */
+  cacheField: string | null;
+  findBy: MappingDraftFind[];
+  modifiers: MappingDraftModifier[];
+  appliesWhen: MappingDraftCondition | null;
+  required: boolean;
+  ignoreSeparators: boolean;
+  /** Static: the value as JSON text, such as "[\"a\"]", "\"MD\"", "5" or "true". */
+  static: string | null;
+  description: string | null;
+  /** True when the builder proposed the entry from the cache, until someone edits it. */
+  prefilled: boolean;
+}
+
+/** An example row and the exact record it must render to. */
+export interface MappingDraftFixture {
+  name: string;
+  parameters: Record<string, string>;
+  record: Record<string, string | null>;
+  datasets: Record<string, Record<string, string | null>[]>;
+  expected: string;
+}
+
+/** A mapping as the builder edits it: the header, the parameters, the entries and the fixtures. */
+export interface MappingDraft {
+  name: string;
+  version: string;
+  templateKind: string;
+  templateVersion: string;
+  description: string | null;
+  system: string;
+  /** The dataset columns of the key, without `dataset.`. */
+  key: string[];
+  /** The label as written, with {dataset.column} tokens. */
+  label: string | null;
+  parameters: MappingDraftParameter[];
+  entries: MappingDraftEntry[];
+  fixtures: MappingDraftFixture[];
+}
+
+/** What the builder found about a draft: an error stops the mapping from loading, a warning does not. */
+export interface MappingDraftIssue {
+  severity: "error" | "warning";
+  message: string;
+  target: string | null;
+}
+
+/** Starts a mapping for a repository and a saved template version. */
+export interface DeliveryMappingDraftRequest {
+  repoId: string;
+  kind: string;
+  version: string;
+  name: string;
+  mappingVersion: string;
+  system: string;
+}
+
+/** A draft written as YAML, what the checks found, and whether the mapping loads and passes the preflight. */
+export interface DeliveryMappingComposeResult {
+  yaml: string;
+  issues: MappingDraftIssue[];
+  valid: boolean;
+}
+
+/** A mapping document read back into a draft, or the problems that stopped it. */
+export interface DeliveryMappingParseResult {
+  draft: MappingDraft | null;
+  issues: MappingDraftIssue[];
+}
+
 export const deliveryApi = {
   stats: (pipelineId: string) => get<DeliveryFlowStats>(`/api/v1/delivery/flows/${pipelineId}/stats`),
   records: (pipelineId: string, query: DeliveryRecordListQuery = {}) =>
@@ -799,6 +1105,40 @@ export const deliveryApi = {
   mapping: (mappingId: string) => get<DeliveryMappingDetail>(`/api/v1/delivery/mappings/${mappingId}`),
   snapshots: (repoId?: string, kind?: string) =>
     get<DeliverySnapshot[]>("/api/v1/delivery/snapshots", { repoId, kind }),
+  /** The saved template versions, with how many synced mappings pin each. */
+  templates: () => get<DeliveryTemplate[]>("/api/v1/delivery/templates"),
+  /** A saved template laid out variable by variable; with `repoId`, each variable names the repository's cached types it can be read from. */
+  templateDetail: (kind: string, version: string, repoId?: string) =>
+    get<DeliveryTemplateDetail>("/api/v1/delivery/templates/detail", { kind, version, repoId }),
+  /** The saved template's bundled schema as JSON text, exactly as it was saved. */
+  templateSchema: (kind: string, version: string) =>
+    getText(`/api/v1/delivery/templates/schema?${new URLSearchParams({ kind, version }).toString()}`),
+  /** Lays out a bundled schema as a template without saving it; a 400 says why the JSON is not a record schema. */
+  previewTemplate: (kind: string, schema: Record<string, unknown>, repoId?: string | null) =>
+    post<DeliveryTemplateDetail>("/api/v1/delivery/templates/preview", { kind, schema, repoId: repoId ?? null }),
+  /** Queues a search of OSDU's schemas on a node through the flow's OSDU connection; poll the task for the page of results. */
+  searchSchemas: (request: DeliverySchemaSearchRequest) =>
+    post<ComputeTaskAccepted>("/api/v1/delivery/templates/search", request),
+  /** Queues a fetch of one kind's bundled schema from OSDU on a node; poll the task for the schema. A fetch saves nothing. */
+  fetchSchema: (pipelineId: string, kind: string) =>
+    post<ComputeTaskAccepted>("/api/v1/delivery/templates/fetch", { pipelineId, kind }),
+  /** Saves a bundled schema as a template version; saving one already saved changes nothing. */
+  saveTemplate: (kind: string, schema: Record<string, unknown>, origin: string) =>
+    post<DeliveryTemplateSaved>("/api/v1/delivery/templates", { kind, schema, origin }),
+  /** Deletes a saved template version; refused with a 409 while a synced mapping pins it. */
+  deleteTemplate: (kind: string, version: string) =>
+    del<void>(`/api/v1/delivery/templates?${new URLSearchParams({ kind, version }).toString()}`),
+  /** The repositories the mapping builder offers, with their git source, cached types and delivery flows. */
+  builderRepos: () => get<DeliveryBuilderRepo[]>("/api/v1/delivery/mapping-builder/repos"),
+  /** A new draft for a repository and a saved template version, prefilled from the repository's cache; a 404 when the template is not saved. */
+  draftMapping: (request: DeliveryMappingDraftRequest) =>
+    post<MappingDraft>("/api/v1/delivery/mapping-builder/draft", request),
+  /** Writes a draft as YAML and checks it against its template and the repository's cache, rendering with `parameters`. */
+  composeMapping: (repoId: string | null, draft: MappingDraft, parameters: Record<string, string> | null) =>
+    post<DeliveryMappingComposeResult>("/api/v1/delivery/mapping-builder/compose", { repoId, draft, parameters }),
+  /** Reads a mapping document back into a draft for the builder. */
+  parseMapping: (yaml: string, path: string | null) =>
+    post<DeliveryMappingParseResult>("/api/v1/delivery/mapping-builder/parse", { yaml, path }),
   /** The cache as the repositories declare it: one row per cached type, with what it captures and holds at `version`. */
   cache: (repoId?: string, search?: string, version?: string) =>
     get<DeliveryCacheDefinition[]>("/api/v1/delivery/cache", { repoId, search, version }),

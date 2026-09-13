@@ -469,7 +469,7 @@ public sealed class Planner
         foreach (var record in batch)
         {
             var key = renderer.DeriveKey(record.Row, out var values);
-            keyed.Add((record, key, SourceKey.Display(resolved.Mapping.Source.System, values), renderer.Label(record.Row)));
+            keyed.Add((record, key, SourceKey.Display(resolved.Mapping.Dataset.System, values), renderer.Label(record.Row)));
         }
 
         var existing = _ledger is null
@@ -484,7 +484,7 @@ public sealed class Planner
             ct.ThrowIfCancellationRequested();
             if (key is null)
             {
-                entries.Add(new PlanEntry { Key = null, SourceKey = sourceKey, Label = label, Action = PlannedAction.Hold, Reason = "natural key incomplete: every key column must be non-empty" });
+                entries.Add(new PlanEntry { Key = null, SourceKey = sourceKey, Label = label, Action = PlannedAction.Hold, Reason = "dataset key incomplete: every key column must be non-empty" });
                 continue;
             }
 

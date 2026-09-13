@@ -1,13 +1,18 @@
 import { useState } from "react";
+import { Link as RouterLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { LayoutTemplate, PencilRuler, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
+import { isApiError } from "../../api/client";
 import { deliveryApi, type DeliveryMapping, type DeliverySnapshot } from "../../api/delivery";
 import { repoApi } from "../../api/endpoints";
 import { CodeView } from "../../components/CodeView";
+import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
 import { FilterBar } from "../../components/FilterBar";
 import { Page } from "../../components/Page";
@@ -26,9 +31,25 @@ function summaryText(summary: Record<string, unknown>, key: string): string {
   return Array.isArray(value) ? value.join(", ") : String(value);
 }
 
+/** A failed read, the one way API failures render. */
+function LoadError({ error, testId }: { error: unknown; testId: string }) {
+  return isApiError(error)
+    ? <CorrelationError error={error} data-testid={testId} />
+    : <p className="text-[13px] text-destructive" data-testid={testId}>{String(error)}</p>;
+}
+
 const mappingColumns: Column<DeliveryMapping>[] = [
   { id: "reference", header: "Mapping", render: (row) => <span className="font-mono text-[12px] font-medium">{row.reference}</span> },
-  { id: "kind", header: "OSDU kind", render: (row) => <TruncatedText text={row.kind} mono maxWidth={320} /> },
+  {
+    id: "template",
+    header: "Template",
+    render: (row) => (
+      <span className="inline-flex max-w-full items-baseline gap-1.5">
+        <TruncatedText text={row.kind} mono maxWidth={300} />
+        <span className="font-mono text-[11px] text-muted-foreground">{summaryText(row.summary, "templateVersion")}</span>
+      </span>
+    ),
+  },
   {
     id: "status",
     header: "Status",
@@ -39,15 +60,14 @@ const mappingColumns: Column<DeliveryMapping>[] = [
     ),
   },
   { id: "system", header: "Source system", render: (row) => summaryText(row.summary, "system") },
-  { id: "key", header: "Natural key", render: (row) => <span className="font-mono text-[12px]">{summaryText(row.summary, "naturalKey")}</span> },
-  { id: "properties", header: "Properties", align: "right", render: (row) => <span className="font-mono tabular-nums">{summaryText(row.summary, "properties")}</span> },
+  { id: "key", header: "Dataset key", render: (row) => <span className="font-mono text-[12px]">{summaryText(row.summary, "key")}</span> },
+  { id: "entries", header: "Entries", align: "right", render: (row) => <span className="font-mono tabular-nums">{summaryText(row.summary, "entries")}</span> },
   { id: "fixtures", header: "Fixtures", align: "right", render: (row) => <span className="font-mono tabular-nums">{summaryText(row.summary, "fixtures")}</span> },
   { id: "path", header: "Path", render: (row) => <TruncatedText text={row.relativePath} mono maxWidth={260} /> },
   { id: "seen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },
 ];
 
 const snapshotColumns: Column<DeliverySnapshot>[] = [
-  { id: "kind", header: "Kind", render: (row) => <Badge variant="outline">{row.kind}</Badge> },
   { id: "name", header: "Name", render: (row) => <TruncatedText text={row.name} mono maxWidth={360} /> },
   { id: "version", header: "Version", render: (row) => <span className="font-mono text-[12px]">{row.version}</span> },
   {
@@ -59,14 +79,12 @@ const snapshotColumns: Column<DeliverySnapshot>[] = [
   {
     id: "summary",
     header: "Contents",
-    render: (row) => (row.kind === "references"
-      ? `${summaryText(row.summary, "items")} item(s) in ${Array.isArray(row.summary.types) ? row.summary.types.length : 0} type(s)`
-      : `${summaryText(row.summary, "dataProperties")} data properties`),
+    render: (row) => `${summaryText(row.summary, "items")} item(s) in ${Array.isArray(row.summary.types) ? row.summary.types.length : 0} type(s)`,
   },
   { id: "path", header: "Path", render: (row) => <TruncatedText text={row.relativePath} mono maxWidth={300} /> },
 ];
 
-/** The mappings and snapshots the synced repositories hold: what every delivery flow renders with. */
+/** The mapping documents the synced repositories hold, and the reference snapshots of their cache: what every delivery flow renders with. */
 export default function DeliveryDocumentsPage() {
   const [repoFilter, setRepoFilter] = useLocalStorageState("sqlflow.filters.delivery-documents.repo", ALL);
   const [selected, setSelected] = useState<string | null>(null);
@@ -74,18 +92,29 @@ export default function DeliveryDocumentsPage() {
   const repos = useQuery({ queryKey: ["repos", "all-for-delivery-documents"], queryFn: () => repoApi.list({ page: 1, pageSize: 200 }) });
   const repoId = repoFilter === ALL ? undefined : repoFilter;
   const mappings = useQuery({ queryKey: ["delivery", "mappings", repoId], queryFn: () => deliveryApi.mappings(repoId) });
-  const snapshots = useQuery({ queryKey: ["delivery", "snapshots", repoId], queryFn: () => deliveryApi.snapshots(repoId) });
+  const snapshots = useQuery({ queryKey: ["delivery", "snapshots", repoId, "references"], queryFn: () => deliveryApi.snapshots(repoId, "references") });
   const mapping = useQuery({
     queryKey: ["delivery", "mapping", selected],
     queryFn: () => deliveryApi.mapping(selected!),
     enabled: selected !== null,
   });
 
+  const detail = mapping.data;
+  const templateVersion = detail !== undefined ? summaryText(detail.mapping.summary, "templateVersion") : "-";
+
   return (
     <Page data-testid="page-delivery-documents">
       <PageHeader
-        title="Mappings and snapshots"
-        subtitle="The pinned mapping documents and the schema and reference snapshots the repositories hold, as the last sync found them."
+        title="Mappings"
+        subtitle="The mapping documents the repositories hold, and the reference snapshots of their cache, as the last sync found them."
+        actions={(
+          <Button asChild size="sm" data-testid="delivery-documents-new-mapping">
+            <RouterLink to="/delivery/mappings/build">
+              <Plus />
+              New mapping
+            </RouterLink>
+          </Button>
+        )}
       />
       <FilterBar>
         <Select value={repoFilter} onValueChange={setRepoFilter}>
@@ -101,22 +130,25 @@ export default function DeliveryDocumentsPage() {
           <TabsTrigger value="mappings" data-testid="delivery-documents-tab-mappings">Mappings</TabsTrigger>
           <TabsTrigger value="snapshots" data-testid="delivery-documents-tab-snapshots">Snapshots</TabsTrigger>
         </TabsList>
-        <TabsContent value="mappings">
+        <TabsContent value="mappings" className="flex flex-col gap-3">
+          {mappings.isError && <LoadError error={mappings.error} testId="delivery-mappings-error" />}
           <DataTable
             columns={mappingColumns}
             rows={mappings.data}
             rowKey={(row) => row.id}
             onRowClick={(row) => setSelected(row.id)}
-            emptyMessage="No mapping documents synced yet. A mapping is a YAML file with documentType: mapping under a repository's mappings directory."
+            emptyMessage="No mapping documents synced yet. A mapping is a YAML file with documentType: mapping under a repository's mappings directory, and the Mapping builder writes one."
+            minWidth={1100}
             data-testid="delivery-mappings-table"
           />
         </TabsContent>
-        <TabsContent value="snapshots">
+        <TabsContent value="snapshots" className="flex flex-col gap-3">
+          {snapshots.isError && <LoadError error={snapshots.error} testId="delivery-snapshots-error" />}
           <DataTable
             columns={snapshotColumns}
             rows={snapshots.data}
             rowKey={(row) => row.id}
-            emptyMessage="No snapshots synced yet. Capture them with sqlflow snapshot and commit the snapshots directory."
+            emptyMessage="No reference snapshots synced yet. Capture them with sqlflow snapshot and commit the snapshots directory."
             data-testid="delivery-snapshots-table"
           />
         </TabsContent>
@@ -125,17 +157,38 @@ export default function DeliveryDocumentsPage() {
       <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) { setSelected(null); } }}>
         <SheetContent className="w-full gap-0 sm:max-w-3xl" data-testid="delivery-mapping-detail">
           <SheetHeader>
-            <SheetTitle>{mapping.data?.mapping.reference ?? "Mapping"}</SheetTitle>
+            <SheetTitle>{detail?.mapping.reference ?? "Mapping"}</SheetTitle>
             <SheetDescription>
-              {mapping.data ? `${mapping.data.mapping.kind} from ${mapping.data.mapping.relativePath}` : "Loading."}
+              {detail !== undefined ? `${detail.mapping.kind} from ${detail.mapping.relativePath}` : "Loading."}
             </SheetDescription>
           </SheetHeader>
-          {mapping.data && (
-            <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
-              {mapping.data.mapping.message && <p className="text-[13px] text-destructive">{mapping.data.mapping.message}</p>}
-              <CodeView value={mapping.data.yaml} language="yaml" height={560} data-testid="delivery-mapping-yaml" />
-            </div>
-          )}
+          <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
+            {mapping.isError && <LoadError error={mapping.error} testId="delivery-mapping-error" />}
+            {detail !== undefined && (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button asChild size="sm" variant="outline" data-testid="delivery-mapping-open-builder">
+                    <RouterLink to={`/delivery/mappings/build?mappingId=${encodeURIComponent(detail.mapping.id)}`}>
+                      <PencilRuler />
+                      Open in builder
+                    </RouterLink>
+                  </Button>
+                  {templateVersion !== "-" && (
+                    <Button asChild size="sm" variant="ghost" data-testid="delivery-mapping-template">
+                      <RouterLink
+                        to={`/delivery/templates?${new URLSearchParams({ kind: detail.mapping.kind, version: templateVersion }).toString()}`}
+                      >
+                        <LayoutTemplate />
+                        <span className="font-mono text-[12px]">{templateVersion}</span>
+                      </RouterLink>
+                    </Button>
+                  )}
+                </div>
+                {detail.mapping.message && <p className="text-[13px] text-destructive">{detail.mapping.message}</p>}
+                <CodeView value={detail.yaml} language="yaml" height={560} data-testid="delivery-mapping-yaml" />
+              </>
+            )}
+          </div>
         </SheetContent>
       </Sheet>
     </Page>

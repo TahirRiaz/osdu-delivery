@@ -24,31 +24,25 @@ public sealed class DeliverySubmissionApiTests
 {
     private const string MappingReference = "Wellbore@1.0.0";
 
-    /// <summary>The sample estate's wellbore mapping, self-contained so the suite needs no snapshot store.</summary>
+    /// <summary>The sample estate's wellbore mapping, self-contained so the suite needs no repository checkout.</summary>
     private const string MappingYaml = """
         documentType: mapping
         name: Wellbore
         version: 1.0.0
-        kind: osdu:wks:master-data--Wellbore:1.3.0
-        source: { system: recall, scopes: [aliases] }
-        identity: { naturalKey: [data.FacilityName], label: "{facility_name}" }
-        envelope:
-          legalTags: [opendes-reference-data-default]
-          otherRelevantDataCountries: [NO]
-          acl:
-            owners: [data.default.owners@opendes.dataservices.energy]
-            viewers: [data.default.viewers@opendes.dataservices.energy]
+        template: { kind: "osdu:wks:master-data--Wellbore:1.3.0", version: a110ad82c3b60a1e }
+        dataset: { system: recall, key: [dataset.facility_name], label: "{dataset.facility_name}" }
         parameters:
           dataPartition: { required: true }
-        properties:
-          - { target: data.FacilityName, source: facility_name, transform: trim }
-          - { target: data.FacilityDescription, source: facility_description }
-          - { target: data.FacilityID, source: facility_id }
-          - target: data.NameAliases
-            collection: true
-            scope: aliases
-            properties:
-              - { target: AliasName, source: alias_name }
+        mappings:
+          - { target: osdu.acl.owners, static: [data.default.owners@opendes.dataservices.energy] }
+          - { target: osdu.acl.viewers, static: [data.default.viewers@opendes.dataservices.energy] }
+          - { target: osdu.legal.legaltags, static: [opendes-reference-data-default] }
+          - { target: osdu.legal.otherRelevantDataCountries, static: [NO] }
+          - { target: osdu.data.FacilityName, source: dataset.facility_name, modifiers: [trim] }
+          - { target: osdu.data.FacilityDescription, source: dataset.facility_description, required: false }
+          - { target: osdu.data.FacilityID, source: dataset.facility_id, required: false }
+          - { target: osdu.data.NameAliases, source: dataset.aliases, required: false }
+          - { target: "osdu.data.NameAliases[].AliasName", source: dataset.aliases.alias_name }
         """;
 
     private static object Wellbore(string name, string description = "a wellbore", string updated = "2026-09-12T10:00:00Z", params string[] aliases) => new
@@ -60,7 +54,7 @@ public sealed class DeliverySubmissionApiTests
             ["facility_id"] = "srn:master-data/Wellbore:" + name,
             ["update_date"] = updated,
         },
-        scopes = new Dictionary<string, object> { ["aliases"] = aliases.Select(a => new { alias_name = a }).ToArray() },
+        datasets = new Dictionary<string, object> { ["aliases"] = aliases.Select(a => new { alias_name = a }).ToArray() },
     };
 
     /// <summary>A wellbore that points at where its payload files already sit, the way a source sends one to a file flow.</summary>
@@ -128,7 +122,7 @@ public sealed class DeliverySubmissionApiTests
             // The same request with its keys in another order and other whitespace is the same submission.
             using var repeat = await PostRawAsync(client, token, $$$"""
                 { "submissionId": "{{{submissionId}}}", "parameters": { "site": "north" }, "flow": "{{{estate.RecordsFlow}}}",
-                  "records": [ { "scopes": { "aliases": [ { "alias_name": "A-1" }, { "alias_name": "A-2" } ] },
+                  "records": [ { "datasets": { "aliases": [ { "alias_name": "A-1" }, { "alias_name": "A-2" } ] },
                                  "record": { "update_date": "2026-09-12T10:00:00Z", "facility_id": "srn:master-data/Wellbore:WB-API-1",
                                              "facility_description": "first", "facility_name": "WB-API-1" } } ] }
                 """);
@@ -164,7 +158,7 @@ public sealed class DeliverySubmissionApiTests
             Assert.Equal(estate.RecordsFlow, body.RootElement.GetProperty("flowName").GetString());
             var record = body.RootElement.GetProperty("records")[0];
             Assert.Equal("WB-API-1", record.GetProperty("record").GetProperty("facility_name").GetString());
-            Assert.Equal("A-1", record.GetProperty("scopes").GetProperty("aliases")[0].GetProperty("alias_name").GetString());
+            Assert.Equal("A-1", record.GetProperty("datasets").GetProperty("aliases")[0].GetProperty("alias_name").GetString());
 
             using var none = await GetAsync(client, token, $"/api/v1/delivery/submissions/{Guid.NewGuid()}/content");
             Assert.Equal(HttpStatusCode.NotFound, none.StatusCode);
@@ -516,6 +510,13 @@ public sealed class DeliverySubmissionApiTests
             Assert.Equal(estate.RecordsPipeline, records.PipelineId);
             Assert.Equal("site", Assert.Single(records.Parameters).Name);
             Assert.Null(records.PayloadName);
+            // The listing says what the flow's records become: the template version its synced mapping fills.
+            Assert.Equal("osdu:wks:master-data--Wellbore:1.3.0", records.TemplateKind);
+            Assert.Equal("a110ad82c3b60a1e", records.TemplateVersion);
+            // A flow whose mapping the catalog has not synced has no template to name.
+            var unsyncedFlow = Assert.Single(flows, f => f.FlowName == estate.UnsyncedMappingFlow);
+            Assert.Null(unsyncedFlow.TemplateKind);
+            Assert.Null(unsyncedFlow.TemplateVersion);
             // A flow that streams files offers manual submission on the same terms, and names the payload its records point at.
             var streaming = Assert.Single(flows, f => f.FlowName == estate.PayloadFlow);
             Assert.True(streaming.AcceptsRecords);
@@ -547,6 +548,8 @@ public sealed class DeliverySubmissionApiTests
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
+            // The sample templates are saved, so the version the mapping pins is one the catalog holds.
+            await SampleEstate.SaveTemplatesAsync(cs);
             using var records = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.RecordsPipeline}/source-contract");
             Assert.Equal(HttpStatusCode.OK, records.StatusCode);
             var contract = (await records.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
@@ -555,11 +558,36 @@ public sealed class DeliverySubmissionApiTests
             Assert.Null(contract.MappingProblem);
             Assert.Equal(MappingReference, contract.MappingReference);
             Assert.Equal("OsduRecord", contract.Protocol);
-            Assert.Equal(["facility_name", "facility_description", "facility_id"], contract.RecordColumns);
-            Assert.Equal(["facility_name"], contract.NaturalKey);
-            var aliases = Assert.Single(contract.Scopes);
-            Assert.Equal("aliases", aliases.Scope);
-            Assert.Equal(["alias_name"], aliases.Columns);
+            // The template version the mapping fills, and the dataset a record is a row of.
+            Assert.Equal(new DeliverySourceTemplateDto("osdu:wks:master-data--Wellbore:1.3.0", "a110ad82c3b60a1e", Saved: true), contract.Template);
+            Assert.Equal("recall", contract.System);
+            Assert.Equal(["facility_name"], contract.Key);
+            Assert.Equal("{dataset.facility_name}", contract.Label);
+            Assert.Equal(["facility_name", "facility_description", "facility_id"], contract.Columns.Select(c => c.Name));
+            // Each column says which template variable it fills, and how.
+            var name = contract.Columns[0];
+            Assert.True(name.Key);
+            Assert.True(name.Label);
+            var fills = Assert.Single(name.Uses);
+            Assert.Equal("osdu.data.FacilityName", fills.Target);
+            Assert.Equal("value", fills.Role);
+            Assert.Equal("dataset.facility_name", fills.Source);
+            Assert.True(fills.Required);
+            Assert.Equal(["trim"], fills.Modifiers);
+            Assert.Null(fills.FindBy);
+            Assert.Null(fills.AppliesWhen);
+            var description = Assert.Single(contract.Columns[1].Uses);
+            Assert.Equal("osdu.data.FacilityDescription", description.Target);
+            Assert.False(description.Required);
+            // The child dataset names the list its rows fill, one item per row.
+            var aliases = Assert.Single(contract.Datasets);
+            Assert.Equal("aliases", aliases.Name);
+            var list = Assert.Single(aliases.Fills);
+            Assert.Equal("osdu.data.NameAliases", list.Target);
+            Assert.False(list.Required);
+            var alias = Assert.Single(aliases.Columns);
+            Assert.Equal("alias_name", alias.Name);
+            Assert.Equal("osdu.data.NameAliases[].AliasName", Assert.Single(alias.Uses).Target);
             Assert.Equal("update_date", contract.LastModifiedColumn);
             Assert.Null(contract.FingerprintColumn);
             var site = Assert.Single(contract.Parameters);
@@ -585,8 +613,18 @@ public sealed class DeliverySubmissionApiTests
             using var unsynced = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.UnsyncedMappingPipeline}/source-contract");
             var problem = (await unsynced.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
             Assert.True(problem.AcceptsRecords);
-            Assert.Empty(problem.RecordColumns);
+            Assert.Empty(problem.Columns);
+            Assert.Null(problem.Template);
             Assert.Contains("has not synced", problem.MappingProblem, StringComparison.Ordinal);
+
+            // A mapping pinning a template version the catalog does not hold still lists its columns, and says no run can render them.
+            using var unsaved = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.UnsavedTemplatePipeline}/source-contract");
+            var unrenderable = (await unsaved.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
+            Assert.NotNull(unrenderable.Template);
+            Assert.False(unrenderable.Template.Saved);
+            Assert.Equal(Estate.UnsavedTemplateVersion, unrenderable.Template.Version);
+            Assert.NotEmpty(unrenderable.Columns);
+            Assert.Contains("which is not saved in the catalog", unrenderable.MappingProblem, StringComparison.Ordinal);
 
             using var unknown = await GetAsync(client, token, $"/api/v1/delivery/flows/{Guid.NewGuid()}/source-contract");
             Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
@@ -738,10 +776,17 @@ public sealed class DeliverySubmissionApiTests
         Guid UnsyncedMappingPipeline,
         string AmbiguousFlow,
         string NoManualFlow,
-        Guid NoManualPipeline)
+        Guid NoManualPipeline,
+        string UnsavedTemplateFlow,
+        Guid UnsavedTemplatePipeline)
     {
         /// <summary>The one place the file flow lets a submission point at: what is inside is allowed, what is outside is not.</summary>
         public const string FileRoot = "C:/lake/wellbore";
+
+        /// <summary>A template version no test saves: a mapping that pins it cannot render until someone does.</summary>
+        public const string UnsavedTemplateVersion = "0123456789abcdef";
+
+        private const string UnsavedTemplateMapping = "WellboreUnsaved@1.0.0";
 
         public static async Task<Estate> SeedAsync(string cs)
         {
@@ -755,6 +800,7 @@ public sealed class DeliverySubmissionApiTests
             var unsynced = "wellbore-unsynced-" + suffix;
             var ambiguous = "wellbore-ambiguous-" + suffix;
             var noManual = "wellbore-no-manual-" + suffix;
+            var unsavedTemplate = "wellbore-unsaved-template-" + suffix;
             var now = DateTime.UtcNow;
 
             await using var db = CatalogDatabase.Create(cs);
@@ -766,6 +812,7 @@ public sealed class DeliverySubmissionApiTests
             db.Pipelines.Add(Pipeline(repoId, ambiguous, RecordsYaml(ambiguous, MappingReference, "    required: true"), now));
             db.Pipelines.Add(Pipeline(secondRepoId, ambiguous, RecordsYaml(ambiguous, MappingReference, "    required: true"), now));
             db.Pipelines.Add(Pipeline(repoId, noManual, RecordsYaml(noManual, MappingReference, "    required: true", manualSubmission: false), now));
+            db.Pipelines.Add(Pipeline(repoId, unsavedTemplate, RecordsYaml(unsavedTemplate, UnsavedTemplateMapping, "    required: true"), now));
             db.Pipelines.Add(Pipeline(repoId, payload, $$"""
                 flowType: delivery
                 name: {{payload}}
@@ -804,6 +851,7 @@ public sealed class DeliverySubmissionApiTests
                 Name = "Wellbore",
                 Version = "1.0.0",
                 Kind = "osdu:wks:master-data--Wellbore:1.3.0",
+                TemplateVersion = "a110ad82c3b60a1e",
                 RelativePath = "mappings/Wellbore@1.0.0.yaml",
                 ContentHash = new string('0', 64),
                 Yaml = MappingYaml,
@@ -811,10 +859,29 @@ public sealed class DeliverySubmissionApiTests
                 FirstSeenUtc = now,
                 LastSeenUtc = now,
             });
+            db.DeliveryMappings.Add(new DeliveryMapping
+            {
+                Id = Guid.NewGuid(),
+                RepoId = repoId,
+                Reference = UnsavedTemplateMapping,
+                Name = "WellboreUnsaved",
+                Version = "1.0.0",
+                Kind = "osdu:wks:master-data--Wellbore:1.3.0",
+                TemplateVersion = UnsavedTemplateVersion,
+                RelativePath = $"mappings/{UnsavedTemplateMapping}.yaml",
+                ContentHash = new string('1', 64),
+                Yaml = MappingYaml
+                    .Replace("name: Wellbore", "name: WellboreUnsaved", StringComparison.Ordinal)
+                    .Replace("version: a110ad82c3b60a1e", "version: " + UnsavedTemplateVersion, StringComparison.Ordinal),
+                Status = "valid",
+                FirstSeenUtc = now,
+                LastSeenUtc = now,
+            });
             await db.SaveChangesAsync();
             return new Estate(
                 repoId, secondRepoId, records, CatalogIdentity.Pipeline(repoId, records), payload, CatalogIdentity.Pipeline(repoId, payload),
-                defaulted, unsynced, CatalogIdentity.Pipeline(repoId, unsynced), ambiguous, noManual, CatalogIdentity.Pipeline(repoId, noManual));
+                defaulted, unsynced, CatalogIdentity.Pipeline(repoId, unsynced), ambiguous, noManual, CatalogIdentity.Pipeline(repoId, noManual),
+                unsavedTemplate, CatalogIdentity.Pipeline(repoId, unsavedTemplate));
         }
 
         /// <summary>A drop's submission in the ledger, so an id it already uses can be refused for records.</summary>
@@ -841,7 +908,7 @@ public sealed class DeliverySubmissionApiTests
         public async Task CleanupAsync(string cs)
         {
             await using var db = CatalogDatabase.Create(cs);
-            var flows = new[] { RecordsFlow, PayloadFlow, DefaultedFlow, UnsyncedMappingFlow, AmbiguousFlow, NoManualFlow };
+            var flows = new[] { RecordsFlow, PayloadFlow, DefaultedFlow, UnsyncedMappingFlow, AmbiguousFlow, NoManualFlow, UnsavedTemplateFlow };
             await db.DeliveryInlineSubmissions.Where(s => flows.Contains(s.FlowName)).ExecuteDeleteAsync();
             await db.DeliverySubmissions.Where(s => flows.Contains(s.FlowName)).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.RepoId == RepoId || r.RepoId == SecondRepoId).ExecuteDeleteAsync();

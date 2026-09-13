@@ -14,7 +14,7 @@ Parses and validates a delivery document offline: no catalog, no OSDU, no secret
 
 On success the command prints one `OK  ...` line to stdout and exits 0. On any load or validation failure it prints one `ERROR  ...` line to stderr (credential values redacted) and exits 1. Given a folder it validates every document under it, one line per file; that is the CI gate.
 
-`${env:NAME}` and `${keyvault:vault/secret}` references are kept as literal references during validation; they resolve only at run time, so validation needs neither the environment variables nor the vault to exist. What validate does not do is the delivery preflight: checking the mapping against the pinned schema snapshot, loading the reference snapshot, and reading a drop's manifest is `sqlflow check` ([delivery.md](delivery.md)).
+`${env:NAME}` and `${keyvault:vault/secret}` references are kept as literal references during validation; they resolve only at run time, so validation needs neither the environment variables nor the vault to exist. What validate does not do is the delivery preflight: checking the mapping against its pinned template (saved in the catalog) and the reference snapshot, and reading a drop's manifest, is `sqlflow check` ([delivery.md](delivery.md)).
 
 ## Arguments
 
@@ -63,7 +63,20 @@ The delivery loader (src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs) p
 - `target.auth`: `oauth2ClientCredentials` needs a `token` block; `bearer`, `apiKeyHeader` and `basic` need `secretRef`; `apiKeyHeader` needs `headerName`.
 - `reliability.concurrency` and `reliability.retry.attempts` must be at least 1.
 
-For a mapping: `name`, `version`, `kind` (four colon-separated parts, `authority:source:entityType:version`), `source.system`, `identity.naturalKey` (at least one top-level scalar property with a source column), `envelope.legalTags`, `envelope.otherRelevantDataCountries`, `envelope.acl.owners` and `envelope.acl.viewers` (each non-empty), the `dataPartition` parameter, and `properties` are required. A property mapped twice, a collection without `properties` or `definition`, a transform missing its `config` (`constant` needs `value`, `split` needs `delimiter`, `equals` needs `resolve`, `map` needs `values`, `reference` and `deliveredReference` need `type`, `template` needs `format`), or a scalar with no source column is an error. The full vocabulary is in [documents.md](../../delivery/documents.md).
+For a mapping (src/SqlFlow.Delivery/Documents/MappingMapper.cs):
+
+- `name`, `version`, `template.kind`, `template.version`, `dataset.system`, `dataset.key`, the `dataPartition` parameter and at least one entry under `mappings` are required.
+- `template.kind` must be `authority:source:entityType:major.minor.patch`, and `template.version` 16 lower-case hexadecimal characters. The template itself is not loaded; that is `sqlflow check`.
+- `dataset.key` names columns of the dataset's own row (`dataset.<column>`), each once, and every `{dataset.<column>}` token in `dataset.label` names such a column too.
+- every entry has a `target` that starts with `osdu.` and steps into at most one array (`[]`, never last), and exactly one of `source` and `static`. A static entry takes only `appliesWhen` and `description` besides its value.
+- a `source` is `dataset.<column>`, `dataset.<child>.<column>`, `dataset.<child>` on an array other entries fill (a repeater), or `cache.<type>.<field>`. A cache source needs `findBy`, each line comparing a field of the same cached type with `dataset.<column>`, `dataset.<child>.<column>` or a quoted text; `findBy` and `ignoreSeparators` are refused on any other entry.
+- the modifiers are `trim`, `upper`, `lower`, `date` (optionally with its input format), `split` (a `separator` and a `part` counting from one), `replace` (at least one pair) and `equals` (one text). A repeater takes none, and a cache source takes them only when a `findBy` line reads a dataset column.
+- `appliesWhen` reads `dataset.<column> is <text>`, `is not <text>`, `is empty` or `is not empty`; a repeater's reads the dataset's own row.
+- no two entries fill the same target; an entry inside `X[]` needs a repeater on `X` and reads only that repeater's child dataset; a child dataset's column read outside a repeater is an error; every `{param.name}` token names a declared parameter.
+- `osdu.acl.owners`, `osdu.acl.viewers`, `osdu.legal.legaltags` and `osdu.legal.otherRelevantDataCountries` each have a static list of at least one text, without repeats and without `appliesWhen`.
+- every fixture has a `name`, a `record` and `expected`.
+
+Every key is described in [documents.md](../../delivery/documents.md) and [mapping-templates.md](../../delivery/mapping-templates.md).
 
 ### Environment file
 
@@ -172,7 +185,7 @@ OK  'leaky' is valid (delivery: /drops/leaky -> https://osdu.example.com).
 
 ## See also
 
-- [sqlflow check, snapshot, and the delivery run options](delivery.md): the preflight gate that checks the mapping against the schema snapshot, and the run verbs.
+- [sqlflow check, snapshot, template, and the delivery run options](delivery.md): the preflight gate that checks the mapping against its pinned template and the cache, the template verbs, and the run verbs.
 - [Document reference](../../delivery/documents.md): every key of the flow and mapping documents.
 - [Environment variables](../../environment-variables.md): secret references and the `.sqlflow/env` file.
 - [sqlflow db](db.md): the sync that projects validated documents into the catalog.

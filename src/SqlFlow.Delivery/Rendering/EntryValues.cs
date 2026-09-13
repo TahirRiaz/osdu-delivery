@@ -1,0 +1,500 @@
+using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Snapshots;
+
+namespace SqlFlow.Delivery.Rendering;
+
+/// <summary>
+/// The value of one mapping entry for one row (docs/delivery/mapping-templates.md): the condition, the source or static
+/// value, the modifiers, the cache lookup, what an empty value does, and the conversion to the template variable's type.
+/// A value that cannot be produced either leaves the variable out or holds the record with a reason naming the target.
+/// </summary>
+internal static partial class EntryValues
+{
+    /// <summary>The value of <paramref name="entry"/> for the row, converted to its variable's type, or null when the variable is left out.</summary>
+    public static JsonNode? Evaluate(
+        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
+    {
+        if (entry.AppliesWhen is { } condition && !Applies(condition, root, item))
+        {
+            return null;
+        }
+
+        var path = entry.Target.Text;
+        object? raw;
+        if (entry.Static is { } fixedValue)
+        {
+            raw = Expand(fixedValue, renderer);
+        }
+        else if (entry.Source!.Kind == MappingSourceKind.DatasetColumn)
+        {
+            var column = entry.Source.Column!;
+            if (!TryModify(entry.Modifiers, Read(column, root, item), path, holds, out raw))
+            {
+                return null;
+            }
+
+            if (IsEmpty(raw))
+            {
+                if (entry.Required)
+                {
+                    holds.Add($"{path}: {column} is empty, and the entry is required");
+                }
+
+                return null;
+            }
+        }
+        else
+        {
+            raw = Cached(entry, root, item, renderer, holds, usages);
+            if (raw is null)
+            {
+                return null;
+            }
+        }
+
+        return raw is null ? null : Convert(raw, renderer.Schema.Resolve(entry.Target.SchemaPath), path, holds);
+    }
+
+    /// <summary>Whether an entry's <c>appliesWhen</c> holds for the row. Comparison is of trimmed text, ignoring case.</summary>
+    public static bool Applies(EntryCondition condition, SourceRow root, SourceRow? item)
+    {
+        var text = SourceRow.Stringify(Read(condition.Column, root, item))?.Trim();
+        var empty = string.IsNullOrEmpty(text);
+        return condition.Operator switch
+        {
+            ConditionOperator.IsEmpty => empty,
+            ConditionOperator.IsNotEmpty => !empty,
+            ConditionOperator.Is => !empty && string.Equals(text, condition.Text!.Trim(), StringComparison.OrdinalIgnoreCase),
+            _ => empty || !string.Equals(text, condition.Text!.Trim(), StringComparison.OrdinalIgnoreCase),
+        };
+    }
+
+    private static object? Read(DatasetColumn column, SourceRow root, SourceRow? item)
+        => column.Child is null ? root.Get(column.Column) : item?.Get(column.Column);
+
+    private static bool IsEmpty(object? value) => value is null || (value is string text && string.IsNullOrWhiteSpace(text));
+
+    /// <summary>
+    /// Applies the modifiers in order. False when a modifier could not read the value (a date that is not a date), which
+    /// holds the record whatever the entry's required flag says: the value was there, and it was wrong.
+    /// </summary>
+    private static bool TryModify(IReadOnlyList<Modifier> modifiers, object? value, string path, List<string> holds, out object? result)
+    {
+        result = value;
+        foreach (var modifier in modifiers)
+        {
+            if (result is null)
+            {
+                return true;
+            }
+
+            var text = result is string s ? s : SourceRow.Stringify(result);
+            switch (modifier.Kind)
+            {
+                case ModifierKind.Trim:
+                    result = text?.Trim();
+                    break;
+                case ModifierKind.Upper:
+                    result = text?.ToUpperInvariant();
+                    break;
+                case ModifierKind.Lower:
+                    result = text?.ToLowerInvariant();
+                    break;
+                case ModifierKind.Split:
+                    result = Split(text, modifier.Separator!, modifier.Part!.Value);
+                    break;
+                case ModifierKind.Replace:
+                    result = Replace(text, modifier.Replacements);
+                    break;
+                case ModifierKind.Equals:
+                    result = text is null ? null : string.Equals(text.Trim(), modifier.Text?.Trim(), StringComparison.OrdinalIgnoreCase);
+                    break;
+                case ModifierKind.Date:
+                    if (!TryDate(result, modifier.Text, out var date))
+                    {
+                        holds.Add($"{path}: '{text}' is not a date/time{(modifier.Text is null ? string.Empty : " in the format " + modifier.Text)}");
+                        result = null;
+                        return false;
+                    }
+
+                    result = date;
+                    break;
+                default:
+                    throw new DeliveryException($"{path}: modifier '{modifier.Kind}' is not supported.");
+            }
+        }
+
+        return true;
+    }
+
+    private static string? Split(string? text, string separator, int part)
+    {
+        if (text is null)
+        {
+            return null;
+        }
+
+        var parts = separator == " " ? Whitespace().Split(text.Trim()) : text.Split(separator, StringSplitOptions.None);
+        if (part > parts.Length)
+        {
+            return null;
+        }
+
+        var value = parts[part - 1].Trim();
+        return value.Length == 0 ? null : value;
+    }
+
+    /// <summary>An exact match of the trimmed value wins; otherwise a key that matches ignoring case, when exactly one does; otherwise the value is unchanged.</summary>
+    private static string? Replace(string? text, IReadOnlyDictionary<string, string> replacements)
+    {
+        if (text is null)
+        {
+            return null;
+        }
+
+        var value = text.Trim();
+        if (replacements.TryGetValue(value, out var exact))
+        {
+            return exact;
+        }
+
+        var loose = replacements.Where(kv => string.Equals(kv.Key, value, StringComparison.OrdinalIgnoreCase)).ToList();
+        return loose.Count == 1 ? loose[0].Value : value;
+    }
+
+    private static bool TryDate(object value, string? format, out string date)
+    {
+        date = string.Empty;
+        switch (value)
+        {
+            case DateTimeOffset offset:
+                date = Json.CanonicalJson.FormatDateTime(offset);
+                return true;
+            case DateTime moment:
+                date = SourceRow.Stringify(moment)!;
+                return true;
+        }
+
+        var text = SourceRow.Stringify(value)?.Trim();
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        var ok = format is not null
+            ? DateTimeOffset.TryParseExact(text, format, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
+            : DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out parsed);
+        if (ok)
+        {
+            date = Json.CanonicalJson.FormatDateTime(parsed);
+        }
+
+        return ok;
+    }
+
+    /// <summary>
+    /// Resolves a cache source: each findBy line in turn compares its cached field with its value, and the first line that
+    /// finds exactly one record wins. The value an entry matched by and the value it read are both recorded as
+    /// dependencies of the render, so a later cache version can tell which records it changes.
+    /// </summary>
+    private static object? Cached(MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
+    {
+        var path = entry.Target.Text;
+        var source = entry.Source!;
+        var typeName = source.CacheType!;
+        var version = renderer.Context.ReferenceSnapshotVersion;
+        var type = renderer.References.Type(typeName);
+        if (type is null)
+        {
+            holds.Add($"{path}: the cache holds no type '{typeName}' in reference snapshot {version}");
+            return null;
+        }
+
+        var tried = new List<(FindBy Find, string Value)>();
+        (FindBy Find, string Value, ReferenceMatch Found)? undecided = null;
+        foreach (var find in entry.FindBy)
+        {
+            string? value;
+            if (find.Literal is not null)
+            {
+                value = find.Literal;
+            }
+            else
+            {
+                if (!TryModify(entry.Modifiers, Read(find.Column!, root, item), path, holds, out var modified))
+                {
+                    return null;
+                }
+
+                value = modified is bool flag ? (flag ? "true" : "false") : SourceRow.Stringify(modified);
+            }
+
+            value = value?.Trim();
+            if (string.IsNullOrEmpty(value))
+            {
+                continue;
+            }
+
+            tried.Add((find, value));
+
+            // A value that already is an OSDU id names its record without a lookup.
+            if (OsduId().IsMatch(value))
+            {
+                if (type.Match("id", value.TrimEnd(':')) is { } byId)
+                {
+                    usages.Add(new CacheUsage(typeName, byId.Id, "id", value, CacheUsageKind.Match));
+                    return Select(entry, type, byId, renderer, holds, usages);
+                }
+
+                if (source.ReadsRecordId)
+                {
+                    return WithVersionSeparator(value);
+                }
+
+                return Missing(entry, $"{path}: '{value}' is already an OSDU id that reference snapshot {version} does not hold, so '{source.CacheField}' cannot be read from the cache", holds);
+            }
+
+            var found = type.Find(find.Field, value, entry.IgnoreSeparators);
+            if (found.Item is { } hit)
+            {
+                usages.Add(new CacheUsage(typeName, hit.Id, ReferenceField.Normalize(find.Field), value, CacheUsageKind.Match));
+                return Select(entry, type, hit, renderer, holds, usages);
+            }
+
+            if (found.IsCaseAmbiguous)
+            {
+                undecided ??= (find, value, found);
+            }
+        }
+
+        if (undecided is { } choice)
+        {
+            // Several records answer to the value. Taking the first would deliver the wrong reference without a trace, so
+            // the record is held whatever the required flag says, and the reason names every candidate.
+            var candidates = string.Join(", ", choice.Found.CaseVariants.Select(c => c.Id));
+            holds.Add(
+                $"{path}: '{choice.Value}' matches {choice.Found.CaseVariants.Count} {typeName} records by {ReferenceField.Normalize(choice.Find.Field)} {choice.Found.Loosening} ({candidates}); make the incoming value exact with a replace modifier. Reference snapshot {version}");
+            return null;
+        }
+
+        if (tried.Count == 0)
+        {
+            var operands = string.Join(", ", entry.FindBy.Where(f => f.Column is not null).Select(f => f.Column!.ToString()).Distinct(StringComparer.Ordinal));
+            if (entry.Required)
+            {
+                holds.Add($"{path}: {operands} is empty, so there is nothing to find in the cache, and the entry is required");
+            }
+
+            return null;
+        }
+
+        var fold = entry.IgnoreSeparators ? ", even with punctuation and spacing ignored" : string.Empty;
+        var described = tried.Select(t => t.Value).Distinct(StringComparer.Ordinal).Count() == 1
+            ? $"'{tried[0].Value}' by {string.Join("/", tried.Select(t => ReferenceField.Normalize(t.Find.Field)))}"
+            : string.Join(" or ", tried.Select(t => $"{ReferenceField.Normalize(t.Find.Field)} '{t.Value}'"));
+        return Missing(entry, $"{path}: no {typeName} matches {described}{fold} in reference snapshot {version}", holds);
+    }
+
+    private static object? Select(MappingEntry entry, ReferenceType type, ReferenceItem hit, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
+    {
+        var source = entry.Source!;
+        if (source.ReadsRecordId)
+        {
+            usages.Add(new CacheUsage(type.Name, hit.Id, "id", hit.Id, CacheUsageKind.Value));
+            return WithVersionSeparator(hit.Id);
+        }
+
+        var field = source.CacheField!;
+        if (type.Value(hit, field) is not { } cached)
+        {
+            return Missing(
+                entry,
+                $"{entry.Target.Text}: {type.Name} '{hit.Id}' caches nothing at '{field}' in reference snapshot {renderer.Context.ReferenceSnapshotVersion}. Cached: {string.Join(", ", type.FieldNames.Prepend("id"))}",
+                holds);
+        }
+
+        usages.Add(new CacheUsage(type.Name, hit.Id, ReferenceField.Normalize(field), cached.Text, CacheUsageKind.Value));
+        return cached.Node.DeepClone();
+    }
+
+    /// <summary>A value the cache does not have: a required entry holds the record, an optional one leaves the variable out.</summary>
+    private static object? Missing(MappingEntry entry, string reason, List<string> holds)
+    {
+        if (entry.Required)
+        {
+            holds.Add(reason);
+        }
+
+        return null;
+    }
+
+    private static string WithVersionSeparator(string id) => id.EndsWith(':') ? id : id + ":";
+
+    private static JsonNode Expand(JsonNode node, MappingRenderer renderer) => node switch
+    {
+        JsonValue value when value.TryGetValue<string>(out var text) => JsonValue.Create(MappingEntry.ExpandParameters(text, renderer.ParameterValue)),
+        JsonObject obj => new JsonObject(obj.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, kv.Value is null ? null : Expand(kv.Value, renderer)))),
+        JsonArray array => new JsonArray(array.Select(item => item is null ? null : Expand(item, renderer)).ToArray()),
+        _ => node.DeepClone(),
+    };
+
+    /// <summary>
+    /// Converts a value to the type its variable declares: text becomes a number, an integer or a boolean where the schema
+    /// says so, a single value bound to a list becomes a list of one, and a set of values fills a list or holds a single
+    /// value. A value that cannot take the type holds the record with a reason naming the target.
+    /// </summary>
+    private static JsonNode? Convert(object raw, SchemaProperty? property, string path, List<string> holds)
+    {
+        var type = property?.Type ?? SchemaType.Any;
+        if (raw is JsonArray set)
+        {
+            return ConvertSet(set, type, property?.ItemScalarType, path, holds);
+        }
+
+        if (raw is JsonObject obj)
+        {
+            if (type is SchemaType.Object or SchemaType.Any)
+            {
+                return obj;
+            }
+
+            holds.Add($"{path}: an object cannot be written where the template takes a {Name(type)}");
+            return null;
+        }
+
+        var scalar = raw is JsonValue value ? Native(value) : raw;
+        if (type == SchemaType.Array && property?.ItemScalarType is { } itemType)
+        {
+            var single = Scalar(scalar, itemType, path, holds);
+            return single is null ? null : new JsonArray(single);
+        }
+
+        return Scalar(scalar, type, path, holds);
+    }
+
+    private static JsonNode? ConvertSet(JsonArray set, SchemaType type, SchemaType? itemScalarType, string path, List<string> holds)
+    {
+        if (type is SchemaType.Array && itemScalarType is { } itemType)
+        {
+            var items = new JsonArray();
+            foreach (var element in set)
+            {
+                if (element is not null && Scalar(Native(element), itemType, path, holds) is { } converted)
+                {
+                    items.Add(converted);
+                }
+            }
+
+            return items.Count > 0 ? items : null;
+        }
+
+        if (type is SchemaType.Array or SchemaType.Object or SchemaType.Any)
+        {
+            return set.DeepClone();
+        }
+
+        if (set.Count == 1 && set[0] is { } only)
+        {
+            return Scalar(Native(only), type, path, holds);
+        }
+
+        holds.Add($"{path}: {set.Count} values were given but the template takes one {Name(type)}; read one value or fill a list");
+        return null;
+    }
+
+    private static JsonNode? Scalar(object raw, SchemaType type, string path, List<string> holds)
+    {
+        try
+        {
+            switch (type)
+            {
+                case SchemaType.String:
+                    return JsonValue.Create(SourceRow.Stringify(raw));
+                case SchemaType.Number:
+                    return raw switch
+                    {
+                        double d => JsonValue.Create(d),
+                        float f => JsonValue.Create((double)f),
+                        long l => JsonValue.Create(l),
+                        int i => JsonValue.Create((long)i),
+                        decimal m => JsonValue.Create((double)m),
+                        bool => throw new FormatException("a boolean is not a number"),
+                        _ => JsonValue.Create(double.Parse(SourceRow.Stringify(raw)!, NumberStyles.Float, CultureInfo.InvariantCulture)),
+                    };
+                case SchemaType.Integer:
+                    return raw switch
+                    {
+                        long l => JsonValue.Create(l),
+                        int i => JsonValue.Create((long)i),
+                        double d when Math.Floor(d) == d => JsonValue.Create((long)d),
+                        _ => JsonValue.Create(long.Parse(SourceRow.Stringify(raw)!, NumberStyles.Integer, CultureInfo.InvariantCulture)),
+                    };
+                case SchemaType.Boolean:
+                    return raw switch
+                    {
+                        bool b => JsonValue.Create(b),
+                        _ => JsonValue.Create(ParseBool(SourceRow.Stringify(raw)!)),
+                    };
+                case SchemaType.Object:
+                case SchemaType.Array:
+                    throw new FormatException($"a single value cannot be written where the template takes a {Name(type)}");
+                default:
+                    return JsonValue.Create(Clr(raw));
+            }
+        }
+        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException)
+        {
+            holds.Add($"{path}: value '{SourceRow.Stringify(raw)}' is not a valid {Name(type)} ({ex.Message})");
+            return null;
+        }
+    }
+
+    /// <summary>A JSON value as the CLR value the conversions expect, so a cached or static value converts like a dataset value.</summary>
+    private static object Native(JsonNode node) => node is JsonValue value
+        ? value.GetValueKind() switch
+        {
+            JsonValueKind.String => value.GetValue<string>(),
+            JsonValueKind.True or JsonValueKind.False => value.GetValue<bool>(),
+            JsonValueKind.Number => value.TryGetValue<long>(out var whole) ? whole : value.GetValue<double>(),
+            _ => node,
+        }
+        : node;
+
+    private static object Clr(object raw) => raw switch
+    {
+        string or bool or long or double => raw,
+        int i => (long)i,
+        short s => (long)s,
+        float f => (double)f,
+        decimal m => (double)m,
+        _ => SourceRow.Stringify(raw)!,
+    };
+
+    private static bool ParseBool(string text)
+    {
+        var t = text.Trim();
+        if (t.Equals("true", StringComparison.OrdinalIgnoreCase) || t is "1" || t.Equals("yes", StringComparison.OrdinalIgnoreCase) || t.Equals("y", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (t.Equals("false", StringComparison.OrdinalIgnoreCase) || t is "0" || t.Equals("no", StringComparison.OrdinalIgnoreCase) || t.Equals("n", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        throw new FormatException($"'{text}' is not a boolean");
+    }
+
+    private static string Name(SchemaType type) => type.ToString().ToLowerInvariant();
+
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex Whitespace();
+
+    [GeneratedRegex(@"^[\w\-\.]+:[\w\-\.]+--[\w\-\.]+:[\w\-\.\:\%]+$")]
+    private static partial Regex OsduId();
+}

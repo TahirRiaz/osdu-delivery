@@ -49,7 +49,7 @@ drop.
 | Column | Purpose |
 | --- | --- |
 | `DeliveryKey` | Primary key. Deterministic, derived from source data. |
-| `FlowId`, `SourceKey`, `Label`, `MappingName` | Provenance. `Label` is the mapping's `identity.label` rendered for the row (a wellbore name, a log name), for search and display only. |
+| `FlowId`, `SourceKey`, `Label`, `MappingName` | Provenance. `Label` is the mapping's `dataset.label` rendered for the row (a wellbore name, a log name), for search and display only. |
 | `RenderContext`, `SourceFingerprint`, `MetadataHash`, `PayloadHash` | What OSDU holds: the gates for tiers 1 and 2. |
 | `SourceModifiedUtc`, `PayloadModifiedUtc` | The last-modified moment of the source row, and the newest modified time of the chunk files, that OSDU's document and payload were built from: the watermarks an incremental drop is ordered against. |
 | `TargetId`, `TargetVersion` | The OSDU id and the last known version (the drift handle). |
@@ -126,10 +126,28 @@ shows both, plus its verify outcomes; a run's page links to what it did to each 
 
 ### `delivery.Mapping` and `delivery.Snapshot`: what the repositories hold
 
-Read models the repository sync writes: every mapping document (its reference, kind, a parsed summary, the
-YAML, and whether it parses) and every schema and reference snapshot (kind, version, when it was captured,
-which reference version is current). They back the GUI's mappings and snapshots page; nothing writes them but
-the sync.
+Read models the repository sync writes: every mapping document (its reference, kind, the template version it pins
+in `TemplateVersion`, a parsed summary, the YAML, and whether it parses) and every reference snapshot version (when it
+was captured, what it holds, and whether it is the current one). They back the GUI's Mappings page, and the templates
+listing counts each template version's pins from `delivery.Mapping`; nothing writes them but the sync.
+
+### `delivery.Template`: the templates mappings pin
+
+The OSDU schemas mappings are checked and rendered against ([mapping-templates.md](mapping-templates.md)). They are
+saved in the catalog rather than in a repository, because the control plane runs as a container whose disk does not
+survive a restart. A row is written by the GUI's Templates page, `POST /api/v1/delivery/templates`, or
+`sqlflow template capture` and `import`, and never changes afterwards.
+
+| Column | Purpose |
+| --- | --- |
+| `Id` | Primary key, derived from the kind and the version. |
+| `Kind`, `Version` | The OSDU kind, and the content version: the first 16 hexadecimal characters of the hash of the canonical bundled schema. Unique together; a mapping pins both. |
+| `SchemaJson` | The bundled JSON Schema, every reference resolved into its definitions. |
+| `Origin`, `CapturedBy`, `CapturedUtc` | Where the schema came from (the OSDU endpoint and flow it was captured through, a data definitions folder, or an imported file), who saved it and when. |
+
+Saving a schema that is already saved adds no row. A version is deleted only while no `delivery.Mapping` row pins it
+(the `(Kind, TemplateVersion)` index answers that), so a template a synced mapping pins cannot be removed from under
+it.
 
 ## Record lifecycle
 

@@ -4,8 +4,8 @@ Status: proposed. Design reference: section 15.
 
 ## Context
 
-The lake needs OSDU's records back. A mapping is not invertible (an equality transform collapses a string to
-a boolean, a split discards everything but one element, constants have no source), so a reverse rendering
+The lake needs OSDU's records back. A mapping is not invertible (an `equals` modifier collapses a string to
+a boolean, a `split` discards everything but one part, static values have no source), so a reverse rendering
 would be a second mapping language with none of the guarantees of the first.
 
 ## Decision

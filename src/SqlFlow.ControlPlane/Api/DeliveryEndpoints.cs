@@ -18,6 +18,7 @@ using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Templates;
 using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.ControlPlane.Api;
@@ -184,29 +185,53 @@ public sealed record DeliveryFlowParameterDto(string Name, bool Required, string
 
 /// <summary>
 /// One delivery flow as the manual submission page lists it: whether its document offers manual submission
-/// (<c>source.manualSubmission</c>), what it renders with, the parameter values a submission has to carry, and the
-/// payload its records point at when it streams one. A flow that does not offer it is listed only when the caller asks
-/// for all of them, and says why.
+/// (<c>source.manualSubmission</c>), what it renders with and the template version that mapping fills (null while the
+/// mapping is not synced or is invalid), the parameter values a submission has to carry, and the payload its records point
+/// at when it streams one. A flow that does not offer it is listed only when the caller asks for all of them, and says why.
 /// </summary>
 public sealed record DeliveryManualFlowDto(
     Guid PipelineId, Guid RepoId, string FlowName, string? Batch, string MappingReference, string Protocol,
-    bool AcceptsRecords, string? RecordsRefusal, IReadOnlyList<DeliveryFlowParameterDto> Parameters, string? PayloadName);
+    bool AcceptsRecords, string? RecordsRefusal, IReadOnlyList<DeliveryFlowParameterDto> Parameters, string? PayloadName,
+    string? TemplateKind, string? TemplateVersion);
 
-/// <summary>The columns a flow's mapping reads from one child scope.</summary>
-public sealed record DeliveryScopeColumnsDto(string Scope, IReadOnlyList<string> Columns);
+/// <summary>The template version a flow's mapping fills, and whether the catalog holds it: a run renders only with a saved version.</summary>
+public sealed record DeliverySourceTemplateDto(string Kind, string Version, bool Saved);
 
 /// <summary>
-/// What a source sends a flow (design.md section 3.4): whether the flow takes records inline and why not, the parameters
-/// it declares, the columns its pinned mapping reads from the root row and from each child scope, the natural key's
-/// columns, the column the flow versions rows by, and the ceilings of one inline submission. <c>MappingProblem</c> says
-/// why the columns are unknown when the catalog cannot read the pinned mapping. <c>PayloadName</c> is the payload the
-/// flow streams, which every record then points at under <c>files</c>, with <c>PayloadHashRequired</c> saying whether
-/// each has to carry a content hash and <c>PayloadRoots</c> where the files may sit.
+/// One mapping entry reading a column. <c>Target</c> is the template variable the entry fills. <c>Role</c> says how it reads
+/// the column: <c>value</c> (the column's value, after the modifiers, is what the entry writes), <c>findBy</c> (the column's
+/// value, after the modifiers, finds the cached record the entry writes from, on the <c>FindBy</c> line) or
+/// <c>appliesWhen</c> (the column decides whether the entry applies). <c>Source</c> is the entry's source as the mapping
+/// writes it, null for a static entry; <c>Required</c> says whether an empty value or a cache miss holds the record.
+/// </summary>
+public sealed record DeliverySourceColumnUseDto(
+    string Target, string Role, string? Source, bool Required, IReadOnlyList<string> Modifiers, string? FindBy, string? AppliesWhen);
+
+/// <summary>A column a record carries: whether the dataset key or the label reads it, and every entry that does.</summary>
+public sealed record DeliverySourceColumnDto(string Name, bool Key, bool Label, IReadOnlyList<DeliverySourceColumnUseDto> Uses);
+
+/// <summary>An array a child dataset's rows fill, one item per row, and whether a record with no rows is held.</summary>
+public sealed record DeliverySourceRepeaterDto(string Target, bool Required);
+
+/// <summary>A child dataset a record carries rows of under <c>datasets</c>: the arrays its rows fill, and the columns read from each row.</summary>
+public sealed record DeliverySourceDatasetDto(string Name, IReadOnlyList<DeliverySourceRepeaterDto> Fills, IReadOnlyList<DeliverySourceColumnDto> Columns);
+
+/// <summary>
+/// What a source sends a flow (design.md section 3.4, docs/delivery/mapping-templates.md): whether the flow takes records
+/// inline and why not, the parameters it declares, the template version its pinned mapping fills, the dataset's system, key
+/// and label, every column the mapping reads from the dataset row and from each child dataset with the template variables
+/// each fills, the column the flow versions rows by, and the ceilings of one inline submission. <c>MappingProblem</c> says
+/// why records would not render: the catalog cannot read the pinned mapping (the columns are then unknown), or the template
+/// version it pins is not saved. <c>PayloadName</c> is the payload the flow streams, which every record then points at
+/// under <c>files</c>, with <c>PayloadHashRequired</c> saying whether each has to carry a content hash and
+/// <c>PayloadRoots</c> where the files may sit.
 /// </summary>
 public sealed record DeliverySourceContractDto(
     Guid PipelineId, string FlowName, string MappingReference, string Protocol, bool AcceptsRecords, string? RecordsRefusal,
-    IReadOnlyList<DeliveryFlowParameterDto> Parameters, IReadOnlyList<string> RecordColumns, IReadOnlyList<DeliveryScopeColumnsDto> Scopes,
-    IReadOnlyList<string> NaturalKey, string? LastModifiedColumn, string? FingerprintColumn, string? MappingProblem,
+    IReadOnlyList<DeliveryFlowParameterDto> Parameters,
+    DeliverySourceTemplateDto? Template, string? System, IReadOnlyList<string> Key, string? Label,
+    IReadOnlyList<DeliverySourceColumnDto> Columns, IReadOnlyList<DeliverySourceDatasetDto> Datasets,
+    string? LastModifiedColumn, string? FingerprintColumn, string? MappingProblem,
     int MaxRecords, int MaxChildRows, int MaxContentBytes,
     string? PayloadName, bool PayloadHashRequired, IReadOnlyList<string> PayloadRoots);
 
@@ -1085,8 +1110,9 @@ public static class DeliveryEndpoints
 
     /// <summary>
     /// The flows records can be submitted to by hand: every active delivery flow whose document offers manual
-    /// submission. With <c>all</c> the flows that do not are listed too, each with the reason, so an operator can see
-    /// why a flow is not on the list. A flow whose document no longer parses is left out of both.
+    /// submission, with the template version its mapping fills. With <c>all</c> the flows that do not are listed too, each
+    /// with the reason, so an operator can see why a flow is not on the list. A flow whose document no longer parses is
+    /// left out of both.
     /// </summary>
     private static async Task<Ok<IReadOnlyList<DeliveryManualFlowDto>>> ListManualSubmissionFlowsAsync(
         bool? all, CatalogDbContext db, DeliveryDocumentLoader documents, CancellationToken ct)
@@ -1096,6 +1122,18 @@ public static class DeliveryEndpoints
             .OrderBy(p => p.Name)
             .Take(MaxManualSubmissionFlows)
             .ToListAsync(ct).ConfigureAwait(false);
+
+        // The template version each synced mapping of these repositories fills, so the listing says what a flow's records become.
+        var repoIds = pipelines.Select(p => p.RepoId).Distinct().ToList();
+        var synced = await db.DeliveryMappings.AsNoTracking()
+            .Where(m => repoIds.Contains(m.RepoId) && m.Status == "valid")
+            .Select(m => new { m.RepoId, m.Reference, m.Kind, m.TemplateVersion })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var pins = new Dictionary<string, TemplateReference>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mapping in synced)
+        {
+            pins.TryAdd(PinKey(mapping.RepoId, mapping.Reference), new TemplateReference(mapping.Kind, mapping.TemplateVersion));
+        }
 
         var flows = new List<DeliveryManualFlowDto>(pipelines.Count);
         foreach (var pipeline in pipelines)
@@ -1118,19 +1156,28 @@ public static class DeliveryEndpoints
                 continue;
             }
 
+            TemplateReference? pin = pins.TryGetValue(PinKey(pipeline.RepoId, flow.Render.Mapping), out var found) ? found : null;
             flows.Add(new DeliveryManualFlowDto(
                 pipeline.Id, pipeline.RepoId, pipeline.Name, pipeline.Batch, flow.Render.Mapping, flow.Target.Protocol.ToString(),
                 refusal is null, refusal,
                 flow.Parameters.OrderBy(kv => kv.Key, StringComparer.Ordinal)
                     .Select(kv => new DeliveryFlowParameterDto(kv.Key, kv.Value.Required, kv.Value.Default, kv.Value.Description))
                     .ToList(),
-                InlineDrop.PayloadContract(flow).PayloadName));
+                InlineDrop.PayloadContract(flow).PayloadName,
+                pin?.Kind,
+                pin?.Version));
         }
 
         return TypedResults.Ok<IReadOnlyList<DeliveryManualFlowDto>>(flows);
     }
 
-    /// <summary>What a source sends the flow: its parameters, the columns its pinned mapping reads, and whether it takes records inline.</summary>
+    /// <summary>The key a synced mapping is found under for a flow: its repository and its reference.</summary>
+    private static string PinKey(Guid repoId, string reference) => repoId.ToString("N") + "/" + reference;
+
+    /// <summary>
+    /// What a source sends the flow: its parameters, the template version its pinned mapping fills, the dataset key, every
+    /// column the mapping reads with the template variables each fills, and whether the flow takes records inline.
+    /// </summary>
     private static async Task<Results<Ok<DeliverySourceContractDto>, ProblemHttpResult>> GetSourceContractAsync(
         Guid pipelineId, CatalogDbContext db, DeliveryDocumentLoader documents, CancellationToken ct)
     {
@@ -1144,7 +1191,7 @@ public static class DeliveryEndpoints
         var reference = definition.Render.Mapping;
         var row = await db.DeliveryMappings.AsNoTracking()
             .FirstOrDefaultAsync(m => m.RepoId == flow.Pipeline.RepoId && m.Reference == reference, ct).ConfigureAwait(false);
-        MappingSourceColumns? columns = null;
+        MappingDefinition? mapping = null;
         string? mappingProblem = null;
         if (row is null)
         {
@@ -1158,11 +1205,26 @@ public static class DeliveryEndpoints
         {
             try
             {
-                columns = MappingColumns.Read(documents.ParseMapping(row.Yaml, row.RelativePath));
+                mapping = documents.ParseMapping(row.Yaml, row.RelativePath);
             }
             catch (FlowValidationException ex)
             {
                 mappingProblem = $"Mapping '{reference}' does not parse: {ex.Message}";
+            }
+        }
+
+        DeliverySourceTemplateDto? template = null;
+        MappingSourceColumns? columns = null;
+        if (mapping is not null)
+        {
+            var kind = mapping.Template.Kind;
+            var version = mapping.Template.Version;
+            var saved = await db.DeliveryTemplates.AsNoTracking().AnyAsync(t => t.Kind == kind && t.Version == version, ct).ConfigureAwait(false);
+            template = new DeliverySourceTemplateDto(kind, version, saved);
+            columns = MappingColumns.Read(mapping);
+            if (!saved)
+            {
+                mappingProblem = $"Mapping '{reference}' pins template {mapping.Template}, which is not saved in the catalog, so a run cannot render the records. Save it on the Templates page, or with 'sqlflow template import'.";
             }
         }
 
@@ -1171,13 +1233,35 @@ public static class DeliveryEndpoints
         return TypedResults.Ok(new DeliverySourceContractDto(
             flow.Pipeline.Id, flow.Pipeline.Name, reference, definition.Target.Protocol.ToString(), refusal is null, refusal,
             definition.Parameters.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => new DeliveryFlowParameterDto(kv.Key, kv.Value.Required, kv.Value.Default, kv.Value.Description)).ToList(),
-            columns?.Record ?? [],
-            columns?.Scopes.Select(s => new DeliveryScopeColumnsDto(s.Scope, s.Columns)).ToList() ?? [],
-            columns?.NaturalKey ?? [],
+            template, mapping?.Dataset.System, mapping?.Dataset.Key ?? [], mapping?.Dataset.Label,
+            columns?.Record.Select(ToColumnDto).ToList() ?? [],
+            columns?.Datasets.Select(d => new DeliverySourceDatasetDto(
+                d.Name,
+                d.Repeaters.Select(r => new DeliverySourceRepeaterDto(r.Target.Text, r.Required)).ToList(),
+                d.Columns.Select(ToColumnDto).ToList())).ToList() ?? [],
             definition.Source.LastModified, definition.Source.Fingerprint, mappingProblem,
             InlineRecords.MaxRecords, InlineRecords.MaxChildRows, InlineRecords.MaxContentBytes,
             payload.PayloadName, payload.HashRequired, payload.Roots));
     }
+
+    /// <summary>A column of the source contract, with every entry that reads it in the mapping's own notation.</summary>
+    private static DeliverySourceColumnDto ToColumnDto(MappingColumn column) => new(
+        column.Name,
+        column.Key,
+        column.Label,
+        column.Uses.Select(use => new DeliverySourceColumnUseDto(
+            use.Entry.Target.Text,
+            use.Role switch
+            {
+                ColumnRole.Value => "value",
+                ColumnRole.FindBy => "findBy",
+                _ => "appliesWhen",
+            },
+            use.Entry.Source?.ToString(),
+            use.Entry.Required,
+            use.Role == ColumnRole.AppliesWhen ? [] : use.Entry.Modifiers.Select(m => m.ToString()).ToList(),
+            use.Find?.ToString(),
+            use.Entry.AppliesWhen?.ToString())).ToList());
 
     /// <summary>The records an inline submission carried, as the ledger holds them.</summary>
     private static async Task<Results<Ok<DeliveryInlineSubmissionDto>, ProblemHttpResult>> GetSubmissionContentAsync(
@@ -1543,13 +1627,13 @@ public static class DeliveryEndpoints
 
     // ---- Plumbing ------------------------------------------------------------------------------------------------
 
-    private sealed record FlowContext(CatalogPipeline Pipeline, FlowDefinition Flow)
+    internal sealed record FlowContext(CatalogPipeline Pipeline, FlowDefinition Flow)
     {
         public Guid FlowId => Flow.Id;
     }
 
     /// <summary>The delivery pipeline and its parsed flow, or the problem to answer with.</summary>
-    private static async Task<(FlowContext? Flow, ProblemHttpResult? Problem)> ResolveAsync(
+    internal static async Task<(FlowContext? Flow, ProblemHttpResult? Problem)> ResolveAsync(
         CatalogDbContext db, DeliveryDocumentLoader documents, Guid pipelineId, CancellationToken ct)
     {
         var pipeline = await db.Pipelines.AsNoTracking().FirstOrDefaultAsync(p => p.Id == pipelineId, ct).ConfigureAwait(false);
@@ -1561,7 +1645,7 @@ public static class DeliveryEndpoints
         return Parse(documents, pipeline);
     }
 
-    private static (FlowContext? Flow, ProblemHttpResult? Problem) Parse(DeliveryDocumentLoader documents, CatalogPipeline pipeline)
+    internal static (FlowContext? Flow, ProblemHttpResult? Problem) Parse(DeliveryDocumentLoader documents, CatalogPipeline pipeline)
     {
         if (!string.Equals(pipeline.Kind, FlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
         {
@@ -1662,7 +1746,7 @@ public static class DeliveryEndpoints
 
     /// <summary>Queues a target-side operation for a node: the flow file's location rides along, every credential
     /// stays a reference the node resolves.</summary>
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> EnqueueOperationAsync(
+    internal static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> EnqueueOperationAsync(
         CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, string operation, IReadOnlyDictionary<string, string> arguments,
         ClaimsPrincipal user, CancellationToken ct)
     {

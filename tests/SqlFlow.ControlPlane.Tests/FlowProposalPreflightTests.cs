@@ -1,4 +1,5 @@
 using SqlFlow.ControlPlane.Api;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.SourceControl.Proposals;
 using SqlFlow.Tests;
 using SqlFlow.Yaml;
@@ -11,11 +12,15 @@ namespace SqlFlow.ControlPlane.Tests;
 /// git push. Errors are the silent-failure modes (a file the sync would ignore, a valid flow under an
 /// undiscoverable extension); warnings are the design signals a reviewer must see (an endpoint change on a revised
 /// flow, a duplicate flow name). No database or git is involved: the catalog side is handed in as plain records,
-/// and the documents are the test-only kind, so no engine is needed.
+/// and the documents are the test-only kind, or the delivery kind for the mapping documents a mapping builder
+/// proposal carries, so no engine is needed.
 /// </summary>
 public sealed class FlowProposalPreflightTests
 {
     private static readonly YamlDocumentLoader Documents = TestFlowKind.Loader();
+
+    /// <summary>The delivery kind, which owns the mapping documents (<c>documentType: mapping</c>) the mapping builder proposes.</summary>
+    private static readonly YamlDocumentLoader DeliveryDocuments = new([new DeliveryFlowKind(new DeliveryDocumentLoader())]);
 
     private const string Flow = """
         flowType: test
@@ -37,6 +42,32 @@ public sealed class FlowProposalPreflightTests
         Assert.Empty(result.Errors);
         Assert.Empty(result.Warnings);
     }
+
+    [Fact]
+    public void MappingFromTheBuilder_PassesAsTheCompanionDocumentItDeclares()
+    {
+        var result = FlowProposalPreflight.Run(DeliveryDocuments, [new ProposalFile("mappings/Wellbore@1.0.0.yaml", SampleMapping())], []);
+
+        Assert.Empty(result.Errors);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void MappingThatDoesNotLoad_IsAnError_NamingWhyTheSyncWouldRecordItInvalid()
+    {
+        // A target written without its origin is not a template variable, so the sync would record the mapping as invalid.
+        var yaml = SampleMapping().Replace("target: osdu.data.FacilityName", "target: data.FacilityName", StringComparison.Ordinal);
+        var result = FlowProposalPreflight.Run(DeliveryDocuments, [new ProposalFile("mappings/Wellbore@1.0.0.yaml", yaml)], []);
+
+        var error = Assert.Single(result.Errors);
+        Assert.Equal("mappings/Wellbore@1.0.0.yaml", error.Path);
+        Assert.Contains("does not parse as the companion document it declares", error.Message, StringComparison.Ordinal);
+        Assert.Contains("must start with 'osdu.'", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>The sample estate's wellbore mapping, as the mapping builder writes one into a proposal.</summary>
+    private static string SampleMapping()
+        => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "samples", "mappings", "Wellbore@1.0.0.yaml"));
 
     [Fact]
     public void UnparseableFlow_IsAnError_NamingTheLoaderCause()

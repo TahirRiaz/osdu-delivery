@@ -97,9 +97,14 @@ public sealed class CacheChangeTests : IDisposable
     [Fact]
     public void A_render_records_what_it_read_out_of_the_cache()
     {
-        var mapping = TestSchema.Mapping(
-            new MappingProperty { Target = "data.Unit", Source = "unit", Transform = MappingTransform.Reference, Config = new TransformConfig { Type = "UnitOfMeasure", MatchBy = ["Code"] } },
-            new MappingProperty { Target = "data.Symbol", Source = "unit", Transform = MappingTransform.Lookup, Config = new TransformConfig { Type = "UnitOfMeasure", MatchBy = ["Code"], Select = "Name" } });
+        var mapping = TestSchema.Mapping("""
+              - target: osdu.data.Unit
+                source: cache.UnitOfMeasure.id
+                findBy: cache.UnitOfMeasure.Code = dataset.unit
+              - target: osdu.data.Symbol
+                source: cache.UnitOfMeasure.Name
+                findBy: cache.UnitOfMeasure.Code = dataset.unit
+            """);
         var renderer = new MappingRenderer(mapping, TestSchema.Build(), new ReferenceSnapshot("refs-1", DateTimeOffset.UnixEpoch, [Units("metre")]), TestSchema.Context());
 
         var result = renderer.Render(new SourceRecord

@@ -114,9 +114,10 @@ deliver the flow's declared drop on a cadence, as a fallback for a missed notifi
 
 A source with a handful of records to deliver, rather than a prepared set, sends them in
 the submission itself: `POST /api/v1/delivery/submissions` with `records` instead of
-`drop`, each record in the shape of a mapping fixture (its root row and its child-scope
-rows, as JSON scalars). It is the same flow and the same mapping, and it takes the same
-path, because the run turns the records into a drop before it reads anything.
+`drop`, each record in the shape of a mapping fixture (its dataset row under `record` and
+its child dataset rows under `datasets`, as JSON scalars). It is the same flow and the same
+mapping, and it takes the same path, because the run turns the records into a drop before
+it reads anything.
 
 - The control plane checks the request's shape and the flow's parameters, and stores the
   records, the resolved parameter values and the mapping the flow pins in the ledger
@@ -126,8 +127,10 @@ path, because the run turns the records into a drop before it reads anything.
 - The run writes the records as a drop under the flow's work location,
   `{work}/inline/{submissionId}`, never at the declared source location, which belongs to
   the preparing side. The drop declares every column the mapping reads, so a column the
-  JSON leaves out is null; when the mapping iterates child scopes the drop is keyed and
-  partitioned, each child row carrying its record's delivery key.
+  JSON leaves out is null. Each child dataset becomes the drop scope of the same name,
+  and when the mapping reads child datasets or the flow streams a payload the drop is
+  keyed and partitioned, each root row carrying its delivery key and each child row its
+  record's.
 - From there nothing is special: the manifest check (which refuses the records when the
   flow was promoted to another mapping after they were accepted), the preflight gate, the
   per-record change gates, the ledger and the drain. The drop carries no source versions,
@@ -163,14 +166,14 @@ mutually inconsistent.
 | Source data | Databricks / Recall | Continuous | The drop, plus a declared source contract |
 | Mapping | This repository | Deliberate, gated | A versioned mapping document |
 | Reference snapshot | OSDU | Periodic sync | Versioned, immutable |
-| Target schema snapshot | OSDU | Pinned by the mapping's kind | Versioned, immutable |
+| Template (the target schema) | OSDU, saved in the catalog | Pinned by the mapping | Versioned, immutable |
 
 ### 4.1 The render context
 
 The three non-source inputs are pinned together as a **render context**:
 
 ```
-renderContext = (mappingVersion, referenceSnapshotVersion, schemaSnapshotVersion)
+renderContext = (mappingVersion, referenceSnapshotVersion, templateVersion)
 ```
 
 It is fixed for a render, recorded in the ledger against every document produced, and it
@@ -178,9 +181,10 @@ enters the content hash. That single construct gives reproducibility, correct
 invalidation when any input moves, and the ability to find every document produced under
 a bad combination after the fact.
 
-The schema snapshot version is pinned **by** the mapping, through the mapping's declared
-kind. An OSDU schema upgrade is therefore a mapping change and inherits the mapping's
-blast radius and its gate.
+The template version is pinned **by** the mapping, through its `template` block (the kind
+and the content version), and the ledger's render context records it under `schema`. An
+OSDU schema upgrade is therefore a mapping change and inherits the mapping's blast radius
+and its gate.
 
 ### 4.2 The mapping is interpreted, not compiled
 
@@ -188,11 +192,13 @@ The existing `MappingGenerator` compiles one mapping document into C# mappers, C
 endpoints, a Python client and a PySpark select. Those outputs were copied across a
 repository boundary and have since drifted from production in both directions.
 
-A mapping is a template, not a program. Every construct in the current document is
+A mapping is data, not a program. Every construct in the current document is
 interpretable at request time: `TargetProperty` is a dotted JSON path, `Transform` plus
 `TransformConfig` is a coercion vocabulary, `IsCollection` with a definition reference is
 a repeater, and a non-collection reference is a single nested block. Interpret it, and
-delete the generators.
+delete the generators. Interpreted here, a mapping is a list of entries, each naming a
+variable of the pinned template and where its value comes from
+([mapping-templates.md](mapping-templates.md)).
 
 The principle that separates the two cases: **generate from what you do not own,
 interpret what you do.** OSDU's schema is external and has one authoritative upstream, so
@@ -207,14 +213,15 @@ work-product-component types.
 
 So the mapping declares only what the schema cannot know:
 
-- the source binding
-- the transform
-- the natural key
-- envelope policy: which legaltag and ACL apply
+- where each value comes from: a dataset column, a cached record, or a static value
+- how an incoming value is changed (the modifiers)
+- the dataset key
+- envelope policy: which legal tags and ACLs apply
 
-Types, requiredness, relationship targets and units all come from the pinned schema. The
-current document spends most of its 1,056 lines restating exactly those, creating a
-second source of truth for facts OSDU already publishes.
+Types, requiredness, relationship targets and units all come from the pinned template, the
+OSDU schema saved in the catalog. The current document spends most of its 1,056 lines
+restating exactly those, creating a second source of truth for facts OSDU already
+publishes.
 
 ## 5. Identity
 
@@ -268,7 +275,7 @@ The question to answer per record is "would delivering this change anything in O
 ### 6.1 Hash the rendered document, not the source
 
 Source-row hashing is a proxy that fails in both directions: an unmapped column changes
-and you redeliver for nothing, or a transform changes and you deliver nothing when you
+and you redeliver for nothing, or a mapping entry changes and you deliver nothing when you
 should.
 
 ```
@@ -298,12 +305,14 @@ reaches through an array of objects and caches the set of aliases it found. Noth
 narrowed to text on the way in, because a cache that quietly drops what it cannot flatten
 looks, at render time, exactly like bad source data.
 
-**How it is matched and read.** A field holding a set matches on any one of its values.
-Matching is case-insensitive and trimmed; ambiguity resolves to the first record in
-snapshot order, which is stable for a version. The `reference` transform takes the matched
-record's id; the `lookup` transform takes the value at a path inside it, which is how a
-mapping builds a document out of cached data rather than only pointing at it. A path the
-cache does not hold fails the preflight gate rather than holding every record at run time.
+**How it is matched and read.** A mapping entry selects a cached record with `findBy`. A
+field holding a set matches on any one of its values. Matching is trimmed; an exact match
+of one record wins, case is ignored only when that finds exactly one record, and a value
+several records answer to holds the record rather than taking one of them. A
+`cache.<Type>.id` source takes the matched record's id; `cache.<Type>.<field>` takes the
+value at a path inside it, which is how a mapping builds a document out of cached data
+rather than only pointing at it. A type or field the cache does not hold fails the
+preflight gate rather than holding every record at run time.
 
 **Who fills it.** The retrieval flow that syncs a kind's metadata declares the cache it
 maintains (`cache.types` in its document, section 15). A retrieve run sweeps each declared
@@ -321,7 +330,7 @@ recent snapshot versions into the catalog (`delivery.CacheDefinition`,
 `delivery.SnapshotItem`), so the GUI's OSDU cache page shows what each flow declares, what
 a version holds and searches the cached values. Those rows are a read model; the snapshot
 in the store stays the authority a render resolves against, which is what keeps a plan
-working offline.
+working without a call to OSDU.
 
 Every read of that read model is scoped to exactly one version per repository, the current
 one unless another is named. That is not a filter but a correctness requirement: the
@@ -383,7 +392,7 @@ never re-uploads the payload that was delivered with it.
 **And the run has to happen.** The whole-run gate (tier 0) used to skip a run when no
 source table advanced, which is the case a cache refresh produces: the source is exactly
 where it was, and everything about how it renders has changed. The watermark now carries
-the render context of the run that wrote it, so a moved cache, mapping or schema version
+the render context of the run that wrote it, so a moved cache, mapping or template version
 plans the scope rather than skipping it.
 
 ### 6.3 Two hashes, decided independently
@@ -393,7 +402,7 @@ different rates. Coupling them means a corrected `LogRun` re-uploads a hundred m
 of grid.
 
 - `metadataHash` over the canonical rendered document alone: the render context decides when a record is rendered
-  again, never whether it is sent, so a new cache or schema version that renders the same document sends nothing
+  again, never whether it is sent, so a new cache or template version that renders the same document sends nothing
 - `payloadHash` over the **logical** payload content
 
 ### 6.4 Do not hash payload bytes
@@ -629,7 +638,7 @@ every content hash it touches. A flow change (concurrency, retry, endpoint) chan
 nothing about what a document is. In one file you cannot tell those edits apart, and
 every operational tweak looks like grounds for redelivering the estate.
 
-Also: the mapping validates against the schema snapshot, the flow validates against
+Also: the mapping validates against its pinned template, the flow validates against
 storage and connection config. Different gates, different failure meanings. And six log
 sources all deliver the same kind, so one mapping serves six flows. Inlining it would
 create six copies of a contract that will drift, which is precisely what already happened
@@ -694,10 +703,11 @@ Not in the flow. Changing identity re-keys every record and orphans the ledger, 
 mapping-level blast radius and must not sit in an operational file where it looks like
 ordinary config.
 
-Express it in target terms: the mapping names which of its mapped properties form the
-natural key. The mapping already declares each property's source binding, so naming the
-key properties is enough to derive both the source columns and the deterministic delivery
-key. No duplication.
+Express it in source terms: the mapping's `dataset.key` names the columns of the incoming
+dataset that identify a record, in order, and `dataset.system` the source system; the
+deterministic delivery key, and so the OSDU id, is derived from them. The key is declared
+apart from the entries, so identity never decides what a property of the record holds, and
+a key column need not be written into the record at all.
 
 Treat it as immutable once a flow has delivered anything, enforced at the schema level,
 with an explicit migration path to change it.
@@ -739,21 +749,25 @@ which production never sends. Every artifact was individually valid.
 
 Before any render, and with no OSDU call:
 
-1. Every source binding the mapping names exists in the drop's declared schema.
-2. Every reference type the mapping resolves against exists in the reference snapshot.
-3. Every schema-required property has a binding that resolves.
-4. Every target path resolves to a real field in the pinned schema, with agreeing types.
-5. The mapping's own example fixtures still render correctly under this exact context.
+1. Every dataset column and child dataset the mapping reads exists in the drop's declared
+   schema.
+2. Every cached type the mapping reads exists in the reference snapshot, with the fields it
+   finds by and reads.
+3. Every property the template requires in `data` has an entry that may not be left out.
+4. Every target is a variable of the pinned template, with an agreeing shape, and every
+   cached or static reference points at an entity type the schema allows.
+5. The mapping's own fixtures still render exactly, without holds, under this exact context.
+
+[mapping-templates.md](mapping-templates.md) lists every check.
 
 If the combination does not validate, nothing renders. Not a warning.
 
 ### 10.3 Schema validation is structurally complete and semantically blind
 
 Point 4 would not have caught the `recall_curve` bug. Both are strings, both bind to a
-string field, both validate. The example fixtures at point 5 are what catch semantic
-drift, which is why the 56 example pairs already in the mapping are worth preserving
-through any format change. They are a per-property regression suite generated from the
-contract itself.
+string field, both validate. The fixtures at point 5 are what catch semantic drift: each is
+an example row and the exact record it must render to, a regression suite written in the
+contract's own terms.
 
 ### 10.4 Unknown keys are an error
 
@@ -794,19 +808,21 @@ The delivery domain runs on the platform's verbs and API; there is no separate d
 
 | Operation | Where | Behaviour |
 |---|---|---|
-| `check` | CLI: `sqlflow check <flow.yaml>` | Everything checkable without a network: document parse, the mapping against the schema snapshot, the reference snapshot and, when the drop is present, the manifest and the source bindings. |
-| `plan` | CLI: `sqlflow run <flow.yaml> --operation plan`; GUI and API: a run with operation `plan` | Renders documents and reports what would be created, updated, skipped or held. Works offline against pinned snapshots. Changes nothing. |
+| `check` | CLI: `sqlflow check <flow.yaml>` | Everything checkable without OSDU: document parse, the mapping against its pinned template (read from the catalog) and the reference snapshot and, when the drop is present, the manifest and the columns the mapping reads. |
+| `plan` | CLI: `sqlflow run <flow.yaml> --operation plan`; GUI and API: a run with operation `plan` | Renders documents and reports what would be created, updated, skipped or held. Works without OSDU, against the pinned template and reference snapshot. Changes nothing. |
 | `deliver` | CLI: `sqlflow run <flow.yaml>`; GUI and API: a run, a schedule fire, or `POST /api/v1/delivery/submissions` with a drop or with records (section 3.4) | Executes a submission: intake, plan into the ledger, deliver what changed. |
 | `verify` | a run with operation `verify` (the record page queues one scoped to the record) | The drift pass: compares OSDU's current version against `targetVersion`. |
 | `known-state` | a run with operation `known-state` | Publishes the compact known state the preparing side reads. |
 | `intake`, `drain` | the fan-out members a deliver run enqueues (section 16.4); also runnable by hand | `intake` registers and plans a drop (or some of its partitions) into work batches without delivering; `drain` delivers the pending batches of a submission (or of the whole flow) without reading the drop. |
 | `retrieve` | a run on a retrieval flow (its default); `plan` on the same flow counts | Pages OSDU's search index into files on the lake (section 15). |
-| `snapshot` | CLI: `sqlflow snapshot <flow.yaml> schema`, `references`, `list` | Captures reference and schema snapshots into the repository's snapshot store and mints a new version. |
+| `snapshot` | CLI: `sqlflow snapshot <flow.yaml> references`, `list` | Captures a reference snapshot into the snapshot store and mints a new version; lists the versions with the template the flow's mapping pins. |
+| `template` | CLI: `sqlflow template capture`, `import`, `list`, `show`, `delete`; the GUI's Templates page | Saves an OSDU schema as an immutable template version in the catalog, from OSDU through a flow's connection or from a bundled schema file. |
 | release, redeliver, delete, read back, probe | the GUI record and flow pages; `POST /api/v1/delivery/records/{key}/...` | Interventions, recorded in the ledger's activity trail under the user who asked. The ones that touch OSDU (delete, read back, probe) run on a node as compute tasks. |
 
-`plan` working offline is a direct consequence of snapshotting the references and schemas.
-It is also the single most valuable operational feature here, because it makes a mapping
-change previewable against real records before it touches a governed store.
+`plan` working without OSDU is a direct consequence of pinning the references as snapshots
+and the schemas as templates. It is also the single most valuable operational feature
+here, because it makes a mapping change previewable against real records before it
+touches a governed store.
 
 Every validation failure is a `FlowValidationException` carrying the file path, following
 the platform's error contract.
@@ -845,8 +861,10 @@ kind (`src/SqlFlow.Delivery`). What the domain takes from the platform, and what
   carries what each record went through, linked to the run id.
 - A flow's own parameters (`parameters:`) are substituted into the drop location and travel
   as run parameter values, recorded on the run and on the submission.
-- The mapping and the snapshots live in the flow's repository (`mappings/`, `snapshots/`),
-  synced into the catalog as read models and never edited through the API.
+- The mapping and the reference snapshots live in the flow's repository (`mappings/`,
+  `snapshots/`), synced into the catalog as read models and never edited through the API;
+  a mapping the GUI's mapping builder writes reaches the repository as a pull request. The
+  templates the mappings pin live in the catalog itself, and a saved version never changes.
 
 ### 12.3 Streaming and retry coexist
 
@@ -954,10 +972,10 @@ whatever the chunk holds. The bytes still stream past unparsed.
 
 ## 15. Reading from OSDU
 
-Reads in service of writing were always here: the verify pass by id, schema and reference
-snapshot fetches, reference resolution on a snapshot miss. Bulk inbound is the retrieval
-kind, `flowType: retrieval`, added because the lake needs OSDU's records back without a
-second export pipeline ([decisions/0008](decisions/0008-retrieval-lands-raw-records.md)).
+Reads in service of writing were always here: the verify pass by id, the schema fetches
+templates are saved from, and the reference snapshot captures. Bulk inbound is the
+retrieval kind, `flowType: retrieval`, added because the lake needs OSDU's records back
+without a second export pipeline ([decisions/0008](decisions/0008-retrieval-lands-raw-records.md)).
 
 ### 15.1 The shape
 
@@ -1005,8 +1023,8 @@ per record. The plan operation counts what the query matches per kind
 (`POST /api/search/v2/query` with `trackTotalCount`) and writes nothing.
 
 What the retrieval kind does not do: it never renders. A mapping is not invertible, since
-an equality transform collapses a string to a boolean, a split discards everything but one
-element, and constants have no source at all. What lands is the record as OSDU holds it.
+an `equals` modifier collapses a string to a boolean, a `split` discards everything but one
+part, and static values have no source at all. What lands is the record as OSDU holds it.
 
 ## 16. Scale: streaming intake, work batches, returned values and fan-out
 
@@ -1109,8 +1127,8 @@ These block schema design and should be settled first.
 1. Settle decisions 1, 2 and 4.
 2. Build the ledger schema and the record-grained lease-and-retry worker. This is the
    artifact everything else depends on and it survives whichever engine runs it.
-3. Snapshot the reference and schema data. Rendering becomes reproducible, and `plan`
-   starts working offline.
+3. Pin the reference data as snapshots and the schemas as templates. Rendering becomes
+   reproducible, and `plan` starts working without OSDU.
 4. Move the mapping from generated to interpreted, proving byte-identical output against
    the 56 example fixtures before and after.
 5. Add change detection, metadata first, then payload.

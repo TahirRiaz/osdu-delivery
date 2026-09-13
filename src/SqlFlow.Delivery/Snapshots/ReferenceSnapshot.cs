@@ -153,7 +153,7 @@ public sealed class ReferenceType
 
     /// <summary>
     /// The item whose <paramref name="field"/> holds <paramref name="value"/>, as <see cref="Find"/> matches it: null
-    /// when nothing matches, and when the value names several items only once case is ignored.
+    /// when nothing matches, and when the value names several items.
     /// </summary>
     public ReferenceItem? Match(string field, string value, bool ignoreSeparators = false)
         => Find(field, value, ignoreSeparators).Item;
@@ -162,17 +162,16 @@ public sealed class ReferenceType
     /// Matches <paramref name="value"/> (trimmed) against what <paramref name="field"/> holds. A field holding a set
     /// matches when any one of its values does, so an item with three aliases is found by any of them.
     /// <para>
-    /// An exact match wins. OSDU codes that differ only by case are different records (<c>ft</c> is the foot and
-    /// <c>fT</c> the femtotesla; <c>s/m</c> is second per metre and <c>S/m</c> siemens per metre), so case is ignored
-    /// only when that finds exactly one item. A value that names several items once case is ignored matches none of
-    /// them and lists them as <see cref="ReferenceMatch.CaseVariants"/>, instead of resolving to whichever comes
-    /// first. Items holding exactly the same value still resolve to the first in snapshot order, which is stable per
-    /// version; <see cref="IsAmbiguous"/> reports where that happened.
+    /// An exact match of exactly one item wins. OSDU codes that differ only by case are different records (<c>ft</c> is
+    /// the foot and <c>fT</c> the femtotesla; <c>s/m</c> is second per metre and <c>S/m</c> siemens per metre), so case is
+    /// ignored only when that finds exactly one item. A value that names several items, exactly or once case is ignored,
+    /// matches none of them and lists them as <see cref="ReferenceMatch.CaseVariants"/>, instead of resolving to
+    /// whichever comes first: picking one would write a reference nobody chose.
     /// </para>
     /// <para>
     /// With <paramref name="ignoreSeparators"/> a third and last attempt folds punctuation and spacing away on both
     /// sides (<see cref="ReferenceKeyFold"/>), so a name a source writes as <c>NO 15/9-19 SR</c> finds the record OSDU
-    /// holds as <c>NO_15_9-19_SR</c>. It is opt-in per mapping property, because a fold that helps a facility name is
+    /// holds as <c>NO_15_9-19_SR</c>. It is opt-in per mapping entry, because a fold that helps a facility name is
     /// exactly wrong for a unit code, and it keeps the same discipline as the case tier: several items under one folded
     /// key match none of them and are listed, rather than one being picked.
     /// </para>
@@ -191,6 +190,8 @@ public sealed class ReferenceType
     private FieldIndex BuildIndex(string field)
     {
         var exact = new Dictionary<string, ReferenceItem>(StringComparer.Ordinal);
+        // Terms that more than one distinct item holds exactly, with every such item in snapshot order.
+        var duplicates = new Dictionary<string, List<ReferenceItem>>(StringComparer.Ordinal);
         var folded = new Dictionary<string, List<ReferenceItem>>(StringComparer.OrdinalIgnoreCase);
         // Built with the other two rather than on demand: it costs one dictionary per indexed field, and building it
         // later would mean a second pass over every item of a type that can hold hundreds of thousands of them.
@@ -207,9 +208,19 @@ public sealed class ReferenceType
             // with three aliases is found by any of them.
             foreach (var term in value.Terms)
             {
-                if (!exact.TryAdd(term, item))
+                if (!exact.TryAdd(term, item) && exact[term] != item)
                 {
-                    ambiguous = exact[term] != item || ambiguous;
+                    ambiguous = true;
+                    if (!duplicates.TryGetValue(term, out var holders))
+                    {
+                        holders = [exact[term]];
+                        duplicates[term] = holders;
+                    }
+
+                    if (!holders.Contains(item))
+                    {
+                        holders.Add(item);
+                    }
                 }
 
                 // The same term under folded case, every distinct item that holds it, in snapshot order: a lookup
@@ -243,7 +254,7 @@ public sealed class ReferenceType
             }
         }
 
-        return new FieldIndex(exact, folded, separatorFolded, ambiguous);
+        return new FieldIndex(exact, duplicates, folded, separatorFolded, ambiguous);
     }
 
     public JsonObject ToJson()
@@ -293,14 +304,16 @@ public sealed class ReferenceType
     private sealed class FieldIndex
     {
         private readonly Dictionary<string, ReferenceItem> _exact;
+        private readonly Dictionary<string, List<ReferenceItem>> _duplicates;
         private readonly Dictionary<string, List<ReferenceItem>> _folded;
         private readonly Dictionary<string, List<ReferenceItem>> _separatorFolded;
 
         public FieldIndex(
-            Dictionary<string, ReferenceItem> exact, Dictionary<string, List<ReferenceItem>> folded,
+            Dictionary<string, ReferenceItem> exact, Dictionary<string, List<ReferenceItem>> duplicates, Dictionary<string, List<ReferenceItem>> folded,
             Dictionary<string, List<ReferenceItem>> separatorFolded, bool ambiguous)
         {
             _exact = exact;
+            _duplicates = duplicates;
             _folded = folded;
             _separatorFolded = separatorFolded;
             Ambiguous = ambiguous;
@@ -312,6 +325,11 @@ public sealed class ReferenceType
 
         public ReferenceMatch Lookup(string term, bool ignoreSeparators)
         {
+            if (_duplicates.TryGetValue(term, out var holders))
+            {
+                return new ReferenceMatch(null, holders, ReferenceMatchKind.Exact);
+            }
+
             if (_exact.TryGetValue(term, out var item))
             {
                 return ReferenceMatch.Of(item, ReferenceMatchKind.Exact);
@@ -416,22 +434,23 @@ public static class ReferenceKeyFold
 
 /// <summary>
 /// What matching a value against one cached field found: the item it names, or nothing. When the value names several
-/// items only once case is ignored, <see cref="Item"/> is null and <see cref="CaseVariants"/> lists them in snapshot
-/// order, so the caller can say which records it could not choose between.
+/// items, <see cref="Item"/> is null and <see cref="CaseVariants"/> lists them in snapshot order, so the caller can say
+/// which records it could not choose between.
 /// </summary>
 public readonly record struct ReferenceMatch(
     ReferenceItem? Item, IReadOnlyList<ReferenceItem> CaseVariants, ReferenceMatchKind Kind = ReferenceMatchKind.None)
 {
     public static ReferenceMatch None => new(null, [], ReferenceMatchKind.None);
 
-    /// <summary>Several items answer to the value once a tier loosened the comparison, so none of them is taken.</summary>
+    /// <summary>Several items answer to the value, exactly or once a tier loosened the comparison, so none of them is taken.</summary>
     public bool IsCaseAmbiguous => Item is null && CaseVariants.Count > 1;
 
     /// <summary>How the tier that could not decide was comparing, for a refusal that says what it tried.</summary>
     public string Loosening => Kind switch
     {
-        ReferenceMatchKind.IgnoringSeparators => "case, punctuation and spacing are ignored",
-        _ => "case is ignored",
+        ReferenceMatchKind.Exact => "exactly",
+        ReferenceMatchKind.IgnoringSeparators => "once case, punctuation and spacing are ignored",
+        _ => "once case is ignored",
     };
 
     public static ReferenceMatch Of(ReferenceItem item, ReferenceMatchKind kind = ReferenceMatchKind.Exact) => new(item, [], kind);

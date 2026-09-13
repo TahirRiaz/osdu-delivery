@@ -59,11 +59,12 @@ production flow kinds: `delivery`, and `retrieval` for the reverse direction (OS
 files on the lake, incremental by watermark, one ledger row per run). A delivery flow names a drop (a storage location the preparing side writes: a manifest,
 parquet record scopes, payload chunks), a pinned mapping (how rows become OSDU records of one kind, which
 columns identify a record, which values resolve against reference data), and an OSDU target (endpoint, auth
-and header references, the delivery protocol). The mapping and the schema and reference snapshots it renders
-with live in the flow's repository and are synced into the catalog as read models. Running the flow means:
+and header references, the delivery protocol). The mapping and the reference snapshots of the OSDU cache it
+renders with live in the flow's repository and are synced into the catalog as read models; the template the mapping pins
+(the OSDU schema of its kind) is saved in the catalog itself. Running the flow means:
 
 1. **Intake**: register the drop's submission under its manifest id, stream every record through the pinned
-   mapping against the pinned snapshots, and decide per record what changed (source versions, fingerprints,
+   mapping against its pinned template and reference snapshot, and decide per record what changed (source versions, fingerprints,
    independent metadata and payload hashes); write the pending work to the ledger and the rendered documents
    to work batch files on the flow's work location.
 2. **Deliver**: lease work batches, send their records through the flow's protocol (a batched record write; a

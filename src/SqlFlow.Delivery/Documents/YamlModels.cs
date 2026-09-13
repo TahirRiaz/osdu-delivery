@@ -305,23 +305,24 @@ internal sealed class MappingYaml
 
     public string? Version { get; set; }
 
-    public string? Kind { get; set; }
+    public MappingTemplateYaml? Template { get; set; }
 
     public string? Description { get; set; }
 
-    public MappingSourceYaml? Source { get; set; }
-
-    public MappingIdentityYaml? Identity { get; set; }
-
-    public MappingEnvelopeYaml? Envelope { get; set; }
+    public MappingDatasetYaml? Dataset { get; set; }
 
     public Dictionary<string, MappingParameterYaml>? Parameters { get; set; }
 
-    public List<MappingPropertyYaml>? Properties { get; set; }
-
-    public Dictionary<string, List<MappingPropertyYaml>>? Definitions { get; set; }
+    public List<MappingEntryYaml>? Mappings { get; set; }
 
     public List<MappingFixtureYaml>? Fixtures { get; set; }
+}
+
+internal sealed class MappingTemplateYaml
+{
+    public string? Kind { get; set; }
+
+    public string? Version { get; set; }
 }
 
 internal sealed class MappingParameterYaml
@@ -333,103 +334,51 @@ internal sealed class MappingParameterYaml
     public string? Description { get; set; }
 }
 
-internal sealed class MappingSourceYaml
+internal sealed class MappingDatasetYaml
 {
     public string? System { get; set; }
 
-    public List<string>? Scopes { get; set; }
-}
-
-internal sealed class MappingIdentityYaml
-{
-    public List<string>? NaturalKey { get; set; }
+    public List<string>? Key { get; set; }
 
     public string? Label { get; set; }
 }
 
-internal sealed class MappingEnvelopeYaml
+internal sealed class MappingEntryYaml
 {
-    public List<string>? LegalTags { get; set; }
+    private object? _static;
 
-    public List<string>? OtherRelevantDataCountries { get; set; }
-
-    public MappingAclYaml? Acl { get; set; }
-
-    public Dictionary<string, string>? Tags { get; set; }
-}
-
-internal sealed class MappingAclYaml
-{
-    public List<string>? Owners { get; set; }
-
-    public List<string>? Viewers { get; set; }
-}
-
-internal sealed class MappingPropertyYaml
-{
     public string? Target { get; set; }
 
     public string? Source { get; set; }
 
-    public string? Description { get; set; }
+    /// <summary>The static value in whatever YAML shape it was written: a scalar, a list or a mapping.</summary>
+    public object? Static
+    {
+        get => _static;
+        set
+        {
+            _static = value;
+            HasStatic = true;
+        }
+    }
 
-    public string? Transform { get; set; }
+    /// <summary>True when the document wrote a <c>static</c> key, even with an empty value.</summary>
+    [YamlDotNet.Serialization.YamlIgnore]
+    public bool HasStatic { get; private set; }
 
-    public TransformConfigYaml? Config { get; set; }
+    /// <summary>One findBy line, or a list of them.</summary>
+    public object? FindBy { get; set; }
 
-    public bool Collection { get; set; }
+    /// <summary>Each modifier is a name (<c>trim</c>) or a one-key mapping (<c>split: { separator: ",", part: 1 }</c>).</summary>
+    public List<object>? Modifiers { get; set; }
 
-    public string? Scope { get; set; }
+    public string? AppliesWhen { get; set; }
 
-    public List<MappingPropertyYaml>? Properties { get; set; }
-
-    public string? Definition { get; set; }
-
-    public List<PropertyExampleYaml>? Examples { get; set; }
-}
-
-internal sealed class TransformConfigYaml
-{
-    public string? Value { get; set; }
-
-    public string? Delimiter { get; set; }
-
-    public int? Index { get; set; }
-
-    public string? Resolve { get; set; }
-
-    public Dictionary<string, string>? Values { get; set; }
-
-    public string? Default { get; set; }
-
-    public string? Type { get; set; }
-
-    public List<string>? MatchBy { get; set; }
+    public bool? Required { get; set; }
 
     public bool? IgnoreSeparators { get; set; }
 
-    public string? Select { get; set; }
-
-    public Dictionary<string, string>? ValueMap { get; set; }
-
-    public string? OnMiss { get; set; }
-
-    public string? System { get; set; }
-
-    public List<string>? Keys { get; set; }
-
-    public string? Format { get; set; }
-
-    public string? InputFormat { get; set; }
-}
-
-internal sealed class PropertyExampleYaml
-{
-    public string? Source { get; set; }
-
-    public Dictionary<string, string?>? Row { get; set; }
-
-    public string? Target { get; set; }
+    public string? Description { get; set; }
 }
 
 internal sealed class MappingFixtureYaml
@@ -438,7 +387,7 @@ internal sealed class MappingFixtureYaml
 
     public Dictionary<string, string?>? Record { get; set; }
 
-    public Dictionary<string, List<Dictionary<string, string?>>>? Scopes { get; set; }
+    public Dictionary<string, List<Dictionary<string, string?>>>? Datasets { get; set; }
 
     public Dictionary<string, string>? Parameters { get; set; }
 

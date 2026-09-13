@@ -1,22 +1,26 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using SqlFlow.Core;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Validation;
 
 /// <summary>
-/// The preflight gate (design.md section 10.2). Before any render, and with no OSDU call, checks that the four
-/// inputs are mutually consistent. If the combination does not validate, nothing renders.
+/// The preflight gate (docs/delivery/mapping-templates.md, Checks). Before any render, and with no OSDU call, checks that
+/// the mapping, its pinned template, the cache and the drop agree. If the combination does not validate, nothing renders.
 /// </summary>
-public static class Preflight
+public static partial class Preflight
 {
     /// <summary>
-    /// Runs every check and returns the issues. <paramref name="dropColumns"/> maps scope name to the columns the
-    /// drop declares; pass null to skip the source-binding check (validate without a drop).
+    /// Runs every check and returns the issues. <paramref name="dropColumns"/> maps a scope name (<c>record</c> or a child
+    /// dataset) to the columns the drop declares; pass null to check without a drop.
     /// </summary>
     public static IReadOnlyList<ValidationIssue> Check(
         MappingDefinition mapping,
@@ -33,9 +37,10 @@ public static class Preflight
         var issues = new List<ValidationIssue>();
         var where = mapping.SourcePath ?? mapping.Reference;
 
-        if (!string.Equals(schema.Kind, mapping.Kind, StringComparison.Ordinal))
+        // 1. The pinned template version is the one given.
+        if (!string.Equals(schema.Kind, mapping.Template.Kind, StringComparison.Ordinal) || !string.Equals(schema.Version, mapping.Template.Version, StringComparison.Ordinal))
         {
-            issues.Add(ValidationIssue.Error($"{where}: mapping kind '{mapping.Kind}' does not match the schema snapshot kind '{schema.Kind}'."));
+            issues.Add(ValidationIssue.Error($"{where}: the mapping pins template {mapping.Template}, but template {schema.Kind} version {schema.Version} was given."));
             return issues;
         }
 
@@ -50,119 +55,31 @@ public static class Preflight
             return issues;
         }
 
-        var boundPaths = new HashSet<string>(StringComparer.Ordinal);
-        WalkProperties(mapping, mapping.Properties, string.Empty, "record", (property, path, scope) =>
+        var template = OsduTemplate.From(schema);
+        foreach (var entry in mapping.Entries)
         {
-            boundPaths.Add(path);
+            CheckEntry(entry, template, references, renderer, issues, where);
+        }
 
-            // 1. Every source binding exists in the drop's declared schema.
-            if (dropColumns is not null && property.Source is { } source && !property.Collection && !property.IsObject)
-            {
-                if (!dropColumns.TryGetValue(scope, out var columns))
-                {
-                    issues.Add(ValidationIssue.Error($"{where}: property '{path}' binds to scope '{scope}', which the drop does not declare."));
-                }
-                else if (!columns.Contains(source))
-                {
-                    issues.Add(ValidationIssue.Error($"{where}: property '{path}' binds to column '{source}', which scope '{scope}' of the drop does not declare. Declared: {string.Join(", ", columns.OrderBy(c => c, StringComparer.Ordinal))}."));
-                }
-            }
-
-            if (dropColumns is not null && property.Transform is MappingTransform.DeliveredReference or MappingTransform.Template)
-            {
-                foreach (var column in MappingColumns.UsedBy(property))
-                {
-                    if (dropColumns.TryGetValue(scope, out var columns) && !columns.Contains(column))
-                    {
-                        issues.Add(ValidationIssue.Error($"{where}: property '{path}' uses column '{column}', which scope '{scope}' of the drop does not declare."));
-                    }
-                }
-            }
-
-            // 2. Every reference type the mapping resolves against exists in the cache, with the fields it matches
-            //    and selects by. A path the cache does not hold would miss on every record, so it is caught here.
-            if (property.Transform is MappingTransform.Reference or MappingTransform.Lookup)
-            {
-                var transformName = property.Transform == MappingTransform.Lookup ? "lookup" : "reference";
-                if (string.IsNullOrWhiteSpace(property.Config.Type))
-                {
-                    issues.Add(ValidationIssue.Error($"{where}: property '{path}' uses the {transformName} transform without config.type."));
-                }
-                else if (references.Type(property.Config.Type) is not { } cached)
-                {
-                    issues.Add(ValidationIssue.Error($"{where}: property '{path}' resolves against reference type '{property.Config.Type}', which reference snapshot '{references.Version}' does not contain. Available: {string.Join(", ", references.Types.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal))}."));
-                }
-                else
-                {
-                    CheckCachedFields(property, cached, references.Version, path, where, transformName, issues);
-                }
-            }
-
-            // 4. Every target path resolves to a real field in the pinned schema, with agreeing shapes.
-            var schemaProperty = schema.Resolve(path);
-            if (schemaProperty is null)
-            {
-                issues.Add(ValidationIssue.Error($"{where}: property '{path}' does not exist in schema '{schema.Kind}' (snapshot {schema.Version})."));
-            }
-            else
-            {
-                if (property.Collection && schemaProperty.Type != SchemaType.Array)
-                {
-                    issues.Add(ValidationIssue.Error($"{where}: property '{path}' is declared as a collection but the schema type is {schemaProperty.Type}."));
-                }
-
-                if (!property.Collection && property.IsObject && schemaProperty.Type is not (SchemaType.Object or SchemaType.Any))
-                {
-                    issues.Add(ValidationIssue.Error($"{where}: property '{path}' is declared as an object but the schema type is {schemaProperty.Type}."));
-                }
-
-                if (!property.Collection && !property.IsObject && schemaProperty.Type is SchemaType.Object)
-                {
-                    issues.Add(ValidationIssue.Error($"{where}: property '{path}' is a scalar binding but the schema type is object; declare nested properties."));
-                }
-
-                if (property.Transform == MappingTransform.Equals && schemaProperty.Type is not (SchemaType.Boolean or SchemaType.Any))
-                {
-                    issues.Add(ValidationIssue.Error($"{where}: property '{path}' uses the equals transform (boolean) but the schema type is {schemaProperty.Type}."));
-                }
-
-                if (property.Transform is MappingTransform.Reference or MappingTransform.DeliveredReference && !schemaProperty.IsRelationship && schemaProperty.Pattern is null)
-                {
-                    issues.Add(ValidationIssue.Warning($"{where}: property '{path}' renders an OSDU reference but the schema does not mark it as a relationship."));
-                }
-            }
-
-            if (property.Collection && string.IsNullOrWhiteSpace(property.Scope ?? property.Source))
-            {
-                issues.Add(ValidationIssue.Error($"{where}: collection property '{path}' names no scope."));
-            }
-
-            if (property.Collection && (property.Scope ?? property.Source) is { } s && !mapping.Source.Scopes.Contains(s, StringComparer.OrdinalIgnoreCase))
-            {
-                issues.Add(ValidationIssue.Error($"{where}: collection property '{path}' iterates scope '{s}', which source.scopes does not declare."));
-            }
-
-            if (property.Definition is { } definition && !mapping.Definitions.ContainsKey(definition))
-            {
-                issues.Add(ValidationIssue.Error($"{where}: property '{path}' references definition '{definition}', which does not exist."));
-            }
-        });
-
-        // 3. Every schema-required property has a binding that resolves.
+        // 5. Every property the schema requires has an entry that is allowed to be empty only if the schema allows it.
         foreach (var required in schema.RequiredAt("data"))
         {
-            if (!boundPaths.Contains("data." + required))
+            var target = $"{TemplatePath.Prefix}.data.{required}";
+            var entry = mapping.Entries.FirstOrDefault(e => e.Target.Text == target);
+            if (entry is null)
             {
-                issues.Add(ValidationIssue.Error($"{where}: schema '{schema.Kind}' requires data.{required}, which the mapping does not bind."));
+                issues.Add(ValidationIssue.Error($"{where}: template {mapping.Template.Kind} requires {target}, which the mapping does not fill."));
+            }
+            else if (!entry.IsStatic && !entry.Required)
+            {
+                issues.Add(ValidationIssue.Error($"{where}: {entry.Where} is required: false, but the template requires {target}, so a record without it cannot be sent."));
             }
         }
 
-        foreach (var required in schema.RequiredAt(string.Empty))
+        // 6. Every dataset column and child dataset exists in the drop.
+        if (dropColumns is not null)
         {
-            if (required is not ("kind" or "acl" or "legal" or "id" or "data") && !boundPaths.Contains(required))
-            {
-                issues.Add(ValidationIssue.Error($"{where}: schema '{schema.Kind}' requires {required} at the record root, which the mapping does not bind."));
-            }
+            CheckColumns(mapping, dropColumns, issues, where);
         }
 
         foreach (var (name, parameter) in mapping.Parameters)
@@ -186,8 +103,7 @@ public static class Preflight
             return issues;
         }
 
-        // 5. The mapping's own example fixtures still render correctly under this exact context.
-        CheckExamples(mapping, renderer, issues, where);
+        // 10. Every fixture renders exactly as declared under this context.
         CheckFixtures(mapping, renderer, issues, where);
         return issues;
     }
@@ -207,94 +123,267 @@ public static class Preflight
             + string.Join(Environment.NewLine, errors.Select(e => "  - " + e.Message)));
     }
 
-    /// <summary>
-    /// The fields a property matches by, and the value it selects, against what the cached type actually holds. A
-    /// type that holds none of the fields can never match, which is an error; a single missing field is a warning,
-    /// because a mapping may list fields that only some snapshots carry.
-    /// </summary>
-    private static void CheckCachedFields(
-        MappingProperty property, ReferenceType cached, string version, string path, string where, string transformName, List<ValidationIssue> issues)
+    private static void CheckEntry(MappingEntry entry, OsduTemplate template, ReferenceSnapshot references, MappingRenderer renderer, List<ValidationIssue> issues, string where)
     {
-        var matchBy = property.Config.MatchBy;
-        if (matchBy.Count > 0)
+        var name = $"{where}: {entry.Where}";
+
+        // 2. The target is a variable of the template, with an agreeing shape; 3. and one a mapping may fill.
+        var variable = template.Find(entry.Target);
+        if (variable is null)
         {
-            var known = matchBy.Where(cached.HasField).ToList();
-            if (known.Count == 0)
+            issues.Add(ValidationIssue.Error($"{name} fills a variable that template {template.Kind} version {template.Version} does not have."));
+            return;
+        }
+
+        switch (variable.Role)
+        {
+            case TemplateVariableRole.Engine:
+                issues.Add(ValidationIssue.Error($"{name}: {entry.Target.Text} is written by OSDU Delivery ({(entry.Target.Leaf == "id" ? "from dataset.key" : "from the template")}), not by a mapping."));
+                return;
+            case TemplateVariableRole.Osdu:
+                issues.Add(ValidationIssue.Error($"{name}: {entry.Target.Text} is set by OSDU when the record is stored, not by a mapping."));
+                return;
+        }
+
+        if (variable.Nested)
+        {
+            issues.Add(ValidationIssue.Error($"{name}: {entry.Target.Text} is a list inside a repeated item; a repeater inside a repeater is not supported."));
+            return;
+        }
+
+        var shapeProblem = ShapeProblem(entry, variable);
+        if (shapeProblem is not null)
+        {
+            issues.Add(ValidationIssue.Error($"{name}: {shapeProblem}"));
+            return;
+        }
+
+        if (entry.Modifiers.Count > 0 && entry.Modifiers[^1].Kind == ModifierKind.Equals && entry.Source?.Kind == MappingSourceKind.DatasetColumn
+            && variable.Type is not ("boolean" or "any"))
+        {
+            issues.Add(ValidationIssue.Error($"{name}: the last modifier is equals, which gives true or false, but the template takes a {variable.Type} at {entry.Target.Text}."));
+        }
+
+        if (entry.IsStatic)
+        {
+            CheckStatic(entry, variable, references, renderer, issues, name);
+        }
+        else if (entry.Source!.Kind == MappingSourceKind.Cache)
+        {
+            CheckCache(entry, variable, references, issues, name);
+        }
+    }
+
+    /// <summary>Why the entry's value cannot take the variable's shape, or null when it can.</summary>
+    private static string? ShapeProblem(MappingEntry entry, TemplateVariable variable)
+    {
+        var shape = variable.Shape;
+        var target = entry.Target.Text;
+        if (entry.IsRepeater)
+        {
+            return shape == TemplateVariableShape.GroupList
+                ? null
+                : $"{entry.Source} repeats rows into {target}, but a repeater fills a list of objects and {target} is {Describe(variable)}.";
+        }
+
+        if (entry.Static is JsonObject)
+        {
+            return shape is TemplateVariableShape.Group or TemplateVariableShape.Whole && variable.Type is "object" or "any"
+                ? null
+                : $"a static object cannot be written to {target}, which is {Describe(variable)}.";
+        }
+
+        if (entry.Static is JsonArray)
+        {
+            return shape is TemplateVariableShape.ValueList or TemplateVariableShape.GroupList or TemplateVariableShape.Whole && variable.Type is "array" or "any"
+                ? null
+                : $"a static list cannot be written to {target}, which is {Describe(variable)}.";
+        }
+
+        if (entry.IsStatic)
+        {
+            return shape is TemplateVariableShape.Value or TemplateVariableShape.ValueList
+                ? null
+                : $"a single static value cannot be written to {target}, which is {Describe(variable)}.";
+        }
+
+        if (entry.Source!.Kind == MappingSourceKind.DatasetColumn)
+        {
+            return shape is TemplateVariableShape.Value or TemplateVariableShape.ValueList
+                ? null
+                : $"{entry.Source} is one value, and {target} is {Describe(variable)}; fill the properties inside it instead.";
+        }
+
+        return shape == TemplateVariableShape.GroupList
+            ? $"{target} is {Describe(variable)}, which a repeater fills from a child dataset, not a cache value."
+            : null;
+    }
+
+    private static string Describe(TemplateVariable variable) => variable.Shape switch
+    {
+        TemplateVariableShape.Value => $"one {variable.Type}",
+        TemplateVariableShape.ValueList => $"a list of {variable.ItemType}",
+        TemplateVariableShape.Group => "an object with properties of its own",
+        TemplateVariableShape.GroupList => "a list of objects",
+        _ => variable.Type == "array" ? "a list the schema does not break into properties" : "an object the schema does not break into properties",
+    };
+
+    private static void CheckStatic(MappingEntry entry, TemplateVariable variable, ReferenceSnapshot references, MappingRenderer renderer, List<ValidationIssue> issues, string name)
+    {
+        var texts = MappingMapper.StaticTexts(entry.Static).ToList();
+        foreach (var text in texts)
+        {
+            foreach (var parameter in MappingEntry.ParameterNames(text))
             {
-                issues.Add(ValidationIssue.Error(
-                    $"{where}: property '{path}' matches {cached.Name} by {string.Join("/", matchBy)}, and reference snapshot '{version}' caches none of those. Cached: {string.Join(", ", cached.FieldNames.Prepend("id"))}."));
-            }
-            else
-            {
-                foreach (var field in matchBy.Where(f => !cached.HasField(f)))
+                if (renderer.ParameterValue(parameter) is null)
                 {
-                    issues.Add(ValidationIssue.Warning(
-                        $"{where}: property '{path}' matches {cached.Name} by '{field}', which reference snapshot '{version}' does not cache. Cached: {string.Join(", ", cached.FieldNames.Prepend("id"))}."));
+                    issues.Add(ValidationIssue.Error($"{name} uses {{param.{parameter}}}, which the flow supplies no value for."));
                 }
             }
         }
 
-        if (property.Transform != MappingTransform.Lookup)
+        // 9. A static id on a relationship exists in the cache, when the cache holds that entity type.
+        if (variable.Relationships.Count == 0 || entry.Static is JsonObject)
         {
             return;
         }
 
-        var select = string.IsNullOrWhiteSpace(property.Config.Select) ? "id" : property.Config.Select!;
-        if (!cached.MeansRecordId(select) && cached.Items.All(item => cached.Value(item, select) is null))
+        foreach (var text in texts)
         {
-            issues.Add(ValidationIssue.Error(
-                $"{where}: property '{path}' reads '{select}' out of {cached.Name}, which reference snapshot '{version}' does not cache. Cached: {string.Join(", ", cached.FieldNames.Prepend("id"))}."));
+            var value = MappingEntry.ExpandParameters(text, renderer.ParameterValue).Trim();
+            var match = RecordId().Match(value);
+            if (!match.Success)
+            {
+                issues.Add(ValidationIssue.Error($"{name}: '{value}' is not an OSDU record id, and {entry.Target.Text} points to {string.Join(" or ", variable.Relationships)}."));
+                continue;
+            }
+
+            var entityType = match.Groups["entity"].Value;
+            if (!Points(variable.Relationships, entityType))
+            {
+                issues.Add(ValidationIssue.Error($"{name}: '{value}' is a {entityType} record, and {entry.Target.Text} points to {string.Join(" or ", variable.Relationships)}."));
+                continue;
+            }
+
+            // Only an entity type the cache holds can be checked. Many fixed ids point at reference data nobody caches
+            // (alias name types, say), and a finding on every plan for a value that cannot be checked is noise.
+            var cached = references.Types.Where(t => string.Equals(t.EntityType, entityType, StringComparison.Ordinal)).ToList();
+            if (cached.Count > 0 && cached.All(t => t.Match("id", match.Groups["id"].Value) is null))
+            {
+                issues.Add(ValidationIssue.Error($"{name}: '{value}' is not in reference snapshot '{references.Version}', which caches {entityType} as {string.Join(", ", cached.Select(t => t.Name))}."));
+            }
         }
     }
 
-    private static void CheckExamples(MappingDefinition mapping, MappingRenderer renderer, List<ValidationIssue> issues, string where)
+    private static void CheckCache(MappingEntry entry, TemplateVariable variable, ReferenceSnapshot references, List<ValidationIssue> issues, string name)
     {
-        WalkProperties(mapping, mapping.Properties, string.Empty, "record", (property, path, _) =>
+        var source = entry.Source!;
+        // 7. The cache type exists and holds the fields findBy compares and the field the source reads.
+        if (references.Type(source.CacheType!) is not { } cached)
         {
-            if (property.Collection || property.IsObject)
+            var available = references.Types.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
+            issues.Add(ValidationIssue.Error(
+                $"{name} reads cache.{source.CacheType}, which reference snapshot '{references.Version}' does not hold. Cached: {(available.Count == 0 ? "nothing" : string.Join(", ", available))}."));
+            return;
+        }
+
+        var cachedFields = string.Join(", ", cached.FieldNames.Prepend("id"));
+        var fields = entry.FindBy.Select(f => f.Field).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var known = fields.Where(f => cached.HasField(f) || cached.MeansRecordId(f)).ToList();
+        if (known.Count == 0)
+        {
+            issues.Add(ValidationIssue.Error($"{name} finds {cached.Name} by {string.Join(" or ", fields)}, and reference snapshot '{references.Version}' caches none of those. Cached: {cachedFields}."));
+        }
+        else
+        {
+            foreach (var field in fields.Except(known, StringComparer.OrdinalIgnoreCase))
             {
-                return;
+                issues.Add(ValidationIssue.Warning($"{name} finds {cached.Name} by '{field}', which reference snapshot '{references.Version}' does not cache. Cached: {cachedFields}."));
+            }
+        }
+
+        if (!source.ReadsRecordId && !cached.MeansRecordId(source.CacheField!) && cached.Items.All(item => cached.Value(item, source.CacheField!) is null))
+        {
+            issues.Add(ValidationIssue.Error($"{name} reads '{source.CacheField}' out of {cached.Name}, which reference snapshot '{references.Version}' does not cache. Cached: {cachedFields}."));
+        }
+
+        // 8. A cached id resolves to the entity type the schema expects for the target.
+        if (!source.ReadsRecordId)
+        {
+            return;
+        }
+
+        if (variable.Relationships.Count > 0)
+        {
+            if (!Points(variable.Relationships, cached.EntityType))
+            {
+                issues.Add(ValidationIssue.Error(
+                    $"{name} writes the id of a cached {cached.Name} ({cached.EntityType}), but the template points {entry.Target.Text} to {string.Join(" or ", variable.Relationships)}."));
+            }
+        }
+        else if (variable.Pattern is null)
+        {
+            issues.Add(ValidationIssue.Warning($"{name} writes an OSDU reference, but the template does not mark {entry.Target.Text} as a relationship."));
+        }
+    }
+
+    /// <summary>Whether an entity type (<c>master-data--Wellbore</c>) is one a relationship allows; a group type alone (<c>dataset</c>) allows every entity of the group.</summary>
+    private static bool Points(IReadOnlyList<string> relationships, string entityType)
+        => relationships.Any(r => string.Equals(r, entityType, StringComparison.Ordinal)
+            || (!r.Contains("--", StringComparison.Ordinal) && entityType.StartsWith(r + "--", StringComparison.Ordinal)));
+
+    private static void CheckColumns(MappingDefinition mapping, IReadOnlyDictionary<string, IReadOnlySet<string>> dropColumns, List<ValidationIssue> issues, string where)
+    {
+        void Require(DatasetColumn column, string reader)
+        {
+            var scope = column.Child ?? DropManifest.RootScope;
+            if (!dropColumns.TryGetValue(scope, out var columns))
+            {
+                issues.Add(ValidationIssue.Error($"{where}: {reader} reads child dataset '{column.Child}', which the drop does not declare."));
+            }
+            else if (!columns.Contains(column.Column))
+            {
+                issues.Add(ValidationIssue.Error(
+                    $"{where}: {reader} reads {column}, which {(column.Child is null ? "the dataset's row" : "child dataset '" + column.Child + "'")} in the drop does not declare. Declared: {string.Join(", ", columns.OrderBy(c => c, StringComparer.Ordinal))}."));
+            }
+        }
+
+        foreach (var key in mapping.Dataset.Key)
+        {
+            Require(new DatasetColumn(null, key), "dataset.key");
+        }
+
+        if (mapping.Dataset.Label is { } label)
+        {
+            foreach (Match token in MappingMapper.LabelToken().Matches(label))
+            {
+                Require(new DatasetColumn(null, token.Groups["column"].Value[(DatasetColumn.Prefix.Length + 1)..]), "dataset.label");
+            }
+        }
+
+        foreach (var entry in mapping.Entries)
+        {
+            if (entry.IsRepeater && !dropColumns.ContainsKey(entry.Source!.Child!))
+            {
+                issues.Add(ValidationIssue.Error($"{where}: {entry.Where} repeats child dataset '{entry.Source.Child}', which the drop does not declare."));
             }
 
-            var prefix = path.Length > property.Target.Length ? path[..^(property.Target.Length + 1)] : string.Empty;
-            foreach (var example in property.Examples)
+            foreach (var column in entry.Columns)
             {
-                var row = example.Row.Count > 0
-                    ? SourceRow.FromStrings(example.Row)
-                    : SourceRow.FromStrings(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { [property.Source ?? "value"] = example.Source });
-                var holds = new List<string>();
-                JsonNode? actual;
-                try
-                {
-                    actual = renderer.RenderScalar(property, row, prefix, holds);
-                }
-                catch (DeliveryException ex)
-                {
-                    issues.Add(ValidationIssue.Error($"{where}: example for '{path}' (source '{example.Source}') failed: {ex.Message}"));
-                    continue;
-                }
-
-                var expected = ParseExpected(example.Target);
-                var actualText = actual is null ? "null" : CanonicalJson.ToString(actual);
-                var expectedText = expected is null ? "null" : CanonicalJson.ToString(expected);
-                if (!string.Equals(actualText, expectedText, StringComparison.Ordinal))
-                {
-                    var detail = holds.Count > 0 ? " (" + string.Join("; ", holds) + ")" : string.Empty;
-                    issues.Add(ValidationIssue.Error($"{where}: example for '{path}' (source '{example.Source ?? "<row>"}') rendered {actualText}, expected {expectedText}{detail}."));
-                }
+                Require(column, entry.Where);
             }
-        });
+        }
     }
 
     private static void CheckFixtures(MappingDefinition mapping, MappingRenderer renderer, List<ValidationIssue> issues, string where)
     {
         foreach (var fixture in mapping.Fixtures)
         {
-            var scopes = fixture.Scopes.ToDictionary(
+            var datasets = fixture.Datasets.ToDictionary(
                 kv => kv.Key,
                 kv => (IReadOnlyList<SourceRow>)kv.Value.Select(SourceRow.FromStrings).ToList(),
                 StringComparer.OrdinalIgnoreCase);
-            var record = new SourceRecord { Row = SourceRow.FromStrings(fixture.Record), Scopes = scopes };
+            var record = new SourceRecord { Row = SourceRow.FromStrings(fixture.Record), Scopes = datasets };
 
             var fixtureRenderer = renderer;
             if (fixture.Parameters.Count > 0)
@@ -305,7 +394,7 @@ public static class Preflight
                     parameters[kv.Key] = kv.Value;
                 }
 
-                fixtureRenderer = new MappingRenderer(mapping, SchemaOf(renderer), renderer.References, renderer.Context with { Parameters = parameters });
+                fixtureRenderer = new MappingRenderer(mapping, renderer.Schema, renderer.References, renderer.Context with { Parameters = parameters });
             }
 
             RenderResult result;
@@ -337,54 +426,15 @@ public static class Preflight
                 var holds = result.Holds.Count > 0 ? Environment.NewLine + "    holds: " + string.Join("; ", result.Holds) : string.Empty;
                 issues.Add(ValidationIssue.Error($"{where}: fixture '{fixture.Name}' rendered a different document:{Environment.NewLine}{diff.Indent("    ")}{holds}"));
             }
-        }
-    }
-
-    private static SchemaSnapshot SchemaOf(MappingRenderer renderer) => renderer.Schema;
-
-    private static JsonNode? ParseExpected(string target)
-    {
-        if (target.Equals("null", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        try
-        {
-            return CanonicalJson.Normalize(JsonNode.Parse(target));
-        }
-        catch (JsonException)
-        {
-            return JsonValue.Create(target);
-        }
-    }
-
-    /// <summary>Visits every property with its full dotted path and the scope its row comes from.</summary>
-    public static void WalkProperties(
-        MappingDefinition mapping,
-        IReadOnlyList<MappingProperty> properties,
-        string prefix,
-        string scope,
-        Action<MappingProperty, string, string> visit)
-    {
-        ArgumentNullException.ThrowIfNull(mapping);
-        ArgumentNullException.ThrowIfNull(properties);
-        ArgumentNullException.ThrowIfNull(visit);
-        foreach (var property in properties)
-        {
-            var path = MappingRenderer.Join(prefix, property.Target);
-            visit(property, path, scope);
-
-            IReadOnlyList<MappingProperty> children = property.Definition is { } d && mapping.Definitions.TryGetValue(d, out var defined)
-                ? defined
-                : property.Properties;
-            if (children.Count > 0)
+            else if (result.Holds.Count > 0)
             {
-                var childScope = property.Collection ? property.Scope ?? property.Source ?? scope : scope;
-                WalkProperties(mapping, children, path, childScope, visit);
+                issues.Add(ValidationIssue.Error($"{where}: fixture '{fixture.Name}' renders the expected document but holds the record: {string.Join("; ", result.Holds)}"));
             }
         }
     }
+
+    [GeneratedRegex(@"^(?<id>[\w\-\.]+:(?<entity>[\w\-\.]+--[\w\-\.]+):[\w\-\.\%]+):?[0-9]*$")]
+    private static partial Regex RecordId();
 }
 
 public enum IssueSeverity

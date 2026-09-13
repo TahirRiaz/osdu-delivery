@@ -83,7 +83,7 @@ public class ReferenceFoldTests
         Assert.Null(found.Item);
         Assert.True(found.IsCaseAmbiguous);
         Assert.Equal(["w1", "w2"], found.CaseVariants.Select(v => v.Id));
-        Assert.Equal("case, punctuation and spacing are ignored", found.Loosening);
+        Assert.Equal("once case, punctuation and spacing are ignored", found.Loosening);
     }
 
     [Fact]
@@ -109,35 +109,18 @@ public class ReferenceFoldTests
     }
 
     [Fact]
-    public void The_fold_belongs_on_a_transform_that_resolves_a_reference()
+    public void The_fold_belongs_on_an_entry_that_reads_the_cache()
     {
-        var mapping = Path.Combine(Samples.NewTempDirectory(), "Folded.mapping.yaml");
-        File.WriteAllText(mapping, """
-            documentType: mapping
-            name: Folded
-            version: 1.0.0
-            kind: "osdu:wks:master-data--Wellbore:1.0.0"
-            source:
-              system: test
-            identity:
-              naturalKey: [data.FacilityName]
-            envelope:
-              legalTags: [opendes-reference-data-default]
-              otherRelevantDataCountries: [NO]
-              acl:
-                owners: [data.default.owners@opendes.dataservices.energy]
-                viewers: [data.default.viewers@opendes.dataservices.energy]
-            properties:
-              - target: data.FacilityName
-                source: facility_name
-                transform: upper
-                config:
-                  ignoreSeparators: true
+        var yaml = TestSchema.MappingDocument("""
+              - target: osdu.data.Description
+                source: dataset.name
+                modifiers: [upper]
+                ignoreSeparators: true
             """);
 
-        var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().LoadMapping(mapping));
+        var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseMapping(yaml, "folded.yaml"));
         Assert.Contains("ignoreSeparators", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("reference or lookup", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("only applies to a cache source", ex.Message, StringComparison.Ordinal);
     }
 
     private static ReferenceType Wellbores(params (string Id, string FacilityName)[] items)

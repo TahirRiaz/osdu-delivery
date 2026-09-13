@@ -38,6 +38,7 @@ export default function ManualSubmissionPage() {
   const rows = (flows.data ?? []).filter((flow) => term === ""
     || flow.flowName.toLowerCase().includes(term)
     || flow.mappingReference.toLowerCase().includes(term)
+    || (flow.templateKind ?? "").toLowerCase().includes(term)
     || (flow.batch ?? "").toLowerCase().includes(term));
 
   const columns: Column<DeliveryManualFlow>[] = [
@@ -53,7 +54,20 @@ export default function ManualSubmissionPage() {
         </div>
       ),
     },
-    { id: "mapping", header: "Renders with", render: (row) => <Badge variant="outline" className="font-mono text-[11px]">{row.mappingReference}</Badge> },
+    {
+      id: "mapping",
+      header: "Renders with",
+      render: (row) => (
+        <div className="flex min-w-0 flex-col items-start gap-0.5">
+          <Badge variant="outline" className="font-mono text-[11px]">{row.mappingReference}</Badge>
+          {row.templateKind !== null && (
+            <span data-testid={`manual-submission-template-${row.flowName}`}>
+              <TruncatedText text={row.templateKind} mono maxWidth={320} className="text-[11px] text-muted-foreground" />
+            </span>
+          )}
+        </div>
+      ),
+    },
     { id: "protocol", header: "Protocol", render: (row) => <span className="font-mono text-[12px]">{row.protocol}</span> },
     {
       id: "payload",

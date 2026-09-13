@@ -4,8 +4,8 @@ namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
 /// Where a flow's mappings and snapshots live. A flow repository keeps them next to its flows (design.md section
-/// 10.1): <c>mappings/</c> holds the pinned mapping documents, <c>snapshots/</c> the schema and reference
-/// snapshots. A flow may name either explicitly under <c>render</c> (relative to the flow file, or a storage URI
+/// 10.1): <c>mappings/</c> holds the pinned mapping documents, <c>snapshots/</c> the reference snapshots of the cache.
+/// Templates live in the catalog. A flow may name either explicitly under <c>render</c> (relative to the flow file, or a storage URI
 /// for snapshots); otherwise the nearest directory of that name walking up from the flow file is used, so a flow
 /// three folders deep in a repository still finds the repository's shared mappings.
 /// </summary>

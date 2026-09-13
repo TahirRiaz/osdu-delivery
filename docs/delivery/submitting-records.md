@@ -1,7 +1,7 @@
 # Submitting records
 
 For a source system, or an operator, that sends records to OSDU Delivery directly instead of preparing a drop. The
-source sends each record's metadata in its own shape, the columns it has; the flow's pinned mapping transforms it into
+source sends each record's metadata in its own shape, the columns it has; the flow's pinned mapping renders it into
 the OSDU document; and the run delivers it through the regular process: the manifest check, the preflight gate, change
 detection, the ledger, the drain and the record history. Nothing about delivery is different from a drop, which is the
 point: a record sent this way is traceable in exactly the same way ([design.md](design.md) section 3.4).
@@ -106,7 +106,7 @@ Each record has the shape of a mapping fixture:
 ```json
 {
   "record": { "source_project": "NO_15_9", "log_id": "L-1001", "index_min": 1000, "update_date": "2026-09-11T12:00:00Z" },
-  "scopes": {
+  "datasets": {
     "curves": [
       { "curve_id": "GR", "curve_unit": "GAPI" },
       { "curve_id": "MD", "curve_unit": "M" }
@@ -115,20 +115,23 @@ Each record has the shape of a mapping fixture:
 }
 ```
 
-- **`record`** is the root row: one column per value the mapping reads. **`scopes`** holds the rows of each child scope
-  the mapping iterates, nested under the record they belong to. A record without child rows leaves `scopes` out.
-- **Values** are strings, numbers, booleans or null. A column holds one type in every row of its scope: whole numbers
+- **`record`** is the dataset's row: one column per value the mapping reads as `dataset.<column>`. **`datasets`** holds
+  the rows of each child dataset the mapping reads (`dataset.<child>`), keyed by the child dataset's name and nested
+  under the record they belong to, exactly as a mapping fixture carries them. A record without child rows leaves
+  `datasets` out. The run writes each child dataset as the drop scope of the same name.
+- **Values** are strings, numbers, booleans or null. A column holds one type in every row of its dataset: whole numbers
   and decimals together are decimals; a string in one row and a number in another is refused. A whole number outside the
   64-bit range is refused; send it as a string. An object or an array as a value is refused; a collection is a child
-  scope.
+  dataset.
 - **A column left out is null.** The written drop declares every column the mapping reads, so a record may leave out the
   columns it has no value for. A column the mapping does not read changes nothing, and the run log names it, so a
   misspelt column is visible there.
 - **Column names** are at most 128 characters and compared without case, so `Name` and `name` in one row are refused.
-  Scope names are identifiers (letters, digits, `_` and `-`).
-- **The natural key** columns (the source columns of the mapping's `identity.naturalKey`) must be non-empty. A record
+  Child dataset names are identifiers (letters, digits, `_` and `-`), and a submission carries at most 32 child
+  datasets.
+- **The dataset key** columns (the columns the mapping's `dataset.key` names) must be non-empty. A record
   whose key is incomplete is reported as untracked by the run and not delivered, as it would be in a drop.
-- **Each record once per submission.** Two records with the same natural key fail the run, naming both.
+- **Each record once per submission.** Two records with the same dataset key fail the run, naming both.
 - **`deliveryKey`** may be sent in the root row, as a drop does; when it is, it must be the key the delivery side derives
   (a different one holds the record). A child row never carries it: it belongs to the record it is nested under.
 - **The version column** the flow names (`source.lastModified` or `source.fingerprint`) works as it does for a drop. A
@@ -266,9 +269,21 @@ Content-Type: application/json
 - **In the GUI**, the Drop-off page takes this route on its own for any file past the streamed ceiling. A browser cannot
   hash a file of this size without reading it all into memory, so it asserts none and says so.
 
-Which columns a flow reads, which are the natural key, which parameters it declares, which payload its records point at
-(with whether a hash is required and the roots allowed) and whether it takes records at all is answered by
-`GET /api/v1/delivery/flows/{pipelineId}/source-contract` (scope `read`).
+Which columns a flow reads and what each of them fills, which are the dataset key, which template version the mapping
+fills, which parameters it declares, which payload its records point at (with whether a hash is required and the roots
+allowed) and whether it takes records at all is answered by
+`GET /api/v1/delivery/flows/{pipelineId}/source-contract` (scope `read`):
+
+| Field | What it says |
+| --- | --- |
+| `template` | `{ kind, version, saved }`: the template version the flow's mapping fills. `saved: false` means a run cannot render the records until that version is saved on the Templates page. |
+| `system`, `key`, `label` | The mapping's `dataset.system`, the dataset key's columns (bare names) and its `dataset.label`. |
+| `columns` | The dataset row's columns, each `{ name, key, label, uses }`. Every use is `{ target, role, source, required, modifiers, findBy, appliesWhen }`: the template variable the entry fills (such as `osdu.data.FacilityName`), and a `role` of `value` (the column's value, modified, is what the entry writes), `findBy` (the column's value finds the cached record the entry writes from) or `appliesWhen` (the column decides whether the entry applies). |
+| `datasets` | The child datasets, each `{ name, fills, columns }`: the lists it fills (`{ target, required }`) and its columns, described as above. |
+| `parameters`, `lastModifiedColumn`, `fingerprintColumn` | The flow parameters a submission carries, and the column the flow versions rows by. |
+| `payloadName`, `payloadHashRequired`, `payloadRoots` | The payload the flow streams, whether each record's files need a content hash, and the roots they may sit inside. |
+| `acceptsRecords`, `recordsRefusal`, the ceilings | Whether the flow takes records inline, why not when it does not, and how much one submission may carry. |
+| `mappingProblem` | Why the columns are unknown, or, while they are listed, that the pinned template version is not saved. |
 
 ## 5. The answers
 
@@ -276,7 +291,7 @@ Which columns a flow reads, which are the natural key, which parameters it decla
 | --- | --- | --- |
 | `202 Accepted` | The records were stored and a run queued. `Location: /api/v1/runs/{runId}`. | `{ "runId", "pipelineId", "flowName", "status", "submissionId", "replayed": false }` |
 | `200 OK` | The same request was accepted before under this `submissionId`: nothing new is queued. | The same body, with the run that request started and `"replayed": true`. |
-| `400 Bad Request` | The request is malformed (`Invalid request`), a parameter does not resolve (`Invalid run parameters`), a record breaks section 4 (`Invalid records`, naming the record, scope and column), a record points at files the flow does not allow or leaves them out (`Invalid records`, naming the record and the roots), or the flow offers no manual submission (`Records not accepted by this flow`). | Problem details. |
+| `400 Bad Request` | The request is malformed (`Invalid request`), a parameter does not resolve (`Invalid run parameters`), a record breaks section 4 (`Invalid records`, naming the record, the child dataset and the column), a record points at files the flow does not allow or leaves them out (`Invalid records`, naming the record and the roots), or the flow offers no manual submission (`Records not accepted by this flow`). | Problem details. |
 | `404 Not Found` | No active delivery flow by that name or id. | Problem details. |
 | `409 Conflict` | The flow name is ambiguous, or the `submissionId` was used before for a different request (naming what differs) or by a drop. | Problem details. |
 
@@ -319,9 +334,10 @@ A delivery flow's page has **Submit records**, and **Manual submission** in the 
 it (with the payload each streams, and, on request, the flows that offer none and why). **Drop-off** next to it is the
 pre-step: it uploads files into the drop-off area, lists what has been dropped off with who uploaded it and when, copies
 a location to paste into a submission, and deletes a drop-off when it is no longer needed. The dialog builds a form from the
-flow's source contract for one record (the natural key and version columns marked, a Now button for the version column),
-or takes any number of records as JSON in the shape of section 4. For a flow that streams files it also asks where the
-record's files are, and for the hash when the flow needs one, showing the roots the flow allows. It offers the flow
+flow's source contract for one record (each field with what it fills, a Now button for the version column, and each
+child dataset with the list it fills), with the template kind and version next to the mapping, or takes any number of
+records as JSON in the shape of section 4, its template writing `datasets`. For a flow that streams files it also asks
+where the record's files are, and for the hash when the flow needs one, showing the roots the flow allows. It offers the flow
 parameters, the preview, `force`, an optional submission id and an optional reference, and opens the run it queued. A
 submission of records has a **Records sent** tab on its page, and the submissions list shows each one under the name its
 source gave it. The Drop-off page takes a file past the streamed ceiling straight to storage on its own, and marks such a

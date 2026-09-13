@@ -137,6 +137,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             row.Name = mapping?.Name ?? Path.GetFileNameWithoutExtension(file);
             row.Version = mapping?.Version ?? string.Empty;
             row.Kind = mapping?.Kind ?? string.Empty;
+            row.TemplateVersion = mapping?.Template.Version ?? string.Empty;
             row.RelativePath = relative;
             row.ContentHash = hash;
             row.Yaml = yaml;
@@ -491,43 +492,6 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     {
         var found = new List<FoundSnapshot>();
 
-        var schemas = Path.Combine(store, "schemas");
-        if (Directory.Exists(schemas))
-        {
-            foreach (var meta in Directory.EnumerateFiles(schemas, "*.meta.json").OrderBy(f => f, StringComparer.Ordinal))
-            {
-                var relative = Relative(root, meta);
-                try
-                {
-                    var node = JsonNode.Parse(await File.ReadAllTextAsync(meta, ct).ConfigureAwait(false)) as JsonObject
-                        ?? throw new DeliveryException("the meta file is not a JSON object");
-                    var kind = node["kind"]?.GetValue<string>() ?? throw new DeliveryException("the meta file has no 'kind'");
-                    var version = node["version"]?.GetValue<string>() ?? string.Empty;
-                    var captured = ParseInstant(node["capturedUtc"]?.GetValue<string>());
-                    var schemaFile = meta[..^".meta.json".Length] + ".json";
-                    var summary = new JsonObject { ["kind"] = kind, ["version"] = version, ["capturedUtc"] = captured, ["file"] = Relative(root, schemaFile) };
-                    if (File.Exists(schemaFile))
-                    {
-                        var schema = JsonNode.Parse(await File.ReadAllTextAsync(schemaFile, ct).ConfigureAwait(false)) as JsonObject;
-                        var data = schema?["properties"]?["data"]?["properties"] as JsonObject;
-                        summary["dataProperties"] = data?.Count ?? 0;
-                        summary["required"] = new JsonArray((schema?["properties"]?["data"]?["required"] as JsonArray)?.Select(r => (JsonNode?)JsonValue.Create(r?.GetValue<string>())).ToArray() ?? []);
-                    }
-                    else
-                    {
-                        summary["missingSchemaFile"] = true;
-                    }
-
-                    found.Add(new FoundSnapshot("schema", kind, version, captured, false, relative, summary.ToJsonString(), !File.Exists(schemaFile)));
-                }
-                catch (Exception ex) when (ex is JsonException or DeliveryException or InvalidOperationException or FormatException)
-                {
-                    warnings.Add($"{relative}: schema snapshot is unreadable ({ex.Message}).");
-                    found.Add(new FoundSnapshot("schema", Path.GetFileName(meta), string.Empty, null, false, relative, new JsonObject { ["error"] = ex.Message }.ToJsonString(), true));
-                }
-            }
-        }
-
         var references = Path.Combine(store, "references");
         if (Directory.Exists(references))
         {
@@ -594,20 +558,20 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         mapping.Name,
         mapping.Version,
         mapping.Kind,
+        TemplateVersion = mapping.Template.Version,
         mapping.EntityType,
         mapping.Description,
-        System = mapping.Source.System,
-        Scopes = mapping.Source.Scopes,
-        NaturalKey = mapping.Identity.NaturalKey,
-        mapping.Identity.Label,
+        System = mapping.Dataset.System,
+        Key = mapping.Dataset.Key,
+        mapping.Dataset.Label,
+        ChildDatasets = mapping.ChildDatasets,
         Parameters = mapping.Parameters.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList(),
-        Properties = mapping.Properties.Count,
-        Definitions = mapping.Definitions.Count,
+        Entries = mapping.Entries.Count,
         Fixtures = mapping.Fixtures.Count,
         LegalTags = mapping.Envelope.LegalTags,
         Countries = mapping.Envelope.OtherRelevantDataCountries,
-        Owners = mapping.Envelope.Acl.Owners,
-        Viewers = mapping.Envelope.Acl.Viewers,
+        Owners = mapping.Envelope.Owners,
+        Viewers = mapping.Envelope.Viewers,
     };
 
     /// <summary>A cheap textual pre-check, so only candidate documents are parsed: every mapping declares its type.</summary>

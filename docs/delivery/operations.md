@@ -16,7 +16,7 @@ Everything the platform already reads ([../environment-variables.md](../environm
 | Flow secrets | nodes, the CLI | Whatever the flows reference: `${env:PETRODB_URL}`, `${keyvault:vault/name}`, and so on. A node holds the references its pool's flows need. |
 | `SQLFLOW_DELIVERY_ALLOW_LOOPBACK` | nodes, the CLI | `true` lets a flow target `localhost` (local OSDU stubs, tests). Off by default: the URL guard refuses loopback and private targets. |
 | `ControlPlane:MaxRequestBodyMegabytes` | control plane | The API's request body ceiling, set on purpose rather than left at Kestrel's default. Default 64. |
-| Repository layout | flow repositories | `mappings/` and `snapshots/` next to the flows (or named under `render`), committed and synced. |
+| Repository layout | flow repositories | `mappings/` and `snapshots/` (the reference snapshots of the OSDU cache) next to the flows (or named under `render`), committed and synced. The templates the mappings pin are saved in the catalog, not in the repository. |
 
 ## First deployment
 
@@ -26,18 +26,21 @@ Everything the platform already reads ([../environment-variables.md](../environm
    section 3.1).
 2. Provision the catalog: the control plane migrates it on start, or `sqlflow db migrate --db <ref>`. The
    ledger's tables come with it.
-3. In the flow repository, capture the snapshots and commit them:
+3. Save the template the mapping pins into the catalog, and capture the reference snapshot into the flow repository and
+   commit it:
 
    ```bash
-   sqlflow snapshot flows/recall-welllog.yaml schema --kind osdu:wks:work-product-component--WellLog:1.4.0
+   sqlflow template capture flows/recall-welllog.yaml --kind osdu:wks:work-product-component--WellLog:1.4.0 --db <ref>
    sqlflow snapshot flows/recall-welllog.yaml references --spec capture-spec.json
-   sqlflow check flows/recall-welllog.yaml --set logSource=STAT_COMP
+   sqlflow check flows/recall-welllog.yaml --set logSource=STAT_COMP --db <ref>
    ```
 
-   The schema and reference calls use the flow's target endpoint and credentials (`--endpoint` overrides the
-   endpoint, `--from-dir` reads a local checkout instead).
+   Both captures use the flow's target endpoint and credentials (`--endpoint` overrides the endpoint). The capture
+   reports the template version, which is the version the mapping pins under `template`. Without access to OSDU,
+   `sqlflow template import` saves a bundled schema file instead, and once the repository is synced (step 4) the GUI's
+   Templates page browses OSDU and saves a template through the flow's connection on a node.
 4. Register the repository as a source in the GUI (Repos) and sync it. The flow appears as a pipeline of kind
-   `delivery`; its mappings and snapshots appear under Mappings.
+   `delivery`; its mappings appear under Mappings, each with the template it pins.
 5. Have the preparing side write a drop and plan it before anything touches OSDU: trigger a run with
    operation `plan` and the flow parameters (the GUI's Trigger run dialog, or
    `sqlflow run flows/recall-welllog.yaml --operation plan --set logSource=STAT_COMP`).
@@ -56,20 +59,31 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, and the path each removal scope calls. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. `reference` narrows them to the ones whose caller-supplied reference contains it, which is how a source finds work it knows by its own name. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
-| `GET /manual-submission/flows` | read | The flows records can be submitted to by hand (those declaring `source.manualSubmission`), with what each renders with, the parameters a submission carries and the payload its records point at. `all=true` lists the other delivery flows too, each with the reason it takes none. |
+| `GET /manual-submission/flows` | read | The flows records can be submitted to by hand (those declaring `source.manualSubmission`), with what each renders with (the mapping, and the template it fills as `templateKind` and `templateVersion`, both null when the mapping is not synced or is invalid), the parameters a submission carries and the payload its records point at. `all=true` lists the other delivery flows too, each with the reason it takes none. |
 | `POST /dropoffs` | operate | Uploads files (multipart) into the deployment's drop-off area, for a submission to point at afterwards. Answers with the location they landed under, each file's size and SHA-256, and the drop-off's id. Refused when no drop-off area is configured (`SQLFLOW_DROPOFF_ROOT`). |
 | `POST /dropoffs/reserve` | operate | Reserves a drop-off the caller uploads into itself, for a file too large to send through the control plane: the row is written first, then one write-only URL per file, valid until `reservedUntilUtc`. Needs a drop-off area on Azure Storage and the Storage Blob Delegator role on the account; refused saying so otherwise. |
 | `POST /dropoffs/{id}/complete` | operate | Closes a reservation once its files are written. What landed is read from storage and is what the ledger records: a reserved file that is missing, a different size, or an unexpected file present fails the completion and leaves the reservation open. Hashes given here are the uploader's own, recorded as asserted. |
 | `GET /dropoffs`, `GET /dropoffs/{id}` | read | The drop-offs, newest first (filterable by `status` and `search`), and one of them with its files, how the bytes got there (`uploadMode`) and where each file's hash came from (`hashSource`). |
 | `DELETE /dropoffs/{id}` | operate | Removes a drop-off's files from storage; the row stays, saying when they went. Re-processing a submission that pointed at them will no longer find its payload. |
 | `GET /dropoff-area` | read | Whether this deployment offers a drop-off area, where it is, what one upload may carry, whether it can hand out upload URLs and what one of those may carry, and how long a completed drop-off is kept (0 for indefinitely). |
-| `GET /flows/{pipelineId}/source-contract` | read | What a source sends the flow: the parameters it declares, the columns its pinned mapping reads from the root row and each child scope, the natural key's columns, the version column, the payload its records point at (with whether a content hash is required and the roots a location may sit inside), and whether it takes records inline (and why not). |
+| `GET /flows/{pipelineId}/source-contract` | read | What a source sends the flow ([submitting-records.md](submitting-records.md) section 4): the parameters it declares, the template version its pinned mapping fills and whether it is saved (`template`), the mapping's `system`, dataset `key` and `label`, the dataset row's `columns` with the entries each serves (as the value, a `findBy` value or an `appliesWhen` condition), the child `datasets` with the lists they fill and their columns, the version column, the payload its records point at (with whether a content hash is required and the roots a location may sit inside), and whether it takes records inline (and why not). |
 | `GET /records/{key}`, `/attempts`, `/activities` | read | One record, its delivery history, its interventions. |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
 | `GET /submissions/{id}/content` | read | The records an inline submission carried, as the ledger holds them: who sent them and when, the operation, where a run wrote them as a drop, and the runs that took them. 404 for a drop's submission. |
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
 | `GET /mappings`, `/mappings/{id}`, `GET /snapshots` | read | What the repositories hold. |
+| `GET /templates` | read | The saved template versions, by kind and newest first, each with where it came from, who saved it and how many synced mappings pin it ([mapping-templates.md](mapping-templates.md)). |
+| `GET /templates/detail`, `GET /templates/schema` | read | One saved version (`kind`, `version`): laid out variable by variable (type, shape, requiredness, who writes it, relationships, unit context and OSDU's description; with `repoId`, the repository's cached types each variable can be read from), or the bundled schema itself. |
+| `POST /templates/preview` | read | A bundled schema (`kind`, `schema`, optional `repoId`) laid out the same way without saving it, with the saved version when it is already saved. |
+| `POST /templates/search` | operate | Searches the schemas OSDU publishes (`pipelineId`, `authority`, `source`, `entityType`, `status`, `latestVersion`, `limit` of at most 100, `offset`) through the delivery flow's OSDU connection, as a compute task on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
+| `POST /templates/fetch` | operate | Fetches one kind's schema (`pipelineId`, `kind`) and every schema it refers to, bundled, through the flow's connection, as a compute task. Nothing is saved. |
+| `POST /templates` | author | Saves a bundled schema (`kind`, `schema`, `origin`) as a template version: `outcome` is `created`, or `unchanged` for a version already saved. |
+| `DELETE /templates` | author | Deletes a version (`kind`, `version`); 409 while a synced mapping pins it. |
+| `GET /mapping-builder/repos` | read | The repositories a mapping can be written for: the source a proposal is opened against, the current cache version and its cached types, and the delivery flows with their endpoint and what they render with. |
+| `POST /mapping-builder/draft` | read | A new mapping (`repoId`, `kind`, `version`, `name`, `mappingVersion`, `system`) for a saved template: the four access and legal entries to fill, and a cache entry for every variable outside a repeater that points to an entity type the repository's cache holds. |
+| `POST /mapping-builder/compose` | read | A draft written as YAML and checked: what is still missing, whether it loads, and the preflight against its template and the repository's current cache, with the `parameters` given. |
+| `POST /mapping-builder/parse` | read | A mapping document (`yaml`) as a draft the builder edits. |
 | `GET /cache` | read | The OSDU cache as the retrieval flows declare it: each cached type, the paths it captures, and how many records it holds at `version` (the current snapshot when none is named). |
 | `GET /cache/items` | read | The cached records at one snapshot `version` (the current one when none is named), paged, filtered by `type` and searched with `search` over every value they hold. |
 | `GET /cache/versions` | read | The snapshot versions of the cache, newest capture first, each with whether it is current, whether the catalog still carries its records, and how many. |
@@ -137,17 +151,31 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 - **A submission's page**: counts, the runs that carried it, its work batches, its attempts, a link to its
   records, and for records sent inline the Records sent tab: the records as sent, who sent them and when, and where
   the run wrote them as a drop.
-- **Manual submission** (Operate): every flow whose document offers manual submission, with what it renders with and
-  the parameters a submission carries; Submit records opens the same sheet for the flow chosen. A switch lists the
-  flows that take no records too, each saying why.
-- **Submit records** (a flow's Delivery tab): one record through a form built from the flow's source contract, or
-  any number as JSON in the shape of a mapping fixture, with the flow parameters, a preview (plan) switch, force and
-  an optional submission id. It makes the same `POST /submissions` a source system makes and opens the run it queued;
-  a flow whose protocol streams payload files shows why it takes no records.
+- **Manual submission** (Operate): every flow whose document offers manual submission, with what it renders with (the
+  mapping and the template kind it fills) and the parameters a submission carries; Submit records opens the same sheet
+  for the flow chosen. A switch lists the flows that take no records too, each saying why.
+- **Submit records** (a flow's Delivery tab): one record through a form built from the flow's source contract (each
+  field with what it fills, each child dataset with the list it fills, and the template kind and version next to the
+  mapping), or any number as JSON in the shape of a mapping fixture (`record` and `datasets`), with the flow parameters,
+  a preview (plan) switch, force and an optional submission id. It makes the same `POST /submissions` a source system
+  makes and opens the run it queued. A flow whose document offers no manual submission shows why it takes no records,
+  and for a flow that streams payload files each record also says where its files already are.
 - **A retrieval flow's page** (Pipelines): the Retrievals tab, every run with its window, location, counts and
   outcome; a row opens the platform run.
 - **Audit trail** (Operate): every run and intervention across flows, by actor, with parameters and log.
-- **Mappings** (Workspace): the mapping documents and snapshots the repositories hold.
+- **Mappings** (Workspace): the mapping documents and snapshots the repositories hold, each mapping with the template it
+  pins and a link to the Mapping builder.
+- **Templates**: browse the schemas OSDU publishes through a delivery flow's connection (a node runs the search and the
+  fetch with the flow's credentials), look at one laid out as a template (every variable with its type, requiredness,
+  relationships, unit context and OSDU's description), and save it; or import a bundled schema file. The saved
+  templates are listed with where each version came from and how many mappings pin it, and a version no mapping pins
+  can be deleted.
+- **Mapping builder**: pick the repository and a saved template, and the page lists every template variable, with a
+  cache entry prefilled for each variable outside a repeater that points to an entity type the repository's cache
+  holds. Each entry takes its value from the dataset, a repeater, the cache or a static value, with its modifiers,
+  condition and required flag, and the YAML and its checks against the template and the repository's cache follow
+  every edit. The mapping is copied, or proposed to the repository as a pull request through the proposal endpoint
+  (`POST /api/v1/repos/sources/{id}/proposals`). An existing synced mapping opens with its entries filled in.
 - **OSDU cache** (Workspace): the reference and master data every delivered document is built from. A summary line
   across the top says which version is being read and whether it is the current one, how many types and records it
   holds, and how many changes wait for approval (the last one opens the Approvals tab). One filter row carries the
@@ -191,11 +219,13 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 | Verb | Purpose |
 | --- | --- |
 | `sqlflow validate <flow.yaml>` | The platform's document validation (the CI gate for a folder). |
-| `sqlflow check <flow.yaml> [--drop <location>] [--set name=value]... [--json]` | The delivery preflight: mapping against the schema snapshot, the reference snapshot, the drop's manifest when present. |
-| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve] [--force] [--set name=value]... [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>] [--db <ref>]` | A run on the workstation. With a catalog connection the ledger is live; without one the engine plans and checks only. A retrieval flow runs `retrieve` by default. |
-| `sqlflow snapshot <flow.yaml> schema --kind <kind> [--from-dir <dir> \| --endpoint <url>]` | Capture a schema snapshot. |
+| `sqlflow check <flow.yaml> [--drop <location>] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the mapping against its pinned template, which it loads from the catalog, and against the reference snapshot, and the drop's manifest when present. |
+| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve] [--force] [--set name=value]... [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>] [--db <ref>]` | A run on the workstation. A delivery flow's runs need the catalog connection: rendering reads the template saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. |
 | `sqlflow snapshot <flow.yaml> references [--from-dir <dir> \| --spec <spec.json> [--endpoint <url>]] [--no-current]` | Capture a reference snapshot and move the pin. A capture from OSDU refreshes the types its spec declares and merges them onto the current snapshot, so the minted version holds the whole cache. |
-| `sqlflow snapshot <flow.yaml> list` | What the flow's snapshot store holds. |
+| `sqlflow snapshot <flow.yaml> list [--db <ref>]` | The reference snapshot versions the flow's snapshot store holds, and whether the template its mapping pins is saved. |
+| `sqlflow template capture <flow.yaml> --kind <kind> [--endpoint <url>]` | Save a kind's schema from OSDU as a template version, through the flow's connection. |
+| `sqlflow template import <schema.json> --kind <kind>`, `sqlflow template import --from-dir <dir> --kind <kind>` | Save a template from a bundled schema file, or from a local checkout of the OSDU data definitions. |
+| `sqlflow template list \| show --kind <kind> [--version <v>] \| delete --kind <kind> --version <v>` | The saved templates, one laid out variable by variable, and deleting a version no synced mapping pins. Every `template` verb needs the catalog connection (`--db <ref>`). |
 | `sqlflow trigger --repo <r> --flow <f> [the same run options]` | Queue a run on the fleet. |
 
 See [../reference/cli/delivery.md](../reference/cli/delivery.md).
@@ -209,7 +239,8 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 | Records `failed` | The record's History tab | The retry budget is spent; the last error is redacted but specific. Release after fixing the cause. |
 | Records stuck `delivering` | `Lease` on the record page in the past | A worker stopped mid-delivery. The next deliver run of the record's drop (the recovered run, a re-run of the submission, or `drain`) waits out the lease, reclaims it and sends the record; nothing else to do unless a node is wedged. |
 | A verify run reports drift | The Records tab with Drifted only | Decide whether the edit in OSDU was legitimate. Redeliver the record, or set `verify.reconcile: true` so verify runs queue redelivery. |
-| Everything re-renders after a change | The render context on the record | Only `render.*` enters the render context; a moved mapping version or snapshot renders every record that uses it again. Only a record whose rendered document differs is sent; the rest are skipped as unchanged and take the new context. |
+| Everything re-renders after a change | The render context on the record | Only `render.*` and the template version its mapping pins enter the render context; a moved mapping version, template version or reference snapshot renders every record that uses it again. Only a record whose rendered document differs is sent; the rest are skipped as unchanged and take the new context. |
+| A run fails: the mapping pins a template that is not saved in the catalog | The run's error names the mapping, the kind and the version | Save that version (the Templates page, `sqlflow template capture` or `import`) and run again. A schema that changed since saves as another version, which the mapping then has to pin. |
 | Is OSDU reachable with the flow's credentials? | Probe target on the flow's Delivery tab | The probe runs on a node and reports the status of the service's info endpoint. |
 | A submission stays `running` with batches `queued` | The submission's batches; the run page's fan-out family | A drain member failed or a node went away. The parent settles what it can; re-run the submission (or trigger `drain` with the submission) to drain the rest. |
 | Records pending with `workflow run ... failed` | The record's attempts: the `workflow` step names the run | The ingestion DAG failed; its own log says why. The next try triggers a new run automatically; fix the data or the manifest section first when the DAG rejected the content. |

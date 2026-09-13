@@ -1,9 +1,12 @@
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+using SqlFlow.Delivery.Templates;
+
 namespace SqlFlow.Delivery.Model;
 
 /// <summary>
-/// The render-affecting half of the document model (design.md sections 4.2, 4.3 and 9). A mapping is a template
-/// interpreted at render time. It declares only what the OSDU schema cannot know: source bindings, transforms, the
-/// natural key and envelope policy. Types, requiredness and relationship targets come from the pinned schema.
+/// A mapping (docs/delivery/mapping-templates.md): which saved template version it fills, what identifies a record of
+/// the incoming dataset, and one entry per template variable it fills, each saying where the value comes from.
 /// </summary>
 public sealed record MappingDefinition
 {
@@ -13,34 +16,65 @@ public sealed record MappingDefinition
 
     public required string Name { get; init; }
 
-    /// <summary>Semantic version of the mapping. Part of the render context and therefore of every content hash.</summary>
+    /// <summary>Semantic version of the mapping. Part of the render context and so of every record's render.</summary>
     public required string Version { get; init; }
 
-    /// <summary>The OSDU kind, which pins the target schema (design.md section 4.1).</summary>
-    public required string Kind { get; init; }
+    /// <summary>The template version the mapping fills.</summary>
+    public required TemplateReference Template { get; init; }
 
     public string? Description { get; init; }
 
-    public required MappingSource Source { get; init; }
+    public required MappingDataset Dataset { get; init; }
 
-    public required MappingIdentity Identity { get; init; }
-
-    public required MappingEnvelope Envelope { get; init; }
-
-    /// <summary>Parameters the mapping accepts from the flow. Values enter the hash (design.md section 9.5).</summary>
+    /// <summary>Parameters the mapping accepts from the flow under <c>render.parameters</c>.</summary>
     public IReadOnlyDictionary<string, MappingParameter> Parameters { get; init; } = new Dictionary<string, MappingParameter>(StringComparer.Ordinal);
 
-    public required IReadOnlyList<MappingProperty> Properties { get; init; }
+    /// <summary>The entries, in the order the document lists them.</summary>
+    public required IReadOnlyList<MappingEntry> Entries { get; init; }
 
-    /// <summary>Reusable nested-object definitions referenced by <see cref="MappingProperty.Definition"/>.</summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<MappingProperty>> Definitions { get; init; } = new Dictionary<string, IReadOnlyList<MappingProperty>>(StringComparer.Ordinal);
+    /// <summary>The access list and legal block, as the static entries for them declare them (parameter tokens unexpanded).</summary>
+    public required MappingEnvelope Envelope { get; init; }
 
-    /// <summary>Whole-document fixtures: a source record and the exact document it must render to.</summary>
+    /// <summary>Example rows and the exact record each must render to.</summary>
     public IReadOnlyList<MappingFixture> Fixtures { get; init; } = [];
 
     public string Reference => Name + "@" + Version;
 
-    public string EntityType => SqlFlow.Delivery.Identity.TargetId.EntityTypeFromKind(Kind);
+    /// <summary>The OSDU kind of the records the mapping renders.</summary>
+    public string Kind => Template.Kind;
+
+    public string EntityType => Identity.TargetId.EntityTypeFromKind(Kind);
+
+    /// <summary>The child datasets the mapping's repeaters read, in the order they are first named.</summary>
+    public IReadOnlyList<string> ChildDatasets => Entries
+        .Where(e => e.IsRepeater)
+        .Select(e => e.Source!.Child!)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    /// <summary>The entries written into each item of a repeater's array.</summary>
+    public IEnumerable<MappingEntry> ItemEntries(MappingEntry repeater)
+    {
+        ArgumentNullException.ThrowIfNull(repeater);
+        return Entries.Where(e => repeater.Target.Equals(e.Target.Repeater));
+    }
+}
+
+/// <summary>The four envelope values OSDU requires on every record, which a mapping gives as static lists.</summary>
+public sealed record MappingEnvelope(
+    IReadOnlyList<string> Owners, IReadOnlyList<string> Viewers, IReadOnlyList<string> LegalTags, IReadOnlyList<string> OtherRelevantDataCountries);
+
+/// <summary>What identifies a record of the incoming dataset.</summary>
+public sealed record MappingDataset
+{
+    /// <summary>The source system, entering the delivery key.</summary>
+    public required string System { get; init; }
+
+    /// <summary>The columns of the dataset's row the delivery key is derived from, in order.</summary>
+    public required IReadOnlyList<string> Key { get; init; }
+
+    /// <summary>Display text with <c>{dataset.column}</c> tokens, for the ledger and the GUI; never part of the record.</summary>
+    public string? Label { get; init; }
 }
 
 public sealed record MappingParameter
@@ -52,213 +86,217 @@ public sealed record MappingParameter
     public string? Description { get; init; }
 }
 
-/// <summary>What the mapping expects from the drop: the source system name and the row scopes it binds to.</summary>
+/// <summary>A column of the dataset's row (<c>dataset.log_name</c>) or of a child dataset's row (<c>dataset.curves.curve_id</c>).</summary>
+public sealed record DatasetColumn(string? Child, string Column)
+{
+    public const string Prefix = "dataset";
+
+    public override string ToString() => Child is null ? $"{Prefix}.{Column}" : $"{Prefix}.{Child}.{Column}";
+}
+
+public enum MappingSourceKind
+{
+    /// <summary>A column of the dataset's row or of a child dataset's row.</summary>
+    DatasetColumn,
+
+    /// <summary>The rows of a child dataset, one array item each: a repeater.</summary>
+    DatasetRows,
+
+    /// <summary>A field of a cached record.</summary>
+    Cache,
+}
+
+/// <summary>Where an entry's value comes from.</summary>
 public sealed record MappingSource
 {
-    /// <summary>The source system, entering the delivery key (for example recall).</summary>
-    public required string System { get; init; }
+    public const string CachePrefix = "cache";
 
-    /// <summary>Child scopes the mapping binds collections to; each yields zero or more rows per record.</summary>
-    public IReadOnlyList<string> Scopes { get; init; } = [];
+    public required MappingSourceKind Kind { get; init; }
+
+    /// <summary>The column a dataset column source reads.</summary>
+    public DatasetColumn? Column { get; init; }
+
+    /// <summary>The child dataset a repeater reads.</summary>
+    public string? Child { get; init; }
+
+    /// <summary>The cached type a cache source reads (<c>UnitOfMeasure</c>).</summary>
+    public string? CacheType { get; init; }
+
+    /// <summary>The cached field a cache source reads: <c>id</c> for the record id, or a field or path into one.</summary>
+    public string? CacheField { get; init; }
+
+    public override string ToString() => Kind switch
+    {
+        MappingSourceKind.DatasetColumn => Column!.ToString(),
+        MappingSourceKind.DatasetRows => $"{DatasetColumn.Prefix}.{Child}",
+        _ => $"{CachePrefix}.{CacheType}.{CacheField}",
+    };
+
+    /// <summary>True when a cache source reads the record id, which renders in the reference form OSDU relationships use.</summary>
+    public bool ReadsRecordId => Kind == MappingSourceKind.Cache && string.Equals(CacheField, "id", StringComparison.Ordinal);
 }
 
-/// <summary>
-/// Identity lives in the mapping, not the flow (design.md section 9.4). The natural key names mapped properties; the
-/// source columns they bind to form the source key, from which the delivery key is derived.
-/// </summary>
-public sealed record MappingIdentity
+/// <summary>One line of a cache source's <c>findBy</c>: the cached field compared, and the dataset value or literal it must equal.</summary>
+public sealed record FindBy(string Type, string Field, DatasetColumn? Column, string? Literal)
 {
-    /// <summary>Target property paths whose source bindings form the natural key, in order.</summary>
-    public required IReadOnlyList<string> NaturalKey { get; init; }
-
-    /// <summary>
-    /// Optional human-readable label template over root-scope columns, e.g. "{wellbore_uwi} {log_name} run {log_run}".
-    /// Stored on the ledger record for search and display; never part of the document or its hash.
-    /// </summary>
-    public string? Label { get; init; }
+    public override string ToString()
+        => $"{MappingSource.CachePrefix}.{Type}.{Field} = {(Column is not null ? Column.ToString() : "'" + Literal + "'")}";
 }
 
-public sealed record MappingEnvelope
+public enum ConditionOperator
 {
-    public required IReadOnlyList<string> LegalTags { get; init; }
-
-    public required IReadOnlyList<string> OtherRelevantDataCountries { get; init; }
-
-    public required MappingAcl Acl { get; init; }
-
-    /// <summary>Static tags stamped on every record.</summary>
-    public IReadOnlyDictionary<string, string> Tags { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    Is,
+    IsNot,
+    IsEmpty,
+    IsNotEmpty,
 }
 
-public sealed record MappingAcl
+/// <summary>An entry's <c>appliesWhen</c>: a dataset value compared with text, or tested for emptiness.</summary>
+public sealed record EntryCondition(DatasetColumn Column, ConditionOperator Operator, string? Text)
 {
-    public required IReadOnlyList<string> Owners { get; init; }
-
-    public required IReadOnlyList<string> Viewers { get; init; }
+    public override string ToString() => Operator switch
+    {
+        ConditionOperator.Is => $"{Column} is {Text}",
+        ConditionOperator.IsNot => $"{Column} is not {Text}",
+        ConditionOperator.IsEmpty => $"{Column} is empty",
+        _ => $"{Column} is not empty",
+    };
 }
 
-/// <summary>The closed transform vocabulary (design.md section 4.2). Anything else is a parse error.</summary>
-public enum MappingTransform
+public enum ModifierKind
 {
-    /// <summary>Copy the source value, coerced to the schema type.</summary>
-    None,
-
-    /// <summary>Emit config.value.</summary>
-    Constant,
-
     Trim,
-
     Upper,
-
     Lower,
-
-    /// <summary>Split on config.delimiter and take config.index.</summary>
     Split,
-
-    /// <summary>True when the source equals config.resolve (case-insensitive).</summary>
+    Replace,
     Equals,
-
-    /// <summary>Look the source value up in config.values; config.default otherwise.</summary>
-    Map,
-
-    /// <summary>Resolve a reference-data or master-data record id from the reference snapshot.</summary>
-    Reference,
-
-    /// <summary>Read a value out of the cached record the source value matches (design.md section 6.2).</summary>
-    Lookup,
-
-    /// <summary>Compute the id of a record this system also delivers (design.md section 5.3).</summary>
-    DeliveredReference,
-
-    /// <summary>Format a template with {column} tokens from the current scope.</summary>
-    Template,
-
-    /// <summary>Parse the source as a date/time and emit RFC 3339 UTC.</summary>
-    DateTime,
+    Date,
 }
 
-/// <summary>What to do when a reference lookup finds nothing.</summary>
-public enum ReferenceMiss
+/// <summary>One change to an incoming dataset value.</summary>
+public sealed record Modifier
 {
-    /// <summary>Hold the record (terminal until intervention).</summary>
-    Hold,
+    public required ModifierKind Kind { get; init; }
 
-    /// <summary>Omit the property.</summary>
-    Omit,
+    /// <summary>For split: the separator; a single space splits on any run of whitespace.</summary>
+    public string? Separator { get; init; }
 
-    /// <summary>Fail the render.</summary>
-    Error,
+    /// <summary>For split: which part to keep, counting from one.</summary>
+    public int? Part { get; init; }
+
+    /// <summary>For replace: incoming values and what each becomes; values it does not list pass unchanged.</summary>
+    public IReadOnlyDictionary<string, string> Replacements { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>For equals: the text the value is compared with; for date: the input format, or null for ISO 8601 and common forms.</summary>
+    public string? Text { get; init; }
+
+    public override string ToString() => Kind switch
+    {
+        ModifierKind.Split => $"split(separator '{Separator}', part {Part})",
+        ModifierKind.Replace => "replace(" + string.Join(", ", Replacements.Select(kv => kv.Key + ": " + kv.Value)) + ")",
+        ModifierKind.Equals => $"equals({Text})",
+        ModifierKind.Date => Text is null ? "date" : $"date({Text})",
+        _ => Kind.ToString().ToLowerInvariant(),
+    };
 }
 
-public sealed record MappingProperty
+/// <summary>One mapping entry: a template variable and where its value comes from.</summary>
+public sealed partial record MappingEntry
 {
-    /// <summary>Dotted JSON path from the record root, e.g. data.Name, or CurveID inside a definition.</summary>
-    public required string Target { get; init; }
+    /// <summary>The entry's position under <c>mappings</c>, for messages.</summary>
+    public required int Index { get; init; }
 
-    /// <summary>Source column in the current scope. Null for constants, templates and objects.</summary>
-    public string? Source { get; init; }
+    public required TemplatePath Target { get; init; }
+
+    /// <summary>The source, or null for a static entry.</summary>
+    public MappingSource? Source { get; init; }
+
+    /// <summary>The static value, or null for an entry with a source.</summary>
+    public JsonNode? Static { get; init; }
+
+    public IReadOnlyList<FindBy> FindBy { get; init; } = [];
+
+    public IReadOnlyList<Modifier> Modifiers { get; init; } = [];
+
+    public EntryCondition? AppliesWhen { get; init; }
+
+    /// <summary>What an empty value does: true holds the record, false leaves the variable out.</summary>
+    public bool Required { get; init; } = true;
+
+    /// <summary>For a cache source: a last matching attempt with punctuation and spacing folded away, for names.</summary>
+    public bool IgnoreSeparators { get; init; }
 
     public string? Description { get; init; }
 
-    public MappingTransform Transform { get; init; } = MappingTransform.None;
+    public bool IsStatic => Source is null;
 
-    public TransformConfig Config { get; init; } = new();
+    public bool IsRepeater => Source?.Kind == MappingSourceKind.DatasetRows;
 
-    /// <summary>When true, the property is an array of objects rendered once per row of <see cref="Scope"/>.</summary>
-    public bool Collection { get; init; }
+    /// <summary>How messages name the entry.</summary>
+    public string Where => $"mappings[{Index}] ({Target.Text})";
 
-    /// <summary>The child scope a collection iterates over.</summary>
-    public string? Scope { get; init; }
+    /// <summary>Every dataset column the entry reads: its source, its findBy values and its condition.</summary>
+    public IEnumerable<DatasetColumn> Columns
+    {
+        get
+        {
+            if (Source?.Column is { } column)
+            {
+                yield return column;
+            }
 
-    /// <summary>Inline nested properties (object or collection item).</summary>
-    public IReadOnlyList<MappingProperty> Properties { get; init; } = [];
+            foreach (var find in FindBy)
+            {
+                if (find.Column is { } findColumn)
+                {
+                    yield return findColumn;
+                }
+            }
 
-    /// <summary>Name of a reusable definition supplying the nested properties.</summary>
-    public string? Definition { get; init; }
+            if (AppliesWhen is { } condition)
+            {
+                yield return condition.Column;
+            }
+        }
+    }
 
-    /// <summary>Per-property fixtures: a source value and the expected rendered value.</summary>
-    public IReadOnlyList<PropertyExample> Examples { get; init; } = [];
+    /// <summary>A <c>{param.name}</c> token inside a static text.</summary>
+    public const string ParameterTokenPattern = @"\{param\.(?<name>[A-Za-z0-9_]+)\}";
 
-    public bool IsObject => Properties.Count > 0 || Definition is not null;
-}
+    /// <summary>Replaces <c>{param.name}</c> tokens in a static text; a parameter without a value leaves its token, which the preflight reports.</summary>
+    public static string ExpandParameters(string text, Func<string, string?> parameter)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(parameter);
+        return ParameterToken().Replace(text, m => parameter(m.Groups["name"].Value) ?? m.Value);
+    }
 
-public sealed record TransformConfig
-{
-    public string? Value { get; init; }
+    /// <summary>The parameter names a static text's tokens name.</summary>
+    public static IEnumerable<string> ParameterNames(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        return ParameterToken().Matches(text).Select(m => m.Groups["name"].Value);
+    }
 
-    public string? Delimiter { get; init; }
-
-    public int? Index { get; init; }
-
-    public string? Resolve { get; init; }
-
-    public IReadOnlyDictionary<string, string> Values { get; init; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-    public string? Default { get; init; }
-
-    /// <summary>Reference type in the snapshot (UnitOfMeasure) or the entity type (master-data--Wellbore).</summary>
-    public string? Type { get; init; }
-
-    /// <summary>Fields of the reference item compared against the (mapped) source value, in order.</summary>
-    public IReadOnlyList<string> MatchBy { get; init; } = [];
-
-    /// <summary>
-    /// For Reference and Lookup: after an exact and a case-insensitive comparison have both found nothing, compare
-    /// again with punctuation and spacing folded away on both sides, so a name a source spells <c>NO 15/9-19</c>
-    /// finds the record OSDU holds as <c>NO_15_9-19</c>.
-    /// <para>
-    /// Off by default, and meant for names rather than codes: a wellbore or a field is one thing however its
-    /// separators are written, while a unit code is not (<c>s/m</c> and <c>S.M</c> would fold together and must not).
-    /// A folded key several records answer to resolves to none of them, as an ambiguous case fold does.
-    /// </para>
-    /// </summary>
-    public bool IgnoreSeparators { get; init; }
-
-    /// <summary>For Lookup: the cached path to read out of the matched item (default the record id).</summary>
-    public string? Select { get; init; }
-
-    /// <summary>Normalisation applied before matching a reference.</summary>
-    public IReadOnlyDictionary<string, string> ValueMap { get; init; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-    public ReferenceMiss OnMiss { get; init; } = ReferenceMiss.Hold;
-
-    /// <summary>For DeliveredReference: the source system and key columns of the referenced record.</summary>
-    public string? System { get; init; }
-
-    public IReadOnlyList<string> Keys { get; init; } = [];
-
-    /// <summary>For Template: the format with {column} tokens.</summary>
-    public string? Format { get; init; }
-
-    /// <summary>For DateTime: an explicit input format; null tries ISO 8601 and common forms.</summary>
-    public string? InputFormat { get; init; }
-}
-
-public sealed record PropertyExample
-{
-    /// <summary>The source value (scalar) or, for templates, the row as name/value pairs.</summary>
-    public string? Source { get; init; }
-
-    public IReadOnlyDictionary<string, string?> Row { get; init; } = new Dictionary<string, string?>(StringComparer.Ordinal);
-
-    /// <summary>The expected rendered value as JSON text (a bare string is quoted automatically).</summary>
-    public required string Target { get; init; }
+    [GeneratedRegex(ParameterTokenPattern)]
+    private static partial Regex ParameterToken();
 }
 
 public sealed record MappingFixture
 {
     public required string Name { get; init; }
 
-    /// <summary>Root-scope row.</summary>
+    /// <summary>The dataset's row.</summary>
     public required IReadOnlyDictionary<string, string?> Record { get; init; }
 
-    /// <summary>Child-scope rows by scope name.</summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> Scopes { get; init; }
+    /// <summary>Child dataset rows by child dataset name.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> Datasets { get; init; }
         = new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>>(StringComparer.Ordinal);
 
     /// <summary>Parameter values for the fixture render.</summary>
     public IReadOnlyDictionary<string, string> Parameters { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
 
-    /// <summary>The expected document (JSON text, compared canonically).</summary>
+    /// <summary>The expected record (JSON text, compared canonically).</summary>
     public required string Expected { get; init; }
 }

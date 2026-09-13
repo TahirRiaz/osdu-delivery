@@ -29,10 +29,12 @@
 
   <ItemGroup>
     <!-- The sample delivery estate, so a platform test can execute a run of the one production flow kind: the flow,
-         what it renders with, and the drop it renders from. Copied next to the binaries rather than located up the
-         tree, so the suite works wherever the build output lands. -->
+         what it renders with (the mappings, and the schemas their templates are saved from), and the drop it renders
+         from. Copied next to the binaries rather than located up the tree, so the suite works wherever the build output
+         lands. -->
     <Content Include="..\..\samples\recall-welllog\flows\**" Link="samples\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\recall-welllog\mappings\**" Link="samples\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\recall-welllog\templates\**" Link="samples\templates\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\recall-welllog\snapshots\**" Link="samples\snapshots\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\recall-welllog\references\**" Link="samples\references\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\recall-welllog\out\**" Link="samples\out\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />

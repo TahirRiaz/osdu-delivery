@@ -12,8 +12,8 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// The records a source sends inline (design.md section 3.4): their shape, the type each column takes across the rows of
-/// its scope, the canonical form the ledger stores and hashes, and every refusal, which names the record, the scope and
-/// the column it is about and never a value.
+/// its dataset, the canonical form the ledger stores and hashes, and every refusal, which names the record, the child
+/// dataset and the column it is about and never a value.
 /// </summary>
 public class InlineRecordsTests
 {
@@ -23,7 +23,7 @@ public class InlineRecordsTests
         var records = InlineRecords.Parse("""
             [
               { "record": { "facility_name": "WB-1", "depth": 12, "active": true, "note": null },
-                "scopes": { "aliases": [ { "alias_name": "A", "ordinal": 1 }, { "alias_name": "B", "ordinal": 1.5 } ] } },
+                "datasets": { "aliases": [ { "alias_name": "A", "ordinal": 1 }, { "alias_name": "B", "ordinal": 1.5 } ] } },
               { "record": { "depth": 12.5, "facility_name": "WB-2" } }
             ]
             """);
@@ -39,7 +39,7 @@ public class InlineRecordsTests
                 new InlineColumn("note", InlineColumnTypes.Text),
             },
             records.RootColumns);
-        var aliases = Assert.Single(records.ScopeColumns);
+        var aliases = Assert.Single(records.DatasetColumns);
         Assert.Equal("aliases", aliases.Key);
         Assert.Equal(
             new[] { new InlineColumn("alias_name", InlineColumnTypes.Text), new InlineColumn("ordinal", InlineColumnTypes.Real) },
@@ -57,10 +57,10 @@ public class InlineRecordsTests
     {
         var records = InlineRecords.Parse("""
             [ { "record": { "facility_name": "WB-1", "facility_description": "first" },
-                "scopes": { "aliases": [ { "alias_name": "A" } ] } } ]
+                "datasets": { "aliases": [ { "alias_name": "A" } ] } } ]
             """);
         var reordered = InlineRecords.Parse(
-            """[{"scopes":{"aliases":[{"alias_name":"A"}]},"record":{"facility_description":"first","facility_name":"WB-1"}}]""");
+            """[{"datasets":{"aliases":[{"alias_name":"A"}]},"record":{"facility_description":"first","facility_name":"WB-1"}}]""");
 
         Assert.Equal(records.Json, reordered.Json);
         Assert.Equal(records.ContentHash, reordered.ContentHash);
@@ -78,7 +78,7 @@ public class InlineRecordsTests
     {
         var records = InlineRecords.Parse("""
             [ { "record": { "facility_name": "WB-1", "depth": 1000.0, "count": 1000, "ok": false, "note": null },
-                "scopes": { "aliases": [ { "alias_name": "A" } ], "events": [] } } ]
+                "datasets": { "aliases": [ { "alias_name": "A" } ], "events": [] } } ]
             """);
 
         var stored = InlineRecords.Parse(records.Json);
@@ -90,8 +90,8 @@ public class InlineRecordsTests
         Assert.Equal(
             new[] { new InlineColumn("count", InlineColumnTypes.Whole), new InlineColumn("depth", InlineColumnTypes.Real), new InlineColumn("facility_name", InlineColumnTypes.Text), new InlineColumn("note", InlineColumnTypes.Text), new InlineColumn("ok", InlineColumnTypes.Flag) },
             stored.RootColumns);
-        // A scope named with no rows is still a scope the submission carried.
-        Assert.Equal(["aliases", "events"], stored.ScopeColumns.Select(s => s.Key));
+        // A child dataset named with no rows is still one the submission carried.
+        Assert.Equal(["aliases", "events"], stored.DatasetColumns.Select(s => s.Key));
     }
 
     [Fact]
@@ -113,7 +113,7 @@ public class InlineRecordsTests
     [InlineData("{}", "records must be a JSON array")]
     [InlineData("[]", "records is empty")]
     [InlineData("[1]", "records[0] must be an object")]
-    [InlineData("""[{"scopes":{}}]""", "records[0] has no \"record\"")]
+    [InlineData("""[{"datasets":{}}]""", "records[0] has no \"record\"")]
     [InlineData("""[{"record":{}}]""", "records[0].record has no columns")]
     [InlineData("""[{"record":[]}]""", "records[0].record must be an object")]
     [InlineData("""[{"record":{"a":1},"extra":1}]""", "records[0] has a key other than")]
@@ -127,12 +127,12 @@ public class InlineRecordsTests
     [InlineData("""[{"record":{"a":1e400}}]""", "records[0].record.a is a number outside the range of a double")]
     [InlineData("""[{"record":{"deliveryKey":"not-a-key"}}]""", "records[0].record.deliveryKey must be the record's delivery key as a UUID")]
     [InlineData("""[{"record":{"deliveryKey":7}}]""", "records[0].record.deliveryKey must be the record's delivery key as a UUID")]
-    [InlineData("""[{"record":{"a":1},"scopes":{"aliases":[{"deliveryKey":"6c773479-64d0-57ca-8877-9ea97d18b766"}]}}]""", "records[0].scopes.aliases[0].deliveryKey is reserved in a child row")]
-    [InlineData("""[{"record":{"a":1},"scopes":{"record":[]}}]""", "the root scope's name")]
-    [InlineData("""[{"record":{"a":1},"scopes":{"1aliases":[]}}]""", "not an identifier")]
-    [InlineData("""[{"record":{"a":1},"scopes":{"aliases":{}}}]""", "records[0].scopes.aliases must be an array of rows")]
-    [InlineData("""[{"record":{"a":1},"scopes":[]}]""", "records[0].scopes must be an object")]
-    [InlineData("""[{"record":{"a":1},"scopes":{"aliases":[1]}}]""", "records[0].scopes.aliases[0] must be an object")]
+    [InlineData("""[{"record":{"a":1},"datasets":{"aliases":[{"deliveryKey":"6c773479-64d0-57ca-8877-9ea97d18b766"}]}}]""", "records[0].datasets.aliases[0].deliveryKey is reserved in a child row")]
+    [InlineData("""[{"record":{"a":1},"datasets":{"record":[]}}]""", "which names the dataset row itself")]
+    [InlineData("""[{"record":{"a":1},"datasets":{"1aliases":[]}}]""", "not an identifier")]
+    [InlineData("""[{"record":{"a":1},"datasets":{"aliases":{}}}]""", "records[0].datasets.aliases must be an array of rows")]
+    [InlineData("""[{"record":{"a":1},"datasets":[]}]""", "records[0].datasets must be an object")]
+    [InlineData("""[{"record":{"a":1},"datasets":{"aliases":[1]}}]""", "records[0].datasets.aliases[0] must be an object")]
     [InlineData("""[{"record":{" a":1}}]""", "padded with spaces")]
     [InlineData("""[{"record":{"":1}}]""", "empty")]
     [InlineData("""[{"record":{"a":1},"files":[]}]""", "records[0].files must be an object of payload names")]
@@ -168,8 +168,8 @@ public class InlineRecordsTests
         var columns = string.Join(",", Enumerable.Range(0, InlineRecords.MaxColumns + 1).Select(i => $"\"c{i}\":1"));
         Assert.Contains($"at most {InlineRecords.MaxColumns}", Assert.Throws<FlowValidationException>(() => InlineRecords.Parse($"[{{\"record\":{{{columns}}}}}]")).Message, StringComparison.Ordinal);
 
-        var scopes = string.Join(",", Enumerable.Range(0, InlineRecords.MaxScopes + 1).Select(i => $"\"s{i}\":[]"));
-        Assert.Contains($"at most {InlineRecords.MaxScopes}", Assert.Throws<FlowValidationException>(() => InlineRecords.Parse($"[{{\"record\":{{\"a\":1}},\"scopes\":{{{scopes}}}}}]")).Message, StringComparison.Ordinal);
+        var datasets = string.Join(",", Enumerable.Range(0, InlineRecords.MaxDatasets + 1).Select(i => $"\"s{i}\":[]"));
+        Assert.Contains($"at most {InlineRecords.MaxDatasets}", Assert.Throws<FlowValidationException>(() => InlineRecords.Parse($"[{{\"record\":{{\"a\":1}},\"datasets\":{{{datasets}}}}}]")).Message, StringComparison.Ordinal);
 
         var name = new string('c', InlineRecords.MaxNameLength + 1);
         Assert.Contains("longer than", Assert.Throws<FlowValidationException>(() => InlineRecords.Parse($"[{{\"record\":{{\"{name}\":1}}}}]")).Message, StringComparison.Ordinal);
@@ -331,7 +331,7 @@ public class InlineSubmissionStateTests
     }
 }
 
-/// <summary>The columns a mapping reads, per scope: the column half of a flow's source contract.</summary>
+/// <summary>The columns a mapping reads, per dataset, with the template variables each fills: the column half of a flow's source contract.</summary>
 public class MappingColumnsTests
 {
     private static Model.MappingDefinition Load(string reference)
@@ -341,38 +341,66 @@ public class MappingColumnsTests
     }
 
     [Fact]
-    public void The_wellbore_mapping_reads_its_scalars_its_key_and_its_alias_scope()
+    public void The_wellbore_mapping_reads_its_key_its_values_and_the_alias_dataset_that_fills_the_name_aliases()
     {
         var columns = MappingColumns.Read(Load("Wellbore@1.0.0"));
 
-        Assert.Equal(["facility_name"], columns.NaturalKey);
-        Assert.Equal(["facility_name", "facility_description", "facility_id"], columns.Record);
-        var aliases = Assert.Single(columns.Scopes);
-        Assert.Equal("aliases", aliases.Scope);
-        Assert.Equal(["alias_name"], aliases.Columns);
-        Assert.Equal(aliases.Columns, columns.For("ALIASES"));
-        Assert.Equal(columns.Record, columns.For("record"));
-        Assert.Empty(columns.For("nothing"));
+        Assert.Equal(["facility_name"], columns.Key);
+        Assert.Equal(["facility_name", "facility_description", "facility_id"], columns.RecordNames);
+        var name = columns.Record[0];
+        Assert.True(name.Key);
+        Assert.True(name.Label);
+        var fills = Assert.Single(name.Uses);
+        Assert.Equal("osdu.data.FacilityName", fills.Entry.Target.Text);
+        Assert.Equal(ColumnRole.Value, fills.Role);
+        Assert.True(fills.Entry.Required);
+        var description = columns.Record[1];
+        Assert.False(description.Key);
+        Assert.False(Assert.Single(description.Uses).Entry.Required);
+
+        var aliases = Assert.Single(columns.Datasets);
+        Assert.Equal("aliases", aliases.Name);
+        Assert.Equal("osdu.data.NameAliases", Assert.Single(aliases.Repeaters).Target.Text);
+        var alias = Assert.Single(aliases.Columns);
+        Assert.Equal("alias_name", alias.Name);
+        Assert.Equal("osdu.data.NameAliases[].AliasName", Assert.Single(alias.Uses).Entry.Target.Text);
+        Assert.Equal(["alias_name"], aliases.ColumnNames);
     }
 
     [Fact]
-    public void The_well_log_mapping_reads_the_columns_its_properties_and_its_label_name()
+    public void The_well_log_mapping_says_which_columns_find_cached_records_and_which_only_the_label_reads()
     {
         var columns = MappingColumns.Read(Load("WellLog@1.4.0"));
 
-        Assert.Equal(["source_project", "log_id"], columns.NaturalKey);
-        Assert.Equal(["source_project", "log_id"], columns.Record.Take(2));
-        Assert.Contains("wellbore_uwi", columns.Record);
-        Assert.Contains("elev_meas_ref", columns.Record);
-        Assert.Contains("native_uid", columns.Record);
-        // The identity label reads log_run, which no property binds.
-        Assert.Contains("log_run", columns.Record);
+        Assert.Equal(["source_project", "log_id"], columns.Key);
+        Assert.Equal(["source_project", "log_id"], columns.RecordNames.Take(2));
+        // The wellbore's name fills no variable itself: it finds the cached wellbore whose id the record points at.
+        var uwi = columns.Record.Single(c => c.Name == "wellbore_uwi");
+        var find = Assert.Single(uwi.Uses);
+        Assert.Equal(ColumnRole.FindBy, find.Role);
+        Assert.Equal("osdu.data.WellboreID", find.Entry.Target.Text);
+        Assert.Equal("cache.Wellbore.FacilityName = dataset.wellbore_uwi", find.Find?.ToString());
+        Assert.True(uwi.Label);
+        // One column can fill several variables.
+        Assert.Equal(["osdu.data.SamplingStart", "osdu.data.TopMeasuredDepth"], columns.Record.Single(c => c.Name == "index_min").Uses.Select(u => u.Entry.Target.Text));
+        // The vertical reference gives the measurement's value, and finds its unit through three findBy lines.
+        var elevation = columns.Record.Single(c => c.Name == "elev_meas_ref");
+        Assert.Single(elevation.Uses, u => u.Role == ColumnRole.Value);
+        Assert.Equal(3, elevation.Uses.Count(u => u.Role == ColumnRole.FindBy));
+        // The label reads log_run, which no entry reads.
+        var run = columns.Record.Single(c => c.Name == "log_run");
+        Assert.True(run.Label);
+        Assert.Empty(run.Uses);
         // The flow's version column is not the mapping's business.
-        Assert.DoesNotContain("update_date", columns.Record);
-        var curves = Assert.Single(columns.Scopes);
-        Assert.Equal("curves", curves.Scope);
+        Assert.DoesNotContain("update_date", columns.RecordNames);
+
+        var curves = Assert.Single(columns.Datasets);
+        Assert.Equal("curves", curves.Name);
+        Assert.Equal("osdu.data.Curves", Assert.Single(curves.Repeaters).Target.Text);
         Assert.Equal(
             ["curve_id", "curve_unit", "index_unit", "index_min", "index_max", "curve_description", "curve_version", "business_value"],
-            curves.Columns);
+            curves.ColumnNames);
+        // A curve without a business value is not a reason to hold its log.
+        Assert.All(curves.Columns.Single(c => c.Name == "business_value").Uses, u => Assert.False(u.Entry.Required));
     }
 }

@@ -9,6 +9,7 @@ behind them.
 | --- | --- |
 | [design.md](design.md) | The design: why the drop is a storage handoff, the four render inputs and the render context, identity, change detection, the ledger, the delivery protocols, the document model, the preflight gate, streaming, the retrieval kind (section 15), the streaming intake, work batches, returned values and fan-out (section 16). Section numbers are referenced from the code. |
 | [documents.md](documents.md) | The delivery flow, retrieval flow and mapping documents key by key. |
+| [mapping-templates.md](mapping-templates.md) | Templates and mappings: the template an OSDU schema becomes and where it is saved, the mapping format entry by entry (sources, `findBy`, modifiers, `appliesWhen`, `required`, fixtures), the checks, and the mapping builder. |
 | [drop-contract.md](drop-contract.md) | What the preparing side writes: the manifest, the parquet scopes, the payload chunks, the delivery key and the payload hash it must derive. |
 | [preparing-a-drop.md](preparing-a-drop.md) | The practical guide for the preparing side: what a drop folder must contain, the manifest field by field, well log files (one file per log, unique and continuing row labels when split), document files, how to hand a drop over, incremental prepare, what each mistake leads to, and a checklist. |
 | [submitting-records.md](submitting-records.md) | The other way in, for a source system: sending records' metadata in the submission itself instead of preparing a drop. What a record looks like, the request and its answers, idempotency, the preview, and what each mistake leads to. |
@@ -22,12 +23,13 @@ behind them.
 
 | Path | Responsibility |
 | --- | --- |
-| `src/SqlFlow.Delivery` | The whole domain: model, identity, canonical JSON and hashing, the document loader and the two flow kinds, snapshots, rendering, planning, the preflight gate, the HTTP runtime, storage (drop reader, disk spill, work batch files, snapshot store, writers), the ledger over the catalog, the engine (intake, worker, verifier, known state, the four protocols, fan-out, the retrieval runner, snapshot capture), the run executors, the compute operations, and the sync of mappings and snapshots into the catalog. |
+| `src/SqlFlow.Delivery` | The whole domain: model, identity, canonical JSON and hashing, the document loader and the two flow kinds, templates (the template model, the catalog store, schema capture and import) and the mapping builder, snapshots, rendering, planning, the preflight gate, the HTTP runtime, storage (drop reader, disk spill, work batch files, snapshot store, writers), the ledger over the catalog, the engine (intake, worker, verifier, known state, the four protocols, fan-out, the retrieval runner, snapshot capture), the run executors, the compute operations, and the sync of mappings and snapshots into the catalog. |
 | `src/SqlFlow.Catalog/DeliveryEntities.cs` | The ledger's EF model (schema `delivery`). |
 | `src/SqlFlow.ControlPlane/Api/DeliveryEndpoints.cs` | The delivery API under `/api/v1/delivery`. |
-| `src/SqlFlow.Cli/DeliveryVerbs.cs` | `sqlflow check` and `sqlflow snapshot`. |
-| `gui/src/features/delivery` | The delivery overview, the flow tabs (stats, records, submissions; retrievals for a retrieval flow), the record page, the submission page with its batches, the audit trail, mappings and snapshots. |
-| `samples/recall-welllog` | A complete sample estate: a flow, its mappings (the well logs it delivers from a drop, and wellbore master data for the records a source submits through the API), captured snapshots, reference data and a generated drop. |
+| `src/SqlFlow.ControlPlane/Api/DeliveryTemplateEndpoints.cs` | Templates and the mapping builder under `/api/v1/delivery`. |
+| `src/SqlFlow.Cli/DeliveryVerbs.cs` | `sqlflow check`, `sqlflow snapshot` and `sqlflow template`. |
+| `gui/src/features/delivery` | The delivery overview, the flow tabs (stats, records, submissions; retrievals for a retrieval flow), the record page, the submission page with its batches, the audit trail, mappings and snapshots, templates and the mapping builder. |
+| `samples/recall-welllog` | A complete sample estate: a flow, its mappings (the well logs it delivers from a drop, and wellbore master data for the records a source submits through the API), the bundled schemas its templates are saved from (`templates/`), captured reference snapshots, reference data and a generated drop. |
 | `tools/SampleDrop` | Generates realistic drops for the samples and the tests. |
 | `tests/SqlFlow.Delivery.Tests` | The domain suites: core, documents, storage, HTTP, the ledger on SQLite, and the engine end to end over the sample estate with a fake protocol. |
 
@@ -39,11 +41,12 @@ A delivery flow lives in a git repository the control plane syncs, next to what 
 repo/
   flows/recall-welllog.yaml        flowType: delivery
   mappings/WellLog@1.4.0.yaml      documentType: mapping, pinned by name and version
-  snapshots/
-    schemas/<kind>.json            bundled JSON Schema, plus .meta.json
+  snapshots/                       the reference snapshots of the OSDU cache
     references/<version>/...       one immutable directory per reference snapshot version
     references/current             the version "pinned" resolves to
 ```
 
 The flow finds `mappings/` and `snapshots/` by walking up from its own file, or names them under `render`. The
-sync projects the flow as a pipeline and the mappings and snapshots as read models the GUI lists.
+sync projects the flow as a pipeline and the mappings and snapshots as read models the GUI lists. Templates are not
+in the repository: the template a mapping pins is saved in the catalog, captured from OSDU or imported from a bundled
+schema file ([mapping-templates.md](mapping-templates.md)).

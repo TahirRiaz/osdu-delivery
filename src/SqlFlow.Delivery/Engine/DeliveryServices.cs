@@ -13,6 +13,7 @@ using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Storage;
+using SqlFlow.Delivery.Templates;
 using SqlFlow.Execution;
 using SqlFlow.Yaml;
 
@@ -67,15 +68,19 @@ public static class DeliveryServices
             sp.GetRequiredService<ILoggerFactory>(),
             sp.GetRequiredService<IProtocolFactory>(),
             new CompositeDeliveryListener(sp.GetServices<IDeliveryListener>()),
-            sp.GetService<IFanOutDispatcher>() ?? NoFanOutDispatcher.Instance));
+            sp.GetService<IFanOutDispatcher>() ?? NoFanOutDispatcher.Instance,
+            sp.GetService<DeliveryLedgerSource>()?.Templates(sp)));
 
         // Execution: the run executor behind the platform's DocumentExecutor, and the ad-hoc compute operations
-        // a node runs for the control plane (target probe, record read-back, record removal).
+        // a node runs for the control plane (target probe, record read-back, record removal, and the schema search and
+        // fetch the Templates page browses OSDU with).
         services.AddSingleton<IFlowDocumentExecutor, DeliveryExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, RetrievalExecutor>();
         services.AddSingleton<IComputeOperation, ProbeTargetOperation>();
         services.AddSingleton<IComputeOperation, ReadRecordOperation>();
         services.AddSingleton<IComputeOperation, DeleteRecordOperation>();
+        services.AddSingleton<IComputeOperation, SearchSchemasOperation>();
+        services.AddSingleton<IComputeOperation, FetchSchemaOperation>();
 
         return services;
     }
@@ -96,6 +101,8 @@ public static class DeliveryServices
             ?? throw new DeliveryException("This host has no catalog connection, so the delivery ledger is unavailable. Start it with the catalog connection (--db, or the catalog variable)."));
         services.AddSingleton<IFanOutDispatcher>(sp => new CatalogFanOutDispatcher(
             sp.GetRequiredService<DeliveryLedgerSource>().Contexts(sp), sp.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<ITemplateStore>(sp => sp.GetRequiredService<DeliveryLedgerSource>().Templates(sp)
+            ?? throw new DeliveryException("This host has no catalog connection, so the templates are unavailable. Start it with the catalog connection (--db, or the catalog variable)."));
         return services;
     }
 }
@@ -108,6 +115,7 @@ public sealed class DeliveryLedgerSource
     private bool _resolved;
     private Func<CatalogDbContext>? _factory;
     private ILedger? _ledger;
+    private ITemplateStore? _templates;
 
     public DeliveryLedgerSource(Func<IServiceProvider, Func<CatalogDbContext>?> contexts)
     {
@@ -121,6 +129,14 @@ public sealed class DeliveryLedgerSource
         ArgumentNullException.ThrowIfNull(provider);
         Resolve(provider);
         return _ledger;
+    }
+
+    /// <summary>The template store over the catalog, or null when the host resolved no catalog connection.</summary>
+    public ITemplateStore? Templates(IServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        Resolve(provider);
+        return _templates;
     }
 
     /// <summary>The catalog context factory, or null when the host resolved no catalog connection.</summary>
@@ -139,6 +155,7 @@ public sealed class DeliveryLedgerSource
             {
                 _factory = _contexts(provider);
                 _ledger = _factory is null ? null : new CatalogLedger(_factory, provider.GetRequiredService<TimeProvider>());
+                _templates = _factory is null ? null : new CatalogTemplateStore(_factory, provider.GetRequiredService<TimeProvider>());
                 _resolved = true;
             }
         }

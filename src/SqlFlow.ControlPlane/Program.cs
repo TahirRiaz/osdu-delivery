@@ -47,6 +47,8 @@ builder.Services.AddSqlFlowEngine();
 // ledger over the catalog: each ledger operation opens its own tracking context from the pooled options.
 builder.Services.AddDeliveryKind();
 builder.Services.AddDeliveryLedger(sp => () => new CatalogDbContext(sp.GetRequiredService<DbContextOptions<CatalogDbContext>>()));
+// The repositories' caches as the catalog carries them, for the mapping builder's checks; recent versions stay in memory.
+builder.Services.AddSingleton<SqlFlow.Delivery.Catalog.CatalogCacheReader>();
 builder.Services.AddSingleton<CatalogSync>();
 builder.Services.AddSingleton<CatalogConnectionProvider>();
 builder.Services.AddSingleton<TokenIssuer>();
@@ -366,6 +368,7 @@ v1.MapGroup(string.Empty).RequireAuthorization("read")
     .MapMaintenanceEndpoints()
     .MapComputeTaskEndpoints()
     .MapDeliveryReadEndpoints()
+    .MapDeliveryTemplateReadEndpoints()
     .MapDropOffReadEndpoints();
 
 // The operate surface: triggering/cancelling a run and managing schedules are privileged operations, so they live
@@ -378,12 +381,15 @@ v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapNodeControlEndpoints()
     .MapComputeTaskControlEndpoints()
     .MapDeliveryWriteEndpoints()
+    .MapDeliveryTemplateOperateEndpoints()
     .MapDropOffWriteEndpoints();
 
 // The author surface: proposing pipelines to a source repo as a pull request pushes a branch under the source's own
-// credential, so it lives under the "author" scope rather than "operate".
+// credential, and saving or deleting a template changes what mappings can pin, so both live under the "author" scope
+// rather than "operate".
 v1.MapGroup(string.Empty).RequireAuthorization("author")
-    .MapFlowProposalEndpoints();
+    .MapFlowProposalEndpoints()
+    .MapDeliveryTemplateAuthorEndpoints();
 
 // The admin surface: user and role administration requires the "admin" scope (the admin role, or a bootstrap
 // token that requested it).

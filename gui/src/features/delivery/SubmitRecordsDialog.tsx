@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { CircleAlert, Loader2 } from "lucide-react";
+import { CircleAlert, Loader2, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +15,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "../../api/client";
-import { deliveryApi, type DeliveryInlineRecord, type DeliverySourceContract } from "../../api/delivery";
+import {
+  deliveryApi, type DeliveryInlineRecord, type DeliverySourceColumnUse, type DeliverySourceContract,
+} from "../../api/delivery";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 
@@ -26,9 +28,9 @@ const MaxReferenceLength = 200;
 
 type Mode = "form" | "json";
 
-/** The columns the form offers: what the mapping reads from the root row, then the flow's version column. */
+/** The columns the form offers: what the mapping reads from the dataset row, then the flow's version columns. */
 function formColumns(contract: DeliverySourceContract): string[] {
-  const columns = [...contract.recordColumns];
+  const columns = contract.columns.map((column) => column.name);
   for (const column of [contract.lastModifiedColumn, contract.fingerprintColumn]) {
     if (column !== null && !columns.some((c) => c.toLowerCase() === column.toLowerCase())) {
       columns.push(column);
@@ -38,15 +40,59 @@ function formColumns(contract: DeliverySourceContract): string[] {
   return columns;
 }
 
+/** The cached type a findBy use reads, as the mapping writes it (cache.Wellbore), from the entry's source or its findBy line. */
+function cachedTypeOf(use: DeliverySourceColumnUse): string | null {
+  const text = use.source !== null && use.source.startsWith("cache.")
+    ? use.source
+    : (use.findBy?.split("=")[0].trim() ?? null);
+  if (text === null || !text.startsWith("cache.")) {
+    return null;
+  }
+
+  const parts = text.split(".");
+  return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : null;
+}
+
+/**
+ * What the mapping does with a column, on one line: the variables it fills, the cached records it finds, and the entries
+ * whose condition it decides. A phrase appears once, however many entries share it.
+ */
+function describeUses(uses: DeliverySourceColumnUse[]): string {
+  const phrases: string[] = [];
+  for (const use of uses) {
+    let phrase: string;
+    if (use.role === "findBy") {
+      const type = cachedTypeOf(use);
+      phrase = type === null ? `finds a cached record for ${use.target}` : `finds ${type} for ${use.target}`;
+    } else if (use.role === "appliesWhen") {
+      phrase = `decides ${use.target}`;
+    } else {
+      phrase = `fills ${use.target}${use.required ? "" : " (optional)"}`;
+    }
+
+    if (use.role !== "appliesWhen" && use.modifiers.length > 0) {
+      phrase += ` after ${use.modifiers.join(", ")}`;
+    }
+
+    if (!phrases.includes(phrase)) {
+      phrases.push(phrase);
+    }
+  }
+
+  return phrases.join("; ");
+}
+
 /** Where the form says the record's payload files are, when the flow streams a payload. */
 type PayloadInput = { name: string; location: string; hash: string } | null;
 
-/** A starting point for the JSON tab: one record with every column the form offers, and one row per child scope. */
+/** A starting point for the JSON tab: one record with every column the form offers, and one blank row per child dataset. */
 function recordsTemplate(contract: DeliverySourceContract): string {
   const blank = (columns: string[]) => Object.fromEntries(columns.map((column) => [column, ""]));
   const record: DeliveryInlineRecord = { record: blank(formColumns(contract)) };
-  if (contract.scopes.length > 0) {
-    record.scopes = Object.fromEntries(contract.scopes.map((scope) => [scope.scope, [blank(scope.columns)]]));
+  if (contract.datasets.length > 0) {
+    record.datasets = Object.fromEntries(
+      contract.datasets.map((dataset) => [dataset.name, [blank(dataset.columns.map((column) => column.name))]]),
+    );
   }
 
   if (contract.payloadName !== null) {
@@ -90,7 +136,7 @@ function parseRecords(text: string): { records: DeliveryInlineRecord[]; error: s
   for (const [index, item] of items.entries()) {
     const record = typeof item === "object" && item !== null && !Array.isArray(item) ? (item as Record<string, unknown>).record : undefined;
     if (typeof record !== "object" || record === null || Array.isArray(record)) {
-      return { records: [], error: `records[${index}] needs a "record" object holding the root row's columns.` };
+      return { records: [], error: `records[${index}] needs a "record" object holding the dataset row's columns.` };
     }
   }
 
@@ -173,6 +219,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
 
   const c = contract.data;
   const columns = c ? formColumns(c) : [];
+  const columnInfo = new Map((c?.columns ?? []).map((column) => [column.name, column]));
   const json = jsonText ?? (c ? recordsTemplate(c) : "[]");
   const formBlank = Object.values(fields).every((value) => value === "");
   const payload: PayloadInput = c !== undefined && c.payloadName !== null
@@ -184,11 +231,11 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
   if (c !== undefined) {
     if (mode === "form") {
       records = [formRecord(fields, payload)];
-      const emptyKey = c.naturalKey.find((column) => (fields[column] ?? "") === "");
+      const emptyKey = c.key.find((column) => (fields[column] ?? "") === "");
       if (formBlank) {
         error = "Fill in the record's columns.";
       } else if (emptyKey !== undefined) {
-        error = `The natural key column '${emptyKey}' is empty; the record's OSDU id is derived from it.`;
+        error = `The key column '${emptyKey}' is empty; the record's OSDU id is derived from it.`;
       } else if (payload !== null && payload.location.trim() === "") {
         error = `The flow streams the payload '${payload.name}', so the record says where its files are.`;
       } else if (payload !== null && c.payloadHashRequired && payload.hash.trim() === "") {
@@ -268,13 +315,38 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
             <>
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <Badge variant="outline" data-testid="submit-records-mapping">{c.mappingReference}</Badge>
+                {c.template !== null && (
+                  <Badge
+                    asChild
+                    variant="outline"
+                    className={c.template.saved ? "font-mono" : "border-warning/50 bg-warning/10 font-mono text-warning"}
+                  >
+                    <RouterLink
+                      to={c.template.saved
+                        ? `/delivery/templates?${new URLSearchParams({ kind: c.template.kind, version: c.template.version }).toString()}`
+                        : "/delivery/templates"}
+                      data-testid="submit-records-template"
+                      data-saved={c.template.saved ? "true" : "false"}
+                    >
+                      {!c.template.saved && <TriangleAlert />}
+                      <span>{c.template.kind}</span>
+                      <span className={c.template.saved ? "text-muted-foreground" : undefined}>{c.template.version}</span>
+                      {!c.template.saved && <span className="font-sans">not saved</span>}
+                    </RouterLink>
+                  </Badge>
+                )}
                 <Badge variant="outline">{c.protocol}</Badge>
                 <span>Up to {c.maxRecords.toLocaleString()} records per submission.</span>
               </div>
               {c.mappingProblem !== null && (
                 <Alert data-testid="submit-records-mapping-problem">
                   <CircleAlert />
-                  <AlertDescription>{c.mappingProblem} The columns cannot be listed, so write the records in the JSON tab.</AlertDescription>
+                  <AlertDescription>
+                    <p>
+                      {c.mappingProblem}
+                      {c.columns.length === 0 && " The columns cannot be listed, so write the records in the JSON tab."}
+                    </p>
+                  </AlertDescription>
                 </Alert>
               )}
               {c.parameters.length > 0 && (
@@ -304,18 +376,41 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                   <TabsTrigger value="json" data-testid="submit-records-tab-json">JSON</TabsTrigger>
                 </TabsList>
                 <TabsContent value="form" className="flex flex-col gap-3 pt-2">
-                  {c.scopes.length > 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      The mapping also reads child rows ({c.scopes.map((s) => s.scope).join(", ")}). A record with child rows is
-                      written in the JSON tab.
-                    </p>
+                  {c.datasets.length > 0 && (
+                    <div className="flex flex-col gap-1 text-xs text-muted-foreground" data-testid="submit-records-datasets">
+                      <p>The mapping also reads child datasets. A record with child rows is written in the JSON tab.</p>
+                      <ul className="flex flex-col gap-0.5">
+                        {c.datasets.map((dataset) => (
+                          <li key={dataset.name} data-testid={`submit-records-dataset-${dataset.name}`}>
+                            <span className="font-mono text-foreground">{dataset.name}</span>
+                            {dataset.fills.length > 0
+                              ? (
+                                <>
+                                  {" fills "}
+                                  <span className="font-mono">
+                                    {dataset.fills.map((fill) => `${fill.target}${fill.required ? "" : " (optional)"}`).join(", ")}
+                                  </span>
+                                </>
+                              )
+                              : " is read by the mapping"}
+                            {dataset.columns.length > 0 && (
+                              <>
+                                {", with the columns "}
+                                <span className="font-mono">{dataset.columns.map((column) => column.name).join(", ")}</span>
+                              </>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {columns.map((column) => (
                       <div key={column} className="flex flex-col gap-1">
                         <Label htmlFor={`${idPrefix}-field-${column}`} className="flex items-center gap-1.5 font-mono text-[12px]">
                           {column}
-                          {c.naturalKey.includes(column) && <Badge variant="secondary" className="h-4 px-1 text-[10px]">key</Badge>}
+                          {c.key.includes(column) && <Badge variant="secondary" className="h-4 px-1 text-[10px]">key</Badge>}
+                          {columnInfo.get(column)?.label === true && <Badge variant="secondary" className="h-4 px-1 text-[10px]">label</Badge>}
                           {column === c.lastModifiedColumn && <Badge variant="secondary" className="h-4 px-1 text-[10px]">last modified</Badge>}
                           {column === c.fingerprintColumn && <Badge variant="secondary" className="h-4 px-1 text-[10px]">fingerprint</Badge>}
                         </Label>
@@ -339,6 +434,11 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                             </Button>
                           )}
                         </div>
+                        {(columnInfo.get(column)?.uses.length ?? 0) > 0 && (
+                          <p className="text-[11px] leading-snug text-muted-foreground" data-testid={`submit-records-uses-${column}`}>
+                            {describeUses(columnInfo.get(column)?.uses ?? [])}
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -413,7 +513,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                 <TabsContent value="json" className="flex flex-col gap-2 pt-2">
                   <CodeView value={json} language="json" height={360} readOnly={false} onChange={setJsonText} data-testid="submit-records-json" />
                   <p className="text-xs text-muted-foreground">
-                    An array of records, each {"{ \"record\": { column: value }, \"scopes\": { scope: [ rows ] } }"}: the shape of a
+                    An array of records, each {"{ \"record\": { column: value }, \"datasets\": { childDataset: [ rows ] } }"}: the shape of a
                     mapping fixture. Values are strings, numbers, booleans or null.
                     {c.payloadName !== null && ` Each record also carries "files": { "${c.payloadName}": "where its files are" }, or { "location": ..., "hash": ... } to send the hash with it.`}
                   </p>

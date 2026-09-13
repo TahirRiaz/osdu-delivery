@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "./helpers";
+import { E2E } from "../playwright.config";
+import { adminSession, expect, test } from "./helpers";
 
 // Seeds the estate THROUGH the product: registers the fixture git repo as a source from the Repos page in the
 // GUI, then watches the control plane's managed sync pull it and the pipeline appear in the catalog. Everything
@@ -12,6 +13,29 @@ function fixtureMeta(): { repoDir: string; headSha: string } {
 }
 
 test.describe.serial("seed the estate via repo source sync", () => {
+  // Templates live in the catalog, not the repository, so the ones the sample mappings pin are saved first: every plan
+  // the later specs run renders against them.
+  test("save the templates the sample mappings pin", async ({ request }) => {
+    const session = await adminSession(request);
+    const templates = [
+      { kind: "osdu:wks:work-product-component--WellLog:1.4.0", file: "osdu_wks_work-product-component--WellLog_1.4.0.json", version: "26a3c3441882db4f" },
+      { kind: "osdu:wks:master-data--Wellbore:1.3.0", file: "osdu_wks_master-data--Wellbore_1.3.0.json", version: "a110ad82c3b60a1e" },
+    ];
+    for (const template of templates) {
+      const schema: unknown = JSON.parse(
+        readFileSync(join(import.meta.dirname, "..", "..", "samples", "recall-welllog", "templates", template.file), "utf8"),
+      );
+      const response = await request.post(`${E2E.apiBaseUrl}/api/v1/delivery/templates`, {
+        headers: { Authorization: `Bearer ${session.token}` },
+        data: { kind: template.kind, schema, origin: `file ${template.file}` },
+      });
+      expect(response.status(), await response.text()).toBe(200);
+      const saved = (await response.json()) as { template: { kind: string; version: string }; outcome: string };
+      expect(saved.template.version).toBe(template.version);
+      expect(["created", "unchanged"]).toContain(saved.outcome);
+    }
+  });
+
   test("register the fixture repo as a source and watch it sync", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-repos").click();
     await expect(adminPage.getByTestId("page-repos")).toBeVisible();

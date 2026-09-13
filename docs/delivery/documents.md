@@ -122,9 +122,9 @@ verify: { reconcile: false }       # whether the verify pass re-queues drifted o
 
 ### Render-affecting versus operational
 
-Only `render.*` enters the render context. Everything else changes how a document gets there: raising
+Only `render.*`, and the template version the pinned mapping names, enter the render context. Everything else changes how a document gets there: raising
 `reliability.concurrency` or changing `target.endpoint` never redelivers a record. A moved render context (a new
-mapping version, schema snapshot or reference snapshot) renders the record again, and whether it is sent is still
+mapping version, template version or reference snapshot) renders the record again, and whether it is sent is still
 decided by the hash of the rendered document alone, so a new cache version that renders the same document sends nothing.
 
 ### Incremental drops: what changed since the last run
@@ -257,108 +257,235 @@ write nothing).
 
 ## Mapping
 
+A mapping fills one template: the OSDU record of one kind, with a variable for every property its schema declares.
+Each entry names a variable and where its value comes from, and a variable without an entry is left out of the record.
+[mapping-templates.md](mapping-templates.md) describes templates, where they are saved, and the mapping builder.
+
 ```yaml
 documentType: mapping
-name: WellLog
-version: 1.4.0                     # part of the render context
-kind: osdu:wks:work-product-component--WellLog:1.4.0   # pins the schema snapshot; must match the storage pattern authority:source:entityType:major.minor.patch
+name: WellLog                      # the reference is Name@version, pinned by a flow under render.mapping
+version: 1.4.0                     # part of the render context; the file is mappings/WellLog@1.4.0.yaml
+template:
+  kind: osdu:wks:work-product-component--WellLog:1.4.0   # authority:source:entityType:major.minor.patch
+  version: 26a3c3441882db4f        # the saved template version: 16 hexadecimal characters
+description: Recall well logs, one record per logging run.
 
-source:
+dataset:
   system: recall                   # enters the delivery key
-  scopes: [curves]                 # child scopes collections iterate
+  key: [dataset.source_project, dataset.log_id]          # the columns the delivery key, and so the OSDU id, is derived from
+  label: "{dataset.wellbore_uwi} / {dataset.log_name}"   # display and search only; never in the record
 
-identity:
-  naturalKey: [data.LogSource, data.LogRun]   # mapped properties whose source columns form the key
-  label: "{wellbore_uwi} / {log_name} / run {log_run}"   # display and search only; never in the document
+parameters:                        # what the mapping accepts from the flow; values enter the render context
+  dataPartition: { required: true }  # always declared: ids are minted in it, so letters, digits, _ - . only
 
-envelope:
-  legalTags: [...]                 # at least one, no repeats (the legal lists are sets to storage)
-  otherRelevantDataCountries: [NO] # at least one, no repeats
-  acl: { owners: [...], viewers: [...] }
-  tags: { DeliveredBy: osdu-delivery }        # static tags (optional)
+mappings:
+  - target: osdu.acl.owners        # the four access and legal variables take static, non-empty lists
+    static: [data.default.owners@opendes.dataservices.energy]
+  - target: osdu.acl.viewers
+    static: [data.default.viewers@opendes.dataservices.energy]
+  - target: osdu.legal.legaltags
+    static: [opendes-reference-data-default]
+  - target: osdu.legal.otherRelevantDataCountries
+    static: [NO]
+  - target: osdu.tags.DeliveredBy  # a key under an object with free keys
+    static: osdu-delivery
+  - target: osdu.data.Name
+    source: dataset.log_name       # a column of the dataset's row
+    modifiers: [trim]
+  - target: osdu.data.WellboreID
+    source: cache.Wellbore.id      # the id of the cached record findBy selects
+    findBy: cache.Wellbore.FacilityName = dataset.wellbore_uwi
+  - target: osdu.data.VerticalMeasurement.VerticalMeasurementTypeID
+    static: "{param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"
+  - target: osdu.data.Curves       # the repeater: one item per row of the child dataset
+    source: dataset.curves
+  - target: osdu.data.Curves[].CurveID
+    source: dataset.curves.curve_id
+  - target: osdu.data.Curves[].LogCurveBusinessValueID
+    source: cache.LogCurveBusinessValue.id
+    findBy:                        # tried in order; the first line that finds a record wins
+      - cache.LogCurveBusinessValue.Code = dataset.curves.business_value
+      - cache.LogCurveBusinessValue.Name = dataset.curves.business_value
+    required: false                # no value leaves the variable out instead of holding the record
 
-parameters:                        # what the mapping accepts from the flow; values enter the hash
-  dataPartition: { required: true }           # always required: ids are minted in it, so letters, digits, _ - . only
-
-properties:
-  - target: data.Name              # dotted path from the record root (data.*, tags.*)
-    source: log_name               # column in the current scope
-    transform: trim                # see the vocabulary below
-    config: { ... }
-    examples:                      # per-property fixtures, checked by the preflight gate
-      - { source: "STAT_COMP ", target: STAT_COMP }
-  - target: data.VerticalMeasurement
-    properties: [ ... ]            # nested object
-  - target: data.Curves
-    collection: true               # array of objects, one per row of the scope
-    scope: curves
-    definition: Curve              # or inline properties
-
-definitions:
-  Curve: [ ... ]                   # reusable nested property lists
-
-fixtures:                          # whole-document regression fixtures
+fixtures:                          # whole-record regression fixtures, rendered by the preflight gate
   - name: ...
-    parameters: { dataPartition: dev }
-    record: { column: value, ... }
-    scopes: { curves: [ { ... } ] }
+    parameters: { dataPartition: opendes }
+    record: { column: value, ... }       # the dataset's row
+    datasets: { curves: [ { ... } ] }    # child dataset rows by child dataset name
     expected: |
-      { ...the exact document... }
+      { ...the exact record... }
 ```
 
-### Transform vocabulary
+### The header
 
-| Transform | Config | Result |
-| --- | --- | --- |
-| *(none)* | | The source value, coerced to the schema type. |
-| `constant` | `value` (may use `{param:name}`) | A literal. |
-| `trim`, `upper`, `lower` | | String operations. |
-| `split` | `delimiter`, `index` | One segment; a missing segment omits the property. A space delimiter splits on any whitespace. |
-| `equals` | `resolve` | Boolean, case-insensitive. |
-| `map` | `values`, `default`, `onMiss` | Dictionary lookup. |
-| `reference` | `type`, `matchBy`, `valueMap`, `onMiss`, optional `delimiter`/`index`, `ignoreSeparators` | An OSDU reference (`id:`) resolved from the reference snapshot. Already-formed ids pass through. |
-| `lookup` | `type`, `matchBy`, `select`, `valueMap`, `onMiss`, optional `delimiter`/`index`, `ignoreSeparators` | A value read out of the cached record the source value matches: the same match as `reference`, but `select` names what to take from it (`Name`, `NameAlias.AliasName`, or `id`, the default). |
-| `deliveredReference` | `type` (entity type), `system`, `keys` | The computed id of a record this system also delivers. |
-| `template` | `format` with `{column}` and `{param:name}` tokens | A formatted string. |
-| `dateTime` | `inputFormat` | RFC 3339 UTC. |
+| Key | Meaning |
+| --- | --- |
+| `documentType` | Always `mapping`. |
+| `name`, `version` | The mapping's reference, `Name@version`, which a flow pins under `render.mapping`. |
+| `template.kind`, `template.version` | The saved template version the mapping fills. A run refuses to render against any other, and one the catalog does not hold stops the run. |
+| `description` | Free text. |
+| `dataset.system` | The source system. It enters the delivery key. |
+| `dataset.key` | The columns of the dataset's row that identify a record, in order, each written `dataset.<column>`. The delivery key, and so the OSDU id, is derived from them. A key column need not be written into the record. |
+| `dataset.label` | Optional display text for the ledger and the GUI, with `{dataset.<column>}` tokens, cut at 400 characters. It never enters the record. |
+| `parameters` | Values the flow supplies under `render.parameters`, each declared with `required`, `default` and `description`. `dataPartition` is always declared, and a flow value for a parameter the mapping does not declare is refused. |
+| `mappings` | The entries, at least one. |
+| `fixtures` | Example rows and the exact record each must render to. |
 
-`onMiss` is `hold` (default: the record is held until intervention), `omit` (drop the property) or `error`.
+### An entry
 
-`matchBy` and `select` name cached fields by the name capture stored them under (the path without its `data.`
-root, or the `as` it declared), and a path inside one (`NameAlias.AliasName`) when the field was cached whole. A
-field holding a set matches on any one of its values, so a record with three aliases is found by any of them. An exact
-match wins, and case is ignored only when that finds exactly one record: OSDU codes that differ only by case are
-different records (`ft` is the foot and `fT` the femtotesla, `s/m` second per metre and `S/m` siemens per metre), so
-a value that names several of them once case is ignored is unresolved (`onMiss` decides what that does) with a reason
-naming them, and `valueMap` maps it to the exact code. Two records holding exactly the same value resolve to the first
-in snapshot order, which is stable for a snapshot version.
+| Key | Meaning |
+| --- | --- |
+| `target` | The template variable to fill: `osdu.` and the property's path in the record, with `[]` after an array of objects (`osdu.data.Curves[].CurveID`). A path steps into at most one array. |
+| `source` | Where the value comes from (below). An entry has `source` or `static`, never both. |
+| `static` | A fixed value: text, a number, a boolean, a list or an object. `{param.name}` tokens in its text are replaced with the flow's parameter values. |
+| `findBy` | With a cache source, and required there: which cached record to read. One line or a list. |
+| `modifiers` | Changes to the incoming dataset value, applied top to bottom. |
+| `appliesWhen` | When the entry applies to a row. When it does not, the variable is left out for that row. |
+| `required` | What an empty value does: `true` (the default) holds the record, `false` leaves the variable out. |
+| `ignoreSeparators` | With a cache source: a last matching attempt with punctuation and spacing folded away. |
+| `description` | Free text. |
 
-`ignoreSeparators: true` adds a third and last attempt, for a name rather than a code. Source systems and OSDU write the
-same facility name differently, because each grew its own convention for the spaces, slashes, underscores and hyphens
+A static entry takes only `appliesWhen` and `description` besides its value. No two entries fill the same variable.
+
+### Sources
+
+| Written as | Reads |
+| --- | --- |
+| `dataset.<column>` | A column of the dataset's row. |
+| `dataset.<child>.<column>` | A column of a child dataset's row, inside a repeater over that child dataset. |
+| `dataset.<child>` | On a target other entries step into (`osdu.data.Curves`): one array item per row of the child dataset. This is the repeater, and it takes no modifiers. |
+| `cache.<Type>.id` | The OSDU id of the cached record `findBy` selects, with the trailing `:` OSDU relationships use. |
+| `cache.<Type>.<field>` | A field of that cached record, or a path inside one (`Name`, `NameAlias.AliasName`). |
+
+An entry inside a repeater (`osdu.data.Curves[].CurveID`) reads the rows of the child dataset the repeater names, and can
+read the dataset's own row with `dataset.<column>` too. A repeater inside a repeated item is not supported. A drop
+carries each child dataset as the scope of the same name ([drop-contract.md](drop-contract.md)).
+
+### findBy and the cache
+
+```yaml
+findBy:
+  - cache.UnitOfMeasure.Code = dataset.curves.curve_unit
+  - cache.UnitOfMeasure.Name = dataset.curves.curve_unit
+```
+
+Each line compares a field of the cached type the source reads with `dataset.<column>`, `dataset.<child>.<column>`, or
+a quoted text (`'KellyBushing'`). The lines are tried in order, a line whose value is empty is skipped, and the first
+line that finds one record wins. Modifiers change the dataset value before it is compared; cached values are OSDU's own
+and are never modified.
+
+Fields are named as the capture stored them (the path without its `data.` root, or the `as` it declared; see the
+retrieval flow's `cache.types[].fields`), or as a path inside one (`NameAlias.AliasName`) when the field was cached
+whole. A field holding a set matches on any one of its values, so a record with three aliases is found by any of them.
+An exact match wins, and case is ignored only when that finds exactly one record: OSDU codes that differ only by case
+are different records (`ft` is the foot and `fT` the femtotesla, `s/m` second per metre and `S/m` siemens per metre).
+A value several records answer to, exactly or once case is ignored, selects none of them: when no line finds exactly
+one record, the record is held whatever `required` says, with a reason naming the candidates, and a `replace` modifier
+makes the incoming value exact.
+
+`ignoreSeparators: true` adds a last attempt, for a name rather than a code. Source systems and OSDU write the same
+facility name differently, because each grew its own convention for the spaces, slashes, underscores and hyphens
 between the parts that carry the meaning: with the fold on, `NO 15/9-19 SR`, `NO_15_9-19_SR` and `no-15-9-19-sr` all
 find one wellbore. The fold keeps the letters and digits in order (including æ, ø and å) and replaces every run of
-anything else with one separator, on the cached values as well as on the source value. It is off by default and belongs
-on names, never on codes: `s/m` and `S.M` would fold together and must not. It runs only after exact and case-insensitive
-comparison have both found nothing, so it can never move a value that already resolved, and a folded key several records
-answer to resolves to none of them with a reason naming them, exactly as an ambiguous case fold does. Declared on any
-transform other than `reference` or `lookup`, it is refused when the mapping is read. A cached
-field of its own called `ID` shadows the record id under that name, so `matchBy: [ID]` reads what OSDU calls
-`data.ID` while `matchBy: [id]` on a type caching no such field reads the record id. A `lookup` whose `select`
-yields a set writes an array where the schema takes one, and holds the record where it takes a single value.
+anything else with one separator, on the cached values as well as on the incoming value. It belongs on names, never on
+codes: `s/m` and `S.M` would fold together and must not. It runs only after the exact and case-insensitive comparisons
+have both found nothing, so it never moves a value that already resolved, and a folded value several records answer to
+selects none of them.
 
-### Coercion
+A value that already is an OSDU id names its record by id. When the cache does not hold it, a `cache.<Type>.id` source
+writes it as it is (ending in `:`), and an entry reading another field has no value. A cached field of its own called
+`ID` shadows the record id under that name, so `cache.UnitOfMeasure.ID` reads what OSDU calls `data.ID`, while `id` on a
+type caching no such field reads the record id. A cached field holding a set writes a list where the template takes
+one, and holds the record where it takes a single value, unless the set holds exactly one.
 
-The schema decides the type. Strings become numbers, integers or booleans as the schema says; a value that
-cannot be coerced holds the record with a reason naming the property. Nulls are omitted, never emitted.
+### Modifiers
+
+| Modifier | Written as | Incoming value | Result |
+| --- | --- | --- | --- |
+| trim | `- trim` | `" STAT_COMP "` | `"STAT_COMP"` |
+| upper, lower | `- upper` | `"gapi"` | `"GAPI"` |
+| split | `- split: { separator: ",", part: 1 }` | `"MAIN,REPEAT"` | `"MAIN"` |
+| replace | `- replace: { GAPI: gAPI }` | `"GAPI"` | `"gAPI"` |
+| equals | `- equals: REGULAR` | `"REGULAR"` or `"DISCRETE"` | `true` or `false` |
+| date | `- date` or `- date: dd.MM.yyyy` | `"01.09.2026"` | `"2026-09-01T00:00:00Z"` |
+
+`part` counts from one; a part the value does not have, or an empty one, gives an empty value. A separator of a single
+space splits on any run of whitespace. `replace` matches the trimmed value exactly, then ignoring case when exactly one
+listed value matches, and returns a value it does not list trimmed and otherwise as it is. `equals` compares trimmed
+text and ignores case, and an entry whose last modifier is `equals` must fill a boolean. `date` reads ISO 8601 and the
+common forms, or exactly the format given, as UTC unless the value carries an offset, and writes a UTC date-time; a
+value that is not a date holds the record whatever `required` says.
+
+### appliesWhen
+
+```yaml
+appliesWhen: dataset.depth_coding is REGULAR
+```
+
+The forms are `<value> is <text>`, `<value> is not <text>`, `<value> is empty` and `<value> is not empty`, where the
+value is `dataset.<column>` or, inside a repeater, `dataset.<child>.<column>`, and the text may be quoted. Comparison is
+of trimmed text and ignores case, and an empty value never `is` a text. A false condition leaves the variable out for
+that row and never holds a record. A repeater's condition decides for the whole array and reads the dataset's own row.
+The four access and legal entries take none.
+
+### required
+
+| Situation | `required: true` (default) | `required: false` |
+| --- | --- | --- |
+| The dataset value is empty after modifiers | Record held | Variable left out |
+| The cache has no matching record | Record held | Variable left out |
+| The cache has several matching records | Record held | Record held |
+| A `date` modifier cannot read the value | Record held | Record held |
+| A repeater's child dataset has no rows with values | Record held | Variable left out |
+| `appliesWhen` is false | Variable left out | Variable left out |
+
+`required: false` never introduces a value, and a static entry takes no `required`. A held record is never sent, and the
+ledger records the reason.
+
+### What the record contains
+
+The engine starts from nothing and writes `id` (from the `dataPartition` parameter, the template's entity type and the
+delivery key) and `kind` (the template's), then writes each entry's value at its target. `osdu.id`, `osdu.kind` and the
+properties OSDU sets (`version`, `createTime`, `createUser`, `modifyTime`, `modifyUser`) take no entry. The template
+decides the type: text becomes a number, an integer or a boolean where the schema says so, a single value written to a
+list of values becomes a list of one, and a value that cannot take the type holds the record with a reason naming the
+target. A variable with no entry, an entry that does not apply and an optional entry with no value are left out; an
+array item that received no value is left out of its array, and an array with no items is left out. A property the
+schema requires in `data` that renders empty holds the record, and so does a dataset key with an empty column, or a
+drop's declared `deliveryKey` that differs from the one the mapping derives.
+
+### Fixtures
+
+| Key | Meaning |
+| --- | --- |
+| `name` | Names the fixture in messages. |
+| `parameters` | Parameter values for this fixture, over the flow's. |
+| `record` | The dataset's row, column by column. |
+| `datasets` | The rows of each child dataset, by child dataset name. |
+| `expected` | The exact record, as JSON, compared canonically. |
 
 ### What the preflight gate checks
 
-1. Every source binding exists in the drop's declared schema.
-2. Every reference type exists in the reference snapshot, and holds the fields the mapping matches by and the value
-   a `lookup` selects. A `matchBy` field the cache does not hold is a warning; a type holding none of them, or a
-   `select` path nothing caches, is an error, because it would hold every record at run time.
-3. Every schema-required property has a binding.
-4. Every target path exists in the pinned schema with an agreeing shape.
-5. Every example and fixture renders exactly as declared under this context.
+When the mapping is read, its keys, sources, `findBy` lines, modifiers and conditions parse, each entry has exactly one
+input, no two entries fill the same variable, and the four access and legal variables are static lists. Before any row
+is rendered, and with no OSDU call:
+
+1. The template version the mapping pins is saved in the catalog, and is the one the render is given.
+2. Every target is a variable of the template, with an agreeing shape: a repeater only on an array of objects, `[]`
+   only under a repeater, a single value only on a scalar or a list of values, an object only from `static`.
+3. No entry fills `osdu.id`, `osdu.kind` or a property OSDU sets.
+4. Every property the schema requires in `data` has an entry, and none of those entries is `required: false`.
+5. Every dataset column and child dataset the mapping reads, the dataset key's and the label's included, exists in the
+   drop, when the drop is known.
+6. Every cached type exists in the reference snapshot and holds the field the source reads. A `findBy` field the cache
+   does not hold is a warning; a type holding none of them is an error, because it would hold every record at run time.
+7. A `cache.<Type>.id` source resolves to the entity type the schema expects for its target: `osdu.data.WellboreID`
+   reads only a cached type of `master-data--Wellbore`.
+8. A static value on a relationship is an OSDU id of an entity type the relationship allows, and exists in the
+   reference snapshot when the snapshot holds that entity type.
+9. Every parameter the mapping requires has a value, the flow supplies none the mapping does not declare, and every
+   `{param.name}` token has a value.
+10. Every fixture renders exactly as declared, and without holds, under this context.
 
 If any check fails, nothing renders.

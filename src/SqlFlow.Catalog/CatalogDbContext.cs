@@ -99,6 +99,9 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<DeliverySnapshotItem> DeliverySnapshotItems => Set<DeliverySnapshotItem>();
 
+    /// <summary>The templates: immutable OSDU schema versions owned by OSDU Delivery, pinned by mappings.</summary>
+    public DbSet<DeliveryTemplate> DeliveryTemplates => Set<DeliveryTemplate>();
+
     public DbSet<DeliveryRetrieval> DeliveryRetrievals => Set<DeliveryRetrieval>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

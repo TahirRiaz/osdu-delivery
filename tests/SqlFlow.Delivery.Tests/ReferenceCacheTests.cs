@@ -92,16 +92,26 @@ public class ReferenceCacheTests
     }
 
     [Fact]
-    public void Ambiguity_is_first_wins_and_reported()
+    public void Several_records_holding_a_value_exactly_match_none_of_them_and_are_all_named()
     {
         var type = new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
         [
             ReferenceItem.FromText("a", new Dictionary<string, string> { ["Code"] = "m" }),
             ReferenceItem.FromText("b", new Dictionary<string, string> { ["Code"] = "m" }),
+            ReferenceItem.FromText("c", new Dictionary<string, string> { ["Code"] = "ft" }),
         ]);
 
-        Assert.Equal("a", type.Match("Code", "m")!.Id);
+        // Taking the first would write a reference nobody chose, so the value resolves to neither and both are listed.
+        Assert.Null(type.Match("Code", "m"));
+        var found = type.Find("Code", "m");
+        Assert.True(found.IsCaseAmbiguous);
+        Assert.Equal(ReferenceMatchKind.Exact, found.Kind);
+        Assert.Equal("exactly", found.Loosening);
+        Assert.Equal(["a", "b"], found.CaseVariants.Select(v => v.Id));
         Assert.True(type.IsAmbiguous("Code"));
+
+        // A value only one record holds still resolves.
+        Assert.Equal("c", type.Match("Code", "ft")!.Id);
     }
 
     [Fact]
@@ -364,42 +374,52 @@ public class ReferenceCacheTests
     }
 
     /// <summary>
-    /// The sample mapping declared the source unit `V/V` as `%`, so a neutron porosity of 0.21 was published as
-    /// 0.21 percent, a hundredth of what the curve carries. `V/V` is a volume fraction, which OSDU's reference data
-    /// calls `m3/m3`. The sample mapping's own curve-unit property is rendered here against the sample snapshot, so
-    /// the mapping and the cached reference data have to agree for this to pass. The snapshot caches `%` as well as
-    /// `m3/m3`, so mapping it back to `%` would resolve rather than hold: only the rendered id catches it.
+    /// The sample mapping once declared the source unit `V/V` as `%`, so a neutron porosity of 0.21 was published as 0.21
+    /// percent, a hundredth of what the curve carries. `V/V` is a volume fraction, which OSDU's reference data calls
+    /// `m3/m3`. The sample mapping's own curve unit entry is rendered here against the sample template and cache, so the
+    /// mapping and the cached reference data have to agree for this to pass. The cache holds `%` as well as `m3/m3`, so
+    /// replacing the unit back with `%` would resolve rather than hold: only the rendered id catches it.
     /// </summary>
     [Fact]
     public async Task The_sample_mapping_renders_the_porosity_unit_as_a_volume_fraction()
     {
         var mapping = new MappingCatalog(Samples.Mappings, new DeliveryDocumentLoader()).Load("WellLog@1.4.0");
-        var curveUnit = mapping.Definitions["Curve"].Single(p => p.Target == "CurveUnit");
-        Assert.Equal("m3/m3", curveUnit.Config!.ValueMap["V/V"]);
+        var curveUnit = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].CurveUnit");
+        Assert.Equal("m3/m3", curveUnit.Modifiers.Single(m => m.Kind == ModifierKind.Replace).Replacements["V/V"]);
 
         var store = new FileSnapshotStore(Samples.Snapshots, Samples.Stores());
         var version = await store.CurrentReferenceVersionAsync();
         Assert.NotNull(version);
         var references = await store.LoadReferencesAsync(version);
         Assert.NotNull(references);
+        var schema = await Samples.SampleTemplates.LoadAsync(mapping.Template);
+        Assert.NotNull(schema);
 
-        var renderer = new MappingRenderer(
-            TestSchema.Mapping(curveUnit with { Target = "data.Unit", Source = "unit" }),
-            TestSchema.Build(),
-            references,
-            TestSchema.Context());
-
+        var context = new RenderContext
+        {
+            MappingReference = mapping.Reference,
+            ReferenceSnapshotVersion = references.Version,
+            SchemaSnapshotVersion = schema.Version,
+            Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "opendes" },
+        };
+        var renderer = new MappingRenderer(mapping, schema, references, context);
+        var fixture = mapping.Fixtures.Single(f => f.Name.StartsWith("L-2001", StringComparison.Ordinal));
         var porosity = renderer.Render(new SourceRecord
         {
-            Row = SourceRow.FromStrings(new Dictionary<string, string?> { ["name"] = "well-1", ["depth"] = "12.5", ["unit"] = "V/V" }),
-            Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase),
+            Row = SourceRow.FromStrings(fixture.Record),
+            Scopes = fixture.Datasets.ToDictionary(
+                kv => kv.Key,
+                kv => (IReadOnlyList<SourceRow>)kv.Value.Select(SourceRow.FromStrings).ToList(),
+                StringComparer.OrdinalIgnoreCase),
         });
-        Assert.False(porosity.IsHeld);
-        Assert.Equal("opendes:reference-data--UnitOfMeasure:m3%2Fm3:", porosity.Document["data"]!["Unit"]!.GetValue<string>());
+
+        Assert.False(porosity.IsHeld, string.Join("; ", porosity.Holds));
+        var nphi = porosity.Document["data"]!["Curves"]!.AsArray().Single(c => c!["CurveID"]!.GetValue<string>() == "NPHI");
+        Assert.Equal("opendes:reference-data--UnitOfMeasure:m3%2Fm3:", nphi!["CurveUnit"]!.GetValue<string>());
     }
 }
 
-/// <summary>The lookup transform: building a document out of what the cache holds.</summary>
+/// <summary>Cache sources that read a field out of the cached record rather than its id: building a document out of what the cache holds.</summary>
 public class CachedLookupTests
 {
     private static ReferenceSnapshot References() => new("refs-1", DateTimeOffset.UnixEpoch,
@@ -421,8 +441,8 @@ public class CachedLookupTests
         ]),
     ]);
 
-    private static MappingRenderer Renderer(params MappingProperty[] extra)
-        => new(TestSchema.Mapping(extra), TestSchema.Build(), References(), TestSchema.Context());
+    private static MappingRenderer Renderer(string entries)
+        => new(TestSchema.Mapping(entries), TestSchema.Build(), References(), TestSchema.Context());
 
     private static SourceRecord Record(string unit = "m") => new()
     {
@@ -430,19 +450,16 @@ public class CachedLookupTests
         Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase),
     };
 
-    private static MappingProperty Lookup(string target, string select, string? type = "UnitOfMeasure")
-        => new()
-        {
-            Target = target,
-            Source = "unit",
-            Transform = MappingTransform.Lookup,
-            Config = new TransformConfig { Type = type, MatchBy = ["Code"], Select = select },
-        };
+    private static string Read(string target, string field, string findBy = "Code") => $$"""
+          - target: {{target}}
+            source: cache.UnitOfMeasure.{{field}}
+            findBy: cache.UnitOfMeasure.{{findBy}} = dataset.unit
+        """;
 
     [Fact]
     public void Reads_a_cached_scalar_into_the_document()
     {
-        var result = Renderer(Lookup("data.Symbol", "Symbol")).Render(Record());
+        var result = Renderer(Read("osdu.data.Symbol", "Symbol")).Render(Record());
         Assert.False(result.IsHeld);
         Assert.Equal("m", result.Document["data"]!["Symbol"]!.GetValue<string>());
     }
@@ -450,7 +467,7 @@ public class CachedLookupTests
     [Fact]
     public void Reads_a_cached_set_into_an_array()
     {
-        var result = Renderer(Lookup("data.Aliases", "Alias")).Render(Record());
+        var result = Renderer(Read("osdu.data.Aliases", "Alias")).Render(Record());
         Assert.False(result.IsHeld);
         Assert.Equal(["meter", "metre"], result.Document["data"]!["Aliases"]!.AsArray().Select(n => n!.GetValue<string>()));
     }
@@ -458,7 +475,7 @@ public class CachedLookupTests
     [Fact]
     public void Reads_a_path_inside_a_cached_object()
     {
-        var result = Renderer(Lookup("data.Symbol", "Persistable.Scale.Code")).Render(Record());
+        var result = Renderer(Read("osdu.data.Symbol", "Persistable.Scale.Code")).Render(Record());
         Assert.False(result.IsHeld);
         Assert.Equal("SI", result.Document["data"]!["Symbol"]!.GetValue<string>());
     }
@@ -466,50 +483,42 @@ public class CachedLookupTests
     [Fact]
     public void A_scalar_target_wraps_into_an_array_and_a_set_holds()
     {
-        var single = Renderer(Lookup("data.Aliases", "Name")).Render(Record());
+        var single = Renderer(Read("osdu.data.Aliases", "Name")).Render(Record());
         Assert.Equal(["metre"], single.Document["data"]!["Aliases"]!.AsArray().Select(n => n!.GetValue<string>()));
 
-        var set = Renderer(Lookup("data.Symbol", "Alias")).Render(Record());
+        var set = Renderer(Read("osdu.data.Symbol", "Alias")).Render(Record());
         Assert.True(set.IsHeld);
-        Assert.Contains(set.Holds, h => h.Contains("2 values were selected but the schema type is string", StringComparison.Ordinal));
+        Assert.Contains(set.Holds, h => h.Contains("2 values were given but the template takes one string", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void An_uncached_path_holds_the_record_and_names_what_is_cached()
+    public void An_uncached_field_holds_the_record_and_names_what_is_cached()
     {
-        var result = Renderer(Lookup("data.Symbol", "NotCached")).Render(Record());
+        var result = Renderer(Read("osdu.data.Symbol", "NotCached")).Render(Record());
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h =>
             h.Contains("caches nothing at 'NotCached'", StringComparison.Ordinal) && h.Contains("Cached: id, Alias, Code", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void A_missed_match_holds_exactly_as_a_reference_does()
+    public void A_missed_match_holds_exactly_as_reading_the_id_does()
     {
-        var result = Renderer(Lookup("data.Symbol", "Symbol")).Render(Record(unit: "furlong"));
+        var result = Renderer(Read("osdu.data.Symbol", "Symbol")).Render(Record(unit: "furlong"));
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h => h.Contains("no UnitOfMeasure matches 'furlong'", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void Preflight_rejects_a_lookup_the_cache_cannot_answer()
+    public void Preflight_rejects_a_field_the_cache_cannot_answer()
     {
-        var mapping = TestSchema.Mapping(Lookup("data.Symbol", "NotCached"));
-        var issues = Preflight.Check(mapping, TestSchema.Build(), References(), TestSchema.Context(), dropColumns: null);
-        Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("reads 'NotCached'", StringComparison.Ordinal));
+        var issues = Preflight.Check(TestSchema.Mapping(Read("osdu.data.Symbol", "NotCached")), TestSchema.Build(), References(), TestSchema.Context(), dropColumns: null);
+        Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("reads 'NotCached' out of UnitOfMeasure", StringComparison.Ordinal));
     }
 
     [Fact]
     public void Preflight_rejects_matching_by_fields_the_cache_does_not_hold()
     {
-        var property = new MappingProperty
-        {
-            Target = "data.Unit",
-            Source = "unit",
-            Transform = MappingTransform.Reference,
-            Config = new TransformConfig { Type = "UnitOfMeasure", MatchBy = ["NotCached"] },
-        };
-        var issues = Preflight.Check(TestSchema.Mapping(property), TestSchema.Build(), References(), TestSchema.Context(), dropColumns: null);
+        var issues = Preflight.Check(TestSchema.Mapping(Read("osdu.data.Unit", "id", findBy: "NotCached")), TestSchema.Build(), References(), TestSchema.Context(), dropColumns: null);
         Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("caches none of those", StringComparison.Ordinal));
     }
 }

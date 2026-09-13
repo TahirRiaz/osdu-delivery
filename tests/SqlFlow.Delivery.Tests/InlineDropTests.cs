@@ -388,25 +388,27 @@ public sealed class InlineDropTests : IDisposable
 
     private const string FlatMappingReference = "WellboreFlat@1.0.0";
 
-    /// <summary>The wellbore mapping with no child scope at all, which is the shape a document mapping has.</summary>
+    /// <summary>The wellbore mapping with no child dataset at all, which is the shape a document mapping has.</summary>
     private const string FlatMapping = """
         documentType: mapping
         name: WellboreFlat
         version: 1.0.0
-        kind: osdu:wks:master-data--Wellbore:1.3.0
-        source: { system: recall }
-        identity: { naturalKey: [data.FacilityName], label: "{facility_name}" }
-        envelope:
-          legalTags: [opendes-reference-data-default]
-          otherRelevantDataCountries: [NO]
-          acl:
-            owners: [data.default.owners@opendes.dataservices.energy]
-            viewers: [data.default.viewers@opendes.dataservices.energy]
+        template:
+          kind: osdu:wks:master-data--Wellbore:1.3.0
+          version: a110ad82c3b60a1e
+        dataset:
+          system: recall
+          key: [dataset.facility_name]
+          label: "{dataset.facility_name}"
         parameters:
           dataPartition: { required: true }
-        properties:
-          - { target: data.FacilityName, source: facility_name, transform: trim }
-          - { target: data.FacilityDescription, source: facility_description }
+        mappings:
+          - { target: osdu.acl.owners, static: [data.default.owners@opendes.dataservices.energy] }
+          - { target: osdu.acl.viewers, static: [data.default.viewers@opendes.dataservices.energy] }
+          - { target: osdu.legal.legaltags, static: [opendes-reference-data-default] }
+          - { target: osdu.legal.otherRelevantDataCountries, static: [NO] }
+          - { target: osdu.data.FacilityName, source: dataset.facility_name, modifiers: [trim] }
+          - { target: osdu.data.FacilityDescription, source: dataset.facility_description, required: false }
         """;
 
     private static string RecordsWithFiles(string name, string location, string? hash = null)

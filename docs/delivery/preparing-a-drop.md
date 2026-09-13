@@ -100,7 +100,7 @@ payload files. The names above are the ones the sample estate and the flows use.
 | `mapping` | Exactly the `Name@version` the flow pins (`render.mapping`). A different version refuses the drop; re-prepare it, or promote the flow deliberately. |
 | `parameters` | The flow parameter values the drop was prepared with. They must equal the values of the run that delivers it. |
 | `createdUtc`, `recordCount` | When the drop was prepared and how many root rows it holds. Informational. |
-| `sourceVersions` | The commit version of each source table the drop was built from. A run in which no source table advanced since the last delivery, and the render context (mapping, schema and cache versions) did not move either, skips the whole drop without reading it (unless forced). So these must increase whenever the source data moved. |
+| `sourceVersions` | The commit version of each source table the drop was built from. A run in which no source table advanced since the last delivery, and the render context (mapping, template and cache versions) did not move either, skips the whole drop without reading it (unless forced). So these must increase whenever the source data moved. |
 | `partitioned` | `false` unless the scopes are co-partitioned: then root file *i* and each child scope's file *i* hold the same records, every scope lists the same number of files, and every file is sorted by the delivery key's text. An unsorted file is refused. `false` works for any layout. |
 | `scopes.record` | The root scope: `files` and `columns`. Required. |
 | `scopes.<child>` | Child scopes (for example `curves`): `files`, `columns`, `parentKey` (the column holding the parent's delivery key, required) and `orderBy` (orders the rows within one parent). |
@@ -118,11 +118,12 @@ before it reads a row and refuses the drop naming the missing column.
 One row per record to deliver.
 
 - **`deliveryKey`**: required when the drop has child scopes or payloads. The lower-case, hyphenated UUID derived from
-  the mapping's natural key (section 5). A row whose declared key differs from the one the delivery side derives is held.
-- **The natural key columns** (the source columns of the mapping's `identity.naturalKey` properties): never null. A
+  the mapping's dataset key (section 5). A row whose declared key differs from the one the delivery side derives is held.
+- **The dataset key columns** (the columns the mapping's `dataset.key` names): never null. A
   null makes the key underivable and the record is held.
-- **Every column the mapping binds**, with the values the mapping expects. The mapping YAML in the flow's repository is
-  the list: each property names its `source` column.
+- **Every column the mapping reads**, with the values the mapping expects. The mapping YAML in the flow's repository is
+  the list: its entries name the columns of the dataset's row as `dataset.<column>` (in `source`, `findBy` and
+  `appliesWhen`), and a child dataset's as `dataset.<child>.<column>`, read from the scope of that name.
 - **The version column** the flow names:
   - `source.lastModified` (for Recall, `update_date`): when the row last changed, declared as `timestamp` or as `string`
     holding RFC 3339 text (`2026-09-11T12:00:00Z`). It must move forward whenever the row or its payload changes. A row
@@ -152,8 +153,8 @@ def delivery_key(source_system: str, *values: str) -> str:
 # delivery_key("recall", "NO_15_9", "L-1001") == "ac3a5843-e5cc-5e7e-9ecf-83fc05872909"
 ```
 
-`source_system` is the mapping's `source.system`; the values are the natural key's source columns in the order the
-mapping lists them. The OSDU record id is `{partition}:{entityType}:{deliveryKey without hyphens}`. See
+`source_system` is the mapping's `dataset.system`; the values are those of the columns its `dataset.key` names, in the
+order the mapping lists them. The OSDU record id is `{partition}:{entityType}:{deliveryKey without hyphens}`. See
 [drop-contract.md](drop-contract.md#the-delivery-key) for the exact byte-level definition.
 
 ## 6. Payload files
@@ -304,7 +305,7 @@ deletions: run a full prepare periodically, or use the source tables' change fee
 | The run fails: "parameter ... was prepared with ..." | The run's parameter values differ from the manifest's | Submit with the values the drop was prepared for. |
 | The run fails: "... names column ..., which the drop's root scope does not declare" | A column the mapping or flow needs is not in the manifest | Declare it (and write it). |
 | The run fails: "invalid manifest" | Unknown key, missing root scope, scope without files or columns, absolute path, `pathTemplate` without `{deliveryKey}` | Fix the manifest as the message says. |
-| A record is `held`: key mismatch or null natural key | The declared `deliveryKey` differs from the derived one, or a key value is null | Fix the row, re-prepare, and release the record. |
+| A record is `held`: key mismatch or incomplete dataset key | The declared `deliveryKey` differs from the derived one, or a key value is null | Fix the row, re-prepare, and release the record. |
 | A record is `held`: no chunk files, empty file, file too large | The payload folder is empty, a file is empty, or a file is above a ceiling | Write the files correctly (section 6), re-prepare, release. |
 | A well log is `held`: "give the same row labels to different rows" | Split files restart or overlap their row index | Write continuing labels (section 6.2), re-prepare, release. |
 | A well log is `held`: "Duplicated index found" | A file repeats a row label | Make the labels unique, re-prepare, release. |
@@ -320,7 +321,7 @@ Held records stay held until an operator releases them (the flow's Records tab, 
 - [ ] A new `submissionId` for every run; `flow`, `mapping` and `parameters` match the flow exactly.
 - [ ] `sourceVersions` increase whenever the source moved.
 - [ ] Every column the mapping and the flow need is declared, with a supported type.
-- [ ] `deliveryKey` derived with the shared algorithm; natural key values never null.
+- [ ] `deliveryKey` derived with the shared algorithm; dataset key values never null.
 - [ ] `update_date` (or the fingerprint) moves forward on every change, as a timestamp or RFC 3339 text.
 - [ ] Payload files under the `pathTemplate`, zero-padded names, none empty.
 - [ ] `payloadHash` changes exactly when the content changes; `chunkCount` equals the files written.

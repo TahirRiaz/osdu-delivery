@@ -33,7 +33,8 @@ public sealed record EngineContext(
     ILoggerFactory Loggers,
     IProtocolFactory Protocols,
     IDeliveryListener Listener,
-    IFanOutDispatcher? FanOut = null)
+    IFanOutDispatcher? FanOut = null,
+    Templates.ITemplateStore? Templates = null)
 {
     /// <summary>The environment switch that lets a flow target a loopback address (local OSDU emulators, tests).</summary>
     public const string AllowLoopbackVariable = "SQLFLOW_DELIVERY_ALLOW_LOOPBACK";
@@ -141,7 +142,7 @@ public sealed class FlowRuntime : IDisposable
         var layout = DeliveryLayout.Resolve(flow);
         var mappings = new MappingCatalog(layout.MappingsDirectory, context.Documents);
         var snapshots = new FileSnapshotStore(layout.SnapshotsRoot, context.Stores);
-        var resolver = new RenderResolver(mappings, snapshots);
+        var resolver = new RenderResolver(mappings, snapshots, context.Templates);
         var mapping = await resolver.ResolveAsync(flow, ct).ConfigureAwait(false);
         var drop = dropOverride ?? FlowParameters.DropLocation(flow, values);
         return new FlowRuntime(context, flow, layout, mappings, snapshots, values, mapping, drop);
@@ -386,7 +387,7 @@ public sealed class FlowRuntime : IDisposable
     /// </summary>
     private async Task EnsureLegalTagsAsync(CancellationToken ct)
     {
-        var tags = Mapping.Mapping.Envelope.LegalTags;
+        var tags = Mapping.Mapping.Envelope.LegalTags.Select(tag => MappingEntry.ExpandParameters(tag, Mapping.Renderer.ParameterValue)).ToList();
         var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
         var invalid = await protocol.InvalidLegalTagsAsync(tags, ct).ConfigureAwait(false);
         if (invalid is null)
@@ -813,7 +814,7 @@ public sealed class FlowRuntime : IDisposable
 
     private ILedger RequireLedger()
         => _context.Ledger ?? throw new DeliveryException(
-            "This operation needs the ledger, which lives in the catalog database. Run it through the control plane, or on a node or CLI started with the catalog connection; without a catalog only validate, plan and snapshot capture are available.");
+            "This operation needs the ledger, which lives in the catalog database. Run it through the control plane, or on a node or CLI started with the catalog connection (--db, or the catalog variable); without a catalog only validate and reference snapshot capture are available, since a render reads the mapping's template from the catalog too.");
 
     public void Dispose() => _http?.Dispose();
 }

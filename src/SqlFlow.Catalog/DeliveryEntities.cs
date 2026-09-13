@@ -447,7 +447,11 @@ public sealed class DeliveryMapping
 
     public string Version { get; set; } = string.Empty;
 
+    /// <summary>The OSDU kind of the template the mapping fills.</summary>
     public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The template version the mapping pins; empty when the document did not parse.</summary>
+    public string TemplateVersion { get; set; } = string.Empty;
 
     public string RelativePath { get; set; } = string.Empty;
 
@@ -456,7 +460,7 @@ public sealed class DeliveryMapping
     /// <summary>The document text, secret-redacted, as it was when synced.</summary>
     public string Yaml { get; set; } = string.Empty;
 
-    /// <summary>A parsed summary (source system, natural key, scopes, property and fixture counts), for listings.</summary>
+    /// <summary>A parsed summary (template, dataset system, key and label, child datasets, entry and fixture counts, envelope), for listings.</summary>
     public string SummaryJson { get; set; } = "{}";
 
     /// <summary>valid or invalid.</summary>
@@ -467,6 +471,34 @@ public sealed class DeliveryMapping
     public DateTime FirstSeenUtc { get; set; }
 
     public DateTime LastSeenUtc { get; set; }
+}
+
+/// <summary>
+/// A template: the OSDU schema of one kind, captured from OSDU or imported from a file, which every mapping for that
+/// kind is checked and rendered against (docs/delivery/mapping-templates.md). Templates are owned by OSDU Delivery. A
+/// version is identified by the kind and the hash of its schema, and never changes; a mapping pins the version it fills.
+/// </summary>
+public sealed class DeliveryTemplate
+{
+    /// <summary>Stable id: derived from the kind and the version.</summary>
+    public Guid Id { get; set; }
+
+    /// <summary>The OSDU kind the schema describes (osdu:wks:work-product-component--WellLog:1.4.0).</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The content version: the hash prefix of the canonical bundled schema.</summary>
+    public string Version { get; set; } = string.Empty;
+
+    /// <summary>The bundled JSON Schema, every reference resolved into its definitions.</summary>
+    public string SchemaJson { get; set; } = string.Empty;
+
+    /// <summary>Where the schema came from: the flow and endpoint reference it was captured through, or the imported file.</summary>
+    public string Origin { get; set; } = string.Empty;
+
+    /// <summary>Who captured or imported it.</summary>
+    public string CapturedBy { get; set; } = string.Empty;
+
+    public DateTime CapturedUtc { get; set; }
 }
 
 /// <summary>A schema or reference snapshot version as the sync found it in a repository's snapshot store.</summary>
@@ -978,6 +1010,7 @@ public static class DeliveryModel
             e.Property(m => m.Name).HasMaxLength(150).IsRequired();
             e.Property(m => m.Version).HasMaxLength(50).IsRequired();
             e.Property(m => m.Kind).HasMaxLength(200).IsRequired();
+            e.Property(m => m.TemplateVersion).HasMaxLength(64).IsRequired();
             e.Property(m => m.RelativePath).HasMaxLength(1000).IsRequired();
             e.Property(m => m.ContentHash).HasMaxLength(64).IsRequired();
             e.Property(m => m.Yaml).IsRequired();
@@ -986,6 +1019,20 @@ public static class DeliveryModel
             e.Property(m => m.Message).HasMaxLength(4000);
             e.HasIndex(m => new { m.RepoId, m.Reference }).IsUnique();
             e.HasIndex(m => new { m.RepoId, m.Kind });
+            // A template delete asks which mappings pin the version.
+            e.HasIndex(m => new { m.Kind, m.TemplateVersion });
+        });
+
+        modelBuilder.Entity<DeliveryTemplate>(e =>
+        {
+            e.ToTable("Template", SchemaName);
+            e.HasKey(t => t.Id);
+            e.Property(t => t.Kind).HasMaxLength(200).IsRequired();
+            e.Property(t => t.Version).HasMaxLength(64).IsRequired();
+            e.Property(t => t.SchemaJson).IsRequired();
+            e.Property(t => t.Origin).HasMaxLength(1000).IsRequired();
+            e.Property(t => t.CapturedBy).HasMaxLength(200).IsRequired();
+            e.HasIndex(t => new { t.Kind, t.Version }).IsUnique();
         });
 
         modelBuilder.Entity<DeliverySnapshot>(e =>

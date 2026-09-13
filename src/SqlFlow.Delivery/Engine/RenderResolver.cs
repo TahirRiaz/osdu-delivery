@@ -3,11 +3,12 @@ using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Templates;
 using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Engine;
 
-/// <summary>A flow's render inputs pinned together: the mapping, both snapshots, the context and a renderer over them.</summary>
+/// <summary>A flow's render inputs pinned together: the mapping, its template, the cache, the context and a renderer over them.</summary>
 public sealed record ResolvedMapping(
     MappingDefinition Mapping,
     SchemaSnapshot Schema,
@@ -16,21 +17,23 @@ public sealed record ResolvedMapping(
     MappingRenderer Renderer);
 
 /// <summary>
-/// Resolves a flow's <c>render</c> block into a <see cref="ResolvedMapping"/> (design.md section 4.1): the pinned
-/// mapping from the catalog, the schema snapshot the mapping's kind pins, the reference snapshot the flow pins (or
-/// the store's current one for <c>pinned</c>), and the mapping parameters the flow supplies.
+/// Resolves a flow's <c>render</c> block into a <see cref="ResolvedMapping"/>: the pinned mapping from the repository, the
+/// template version the mapping pins from the catalog, the reference snapshot the flow pins (or the store's current one for
+/// <c>pinned</c>), and the mapping parameters the flow supplies. The preflight runs before anything is returned.
 /// </summary>
 public sealed class RenderResolver
 {
     private readonly MappingCatalog _mappings;
     private readonly ISnapshotStore _snapshots;
+    private readonly ITemplateStore? _templates;
 
-    public RenderResolver(MappingCatalog mappings, ISnapshotStore snapshots)
+    public RenderResolver(MappingCatalog mappings, ISnapshotStore snapshots, ITemplateStore? templates)
     {
         ArgumentNullException.ThrowIfNull(mappings);
         ArgumentNullException.ThrowIfNull(snapshots);
         _mappings = mappings;
         _snapshots = snapshots;
+        _templates = templates;
     }
 
     public async Task<ResolvedMapping> ResolveAsync(FlowDefinition flow, CancellationToken ct = default)
@@ -39,18 +42,24 @@ public sealed class RenderResolver
         var where = flow.SourcePath ?? flow.Name;
         var mapping = _mappings.Load(flow.Render.Mapping);
 
-        var schema = await _snapshots.LoadSchemaAsync(mapping.Kind, ct).ConfigureAwait(false)
-            ?? throw new FlowValidationException(
-                $"{where}: no schema snapshot for kind '{mapping.Kind}' under '{DescribeStore()}'. Capture one with 'sqlflow snapshot schema --kind {mapping.Kind}'.");
+        if (_templates is null)
+        {
+            throw new FlowValidationException(
+                $"{where}: mapping {mapping.Reference} fills template {mapping.Template}, and templates live in the catalog, which this host was started without. Start it with the catalog connection (--db, or the catalog variable).");
+        }
 
-        var usesReferences = UsesReferences(mapping);
+        var schema = await _templates.LoadAsync(mapping.Template, ct).ConfigureAwait(false)
+            ?? throw new FlowValidationException(
+                $"{where}: mapping {mapping.Reference} pins template {mapping.Template}, which is not saved in the catalog. Save it on the Templates page, or with 'sqlflow template import'.");
+
+        var usesCache = mapping.Entries.Any(e => e.Source?.Kind == MappingSourceKind.Cache);
         ReferenceSnapshot references;
         if (flow.Render.References.Equals("pinned", StringComparison.OrdinalIgnoreCase))
         {
             var current = await _snapshots.CurrentReferenceVersionAsync(ct).ConfigureAwait(false);
             if (current is null)
             {
-                if (usesReferences)
+                if (usesCache)
                 {
                     throw new FlowValidationException(
                         $"{where}: render.references is 'pinned' but the snapshot store has no current reference snapshot. Capture one with 'sqlflow snapshot references'.");
@@ -96,20 +105,5 @@ public sealed class RenderResolver
         Preflight.ThrowIfFailed(issues, where);
         var renderer = new MappingRenderer(mapping, schema, references, context);
         return new ResolvedMapping(mapping, schema, references, context, renderer);
-    }
-
-    private string DescribeStore() => _snapshots is Storage.FileSnapshotStore f ? f.Root : _snapshots.GetType().Name;
-
-    private static bool UsesReferences(MappingDefinition mapping)
-    {
-        var uses = false;
-        Preflight.WalkProperties(mapping, mapping.Properties, string.Empty, "record", (p, _, _) =>
-        {
-            if (p.Transform == MappingTransform.Reference)
-            {
-                uses = true;
-            }
-        });
-        return uses;
     }
 }

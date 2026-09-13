@@ -119,7 +119,7 @@ public sealed class InlineSubmissionEngineTests : IDisposable
         Assert.True(result.Success, result.Error);
         Assert.Equal(1, plan.Records);
         Assert.Equal(1, plan.Deliveries);
-        Assert.Empty(plan.Issues);
+        Assert.True(plan.Issues.Count == 0, string.Join(" | ", plan.Issues));
         Assert.Empty(_protocol.Deliveries);
         Assert.Null(await _ledger.GetRecordAsync(_estate.Definition.Id, WellboreEstate.Key("WB-PLAN")));
         Assert.Null(await _ledger.GetSubmissionAsync(submission.SubmissionId));

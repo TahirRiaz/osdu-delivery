@@ -32,7 +32,7 @@ internal static class Program
         var needsFile = command is not ("auth" or "db" or "worker" or "runs" or "user"
             or "health" or "login" or "logout" or "trigger" or "groups"
             or "whoami" or "doctor" or "summary" or "nodes" or "schedules" or "repos" or "pipelines"
-            or "search" or "completions");
+            or "search" or "completions" or "template");
         if (positional.Length < (needsFile ? 2 : 1) || args.Any(a => a is "-h" or "--help"))
         {
             PrintUsage();
@@ -98,6 +98,9 @@ internal static class Program
 
                 case "snapshot":
                     return await DeliveryVerbs.SnapshotAsync(provider, file, positional, args, CancellationToken.None).ConfigureAwait(false);
+
+                case "template":
+                    return await DeliveryVerbs.TemplateAsync(provider, positional, args, args.Contains("--json"), CancellationToken.None).ConfigureAwait(false);
 
                 case "run":
                 {
@@ -849,8 +852,9 @@ internal static class Program
         });
 
         AddCliEngine(services);
-        // The ledger rides on the catalog connection a run was given (--db, or the catalog variable); without one the
-        // engine validates, plans and captures snapshots, and says so when asked to deliver.
+        // The ledger and the templates ride on the catalog connection a run was given (--db, or the catalog variable).
+        // Without one the engine validates documents and captures reference snapshots, and says what is missing when
+        // asked to check, plan or deliver.
         services.AddDeliveryLedger(sp => HasCatalogConnection(args) && ResolveCatalogConnection(sp, args) is { } catalog ? () => CatalogDatabase.Create(catalog) : null);
         if (json)
         {
@@ -894,12 +898,16 @@ internal static class Program
             Usage:
               sqlflow validate <flow.yaml|folder>  Validate a flow document, or every document under a folder
                                [--json]            (the CI gate: exit 0 only when every document is valid)
-              sqlflow check    <flow.yaml>         The delivery preflight: the mapping against the schema snapshot, the
-                               [--drop <location>] [--set name=value]... [--json]
+              sqlflow check    <flow.yaml>         The delivery preflight: the mapping against its pinned template, the
+                               [--drop <location>] [--set name=value]... [--json] [--db <conn-ref>]
                                                    reference snapshot, and the drop's manifest when the drop is present
-              sqlflow snapshot <flow.yaml> schema --kind <kind> [--from-dir <dir> | --endpoint <url>]
+                                                   (needs --db: templates live in the catalog)
               sqlflow snapshot <flow.yaml> references [--from-dir <dir> | --spec <spec.json> [--endpoint <url>]] [--no-current]
-              sqlflow snapshot <flow.yaml> list    Capture or list the schema and reference snapshots the flow renders with
+              sqlflow snapshot <flow.yaml> list    Capture or list the reference snapshots of the cache the flow renders against
+              sqlflow template capture <flow.yaml> --kind <kind> [--endpoint <url>]
+              sqlflow template import <schema.json> --kind <kind>   (or --from-dir <data definitions> --kind <kind>)
+              sqlflow template list | show --kind <kind> [--version <v>] | delete --kind <kind> --version <v>
+                                                   The templates in the catalog: OSDU schemas mappings pin (needs --db)
               sqlflow run      <flow.yaml>         Execute the flow (Ctrl+C aborts the in-flight work)
                                [--operation deliver|verify|plan|known-state|intake|drain|retrieve] [--force] [--set name=value]...
                                [--drop <location>] [--submission <id>] [--record <key>]... [--redeliver all|metadata|payload] [--publish-to <location>]

@@ -515,6 +515,34 @@ export interface RepoSource {
   updatedUtc: string;
 }
 
+/** One file a proposal writes: a repo-relative path and its full content. An existing path is revised; a new one is added. */
+export interface ProposalFile {
+  path: string;
+  content: string;
+}
+
+/**
+ * Files proposed to a tracked repo source as a pull request. `baseBranch` defaults to the source's tracked branch and
+ * `headBranch` to a branch derived from the content; the control plane pushes with the source's own stored credential.
+ */
+export interface ProposeFilesRequest {
+  title: string;
+  body: string | null;
+  baseBranch: string | null;
+  headBranch: string | null;
+  files: ProposalFile[];
+}
+
+/** An opened proposal: the pull request to review, the pushed branch and commit, and the preflight warnings stamped into its body. */
+export interface ProposalCreated {
+  pullRequestUrl: string;
+  pullRequestNumber: number;
+  headBranch: string;
+  commitSha: string;
+  filesChanged: number;
+  warnings: string[];
+}
+
 export interface RegisterRepoSourceRequest {
   name: string;
   remoteUrl: string;

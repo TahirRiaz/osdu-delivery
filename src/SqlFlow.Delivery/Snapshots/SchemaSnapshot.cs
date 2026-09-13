@@ -107,6 +107,23 @@ public sealed class SchemaSnapshot
 
     private JsonObject EffectiveRoot => _effectiveRoot ??= Effective(_root);
 
+    /// <summary>The effective root object: every <c>allOf</c> branch merged and every <c>$ref</c> followed.</summary>
+    internal JsonObject EffectiveRootObject => EffectiveRoot;
+
+    /// <summary>A schema node with its <c>allOf</c> branches merged and its <c>$ref</c> followed, for walks over the whole schema.</summary>
+    internal JsonObject EffectiveOf(JsonObject schema)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        return Effective(schema);
+    }
+
+    /// <summary>The JSON Schema type an effective node declares, or implies through its properties or items.</summary>
+    internal static SchemaType TypeOfNode(JsonObject schema)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        return TypeOf(schema);
+    }
+
     private SchemaProperty? Child(JsonObject effectiveObject, string name)
     {
         if (effectiveObject["properties"] is JsonObject props && props[name] is JsonObject child)

@@ -1,3 +1,6 @@
+using SqlFlow.Catalog;
+using SqlFlow.Delivery.Templates;
+
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
@@ -17,6 +20,13 @@ internal static class SampleEstate
     /// what makes the pipeline id unique anyway.
     /// </summary>
     public const string FlowName = "recall-welllog";
+
+    /// <summary>The templates the sample mappings pin, by kind, and the bundled schema file each is saved from.</summary>
+    private static readonly (string Kind, string File)[] Templates =
+    [
+        ("osdu:wks:work-product-component--WellLog:1.4.0", "osdu_wks_work-product-component--WellLog_1.4.0.json"),
+        ("osdu:wks:master-data--Wellbore:1.3.0", "osdu_wks_master-data--Wellbore_1.3.0.json"),
+    ];
 
     /// <summary>The parts of the estate a run needs: the documents, what they render with, and the drop itself.</summary>
     private static readonly string[] Parts = ["flows", "mappings", "snapshots", "references", "out"];
@@ -39,6 +49,23 @@ internal static class SampleEstate
         var drop = Path.Combine(destination, "out", "{logSource}").Replace('\\', '/');
         File.WriteAllText(flowFile, File.ReadAllText(flowFile).Replace("samples/recall-welllog/out/{logSource}", drop, StringComparison.Ordinal));
         return destination;
+    }
+
+    /// <summary>
+    /// Saves the templates the sample mappings pin into the catalog at <paramref name="connectionString"/>, exactly as saving
+    /// them on the Templates page does. Templates live in the catalog rather than the repository, so a run that renders
+    /// the sample needs them there.
+    /// </summary>
+    public static async Task SaveTemplatesAsync(string connectionString)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        var store = new CatalogTemplateStore(() => CatalogDatabase.Create(connectionString));
+        foreach (var (kind, file) in Templates)
+        {
+            var path = Path.Combine(Locate(), "templates", file);
+            var schema = TemplateSources.FromBundledJson(await File.ReadAllTextAsync(path), kind, DateTimeOffset.UtcNow, path);
+            await store.SaveAsync(schema, "file " + file, "tests");
+        }
     }
 
     /// <summary>

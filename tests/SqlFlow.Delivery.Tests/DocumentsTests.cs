@@ -3,6 +3,7 @@ using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Tests;
+using SqlFlow.Delivery.Templates;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -129,9 +130,12 @@ public class YamlDocumentLoaderTests
         Assert.Equal("samples/recall-welllog/out/{logSource}/known-state", flow.Source.KnownState);
 
         var mapping = new MappingCatalog(Samples.Mappings, loader).Load("WellLog@1.4.0");
-        Assert.Equal("osdu:wks:work-product-component--WellLog:1.4.0", mapping.Kind);
-        Assert.Contains(mapping.Properties, p => p.Target == "data.Curves" && p.Collection && p.Definition == "Curve");
-        Assert.Single(mapping.Fixtures);
+        Assert.Equal(new TemplateReference("osdu:wks:work-product-component--WellLog:1.4.0", "26a3c3441882db4f"), mapping.Template);
+        Assert.Contains(mapping.Entries, e => e.Target.Text == "osdu.data.Curves" && e.IsRepeater && e.Source!.Child == "curves");
+        Assert.Equal(["curves"], mapping.ChildDatasets);
+        Assert.Equal(2, mapping.Fixtures.Count);
+        Assert.Equal(["opendes-reference-data-default"], mapping.Envelope.LegalTags);
+        Assert.Equal(["NO"], mapping.Envelope.OtherRelevantDataCountries);
     }
 
     [Fact]
@@ -197,15 +201,37 @@ public class YamlDocumentLoaderTests
     }
 
     [Fact]
-    public void Mapping_parse_validates_transform_configuration()
+    public void Mapping_parse_reads_sources_and_refuses_what_is_malformed()
     {
         var loader = new DeliveryDocumentLoader();
         var mapping = loader.ParseMapping(TestSchema.MappingYaml, "m.yaml");
-        Assert.Equal(MappingTransform.Reference, mapping.Properties[2].Transform);
-        Assert.Equal(["Code"], mapping.Properties[2].Config.MatchBy);
+        Assert.Equal(TestSchema.Template, mapping.Template);
+        var unit = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Unit");
+        Assert.Equal(MappingSourceKind.Cache, unit.Source!.Kind);
+        Assert.True(unit.Source.ReadsRecordId);
+        Assert.Equal("Code", Assert.Single(unit.FindBy).Field);
+        Assert.Equal(new DatasetColumn(null, "unit"), unit.FindBy[0].Column);
+        Assert.True(mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves").IsRepeater);
+        Assert.Equal(new DatasetColumn("curves", "curve_id"), mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].CurveID").Source!.Column);
 
-        Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingYaml.Replace("config: { type: UnitOfMeasure, matchBy: [Code] }", "config: { matchBy: [Code] }", StringComparison.Ordinal), "m"));
-        Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingYaml.Replace("identity: { naturalKey: [data.Name] }", "identity: { naturalKey: [data.Curves] }", StringComparison.Ordinal), "m"));
+        string Refused(string entries) => Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingDocument(entries), "m.yaml")).Message;
+        Assert.Contains("needs 'findBy'", Refused("  - { target: osdu.data.Unit, source: cache.UnitOfMeasure.id }"), StringComparison.Ordinal);
+        Assert.Contains("both 'source' and 'static'", Refused("  - { target: osdu.data.Symbol, source: dataset.a, static: b }"), StringComparison.Ordinal);
+        Assert.Contains("neither 'source' nor 'static'", Refused("  - { target: osdu.data.Symbol }"), StringComparison.Ordinal);
+        Assert.Contains("must start with 'dataset.'", Refused("  - { target: osdu.data.Symbol, source: column_a }"), StringComparison.Ordinal);
+        Assert.Contains("must start with 'osdu.'", Refused("  - { target: data.Symbol, source: dataset.a }"), StringComparison.Ordinal);
+        Assert.Contains("fills the same variable", Refused("  - { target: osdu.data.Name, source: dataset.other }"), StringComparison.Ordinal);
+        Assert.Contains("no entry repeats osdu.data.Curves", Refused("  - { target: \"osdu.data.Curves[].CurveID\", source: dataset.curves.curve_id }"), StringComparison.Ordinal);
+        Assert.Contains("only an entry inside a repeater", Refused("  - { target: osdu.data.Symbol, source: dataset.curves.curve_id }"), StringComparison.Ordinal);
+        Assert.Contains("is not a modifier", Refused("  - { target: osdu.data.Symbol, source: dataset.a, modifiers: [shout] }"), StringComparison.Ordinal);
+        Assert.Contains("split needs the part", Refused("  - { target: osdu.data.Symbol, source: dataset.a, modifiers: [{ split: { separator: x } }] }"), StringComparison.Ordinal);
+        Assert.Contains("appliesWhen 'dataset.a equals b'", Refused("  - { target: osdu.data.Symbol, source: dataset.a, appliesWhen: dataset.a equals b }"), StringComparison.Ordinal);
+        Assert.Contains("compares cache.Wellbore", Refused("  - { target: osdu.data.Unit, source: cache.UnitOfMeasure.id, findBy: cache.Wellbore.Code = dataset.a }"), StringComparison.Ordinal);
+        Assert.Contains("uses {param.missing}", Refused("  - { target: osdu.data.Symbol, static: \"{param.missing}\" }"), StringComparison.Ordinal);
+        Assert.Contains("a static entry takes only", Refused("  - { target: osdu.data.Symbol, static: b, required: false }"), StringComparison.Ordinal);
+        Assert.Contains("steps into more than one array", Refused("  - { target: \"osdu.data.Curves[].Points[].X\", source: dataset.a }"), StringComparison.Ordinal);
+
+        Assert.Contains("template.version", Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingYaml.Replace(TestSchema.Build().Version, "latest", StringComparison.Ordinal), "m")).Message, StringComparison.Ordinal);
         Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingYaml.Replace("dataPartition: { required: true }", "other: { required: true }", StringComparison.Ordinal), "m"));
         var wrongKind = Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingYaml.Replace("documentType: mapping", "flowType: delivery", StringComparison.Ordinal), "m"));
         Assert.Contains("expected 'documentType: mapping'", wrongKind.Message, StringComparison.Ordinal);
@@ -256,8 +282,8 @@ public class OsduIdentifierValidationTests
     }
 
     [Theory]
-    [InlineData("legalTags: [tag]", "legalTags: [tag, tag]", "envelope.legalTags")]
-    [InlineData("otherRelevantDataCountries: [NO]", "otherRelevantDataCountries: [NO, NO]", "envelope.otherRelevantDataCountries")]
+    [InlineData("static: [tag] }", "static: [tag, tag] }", "osdu.legal.legaltags")]
+    [InlineData("static: [NO] }", "static: [NO, NO] }", "osdu.legal.otherRelevantDataCountries")]
     public void A_repeated_legal_entry_is_rejected_because_the_legal_lists_are_sets(string from, string to, string key)
     {
         var yaml = TestSchema.MappingYaml.Replace(from, to, StringComparison.Ordinal);

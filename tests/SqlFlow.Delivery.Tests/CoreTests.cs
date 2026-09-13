@@ -1,3 +1,4 @@
+using SqlFlow.Delivery.Documents;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
@@ -140,21 +141,32 @@ public class SchemaSnapshotTests
 
 public class MappingRendererTests
 {
-    private static SourceRecord Record(string name = "well-1", string? depth = "12.5", string? unit = "m")
+    private static SourceRecord Record(string name = "well-1", string? depth = "12.5", string? unit = "m", string? flag = "REGULAR", string? wellbore = "NO 1/1-A", bool curves = true)
         => new()
         {
-            Row = SourceRow.FromStrings(new Dictionary<string, string?> { ["name"] = name, ["depth"] = depth, ["unit"] = unit, ["wb"] = "NO 1/1-A", ["flag"] = "REGULAR" }),
+            Row = SourceRow.FromStrings(new Dictionary<string, string?>
+            {
+                ["name"] = name,
+                ["depth"] = depth,
+                ["unit"] = unit,
+                ["wb"] = wellbore,
+                ["flag"] = flag,
+                ["when"] = "01.09.2026",
+                ["pass"] = "MAIN,REPEAT",
+            }),
             Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase)
             {
-                ["curves"] = [SourceRow.FromStrings(new Dictionary<string, string?> { ["curve_id"] = "GR", ["top"] = "1" }), SourceRow.FromStrings(new Dictionary<string, string?> { ["curve_id"] = "RHOB", ["top"] = "2" })],
+                ["curves"] = curves
+                    ? [SourceRow.FromStrings(new Dictionary<string, string?> { ["curve_id"] = "GR", ["top"] = "1" }), SourceRow.FromStrings(new Dictionary<string, string?> { ["curve_id"] = "RHOB", ["top"] = "2" })]
+                    : [],
             },
         };
 
-    private static MappingRenderer Renderer(params MappingProperty[] extra)
-        => new(TestSchema.Mapping(extra), TestSchema.Build(), TestSchema.References(), TestSchema.Context());
+    private static MappingRenderer Renderer(string entries = "", ReferenceSnapshot? references = null)
+        => new(TestSchema.Mapping(entries), TestSchema.Build(), references ?? TestSchema.References(), TestSchema.Context());
 
     [Fact]
-    public void Renders_envelope_id_and_coerced_scalars()
+    public void Writes_the_id_and_kind_and_converts_values_to_the_template_types()
     {
         var result = Renderer().Render(Record());
         Assert.False(result.IsHeld);
@@ -164,39 +176,112 @@ public class MappingRendererTests
         Assert.Equal("well-1", data["Name"]!.GetValue<string>());
         Assert.Equal("test:wks:work-product-component--Thing:1.0.0", result.Document["kind"]!.GetValue<string>());
         Assert.Equal("tag", result.Document["legal"]!["legaltags"]![0]!.GetValue<string>());
+        Assert.Equal("owners@x", result.Document["acl"]!["owners"]![0]!.GetValue<string>());
     }
 
     [Fact]
-    public void Renders_references_collections_and_nested_objects()
+    public void Renders_cache_ids_repeaters_objects_and_modifiers()
     {
-        var renderer = Renderer(
-            new MappingProperty { Target = "data.Unit", Source = "unit", Transform = MappingTransform.Reference, Config = new TransformConfig { Type = "UnitOfMeasure", MatchBy = ["Code"] } },
-            new MappingProperty { Target = "data.WellboreID", Source = "wb", Transform = MappingTransform.Reference, Config = new TransformConfig { Type = "Wellbore", MatchBy = ["FacilityName"] } },
-            new MappingProperty { Target = "data.IsRegular", Source = "flag", Transform = MappingTransform.Equals, Config = new TransformConfig { Resolve = "regular" } },
-            new MappingProperty { Target = "data.Nested", Properties = [new MappingProperty { Target = "Inner", Source = "name", Transform = MappingTransform.Upper }] },
-            new MappingProperty { Target = "data.Curves", Collection = true, Scope = "curves", Properties = [new MappingProperty { Target = "CurveID", Source = "curve_id" }, new MappingProperty { Target = "TopDepth", Source = "top" }] });
+        var renderer = Renderer("""
+              - target: osdu.data.Unit
+                source: cache.UnitOfMeasure.id
+                findBy: cache.UnitOfMeasure.Code = dataset.unit
+              - target: osdu.data.WellboreID
+                source: cache.Wellbore.id
+                findBy: cache.Wellbore.FacilityName = dataset.wb
+              - target: osdu.data.IsRegular
+                source: dataset.flag
+                modifiers:
+                  - equals: regular
+              - target: osdu.data.Nested.Inner
+                source: dataset.name
+                modifiers: [upper]
+              - target: osdu.data.Description
+                source: dataset.pass
+                modifiers:
+                  - split: { separator: ",", part: 2 }
+              - target: osdu.data.When
+                source: dataset.when
+                modifiers:
+                  - date: dd.MM.yyyy
+              - target: osdu.tags.Source
+                static: test
+              - target: osdu.data.Curves
+                source: dataset.curves
+              - target: osdu.data.Curves[].CurveID
+                source: dataset.curves.curve_id
+              - target: osdu.data.Curves[].TopDepth
+                source: dataset.curves.top
+            """);
         var result = renderer.Render(Record());
-        Assert.False(result.IsHeld);
+        Assert.False(result.IsHeld, string.Join("; ", result.Holds));
         var data = result.Document["data"]!;
         Assert.Equal("dev:reference-data--UnitOfMeasure:m:", data["Unit"]!.GetValue<string>());
         Assert.Equal("dev:master-data--Wellbore:abc:", data["WellboreID"]!.GetValue<string>());
         Assert.True(data["IsRegular"]!.GetValue<bool>());
         Assert.Equal("WELL-1", data["Nested"]!["Inner"]!.GetValue<string>());
-        Assert.Equal(2, data["Curves"]!.AsArray().Count);
+        Assert.Equal("REPEAT", data["Description"]!.GetValue<string>());
+        Assert.StartsWith("2026-09-01T00:00:00", data["When"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.Equal("test", result.Document["tags"]!["Source"]!.GetValue<string>());
+        Assert.Equal(["GR", "RHOB"], data["Curves"]!.AsArray().Select(c => c!["CurveID"]!.GetValue<string>()));
         Assert.Equal(2, data["Curves"]![1]!["TopDepth"]!.GetValue<long>());
     }
 
     [Fact]
-    public void Holds_on_missing_reference_and_incomplete_key()
+    public void An_empty_required_value_holds_the_record_and_an_empty_optional_value_is_left_out()
     {
-        var renderer = Renderer(new MappingProperty { Target = "data.Unit", Source = "unit", Transform = MappingTransform.Reference, Config = new TransformConfig { Type = "UnitOfMeasure", MatchBy = ["Code"] } });
-        var missingUnit = renderer.Render(Record(unit: "furlong"));
-        Assert.True(missingUnit.IsHeld);
-        Assert.Contains(missingUnit.Holds, h => h.Contains("no UnitOfMeasure matches 'furlong'", StringComparison.Ordinal));
+        var required = Renderer("  - { target: osdu.data.Description, source: dataset.missing }").Render(Record());
+        Assert.True(required.IsHeld);
+        Assert.Contains(required.Holds, h => h.Contains("osdu.data.Description: dataset.missing is empty", StringComparison.Ordinal));
 
-        var noKey = renderer.Render(Record(name: " "));
+        var optional = Renderer("  - { target: osdu.data.Description, source: dataset.missing, required: false }").Render(Record());
+        Assert.False(optional.IsHeld);
+        Assert.Null(optional.Document["data"]!["Description"]);
+    }
+
+    [Fact]
+    public void A_cache_miss_holds_a_required_entry_and_leaves_an_optional_one_out()
+    {
+        const string Unit = """
+              - target: osdu.data.Unit
+                source: cache.UnitOfMeasure.id
+                findBy: cache.UnitOfMeasure.Code = dataset.unit
+            """;
+        var missing = Renderer(Unit).Render(Record(unit: "furlong"));
+        Assert.True(missing.IsHeld);
+        Assert.Contains(missing.Holds, h => h.Contains("no UnitOfMeasure matches 'furlong' by Code", StringComparison.Ordinal));
+
+        var optional = Renderer(Unit + "\n    required: false").Render(Record(unit: "furlong"));
+        Assert.False(optional.IsHeld);
+        Assert.Null(optional.Document["data"]!["Unit"]);
+
+        var noKey = Renderer().Render(Record(name: " "));
         Assert.True(noKey.IsHeld);
         Assert.Null(noKey.Key);
+    }
+
+    [Fact]
+    public void Several_records_holding_the_value_hold_the_record_even_when_the_entry_is_optional()
+    {
+        var references = new ReferenceSnapshot("refs-1", DateTimeOffset.UnixEpoch,
+        [
+            new ReferenceType("Wellbore", "master-data--Wellbore",
+            [
+                ReferenceItem.FromText("dev:master-data--Wellbore:one", new Dictionary<string, string> { ["FacilityName"] = "NO 1/1-A" }),
+                ReferenceItem.FromText("dev:master-data--Wellbore:two", new Dictionary<string, string> { ["FacilityName"] = "NO 1/1-A" }),
+            ]),
+        ]);
+        var result = Renderer("""
+              - target: osdu.data.WellboreID
+                source: cache.Wellbore.id
+                findBy: cache.Wellbore.FacilityName = dataset.wb
+                required: false
+            """, references).Render(Record());
+        Assert.True(result.IsHeld);
+        Assert.Contains(result.Holds, h =>
+            h.Contains("'NO 1/1-A' matches 2 Wellbore records by FacilityName exactly", StringComparison.Ordinal)
+            && h.Contains("dev:master-data--Wellbore:one", StringComparison.Ordinal)
+            && h.Contains("dev:master-data--Wellbore:two", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -210,8 +295,13 @@ public class MappingRendererTests
                 ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:ft", new Dictionary<string, string> { ["Code"] = "ft", ["Name"] = "foot" }),
             ]),
         ]);
-        var unit = new MappingProperty { Target = "data.Unit", Source = "unit", Transform = MappingTransform.Reference, Config = new TransformConfig { Type = "UnitOfMeasure", MatchBy = ["Code", "Name"] } };
-        var renderer = new MappingRenderer(TestSchema.Mapping(unit), TestSchema.Build(), references, TestSchema.Context());
+        var renderer = Renderer("""
+              - target: osdu.data.Unit
+                source: cache.UnitOfMeasure.id
+                findBy:
+                  - cache.UnitOfMeasure.Code = dataset.unit
+                  - cache.UnitOfMeasure.Name = dataset.unit
+            """, references);
 
         var feet = renderer.Render(Record(unit: "ft"));
         Assert.False(feet.IsHeld);
@@ -221,16 +311,113 @@ public class MappingRendererTests
         var undecided = renderer.Render(Record(unit: "FT"));
         Assert.True(undecided.IsHeld);
         Assert.Contains(undecided.Holds, h =>
-            h.Contains("'FT' matches 2 UnitOfMeasure records by Code only when case is ignored", StringComparison.Ordinal)
+            h.Contains("'FT' matches 2 UnitOfMeasure records by Code once case is ignored", StringComparison.Ordinal)
             && h.Contains("dev:reference-data--UnitOfMeasure:fT", StringComparison.Ordinal)
             && h.Contains("dev:reference-data--UnitOfMeasure:ft", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AppliesWhen_leaves_the_variable_out_for_rows_it_does_not_apply_to()
+    {
+        var renderer = Renderer("""
+              - target: osdu.data.Description
+                source: dataset.name
+                appliesWhen: dataset.flag is REGULAR
+              - target: osdu.data.Symbol
+                static: flagged
+                appliesWhen: dataset.flag is not empty
+              - target: osdu.data.Count
+                static: 1
+                appliesWhen: dataset.flag is not "regular"
+            """);
+
+        var regular = renderer.Render(Record(flag: "regular"));
+        Assert.False(regular.IsHeld);
+        Assert.Equal("well-1", regular.Document["data"]!["Description"]!.GetValue<string>());
+        Assert.Equal("flagged", regular.Document["data"]!["Symbol"]!.GetValue<string>());
+        Assert.Null(regular.Document["data"]!["Count"]);
+
+        var discrete = renderer.Render(Record(flag: "DISCRETE"));
+        Assert.False(discrete.IsHeld);
+        Assert.Null(discrete.Document["data"]!["Description"]);
+        Assert.Equal(1, discrete.Document["data"]!["Count"]!.GetValue<long>());
+
+        var none = renderer.Render(Record(flag: null));
+        Assert.Null(none.Document["data"]!["Symbol"]);
+    }
+
+    [Fact]
+    public void A_repeater_without_rows_holds_when_required_and_is_left_out_when_optional()
+    {
+        const string Curves = """
+              - target: osdu.data.Curves[].CurveID
+                source: dataset.curves.curve_id
+              - target: osdu.data.Curves
+                source: dataset.curves
+            """;
+        var required = Renderer(Curves).Render(Record(curves: false));
+        Assert.True(required.IsHeld);
+        Assert.Contains(required.Holds, h => h.Contains("osdu.data.Curves: dataset.curves has no rows", StringComparison.Ordinal));
+
+        var optional = Renderer(Curves + "\n    required: false").Render(Record(curves: false));
+        Assert.False(optional.IsHeld);
+        Assert.Null(optional.Document["data"]!["Curves"]);
+    }
+
+    [Fact]
+    public void Static_values_expand_parameters_and_take_the_template_type()
+    {
+        var result = Renderer("""
+              - { target: osdu.data.Description, static: "{param.dataPartition}-x" }
+              - { target: osdu.data.Count, static: "5" }
+              - { target: osdu.data.IsRegular, static: true }
+              - { target: osdu.data.Aliases, static: [one, two] }
+            """).Render(Record());
+        Assert.False(result.IsHeld, string.Join("; ", result.Holds));
+        var data = result.Document["data"]!;
+        Assert.Equal("dev-x", data["Description"]!.GetValue<string>());
+        Assert.Equal(5, data["Count"]!.GetValue<long>());
+        Assert.True(data["IsRegular"]!.GetValue<bool>());
+        Assert.Equal(["one", "two"], data["Aliases"]!.AsArray().Select(a => a!.GetValue<string>()));
+    }
+
+    [Fact]
+    public void Replace_takes_an_exact_key_first_and_otherwise_the_one_key_that_matches_ignoring_case()
+    {
+        var renderer = Renderer("""
+              - target: osdu.data.Unit
+                source: cache.UnitOfMeasure.id
+                findBy: cache.UnitOfMeasure.Code = dataset.unit
+                modifiers:
+                  - replace: { Metre: m, FEET: ft, feet: ft }
+            """);
+        Assert.Equal("dev:reference-data--UnitOfMeasure:m:", renderer.Render(Record(unit: "METRE")).Document["data"]!["Unit"]!.GetValue<string>());
+        Assert.Equal("dev:reference-data--UnitOfMeasure:ft:", renderer.Render(Record(unit: "feet")).Document["data"]!["Unit"]!.GetValue<string>());
+
+        // Two keys match "Feet" once case is ignored, so the value passes unchanged and the cache does not hold it.
+        Assert.True(renderer.Render(Record(unit: "Feet")).IsHeld);
+    }
+
+    [Fact]
+    public void A_date_that_is_not_a_date_holds_whatever_the_required_flag()
+    {
+        var result = Renderer("""
+              - target: osdu.data.When
+                source: dataset.name
+                modifiers:
+                  - date: dd.MM.yyyy
+                required: false
+            """).Render(Record());
+        Assert.True(result.IsHeld);
+        Assert.Contains(result.Holds, h => h.Contains("'well-1' is not a date/time in the format dd.MM.yyyy", StringComparison.Ordinal));
     }
 
     [Fact]
     public void Holds_on_schema_required_property_missing_and_bad_number()
     {
         var result = Renderer().Render(Record(depth: null));
-        Assert.Contains(result.Holds, h => h.Contains("schema-required property data.Depth", StringComparison.Ordinal));
+        Assert.Contains(result.Holds, h => h.Contains("osdu.data.Depth: dataset.depth is empty", StringComparison.Ordinal));
+        Assert.Contains(result.Holds, h => h.Contains("schema-required property data.Depth rendered empty", StringComparison.Ordinal));
         var bad = Renderer().Render(Record(depth: "deep"));
         Assert.Contains(bad.Holds, h => h.Contains("not a valid number", StringComparison.Ordinal));
     }
@@ -260,14 +447,11 @@ public class MappingRendererTests
     }
 
     [Fact]
-    public void Constant_expands_parameters_and_split_omits_missing_segment()
+    public void A_renderer_refuses_a_template_version_the_mapping_does_not_pin()
     {
-        var renderer = Renderer(
-            new MappingProperty { Target = "data.Description", Transform = MappingTransform.Constant, Config = new TransformConfig { Value = "{param:dataPartition}-x" } },
-            new MappingProperty { Target = "data.Nested", Properties = [new MappingProperty { Target = "Inner", Source = "name", Transform = MappingTransform.Split, Config = new TransformConfig { Delimiter = ",", Index = 1 } }] });
-        var result = renderer.Render(Record());
-        Assert.Equal("dev-x", result.Document["data"]!["Description"]!.GetValue<string>());
-        Assert.Null(result.Document["data"]!["Nested"]);
+        var other = SchemaSnapshot.Parse(TestSchema.Kind, TestSchema.Build().Root.ToJsonString().Replace("\"Symbol\"", "\"Mark\"", StringComparison.Ordinal), DateTimeOffset.UnixEpoch);
+        var ex = Assert.Throws<FlowValidationException>(() => new MappingRenderer(TestSchema.Mapping(), other, TestSchema.References(), TestSchema.Context()));
+        Assert.Contains("the mapping fills template", ex.Message, StringComparison.Ordinal);
     }
 }
 
@@ -280,61 +464,120 @@ public class PreflightTests
             ["curves"] = new HashSet<string>(["curve_id", "top"], StringComparer.OrdinalIgnoreCase),
         };
 
+    private static IReadOnlyList<ValidationIssue> Check(string entries, IReadOnlyDictionary<string, IReadOnlySet<string>>? columns = null, string baseEntries = TestSchema.BaseEntries, RenderContext? context = null, string fixtures = "")
+        => Preflight.Check(TestSchema.Mapping(entries, fixtures, baseEntries), TestSchema.Build(), TestSchema.References(), context ?? TestSchema.Context(), columns);
+
+    private static void HasError(IReadOnlyList<ValidationIssue> issues, string text)
+        => Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains(text, StringComparison.Ordinal));
+
     [Fact]
     public void Passes_a_consistent_combination()
     {
-        var issues = Preflight.Check(TestSchema.Mapping(), TestSchema.Build(), TestSchema.References(), TestSchema.Context(), Columns("name", "depth"));
+        var issues = Preflight.Check(new DeliveryDocumentLoader().ParseMapping(TestSchema.MappingYaml, "m.yaml"), TestSchema.Build(), TestSchema.References(), TestSchema.Context(), Columns("name", "depth", "unit"));
         Assert.DoesNotContain(issues, i => i.Severity == IssueSeverity.Error);
     }
 
     [Fact]
-    public void Fails_on_missing_source_column_unknown_target_and_missing_reference_type()
+    public void Fails_on_missing_columns_an_unknown_variable_and_a_missing_cache_type()
     {
-        var mapping = TestSchema.Mapping(
-            new MappingProperty { Target = "data.Nope", Source = "depth" },
-            new MappingProperty { Target = "data.Unit", Source = "unit", Transform = MappingTransform.Reference, Config = new TransformConfig { Type = "Country" } });
-        var issues = Preflight.Check(mapping, TestSchema.Build(), TestSchema.References(), TestSchema.Context(), Columns("name"));
-        Assert.Contains(issues, i => i.Message.Contains("binds to column 'depth'", StringComparison.Ordinal));
-        Assert.Contains(issues, i => i.Message.Contains("'data.Nope' does not exist", StringComparison.Ordinal));
-        Assert.Contains(issues, i => i.Message.Contains("reference type 'Country'", StringComparison.Ordinal));
+        var issues = Check("""
+              - { target: osdu.data.Nope, source: dataset.depth }
+              - target: osdu.data.Unit
+                source: cache.Country.id
+                findBy: cache.Country.Code = dataset.unit
+            """, Columns("name"));
+        HasError(issues, "reads dataset.depth, which the dataset's row in the drop does not declare");
+        HasError(issues, "fills a variable that template test:wks:work-product-component--Thing:1.0.0");
+        HasError(issues, "reads cache.Country, which reference snapshot 'refs-1' does not hold");
         Assert.Throws<FlowValidationException>(() => Preflight.ThrowIfFailed(issues, "test"));
     }
 
     [Fact]
-    public void Fails_when_a_schema_required_property_is_unbound()
+    public void Fails_when_a_schema_required_property_has_no_entry_or_may_be_left_out()
     {
-        var mapping = TestSchema.Mapping() with { Properties = [new MappingProperty { Target = "data.Name", Source = "name" }] };
-        var issues = Preflight.Check(mapping, TestSchema.Build(), TestSchema.References(), TestSchema.Context(), null);
-        Assert.Contains(issues, i => i.Message.Contains("requires data.Depth", StringComparison.Ordinal));
+        var withoutDepth = TestSchema.BaseEntries.Replace("  - { target: osdu.data.Depth, source: dataset.depth }", string.Empty, StringComparison.Ordinal);
+        HasError(Check(string.Empty, baseEntries: withoutDepth), "requires osdu.data.Depth, which the mapping does not fill");
+
+        var optionalDepth = TestSchema.BaseEntries.Replace("source: dataset.depth }", "source: dataset.depth, required: false }", StringComparison.Ordinal);
+        HasError(Check(string.Empty, baseEntries: optionalDepth), "is required: false, but the template requires osdu.data.Depth");
     }
 
     [Fact]
-    public void Fails_on_undeclared_parameter_and_example_mismatch()
+    public void Refuses_what_the_engine_and_OSDU_write()
     {
-        var mapping = TestSchema.Mapping(new MappingProperty { Target = "data.Description", Source = "name", Transform = MappingTransform.Upper, Examples = [new PropertyExample { Source = "abc", Target = "abc" }] });
-        var context = TestSchema.Context() with { Parameters = new Dictionary<string, string> { ["dataPartition"] = "dev", ["extra"] = "1" } };
-        var issues = Preflight.Check(mapping, TestSchema.Build(), TestSchema.References(), context, null);
-        Assert.Contains(issues, i => i.Message.Contains("parameter 'extra'", StringComparison.Ordinal));
+        HasError(Check("  - { target: osdu.id, static: x }"), "osdu.id is written by OSDU Delivery");
+        HasError(Check("  - { target: osdu.kind, static: x }"), "osdu.kind is written by OSDU Delivery");
+    }
 
-        var examples = Preflight.Check(mapping, TestSchema.Build(), TestSchema.References(), TestSchema.Context(), null);
-        Assert.Contains(examples, i => i.Message.Contains("rendered \"ABC\", expected \"abc\"", StringComparison.Ordinal));
+    [Fact]
+    public void Refuses_values_whose_shape_the_variable_does_not_take()
+    {
+        HasError(Check("""
+              - target: osdu.data.Nested[].Inner
+                source: dataset.curves.curve_id
+              - target: osdu.data.Nested
+                source: dataset.curves
+            """), "a repeater fills a list of objects");
+        HasError(Check("  - { target: osdu.data.Nested, source: dataset.name }"), "is one value");
+        HasError(Check("  - { target: osdu.data.Symbol, static: { a: b } }"), "a static object cannot be written");
+        HasError(Check("  - { target: osdu.data.Symbol, source: dataset.flag, modifiers: [{ equals: yes }] }"), "the last modifier is equals");
+    }
+
+    [Fact]
+    public void Refuses_a_cache_id_of_another_entity_type_than_the_template_points_to()
+    {
+        HasError(Check("""
+              - target: osdu.data.WellboreID
+                source: cache.UnitOfMeasure.id
+                findBy: cache.UnitOfMeasure.Code = dataset.unit
+            """), "writes the id of a cached UnitOfMeasure (reference-data--UnitOfMeasure), but the template points osdu.data.WellboreID to master-data--Wellbore");
+    }
+
+    [Fact]
+    public void Checks_a_static_reference_against_the_cache_and_the_relationship()
+    {
+        var known = Check("  - { target: osdu.data.Unit, static: \"{param.dataPartition}:reference-data--UnitOfMeasure:m:\" }");
+        Assert.DoesNotContain(known, i => i.Severity == IssueSeverity.Error);
+
+        HasError(Check("  - { target: osdu.data.Unit, static: \"dev:reference-data--UnitOfMeasure:furlong:\" }"), "is not in reference snapshot 'refs-1'");
+        HasError(Check("  - { target: osdu.data.Unit, static: \"dev:master-data--Wellbore:abc:\" }"), "is a master-data--Wellbore record, and osdu.data.Unit points to reference-data--UnitOfMeasure");
+        HasError(Check("  - { target: osdu.data.Unit, static: metre }"), "'metre' is not an OSDU record id");
+    }
+
+    [Fact]
+    public void Refuses_matching_by_fields_the_cache_does_not_hold()
+    {
+        HasError(Check("""
+              - target: osdu.data.Unit
+                source: cache.UnitOfMeasure.id
+                findBy: cache.UnitOfMeasure.NotCached = dataset.unit
+            """), "caches none of those");
+    }
+
+    [Fact]
+    public void Fails_on_an_undeclared_parameter()
+    {
+        var context = TestSchema.Context() with { Parameters = new Dictionary<string, string> { ["dataPartition"] = "dev", ["extra"] = "1" } };
+        HasError(Check(string.Empty, context: context), "parameter 'extra'");
     }
 
     [Fact]
     public void Fixtures_are_rendered_and_compared_canonically()
     {
-        var expected = """{"id":"dev:work-product-component--Thing:%KEY%","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"w","Depth":1}}""";
         var key = DeliveryKey.Derive("test", ["w"]).Value.ToString("N");
-        var mapping = TestSchema.Mapping() with
-        {
-            Fixtures = [new MappingFixture { Name = "f", Record = new Dictionary<string, string?> { ["name"] = "w", ["depth"] = "1" }, Expected = expected.Replace("%KEY%", key, StringComparison.Ordinal) }],
-        };
-        var issues = Preflight.Check(mapping, TestSchema.Build(), TestSchema.References(), TestSchema.Context(), null);
-        Assert.DoesNotContain(issues, i => i.Severity == IssueSeverity.Error);
+        string Fixture(string depth) => $$$"""
+            fixtures:
+              - name: f
+                record: { name: w, depth: "1" }
+                expected: |
+                  {"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"w","Depth":{{{depth}}}}}
+            """;
 
-        var wrong = mapping with { Fixtures = [mapping.Fixtures[0] with { Expected = expected.Replace("%KEY%", key, StringComparison.Ordinal).Replace("\"Depth\":1", "\"Depth\":2", StringComparison.Ordinal) }] };
-        var failing = Preflight.Check(wrong, TestSchema.Build(), TestSchema.References(), TestSchema.Context(), null);
-        Assert.Contains(failing, i => i.Message.Contains("~ data.Depth: 2 -> 1", StringComparison.Ordinal));
+        Assert.DoesNotContain(Check(string.Empty, fixtures: Fixture("1")), i => i.Severity == IssueSeverity.Error);
+        HasError(Check(string.Empty, fixtures: Fixture("2")), "~ data.Depth: 2 -> 1");
+
+        // A fixture that renders its document but would hold the record is not a passing fixture.
+        HasError(Check("  - { target: osdu.data.Description, source: dataset.missing }", fixtures: Fixture("1")), "renders the expected document but holds the record");
     }
 }
 

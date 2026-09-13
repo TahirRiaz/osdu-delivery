@@ -19,6 +19,7 @@ using SqlFlow.Delivery.Protocols;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Storage;
+using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Tests;
 
@@ -66,6 +67,8 @@ public sealed class SqliteCatalog : IDisposable
     public CatalogDbContext CreateDbContext() => new(_options);
 
     public CatalogLedger Ledger(TimeProvider? time = null) => new(CreateDbContext, time);
+
+    public CatalogTemplateStore Templates(TimeProvider? time = null) => new(CreateDbContext, time);
 
     public void Dispose() => _connection.Dispose();
 }
@@ -250,15 +253,57 @@ public sealed class FakeHttpHandler : HttpMessageHandler
 /// <summary>Paths to the sample documents linked into the test output, and a ready-made engine context over them.</summary>
 public static class Samples
 {
+    public const string WellLogKind = "osdu:wks:work-product-component--WellLog:1.4.0";
+
+    public const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
+
     public static string Root => Path.Combine(AppContext.BaseDirectory, "samples");
 
     public static string Mappings => Path.Combine(Root, "mappings");
 
     public static string Snapshots => Path.Combine(Root, "snapshots");
 
+    /// <summary>The bundled OSDU schemas the sample mappings pin, as a template import reads them.</summary>
+    public static string TemplateFiles => Path.Combine(Root, "templates");
+
     public static string Flow => Path.Combine(Root, "flows", "recall-welllog.yaml");
 
     public static string References => Path.Combine(Root, "references");
+
+    // One catalog holding the sample templates for the whole run: templates are immutable, and the store keeps every
+    // loaded version in memory, so after the warm-up a render never reaches the database behind it.
+    private static readonly Lazy<(SqliteCatalog Catalog, CatalogTemplateStore Store)> SampleCatalog = new(() =>
+    {
+        var catalog = new SqliteCatalog();
+        var store = catalog.Templates();
+        ImportSampleTemplatesAsync(store).GetAwaiter().GetResult();
+        return (catalog, store);
+    });
+
+    /// <summary>A template store holding the sample templates, shared by the engine tests.</summary>
+    public static ITemplateStore SampleTemplates => SampleCatalog.Value.Store;
+
+    /// <summary>Saves the sample templates into <paramref name="store"/> and loads each once, returning what was saved.</summary>
+    public static async Task<IReadOnlyList<TemplateSaved>> ImportSampleTemplatesAsync(ITemplateStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        var saved = new List<TemplateSaved>();
+        foreach (var kind in new[] { WellLogKind, WellboreKind })
+        {
+            var schema = SampleTemplate(kind);
+            saved.Add(await store.SaveAsync(schema, "sample file", "tests"));
+            await store.LoadAsync(new TemplateReference(schema.Kind, schema.Version));
+        }
+
+        return saved;
+    }
+
+    /// <summary>The sample schema of a kind, read from its bundled file.</summary>
+    public static SchemaSnapshot SampleTemplate(string kind)
+    {
+        var file = Path.Combine(TemplateFiles, kind.Replace(':', '_') + ".json");
+        return TemplateSources.FromBundledJson(File.ReadAllText(file), kind, new DateTimeOffset(2026, 9, 7, 22, 37, 2, TimeSpan.Zero), file);
+    }
 
     public static string NewTempDirectory()
     {
@@ -270,7 +315,7 @@ public static class Samples
     /// <summary>The platform file stores plus the delivery writers, exactly as the hosts register them.</summary>
     public static FileStoreRegistry Stores() => new([new LocalFileStore()], [new LocalFileWriter()], [new LocalFileReader()]);
 
-    public static EngineContext Engine(ILedger? ledger, TimeProvider? time = null, IProtocolFactory? protocols = null)
+    public static EngineContext Engine(ILedger? ledger, TimeProvider? time = null, IProtocolFactory? protocols = null, ITemplateStore? templates = null)
     {
         var stores = Stores();
         var loader = new DeliveryDocumentLoader();
@@ -283,7 +328,8 @@ public static class Samples
             time ?? TimeProvider.System,
             NullLoggerFactory.Instance,
             protocols ?? new DefaultProtocolFactory(new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance),
-            CompositeDeliveryListener.Empty);
+            CompositeDeliveryListener.Empty,
+            Templates: templates ?? SampleTemplates);
     }
 
     /// <summary>The sample flow with the network target replaced by a local placeholder (tests never call OSDU).</summary>
@@ -311,6 +357,16 @@ public static class Samples
 public static class TestSchema
 {
     public const string Kind = "test:wks:work-product-component--Thing:1.0.0";
+
+    /// <summary>The entries every test mapping starts from: the envelope, the key's own property and the one property the schema requires.</summary>
+    public const string BaseEntries = """
+          - { target: osdu.acl.owners, static: [owners@x] }
+          - { target: osdu.acl.viewers, static: [viewers@x] }
+          - { target: osdu.legal.legaltags, static: [tag] }
+          - { target: osdu.legal.otherRelevantDataCountries, static: [NO] }
+          - { target: osdu.data.Name, source: dataset.name }
+          - { target: osdu.data.Depth, source: dataset.depth }
+        """;
 
     public static SchemaSnapshot Build() => SchemaSnapshot.Parse(Kind, """
         {
@@ -352,6 +408,9 @@ public static class TestSchema
         }
         """, new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
 
+    /// <summary>The template version of <see cref="Build"/>, which every test mapping pins.</summary>
+    public static TemplateReference Template => new(Kind, Build().Version);
+
     public static ReferenceSnapshot References() => new("refs-1", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
     [
         new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
@@ -373,56 +432,43 @@ public static class TestSchema
         Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "dev" },
     };
 
-    /// <summary>A minimal valid mapping over the test schema.</summary>
-    public static MappingDefinition Mapping(params MappingProperty[] extra) => new()
-    {
-        Name = "Thing",
-        Version = "1.0.0",
-        Kind = Kind,
-        Source = new MappingSource { System = "test", Scopes = ["curves"] },
-        Identity = new MappingIdentity { NaturalKey = ["data.Name"] },
-        Envelope = new MappingEnvelope
-        {
-            LegalTags = ["tag"],
-            OtherRelevantDataCountries = ["NO"],
-            Acl = new MappingAcl { Owners = ["owners@x"], Viewers = ["viewers@x"] },
-        },
-        Parameters = new Dictionary<string, MappingParameter>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = new() { Required = true } },
-        Properties =
-        [
-            new MappingProperty { Target = "data.Name", Source = "name" },
-            new MappingProperty { Target = "data.Depth", Source = "depth" },
-            .. extra,
-        ],
-    };
-
-    public static string MappingYaml => """
+    /// <summary>
+    /// A mapping document over the test template: the header, <paramref name="baseEntries"/>, then <paramref name="entries"/>
+    /// (YAML list items indented by two spaces), then <paramref name="fixtures"/> (a whole top-level block).
+    /// </summary>
+    public static string MappingDocument(string entries = "", string fixtures = "", string baseEntries = BaseEntries) =>
+        $"""
         documentType: mapping
         name: Thing
         version: 1.0.0
-        kind: test:wks:work-product-component--Thing:1.0.0
-        source: { system: test, scopes: [curves] }
-        identity: { naturalKey: [data.Name] }
-        envelope:
-          legalTags: [tag]
-          otherRelevantDataCountries: [NO]
-          acl: { owners: [owners@x], viewers: [viewers@x] }
+        template:
+          kind: {Kind}
+          version: {Build().Version}
+        dataset:
+          system: test
+          key: [dataset.name]
         parameters:
-          dataPartition: { required: true }
-        properties:
-          - { target: data.Name, source: name }
-          - { target: data.Depth, source: depth }
-          - target: data.Unit
-            source: unit
-            transform: reference
-            config: { type: UnitOfMeasure, matchBy: [Code] }
-          - target: data.Curves
-            collection: true
-            scope: curves
-            properties:
-              - { target: CurveID, source: curve_id }
-              - { target: TopDepth, source: top }
-        """;
+          dataPartition: {"{"} required: true {"}"}
+        mappings:
+
+        """ + baseEntries + "\n" + entries + "\n" + fixtures + "\n";
+
+    /// <summary>A valid mapping over the test template, with <paramref name="entries"/> appended to the base entries.</summary>
+    public static MappingDefinition Mapping(string entries = "", string fixtures = "", string baseEntries = BaseEntries)
+        => new DeliveryDocumentLoader().ParseMapping(MappingDocument(entries, fixtures, baseEntries), "thing.yaml");
+
+    /// <summary>A mapping document with a cache entry and a repeater, for the loader tests.</summary>
+    public static string MappingYaml => MappingDocument("""
+          - target: osdu.data.Unit
+            source: cache.UnitOfMeasure.id
+            findBy: cache.UnitOfMeasure.Code = dataset.unit
+          - target: osdu.data.Curves
+            source: dataset.curves
+          - target: osdu.data.Curves[].CurveID
+            source: dataset.curves.curve_id
+          - target: osdu.data.Curves[].TopDepth
+            source: dataset.curves.top
+        """);
 
     public static JsonObject Doc(string json) => (JsonObject)JsonNode.Parse(json)!;
 }

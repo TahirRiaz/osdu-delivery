@@ -4,11 +4,12 @@ import { join, resolve } from "node:path";
 
 /**
  * Builds the e2e fixture: a real local git repository holding the sample delivery estate (the recall-welllog
- * flow, its pinned mapping, the captured schema and reference snapshots, and the generated demo drop), which
+ * flow, its pinned mappings, the captured reference snapshot, and the generated demo drop), which
  * the suite registers as a repo source through the GUI. The control plane then syncs it exactly as it would a
  * customer's remote, so pipelines, runs, schedules, mappings and the delivery pages are all exercised against
- * real documents flowing through the product's own path. Runs use the plan operation, which renders the drop
- * against the snapshots and the ledger without touching an OSDU target.
+ * real documents flowing through the product's own path. The templates those mappings pin live in the catalog, not the
+ * repository, so the seed spec saves them through the API. Runs use the plan operation, which renders the drop
+ * against the templates, the reference snapshot and the ledger without touching an OSDU target.
  */
 export default function globalSetup(): void {
   const here = import.meta.dirname;

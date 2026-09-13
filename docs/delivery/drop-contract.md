@@ -49,8 +49,8 @@ File names are free; the manifest lists them. Parquet scope files need only top-
 | `parameters` | The flow parameter values the drop was prepared with. |
 | `sourceVersions` | Delta commit version per source table, for the tier-0 whole-run gate. |
 | `partitioned` | When true, root file i and each child scope's file i hold the same records, every scope declares the same number of files, and every file is sorted by the delivery key's text: the intake joins them partition by partition without a spill, and a fan-out spreads the partitions over member runs. An unsorted file is refused. Without it, child scopes are joined through a disk spill, which works for any layout. |
-| `scopes.record` | The root scope. Must declare every column the mapping binds (the preflight gate checks). |
-| `scopes.<child>` | Child scopes: `parentKey` names the column holding the parent's delivery key; `orderBy` orders rows within a parent. |
+| `scopes.record` | The root scope: the dataset's row. Must declare every column the mapping reads as `dataset.<column>` (the preflight gate checks). |
+| `scopes.<child>` | Child scopes: a child dataset the mapping reads (`dataset.<child>`, `dataset.<child>.<column>`) is the scope of the same name. `parentKey` names the column holding the parent's delivery key; `orderBy` orders rows within a parent. |
 | `payloads.<name>` | Where the chunks live and which root column carries the logical payload hash. `pathTemplate` is drop-relative and must contain `{deliveryKey}`; a drop written from a submission declares `locationColumn` instead, naming the root column that holds each record's own payload location ([submitting-records.md](submitting-records.md)). One of the two is required. The `hashColumn` may be left out only when the flow takes the chunk files' modified times as the payload watermark (`change.payloadDetect: lastModified`). |
 
 When the drop has child scopes or payloads, the root scope must carry a `deliveryKey` column
@@ -86,12 +86,12 @@ renderer holds any record whose declared key differs from the derived one.
 ```text
 root      = 6b6d1c3e-3a3c-5d0a-9f76-0f4a2c1e8d21
 keyNs     = uuid5(root, "delivery-key")
-name      = lower(trim(sourceSystem)) + ( "\x1f" + trim(value) ) for each natural-key value in order
+name      = lower(trim(sourceSystem)) + ( "\x1f" + trim(value) ) for each dataset key value in order
 deliveryKey = uuid5(keyNs, name)
 ```
 
 `uuid5` is RFC 4122 version 5 (SHA-1) over the namespace bytes in network order followed by the UTF-8 name.
-The natural-key values are the source columns of the mapping's `identity.naturalKey` properties, in order.
+The key values are those of the columns the mapping's `dataset.key` names, in order, and `sourceSystem` is its `dataset.system`.
 A null value makes the key underivable and the record is held.
 
 Python reference (standard library only):

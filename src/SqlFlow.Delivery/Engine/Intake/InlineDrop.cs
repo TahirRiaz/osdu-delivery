@@ -31,10 +31,12 @@ public sealed record InlineDropResult(string Location, DropManifest Manifest, bo
 /// </para>
 /// <para>
 /// JSON leaves a column out where a drop writes a null, so the drop declares every column the mapping reads and every
-/// column the flow names, and a column no record sent is null in every row. When the mapping iterates child scopes the
-/// drop is keyed: each root row carries its delivery key and each child row its record's key, sorted, so the intake
-/// merge-joins them. A record whose natural key is incomplete gets a key of its own for that join only; the renderer
-/// derives none, so the intake reports the record as untracked exactly as it would for such a row in a prepared drop.
+/// column the flow names, and a column no record sent is null in every row. Each child dataset the mapping repeats is
+/// written as a drop scope of the same name. The drop is keyed when the mapping repeats a child dataset or the flow
+/// streams a payload, since both are joined to their record by its key: each dataset row carries its delivery key and each
+/// child row its record's key, sorted, so the intake merge-joins them. A record whose dataset key is incomplete gets a key
+/// of its own for that join only; the renderer derives none, so the intake reports the record as untracked exactly as it
+/// would for such a row in a prepared drop.
 /// </para>
 /// </summary>
 public static class InlineDrop
@@ -49,7 +51,7 @@ public static class InlineDrop
     /// <summary>The root-scope column a submission's drop carries each record's payload content hash in.</summary>
     public const string HashColumnPrefix = "payloadHash__";
 
-    /// <summary>The namespace of the join keys given to records whose natural key is incomplete.</summary>
+    /// <summary>The namespace of the join keys given to records whose dataset key is incomplete.</summary>
     private static readonly Guid UntrackedKeys = DeterministicGuid.Namespace("inline-submission-untracked-record");
 
     /// <summary>The drop location of a submission: under the flow's work location for these parameter values.</summary>
@@ -148,7 +150,7 @@ public static class InlineDrop
     /// <summary>
     /// Writes the drop at <paramref name="location"/> unless a manifest for the same submission is already there. The
     /// mapping is the resolved one the run renders with: the drop declares the columns it reads, and derives the
-    /// delivery keys it joins child scopes by.
+    /// delivery keys it joins child datasets by.
     /// </summary>
     public static async Task<InlineDropResult> WriteAsync(
         IDropReader drops, FileStoreRegistry stores, string location, FlowDefinition flow, ResolvedMapping mapping, InlineSubmissionState submission,
@@ -194,22 +196,22 @@ public static class InlineDrop
         var warnings = new List<string>();
         var where = string.Create(CultureInfo.InvariantCulture, $"Inline submission {submission.SubmissionId:D}");
 
-        // Every scope the mapping iterates is declared, sent or not; a scope the mapping does not iterate is not written.
-        var sentScopes = records.ScopeColumns.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
-        foreach (var ignored in sentScopes.Keys.Where(s => read.Scopes.All(m => !m.Scope.Equals(s, StringComparison.OrdinalIgnoreCase))))
+        // Every child dataset the mapping repeats is declared, sent or not; one the mapping does not repeat is not written.
+        var sentDatasets = records.DatasetColumns.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+        foreach (var ignored in sentDatasets.Keys.Where(s => read.Datasets.All(m => !m.Name.Equals(s, StringComparison.OrdinalIgnoreCase))))
         {
-            warnings.Add($"{where}: scope '{ignored}' is not one the mapping iterates, so its rows are not written to the drop.");
+            warnings.Add($"{where}: child dataset '{ignored}' is not one the mapping repeats, so its rows are not written to the drop.");
         }
 
         var payloadName = Planner.PayloadName(flow);
         var payload = payloadName is null ? null : PayloadColumns.Of(payloadName, records);
         // A payload is joined to its record by the delivery key, so a drop that declares one is keyed even when the
-        // mapping iterates no child scope at all: the reader refuses root rows without a key whenever the drop has
+        // mapping repeats no child dataset at all: the reader refuses root rows without a key whenever the drop has
         // child scopes or payloads.
-        var keyed = read.Scopes.Count > 0 || payloadName is not null;
+        var keyed = read.Datasets.Count > 0 || payloadName is not null;
         var keys = Keys(records, mapping.Renderer, submission, keyed);
         var flowColumns = new[] { flow.Source.LastModified, flow.Source.Fingerprint }.OfType<string>().ToList();
-        var rootColumns = Declare(DropManifest.RootScope, records.RootColumns, read.Record, flowColumns, keyed, warnings, where);
+        var rootColumns = Declare(DropManifest.RootScope, records.RootColumns, read.RecordNames, flowColumns, keyed, warnings, where);
         if (payload is not null)
         {
             foreach (var reserved in payload.Columns)
@@ -237,22 +239,23 @@ public static class InlineDrop
             order.Select(i => Row(records.Records[i], rootColumns, keyed ? keys[i] : null, payload)).ToList(), ct).ConfigureAwait(false);
         scopes[DropManifest.RootScope] = new ManifestScope { Files = [RecordFile], Columns = Manifest(rootColumns) };
 
-        foreach (var scope in read.Scopes)
+        // Each child dataset is written as a scope of the drop under its own name.
+        foreach (var dataset in read.Datasets)
         {
-            var sent = sentScopes.TryGetValue(scope.Scope, out var columns) ? columns : [];
-            var scopeColumns = Declare(scope.Scope, sent, scope.Columns, [], keyed: true, warnings, where);
+            var sent = sentDatasets.TryGetValue(dataset.Name, out var columns) ? columns : [];
+            var datasetColumns = Declare(dataset.Name, sent, dataset.ColumnNames, [], keyed: true, warnings, where);
             var rows = new List<IReadOnlyDictionary<string, object?>>();
             foreach (var i in order)
             {
-                if (records.Records[i].Scopes.TryGetValue(scope.Scope, out var childRows))
+                if (records.Records[i].Datasets.TryGetValue(dataset.Name, out var childRows))
                 {
-                    rows.AddRange(childRows.Select(child => Row(child, scopeColumns, keys[i])));
+                    rows.AddRange(childRows.Select(child => Row(child, datasetColumns, keys[i])));
                 }
             }
 
-            var file = ScopeFile(scope.Scope);
-            await WriteFileAsync(stores, root.Resolve(file), scopeColumns, rows, ct).ConfigureAwait(false);
-            scopes[scope.Scope] = new ManifestScope { Files = [file], Columns = Manifest(scopeColumns), ParentKey = DropReader.DeliveryKeyColumn };
+            var file = ScopeFile(dataset.Name);
+            await WriteFileAsync(stores, root.Resolve(file), datasetColumns, rows, ct).ConfigureAwait(false);
+            scopes[dataset.Name] = new ManifestScope { Files = [file], Columns = Manifest(datasetColumns), ParentKey = DropReader.DeliveryKeyColumn };
         }
 
         var manifest = new DropManifest
@@ -306,8 +309,8 @@ public static class InlineDrop
     }
 
     /// <summary>
-    /// The key each record is written under: the one it sent, the one its natural key derives, or (in a keyed drop, for a
-    /// record whose natural key is incomplete) a join key of its own. Two records that are the same record are refused.
+    /// The key each record is written under: the one it sent, the one its dataset key derives, or (in a keyed drop, for a
+    /// record whose dataset key is incomplete) a join key of its own. Two records that are the same record are refused.
     /// </summary>
     private static string?[] Keys(InlineRecords records, MappingRenderer renderer, InlineSubmissionState submission, bool keyed)
     {
@@ -368,16 +371,20 @@ public static class InlineDrop
             .ToList();
         if (unread.Count > 0)
         {
-            warnings.Add($"{where}: scope '{scope}' carries column(s) the mapping does not read, so they change nothing: {string.Join(", ", unread)}.");
+            warnings.Add($"{where}: {Describe(scope)} carries column(s) the mapping does not read, so they change nothing: {string.Join(", ", unread)}.");
         }
 
         if (missing.Count > 0)
         {
-            warnings.Add($"{where}: no record sent column(s) of scope '{scope}' that the mapping or the flow reads, so they are null in every row: {string.Join(", ", missing)}.");
+            warnings.Add($"{where}: no record sent column(s) of {Describe(scope)} that the mapping or the flow reads, so they are null in every row: {string.Join(", ", missing)}.");
         }
 
         return columns;
     }
+
+    /// <summary>How messages name a scope of the drop: the dataset row, or the child dataset written under that name.</summary>
+    private static string Describe(string scope)
+        => scope.Equals(DropManifest.RootScope, StringComparison.Ordinal) ? "the dataset row" : $"child dataset '{scope}'";
 
     private static IReadOnlyDictionary<string, object?> Row(InlineRecord record, IReadOnlyList<InlineColumn> columns, string? key, PayloadColumns? payload)
     {

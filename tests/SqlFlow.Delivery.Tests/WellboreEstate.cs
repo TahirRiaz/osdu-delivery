@@ -125,14 +125,14 @@ internal sealed class WellboreEstate : IDisposable
     public void WriteMapping(string reference, string yaml)
         => File.WriteAllText(Path.Combine(Root, "mappings", reference + ".yaml"), yaml);
 
-    /// <summary>The delivery key both halves derive for a wellbore, from the mapping's natural key.</summary>
+    /// <summary>The delivery key both halves derive for a wellbore, from the mapping's dataset key.</summary>
     public static DeliveryKey Key(string facilityName) => DeliveryKey.Derive("recall", [facilityName]);
 
     /// <summary>One wellbore as a source sends it: the columns the mapping reads, the flow's version column, and its aliases.</summary>
     public static object Wellbore(string? facilityName, string description, string updated, params string[] aliases) => new
     {
         record = Row(facilityName, description, updated),
-        scopes = new Dictionary<string, object> { ["aliases"] = aliases.Select(a => new Dictionary<string, object?> { ["alias_name"] = a }).ToArray() },
+        datasets = new Dictionary<string, object> { ["aliases"] = aliases.Select(a => new Dictionary<string, object?> { ["alias_name"] = a }).ToArray() },
     };
 
     /// <summary>
