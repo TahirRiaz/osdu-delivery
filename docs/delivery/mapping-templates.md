@@ -250,6 +250,24 @@ the template: `"1000"` becomes the number `1000` where the schema says number. A
 type holds the record. A variable with no entry, an entry that does not apply, and an optional entry with no value
 are all left out, and so is an object or array left with nothing in it.
 
+### The record shape
+
+The Mappings page shows, next to a mapping's YAML, the shape of the records it renders, without a drop, a row or a
+cache. The shape is drawn by the renderer delivery uses, so `id`, `kind`, the envelope, the nesting, the arrays and the
+types are the ones a render writes:
+
+- A value read from the dataset or the cache is a placeholder naming the type the template gives the property and where
+  the value comes from, with its modifiers and whether it is optional or conditional:
+  `"SamplingStart": "<number from dataset.index_min>"`,
+  `"WellboreID": "<string from cache.Wellbore.id by FacilityName = dataset.wellbore_uwi>"`.
+- A static value shows as it renders, with the parameter values given on the page. A parameter without a value shows as
+  its `{param.name}` token, in static values and in the partition of `id`.
+- A repeated array has one item, and a note says it takes one item per row of its child dataset.
+- A list of values filled from one source is a list of one placeholder, as a render writes a list of one.
+
+Nothing is read, rendered for delivery or stored. `POST /api/v1/delivery/mapping-builder/shape` draws the same for any
+mapping document.
+
 ## Checks
 
 When a mapping is read:

@@ -26,6 +26,11 @@ public sealed class MappingRenderer
     private readonly IReadOnlyList<(MappingEntry Repeater, IReadOnlyList<MappingEntry> Items)> _repeaters;
 
     public MappingRenderer(MappingDefinition mapping, SchemaSnapshot schema, ReferenceSnapshot references, RenderContext context)
+        : this(mapping, schema, references, context, requireParameters: true)
+    {
+    }
+
+    private MappingRenderer(MappingDefinition mapping, SchemaSnapshot schema, ReferenceSnapshot references, RenderContext context, bool requireParameters)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(schema);
@@ -42,11 +47,14 @@ public sealed class MappingRenderer
         _references = references;
         _context = context;
 
-        foreach (var (name, parameter) in mapping.Parameters)
+        if (requireParameters)
         {
-            if (parameter.Required && !context.Parameters.ContainsKey(name) && parameter.Default is null)
+            foreach (var (name, parameter) in mapping.Parameters)
             {
-                throw new FlowValidationException($"{Where(mapping)}: parameter '{name}' is required but the flow supplies no value under render.parameters.");
+                if (parameter.Required && !context.Parameters.ContainsKey(name) && parameter.Default is null)
+                {
+                    throw new FlowValidationException($"{Where(mapping)}: parameter '{name}' is required but the flow supplies no value under render.parameters.");
+                }
             }
         }
 
@@ -58,6 +66,74 @@ public sealed class MappingRenderer
     public MappingDefinition Mapping => _mapping;
 
     public RenderContext Context => _context;
+
+    /// <summary>
+    /// The shape of the records <paramref name="mapping"/> renders, drawn without a source record or a cache: the record
+    /// <see cref="Render"/> assembles, with every value read from a row or the cache replaced by a placeholder naming the
+    /// type the template gives it and where it comes from, static values as they render, and one item in each repeated
+    /// array. The notes say what the placeholders cannot: how many items an array takes, parameters without a value, and
+    /// what a render would hold for whatever the row.
+    /// </summary>
+    public static MappingShape Shape(MappingDefinition mapping, SchemaSnapshot schema, IReadOnlyDictionary<string, string> parameters)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(parameters);
+        var context = new RenderContext
+        {
+            MappingReference = mapping.Reference,
+            ReferenceSnapshotVersion = ReferenceSnapshot.Empty.Version,
+            SchemaSnapshotVersion = schema.Version,
+            Parameters = parameters,
+        };
+        var renderer = new MappingRenderer(mapping, schema, ReferenceSnapshot.Empty, context, requireParameters: false);
+        var notes = new List<string>();
+
+        foreach (var name in mapping.Parameters.Keys)
+        {
+            if (string.IsNullOrWhiteSpace(renderer.ParameterValue(name)))
+            {
+                notes.Add($"parameter '{name}' has no value, so the shape shows {{param.{name}}} where the mapping uses it");
+            }
+        }
+
+        var partition = renderer.ParameterValue(RenderContext.DataPartitionParameter);
+        if (string.IsNullOrWhiteSpace(partition))
+        {
+            partition = "{param." + RenderContext.DataPartitionParameter + "}";
+        }
+        else
+        {
+            try
+            {
+                partition = context.DataPartition;
+            }
+            catch (FlowValidationException ex)
+            {
+                // The id is still drawn with the value given, so the note and the id it would refuse read side by side.
+                notes.Add(ex.Message);
+            }
+        }
+
+        var key = string.Join(", ", mapping.Dataset.Key.Select(column => $"{DatasetColumn.Prefix}.{column}"));
+        var document = new JsonObject
+        {
+            ["id"] = $"{partition}:{mapping.EntityType}:<delivery key from {mapping.Dataset.System}, {key}>",
+            ["kind"] = mapping.Kind,
+            ["data"] = new JsonObject(),
+        };
+        renderer.Assemble(document, new ShapeValues(renderer, notes), notes);
+
+        // The envelope reads before the data it guards, as OSDU's own examples lay a record out.
+        var shaped = new JsonObject();
+        foreach (var (name, node) in document.Where(p => p.Key != "data"))
+        {
+            shaped[name] = node?.DeepClone();
+        }
+
+        shaped["data"] = document["data"]!.DeepClone();
+        return new MappingShape(shaped, notes);
+    }
 
     /// <summary>
     /// The display label for a row from the mapping's <c>dataset.label</c>. Display only: it is stored on the ledger record
@@ -122,60 +198,7 @@ public sealed class MappingRenderer
             document["id"] = targetId;
         }
 
-        foreach (var entry in _recordEntries)
-        {
-            if (EntryValues.Evaluate(entry, record.Row, item: null, this, holds, usages) is { } value)
-            {
-                SetPath(document, entry.Target.Segments.Select(s => s.Name).ToList(), value);
-            }
-        }
-
-        foreach (var (repeater, items) in _repeaters)
-        {
-            if (repeater.AppliesWhen is { } condition && !EntryValues.Applies(condition, record.Row, item: null))
-            {
-                continue;
-            }
-
-            var child = repeater.Source!.Child!;
-            var array = new JsonArray();
-            foreach (var row in record.ScopeRows(child))
-            {
-                var item = new JsonObject();
-                foreach (var entry in items)
-                {
-                    if (EntryValues.Evaluate(entry, record.Row, row, this, holds, usages) is { } value)
-                    {
-                        SetPath(item, entry.Target.WithinItem, value);
-                    }
-                }
-
-                if (item.Count > 0)
-                {
-                    array.Add(item);
-                }
-            }
-
-            if (array.Count > 0)
-            {
-                SetPath(document, repeater.Target.Segments.Select(s => s.Name).ToList(), array);
-            }
-            else if (repeater.Required)
-            {
-                holds.Add($"{repeater.Target.Text}: {repeater.Source} has no rows with values, and the entry is required");
-            }
-        }
-
-        if (document["data"] is JsonObject data)
-        {
-            foreach (var required in _requiredData)
-            {
-                if (data[required] is null)
-                {
-                    holds.Add($"schema-required property data.{required} rendered empty");
-                }
-            }
-        }
+        Assemble(document, new RowValues(this, record, holds, usages), holds);
 
         var normalized = (JsonObject)CanonicalJson.Normalize(document)!;
         var canonical = CanonicalJson.ToString(normalized);
@@ -214,6 +237,68 @@ public sealed class MappingRenderer
 
     internal static string Where(MappingDefinition mapping) => mapping.SourcePath ?? mapping.Reference;
 
+    /// <summary>
+    /// Writes every entry's value into <paramref name="document"/>: the record's own entries at their targets, then each
+    /// repeater's array with one item per row, then the check that the data the schema requires is there. What a value
+    /// cannot be written for is added to <paramref name="holds"/>. The one assembly a render and a shape share.
+    /// </summary>
+    private void Assemble(JsonObject document, IRecordValues values, List<string> holds)
+    {
+        foreach (var entry in _recordEntries)
+        {
+            if (values.Value(entry, item: null) is { } value)
+            {
+                SetPath(document, entry.Target.Segments.Select(s => s.Name).ToList(), value);
+            }
+        }
+
+        foreach (var (repeater, items) in _repeaters)
+        {
+            if (!values.Applies(repeater))
+            {
+                continue;
+            }
+
+            var array = new JsonArray();
+            foreach (var row in values.Items(repeater))
+            {
+                var item = new JsonObject();
+                foreach (var entry in items)
+                {
+                    if (values.Value(entry, row) is { } value)
+                    {
+                        SetPath(item, entry.Target.WithinItem, value);
+                    }
+                }
+
+                if (item.Count > 0)
+                {
+                    array.Add(item);
+                }
+            }
+
+            if (array.Count > 0)
+            {
+                SetPath(document, repeater.Target.Segments.Select(s => s.Name).ToList(), array);
+            }
+            else if (repeater.Required)
+            {
+                holds.Add($"{repeater.Target.Text}: {repeater.Source} has no rows with values, and the entry is required");
+            }
+        }
+
+        if (document["data"] is JsonObject data)
+        {
+            foreach (var required in _requiredData)
+            {
+                if (data[required] is null)
+                {
+                    holds.Add($"schema-required property data.{required} rendered empty");
+                }
+            }
+        }
+    }
+
     /// <summary>One row per cached path a record actually consumed; a value read twice is one dependency.</summary>
     private static IReadOnlyList<CacheUsage> Distinct(List<CacheUsage> usages)
     {
@@ -251,6 +336,45 @@ public sealed class MappingRenderer
 
         current[segments[^1]] = value;
     }
+
+    /// <summary>Where an assembled record's values come from: a source record's rows, or the placeholders of a shape.</summary>
+    private interface IRecordValues
+    {
+        /// <summary>The entry's value, for the record's row or for one item of a repeater; null leaves the variable out.</summary>
+        JsonNode? Value(MappingEntry entry, SourceRow? item);
+
+        /// <summary>Whether the repeater's condition lets it write its array.</summary>
+        bool Applies(MappingEntry repeater);
+
+        /// <summary>The rows the repeater writes one item for.</summary>
+        IEnumerable<SourceRow?> Items(MappingEntry repeater);
+    }
+
+    /// <summary>A source record's values, as a delivery renders them.</summary>
+    private sealed class RowValues(MappingRenderer renderer, SourceRecord record, List<string> holds, List<CacheUsage> usages) : IRecordValues
+    {
+        public JsonNode? Value(MappingEntry entry, SourceRow? item) => EntryValues.Evaluate(entry, record.Row, item, renderer, holds, usages);
+
+        public bool Applies(MappingEntry repeater) => repeater.AppliesWhen is not { } condition || EntryValues.Applies(condition, record.Row, item: null);
+
+        public IEnumerable<SourceRow?> Items(MappingEntry repeater) => record.ScopeRows(repeater.Source!.Child!);
+    }
+
+    /// <summary>Placeholders in place of a record's values: one item per repeater, whatever its condition, with a note saying how many a record takes.</summary>
+    private sealed class ShapeValues(MappingRenderer renderer, List<string> notes) : IRecordValues
+    {
+        public JsonNode? Value(MappingEntry entry, SourceRow? item) => EntryValues.Describe(entry, renderer, notes);
+
+        public bool Applies(MappingEntry repeater) => true;
+
+        public IEnumerable<SourceRow?> Items(MappingEntry repeater)
+        {
+            var when = repeater.AppliesWhen is { } condition ? $", only when {condition}" : string.Empty;
+            var none = repeater.Required ? "a record without any is held" : "left out when there are none";
+            notes.Add($"{repeater.Target.Text}: one item per row of {repeater.Source}{when}; {none}");
+            return [null];
+        }
+    }
 }
 
 /// <summary>The outcome of rendering one record.</summary>
@@ -278,3 +402,9 @@ public sealed record RenderResult
 
     public bool IsHeld => Holds.Count > 0 || Key is null;
 }
+
+/// <summary>
+/// The shape of the records a mapping renders (<see cref="MappingRenderer.Shape"/>): the record with placeholders where
+/// values come from a row or the cache, laid out envelope first, and what the placeholders cannot say.
+/// </summary>
+public sealed record MappingShape(JsonObject Document, IReadOnlyList<string> Notes);

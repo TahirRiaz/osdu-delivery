@@ -11,6 +11,7 @@ using SqlFlow.Delivery;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
 using SqlFlow.Delivery.Validation;
@@ -126,6 +127,20 @@ public sealed record DeliveryMappingParseRequest(string Yaml, string? Path);
 
 public sealed record DeliveryMappingParseResult(MappingDraft? Draft, IReadOnlyList<MappingDraftIssue> Issues);
 
+/// <summary>A mapping document to draw the record shape of, and the parameter values to draw it with.</summary>
+public sealed record DeliveryMappingShapeRequest(string Yaml, string? Path, IReadOnlyDictionary<string, string>? Parameters);
+
+/// <summary>A parameter the mapping declares, and the value the shape was drawn with: the one given, else the default, else null.</summary>
+public sealed record DeliveryMappingShapeParameterDto(string Name, bool Required, string? Default, string? Description, string? Value);
+
+/// <summary>
+/// The shape of the records a mapping renders: the record with a placeholder wherever a value comes from a row or the
+/// cache, the parameters the mapping declares, what the placeholders cannot say, and what stopped a shape being drawn
+/// (<c>Record</c> is null then).
+/// </summary>
+public sealed record DeliveryMappingShapeResult(
+    JsonObject? Record, IReadOnlyList<DeliveryMappingShapeParameterDto> Parameters, IReadOnlyList<string> Notes, IReadOnlyList<MappingDraftIssue> Issues);
+
 /// <summary>
 /// Templates and the mapping builder (docs/delivery/mapping-templates.md). Reading and laying out templates, browsing the
 /// OSDU data definitions (the public repository of OSDU schemas, which needs no credential), drafting and checking a
@@ -152,6 +167,7 @@ public static class DeliveryTemplateEndpoints
         delivery.MapPost("/mapping-builder/draft", DraftMappingAsync).WithName("DraftDeliveryMapping");
         delivery.MapPost("/mapping-builder/compose", ComposeMappingAsync).WithName("ComposeDeliveryMapping");
         delivery.MapPost("/mapping-builder/parse", ParseMappingAsync).WithName("ParseDeliveryMapping");
+        delivery.MapPost("/mapping-builder/shape", ShapeMappingAsync).WithName("ShapeDeliveryMapping");
         return group;
     }
 
@@ -599,6 +615,62 @@ public static class DeliveryTemplateEndpoints
             return TypedResults.Ok(new DeliveryMappingParseResult(null, [new MappingDraftIssue(MappingDraftIssue.ErrorSeverity, ex.Message)]));
         }
     }
+
+    /// <summary>
+    /// The shape of the records a mapping document renders, drawn against its saved template without a row or a cache
+    /// (<see cref="MappingRenderer.Shape"/>). A document that does not load, or pins a template that is not saved, answers
+    /// with the issue and no record; it is not an HTTP error, because the document is what the caller is looking at.
+    /// </summary>
+    private static async Task<Ok<DeliveryMappingShapeResult>> ShapeMappingAsync(
+        DeliveryMappingShapeRequest request, ITemplateStore templates, DeliveryDocumentLoader documents, CancellationToken ct)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.Yaml))
+        {
+            return ShapeIssue([], "There is no mapping document to draw the record shape of.");
+        }
+
+        MappingDefinition mapping;
+        try
+        {
+            mapping = documents.ParseMapping(request.Yaml, string.IsNullOrWhiteSpace(request.Path) ? "mapping.yaml" : request.Path);
+        }
+        catch (FlowValidationException ex)
+        {
+            return ShapeIssue([], ex.Message);
+        }
+
+        var parameters = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (name, value) in request.Parameters ?? new Dictionary<string, string>())
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                parameters[name] = value.Trim();
+            }
+        }
+
+        var declared = mapping.Parameters
+            .Select(p => new DeliveryMappingShapeParameterDto(p.Key, p.Value.Required, p.Value.Default, p.Value.Description, parameters.GetValueOrDefault(p.Key) ?? p.Value.Default))
+            .ToList();
+
+        var schema = await templates.LoadAsync(mapping.Template, ct).ConfigureAwait(false);
+        if (schema is null)
+        {
+            return ShapeIssue(declared, $"The mapping pins template {mapping.Template}, which is not saved. Save it on the Templates page to see the records the mapping renders.");
+        }
+
+        try
+        {
+            var shape = MappingRenderer.Shape(mapping, schema, parameters);
+            return TypedResults.Ok(new DeliveryMappingShapeResult(shape.Document, declared, shape.Notes, []));
+        }
+        catch (Exception ex) when (ex is FlowValidationException or DeliveryException)
+        {
+            return ShapeIssue(declared, ex.Message);
+        }
+    }
+
+    private static Ok<DeliveryMappingShapeResult> ShapeIssue(IReadOnlyList<DeliveryMappingShapeParameterDto> parameters, string message)
+        => TypedResults.Ok(new DeliveryMappingShapeResult(null, parameters, [], [new MappingDraftIssue(MappingDraftIssue.ErrorSeverity, message)]));
 
     private static bool IsError(MappingDraftIssue issue) => issue.Severity == MappingDraftIssue.ErrorSeverity;
 

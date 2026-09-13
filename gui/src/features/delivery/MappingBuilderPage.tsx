@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
 import { CircleCheck, GitPullRequest, Loader2, OctagonAlert, PencilRuler, Plus, RotateCcw, TriangleAlert, X } from "lucide-react";
@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
   deliveryApi, type DeliveryMappingComposeResult, type DeliveryTemplateVariable, type MappingDraft, type MappingDraftEntry,
   type MappingDraftIssue,
@@ -33,17 +34,6 @@ import { ProblemView, problemText } from "./TemplateSheet";
 
 /** How long the draft has to stay unchanged before it is written and checked again. */
 const COMPOSE_DELAY_MS = 500;
-
-/** The value once it has stopped changing for `delayMs`: what the check runs on, so a keystroke is not a request. */
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [value, delayMs]);
-
-  return debounced;
-}
 
 /** What a compose request carries, kept as one JSON text so an unchanged draft is recognised and not checked again. */
 interface ComposeRequest {

@@ -1147,6 +1147,26 @@ export interface DeliveryMappingParseResult {
   issues: MappingDraftIssue[];
 }
 
+/** A parameter a mapping declares, and the value its record shape was drawn with: the one given, else the default. */
+export interface DeliveryMappingShapeParameter {
+  name: string;
+  required: boolean;
+  default: string | null;
+  description: string | null;
+  value: string | null;
+}
+
+/**
+ * The shape of the records a mapping renders, drawn by the renderer delivery uses: a placeholder naming the template's
+ * type and the source wherever a value comes from a row or the cache. `record` is null when an issue stopped it.
+ */
+export interface DeliveryMappingShapeResult {
+  record: Record<string, unknown> | null;
+  parameters: DeliveryMappingShapeParameter[];
+  notes: string[];
+  issues: MappingDraftIssue[];
+}
+
 export const deliveryApi = {
   stats: (pipelineId: string) => get<DeliveryFlowStats>(`/api/v1/delivery/flows/${pipelineId}/stats`),
   records: (pipelineId: string, query: DeliveryRecordListQuery = {}) =>
@@ -1230,6 +1250,9 @@ export const deliveryApi = {
   /** Reads a mapping document back into a draft for the builder. */
   parseMapping: (yaml: string, path: string | null) =>
     post<DeliveryMappingParseResult>("/api/v1/delivery/mapping-builder/parse", { yaml, path }),
+  /** The shape of the records a mapping document renders, drawn with `parameters`; nothing is read or stored. */
+  mappingShape: (yaml: string, path: string | null, parameters: Record<string, string>) =>
+    post<DeliveryMappingShapeResult>("/api/v1/delivery/mapping-builder/shape", { yaml, path, parameters }),
   /** The cache as the repositories declare it: one row per cached type, with what it captures and holds at `version`. */
   cache: (repoId?: string, search?: string, version?: string) =>
     get<DeliveryCacheDefinition[]>("/api/v1/delivery/cache", { repoId, search, version }),

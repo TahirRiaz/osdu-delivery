@@ -399,7 +399,7 @@ export function TemplatesBrowseTab({ canAuthor, canOperate }: { canAuthor: boole
           <span className="inline-flex items-center gap-2">
             <Button
               variant="outline"
-              size="sm"
+              size="xs"
               onClick={() => {
                 const kind = viewing?.kind;
                 setViewing(null);
@@ -413,7 +413,7 @@ export function TemplatesBrowseTab({ canAuthor, canOperate }: { canAuthor: boole
               Compare versions
             </Button>
             {canAuthor && (
-              <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending} data-testid="templates-browse-save">
+              <Button variant="outline" size="xs" onClick={() => save.mutate()} disabled={save.isPending} data-testid="templates-browse-save">
                 {save.isPending ? <Loader2 className="animate-spin" /> : <Save />}
                 Save template
               </Button>

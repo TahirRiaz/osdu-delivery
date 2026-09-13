@@ -162,9 +162,8 @@ export default function TemplatesPage() {
   const pinnedBy = detail.data?.saved?.pinnedBy ?? 0;
   const deleteButton = (
     <Button
-      variant="outline"
-      size="sm"
-      className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+      variant="destructive-outline"
+      size="xs"
       onClick={() => setDeleteOpen(true)}
       disabled={remove.isPending || pinnedBy > 0}
       data-testid="templates-delete"

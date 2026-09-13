@@ -373,6 +373,14 @@ test.describe.serial("templates and the mapping builder", () => {
 
     const detail = adminPage.getByTestId("delivery-mapping-detail");
     await expect(detail.getByTestId("delivery-mapping-template")).toContainText(WELLLOG_VERSION, { timeout: 15_000 });
+
+    // The record shape: the renderer's layout with placeholders, and the partition filled into the id once it is given.
+    await detail.getByTestId("delivery-mapping-tab-shape").click();
+    const shape = detail.getByTestId("delivery-mapping-shape-json");
+    await expect(shape).toContainText("dataset.source_project>", { timeout: 15_000 });
+    await detail.getByTestId("delivery-mapping-shape-parameter-dataPartition").fill("opendes");
+    await expect(shape).toContainText("opendes:work-product-component--WellLog:", { timeout: 15_000 });
+
     await detail.getByTestId("delivery-mapping-open-builder").click();
 
     await expect(adminPage.getByTestId("page-delivery-mapping-builder")).toBeVisible();

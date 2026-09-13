@@ -59,6 +59,95 @@ internal static partial class EntryValues
         return raw is null ? null : Convert(raw, renderer.Schema.Resolve(entry.Target.SchemaPath), path, holds);
     }
 
+    /// <summary>
+    /// The value of <paramref name="entry"/> in a record's shape, without a row: a static value converted exactly as a
+    /// render converts it, or a placeholder naming the type the template gives the variable and where the value comes from
+    /// (a list of one where the variable is a list of values). A value that could not be written whatever the row, a single
+    /// value on an object, is noted and left out, as a render holds it.
+    /// </summary>
+    public static JsonNode? Describe(MappingEntry entry, MappingRenderer renderer, List<string> notes)
+    {
+        var path = entry.Target.Text;
+        var property = renderer.Schema.Resolve(entry.Target.SchemaPath);
+        if (entry.Static is { } fixedValue)
+        {
+            return Convert(Expand(fixedValue, renderer), property, path, notes);
+        }
+
+        var type = property?.Type ?? SchemaType.Any;
+        switch (type)
+        {
+            case SchemaType.String:
+                return JsonValue.Create(Placeholder(entry, property!.Format is { } format ? $"{format} string" : Name(type)));
+            case SchemaType.Number:
+            case SchemaType.Integer:
+            case SchemaType.Boolean:
+                return JsonValue.Create(Placeholder(entry, Name(type)));
+            case SchemaType.Any:
+                return JsonValue.Create(Placeholder(entry, "value"));
+        }
+
+        if (type == SchemaType.Array && property!.ItemScalarType is { } itemType && itemType != SchemaType.Object)
+        {
+            var itemFormat = property.Items?["format"] is JsonValue f && f.TryGetValue<string>(out var text) ? text : null;
+            return new JsonArray(JsonValue.Create(Placeholder(entry, itemFormat is not null ? $"{itemFormat} string" : Name(itemType))));
+        }
+
+        // An object, or a list of objects: a cached field can carry one whole, and a dataset column never can.
+        if (entry.Source!.Kind == MappingSourceKind.Cache)
+        {
+            return JsonValue.Create(Placeholder(entry, Name(type)));
+        }
+
+        notes.Add($"{path}: a single value from {entry.Source} cannot be written where the template takes an {Name(type)}");
+        return null;
+    }
+
+    /// <summary>A placeholder for a value read from a row or the cache: <c>&lt;number from dataset.depth | trim, optional&gt;</c>.</summary>
+    private static string Placeholder(MappingEntry entry, string type)
+    {
+        var source = entry.Source!;
+        var origin = source.Kind == MappingSourceKind.Cache
+            ? entry.FindBy.Count == 0 ? source.ToString() : $"{source} by {FindText(entry)}"
+            : entry.Modifiers.Count == 0 ? source.ToString() : $"{source} | {ModifierText(entry.Modifiers)}";
+        var optional = entry.Required ? string.Empty : ", optional";
+        var when = entry.AppliesWhen is { } condition ? $", when {condition}" : string.Empty;
+        return $"<{type} from {origin}{optional}{when}>";
+    }
+
+    /// <summary>
+    /// A cache source's findBy lines as one phrase, consecutive lines comparing the same value run together
+    /// (<c>Code/Name = (dataset.unit | trim)</c>); the modifiers change the value compared, so they sit with it.
+    /// </summary>
+    private static string FindText(MappingEntry entry)
+    {
+        var groups = new List<(List<string> Fields, string Operand)>();
+        foreach (var find in entry.FindBy)
+        {
+            var operand = find.Literal is not null
+                ? $"'{find.Literal}'"
+                : entry.Modifiers.Count == 0 ? find.Column!.ToString() : $"({find.Column} | {ModifierText(entry.Modifiers)})";
+            if (groups.Count > 0 && string.Equals(groups[^1].Operand, operand, StringComparison.Ordinal))
+            {
+                groups[^1].Fields.Add(ReferenceField.Normalize(find.Field));
+            }
+            else
+            {
+                groups.Add(([ReferenceField.Normalize(find.Field)], operand));
+            }
+        }
+
+        return string.Join(" or ", groups.Select(g => $"{string.Join('/', g.Fields)} = {g.Operand}"));
+    }
+
+    /// <summary>The modifiers as a pipeline; a replace of more than a few values is counted rather than listed.</summary>
+    private static string ModifierText(IReadOnlyList<Modifier> modifiers) => string.Join(" | ", modifiers.Select(modifier => modifier.Kind switch
+    {
+        ModifierKind.Split => $"split('{modifier.Separator}', {modifier.Part})",
+        ModifierKind.Replace when modifier.Replacements.Count > 3 => $"replace({modifier.Replacements.Count} values)",
+        _ => modifier.ToString(),
+    }));
+
     /// <summary>Whether an entry's <c>appliesWhen</c> holds for the row. Comparison is of trimmed text, ignoring case.</summary>
     public static bool Applies(EntryCondition condition, SourceRow root, SourceRow? item)
     {

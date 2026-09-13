@@ -402,7 +402,7 @@ export function TemplatesImportTab({ canAuthor }: { canAuthor: boolean }) {
         detail={shown?.detail}
         previewSchema={shown?.schema}
         actions={canAuthor && shown !== null ? (
-          <Button size="sm" onClick={() => save.mutate(shown)} disabled={save.isPending} data-testid="templates-import-save">
+          <Button variant="outline" size="xs" onClick={() => save.mutate(shown)} disabled={save.isPending} data-testid="templates-import-save">
             {save.isPending ? <Loader2 className="animate-spin" /> : <Save />}
             Save template
           </Button>

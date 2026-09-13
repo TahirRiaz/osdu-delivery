@@ -197,6 +197,15 @@ public sealed class DeliveryTemplateApiTests
             Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
             Assert.Contains("target: osdu.data.WellboreID", checkedSample.Yaml, StringComparison.Ordinal);
 
+            // The same document drawn as the shape of the records it renders: the identity and the envelope as a render
+            // writes them, and a placeholder wherever a value comes from a row or the cache.
+            var shape = await ReadAsync<DeliveryMappingShapeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/shape", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml", parameters }));
+            Assert.Empty(shape.Issues);
+            Assert.NotNull(shape.Record);
+            Assert.Equal("opendes:work-product-component--WellLog:<delivery key from recall, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
+            Assert.Equal("<string from dataset.curves.curve_id>", shape.Record["data"]!["Curves"]![0]!["CurveID"]!.GetValue<string>());
+            Assert.Equal("opendes", Assert.Single(shape.Parameters).Value);
+
             // A wellbore reference read from the unit cache is written, and refused by the check against the template.
             var wrong = parsed.Draft with
             {

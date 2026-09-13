@@ -294,9 +294,9 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                   Clear
                 </Button>
                 <Button
-                  variant="outline"
+                  variant="destructive-outline"
                   size="sm"
-                  className="ml-auto h-7 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  className="ml-auto h-7"
                   onClick={() => setRemoveOpen(true)}
                   data-testid="delivery-remove-selected"
                 >

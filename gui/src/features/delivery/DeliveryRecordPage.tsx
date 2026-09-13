@@ -261,9 +261,8 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
               </Button>
             )}
             <Button
-              variant="outline"
+              variant="destructive-outline"
               size="sm"
-              className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
               onClick={() => setRemoveOpen(true)}
               disabled={busy || !canActOnTarget || detail.pipelineId === null}
               data-testid="record-delete"
