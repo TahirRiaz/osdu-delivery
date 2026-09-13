@@ -1,141 +1,111 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useDeferredValue, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, CircleAlert, Eye, Loader2, Save, Search } from "lucide-react";
+import { Archive, ExternalLink, Eye, FlaskConical, Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { useLocalStorageState } from "@/hooks/useLocalStorageState";
-import {
-  deliveryApi,
-  type DeliveryOsduSchema, type DeliverySchemaFetchResult, type DeliverySchemaSearchRequest, type DeliverySchemaSearchResult,
-} from "../../api/delivery";
+import { deliveryApi, type DeliveryOsduSchema } from "../../api/delivery";
 import { DataTable, type Column } from "../../components/DataTable";
-import { EmptyState } from "../../components/EmptyState";
+import { FilterBar } from "../../components/FilterBar";
+import { LinkRef } from "../../components/LinkRef";
 import { RelativeTime } from "../../components/RelativeTime";
-import { RunStatusBadge } from "../../components/StatusBadge";
+import { SearchInput } from "../../components/SearchInput";
+import { StatePill } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
 import { ProblemView, problemText, TaskProgress, TemplateSheet } from "./TemplateSheet";
-import { isTerminalTask, taskResult, useComputeTask } from "./useComputeTask";
 
-/** How many schemas one search asks OSDU for: the most a schema search returns at once. */
-const PAGE_SIZE = 100;
+/** The most rows the table renders at once; the search narrows the rest. */
+const MAX_ROWS = 200;
 
-/** A schema being looked at: its kind, the flow whose OSDU connection fetches it, and the fetch task once queued. */
+/** A schema in the table, and how many versions of its entity type the release publishes. */
+interface BrowseRow {
+  schema: DeliveryOsduSchema;
+  versions: number;
+}
+
+/** A schema being looked at: the release it is read from, and its kind. */
 interface Viewing {
+  release: string;
   kind: string;
-  pipelineId: string;
-  taskId: string | null;
 }
 
-function blankToNull(value: string): string | null {
-  const trimmed = value.trim();
-  return trimmed === "" ? null : trimmed;
-}
+/** A published schema, the usual case, reads plainly; one in development or obsolete stands out. */
+function StatusCell({ schema }: { schema: DeliveryOsduSchema }) {
+  if (schema.status === null || schema.status === "PUBLISHED") {
+    return <span className="text-muted-foreground">{schema.status === null ? "-" : "Published"}</span>;
+  }
 
-function FilterField({
-  id, label, value, onChange, placeholder,
-}: { id: string; label: string; value: string; onChange: (value: string) => void; placeholder: string }) {
+  const obsolete = schema.status === "OBSOLETE";
   return (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        className="h-8 font-mono"
-        placeholder={placeholder}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        data-testid={id}
-      />
-    </div>
+    <StatePill
+      tone={obsolete ? "muted" : "warning"}
+      label={obsolete ? "Obsolete" : schema.status === "DEVELOPMENT" ? "In development" : schema.status}
+      icon={obsolete ? Archive : FlaskConical}
+      testId={`templates-browse-status-${schema.kind}`}
+    />
   );
 }
 
-interface TemplatesBrowseTabProps {
-  canOperate: boolean;
-  canAuthor: boolean;
+/** A link out to the data definitions repository, opening in a new tab. */
+function RepositoryLink({ href, children, testId }: { href: string; children: ReactNode; testId: string }) {
+  return (
+    <Button asChild variant="link" size="sm" className="h-auto px-0">
+      <a href={href} target="_blank" rel="noreferrer" data-testid={testId}>
+        {children}
+        <ExternalLink className="size-3.5" />
+      </a>
+    </Button>
+  );
 }
 
 /**
- * Browse OSDU: search the schemas OSDU publishes through a delivery flow's OSDU connection, look at one laid out as a
- * template, and save it. Both the search and the fetch run on a node with the flow's credentials, exactly like a run, so
- * the page queues a task and follows it.
+ * Browse OSDU: the OSDU data definitions, the Open Group's public repository of OSDU schemas and the canonical source of
+ * every OSDU kind. Pick a release (the newest by default), find a kind with one search, look at it laid out as a template
+ * and save it. The control plane reads the repository; the schemas are public, so no flow, credential or node is involved.
  */
-export function TemplatesBrowseTab({ canOperate, canAuthor }: TemplatesBrowseTabProps) {
+export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
   const queryClient = useQueryClient();
-  const [repoId, setRepoId] = useLocalStorageState("sqlflow.templates.browse.repo", "");
-  const [pipelineId, setPipelineId] = useLocalStorageState("sqlflow.templates.browse.flow", "");
-  const [authority, setAuthority] = useState("");
-  const [source, setSource] = useState("");
-  const [entityType, setEntityType] = useState("");
-  const [status, setStatus] = useState("PUBLISHED");
-  const [latestOnly, setLatestOnly] = useState(true);
-  const [searchTaskId, setSearchTaskId] = useState<string | null>(null);
-  const [searchRequest, setSearchRequest] = useState<DeliverySchemaSearchRequest | null>(null);
+  const [pickedRelease, setPickedRelease] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [allVersions, setAllVersions] = useState(false);
   const [viewing, setViewing] = useState<Viewing | null>(null);
+  const term = useDeferredValue(search);
 
-  const repos = useQuery({ queryKey: ["delivery", "mapping-builder", "repos"], queryFn: deliveryApi.builderRepos });
-  const repoList = repos.data ?? [];
-  const withFlows = repoList.filter((candidate) => candidate.flows.length > 0);
-  const repo = withFlows.find((candidate) => candidate.repoId === repoId) ?? null;
-  const flow = repo?.flows.find((candidate) => candidate.pipelineId === pipelineId) ?? null;
+  const releases = useQuery({
+    queryKey: ["delivery", "osdu-definitions", "releases"],
+    queryFn: deliveryApi.osduReleases,
+    staleTime: 10 * 60_000,
+  });
+  const release = pickedRelease ?? releases.data?.[0]?.name ?? null;
 
-  // A remembered repository or flow that is gone would aim the search at nothing: fall back to none, and take a
-  // repository's only flow when it has just one.
-  if (repos.data !== undefined && repoId !== "" && repo === null) {
-    setRepoId("");
-  }
+  // A release is a tag at a fixed commit, so what it publishes never changes while the page is open.
+  const index = useQuery({
+    queryKey: ["delivery", "osdu-definitions", "schemas", release],
+    queryFn: () => deliveryApi.osduSchemas(release!),
+    enabled: release !== null,
+    staleTime: Infinity,
+  });
 
-  const onlyFlow = repo !== null && repo.flows.length === 1 ? repo.flows[0].pipelineId : "";
-  if (repo !== null && flow === null && pipelineId !== onlyFlow) {
-    setPipelineId(onlyFlow);
-  }
+  const file = useQuery({
+    queryKey: ["delivery", "osdu-definitions", "schema", viewing?.release ?? null, viewing?.kind ?? null],
+    queryFn: () => deliveryApi.osduSchema(viewing!.release, viewing!.kind),
+    enabled: viewing !== null,
+    staleTime: Infinity,
+  });
 
-  const search = useComputeTask(searchTaskId);
-  const searchResult = useMemo(
-    () => (search.data?.status === "succeeded" ? taskResult<DeliverySchemaSearchResult>(search.data) : null),
-    [search.data],
-  );
-  const searching = searchTaskId !== null && !search.isError && !isTerminalTask(search.data);
-
-  const fetchTask = useComputeTask(viewing?.taskId ?? null);
-  const fetched = useMemo(
-    () => (fetchTask.data?.status === "succeeded" ? taskResult<DeliverySchemaFetchResult>(fetchTask.data) : null),
-    [fetchTask.data],
-  );
+  // Under the templates key, so a save refreshes it and the sheet shows the version as saved.
   const preview = useQuery({
-    queryKey: ["delivery", "templates", "preview", "osdu", viewing?.taskId ?? null, repoId],
-    queryFn: () => deliveryApi.previewTemplate(fetched!.kind, fetched!.schema, repoId === "" ? null : repoId),
-    enabled: fetched !== null,
-  });
-
-  const startSearch = useMutation({
-    mutationFn: (request: DeliverySchemaSearchRequest) => deliveryApi.searchSchemas(request),
-    onSuccess: (accepted, request) => {
-      setSearchTaskId(accepted.taskId);
-      setSearchRequest(request);
-    },
-    onError: (error) => toast.error(problemText(error)),
-  });
-
-  const startFetch = useMutation({
-    mutationFn: (target: { pipelineId: string; kind: string }) => deliveryApi.fetchSchema(target.pipelineId, target.kind),
-    // The sheet may have been closed, or another schema opened, while the fetch was being queued.
-    onSuccess: (accepted, target) => setViewing((current) => (
-      current !== null && current.kind === target.kind && current.pipelineId === target.pipelineId && current.taskId === null
-        ? { ...current, taskId: accepted.taskId }
-        : current)),
-    onError: (error) => toast.error(problemText(error)),
+    queryKey: ["delivery", "templates", "preview", "osdu", file.data?.release.commit ?? null, file.data?.kind ?? null],
+    queryFn: () => deliveryApi.previewTemplate(file.data!.kind, file.data!.schema),
+    enabled: viewing !== null && file.data !== undefined,
   });
 
   const save = useMutation({
-    mutationFn: (schema: DeliverySchemaFetchResult) =>
-      deliveryApi.saveTemplate(schema.kind, schema.schema, `OSDU ${schema.endpoint} through flow '${schema.flow}'`),
+    mutationFn: () => deliveryApi.saveTemplate(file.data!.kind, file.data!.schema, file.data!.origin),
     onSuccess: (saved) => {
       toast.success(saved.outcome === "created"
         ? `Saved template ${saved.template.kind} version ${saved.template.version}.`
@@ -145,99 +115,103 @@ export function TemplatesBrowseTab({ canOperate, canAuthor }: TemplatesBrowseTab
     onError: (error) => toast.error(problemText(error)),
   });
 
-  const searchFromForm = () => {
-    if (flow === null) {
-      return;
+  const counts = useMemo(() => {
+    const byType = new Map<string, number>();
+    for (const schema of index.data?.schemas ?? []) {
+      byType.set(schema.entityType, (byType.get(schema.entityType) ?? 0) + 1);
     }
 
-    startSearch.mutate({
-      pipelineId: flow.pipelineId,
-      authority: blankToNull(authority),
-      source: blankToNull(source),
-      entityType: blankToNull(entityType),
-      status: blankToNull(status),
-      latestVersion: latestOnly,
-      limit: PAGE_SIZE,
-      offset: 0,
-    });
-  };
+    return byType;
+  }, [index.data]);
 
-  // Paging repeats the search that produced the page on show, not whatever the form holds now.
-  const page = (offset: number) => {
-    if (searchRequest !== null) {
-      startSearch.mutate({ ...searchRequest, offset });
+  // The index lists each entity type newest version first, so the first of a type is its newest.
+  const rows = useMemo((): BrowseRow[] | undefined => {
+    if (index.data === undefined) {
+      return undefined;
     }
-  };
+
+    const terms = term.trim().toLowerCase().split(/\s+/).filter((part) => part !== "");
+    const shown = new Set<string>();
+    const result: BrowseRow[] = [];
+    for (const schema of index.data.schemas) {
+      if (!allVersions) {
+        if (shown.has(schema.entityType)) {
+          continue;
+        }
+
+        shown.add(schema.entityType);
+      }
+
+      const kind = schema.kind.toLowerCase();
+      if (terms.every((part) => kind.includes(part))) {
+        result.push({ schema, versions: counts.get(schema.entityType) ?? 1 });
+      }
+    }
+
+    return result;
+  }, [index.data, term, allVersions, counts]);
 
   const view = (kind: string) => {
-    if (searchRequest === null || !canOperate) {
+    if (index.data === undefined) {
       return;
     }
 
     save.reset();
-    setViewing({ kind, pipelineId: searchRequest.pipelineId, taskId: null });
-    startFetch.mutate({ pipelineId: searchRequest.pipelineId, kind });
+    setViewing({ release: index.data.release.name, kind });
   };
 
-  const columns: Column<DeliveryOsduSchema>[] = [
-    { id: "kind", header: "Kind", render: (row) => <TruncatedText text={row.kind} mono maxWidth={460} /> },
-    { id: "status", header: "Status", render: (row) => <span className="font-mono text-[12px]">{row.status ?? "-"}</span> },
-    { id: "scope", header: "Scope", render: (row) => <span className="font-mono text-[12px]">{row.scope ?? "-"}</span> },
-    { id: "created", header: "Created", render: (row) => <RelativeTime value={row.createdUtc} /> },
-    { id: "createdBy", header: "Created by", render: (row) => <TruncatedText text={row.createdBy} maxWidth={220} /> },
+  const columns: Column<BrowseRow>[] = [
+    { id: "kind", header: "Kind", render: (row) => <TruncatedText text={row.schema.kind} mono maxWidth={460} /> },
+    { id: "status", header: "Status", render: (row) => <StatusCell schema={row.schema} /> },
+    ...(allVersions ? [] : [{
+      id: "versions",
+      header: "Versions",
+      align: "right" as const,
+      render: (row: BrowseRow) => (
+        <span className="font-mono tabular-nums text-muted-foreground">{row.versions} version{row.versions === 1 ? "" : "s"}</span>
+      ),
+    }]),
     {
-      id: "view",
+      id: "actions",
       header: "",
       align: "right",
       render: (row) => (
-        <Button
-          variant="outline"
-          size="xs"
-          onClick={(event) => { event.stopPropagation(); view(row.kind); }}
-          data-testid={`templates-browse-view-${row.kind}`}
-        >
-          <Eye />
-          View
-        </Button>
+        <span className="inline-flex items-center gap-1">
+          <LinkRef
+            url={row.schema.webUrl}
+            title="In the OSDU data definitions"
+            testId={`templates-browse-link-${row.schema.kind}`}
+            copyTestId={`templates-browse-copy-${row.schema.kind}`}
+          />
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={(event) => { event.stopPropagation(); view(row.schema.kind); }}
+            data-testid={`templates-browse-view-${row.schema.kind}`}
+          >
+            <Eye />
+            View
+          </Button>
+        </span>
       ),
     },
   ];
 
   // What the sheet shows while the schema is on its way, and what went wrong when it does not arrive.
-  const fetchEnded = fetchTask.data !== undefined && isTerminalTask(fetchTask.data);
   let progress: ReactNode = null;
   let problem: ReactNode = null;
   if (viewing !== null) {
-    if (startFetch.isError) {
-      problem = <ProblemView error={startFetch.error} testId="templates-browse-fetch-error" />;
-    } else if (fetchTask.isError) {
-      problem = <ProblemView error={fetchTask.error} testId="templates-browse-fetch-error" />;
-    } else if (fetchEnded && fetchTask.data?.status !== "succeeded") {
-      problem = (
-        <Alert variant="destructive" data-testid="templates-browse-fetch-error">
-          <CircleAlert />
-          <AlertDescription>
-            <p>{fetchTask.data?.error ?? `The fetch ended ${fetchTask.data?.status ?? "without a status"} and returned no schema.`}</p>
-          </AlertDescription>
-        </Alert>
-      );
-    } else if (fetchEnded && fetched === null) {
-      problem = (
-        <Alert variant="destructive" data-testid="templates-browse-fetch-error">
-          <CircleAlert />
-          <AlertDescription><p>The node answered, but its answer could not be read as a schema.</p></AlertDescription>
-        </Alert>
-      );
-    } else if (preview.isError) {
-      problem = <ProblemView error={preview.error} testId="templates-browse-preview-error" />;
-    } else if (!fetchEnded) {
+    if (file.isError) {
+      problem = <ProblemView error={file.error} testId="templates-browse-fetch-error" />;
+    } else if (file.data === undefined) {
       progress = (
         <TaskProgress
-          label={`Fetching ${viewing.kind} and every schema it refers to from OSDU`}
-          task={fetchTask.data}
+          label={`Reading ${viewing.kind} and every schema it refers to from release ${viewing.release}`}
           testId="templates-browse-fetch-progress"
         />
       );
+    } else if (preview.isError) {
+      problem = <ProblemView error={preview.error} testId="templates-browse-preview-error" />;
     } else if (preview.data === undefined) {
       progress = <TaskProgress label="Laying the schema out as a template" testId="templates-browse-preview-progress" />;
     } else if (save.isError) {
@@ -245,167 +219,81 @@ export function TemplatesBrowseTab({ canOperate, canAuthor }: TemplatesBrowseTab
     }
   }
 
-  if (!canOperate) {
-    return (
-      <Alert data-testid="templates-browse-forbidden">
-        <CircleAlert />
-        <AlertDescription>
-          <p>Browsing OSDU runs on a node with a delivery flow&apos;s credentials, which needs the operate scope.</p>
-        </AlertDescription>
-      </Alert>
-    );
-  }
+  const shownRows = rows?.slice(0, MAX_ROWS);
+  const typeCount = counts.size;
+  const schemaCount = index.data?.schemas.length ?? 0;
+  const listed = index.data?.release;
 
   return (
-    <div className="flex flex-col gap-4" data-testid="templates-browse">
-      {repos.isError && <ProblemView error={repos.error} />}
-      {repos.data === undefined && !repos.isError && <Skeleton className="h-40 w-full rounded-lg" />}
-      {repos.data !== undefined && withFlows.length === 0 && (
-        <EmptyState
-          icon={<Search />}
-          title="No repository has a delivery flow"
-          description="OSDU is browsed through a delivery flow's OSDU connection. Sync a repository that declares one, then come back here."
-          data-testid="templates-browse-no-flows"
-        />
-      )}
-      {withFlows.length > 0 && (
-        <Card className="gap-3 rounded-lg p-4" data-testid="templates-browse-form">
-          <form
-            className="flex flex-col gap-3"
-            onSubmit={(event) => { event.preventDefault(); searchFromForm(); }}
-          >
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="templates-browse-repo">Repository</Label>
-                <Select value={repo?.repoId ?? ""} onValueChange={(next) => { setRepoId(next); setPipelineId(""); }}>
-                  <SelectTrigger id="templates-browse-repo" size="sm" className="h-8 w-full" data-testid="templates-browse-repo">
-                    <SelectValue placeholder="Pick a repository" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {withFlows.map((candidate) => (
-                      <SelectItem key={candidate.repoId} value={candidate.repoId}>{candidate.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="templates-browse-flow">OSDU connection</Label>
-                <Select value={flow?.pipelineId ?? ""} onValueChange={setPipelineId} disabled={repo === null}>
-                  <SelectTrigger id="templates-browse-flow" size="sm" className="h-8 w-full" data-testid="templates-browse-flow">
-                    <SelectValue placeholder={repo === null ? "Pick a repository first" : "Pick a delivery flow"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(repo?.flows ?? []).map((candidate) => (
-                      <SelectItem key={candidate.pipelineId} value={candidate.pipelineId}>
-                        {candidate.name}
-                        <span className="font-mono text-[11px] text-muted-foreground">{candidate.endpoint}</span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            {flow !== null && (
-              <p className="text-xs text-muted-foreground" data-testid="templates-browse-endpoint">
-                A node searches <span className="font-mono">{flow.endpoint}</span> with the credentials of flow {flow.name}.
-              </p>
-            )}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <FilterField id="templates-browse-authority" label="Authority" value={authority} onChange={setAuthority} placeholder="osdu" />
-              <FilterField id="templates-browse-source" label="Source" value={source} onChange={setSource} placeholder="wks" />
-              <FilterField id="templates-browse-entity-type" label="Entity type" value={entityType} onChange={setEntityType} placeholder="master-data--Wellbore" />
-              <FilterField id="templates-browse-status" label="Status" value={status} onChange={setStatus} placeholder="PUBLISHED" />
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <Label className="flex items-center gap-2 text-[13px] font-normal">
-                <Switch checked={latestOnly} onCheckedChange={setLatestOnly} data-testid="templates-browse-latest" />
-                Latest versions only
-              </Label>
-              <Button
-                type="submit"
-                size="sm"
-                className="ml-auto"
-                disabled={flow === null || startSearch.isPending || searching}
-                data-testid="templates-browse-search"
-              >
-                {startSearch.isPending || searching ? <Loader2 className="animate-spin" /> : <Search />}
-                Search OSDU
-              </Button>
-            </div>
-          </form>
-        </Card>
-      )}
-
-      {searchTaskId !== null && (
-        <Card className="gap-2 rounded-lg p-3" data-testid="templates-browse-task">
-          <div className="flex flex-wrap items-center gap-2 text-[13px] font-medium">
-            Schema search
-            {search.data !== undefined
-              ? <RunStatusBadge status={search.data.status} testId="templates-browse-status-badge" />
-              : !search.isError && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
-            {search.data?.claimedByNode && <span className="font-mono text-[11px] text-muted-foreground">{search.data.claimedByNode}</span>}
-            {searchResult !== null && (
-              <span className="text-xs font-normal text-muted-foreground" data-testid="templates-browse-summary">
-                <span className="font-mono tabular-nums text-foreground">{searchResult.totalCount.toLocaleString()}</span>
-                {` schema${searchResult.totalCount === 1 ? "" : "s"} found through flow ${searchResult.flow} at `}
-                <span className="font-mono">{searchResult.endpoint}</span>
-              </span>
-            )}
+    <div className="flex flex-col gap-3" data-testid="templates-browse">
+      <Card className="gap-2 rounded-lg p-3" data-testid="templates-browse-form">
+        <FilterBar>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="templates-browse-release" className="text-[13px] font-normal text-muted-foreground">Release</Label>
+            <Select value={release ?? ""} onValueChange={setPickedRelease} disabled={releases.data === undefined}>
+              <SelectTrigger id="templates-browse-release" size="sm" className="h-8 w-40" data-testid="templates-browse-release">
+                <SelectValue placeholder={releases.isError ? "Unavailable" : "Loading releases"} />
+              </SelectTrigger>
+              <SelectContent>
+                {(releases.data ?? []).map((candidate, i) => (
+                  <SelectItem key={candidate.name} value={candidate.name}>
+                    <span className="font-mono">{candidate.name}</span>
+                    {i === 0 && <span className="text-[11px] text-muted-foreground">newest</span>}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-          {search.isError && <ProblemView error={search.error} testId="templates-browse-error" />}
-          {search.data !== undefined && isTerminalTask(search.data) && search.data.status !== "succeeded" && (
-            <p className="text-[13px] text-destructive" data-testid="templates-browse-error">
-              {search.data.error ?? `The search ended ${search.data.status} and found nothing.`}
-            </p>
-          )}
-          {search.data?.status === "succeeded" && searchResult === null && (
-            <p className="text-[13px] text-destructive" data-testid="templates-browse-error">
-              The node answered, but its answer could not be read as a list of schemas.
-            </p>
-          )}
-        </Card>
-      )}
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="Wellbore, WellLog, reference-data..."
+            label="Search the record kinds of the release"
+            className="sm:w-80"
+            testId="templates-browse-search"
+          />
+          <Label className="flex items-center gap-2 text-[13px] font-normal">
+            <Switch checked={allVersions} onCheckedChange={setAllVersions} data-testid="templates-browse-all-versions" />
+            Every version
+          </Label>
+        </FilterBar>
+        <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground" data-testid="templates-browse-summary">
+          {listed === undefined
+            ? "The OSDU data definitions: the Open Group's public repository of OSDU schemas."
+            : (
+              <>
+                <span>
+                  <span className="font-mono tabular-nums text-foreground">{typeCount.toLocaleString()}</span>
+                  {` record type${typeCount === 1 ? "" : "s"} and `}
+                  <span className="font-mono tabular-nums text-foreground">{schemaCount.toLocaleString()}</span>
+                  {` schema${schemaCount === 1 ? "" : "s"} in the OSDU data definitions `}
+                  <span className="font-mono text-foreground">{listed.name}</span>
+                  {listed.publishedUtc !== null && <>, released <RelativeTime value={listed.publishedUtc} /></>}
+                  .
+                </span>
+                <RepositoryLink href={listed.webUrl} testId="templates-browse-repository-link">Open in the repository</RepositoryLink>
+              </>
+            )}
+        </p>
+      </Card>
 
-      {searchResult !== null && (
+      {releases.isError && <ProblemView error={releases.error} testId="templates-browse-error" />}
+      {index.isError && <ProblemView error={index.error} testId="templates-browse-error" />}
+      {!releases.isError && !index.isError && rows === undefined && <Skeleton className="h-64 w-full rounded-lg" />}
+
+      {shownRows !== undefined && (
         <DataTable
           columns={columns}
-          rows={searchResult.schemas}
-          rowKey={(row) => row.kind}
-          onRowClick={(row) => view(row.kind)}
-          emptyMessage="OSDU publishes no schema that matches. Loosen the filters, or turn off Latest versions only."
-          minWidth={900}
-          footer={searchResult.totalCount > searchResult.schemas.length ? (
-            <div
-              className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-1.5 text-xs text-muted-foreground"
-              data-testid="templates-browse-paging"
-            >
-              <span className="tabular-nums">
-                {`${(searchResult.offset + 1).toLocaleString()} to ${(searchResult.offset + searchResult.schemas.length).toLocaleString()} of ${searchResult.totalCount.toLocaleString()}`}
-              </span>
-              <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  disabled={searchResult.offset === 0 || startSearch.isPending || searching}
-                  onClick={() => page(Math.max(0, searchResult.offset - PAGE_SIZE))}
-                  data-testid="templates-browse-previous"
-                >
-                  <ChevronLeft />
-                  Previous
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  disabled={searchResult.offset + searchResult.schemas.length >= searchResult.totalCount || startSearch.isPending || searching}
-                  onClick={() => page(searchResult.offset + searchResult.schemas.length)}
-                  data-testid="templates-browse-next"
-                >
-                  Next
-                  <ChevronRight />
-                </Button>
-              </div>
+          rows={shownRows}
+          rowKey={(row) => row.schema.kind}
+          onRowClick={(row) => view(row.schema.kind)}
+          emptyMessage={`No record kind in ${listed?.name ?? "the release"} matches the search.`}
+          footer={rows !== undefined && rows.length > MAX_ROWS ? (
+            <div className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground" data-testid="templates-browse-truncated">
+              {`Showing ${MAX_ROWS.toLocaleString()} of ${rows.length.toLocaleString()}. Narrow the search to see the rest.`}
             </div>
           ) : undefined}
+          minWidth={900}
           data-testid="templates-browse-results"
         />
       )}
@@ -414,18 +302,23 @@ export function TemplatesBrowseTab({ canOperate, canAuthor }: TemplatesBrowseTab
         open={viewing !== null}
         onClose={() => setViewing(null)}
         title={viewing?.kind ?? "Schema"}
-        description={fetched !== null
-          ? `Fetched from OSDU at ${fetched.endpoint} through flow ${fetched.flow}. Nothing is saved until you save it.`
-          : "Fetched from OSDU on a node, with the flow's credentials. Nothing is saved until you save it."}
+        description={file.data !== undefined
+          ? `From the OSDU data definitions ${file.data.release.name} (commit ${file.data.release.commit.slice(0, 12)}), Generated/${file.data.path}. Nothing is saved until you save it.`
+          : "Read from the OSDU data definitions. Nothing is saved until you save it."}
         progress={progress}
         problem={problem}
-        detail={fetched !== null ? preview.data : undefined}
-        previewSchema={fetched?.schema}
-        actions={canAuthor && fetched !== null && preview.data !== undefined ? (
-          <Button size="sm" onClick={() => save.mutate(fetched)} disabled={save.isPending} data-testid="templates-browse-save">
-            {save.isPending ? <Loader2 className="animate-spin" /> : <Save />}
-            Save template
-          </Button>
+        detail={file.data !== undefined ? preview.data : undefined}
+        previewSchema={file.data?.schema}
+        actions={file.data !== undefined && preview.data !== undefined ? (
+          <span className="inline-flex items-center gap-3">
+            <RepositoryLink href={file.data.webUrl} testId="templates-browse-source-link">View the source</RepositoryLink>
+            {canAuthor && (
+              <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending} data-testid="templates-browse-save">
+                {save.isPending ? <Loader2 className="animate-spin" /> : <Save />}
+                Save template
+              </Button>
+            )}
+          </span>
         ) : undefined}
         busy={save.isPending}
         testId="templates-browse-sheet"

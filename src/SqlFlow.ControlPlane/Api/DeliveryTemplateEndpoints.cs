@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
@@ -9,7 +10,6 @@ using SqlFlow.Core.Identity;
 using SqlFlow.Delivery;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Documents;
-using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
@@ -32,12 +32,21 @@ public sealed record DeliveryTemplateVariableDto(
 public sealed record DeliveryTemplateDetailDto(
     string Kind, string Version, string? Title, string? Description, DeliveryTemplateDto? Saved, IReadOnlyList<DeliveryTemplateVariableDto> Variables);
 
-/// <summary>A search of OSDU's schemas, run on a node through the delivery flow's OSDU connection.</summary>
-public sealed record DeliverySchemaSearchRequest(
-    Guid PipelineId, string? Authority, string? Source, string? EntityType, string? Status, bool? LatestVersion, int? Limit, int? Offset);
+/// <summary>A release of the OSDU data definitions: its tag, the commit it names, when that was committed, and its schema folder on the web.</summary>
+public sealed record DeliveryOsduReleaseDto(string Name, string Commit, DateTimeOffset? PublishedUtc, Uri WebUrl);
 
-/// <summary>Fetches one kind's schema from OSDU on a node, through the delivery flow's OSDU connection.</summary>
-public sealed record DeliverySchemaFetchRequest(Guid PipelineId, string Kind);
+/// <summary>A record schema a release publishes, with its file in the release and the file's page on the web.</summary>
+public sealed record DeliveryOsduSchemaDto(string Kind, string EntityType, string Version, string? Status, string Path, Uri WebUrl);
+
+/// <summary>Every record schema one release of the OSDU data definitions publishes.</summary>
+public sealed record DeliveryOsduSchemaIndexDto(DeliveryOsduReleaseDto Release, IReadOnlyList<DeliveryOsduSchemaDto> Schemas);
+
+/// <summary>
+/// A kind's schema bundled from a release of the OSDU data definitions: <c>Version</c> is the template version it saves as,
+/// <c>Origin</c> what the saved template records as where it came from. Nothing is saved.
+/// </summary>
+public sealed record DeliveryOsduSchemaFileDto(
+    string Kind, string Version, DeliveryOsduReleaseDto Release, string Path, Uri WebUrl, string Origin, JsonObject Schema);
 
 /// <summary>A bundled schema to lay out as a template without saving it.</summary>
 public sealed record DeliveryTemplatePreviewRequest(string Kind, JsonElement Schema, Guid? RepoId);
@@ -74,9 +83,9 @@ public sealed record DeliveryMappingParseRequest(string Yaml, string? Path);
 public sealed record DeliveryMappingParseResult(MappingDraft? Draft, IReadOnlyList<MappingDraftIssue> Issues);
 
 /// <summary>
-/// Templates and the mapping builder (docs/delivery/mapping-templates.md). Reading and laying out templates, drafting and
-/// checking a mapping are reads; browsing OSDU runs on a node under the delivery flow's credentials, like every other
-/// target operation; saving and deleting a template changes what mappings can pin, so it is an author action.
+/// Templates and the mapping builder (docs/delivery/mapping-templates.md). Reading and laying out templates, browsing the
+/// OSDU data definitions (the public repository of OSDU schemas, which needs no credential), drafting and checking a
+/// mapping are reads; saving and deleting a template changes what mappings can pin, so it is an author action.
 /// </summary>
 public static class DeliveryTemplateEndpoints
 {
@@ -91,19 +100,13 @@ public static class DeliveryTemplateEndpoints
         delivery.MapGet("/templates/detail", GetTemplateAsync).WithName("GetDeliveryTemplate");
         delivery.MapGet("/templates/schema", GetTemplateSchemaAsync).WithName("GetDeliveryTemplateSchema");
         delivery.MapPost("/templates/preview", PreviewTemplateAsync).WithName("PreviewDeliveryTemplate");
+        delivery.MapGet("/templates/osdu/releases", ListOsduReleasesAsync).WithName("ListDeliveryOsduReleases");
+        delivery.MapGet("/templates/osdu/schemas", ListOsduSchemasAsync).WithName("ListDeliveryOsduSchemas");
+        delivery.MapGet("/templates/osdu/schema", GetOsduSchemaAsync).WithName("GetDeliveryOsduSchema");
         delivery.MapGet("/mapping-builder/repos", ListBuilderReposAsync).WithName("ListDeliveryMappingBuilderRepos");
         delivery.MapPost("/mapping-builder/draft", DraftMappingAsync).WithName("DraftDeliveryMapping");
         delivery.MapPost("/mapping-builder/compose", ComposeMappingAsync).WithName("ComposeDeliveryMapping");
         delivery.MapPost("/mapping-builder/parse", ParseMappingAsync).WithName("ParseDeliveryMapping");
-        return group;
-    }
-
-    public static RouteGroupBuilder MapDeliveryTemplateOperateEndpoints(this RouteGroupBuilder group)
-    {
-        ArgumentNullException.ThrowIfNull(group);
-        var delivery = group.MapGroup("/delivery").WithTags("Delivery");
-        delivery.MapPost("/templates/search", SearchSchemasAsync).WithName("SearchDeliveryOsduSchemas");
-        delivery.MapPost("/templates/fetch", FetchSchemaAsync).WithName("FetchDeliveryOsduSchema");
         return group;
     }
 
@@ -183,52 +186,63 @@ public static class DeliveryTemplateEndpoints
         return TypedResults.Ok(Detail(OsduTemplate.From(schema), info is null ? null : ToDto(info, pins), cache));
     }
 
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> SearchSchemasAsync(
-        DeliverySchemaSearchRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    private static async Task<Results<Ok<IReadOnlyList<DeliveryOsduReleaseDto>>, ProblemHttpResult>> ListOsduReleasesAsync(
+        OsduDataDefinitions definitions, CancellationToken ct)
     {
-        if (request is null)
+        try
         {
-            return Problem("A search needs the delivery flow whose OSDU connection to use.", StatusCodes.Status400BadRequest);
+            var releases = await definitions.ReleasesAsync(ct).ConfigureAwait(false);
+            return TypedResults.Ok<IReadOnlyList<DeliveryOsduReleaseDto>>(releases.Select(r => Release(definitions, r)).ToList());
         }
-
-        if (request.Limit is < 1 or > OsduSchemaQuery.MaxLimit || request.Offset is < 0)
+        catch (DataDefinitionsException ex)
         {
-            return Problem($"A search returns between 1 and {OsduSchemaQuery.MaxLimit} schemas per page, from an offset of zero or more.", StatusCodes.Status400BadRequest);
+            return Unavailable(ex);
         }
-
-        var (flow, problem) = await DeliveryEndpoints.ResolveAsync(db, documents, request.PipelineId, ct).ConfigureAwait(false);
-        if (flow is null)
-        {
-            return problem!;
-        }
-
-        var arguments = new Dictionary<string, string>(StringComparer.Ordinal);
-        Put(arguments, "authority", request.Authority);
-        Put(arguments, "source", request.Source);
-        Put(arguments, "entityType", request.EntityType);
-        Put(arguments, "status", request.Status);
-        arguments["latestVersion"] = request.LatestVersion == false ? "false" : "true";
-        arguments["limit"] = (request.Limit ?? OsduSchemaQuery.MaxLimit).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        arguments["offset"] = (request.Offset ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        return await DeliveryEndpoints.EnqueueOperationAsync(db, dispatcher, flow, SearchSchemasOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
     }
 
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> FetchSchemaAsync(
-        DeliverySchemaFetchRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    private static async Task<Results<Ok<DeliveryOsduSchemaIndexDto>, ProblemHttpResult>> ListOsduSchemasAsync(
+        string? release, OsduDataDefinitions definitions, CancellationToken ct)
     {
-        if (request is null || string.IsNullOrWhiteSpace(request.Kind) || request.Kind.Trim().Split(':').Length != 4)
+        try
         {
-            return Problem("A fetch needs the kind, as authority:source:entityType:version.", StatusCodes.Status400BadRequest);
+            var index = await definitions.IndexAsync(release, ct).ConfigureAwait(false);
+            return TypedResults.Ok(new DeliveryOsduSchemaIndexDto(
+                Release(definitions, index.Release),
+                index.Schemas.Select(s => new DeliveryOsduSchemaDto(s.Kind, s.EntityType, s.Version, s.Status, s.Path, definitions.FileWebUrl(index.Release, s.Path))).ToList()));
+        }
+        catch (DataDefinitionsException ex)
+        {
+            return Unavailable(ex);
+        }
+    }
+
+    private static async Task<Results<Ok<DeliveryOsduSchemaFileDto>, ProblemHttpResult>> GetOsduSchemaAsync(
+        string? release, string? kind, OsduDataDefinitions definitions, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(kind))
+        {
+            return Problem("Name the schema with kind, as authority:source:entityType:version.", StatusCodes.Status400BadRequest);
         }
 
-        var (flow, problem) = await DeliveryEndpoints.ResolveAsync(db, documents, request.PipelineId, ct).ConfigureAwait(false);
-        if (flow is null)
+        try
         {
-            return problem!;
+            var file = await definitions.FetchAsync(release, kind, ct).ConfigureAwait(false);
+            return TypedResults.Ok(new DeliveryOsduSchemaFileDto(
+                file.Schema.Kind, file.Schema.Version, Release(definitions, file.Release), file.Path, definitions.FileWebUrl(file.Release, file.Path), file.Origin, file.Schema.Root));
         }
-
-        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["kind"] = request.Kind.Trim() };
-        return await DeliveryEndpoints.EnqueueOperationAsync(db, dispatcher, flow, FetchSchemaOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+        catch (FlowValidationException ex)
+        {
+            return Problem(ex.Message, StatusCodes.Status400BadRequest);
+        }
+        catch (DataDefinitionsException ex)
+        {
+            return Unavailable(ex);
+        }
+        catch (DeliveryException ex)
+        {
+            // The release's file is there but is not a record schema a template can be saved from.
+            return Problem(ex.Message, StatusCodes.Status422UnprocessableEntity, "Not a record schema");
+        }
     }
 
     private static async Task<Results<Ok<DeliveryTemplateSavedDto>, ProblemHttpResult>> SaveTemplateAsync(
@@ -469,13 +483,14 @@ public static class DeliveryTemplateEndpoints
                 v.Path.Text, v.Shape.ToString(), v.Type, v.ItemType, v.Format, v.Required, v.Role.ToString(), v.Relationships, v.Pattern, v.UnitContext,
                 v.Title, v.Description, v.KeyValueType, v.Nested, MappingBuilder.CacheTypesFor(v, cache).Select(c => c.Name).ToList())).ToList());
 
-    private static void Put(Dictionary<string, string> arguments, string name, string? value)
-    {
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            arguments[name] = value.Trim();
-        }
-    }
+    private static DeliveryOsduReleaseDto Release(OsduDataDefinitions definitions, DataDefinitionsRelease release)
+        => new(release.Name, release.Commit, release.PublishedUtc, definitions.ReleaseWebUrl(release));
+
+    /// <summary>What the data definitions could not answer: 404 for what they do not hold, 502 when they could not be read.</summary>
+    private static ProblemHttpResult Unavailable(DataDefinitionsException ex)
+        => ex.NotFound
+            ? Problem(ex.Message, StatusCodes.Status404NotFound, "Not found")
+            : Problem(ex.Message, StatusCodes.Status502BadGateway, "OSDU data definitions unavailable");
 
     private static ProblemHttpResult Problem(string detail, int status, string title = "Bad request")
         => TypedResults.Problem(detail: detail, statusCode: status, title: title);

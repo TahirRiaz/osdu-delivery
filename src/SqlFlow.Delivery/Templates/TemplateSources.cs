@@ -1,5 +1,3 @@
-using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
@@ -9,138 +7,34 @@ using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Templates;
 
-/// <summary>A search of the schemas OSDU publishes (openapi schema_service, <c>GET /schema</c>).</summary>
-public sealed record OsduSchemaQuery
-{
-    /// <summary>The most schemas one search page returns (the service caps <c>limit</c> at 100).</summary>
-    public const int MaxLimit = 100;
-
-    public string? Authority { get; init; }
-
-    public string? Source { get; init; }
-
-    public string? EntityType { get; init; }
-
-    /// <summary>PUBLISHED, OBSOLETE or DEVELOPMENT; null asks for the service's default (PUBLISHED).</summary>
-    public string? Status { get; init; }
-
-    public bool LatestVersion { get; init; } = true;
-
-    public int Limit { get; init; } = MaxLimit;
-
-    public int Offset { get; init; }
-}
-
-/// <summary>One schema OSDU publishes, as its search lists it.</summary>
-public sealed record OsduSchemaInfo(
-    string Kind, string Authority, string Source, string EntityType, string Version, string? Status, string? Scope, DateTime? CreatedUtc, string? CreatedBy);
-
-/// <summary>A page of schema search results.</summary>
-public sealed record OsduSchemaSearch(IReadOnlyList<OsduSchemaInfo> Schemas, int Offset, int Count, int TotalCount);
-
 /// <summary>
-/// Where a template's schema comes from: OSDU's schema service, or a bundled schema file. Both produce the same thing, a
-/// <see cref="SchemaSnapshot"/> whose every <c>$ref</c> is resolved into its definitions, which the template store saves.
+/// Where a template's schema comes from: the OSDU data definitions, read from the public repository
+/// (<see cref="OsduDataDefinitions"/>) or from a local checkout of it, or a bundled schema file for a schema of one's own.
+/// Each produces the same thing, a <see cref="SchemaSnapshot"/> whose every <c>$ref</c> is resolved into its definitions,
+/// which the template store saves.
 /// </summary>
 public static class TemplateSources
 {
-    /// <summary>The schema service (openapi schema_service v1).</summary>
-    public const string SchemaPath = "/api/schema-service/v1/schema";
-
-    /// <summary>Searches OSDU's schemas (openapi schema_service, <c>GET /schema</c>).</summary>
-    public static async Task<OsduSchemaSearch> SearchAsync(OsduConnection osdu, OsduSchemaQuery query, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(osdu);
-        ArgumentNullException.ThrowIfNull(query);
-        if (query.Limit is < 1 or > OsduSchemaQuery.MaxLimit)
-        {
-            throw new DeliveryException($"A schema search returns between 1 and {OsduSchemaQuery.MaxLimit} schemas per page; {query.Limit} was asked for.");
-        }
-
-        if (query.Offset < 0)
-        {
-            throw new DeliveryException("A schema search offset cannot be negative.");
-        }
-
-        var parameters = new List<(string Name, string Value)>();
-        Add(parameters, "authority", query.Authority);
-        Add(parameters, "source", query.Source);
-        Add(parameters, "entityType", query.EntityType);
-        Add(parameters, "status", query.Status);
-        parameters.Add(("latestVersion", query.LatestVersion ? "true" : "false"));
-        parameters.Add(("limit", query.Limit.ToString(CultureInfo.InvariantCulture)));
-        parameters.Add(("offset", query.Offset.ToString(CultureInfo.InvariantCulture)));
-
-        var path = new StringBuilder(SchemaPath);
-        for (var i = 0; i < parameters.Count; i++)
-        {
-            path.Append(i == 0 ? '?' : '&').Append(parameters[i].Name).Append('=').Append(Uri.EscapeDataString(parameters[i].Value));
-        }
-
-        var response = await osdu.GetJsonAsync(path.ToString(), ct).ConfigureAwait(false);
-        var schemas = new List<OsduSchemaInfo>();
-        foreach (var info in (response["schemaInfos"] as JsonArray ?? []).OfType<JsonObject>())
-        {
-            if (info["schemaIdentity"] is not JsonObject identity)
-            {
-                continue;
-            }
-
-            var authority = Text(identity, "authority");
-            var entityType = Text(identity, "entityType");
-            if (authority is null || entityType is null)
-            {
-                continue;
-            }
-
-            var source = Text(identity, "source") ?? string.Empty;
-            var version = string.Create(
-                CultureInfo.InvariantCulture,
-                $"{Number(identity, "schemaVersionMajor")}.{Number(identity, "schemaVersionMinor")}.{Number(identity, "schemaVersionPatch")}");
-            var kind = Text(identity, "id") ?? $"{authority}:{source}:{entityType}:{version}";
-            schemas.Add(new OsduSchemaInfo(
-                kind, authority, source, entityType, version, Text(info, "status"), Text(info, "scope"), Instant(Text(info, "dateCreated")), Text(info, "createdBy")));
-        }
-
-        return new OsduSchemaSearch(
-            schemas,
-            (int)Number(response, "offset", query.Offset),
-            (int)Number(response, "count", schemas.Count),
-            (int)Number(response, "totalCount", schemas.Count));
-    }
-
-    /// <summary>Fetches a kind's schema from OSDU (openapi schema_service, <c>GET /schema/{id}</c>) and every schema it references.</summary>
-    public static async Task<SchemaSnapshot> FetchAsync(OsduConnection osdu, string kind, TimeProvider time, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(osdu);
-        ArgumentNullException.ThrowIfNull(time);
-        RequireKind(kind);
-        var root = await osdu.GetJsonAsync($"{SchemaPath}/{Http.UrlPath.EscapeSegment(kind)}", ct).ConfigureAwait(false);
-        var bundled = await SchemaBundler.BundleAsync(root, kind, async (reference, _, token) =>
-        {
-            var id = reference.Replace("#/definitions/", string.Empty, StringComparison.Ordinal);
-            var schema = await osdu.GetJsonAsync($"{SchemaPath}/{Http.UrlPath.EscapeSegment(id)}", token).ConfigureAwait(false);
-            return (id, schema);
-        }, ct).ConfigureAwait(false);
-        return Validated(kind, bundled, time.GetUtcNow(), osdu.Endpoint);
-    }
-
-    /// <summary>Bundles a kind's schema from a local checkout of the OSDU data definitions.</summary>
+    /// <summary>Bundles a kind's schema from a local checkout of the OSDU data definitions (the repository's <c>Generated</c> folder).</summary>
     public static async Task<SchemaSnapshot> FromDirectoryAsync(string dataRoot, string kind, TimeProvider time, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
         ArgumentNullException.ThrowIfNull(time);
         RequireKind(kind);
-        var file = SchemaBundler.LocateKindFile(dataRoot, kind);
-        var root = JsonNode.Parse(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false)) as JsonObject
-            ?? throw new DeliveryException($"Schema file '{file}' is not a JSON object.");
-        var bundled = await SchemaBundler.BundleAsync(root, file, SchemaBundler.DirectoryResolver(dataRoot), ct).ConfigureAwait(false);
-        return Validated(kind, bundled, time.GetUtcNow(), file);
+        var root = Path.GetFullPath(dataRoot);
+        if (!Directory.Exists(root))
+        {
+            throw new DeliveryException($"The data definitions folder '{root}' does not exist.");
+        }
+
+        var path = SchemaBundler.KindPath(kind);
+        var bundled = await SchemaBundler.BundleTreeAsync(path, (file, token) => ReadCheckoutFileAsync(root, file, token), ct).ConfigureAwait(false);
+        return Validated(kind, bundled, time.GetUtcNow(), Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar)));
     }
 
     /// <summary>
-    /// Reads a bundled schema (every <c>$ref</c> under <c>#/definitions/</c> and present), as a fetch stores it and as
-    /// the import accepts it. <paramref name="where"/> names the file or upload in errors.
+    /// Reads a bundled schema (every <c>$ref</c> under <c>#/definitions/</c> and present), as the data definitions bundle
+    /// it and as the import accepts it. <paramref name="where"/> names the file or upload in errors.
     /// </summary>
     public static SchemaSnapshot FromBundledJson(string json, string kind, DateTimeOffset capturedUtc, string where)
     {
@@ -160,7 +54,8 @@ public static class TemplateSources
         return Validated(kind, root, capturedUtc, where);
     }
 
-    private static SchemaSnapshot Validated(string kind, JsonObject bundled, DateTimeOffset capturedUtc, string where)
+    /// <summary>A bundled schema as a template is saved from it: it describes the kind, refers to nothing outside itself, and declares <c>data</c>.</summary>
+    internal static SchemaSnapshot Validated(string kind, JsonObject bundled, DateTimeOffset capturedUtc, string where)
     {
         if (bundled["x-osdu-schema-source"] is JsonValue declared && declared.TryGetValue<string>(out var source)
             && !string.IsNullOrWhiteSpace(source) && !string.Equals(source, kind, StringComparison.Ordinal))
@@ -195,12 +90,33 @@ public static class TemplateSources
         return snapshot;
     }
 
-    private static void RequireKind(string kind)
+    internal static void RequireKind(string kind)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
         if (!FlowMapper.IsRecordKind(kind))
         {
             throw new FlowValidationException($"Kind '{kind}' must be 'authority:source:entityType:major.minor.patch'.");
+        }
+    }
+
+    private static async Task<JsonObject> ReadCheckoutFileAsync(string root, string path, CancellationToken ct)
+    {
+        var file = Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar));
+        if (!File.Exists(file))
+        {
+            // A checkout that keeps the files in other folders (the osdu-client repository's Specifications/Data) still holds them by name.
+            file = Directory.EnumerateFiles(root, Path.GetFileName(file), SearchOption.AllDirectories).FirstOrDefault()
+                ?? throw new DeliveryException($"No schema file '{path}' under '{root}'.");
+        }
+
+        try
+        {
+            return JsonNode.Parse(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false)) as JsonObject
+                ?? throw new DeliveryException($"Schema file '{file}' is not a JSON object.");
+        }
+        catch (JsonException ex)
+        {
+            throw new DeliveryException($"Schema file '{file}' is not valid JSON ({ex.Message}).", ex);
         }
     }
 
@@ -235,21 +151,4 @@ public static class TemplateSources
                 break;
         }
     }
-
-    private static void Add(List<(string, string)> parameters, string name, string? value)
-    {
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            parameters.Add((name, value.Trim()));
-        }
-    }
-
-    private static string? Text(JsonObject node, string key)
-        => node[key] is JsonValue value && value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text) ? text : null;
-
-    private static long Number(JsonObject node, string key, long fallback = 0)
-        => node[key] is JsonValue value && value.TryGetValue<long>(out var number) ? number : fallback;
-
-    private static DateTime? Instant(string? text)
-        => text is not null && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed) ? parsed.UtcDateTime : null;
 }

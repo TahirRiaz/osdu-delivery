@@ -24,7 +24,7 @@ namespace SqlFlow.Cli;
 internal static class DeliveryVerbs
 {
     private const string TemplateUsage =
-        "Usage: sqlflow template (capture <flow.yaml> --kind <kind> [--endpoint <url>] | import <schema.json> --kind <kind> | import --from-dir <dir> --kind <kind> | list | show --kind <kind> [--version <version>] | delete --kind <kind> --version <version>) [--db <conn-ref>] [--json]";
+        "Usage: sqlflow template (capture --kind <kind> [--release <tag>] | import <schema.json> --kind <kind> | import --from-dir <dir> --kind <kind> | list | show --kind <kind> [--version <version>] | delete --kind <kind> --version <version>) [--db <conn-ref>] [--json]";
 
     public static async Task<int> CheckAsync(IServiceProvider provider, string flowPath, string[] args, bool json, CancellationToken ct)
     {
@@ -171,31 +171,18 @@ internal static class DeliveryVerbs
         {
             case "capture":
             {
-                var flowPath = positional.Length > 2 ? positional[2] : throw new FlowValidationException(TemplateUsage);
-                var kind = Program.GetOption(args, "--kind") ?? throw new FlowValidationException(TemplateUsage);
-                var text = await File.ReadAllTextAsync(flowPath, ct).ConfigureAwait(false);
-                OsduConnection osdu;
-                string flowName;
-                string endpoint;
-                if (engine.Documents.Probe(text, flowPath).Equals(RetrievalDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
+                // The canonical OSDU schemas are the Open Group's data definitions, not whatever one platform happens to host.
+                if (positional.Length > 2)
                 {
-                    var retrieval = engine.Documents.ParseRetrieval(text, flowPath);
-                    (flowName, endpoint) = (retrieval.Name, retrieval.Source.Endpoint);
-                    osdu = await ConnectAsync(retrieval.Source.Endpoint, retrieval.Source.Auth, retrieval.Source.Headers, retrieval.Reliability, args, engine, ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    var flow = engine.Documents.ParseFlow(text, flowPath);
-                    (flowName, endpoint) = (flow.Name, flow.Target.Endpoint);
-                    osdu = await ConnectAsync(flow.Target.Endpoint, flow.Target.Auth, flow.Target.Headers, flow.Reliability, args, engine, ct).ConfigureAwait(false);
+                    throw new FlowValidationException(
+                        "'sqlflow template capture' takes no flow: it saves the kind's schema from the OSDU data definitions. " + TemplateUsage);
                 }
 
-                using (osdu)
-                {
-                    var schema = await TemplateSources.FetchAsync(osdu, kind, engine.Time, ct).ConfigureAwait(false);
-                    var origin = $"OSDU {Program.GetOption(args, "--endpoint") ?? endpoint} through flow '{flowName}'";
-                    return Report(await store.SaveAsync(schema, origin, actor, ct).ConfigureAwait(false), json);
-                }
+                var kind = Program.GetOption(args, "--kind") ?? throw new FlowValidationException(TemplateUsage);
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+                var definitions = new OsduDataDefinitions(() => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, engine.Time);
+                var file = await definitions.FetchAsync(Program.GetOption(args, "--release"), kind, ct).ConfigureAwait(false);
+                return Report(await store.SaveAsync(file.Schema, file.Origin, actor, ct).ConfigureAwait(false), json);
             }
 
             case "import":

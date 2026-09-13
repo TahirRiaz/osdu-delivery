@@ -4,16 +4,16 @@ using SqlFlow.Core;
 namespace SqlFlow.Delivery.Engine.Snapshots;
 
 /// <summary>
-/// Turns an OSDU JSON Schema with external references into one self-contained document whose every <c>$ref</c>
-/// is <c>#/definitions/{name}</c>. Two sources are supported: the schema service, whose refs are schema ids
-/// (<c>osdu:wks:AbstractAccessControlList:1.0.0</c>, sometimes already under <c>#/definitions/</c>), and a local
-/// checkout of the OSDU data definitions, whose refs are relative file paths (<c>../abstract/X.1.0.0.json</c>).
+/// Turns an OSDU JSON Schema with external references into one self-contained document whose every <c>$ref</c> is
+/// <c>#/definitions/{name}</c>. The schemas come from an OSDU data definitions tree (the <c>Generated</c> folder of the
+/// public repository, read over its API or from a local checkout), whose references are file paths relative to the
+/// file they appear in (<c>../abstract/AbstractLegalTags.1.0.0.json</c>).
 /// </summary>
 public static class SchemaBundler
 {
     /// <summary>
     /// Bundles <paramref name="root"/>, resolving each non-local reference through <paramref name="resolve"/>
-    /// (which receives the raw reference and the reference of the document it appears in, and returns the
+    /// (which receives the raw reference and the name of the document it appears in, and returns the
     /// referenced document and its canonical name).
     /// </summary>
     public static async Task<JsonObject> BundleAsync(JsonObject root, string rootName, Func<string, string, CancellationToken, Task<(string Name, JsonObject Schema)>> resolve, CancellationToken ct = default)
@@ -101,31 +101,54 @@ public static class SchemaBundler
         return bundled;
     }
 
-    /// <summary>A resolver over a local checkout of the OSDU data definitions (the osdu-client repo's Specifications/Data layout).</summary>
-    public static Func<string, string, CancellationToken, Task<(string Name, JsonObject Schema)>> DirectoryResolver(string dataRoot)
+    /// <summary>
+    /// Bundles the schema file at <paramref name="rootPath"/> of an OSDU data definitions tree. <paramref name="read"/>
+    /// reads a file by its path from the tree's root, with forward slashes, and is asked for each file once. A referenced
+    /// file is bundled as the definition named by its file name without <c>.json</c>, so a tree bundles the same way, to
+    /// the same template version, wherever it is read from.
+    /// </summary>
+    public static async Task<JsonObject> BundleTreeAsync(string rootPath, Func<string, CancellationToken, Task<JsonObject>> read, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
-        return (reference, owner, _) =>
+        ArgumentException.ThrowIfNullOrWhiteSpace(rootPath);
+        ArgumentNullException.ThrowIfNull(read);
+        var root = await read(rootPath, ct).ConfigureAwait(false);
+
+        // The file each definition was read from, by the name it is bundled under: a reference is relative to the file it is in.
+        var files = new Dictionary<string, string>(StringComparer.Ordinal) { [rootPath] = rootPath };
+        var loaded = new Dictionary<string, JsonObject>(StringComparer.Ordinal) { [rootPath] = root };
+        return await BundleAsync(root, rootPath, async (reference, owner, token) =>
         {
-            var ownerDir = Path.GetDirectoryName(owner) ?? dataRoot;
-            var candidate = Path.GetFullPath(Path.Combine(ownerDir, reference.Replace('/', Path.DirectorySeparatorChar)));
-            if (!File.Exists(candidate))
+            if (!files.TryGetValue(owner, out var ownerPath))
             {
-                candidate = FindByName(dataRoot, reference)
-                    ?? throw new DeliveryException($"Schema reference '{reference}' (from {owner}) was not found under '{dataRoot}'.");
+                throw new DeliveryException(
+                    $"{rootPath}: the reference '{reference}' is in definition '{owner}', which no file of the data definitions holds, so there is nothing it is relative to.");
             }
 
-            var node = JsonNode.Parse(File.ReadAllText(candidate)) as JsonObject
-                ?? throw new DeliveryException($"Schema file '{candidate}' is not a JSON object.");
-            var name = Path.GetFileNameWithoutExtension(candidate);
-            return Task.FromResult((name, node));
-        };
+            var path = TreePath(rootPath, ownerPath, reference);
+            var name = FileStem(path);
+            if (files.TryGetValue(name, out var existing) && !string.Equals(existing, path, StringComparison.Ordinal))
+            {
+                throw new DeliveryException($"{rootPath}: '{existing}' and '{path}' would both be bundled as definition '{name}'.");
+            }
+
+            files[name] = path;
+            if (!loaded.TryGetValue(path, out var schema))
+            {
+                schema = await read(path, token).ConfigureAwait(false);
+                loaded[path] = schema;
+            }
+
+            return (name, schema);
+        }, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Finds the file for a kind (<c>osdu:wks:work-product-component--WellLog:1.4.0</c>) under a data definitions checkout.</summary>
-    public static string LocateKindFile(string dataRoot, string kind)
+    /// <summary>
+    /// The path of a kind's schema file from the root of a data definitions tree: its group folder and file, so
+    /// <c>osdu:wks:master-data--Wellbore:1.3.0</c> is <c>master-data/Wellbore.1.3.0.json</c>.
+    /// </summary>
+    public static string KindPath(string kind)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
         var parts = kind.Split(':');
         if (parts.Length != 4)
         {
@@ -133,24 +156,50 @@ public static class SchemaBundler
         }
 
         var entity = parts[2];
-        var version = parts[3];
         var sep = entity.IndexOf("--", StringComparison.Ordinal);
-        var group = sep < 0 ? string.Empty : entity[..sep];
-        var name = sep < 0 ? entity : entity[(sep + 2)..];
-        var file = $"{name}.{version}.json";
-        var direct = Path.Combine(dataRoot, group, file);
-        if (File.Exists(direct))
-        {
-            return direct;
-        }
-
-        return FindByName(dataRoot, file) ?? throw new DeliveryException($"No schema file '{file}' for kind '{kind}' under '{dataRoot}'.");
+        var file = $"{(sep < 0 ? entity : entity[(sep + 2)..])}.{parts[3]}.json";
+        return sep < 0 ? file : $"{entity[..sep]}/{file}";
     }
 
-    private static string? FindByName(string root, string reference)
+    /// <summary>A reference resolved against the file it is in, kept inside the tree.</summary>
+    private static string TreePath(string rootPath, string ownerPath, string reference)
     {
-        var fileName = Path.GetFileName(reference.Replace('\\', '/'));
-        return Directory.EnumerateFiles(root, fileName, SearchOption.AllDirectories).FirstOrDefault();
+        if (reference.Contains('#') || reference.Contains('\\') || reference.StartsWith('/') || reference.Contains("://", StringComparison.Ordinal))
+        {
+            throw new DeliveryException($"{rootPath}: the reference '{reference}' is not a file of the data definitions.");
+        }
+
+        var segments = ownerPath.Split('/')[..^1].ToList();
+        foreach (var segment in reference.Split('/'))
+        {
+            if (segment is "" or ".")
+            {
+                continue;
+            }
+
+            if (segment == "..")
+            {
+                if (segments.Count == 0)
+                {
+                    throw new DeliveryException($"{rootPath}: the reference '{reference}' leads outside the data definitions.");
+                }
+
+                segments.RemoveAt(segments.Count - 1);
+                continue;
+            }
+
+            segments.Add(segment);
+        }
+
+        return segments.Count == 0
+            ? throw new DeliveryException($"{rootPath}: the reference '{reference}' names no file.")
+            : string.Join('/', segments);
+    }
+
+    private static string FileStem(string path)
+    {
+        var file = path[(path.LastIndexOf('/') + 1)..];
+        return file.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? file[..^".json".Length] : file;
     }
 
     private static JsonObject Strip(JsonObject schema)

@@ -1,9 +1,8 @@
 using System.Net;
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
-using SqlFlow.Core.Secrets;
-using SqlFlow.Delivery.Engine.Snapshots;
-using SqlFlow.Delivery.Model;
+using SqlFlow.Core;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
 using Xunit;
@@ -218,7 +217,7 @@ public sealed class CatalogTemplateStoreTests : IDisposable
     }
 }
 
-/// <summary>Where a template's schema comes from: a bundled file, or OSDU's schema service.</summary>
+/// <summary>A bundled schema file, as the import accepts it.</summary>
 public class TemplateSourcesTests
 {
     private const string Kind = "test:wks:work-product-component--Thing:1.0.0";
@@ -243,59 +242,167 @@ public class TemplateSourcesTests
         Assert.Contains(reason, ex.Message, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task Searching_OSDU_asks_the_schema_service_and_reads_what_it_lists()
+}
+
+/// <summary>
+/// The OSDU data definitions over the repository's GitLab API: its release tags, a release's index of the kinds it
+/// publishes, and a kind bundled from its file and every file it refers to, all read at the commit the release names.
+/// </summary>
+public class OsduDataDefinitionsTests
+{
+    private const string Commit = "99f8fc88d8ad838b5738ac5ad92ac643538b5766";
+    private const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
+
+    /// <summary>A release's Generated folder, reduced to a Wellbore schema and the abstract schemas it refers to.</summary>
+    private static readonly Dictionary<string, string> Tree = new(StringComparer.Ordinal)
     {
-        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/api/schema-service/v1/schema", HttpStatusCode.OK, """
-            {
-              "schemaInfos": [
-                {
-                  "schemaIdentity": { "authority": "osdu", "source": "wks", "entityType": "master-data--Wellbore", "schemaVersionMajor": 1, "schemaVersionMinor": 3, "schemaVersionPatch": 0, "id": "osdu:wks:master-data--Wellbore:1.3.0" },
-                  "status": "PUBLISHED", "scope": "SHARED", "dateCreated": "2024-01-01T00:00:00Z", "createdBy": "someone"
-                },
-                { "schemaIdentity": { "authority": "osdu", "source": "wks", "entityType": "master-data--Well", "schemaVersionMajor": 1, "schemaVersionMinor": 2, "schemaVersionPatch": 0 } }
-              ],
-              "offset": 0, "count": 2, "totalCount": 7
-            }
-            """);
-        using var osdu = await Connect(handler);
-
-        var found = await TemplateSources.SearchAsync(osdu, new OsduSchemaQuery { Authority = "osdu", EntityType = "master-data--Wellbore", Limit = 50 });
-
-        var request = Assert.Single(handler.Calls);
-        Assert.Contains("authority=osdu", request.Uri.Query, StringComparison.Ordinal);
-        Assert.Contains("entityType=master-data--Wellbore", request.Uri.Query, StringComparison.Ordinal);
-        Assert.Contains("latestVersion=true", request.Uri.Query, StringComparison.Ordinal);
-        Assert.Contains("limit=50", request.Uri.Query, StringComparison.Ordinal);
-        Assert.Equal(7, found.TotalCount);
-        Assert.Equal(["osdu:wks:master-data--Wellbore:1.3.0", "osdu:wks:master-data--Well:1.2.0"], found.Schemas.Select(s => s.Kind));
-        Assert.Equal("PUBLISHED", found.Schemas[0].Status);
-        await Assert.ThrowsAsync<DeliveryException>(() => TemplateSources.SearchAsync(osdu, new OsduSchemaQuery { Limit = 500 }));
-    }
+        ["SchemaStatus.json"] = """
+            { "osdu:wks:AbstractAccessControlList:1.0.0": "PUBLISHED", "osdu:wks:master-data--Wellbore:1.0.0": "PUBLISHED",
+              "osdu:wks:master-data--Wellbore:1.3.0": "PUBLISHED", "osdu:wks:master-data--Well:1.2.0": "DEVELOPMENT", "osdu:wks:Manifest:1.0.0": "PUBLISHED" }
+            """,
+        ["master-data/Wellbore.1.3.0.json"] = """
+            { "$id": "https://schema.osdu.opengroup.org/json/master-data/Wellbore.1.3.0.json", "x-osdu-schema-source": "osdu:wks:master-data--Wellbore:1.3.0", "type": "object",
+              "properties": {
+                "acl": { "$ref": "../abstract/AbstractAccessControlList.1.0.0.json" },
+                "data": { "allOf": [ { "$ref": "../abstract/AbstractFacility.1.1.0.json" }, { "type": "object", "properties": { "WellID": { "type": "string" } } } ] } } }
+            """,
+        ["abstract/AbstractAccessControlList.1.0.0.json"] = """
+            { "type": "object", "properties": { "owners": { "type": "array", "items": { "type": "string" } } } }
+            """,
+        ["abstract/AbstractFacility.1.1.0.json"] = """
+            { "type": "object", "properties": { "FacilityName": { "type": "string" }, "Owners": { "$ref": "AbstractAccessControlList.1.0.0.json" } } }
+            """,
+    };
 
     [Fact]
-    public async Task Fetching_a_schema_resolves_every_schema_it_refers_to()
+    public async Task The_newest_release_is_the_default_and_its_index_lists_the_record_kinds_it_publishes()
     {
-        var handler = new FakeHttpHandler()
-            .OnMatch(r => Uri.UnescapeDataString(r.RequestUri!.AbsolutePath).EndsWith("/schema/" + Kind, StringComparison.Ordinal), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """
-                { "x-osdu-schema-source": "test:wks:work-product-component--Thing:1.0.0", "type": "object",
-                  "properties": { "acl": { "$ref": "osdu:wks:AbstractAccessControlList:1.0.0" }, "data": { "type": "object", "properties": { "Name": { "type": "string" } } } } }
-                """))
-            .OnMatch(r => Uri.UnescapeDataString(r.RequestUri!.AbsolutePath).EndsWith("/schema/osdu:wks:AbstractAccessControlList:1.0.0", StringComparison.Ordinal), _ => FakeHttpHandler.Json(HttpStatusCode.OK, """
-                { "type": "object", "properties": { "owners": { "type": "array", "items": { "type": "string" } } } }
-                """));
-        using var osdu = await Connect(handler);
+        var handler = Repository();
+        using var http = new HttpClient(handler, disposeHandler: false);
+        var definitions = Definitions(http, new TestClock());
 
-        var schema = await TemplateSources.FetchAsync(osdu, Kind, new TestClock());
+        var releases = await definitions.ReleasesAsync();
+        Assert.Equal(["v0.30.0", "v0.29.1", "v0.28.3.1"], releases.Select(r => r.Name));
+        Assert.Equal(Commit, releases[0].Commit);
 
+        var index = await definitions.IndexAsync(release: null);
+        Assert.Equal("v0.30.0", index.Release.Name);
+
+        // Abstract building blocks and the manifest are not records a mapping fills, so the index leaves them out.
+        Assert.Equal(["osdu:wks:master-data--Well:1.2.0", "osdu:wks:master-data--Wellbore:1.3.0", "osdu:wks:master-data--Wellbore:1.0.0"], index.Schemas.Select(s => s.Kind));
+        Assert.Equal("DEVELOPMENT", index.Schemas[0].Status);
+        var wellbore = index.Schemas[1];
+        Assert.Equal("master-data--Wellbore", wellbore.EntityType);
+        Assert.Equal("1.3.0", wellbore.Version);
+        Assert.Equal("PUBLISHED", wellbore.Status);
+        Assert.Equal("master-data/Wellbore.1.3.0.json", wellbore.Path);
+        Assert.Equal(
+            "https://community.opengroup.org/osdu/data/data-definitions/-/blob/v0.30.0/Generated/master-data/Wellbore.1.3.0.json",
+            definitions.FileWebUrl(index.Release, wellbore.Path).AbsoluteUri);
+
+        // The release list and the index are each read once.
+        await definitions.IndexAsync("v0.30.0");
         Assert.Equal(2, handler.Calls.Count);
-        Assert.Equal(SchemaType.Array, schema.Resolve("acl.owners")!.Type);
-        var template = OsduTemplate.From(schema);
-        Assert.NotNull(template.Find(TemplatePath.TryParse("osdu.data.Name", out var name, out _) ? name! : throw new InvalidOperationException()));
     }
 
-    private static Task<OsduConnection> Connect(FakeHttpHandler handler)
-        => OsduConnection.CreateAsync(
-            "https://osdu.example.test", new TargetAuth { Type = TargetAuthType.None }, new Dictionary<string, string> { ["data-partition-id"] = "opendes" },
-            new FlowReliability(), new SecretResolver([new EnvSecretProvider()]), handler);
+    [Fact]
+    public async Task A_kind_is_bundled_from_its_release_exactly_as_a_checkout_of_the_release_bundles_it()
+    {
+        var handler = Repository();
+        using var http = new HttpClient(handler, disposeHandler: false);
+        var clock = new TestClock();
+        var definitions = Definitions(http, clock);
+
+        var file = await definitions.FetchAsync("v0.30.0", WellboreKind);
+
+        Assert.Equal("master-data/Wellbore.1.3.0.json", file.Path);
+        Assert.Equal("OSDU data definitions v0.30.0 (99f8fc88d8ad) Generated/master-data/Wellbore.1.3.0.json", file.Origin);
+        var bundled = Assert.IsType<JsonObject>(file.Schema.Root["definitions"]);
+        Assert.Equal(["AbstractAccessControlList.1.0.0", "AbstractFacility.1.1.0"], bundled.Select(d => d.Key));
+        var template = OsduTemplate.From(file.Schema);
+        foreach (var path in new[] { "osdu.acl.owners", "osdu.data.FacilityName", "osdu.data.WellID" })
+        {
+            Assert.NotNull(template.Find(TemplatePath.TryParse(path, out var parsed, out _) ? parsed! : throw new InvalidOperationException(path)));
+        }
+
+        // Every file is read once at the release's commit, however often it is referred to, and a second fetch reads nothing.
+        Assert.Equal(4, handler.Calls.Count);
+        Assert.All(handler.Calls.Skip(1), call => Assert.EndsWith("?ref=" + Commit, call.Uri.AbsoluteUri, StringComparison.Ordinal));
+        var again = await definitions.FetchAsync("v0.30.0", WellboreKind);
+        Assert.Equal(4, handler.Calls.Count);
+        Assert.Equal(file.Schema.Version, again.Schema.Version);
+
+        // A local checkout of the same release bundles to the same template version.
+        var root = Samples.NewTempDirectory();
+        foreach (var (path, json) in Tree)
+        {
+            var target = Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            await File.WriteAllTextAsync(target, json);
+        }
+
+        Assert.Equal(file.Schema.Version, (await TemplateSources.FromDirectoryAsync(root, WellboreKind, clock)).Version);
+    }
+
+    [Fact]
+    public async Task What_the_repository_does_not_hold_is_not_found_and_a_repository_that_fails_says_so()
+    {
+        var handler = Repository();
+        using var http = new HttpClient(handler, disposeHandler: false);
+        var definitions = Definitions(http, new TestClock());
+
+        var release = await Assert.ThrowsAsync<DataDefinitionsException>(() => definitions.IndexAsync("v9.9.9"));
+        Assert.True(release.NotFound);
+        Assert.Contains("no release 'v9.9.9'; the latest is v0.30.0", release.Message, StringComparison.Ordinal);
+
+        var kind = await Assert.ThrowsAsync<DataDefinitionsException>(() => definitions.FetchAsync(null, "osdu:wks:master-data--Missing:1.0.0"));
+        Assert.True(kind.NotFound);
+        Assert.Contains("Generated/master-data/Missing.1.0.0.json at v0.30.0", kind.Message, StringComparison.Ordinal);
+
+        await Assert.ThrowsAsync<FlowValidationException>(() => definitions.FetchAsync(null, "Wellbore"));
+
+        var failing = new FakeHttpHandler().On(HttpMethod.Get, "/repository/tags", HttpStatusCode.ServiceUnavailable, """{ "message": "maintenance" }""");
+        using var failingHttp = new HttpClient(failing, disposeHandler: false);
+        var down = await Assert.ThrowsAsync<DataDefinitionsException>(() => Definitions(failingHttp, new TestClock()).ReleasesAsync());
+        Assert.False(down.NotFound);
+        Assert.Contains("answered 503", down.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_reference_that_leads_outside_the_data_definitions_is_refused()
+    {
+        var root = Samples.NewTempDirectory();
+        Directory.CreateDirectory(Path.Combine(root, "master-data"));
+        await File.WriteAllTextAsync(
+            Path.Combine(root, "master-data", "Wellbore.1.3.0.json"),
+            """{ "type": "object", "properties": { "acl": { "$ref": "../../private/AbstractAccessControlList.1.0.0.json" }, "data": { "type": "object" } } }""");
+
+        var ex = await Assert.ThrowsAsync<DeliveryException>(() => TemplateSources.FromDirectoryAsync(root, WellboreKind, new TestClock()));
+        Assert.Contains("leads outside the data definitions", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>The repository's API: four tags (three releases, one other tag) and the tree at the newest release's commit.</summary>
+    private static FakeHttpHandler Repository()
+    {
+        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/repository/tags", HttpStatusCode.OK, $$"""
+            [
+              { "name": "v0.29.1", "commit": { "id": "0000000000000000000000000000000000000291", "committed_date": "2026-01-29T15:47:11.000+08:00" } },
+              { "name": "v0.30.0", "commit": { "id": "{{Commit}}", "committed_date": "2026-07-17T14:55:57.000+08:00" } },
+              { "name": "v0.28.3.1", "commit": { "id": "0000000000000000000000000000000000002831" } },
+              { "name": "milestone-27", "commit": { "id": "0000000000000000000000000000000000000027" } }
+            ]
+            """);
+        foreach (var (path, json) in Tree)
+        {
+            var escaped = Uri.EscapeDataString("Generated/" + path);
+            handler.OnMatch(
+                r => r.RequestUri!.AbsoluteUri.Contains("/repository/files/" + escaped + "/raw?ref=" + Commit, StringComparison.Ordinal),
+                _ => FakeHttpHandler.Json(HttpStatusCode.OK, json));
+        }
+
+        return handler;
+    }
+
+    private static OsduDataDefinitions Definitions(HttpClient http, TimeProvider time)
+        => new(() => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, time);
 }

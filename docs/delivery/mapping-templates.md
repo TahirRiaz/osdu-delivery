@@ -20,16 +20,19 @@ A template is generated from an OSDU schema. It is identified by the OSDU kind i
 **Where templates come from.** The GUI's Templates page is where a person looks at OSDU schemas and turns one into a
 template:
 
-- **Browse OSDU.** Pick a flow whose OSDU connection to use, and search the schemas OSDU publishes by authority,
-  source and entity type (openapi schema_service, `GET /schema`). A node runs the search with that flow's credentials,
-  resolved from the node's own environment exactly as for a run.
+- **Browse OSDU.** The canonical OSDU schemas are the OSDU data definitions, the Open Group's public repository at
+  <https://community.opengroup.org/osdu/data/data-definitions>. Pick one of its releases (a version tag; the newest is
+  the default) and search the record kinds it publishes, which its `Generated/SchemaStatus.json` lists. The control
+  plane reads the repository's GitLab API itself: the schemas are public, so no flow, credential or node is involved.
+  `ControlPlane:SchemaRepository` points it at a mirror when community.opengroup.org is out of reach.
 - **Look at a schema.** Open a kind to see it laid out as a template: every variable with its type, requiredness,
-  relationships, unit context and OSDU's description. The node fetches the schema (`GET /schema/{id}`) and every schema
-  it references, and nothing is stored yet.
+  relationships, unit context and OSDU's description. The control plane reads the kind's file under `Generated` at the
+  commit the release tag names, with every file it refers to, and bundles them; nothing is stored yet. The kind links
+  to its file in the repository.
 - **Save it.** Saving stores exactly the schema that was shown as a template version, and from then on mappings can
-  pin it.
-- **Import a file.** A bundled schema file can be uploaded and saved the same way, for an environment without access
-  to OSDU, and for tests.
+  pin it. The template's origin names the release, its commit and the file.
+- **Import a file.** A schema of one's own, which the data definitions do not publish, is uploaded as a bundled schema
+  file and saved the same way.
 
 **Where templates are stored.** In the catalog database, table `delivery.Template`. The control plane runs as a
 container whose disk does not survive a restart, and the catalog is where everything durable already lives. A row
@@ -309,10 +312,10 @@ documents, and the reference cache capture is unchanged.
    in the render resolver. Adapt the planner, the legal tag check and the catalog sync summary, and move manual
    submission onto the standard: records carry `datasets`, and the source contract describes each column by the
    template variables it fills.
-5. **Browse, fetch and save.** Node operations that search OSDU's schemas and fetch one kind's bundled schema
-   through a chosen flow's connection, a save path that stores a fetched or imported schema, and CLI verbs
-   `sqlflow template capture | import | list | show`.
-6. **API.** Search OSDU schemas and fetch one for preview; list, show, save, import and delete templates; draft a mapping for a repository and a template with
+5. **Browse, fetch and save.** Read the OSDU data definitions' releases, a release's index of record kinds, and one
+   kind's schema bundled with the files it refers to, a save path that stores a fetched or imported schema, and CLI
+   verbs `sqlflow template capture | import | list | show`.
+6. **API.** List the data definitions' releases and record kinds and fetch one for preview; list, show, save, import and delete templates; draft a mapping for a repository and a template with
    cache prefills; convert between the builder's entries and YAML; check a mapping against its template and the
    repository's cache.
 7. **GUI.** A Templates page to browse OSDU schemas, view a schema as a template and save it, and the Mapping

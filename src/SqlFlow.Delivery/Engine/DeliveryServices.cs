@@ -72,15 +72,12 @@ public static class DeliveryServices
             sp.GetService<DeliveryLedgerSource>()?.Templates(sp)));
 
         // Execution: the run executor behind the platform's DocumentExecutor, and the ad-hoc compute operations
-        // a node runs for the control plane (target probe, record read-back, record removal, and the schema search and
-        // fetch the Templates page browses OSDU with).
+        // a node runs for the control plane (target probe, record read-back and record removal).
         services.AddSingleton<IFlowDocumentExecutor, DeliveryExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, RetrievalExecutor>();
         services.AddSingleton<IComputeOperation, ProbeTargetOperation>();
         services.AddSingleton<IComputeOperation, ReadRecordOperation>();
         services.AddSingleton<IComputeOperation, DeleteRecordOperation>();
-        services.AddSingleton<IComputeOperation, SearchSchemasOperation>();
-        services.AddSingleton<IComputeOperation, FetchSchemaOperation>();
 
         return services;
     }

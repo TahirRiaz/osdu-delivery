@@ -1,5 +1,6 @@
 ﻿using System.Net;
 using System.Text;
+using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.ControlPlane.Configuration;
 
@@ -41,6 +42,8 @@ public sealed class ControlPlaneOptions
     public CacheRolloutOptions CacheRollout { get; set; } = new();
 
     public DropOffOptions DropOff { get; set; } = new();
+
+    public SchemaRepositoryOptions SchemaRepository { get; set; } = new();
 
     /// <summary>The largest request body the API accepts, in megabytes. Set explicitly (never the server default) so a
     /// submission manifest listing many records, or a large scoped request, is bounded on purpose. Default 64.</summary>
@@ -124,6 +127,7 @@ public sealed class ControlPlaneOptions
         }
 
         CacheRollout.Validate();
+        SchemaRepository.Validate();
 
         if (Reaper.PollSeconds < 1)
         {
@@ -532,6 +536,41 @@ public sealed class CacheRolloutOptions
         if (PollSeconds < 1)
         {
             throw new InvalidOperationException("ControlPlane:CacheRollout:PollSeconds must be positive.");
+        }
+    }
+}
+
+/// <summary>
+/// The OSDU data definitions the Templates page browses: the Open Group's public repository of OSDU schemas, read through
+/// its GitLab API (section <c>ControlPlane:SchemaRepository</c>). The defaults are the public repository; point both URLs
+/// at a mirror of it when the control plane cannot reach community.opengroup.org.
+/// </summary>
+public sealed class SchemaRepositoryOptions
+{
+    /// <summary>The GitLab API URL of the data definitions project.</summary>
+    public Uri ApiUrl { get; set; } = OsduDataDefinitions.DefaultApiUrl;
+
+    /// <summary>The project's web page, which the page links to a release's schema files on.</summary>
+    public Uri WebUrl { get; set; } = OsduDataDefinitions.DefaultWebUrl;
+
+    /// <summary>Seconds one request to the repository may take.</summary>
+    public int TimeoutSeconds { get; set; } = 30;
+
+    public void Validate()
+    {
+        RequireHttpUrl(ApiUrl, nameof(ApiUrl));
+        RequireHttpUrl(WebUrl, nameof(WebUrl));
+        if (TimeoutSeconds is < 1 or > 600)
+        {
+            throw new InvalidOperationException("ControlPlane:SchemaRepository:TimeoutSeconds must be between 1 and 600.");
+        }
+    }
+
+    private static void RequireHttpUrl(Uri? url, string name)
+    {
+        if (url is null || !url.IsAbsoluteUri || (url.Scheme != Uri.UriSchemeHttps && url.Scheme != Uri.UriSchemeHttp))
+        {
+            throw new InvalidOperationException($"ControlPlane:SchemaRepository:{name} must be an absolute http or https URL.");
         }
     }
 }

@@ -18,6 +18,7 @@ using SqlFlow.ControlPlane.Notifications;
 using SqlFlow.ControlPlane.Proposals;
 using SqlFlow.ControlPlane.Security;
 using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Templates;
 using SqlFlow.Execution;
 using SqlFlow.Node;
 using SqlFlow.SourceControl.Proposals;
@@ -49,6 +50,18 @@ builder.Services.AddDeliveryKind();
 builder.Services.AddDeliveryLedger(sp => () => new CatalogDbContext(sp.GetRequiredService<DbContextOptions<CatalogDbContext>>()));
 // The repositories' caches as the catalog carries them, for the mapping builder's checks; recent versions stay in memory.
 builder.Services.AddSingleton<SqlFlow.Delivery.Catalog.CatalogCacheReader>();
+// The OSDU data definitions (the Open Group's public repository of OSDU schemas) the Templates page browses and saves
+// templates from. A release is read at the commit its tag names, so what was read is cached for the process.
+builder.Services.AddHttpClient(OsduDataDefinitions.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(options.SchemaRepository.TimeoutSeconds));
+builder.Services.AddSingleton(sp =>
+{
+    var clients = sp.GetRequiredService<IHttpClientFactory>();
+    return new OsduDataDefinitions(
+        () => clients.CreateClient(OsduDataDefinitions.HttpClientName),
+        options.SchemaRepository.ApiUrl,
+        options.SchemaRepository.WebUrl,
+        sp.GetRequiredService<TimeProvider>());
+});
 builder.Services.AddSingleton<CatalogSync>();
 builder.Services.AddSingleton<CatalogConnectionProvider>();
 builder.Services.AddSingleton<TokenIssuer>();
@@ -381,7 +394,6 @@ v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapNodeControlEndpoints()
     .MapComputeTaskControlEndpoints()
     .MapDeliveryWriteEndpoints()
-    .MapDeliveryTemplateOperateEndpoints()
     .MapDropOffWriteEndpoints();
 
 // The author surface: proposing pipelines to a source repo as a pull request pushes a branch under the source's own

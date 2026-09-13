@@ -904,7 +904,7 @@ internal static class Program
                                                    (needs --db: templates live in the catalog)
               sqlflow snapshot <flow.yaml> references [--from-dir <dir> | --spec <spec.json> [--endpoint <url>]] [--no-current]
               sqlflow snapshot <flow.yaml> list    Capture or list the reference snapshots of the cache the flow renders against
-              sqlflow template capture <flow.yaml> --kind <kind> [--endpoint <url>]
+              sqlflow template capture --kind <kind> [--release <tag>]   (from the OSDU data definitions, newest release by default)
               sqlflow template import <schema.json> --kind <kind>   (or --from-dir <data definitions> --kind <kind>)
               sqlflow template list | show --kind <kind> [--version <v>] | delete --kind <kind> --version <v>
                                                    The templates in the catalog: OSDU schemas mappings pin (needs --db)

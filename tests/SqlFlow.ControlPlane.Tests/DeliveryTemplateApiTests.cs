@@ -1,9 +1,11 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Identity;
@@ -15,8 +17,8 @@ namespace SqlFlow.ControlPlane.Tests;
 /// <summary>
 /// Templates and the mapping builder through the API (docs/delivery/mapping-templates.md): saving a template version, which
 /// takes a signed-in caller, reading it as variables and as its schema, the delete a pinned version refuses, and the builder's
-/// repository listing, draft, parse and check against a repository's cache as the catalog carries it. Browsing OSDU is
-/// queued as node operations, which the in-process worker leaves queued here. Gated on a reachable catalog database.
+/// repository listing, draft, parse and check against a repository's cache as the catalog carries it, and browsing the OSDU
+/// data definitions, served here by a stand-in for the repository's API. Gated on a reachable catalog database.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class DeliveryTemplateApiTests
@@ -208,18 +210,66 @@ public sealed class DeliveryTemplateApiTests
             var noCache = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { repoId = (Guid?)null, draft = parsed.Draft, parameters }));
             Assert.False(noCache.Valid);
             Assert.Contains(noCache.Issues, i => i.Message.Contains("reads cache.Wellbore, which reference snapshot 'none' does not hold", StringComparison.Ordinal));
-
-            // Browsing OSDU is queued on a node through the flow's connection.
-            var search = await ReadAsync<ComputeTaskAccepted>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/templates/search", new { pipelineId, entityType = "master-data--Wellbore" }));
-            var fetch = await ReadAsync<ComputeTaskAccepted>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/templates/fetch", new { pipelineId, kind = WellboreKind }));
-            await using var db = CatalogDatabase.Create(cs);
-            var tasks = await db.ComputeTasks.AsNoTracking().Where(t => t.TaskId == search.TaskId || t.TaskId == fetch.TaskId).ToListAsync();
-            Assert.Contains(tasks, t => t.TaskId == search.TaskId && t.Operation == "delivery-schema-search" && t.ArgumentsJson.Contains("master-data--Wellbore", StringComparison.Ordinal));
-            Assert.Contains(tasks, t => t.TaskId == fetch.TaskId && t.Operation == "delivery-schema-fetch" && t.ArgumentsJson.Contains(WellboreKind, StringComparison.Ordinal));
         }
         finally
         {
             await CleanupAsync(cs, repoId, flowName);
+        }
+    }
+
+    [SkippableFact]
+    public async Task A_reader_browses_the_OSDU_data_definitions_and_gets_a_kind_bundled_with_where_it_came_from()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        using var handler = new DataDefinitionsHandler();
+        using var http = new HttpClient(handler, disposeHandler: false);
+        var definitions = new OsduDataDefinitions(() => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, TimeProvider.System);
+        await using var factory = Factory(cs).WithServices(services => services.AddSingleton(definitions));
+        using var client = factory.CreateClient();
+        var reader = await TokenAsync(client, "read");
+
+        using (var anonymous = await client.GetAsync(new Uri("/api/v1/delivery/templates/osdu/releases", UriKind.Relative)))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+        }
+
+        var release = Assert.Single(await ReadAsync<List<DeliveryOsduReleaseDto>>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/releases")));
+        Assert.Equal("v0.30.0", release.Name);
+        Assert.Equal(DataDefinitionsHandler.Commit, release.Commit);
+        Assert.Equal("https://community.opengroup.org/osdu/data/data-definitions/-/tree/v0.30.0/Generated", release.WebUrl.AbsoluteUri);
+
+        // The index lists the record kinds only: the abstract schema it also names is a building block.
+        var index = await ReadAsync<DeliveryOsduSchemaIndexDto>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/schemas"));
+        var wellbore = Assert.Single(index.Schemas);
+        Assert.Equal(WellboreKind, wellbore.Kind);
+        Assert.Equal("https://community.opengroup.org/osdu/data/data-definitions/-/blob/v0.30.0/Generated/master-data/Wellbore.1.3.0.json", wellbore.WebUrl.AbsoluteUri);
+
+        var file = await ReadAsync<DeliveryOsduSchemaFileDto>(await SendAsync(
+            client, reader, HttpMethod.Get, $"/api/v1/delivery/templates/osdu/schema?release=v0.30.0&kind={Uri.EscapeDataString(WellboreKind)}"));
+        Assert.Equal("OSDU data definitions v0.30.0 (99f8fc88d8ad) Generated/master-data/Wellbore.1.3.0.json", file.Origin);
+        Assert.NotNull(file.Schema["definitions"]?["AbstractAccessControlList.1.0.0"]);
+
+        // What comes back is what the preview lays out, and what saving would store.
+        var detail = await ReadAsync<DeliveryTemplateDetailDto>(await SendAsync(client, reader, HttpMethod.Post, "/api/v1/delivery/templates/preview", new { kind = file.Kind, schema = file.Schema }));
+        Assert.Equal(file.Version, detail.Version);
+        Assert.Contains(detail.Variables, v => v.Path == "osdu.data.FacilityName");
+        Assert.Contains(detail.Variables, v => v.Path == "osdu.acl.owners");
+
+        using (var unknownRelease = await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/schemas?release=v9.9.9"))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, unknownRelease.StatusCode);
+        }
+
+        using (var missingKind = await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/schema?kind=" + Uri.EscapeDataString("osdu:wks:master-data--Missing:1.0.0")))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, missingKind.StatusCode);
+            Assert.Contains("Generated/master-data/Missing.1.0.0.json", await missingKind.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+
+        using (var notKind = await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/schema?kind=Wellbore"))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, notKind.StatusCode);
         }
     }
 
@@ -391,6 +441,40 @@ public sealed class DeliveryTemplateApiTests
             var value = JsonSerializer.Deserialize<T>(text, Web);
             Assert.NotNull(value);
             return value;
+        }
+    }
+
+    /// <summary>The OSDU data definitions' GitLab API, reduced to one release whose tree holds a Wellbore schema and the abstract schema it refers to.</summary>
+    private sealed class DataDefinitionsHandler : HttpMessageHandler
+    {
+        public const string Commit = "99f8fc88d8ad838b5738ac5ad92ac643538b5766";
+
+        private static readonly Dictionary<string, string> Files = new(StringComparer.Ordinal)
+        {
+            ["Generated/SchemaStatus.json"] = """{ "osdu:wks:master-data--Wellbore:1.3.0": "PUBLISHED", "osdu:wks:AbstractAccessControlList:1.0.0": "PUBLISHED" }""",
+            ["Generated/master-data/Wellbore.1.3.0.json"] = """
+                { "x-osdu-schema-source": "osdu:wks:master-data--Wellbore:1.3.0", "type": "object",
+                  "properties": { "acl": { "$ref": "../abstract/AbstractAccessControlList.1.0.0.json" }, "data": { "type": "object", "properties": { "FacilityName": { "type": "string" } } } } }
+                """,
+            ["Generated/abstract/AbstractAccessControlList.1.0.0.json"] = """{ "type": "object", "properties": { "owners": { "type": "array", "items": { "type": "string" } } } }""",
+        };
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = Uri.UnescapeDataString(request.RequestUri!.AbsolutePath);
+            string? body = null;
+            if (path.EndsWith("/repository/tags", StringComparison.Ordinal))
+            {
+                body = $$"""[ { "name": "v0.30.0", "commit": { "id": "{{Commit}}", "committed_date": "2026-07-17T14:55:57.000+08:00" } } ]""";
+            }
+            else if (request.RequestUri.Query.Contains("ref=" + Commit, StringComparison.Ordinal))
+            {
+                body = Files.FirstOrDefault(f => path.EndsWith("/repository/files/" + f.Key + "/raw", StringComparison.Ordinal)).Value;
+            }
+
+            return Task.FromResult(body is null
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") });
         }
     }
 }

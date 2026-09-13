@@ -30,13 +30,15 @@ Everything the platform already reads ([../environment-variables.md](../environm
    commit it:
 
    ```bash
-   sqlflow template capture flows/recall-welllog.yaml --kind osdu:wks:work-product-component--WellLog:1.4.0 --db <ref>
+   sqlflow template capture --kind osdu:wks:work-product-component--WellLog:1.4.0 --db <ref>
    sqlflow snapshot flows/recall-welllog.yaml references --spec capture-spec.json
    sqlflow check flows/recall-welllog.yaml --set logSource=STAT_COMP --db <ref>
    ```
 
-   Both captures use the flow's target endpoint and credentials (`--endpoint` overrides the endpoint). The capture
-   reports the template version, which is the version the mapping pins under `template`. Without access to OSDU,
+   The template capture reads the kind's schema from the OSDU data definitions, the Open Group's public repository
+   (the newest release, or `--release <tag>`), and reports the template version, which is the version the mapping pins
+   under `template`. The reference capture uses the flow's target endpoint and credentials (`--endpoint` overrides the
+   endpoint). Without access to the data definitions,
    `sqlflow template import` saves a bundled schema file instead, and once the repository is synced (step 4) the GUI's
    Templates page browses OSDU and saves a template through the flow's connection on a node.
 4. Register the repository as a source in the GUI (Repos) and sync it. The flow appears as a pipeline of kind
@@ -76,8 +78,9 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /templates` | read | The saved template versions, by kind and newest first, each with where it came from, who saved it and how many synced mappings pin it ([mapping-templates.md](mapping-templates.md)). |
 | `GET /templates/detail`, `GET /templates/schema` | read | One saved version (`kind`, `version`): laid out variable by variable (type, shape, requiredness, who writes it, relationships, unit context and OSDU's description; with `repoId`, the repository's cached types each variable can be read from), or the bundled schema itself. |
 | `POST /templates/preview` | read | A bundled schema (`kind`, `schema`, optional `repoId`) laid out the same way without saving it, with the saved version when it is already saved. |
-| `POST /templates/search` | operate | Searches the schemas OSDU publishes (`pipelineId`, `authority`, `source`, `entityType`, `status`, `latestVersion`, `limit` of at most 100, `offset`) through the delivery flow's OSDU connection, as a compute task on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
-| `POST /templates/fetch` | operate | Fetches one kind's schema (`pipelineId`, `kind`) and every schema it refers to, bundled, through the flow's connection, as a compute task. Nothing is saved. |
+| `GET /templates/osdu/releases` | read | The releases of the OSDU data definitions (the Open Group's public schema repository), newest first: each tag, the commit it names, and its schema folder on the web. 502 when the repository cannot be read. |
+| `GET /templates/osdu/schemas` | read | Every record kind a release publishes (`release`, the newest when omitted): kind, entity type, version, status, and its file with a link to it. 404 for a release the repository does not have. |
+| `GET /templates/osdu/schema` | read | One kind's schema from a release (`kind`, `release`), bundled with every file it refers to, read at the release's commit: the template version it saves as, and the `origin` a save records. Nothing is saved; 404 for a kind the release does not publish. |
 | `POST /templates` | author | Saves a bundled schema (`kind`, `schema`, `origin`) as a template version: `outcome` is `created`, or `unchanged` for a version already saved. |
 | `DELETE /templates` | author | Deletes a version (`kind`, `version`); 409 while a synced mapping pins it. |
 | `GET /mapping-builder/repos` | read | The repositories a mapping can be written for: the source a proposal is opened against, the current cache version and its cached types, and the delivery flows with their endpoint and what they render with. |
@@ -223,7 +226,7 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 | `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve] [--force] [--set name=value]... [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>] [--db <ref>]` | A run on the workstation. A delivery flow's runs need the catalog connection: rendering reads the template saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. |
 | `sqlflow snapshot <flow.yaml> references [--from-dir <dir> \| --spec <spec.json> [--endpoint <url>]] [--no-current]` | Capture a reference snapshot and move the pin. A capture from OSDU refreshes the types its spec declares and merges them onto the current snapshot, so the minted version holds the whole cache. |
 | `sqlflow snapshot <flow.yaml> list [--db <ref>]` | The reference snapshot versions the flow's snapshot store holds, and whether the template its mapping pins is saved. |
-| `sqlflow template capture <flow.yaml> --kind <kind> [--endpoint <url>]` | Save a kind's schema from OSDU as a template version, through the flow's connection. |
+| `sqlflow template capture --kind <kind> [--release <tag>]` | Save a kind's schema from the OSDU data definitions as a template version (the newest release by default). |
 | `sqlflow template import <schema.json> --kind <kind>`, `sqlflow template import --from-dir <dir> --kind <kind>` | Save a template from a bundled schema file, or from a local checkout of the OSDU data definitions. |
 | `sqlflow template list \| show --kind <kind> [--version <v>] \| delete --kind <kind> --version <v>` | The saved templates, one laid out variable by variable, and deleting a version no synced mapping pins. Every `template` verb needs the catalog connection (`--db <ref>`). |
 | `sqlflow trigger --repo <r> --flow <f> [the same run options]` | Queue a run on the fleet. |

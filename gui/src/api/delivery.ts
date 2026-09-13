@@ -879,49 +879,43 @@ export interface DeliveryTemplateSaved {
   outcome: "created" | "unchanged";
 }
 
-/** A search of the schemas OSDU publishes, run on a node through a delivery flow's OSDU connection. */
-export interface DeliverySchemaSearchRequest {
-  pipelineId: string;
-  authority?: string | null;
-  source?: string | null;
-  entityType?: string | null;
-  status?: string | null;
-  latestVersion?: boolean | null;
-  limit?: number | null;
-  offset?: number | null;
+/**
+ * A release of the OSDU data definitions, the Open Group's public repository of OSDU schemas: its version tag, the commit
+ * the tag names, when that was committed, and the release's schema folder in the repository.
+ */
+export interface DeliveryOsduRelease {
+  name: string;
+  commit: string;
+  publishedUtc: string | null;
+  webUrl: string;
 }
 
-/** One schema OSDU publishes, as its search lists it. The node leaves out the values OSDU did not give. */
+/** A record schema a release publishes: its kind, its status in the release, and its file with a link to it. */
 export interface DeliveryOsduSchema {
   kind: string;
-  authority: string;
-  source: string;
   entityType: string;
   version: string;
-  status?: string | null;
-  scope?: string | null;
-  createdUtc?: string | null;
-  createdBy?: string | null;
+  /** PUBLISHED, DEVELOPMENT or OBSOLETE; null when the release's index gives none. */
+  status: string | null;
+  /** The file under the release's Generated folder, such as master-data/Wellbore.1.3.0.json. */
+  path: string;
+  webUrl: string;
 }
 
-/** A search task's result: one page of schemas, and the flow whose connection found them. */
-export interface DeliverySchemaSearchResult {
-  flow: string;
-  endpoint: string;
-  correlationId: string;
+/** Every record schema one release publishes, by entity type and newest version first. */
+export interface DeliveryOsduSchemaIndex {
+  release: DeliveryOsduRelease;
   schemas: DeliveryOsduSchema[];
-  offset: number;
-  count: number;
-  totalCount: number;
 }
 
-/** A fetch task's result: one kind's bundled schema as OSDU holds it. A fetch saves nothing. */
-export interface DeliverySchemaFetchResult {
-  flow: string;
-  endpoint: string;
-  correlationId: string;
+/** A kind's schema bundled from a release: the template version it saves as, and the origin a save records. Nothing is saved. */
+export interface DeliveryOsduSchemaFile {
   kind: string;
   version: string;
+  release: DeliveryOsduRelease;
+  path: string;
+  webUrl: string;
+  origin: string;
   schema: Record<string, unknown>;
 }
 
@@ -1116,12 +1110,14 @@ export const deliveryApi = {
   /** Lays out a bundled schema as a template without saving it; a 400 says why the JSON is not a record schema. */
   previewTemplate: (kind: string, schema: Record<string, unknown>, repoId?: string | null) =>
     post<DeliveryTemplateDetail>("/api/v1/delivery/templates/preview", { kind, schema, repoId: repoId ?? null }),
-  /** Queues a search of OSDU's schemas on a node through the flow's OSDU connection; poll the task for the page of results. */
-  searchSchemas: (request: DeliverySchemaSearchRequest) =>
-    post<ComputeTaskAccepted>("/api/v1/delivery/templates/search", request),
-  /** Queues a fetch of one kind's bundled schema from OSDU on a node; poll the task for the schema. A fetch saves nothing. */
-  fetchSchema: (pipelineId: string, kind: string) =>
-    post<ComputeTaskAccepted>("/api/v1/delivery/templates/fetch", { pipelineId, kind }),
+  /** The releases of the OSDU data definitions (the Open Group's public schema repository), newest first; a 502 when it cannot be read. */
+  osduReleases: () => get<DeliveryOsduRelease[]>("/api/v1/delivery/templates/osdu/releases"),
+  /** Every record kind a release of the OSDU data definitions publishes; a 404 for a release it does not have. */
+  osduSchemas: (release: string) =>
+    get<DeliveryOsduSchemaIndex>("/api/v1/delivery/templates/osdu/schemas", { release }),
+  /** One kind's schema from a release, bundled with every schema it refers to. Nothing is saved; a 404 for a kind the release does not publish. */
+  osduSchema: (release: string, kind: string) =>
+    get<DeliveryOsduSchemaFile>("/api/v1/delivery/templates/osdu/schema", { release, kind }),
   /** Saves a bundled schema as a template version; saving one already saved changes nothing. */
   saveTemplate: (kind: string, schema: Record<string, unknown>, origin: string) =>
     post<DeliveryTemplateSaved>("/api/v1/delivery/templates", { kind, schema, origin }),

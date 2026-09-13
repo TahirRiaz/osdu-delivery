@@ -143,7 +143,7 @@ survive a restart. A row is written by the GUI's Templates page, `POST /api/v1/d
 | `Id` | Primary key, derived from the kind and the version. |
 | `Kind`, `Version` | The OSDU kind, and the content version: the first 16 hexadecimal characters of the hash of the canonical bundled schema. Unique together; a mapping pins both. |
 | `SchemaJson` | The bundled JSON Schema, every reference resolved into its definitions. |
-| `Origin`, `CapturedBy`, `CapturedUtc` | Where the schema came from (the OSDU endpoint and flow it was captured through, a data definitions folder, or an imported file), who saved it and when. |
+| `Origin`, `CapturedBy`, `CapturedUtc` | Where the schema came from (the release, commit and file of the OSDU data definitions, a local data definitions folder, or an imported file), who saved it and when. |
 
 Saving a schema that is already saved adds no row. A version is deleted only while no `delivery.Mapping` row pins it
 (the `(Kind, TemplateVersion)` index answers that), so a template a synced mapping pins cannot be removed from under

@@ -40,7 +40,7 @@ snapshot store; `sqlflow template` saves them in the catalog.
 ## template
 
 ```bash
-sqlflow template capture <flow.yaml> --kind <kind> [--endpoint <url>] [--db <ref>] [--json]
+sqlflow template capture --kind <kind> [--release <tag>] [--db <ref>] [--json]
 sqlflow template import <schema.json> --kind <kind> [--db <ref>] [--json]
 sqlflow template import --from-dir <dir> --kind <kind> [--db <ref>] [--json]
 sqlflow template list [--db <ref>] [--json]
@@ -55,9 +55,9 @@ characters), which a mapping pins under `template`. Every form needs the catalog
 
 | Verb | What it does |
 | --- | --- |
-| `capture` | Fetches the kind's schema from OSDU's schema service (`GET /api/schema-service/v1/schema/{id}`) and every schema it refers to, bundles them into one document, and saves it. The connection is the flow's: a delivery flow's target or a retrieval flow's source, its auth and headers resolved from this machine's environment (`--endpoint` overrides the endpoint). |
-| `import <schema.json>` | Saves a bundled schema file, one whose every `$ref` points into its own `definitions`: the form `capture` produces, and the one the sample estate keeps under `samples/recall-welllog/templates`. |
-| `import --from-dir <dir>` | Bundles the kind's schema from a local checkout of the OSDU data definitions and saves it. |
+| `capture` | Reads the kind's schema from the OSDU data definitions, the Open Group's public repository (<https://community.opengroup.org/osdu/data/data-definitions>): its file under `Generated` at the commit the release tag names, with every file it refers to, bundled into one document and saved. The newest release unless `--release <tag>` names one; the origin records the release, commit and file. |
+| `import <schema.json>` | Saves a bundled schema file, one whose every `$ref` points into its own `definitions`: the form `capture` saves, and the one the sample estate keeps under `samples/recall-welllog/templates`. For a schema of one's own that the data definitions do not publish. |
+| `import --from-dir <dir>` | Bundles the kind's schema from a local checkout of the OSDU data definitions (its `Generated` folder) and saves it, exactly as `capture` bundles it from the repository. |
 | `list` | Every saved version: kind, version, when and by whom it was saved, and where it came from. |
 | `show` | One version laid out as a template: every variable with its shape, whether the schema requires it, who writes it (a mapping, OSDU Delivery or OSDU), the entity types it points to and its unit context. Without `--version`, the most recently saved version of the kind. |
 | `delete` | Deletes a version. Refused while a synced mapping pins it, naming the mappings. |

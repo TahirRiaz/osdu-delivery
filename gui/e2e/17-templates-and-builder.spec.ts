@@ -5,12 +5,26 @@ import { expect, test } from "./helpers";
 
 // Templates and the mapping builder (docs/delivery/mapping-templates.md). Runs after the seed (03), which saves the two
 // templates the sample mappings pin and syncs the fixture repository, so both templates are pinned by a synced mapping
-// and the repository's cache is in the catalog. Browsing OSDU runs on a node through a flow's OSDU connection, which the
-// suite does not have, so everything here works from the saved templates and a schema file.
+// and the repository's cache is in the catalog. Browsing OSDU reads the Open Group's public data definitions repository
+// through the control plane, which the suite cannot reach, so the browse test stands in for those three answers and lets
+// everything after them (the preview, the save) run against the real control plane.
 
 const WELLBORE_KIND = "osdu:wks:master-data--Wellbore:1.3.0";
 const WELLBORE_VERSION = "a110ad82c3b60a1e";
 const WELLBORE_FILE = "osdu_wks_master-data--Wellbore_1.3.0.json";
+const DATA_DEFINITIONS = "https://community.opengroup.org/osdu/data/data-definitions";
+const RELEASE = {
+  name: "v0.30.0",
+  commit: "99f8fc88d8ad838b5738ac5ad92ac643538b5766",
+  publishedUtc: "2026-07-17T06:55:57Z",
+  webUrl: `${DATA_DEFINITIONS}/-/tree/v0.30.0/Generated`,
+};
+const WELLBORE_URL = `${DATA_DEFINITIONS}/-/blob/v0.30.0/Generated/master-data/Wellbore.1.3.0.json`;
+
+/** A record schema as the control plane lists it for a release. */
+function osduSchema(kind: string, entityType: string, version: string, status: string, path: string) {
+  return { kind, entityType, version, status, path, webUrl: `${DATA_DEFINITIONS}/-/blob/v0.30.0/Generated/${path}` };
+}
 const WELLLOG_KIND = "osdu:wks:work-product-component--WellLog:1.4.0";
 const WELLLOG_VERSION = "26a3c3441882db4f";
 
@@ -73,6 +87,81 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(sheet.getByTestId("templates-view-state")).toHaveText("saved");
     await sheet.getByTestId("templates-import-save").click();
     await expect(adminPage.getByText(/was already saved, so nothing changed/).first()).toBeVisible({ timeout: 15_000 });
+  });
+
+  test("the OSDU data definitions are browsed by release, and a kind opens as the template it saves as", async ({ adminPage }) => {
+    const releases = /\/api\/v1\/delivery\/templates\/osdu\/releases$/;
+    const schemas = /\/api\/v1\/delivery\/templates\/osdu\/schemas(\?|$)/;
+    const schema = /\/api\/v1\/delivery\/templates\/osdu\/schema(\?|$)/;
+    const wellboreSchema: unknown = JSON.parse(
+      readFileSync(join(import.meta.dirname, "..", "..", "samples", "recall-welllog", "templates", WELLBORE_FILE), "utf8"),
+    );
+    const asked: string[] = [];
+    await adminPage.route(releases, (route) => route.fulfill({ json: [RELEASE, { ...RELEASE, name: "v0.29.1", commit: "0".repeat(40) }] }));
+    await adminPage.route(schemas, (route) => {
+      asked.push(route.request().url());
+      return route.fulfill({
+        json: {
+          release: RELEASE,
+          schemas: [
+            osduSchema("osdu:wks:master-data--Well:1.2.0", "master-data--Well", "1.2.0", "DEVELOPMENT", "master-data/Well.1.2.0.json"),
+            osduSchema(WELLBORE_KIND, "master-data--Wellbore", "1.3.0", "PUBLISHED", "master-data/Wellbore.1.3.0.json"),
+            osduSchema("osdu:wks:master-data--Wellbore:1.0.0", "master-data--Wellbore", "1.0.0", "PUBLISHED", "master-data/Wellbore.1.0.0.json"),
+          ],
+        },
+      });
+    });
+    await adminPage.route(schema, (route) => {
+      asked.push(route.request().url());
+      return route.fulfill({
+        json: {
+          kind: WELLBORE_KIND,
+          version: WELLBORE_VERSION,
+          release: RELEASE,
+          path: "master-data/Wellbore.1.3.0.json",
+          webUrl: WELLBORE_URL,
+          origin: "OSDU data definitions v0.30.0 (99f8fc88d8ad) Generated/master-data/Wellbore.1.3.0.json",
+          schema: wellboreSchema,
+        },
+      });
+    });
+
+    try {
+      await openTemplates(adminPage);
+      await adminPage.getByTestId("templates-tab-browse").click();
+
+      // The newest release is browsed straight away: there is no repository or connection to pick first.
+      await expect(adminPage.getByTestId("templates-browse-release")).toContainText("v0.30.0", { timeout: 15_000 });
+      await expect(adminPage.getByTestId("templates-browse-summary")).toContainText("2 record types");
+      await expect(adminPage.getByTestId("templates-browse-repository-link")).toHaveAttribute("href", RELEASE.webUrl);
+      const rows = adminPage.getByTestId("templates-browse-results").getByTestId("table-row");
+      await expect(rows).toHaveCount(2);
+      await expect(adminPage.getByTestId("templates-browse-status-osdu:wks:master-data--Well:1.2.0")).toHaveText("In development");
+
+      // One search box finds a kind by any part of it; each entity type shows its newest version unless every version is asked for.
+      await adminPage.getByTestId("templates-browse-search").fill("wellbore");
+      await expect(rows).toHaveCount(1);
+      await expect(rows.first()).toContainText("2 versions");
+      await expect(adminPage.getByTestId(`templates-browse-link-${WELLBORE_KIND}`)).toHaveAttribute("href", WELLBORE_URL);
+      await adminPage.getByTestId("templates-browse-all-versions").click();
+      await expect(rows).toHaveCount(2);
+
+      // A kind opens laid out as the template it saves as; the seed saved this one, so saving it changes nothing.
+      await adminPage.getByTestId(`templates-browse-view-${WELLBORE_KIND}`).click();
+      const sheet = adminPage.getByTestId("templates-browse-sheet");
+      await expect(sheet.getByTestId("templates-view-version")).toHaveText(WELLBORE_VERSION, { timeout: 15_000 });
+      await expect(sheet.getByTestId("templates-view-state")).toHaveText("saved");
+      await expect(sheet.getByTestId("templates-browse-source-link")).toHaveAttribute("href", WELLBORE_URL);
+      await sheet.getByTestId("templates-browse-save").click();
+      await expect(adminPage.getByText(/was already saved, so nothing changed/).first()).toBeVisible({ timeout: 15_000 });
+
+      expect(asked.length).toBeGreaterThan(1);
+      expect(asked.every((url) => new URL(url).searchParams.get("release") === "v0.30.0")).toBe(true);
+    } finally {
+      await adminPage.unroute(releases);
+      await adminPage.unroute(schemas);
+      await adminPage.unroute(schema);
+    }
   });
 
   test("the builder starts a mapping from a saved template, with what the cache holds prefilled", async ({ adminPage }) => {

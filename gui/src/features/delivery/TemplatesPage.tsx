@@ -45,14 +45,13 @@ const savedColumns: Column<DeliveryTemplate>[] = [
 
 /**
  * Templates: the OSDU record schemas the catalog holds as templates, which mappings pin. A saved version is its content
- * and never changes. New versions come from OSDU itself (searched and fetched on a node through a delivery flow's
- * connection) or from a bundled schema file, and each is looked at, variable by variable, before it is saved.
+ * and never changes. New versions come from the OSDU data definitions (the Open Group's public repository of OSDU schemas)
+ * or, for a schema of one's own, from a bundled schema file, and each is looked at, variable by variable, before it is saved.
  */
 export default function TemplatesPage() {
   const queryClient = useQueryClient();
   const { hasScope } = useAuth();
   const canAuthor = hasScope("author");
-  const canOperate = hasScope("operate");
   const [searchParams, setSearchParams] = useSearchParams();
   const [storedTab, setTab] = useLocalStorageState<string>("sqlflow.templates.tab", "saved");
   const tab: TemplatesTab = TABS.includes(storedTab) ? (storedTab as TemplatesTab) : "saved";
@@ -160,7 +159,7 @@ export default function TemplatesPage() {
           )}
         </TabsContent>
         <TabsContent value="browse" forceMount className="data-[state=inactive]:hidden">
-          <TemplatesBrowseTab canOperate={canOperate} canAuthor={canAuthor} />
+          <TemplatesBrowseTab canAuthor={canAuthor} />
         </TabsContent>
         <TabsContent value="import" forceMount className="data-[state=inactive]:hidden">
           <TemplatesImportTab canAuthor={canAuthor} />

@@ -816,7 +816,7 @@ The delivery domain runs on the platform's verbs and API; there is no separate d
 | `intake`, `drain` | the fan-out members a deliver run enqueues (section 16.4); also runnable by hand | `intake` registers and plans a drop (or some of its partitions) into work batches without delivering; `drain` delivers the pending batches of a submission (or of the whole flow) without reading the drop. |
 | `retrieve` | a run on a retrieval flow (its default); `plan` on the same flow counts | Pages OSDU's search index into files on the lake (section 15). |
 | `snapshot` | CLI: `sqlflow snapshot <flow.yaml> references`, `list` | Captures a reference snapshot into the snapshot store and mints a new version; lists the versions with the template the flow's mapping pins. |
-| `template` | CLI: `sqlflow template capture`, `import`, `list`, `show`, `delete`; the GUI's Templates page | Saves an OSDU schema as an immutable template version in the catalog, from OSDU through a flow's connection or from a bundled schema file. |
+| `template` | CLI: `sqlflow template capture`, `import`, `list`, `show`, `delete`; the GUI's Templates page | Saves an OSDU schema as an immutable template version in the catalog, from the OSDU data definitions (the Open Group's public repository, or a local checkout of it) or from a bundled schema file. |
 | release, redeliver, delete, read back, probe | the GUI record and flow pages; `POST /api/v1/delivery/records/{key}/...` | Interventions, recorded in the ledger's activity trail under the user who asked. The ones that touch OSDU (delete, read back, probe) run on a node as compute tasks. |
 
 `plan` working without OSDU is a direct consequence of pinning the references as snapshots

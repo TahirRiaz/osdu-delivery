@@ -1,13 +1,19 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Save, TriangleAlert } from "lucide-react";
+import { Cloud, Cog, Save, TriangleAlert, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import { isApiError } from "../../api/client";
-import { deliveryApi, type DeliveryTemplateDetail, type DeliveryTemplateVariable } from "../../api/delivery";
+import {
+  deliveryApi,
+  type DeliveryTemplateDetail,
+  type DeliveryTemplateRole,
+  type DeliveryTemplateVariable,
+} from "../../api/delivery";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
 import { DataTable, type Column } from "../../components/DataTable";
@@ -33,6 +39,22 @@ function matches(variable: DeliveryTemplateVariable, term: string): boolean {
     || (variable.title ?? "").toLowerCase().includes(term)
     || (variable.description ?? "").toLowerCase().includes(term)
     || variable.relationships.some((relationship) => relationship.toLowerCase().includes(term));
+}
+
+/**
+ * How a variable no mapping may fill stands out from the ones a mapping fills: a glyph and a tone per writer, carried
+ * by both the path and its label, so a row OSDU sets reads differently from a row OSDU Delivery writes at a glance.
+ * Null for a variable a mapping fills, which keeps the plain look.
+ */
+function roleVisual(role: DeliveryTemplateRole): { label: string; tone: "info" | "warning"; icon: LucideIcon; textClass: string } | null {
+  const label = roleLabel(role);
+  if (label === null) {
+    return null;
+  }
+
+  return role === "Osdu"
+    ? { label, tone: "info", icon: Cloud, textClass: "text-info" }
+    : { label, tone: "warning", icon: Cog, textClass: "text-warning" };
 }
 
 /** The schema as JSON: the one being previewed, or the saved template's, loaded when the tab opens. */
@@ -89,14 +111,20 @@ export function TemplateView({ detail, previewSchema, actions }: TemplateViewPro
         header: "Variable",
         render: (variable) => {
           const { parent, leaf } = splitPath(variable.path);
-          const role = roleLabel(variable.role);
+          const role = roleVisual(variable.role);
           return (
             <span className="inline-flex items-center gap-1.5" style={{ paddingLeft: pathDepth(variable.path) * 14 }}>
-              <span className="font-mono text-[12px]" data-testid={`templates-view-variable-${variable.path}`}>
-                <span className="text-muted-foreground">{parent}</span>
+              <span
+                className={cn("font-mono text-[12px]", role?.textClass)}
+                data-testid={`templates-view-variable-${variable.path}`}
+                data-role={variable.role}
+              >
+                <span className={role === null ? "text-muted-foreground" : "opacity-70"}>{parent}</span>
                 <span className="font-medium">{leaf}</span>
               </span>
-              {role !== null && <Badge variant="outline" className="text-[10px]">{role}</Badge>}
+              {role !== null && (
+                <StatePill tone={role.tone} label={role.label} icon={role.icon} testId={`templates-view-role-${variable.path}`} />
+              )}
               {variable.nested && <Badge variant="outline" className="text-[10px]">nested list</Badge>}
               {variable.keyValueType !== null && <Badge variant="outline" className="text-[10px]">free keys of {variable.keyValueType}</Badge>}
             </span>
