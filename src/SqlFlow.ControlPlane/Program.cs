@@ -48,8 +48,6 @@ builder.Services.AddSqlFlowEngine();
 // ledger over the catalog: each ledger operation opens its own tracking context from the pooled options.
 builder.Services.AddDeliveryKind();
 builder.Services.AddDeliveryLedger(sp => () => new CatalogDbContext(sp.GetRequiredService<DbContextOptions<CatalogDbContext>>()));
-// The repositories' caches as the catalog carries them, for the mapping builder's checks; recent versions stay in memory.
-builder.Services.AddSingleton<SqlFlow.Delivery.Catalog.CatalogCacheReader>();
 // The OSDU data definitions (the Open Group's public repository of OSDU schemas) the Templates page browses and saves
 // templates from, kept as a local copy: each release downloaded once as one archive and read from disk after that, the
 // release list read again when older than RefreshMinutes or when someone syncs. Timeouts are per request, set by the class.

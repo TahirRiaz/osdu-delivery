@@ -34,7 +34,8 @@ public sealed record EngineContext(
     IProtocolFactory Protocols,
     IDeliveryListener Listener,
     IFanOutDispatcher? FanOut = null,
-    Templates.ITemplateStore? Templates = null)
+    Templates.ITemplateStore? Templates = null,
+    ICacheStore? Cache = null)
 {
     /// <summary>The environment switch that lets a flow target a loopback address (local OSDU emulators, tests).</summary>
     public const string AllowLoopbackVariable = "SQLFLOW_DELIVERY_ALLOW_LOOPBACK";
@@ -54,8 +55,8 @@ public sealed record EngineContext(
 public sealed record RunResult(IntakeResult Intake, WorkerSummary Work, SubmissionState Submission, int IntakeMembers = 0, int DrainMembers = 0);
 
 /// <summary>
-/// One flow, resolved and ready: parameters applied, render inputs pinned (from the mappings and snapshots the
-/// flow's repository layout locates), and (when a ledger and a target are wired) the protocol, worker, verifier
+/// One flow, resolved and ready: parameters applied, render inputs pinned (the mapping from the flow's repository, the
+/// template and the cache from the catalog), and (when a ledger and a target are wired) the protocol, worker, verifier
 /// and publisher over them. Every operation an operator can trigger goes through here and is recorded in the
 /// ledger's activity trail with the <see cref="Actor"/> that asked for it and the platform <see cref="RunId"/>
 /// it ran as. A deliver run coordinates its own fan-out (design.md section 16.4): intake partitions first, then
@@ -82,13 +83,12 @@ public sealed class FlowRuntime : IDisposable
     private HttpRuntime? _http;
     private IDeliveryProtocol? _protocol;
 
-    private FlowRuntime(EngineContext context, FlowDefinition flow, DeliveryLayout layout, MappingCatalog mappings, ISnapshotStore snapshots, IReadOnlyDictionary<string, string> parameters, ResolvedMapping? mapping, string? dropLocation)
+    private FlowRuntime(EngineContext context, FlowDefinition flow, DeliveryLayout layout, MappingCatalog mappings, IReadOnlyDictionary<string, string> parameters, ResolvedMapping? mapping, string? dropLocation)
     {
         _context = context;
         Flow = flow;
         Layout = layout;
         Mappings = mappings;
-        Snapshots = snapshots;
         Parameters = parameters;
         _mapping = mapping;
         _drop = dropLocation;
@@ -101,12 +101,10 @@ public sealed class FlowRuntime : IDisposable
 
     public MappingCatalog Mappings { get; }
 
-    public ISnapshotStore Snapshots { get; }
-
     public IReadOnlyDictionary<string, string> Parameters { get; }
 
     /// <summary>The pinned render inputs. Only a runtime opened with <see cref="CreateAsync(EngineContext, FlowDefinition, IReadOnlyDictionary{string, string}?, string?, CancellationToken)"/> has them.</summary>
-    public ResolvedMapping Mapping => _mapping ?? throw new DeliveryException("This operation renders records and needs the flow's mapping and snapshots; the runtime was opened for target operations only.");
+    public ResolvedMapping Mapping => _mapping ?? throw new DeliveryException("This operation renders records and needs the flow's mapping, template and cache; the runtime was opened for target operations only.");
 
     /// <summary>The drop the runtime reads. Only a runtime opened with the full <see cref="CreateAsync(EngineContext, FlowDefinition, IReadOnlyDictionary{string, string}?, string?, CancellationToken)"/> has one.</summary>
     public string DropLocation => _drop ?? throw new DeliveryException("This operation reads the drop and needs the flow's parameters; the runtime was opened for target operations only.");
@@ -141,17 +139,16 @@ public sealed class FlowRuntime : IDisposable
         var values = FlowParameters.Resolve(flow, parameters);
         var layout = DeliveryLayout.Resolve(flow);
         var mappings = new MappingCatalog(layout.MappingsDirectory, context.Documents);
-        var snapshots = new FileSnapshotStore(layout.SnapshotsRoot, context.Stores);
-        var resolver = new RenderResolver(mappings, snapshots, context.Templates);
+        var resolver = new RenderResolver(mappings, context.Cache, context.Templates);
         var mapping = await resolver.ResolveAsync(flow, ct).ConfigureAwait(false);
         var drop = dropOverride ?? FlowParameters.DropLocation(flow, values);
-        return new FlowRuntime(context, flow, layout, mappings, snapshots, values, mapping, drop);
+        return new FlowRuntime(context, flow, layout, mappings, values, mapping, drop);
     }
 
     /// <summary>
     /// A runtime for the operations that touch the target and the ledger but never the drop (verify, delete,
     /// release, redeliver, known-state, probe, drain): no parameters are required and no mapping is resolved, so
-    /// they work for a flow whose drop parameters are unknown or whose snapshots are not on this host.
+    /// they work for a flow whose drop parameters are unknown or whose mapping could not render right now.
     /// </summary>
     public static FlowRuntime ForTarget(EngineContext context, FlowDefinition flow)
     {
@@ -159,17 +156,8 @@ public sealed class FlowRuntime : IDisposable
         ArgumentNullException.ThrowIfNull(flow);
         var layout = DeliveryLayout.Resolve(flow);
         return new FlowRuntime(
-            context, flow, layout, new MappingCatalog(layout.MappingsDirectory, context.Documents), new FileSnapshotStore(layout.SnapshotsRoot, context.Stores),
+            context, flow, layout, new MappingCatalog(layout.MappingsDirectory, context.Documents),
             new Dictionary<string, string>(StringComparer.Ordinal), null, null);
-    }
-
-    /// <summary>The render inputs alone (mappings and snapshot store), for snapshot capture and mapping checks that need no drop.</summary>
-    public static (MappingCatalog Mappings, ISnapshotStore Snapshots) RenderInputs(EngineContext context, FlowDefinition flow)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        ArgumentNullException.ThrowIfNull(flow);
-        var layout = DeliveryLayout.Resolve(flow);
-        return (new MappingCatalog(layout.MappingsDirectory, context.Documents), new FileSnapshotStore(layout.SnapshotsRoot, context.Stores));
     }
 
     public Planner Planner => new(_context.Drops, _context.Ledger, _context.Loggers.CreateLogger<Planner>());
@@ -814,7 +802,7 @@ public sealed class FlowRuntime : IDisposable
 
     private ILedger RequireLedger()
         => _context.Ledger ?? throw new DeliveryException(
-            "This operation needs the ledger, which lives in the catalog database. Run it through the control plane, or on a node or CLI started with the catalog connection (--db, or the catalog variable); without a catalog only validate and reference snapshot capture are available, since a render reads the mapping's template from the catalog too.");
+            "This operation needs the ledger, which lives in the catalog database. Run it through the control plane, or on a node or CLI started with the catalog connection (--db, or the catalog variable); without a catalog only validate is available, since a render reads the mapping's template, and the cache it reads, from the catalog too.");
 
     public void Dispose() => _http?.Dispose();
 }

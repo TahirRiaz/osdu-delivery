@@ -14,7 +14,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type {
-  DeliveryBuilderRepo, DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftConditionOperator,
+  DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftConditionOperator,
   MappingDraftEntry, MappingDraftInput, MappingDraftIssue, MappingDraftModifier, MappingDraftModifierKind,
 } from "../../api/delivery";
 import {
@@ -258,13 +258,14 @@ function ChoiceOrText({
 interface EntryFormProps {
   target: EntryEditorTarget;
   draft: MappingDraft;
-  repo: DeliveryBuilderRepo | null;
+  /** The types of the cache the mapping reads, offered to a cache entry; empty when no cache is picked. */
+  cacheTypes: DeliveryCachedType[];
   issues: MappingDraftIssue[];
   onSave: (target: string, entry: MappingDraftEntry | null) => void;
   onClose: () => void;
 }
 
-function EntryForm({ target, draft, repo, issues, onSave, onClose }: EntryFormProps) {
+function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: EntryFormProps) {
   const ids = useId();
   const { variable, entry, keyHolder, outside } = target;
   const known = useMemo(() => knownColumns(draft), [draft]);
@@ -303,7 +304,7 @@ function EntryForm({ target, draft, repo, issues, onSave, onClose }: EntryFormPr
   const repeaterChild = repeater === null
     ? null
     : draft.entries.find((candidate) => candidate.target === repeater && candidate.input === "Repeat")?.child ?? null;
-  const repoTypes = repo?.cacheTypes ?? [];
+  const repoTypes = cacheTypes;
   const typeFields = repoTypes.find((type) => type.name === cacheType.trim())?.fields ?? [];
   const fieldOptions: ChoiceOption[] = [...new Set([...typeFields, "id"])].map((field) => ({ value: field, group: "Cached fields" }));
   const typeOptions: ChoiceOption[] = [
@@ -945,7 +946,8 @@ interface MappingEntryEditorProps {
   /** What to edit; null closes the editor. */
   target: EntryEditorTarget | null;
   draft: MappingDraft;
-  repo: DeliveryBuilderRepo | null;
+  /** The types of the cache the mapping reads, offered to a cache entry; empty when no cache is picked. */
+  cacheTypes: DeliveryCachedType[];
   /** Every issue of the last check; the editor shows the ones about its target. */
   issues: MappingDraftIssue[];
   /** Puts the entry for a target into the draft, or removes the target's entry when the entry is null. */
@@ -958,7 +960,7 @@ interface MappingEntryEditorProps {
  * static value), with its modifiers, condition, requiredness and description. It edits a copy, and Save puts the entry
  * into the draft, so Cancel leaves the draft as it was.
  */
-export function MappingEntryEditor({ target, draft, repo, issues, onSave, onClose }: MappingEntryEditorProps) {
+export function MappingEntryEditor({ target, draft, cacheTypes, issues, onSave, onClose }: MappingEntryEditorProps) {
   // The sheet slides out showing what it showed, so the last target stays rendered while it closes.
   const [shown, setShown] = useState<EntryEditorTarget | null>(target);
   if (target !== null && target !== shown) {
@@ -973,7 +975,7 @@ export function MappingEntryEditor({ target, draft, repo, issues, onSave, onClos
             key={shown.session}
             target={shown}
             draft={draft}
-            repo={repo}
+            cacheTypes={cacheTypes}
             issues={shown.keyHolder === null ? issues.filter((issue) => issue.target === shown.variable.path) : []}
             onSave={onSave}
             onClose={onClose}

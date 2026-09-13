@@ -12,6 +12,7 @@ using SqlFlow.Delivery.Engine.Listeners;
 using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Storage;
 using SqlFlow.Delivery.Templates;
 using SqlFlow.Execution;
@@ -51,6 +52,7 @@ public static class DeliveryServices
         services.AddSingleton<DeliveryDocumentLoader>();
         services.AddSingleton<IFlowDocumentKind, DeliveryFlowKind>();
         services.AddSingleton<IFlowDocumentKind, RetrievalFlowKind>();
+        services.AddSingleton<IFlowDocumentKind, CacheFlowKind>();
         services.AddSingleton<ICatalogSyncExtension, DeliveryCatalogSync>();
 
         // Protocols and the completion callback. The logging listener is always on; hosts add their own (a live
@@ -69,12 +71,14 @@ public static class DeliveryServices
             sp.GetRequiredService<IProtocolFactory>(),
             new CompositeDeliveryListener(sp.GetServices<IDeliveryListener>()),
             sp.GetService<IFanOutDispatcher>() ?? NoFanOutDispatcher.Instance,
-            sp.GetService<DeliveryLedgerSource>()?.Templates(sp)));
+            sp.GetService<DeliveryLedgerSource>()?.Templates(sp),
+            sp.GetService<DeliveryLedgerSource>()?.Cache(sp)));
 
-        // Execution: the run executor behind the platform's DocumentExecutor, and the ad-hoc compute operations
+        // Execution: the run executors behind the platform's DocumentExecutor, and the ad-hoc compute operations
         // a node runs for the control plane (target probe, record read-back and record removal).
         services.AddSingleton<IFlowDocumentExecutor, DeliveryExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, RetrievalExecutor>();
+        services.AddSingleton<IFlowDocumentExecutor, CacheExecutor>();
         services.AddSingleton<IComputeOperation, ProbeTargetOperation>();
         services.AddSingleton<IComputeOperation, ReadRecordOperation>();
         services.AddSingleton<IComputeOperation, DeleteRecordOperation>();
@@ -86,8 +90,8 @@ public static class DeliveryServices
     /// Wires the ledger over the catalog. <paramref name="contexts"/> decides, once the host is built, whether a
     /// catalog is available (the control plane and a worker always have one; a CLI run has one only with <c>--db</c>
     /// or the catalog variable) and, when it is, opens a fresh catalog context per ledger operation; the ledger
-    /// disposes what it opens. Without a catalog the engine runs ledger-less: validate, plan and snapshot capture.
-    /// The same catalog is what lets a run fan out across the fleet.
+    /// disposes what it opens. Without a catalog the engine only validates documents: a render reads its template, and
+    /// any cache its mapping reads, from the catalog. The same catalog is what lets a run fan out across the fleet.
     /// </summary>
     public static IServiceCollection AddDeliveryLedger(this IServiceCollection services, Func<IServiceProvider, Func<CatalogDbContext>?> contexts)
     {
@@ -100,6 +104,8 @@ public static class DeliveryServices
             sp.GetRequiredService<DeliveryLedgerSource>().Contexts(sp), sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<ITemplateStore>(sp => sp.GetRequiredService<DeliveryLedgerSource>().Templates(sp)
             ?? throw new DeliveryException("This host has no catalog connection, so the templates are unavailable. Start it with the catalog connection (--db, or the catalog variable)."));
+        services.AddSingleton<ICacheStore>(sp => sp.GetRequiredService<DeliveryLedgerSource>().Cache(sp)
+            ?? throw new DeliveryException("This host has no catalog connection, so the caches are unavailable. Start it with the catalog connection (--db, or the catalog variable)."));
         return services;
     }
 }
@@ -113,6 +119,7 @@ public sealed class DeliveryLedgerSource
     private Func<CatalogDbContext>? _factory;
     private ILedger? _ledger;
     private ITemplateStore? _templates;
+    private CatalogCacheStore? _cache;
 
     public DeliveryLedgerSource(Func<IServiceProvider, Func<CatalogDbContext>?> contexts)
     {
@@ -136,6 +143,14 @@ public sealed class DeliveryLedgerSource
         return _templates;
     }
 
+    /// <summary>The cache store over the catalog, or null when the host resolved no catalog connection.</summary>
+    public ICacheStore? Cache(IServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        Resolve(provider);
+        return _cache;
+    }
+
     /// <summary>The catalog context factory, or null when the host resolved no catalog connection.</summary>
     public Func<CatalogDbContext>? Contexts(IServiceProvider provider)
     {
@@ -153,6 +168,7 @@ public sealed class DeliveryLedgerSource
                 _factory = _contexts(provider);
                 _ledger = _factory is null ? null : new CatalogLedger(_factory, provider.GetRequiredService<TimeProvider>());
                 _templates = _factory is null ? null : new CatalogTemplateStore(_factory, provider.GetRequiredService<TimeProvider>());
+                _cache = _factory is null ? null : new CatalogCacheStore(_factory);
                 _resolved = true;
             }
         }

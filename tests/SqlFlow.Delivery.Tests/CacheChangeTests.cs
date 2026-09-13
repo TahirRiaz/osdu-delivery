@@ -17,6 +17,9 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class CacheChangeTests : IDisposable
 {
+    /// <summary>The cache the records under test were built from.</summary>
+    private const string CacheName = "units";
+
     private readonly SqliteCatalog _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("test-flow");
@@ -48,7 +51,10 @@ public sealed class CacheChangeTests : IDisposable
     private Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(int count, params CacheUsage[] usages) => DeliveredAsync("WELL", count, usages);
 
     /// <summary>Delivers <paramref name="count"/> records keyed under <paramref name="prefix"/> that all read the same cached values.</summary>
-    private async Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(string prefix, int count, params CacheUsage[] usages)
+    private Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(string prefix, int count, params CacheUsage[] usages) => DeliveredAsync(CacheName, prefix, count, usages);
+
+    /// <summary>Delivers <paramref name="count"/> records keyed under <paramref name="prefix"/> that all read the same values of <paramref name="cache"/>.</summary>
+    private async Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(string cache, string prefix, int count, params CacheUsage[] usages)
     {
         var submission = Guid.NewGuid();
         await Ledger.RegisterSubmissionAsync(new SubmissionState
@@ -64,7 +70,7 @@ public sealed class CacheChangeTests : IDisposable
             ReceivedUtc = Now,
         });
 
-        var setId = usages.Length == 0 ? (long?)null : await Ledger.EnsureCacheSetAsync(usages);
+        var setId = usages.Length == 0 ? (long?)null : await Ledger.EnsureCacheSetAsync(cache, usages);
         var keys = new List<DeliveryKey>();
         var records = new List<RecordState>();
         for (var i = 0; i < count; i++)
@@ -91,8 +97,24 @@ public sealed class CacheChangeTests : IDisposable
         return keys;
     }
 
-    private Task<CacheImpactResult> AnalyzeAsync(ReferenceType? previous, ReferenceType current, CacheChangeMode mode)
-        => new CacheImpactAnalyzer(Ledger, _clock, NullLogger.Instance).AnalyzeAsync(previous, current, mode, "v1", "v2");
+    private Task<CacheImpactResult> AnalyzeAsync(ReferenceType? previous, ReferenceType current, CacheChangeMode mode, string cache = CacheName)
+        => new CacheImpactAnalyzer(Ledger, _clock, NullLogger.Instance).AnalyzeAsync(cache, previous, current, mode, "v1", "v2");
+
+    [Fact]
+    public async Task A_change_to_one_cache_never_reaches_records_built_from_another_cache_with_a_type_of_the_same_name()
+    {
+        // Two caches can each hold a UnitOfMeasure type; a set is a set of one cache's values, and a refresh of the other
+        // cache finds nothing built from it.
+        await DeliveredAsync("other-units", "OTHER", 2, Reads("Name", "metre"));
+        var elsewhere = await AnalyzeAsync(Units("metre"), Units("meter"), CacheChangeMode.Approve);
+        Assert.Equal(0, elsewhere.AffectedRecords);
+        Assert.Empty(await Ledger.GatedCacheSetsAsync());
+
+        var there = await AnalyzeAsync(Units("metre"), Units("meter"), CacheChangeMode.Approve, cache: "other-units");
+        Assert.Equal(2, there.AffectedRecords);
+        var tag = Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0));
+        Assert.Equal("other-units", tag.CacheName);
+    }
 
     [Fact]
     public void A_render_records_what_it_read_out_of_the_cache()
@@ -132,7 +154,7 @@ public sealed class CacheChangeTests : IDisposable
         Assert.Equal(first.CacheSetId, last!.CacheSetId);
 
         // The same values from a second run resolve to the same set, so the trail never grows with the estate.
-        var again = await Ledger.EnsureCacheSetAsync([Reads("Name", "metre")]);
+        var again = await Ledger.EnsureCacheSetAsync(CacheName, [Reads("Name", "metre")]);
         Assert.Equal(first.CacheSetId, again);
 
         var entries = await Ledger.ListCacheSetAsync(again);
@@ -168,7 +190,7 @@ public sealed class CacheChangeTests : IDisposable
     public async Task A_change_names_the_value_the_replaced_version_held_not_one_a_set_left_from_an_earlier_render_holds()
     {
         // Seen live: a set built before the last change still holds the value before last, and the tag named that one.
-        await Ledger.EnsureCacheSetAsync([Reads("Name", "metre")]);
+        await Ledger.EnsureCacheSetAsync(CacheName, [Reads("Name", "metre")]);
         await DeliveredAsync(2, Reads("Name", "meter"));
 
         var impact = await AnalyzeAsync(Units("meter"), Units("metres"), CacheChangeMode.Approve);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link as RouterLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, GitCommitHorizontal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -51,33 +52,29 @@ const countTone: Record<DeliveryCacheChange, string> = {
 };
 
 function keyOf(entry: DeliveryCacheHistoryEntry): string {
-  return `${entry.version.repoId}:${entry.version.version}`;
+  return `${entry.version.cache}:${entry.version.version}`;
 }
 
 function totalOf(entry: DeliveryCacheHistoryEntry): number {
-  return (entry.changed ?? 0) + (entry.added ?? 0) + (entry.removed ?? 0);
+  return entry.changed + entry.added + entry.removed;
 }
 
-/** Whether the version is known to have changed something (in the type picked, when one is). */
+/** Whether the version changed something (in the type picked, when one is). */
 function changedSomething(entry: DeliveryCacheHistoryEntry): boolean {
-  return entry.compared && totalOf(entry) > 0;
+  return totalOf(entry) > 0;
 }
 
-/** What one version changed, as tinted counts, or why that is not known. */
+/** What one version changed, as tinted counts. */
 function ChangeCounts({ entry }: { entry: DeliveryCacheHistoryEntry }) {
-  if (!entry.version.carried) {
-    return <span className="text-[12px] text-muted-foreground">records no longer carried</span>;
+  if (entry.before === null) {
+    return (
+      <span className="text-[12px] text-muted-foreground">
+        first version{entry.added > 0 ? `, ${entry.added.toLocaleString()} records arrived` : ""}
+      </span>
+    );
   }
 
-  if (entry.previousVersion === null) {
-    return <span className="text-[12px] text-muted-foreground">first version</span>;
-  }
-
-  if (!entry.compared) {
-    return <span className="text-[12px] text-muted-foreground">the version before it is no longer carried</span>;
-  }
-
-  const parts = (["changed", "added", "removed"] as const).filter((kind) => (entry[kind] ?? 0) > 0);
+  const parts = (["changed", "added", "removed"] as const).filter((kind) => entry[kind] > 0);
   if (parts.length === 0) {
     return <span className="text-[12px] text-muted-foreground">no changes</span>;
   }
@@ -86,7 +83,7 @@ function ChangeCounts({ entry }: { entry: DeliveryCacheHistoryEntry }) {
     <span className="inline-flex gap-3 font-mono text-[12px] tabular-nums">
       {parts.map((kind) => (
         <span key={kind} className={countTone[kind]}>
-          {(entry[kind] ?? 0).toLocaleString()} {kind}
+          {entry[kind].toLocaleString()} {kind}
         </span>
       ))}
     </span>
@@ -172,7 +169,7 @@ function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; typ
   const [change, setChange] = useState<ChangeFilter>(ALL);
   const [search, setSearch] = useState("");
   const [row, setRow] = useState<DeliveryCacheDiffItem | null>(null);
-  const { version, previousVersion } = entry;
+  const { version, before } = entry;
 
   const header = (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
@@ -180,32 +177,32 @@ function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; typ
         {type ? <>Changes to <span className="font-mono">{type}</span> in </> : "Changes in "}
         <span className="font-mono">{version.version}</span>
       </h3>
-      {previousVersion && (
+      {before && (
         <span className="text-[12px] text-muted-foreground">
-          compared with <span className="font-mono">{previousVersion}</span>, the version captured before it
+          compared with <span className="font-mono">{before}</span>, the version captured before it
         </span>
       )}
     </div>
   );
 
-  if (!entry.compared || previousVersion === null) {
-    const reason = !version.carried
-      ? "The catalog no longer carries the records of this version, so its changes cannot be listed. The snapshot files still hold it."
-      : previousVersion === null
-        ? "This is the first version, so there is nothing before it to compare with."
-        : "The catalog no longer carries the records of the version before it, so the changes cannot be listed. The snapshot files still hold both.";
+  if (before === null) {
     return (
       <div className="flex flex-col gap-3 p-3" data-testid="delivery-cache-history-detail">
         {header}
         <Card className="gap-0 rounded-lg p-0">
-          <EmptyState icon={<GitCommitHorizontal />} title="Nothing to compare" description={reason} data-testid="delivery-cache-history-uncomparable" />
+          <EmptyState
+            icon={<GitCommitHorizontal />}
+            title="Nothing to compare"
+            description="This is the first version of the cache, so there is nothing before it to compare with. Its records are under Records."
+            data-testid="delivery-cache-history-uncomparable"
+          />
         </Card>
       </div>
     );
   }
 
-  const count = (filter: ChangeFilter) => (filter === ALL ? totalOf(entry) : entry[filter] ?? 0).toLocaleString();
-  const scope = { repoId: version.repoId, from: previousVersion, to: version.version, type: type ?? undefined };
+  const count = (filter: ChangeFilter) => (filter === ALL ? totalOf(entry) : entry[filter]).toLocaleString();
+  const scope = { cache: version.cache, from: before, to: version.version, type: type ?? undefined };
 
   return (
     <div className="flex flex-col gap-2 p-3" data-testid="delivery-cache-history-detail">
@@ -254,7 +251,7 @@ function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; typ
           .then((result) => result.items)}
         // The type column says nothing a scoped listing does not already say in its title.
         columns={type === null ? [changeColumn, typeColumn, ...recordColumns] : [changeColumn, ...recordColumns]}
-        rowKey={(item) => `${item.repoId}:${item.typeName}:${item.recordId}`}
+        rowKey={(item) => `${item.typeName}:${item.recordId}`}
         onRowClick={setRow}
         emptyMessage={search || change !== ALL
           ? "No changes match these filters."
@@ -281,7 +278,7 @@ function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; typ
                 <p className="text-[12px] text-muted-foreground">{row.entityType}</p>
               </SheetHeader>
               <div className="grid flex-1 gap-4 overflow-y-auto p-4 md:grid-cols-2">
-                <Side title="Before" version={previousVersion} values={row.before} testId="delivery-cache-history-before" />
+                <Side title="Before" version={before} values={row.before} testId="delivery-cache-history-before" />
                 <Side title="After" version={version.version} values={row.after} testId="delivery-cache-history-after" />
               </div>
             </>
@@ -293,24 +290,23 @@ function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; typ
 }
 
 /**
- * The cache's version history: every snapshot version, newest first, with what it changed compared with the version
- * of the same repository captured before it. Picking a version raises its changes in the workbench bottom panel,
- * where they can be filtered, searched and opened record by record while the list stays in view. With a type in
- * scope the counts are that type's alone, and the versions that left it untouched can be folded away. It covers
- * the whole cache, where Approvals covers only the changes that reach records already delivered.
+ * One cache's version history: every version, newest first, with what captured it (the run and who asked, or the import
+ * from files) and what it changed compared with the version captured before it. Picking a version raises its changes in
+ * the workbench bottom panel, where they can be filtered, searched and opened record by record while the list stays in
+ * view. With a type in scope the counts are that type's alone, and the versions that left it untouched can be folded
+ * away. It covers the whole cache, where Approvals covers only the changes that reach records already delivered.
  */
-export function DeliveryCacheHistory({ repoId, type }: { repoId: string | undefined; type: string | null }) {
+export function DeliveryCacheHistory({ cache, type }: { cache: string; type: string | null }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [onlyChanged, setOnlyChanged] = useState(true);
   const { ownedId, show } = useOwnedPanel(PANEL);
   const history = useQuery({
-    queryKey: ["delivery", "cache", "history", repoId, type],
-    queryFn: () => deliveryApi.cacheHistory(repoId, type ?? undefined),
+    queryKey: ["delivery", "cache", "history", cache, type],
+    queryFn: () => deliveryApi.cacheHistory(cache, type ?? undefined),
   });
 
   const entries = history.data ?? [];
   const selected = entries.find((entry) => keyOf(entry) === selectedKey);
-  const showRepo = new Set(entries.map((entry) => entry.version.repoId)).size > 1;
 
   const raise = useCallback((entry: DeliveryCacheHistoryEntry) => show(
     `${keyOf(entry)}:${type ?? ""}`,
@@ -343,7 +339,7 @@ export function DeliveryCacheHistory({ repoId, type }: { repoId: string | undefi
         <EmptyState
           icon={<GitCommitHorizontal />}
           title="No version captured yet"
-          description="Running the retrieval flow that declares the cache captures the first one."
+          description="Refreshing the cache captures the first one: run its cache flow with the refresh operation."
           data-testid="delivery-cache-history-empty"
         />
       </Card>
@@ -373,23 +369,39 @@ export function DeliveryCacheHistory({ repoId, type }: { repoId: string | undefi
       ),
     },
     { id: "captured", header: "Captured", render: (entry) => <RelativeTime value={entry.version.capturedUtc} /> },
-    ...(showRepo
-      ? [{ id: "repo", header: "Repository", render: (entry: DeliveryCacheHistoryEntry) => <span>{entry.version.repoName}</span> }]
-      : []),
+    {
+      id: "capturedBy",
+      header: "Captured by",
+      render: (entry) => (
+        <span className="flex flex-col">
+          {entry.version.runId !== null
+            ? (
+              <RouterLink
+                to={`/runs/${entry.version.runId}`}
+                className="font-mono text-[12px] text-primary hover:underline"
+                onClick={(event) => event.stopPropagation()}
+                data-testid="delivery-cache-history-run"
+              >
+                run {entry.version.runId.slice(0, 8)}
+              </RouterLink>
+            )
+            : <TruncatedText text={entry.version.origin} maxWidth={220} className="text-[12px]" />}
+          <span className="text-[11px] text-muted-foreground">{entry.version.capturedBy}</span>
+        </span>
+      ),
+    },
     {
       id: "records",
       header: "Records",
       align: "right",
-      render: (entry) => (
-        <span className="font-mono tabular-nums">{entry.version.carried ? entry.version.items.toLocaleString() : "-"}</span>
-      ),
+      render: (entry) => <span className="font-mono tabular-nums">{entry.version.items.toLocaleString()}</span>,
     },
     { id: "changes", header: type ? `Changes to ${type}` : "Changes", render: (entry) => <ChangeCounts entry={entry} /> },
     {
       id: "previous",
       header: "Compared with",
       render: (entry) => (
-        <span className="font-mono text-[12px] text-muted-foreground">{entry.previousVersion ?? "-"}</span>
+        <span className="font-mono text-[12px] text-muted-foreground">{entry.before ?? "-"}</span>
       ),
     },
   ];

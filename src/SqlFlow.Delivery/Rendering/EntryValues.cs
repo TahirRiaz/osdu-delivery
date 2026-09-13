@@ -295,11 +295,11 @@ internal static partial class EntryValues
         var path = entry.Target.Text;
         var source = entry.Source!;
         var typeName = source.CacheType!;
-        var version = renderer.Context.ReferenceSnapshotVersion;
+        var version = CacheLabel(renderer.Context);
         var type = renderer.References.Type(typeName);
         if (type is null)
         {
-            holds.Add($"{path}: the cache holds no type '{typeName}' in reference snapshot {version}");
+            holds.Add($"{path}: the cache holds no type '{typeName}' in {version}");
             return null;
         }
 
@@ -344,7 +344,7 @@ internal static partial class EntryValues
                     return WithVersionSeparator(value);
                 }
 
-                return Missing(entry, $"{path}: '{value}' is already an OSDU id that reference snapshot {version} does not hold, so '{source.CacheField}' cannot be read from the cache", holds);
+                return Missing(entry, $"{path}: '{value}' is already an OSDU id that {version} does not hold, so '{source.CacheField}' cannot be read from the cache", holds);
             }
 
             var found = type.Find(find.Field, value, entry.IgnoreSeparators);
@@ -366,7 +366,7 @@ internal static partial class EntryValues
             // the record is held whatever the required flag says, and the reason names every candidate.
             var candidates = string.Join(", ", choice.Found.CaseVariants.Select(c => c.Id));
             holds.Add(
-                $"{path}: '{choice.Value}' matches {choice.Found.CaseVariants.Count} {typeName} records by {ReferenceField.Normalize(choice.Find.Field)} {choice.Found.Loosening} ({candidates}); make the incoming value exact with a replace modifier. Reference snapshot {version}");
+                $"{path}: '{choice.Value}' matches {choice.Found.CaseVariants.Count} {typeName} records by {ReferenceField.Normalize(choice.Find.Field)} {choice.Found.Loosening} ({candidates}) in {version}; make the incoming value exact with a replace modifier");
             return null;
         }
 
@@ -385,8 +385,12 @@ internal static partial class EntryValues
         var described = tried.Select(t => t.Value).Distinct(StringComparer.Ordinal).Count() == 1
             ? $"'{tried[0].Value}' by {string.Join("/", tried.Select(t => ReferenceField.Normalize(t.Find.Field)))}"
             : string.Join(" or ", tried.Select(t => $"{ReferenceField.Normalize(t.Find.Field)} '{t.Value}'"));
-        return Missing(entry, $"{path}: no {typeName} matches {described}{fold} in reference snapshot {version}", holds);
+        return Missing(entry, $"{path}: no {typeName} matches {described}{fold} in {version}", holds);
     }
+
+    /// <summary>The cache version a render read, as a hold reason names it: "version 20260910T165153Z of cache 'osdu-reference-cache'".</summary>
+    private static string CacheLabel(RenderContext context)
+        => context.CacheName is null ? $"cache version {context.CacheVersion}" : $"version {context.CacheVersion} of cache '{context.CacheName}'";
 
     private static object? Select(MappingEntry entry, ReferenceType type, ReferenceItem hit, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
     {
@@ -402,7 +406,7 @@ internal static partial class EntryValues
         {
             return Missing(
                 entry,
-                $"{entry.Target.Text}: {type.Name} '{hit.Id}' caches nothing at '{field}' in reference snapshot {renderer.Context.ReferenceSnapshotVersion}. Cached: {string.Join(", ", type.FieldNames.Prepend("id"))}",
+                $"{entry.Target.Text}: {type.Name} '{hit.Id}' caches nothing at '{field}' in {CacheLabel(renderer.Context)}. Cached: {string.Join(", ", type.FieldNames.Prepend("id"))}",
                 holds);
         }
 

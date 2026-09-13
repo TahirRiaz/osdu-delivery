@@ -10,7 +10,7 @@ secret reference is listed once, in [../environment-variables.md](../environment
 
 | Page | Covers |
 | --- | --- |
-| [cli/delivery.md](cli/delivery.md) | `sqlflow check`, `sqlflow snapshot`, `sqlflow template`, and the delivery run options of `run` and `trigger`. |
+| [cli/delivery.md](cli/delivery.md) | `sqlflow check`, `sqlflow cache`, `sqlflow template`, and the delivery run options of `run` and `trigger`. |
 | [cli/validate.md](cli/validate.md) | `sqlflow validate`: a flow or mapping document, or a whole estate, checked offline. |
 | [cli/db.md](cli/db.md) | `sqlflow db migrate`, `status`, `sync`: the catalog schema and the projection of a local estate into it. |
 | [cli/worker.md](cli/worker.md) | `sqlflow worker`: the compute node, its claim loop, failure handling, and shutdown. |

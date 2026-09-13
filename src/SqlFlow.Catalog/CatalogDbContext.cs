@@ -87,7 +87,7 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<DeliveryMapping> DeliveryMappings => Set<DeliveryMapping>();
 
-    public DbSet<DeliverySnapshot> DeliverySnapshots => Set<DeliverySnapshot>();
+    public DbSet<DeliveryCacheVersion> DeliveryCacheVersions => Set<DeliveryCacheVersion>();
 
     public DbSet<DeliveryCacheDefinition> DeliveryCacheDefinitions => Set<DeliveryCacheDefinition>();
 
@@ -97,7 +97,7 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<DeliveryUpdateTag> DeliveryUpdateTags => Set<DeliveryUpdateTag>();
 
-    public DbSet<DeliverySnapshotItem> DeliverySnapshotItems => Set<DeliverySnapshotItem>();
+    public DbSet<DeliveryCacheItem> DeliveryCacheItems => Set<DeliveryCacheItem>();
 
     /// <summary>The templates: immutable OSDU schema versions owned by OSDU Delivery, pinned by mappings.</summary>
     public DbSet<DeliveryTemplate> DeliveryTemplates => Set<DeliveryTemplate>();

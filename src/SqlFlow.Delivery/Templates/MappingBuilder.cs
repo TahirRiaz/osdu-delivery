@@ -117,7 +117,7 @@ public sealed record MappingDraftIssue(string Severity, string Message, string? 
     public const string WarningSeverity = "warning";
 }
 
-/// <summary>A cached type a repository's cache holds: the name mappings read it by, its entity type, and the fields it captures.</summary>
+/// <summary>A type a cache holds: the name mappings read it by, its entity type, and the fields it captures.</summary>
 public sealed record CachedTypeInfo(string Name, string EntityType, IReadOnlyList<string> Fields);
 
 /// <summary>

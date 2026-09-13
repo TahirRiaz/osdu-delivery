@@ -124,12 +124,45 @@ shows both, plus its verify outcomes; a run's page links to what it did to each 
 `(FlowId, Scope, TableName) -> Version`, where the scope is the flow's parameter set. A manifest whose
 `sourceVersions` have not advanced past these skips the whole run (unless the run is forced).
 
-### `delivery.Mapping` and `delivery.Snapshot`: what the repositories hold
+### `delivery.Mapping` and `delivery.CacheDefinition`: what the repositories declare
 
 Read models the repository sync writes: every mapping document (its reference, kind, the template version it pins
-in `TemplateVersion`, a parsed summary, the YAML, and whether it parses) and every reference snapshot version (when it
-was captured, what it holds, and whether it is the current one). They back the GUI's Mappings page, and the templates
-listing counts each template version's pins from `delivery.Mapping`; nothing writes them but the sync.
+in `TemplateVersion`, a parsed summary, the YAML, and whether it parses) and every type a cache flow declares (the
+`CacheName`, the cache flow's `RelativePath`, the type's `Name`, `EntityType`, `Kind` and `Query`, the kept paths as
+`FieldsJson`, `OnChange`, and the flow's `MakeCurrent`). They back the GUI's Mappings and OSDU cache pages, and the
+templates listing counts each template version's pins from `delivery.Mapping`; nothing writes them but the sync.
+
+### `delivery.CacheVersion` and `delivery.CacheItem`: the versions of every cache
+
+What a cache holds lives here and nowhere else ([design.md](design.md) section 6.2): nothing about it is written to a
+repository. A cache is named by the cache flow that defines it. A version is written by the refresh run that captured
+it, or by `sqlflow cache import`, and never changes afterwards. Every version is kept, because a delivered record's
+render context names the version it was rendered against.
+
+| Column | Purpose |
+| --- | --- |
+| `Id` | Primary key, derived from the cache name and the version label. |
+| `CacheName`, `Version`, `Sequence` | The cache, the label minted from the capture instant (`20260908T212727Z`), and the version's place in the cache's history, 1 for the first. |
+| `CapturedUtc`, `CapturedBy`, `RunId`, `Origin` | When it was captured; who asked (the run's trigger, or `cli:<user>` for an import); the platform run that captured it, null for an import; the endpoint reference searched or the directory imported. |
+| `ContentHash` | The hash of the whole content, checked on every load: a version whose records were altered after it was written is refused, and nothing renders against it. |
+| `PreviousVersion`, `Current` | The version that was current when this one was captured, and whether this is the version deliveries render against unless a flow pins another. |
+| `TypesJson`, `Items` | The types the version holds, each with its entity type and record count, and the records across them. |
+
+`delivery.CacheItem` keeps the cached records by version range rather than by copy. A row is one record's OSDU id and
+captured values (`FieldsJson`, with every scalar also in `Terms` for search) as a run of consecutive versions held
+them: from the version at `FromSequence` up to, and not including, the one at `ToSequence`, which is null while the
+newest version still holds the record unchanged. A refresh writes rows only for the records that changed, arrived or
+left, so keeping every version costs rows in proportion to what moved.
+
+### `delivery.CacheSet`, `delivery.CacheSetEntry` and `delivery.UpdateTag`: what a cache change reaches
+
+A `delivery.CacheSet` is one distinct combination of cached values a render consumed, shared by every record that read
+the same values through the record's `CacheSetId`. Each `delivery.CacheSetEntry` is one value in it: the cache it was
+read from (`CacheName`), the type, the cached record, the path, and the value as it was read. A `delivery.UpdateTag`
+is one change a refresh found in values delivered records were built from: the cache, the type, the cached record, the
+path, the value before and after, the versions it moved between, `Mode` (`approve` or `auto`), `Status` (`pending`,
+`approved`, `rejected`, `rolling`, `applied`), how many delivered records it reaches and how far the rollout has got
+([design.md](design.md) section 6.2).
 
 ### `delivery.Template`: the templates mappings pin
 

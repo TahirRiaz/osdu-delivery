@@ -86,5 +86,5 @@ those two places.
 `src/features/delivery` holds the delivery domain's pages over `src/api/delivery.ts`: the overview (`/delivery`),
 the per-flow Delivery, Records and Submissions tabs on a delivery pipeline's page, the record page
 (`/delivery/records/:key`) with its history and interventions, the submission page, the audit trail
-(`/delivery/activity`), and the mappings and snapshots page (`/delivery/documents`). Target-side actions (probe,
+(`/delivery/activity`), the mappings page (`/delivery/documents`), and the OSDU cache page (`/delivery/cache`). Target-side actions (probe,
 read back, delete) queue a compute task and poll it through `useComputeTask`.

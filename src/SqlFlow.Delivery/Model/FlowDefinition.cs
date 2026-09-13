@@ -172,20 +172,26 @@ public sealed record FlowRender
     /// <summary>Pinned mapping reference in the form Name@version. Never floating (design.md section 9.2).</summary>
     public required string Mapping { get; init; }
 
+    /// <summary>The <see cref="CacheVersion"/> that takes whichever version of the cache is current when the run starts.</summary>
+    public const string CurrentCacheVersion = "current";
+
     /// <summary>
-    /// "pinned" resolves the snapshot store's current reference version at the start of each render and records
-    /// it; an explicit version string pins that version.
+    /// The cache the mapping's <c>cache.</c> sources read: the name of a cache flow (<c>flowType: cache</c>). Null for a flow
+    /// whose mapping reads nothing from a cache.
     /// </summary>
-    public string References { get; init; } = "pinned";
+    public string? Cache { get; init; }
+
+    /// <summary>
+    /// The version of the cache a render reads: <c>current</c> (the default) takes the cache's current version when the run
+    /// starts and records it in the render context; a version label pins that version.
+    /// </summary>
+    public string CacheVersion { get; init; } = CurrentCacheVersion;
 
     /// <summary>Values for the parameters the mapping declares. They enter the content hash (design.md section 9.5).</summary>
     public IReadOnlyDictionary<string, string> Parameters { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
 
     /// <summary>The mappings directory, relative to the flow file. Null finds the nearest <c>mappings</c> directory walking up from the flow file.</summary>
     public string? MappingsDirectory { get; init; }
-
-    /// <summary>The snapshot store root (a directory relative to the flow file, or a storage URI). Null finds the nearest <c>snapshots</c> directory walking up from the flow file.</summary>
-    public string? SnapshotsDirectory { get; init; }
 
     public string MappingName => SplitMapping().Name;
 

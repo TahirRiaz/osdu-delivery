@@ -1,24 +1,21 @@
-using System.Globalization;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Core;
 using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
-using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
 using ContentHash = SqlFlow.Delivery.Hashing.ContentHash;
 
 namespace SqlFlow.Delivery.Catalog;
 
 /// <summary>
-/// The delivery kind's document families in the repository sync: every mapping document (<c>documentType:
-/// mapping</c>, anywhere in the tree) and every snapshot the repository's <c>snapshots</c> directories hold
-/// (schema snapshots by OSDU kind, reference snapshot versions and which one is current) become catalog rows, so
-/// the GUI lists what a flow renders with without opening the repository. Rows are keyed by repository and
-/// reference; a document that disappears from the tree loses its row.
+/// The delivery kind's document families in the repository sync: every mapping document (<c>documentType: mapping</c>,
+/// anywhere in the tree) and what every cache flow (<c>flowType: cache</c>) declares it caches become catalog rows, so the
+/// GUI lists what a flow renders with, and what each cache holds, without opening the repository. Rows are keyed by
+/// repository and reference; a document that disappears from the tree loses its row. The sync only reads the
+/// repository: the versions of a cache are written into the catalog by the runs of its cache flow, never by the sync.
 /// </summary>
 public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 {
@@ -28,21 +25,6 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     };
 
     private static readonly JsonSerializerOptions SummaryJson = new(JsonSerializerDefaults.Web);
-
-    /// <summary>How many cached items of one snapshot the catalog carries for search; the snapshot itself is whole.</summary>
-    private const int MaxCachedItemsPerSnapshot = 200_000;
-
-    /// <summary>
-    /// How many reference snapshot versions per repository the catalog carries the items of, newest first and the
-    /// current version always among them. Older versions keep their snapshot row (and stay listed with their
-    /// counts), but their items are dropped: the snapshot files remain the authority a render resolves against, and
-    /// this is only the queryable copy. The ceiling is what keeps the copy proportional to what an operator will
-    /// actually look back through, rather than to how often the cache has been refreshed.
-    /// </summary>
-    private const int CachedVersionsRetained = 10;
-
-    /// <summary>Rows per insert batch, so a large cache does not build one enormous command.</summary>
-    private const int CachedItemChunk = 2_000;
 
     /// <summary>The widths of <c>delivery.Template</c>'s kind and version, which a mapping row's pin mirrors.</summary>
     private const int MaxTemplateKindLength = 200;
@@ -66,8 +48,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
         var mappings = await SyncMappingsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
         var caches = await SyncCacheDefinitionsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
-        var snapshots = await SyncSnapshotsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
-        return mappings.Add(caches).Add(snapshots);
+        return mappings.Add(caches);
     }
 
     private async Task<CatalogSyncExtensionResult> SyncMappingsAsync(
@@ -179,122 +160,16 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         return new CatalogSyncExtensionResult(added, updated, unchanged, removed, invalid);
     }
 
-    private static async Task<CatalogSyncExtensionResult> SyncSnapshotsAsync(
-        CatalogDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
-    {
-        var existing = await context.DeliverySnapshots.Where(s => s.RepoId == repoId).AsTracking().ToDictionaryAsync(s => s.Id, ct).ConfigureAwait(false);
-        var seen = new HashSet<Guid>();
-        var references = new List<CachedVersion>();
-        int added = 0, updated = 0, unchanged = 0, invalid = 0;
-
-        // Which versions already have their items in the catalog, in one query rather than one per snapshot: an
-        // unchanged version whose items are present is never re-read from the store.
-        var carried = (await context.DeliverySnapshotItems.AsNoTracking()
-            .Where(i => i.RepoId == repoId)
-            .Select(i => i.SnapshotId)
-            .Distinct()
-            .ToListAsync(ct).ConfigureAwait(false)).ToHashSet();
-
-        foreach (var store in EnumerateSnapshotStores(root))
-        {
-            ct.ThrowIfCancellationRequested();
-            foreach (var found in await ReadStoreAsync(root, store, warnings, ct).ConfigureAwait(false))
-            {
-                var id = FlowIdentity.FromName($"delivery-snapshot/{repoId:N}/{found.Kind}/{found.Name}");
-                if (!seen.Add(id))
-                {
-                    warnings.Add($"{found.RelativePath}: {found.Kind} snapshot '{found.Name}' appears in more than one snapshot store; the first wins.");
-                    continue;
-                }
-
-                if (found.Invalid)
-                {
-                    invalid++;
-                }
-
-                if (!existing.TryGetValue(id, out var row))
-                {
-                    row = new DeliverySnapshot { Id = id, RepoId = repoId, FirstSeenUtc = nowUtc };
-                    context.DeliverySnapshots.Add(row);
-                    added++;
-                }
-                else if (row.Version == found.Version && row.Current == found.Current && row.RelativePath == found.RelativePath && row.SummaryJson == found.SummaryJson)
-                {
-                    row.LastSeenUtc = nowUtc;
-                    unchanged++;
-                    if (found.Kind == "references" && !found.Invalid)
-                    {
-                        references.Add(new CachedVersion(id, store, found.Version, found.CapturedUtc, found.Current, Stale: !carried.Contains(id)));
-                    }
-
-                    continue;
-                }
-                else
-                {
-                    updated++;
-                }
-
-                row.Kind = found.Kind;
-                row.Name = found.Name;
-                row.Version = found.Version;
-                row.CapturedUtc = found.CapturedUtc;
-                row.Current = found.Current;
-                row.RelativePath = found.RelativePath;
-                row.SummaryJson = found.SummaryJson;
-                row.LastSeenUtc = nowUtc;
-                if (found.Kind == "references" && !found.Invalid)
-                {
-                    // A version whose row changed is re-read whatever the catalog holds for it: its contents may
-                    // have changed with it.
-                    references.Add(new CachedVersion(id, store, found.Version, found.CapturedUtc, found.Current, Stale: true));
-                }
-            }
-        }
-
-        // The retained versions' items are carried into the catalog. Rows are written after the snapshot rows are
-        // saved, so an item always has its snapshot to hang from.
-        await context.SaveChangesAsync(ct).ConfigureAwait(false);
-        var retained = Retain(references);
-        foreach (var version in retained.Where(v => v.Stale))
-        {
-            await SyncSnapshotItemsAsync(context, repoId, version.Id, version.Store, version.Version, warnings, ct).ConfigureAwait(false);
-        }
-
-        // Items are dropped for the versions the catalog no longer carries: the ones that fell out of the retention
-        // window, and the ones whose snapshot has left the repository altogether.
-        var keep = retained.Select(v => v.Id).ToHashSet();
-        var dropItems = carried.Where(id => !keep.Contains(id))
-            .Concat(existing.Keys.Where(id => !seen.Contains(id)))
-            .Distinct()
-            .ToList();
-        if (dropItems.Count > 0)
-        {
-            await context.DeliverySnapshotItems.Where(i => dropItems.Contains(i.SnapshotId)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
-        }
-
-        var removed = 0;
-        foreach (var (id, row) in existing)
-        {
-            if (!seen.Contains(id))
-            {
-                context.DeliverySnapshots.Remove(row);
-                removed++;
-            }
-        }
-
-        await context.SaveChangesAsync(ct).ConfigureAwait(false);
-        return new CatalogSyncExtensionResult(added, updated, unchanged, removed, invalid);
-    }
-
     /// <summary>
-    /// The cached types the repository's retrieval flows declare (<c>cache.types</c>): the definition side of the
-    /// cache, so the GUI can show what a flow keeps cached and which paths it captures without opening the YAML.
+    /// The types the repository's cache flows declare (<c>flowType: cache</c>): the definition side of each cache, so the GUI
+    /// can show what a cache holds, which paths it keeps and which file to change, next to the versions its runs captured.
     /// </summary>
     private async Task<CatalogSyncExtensionResult> SyncCacheDefinitionsAsync(
         CatalogDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
     {
         var existing = await context.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).AsTracking().ToDictionaryAsync(c => c.Id, ct).ConfigureAwait(false);
         var seen = new HashSet<Guid>();
+        var caches = new Dictionary<string, string>(StringComparer.Ordinal);
         int added = 0, updated = 0, unchanged = 0, invalid = 0;
 
         foreach (var file in EnumerateYaml(root))
@@ -311,16 +186,16 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 continue;
             }
 
-            if (!LooksLikeCachingRetrieval(yaml))
+            if (!DeclaresFlowType(yaml, CacheDefinition.FlowTypeName))
             {
                 continue;
             }
 
             var relative = Relative(root, file);
-            RetrievalDefinition retrieval;
+            CacheDefinition cache;
             try
             {
-                retrieval = _documents.ParseRetrieval(yaml, relative);
+                cache = _documents.ParseCache(yaml, relative);
             }
             catch (FlowValidationException ex)
             {
@@ -329,29 +204,26 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 continue;
             }
 
-            if (retrieval.Cache is not { } cache)
+            if (!caches.TryAdd(cache.Name, relative))
             {
+                warnings.Add($"{relative}: cache '{cache.Name}' is already declared by {caches[cache.Name]}; the first file wins.");
                 continue;
             }
 
             foreach (var type in cache.Types)
             {
-                var id = FlowIdentity.FromName($"delivery-cache/{repoId:N}/{retrieval.Name}/{type.Name}");
-                if (!seen.Add(id))
-                {
-                    warnings.Add($"{relative}: cached type '{type.Name}' of flow '{retrieval.Name}' is declared more than once; the first wins.");
-                    continue;
-                }
-
+                var id = FlowIdentity.FromName($"delivery-cache/{repoId:N}/{cache.Name}/{type.Name}");
+                seen.Add(id);
                 var fields = JsonSerializer.Serialize(type.Fields.Select(f => new { f.Path, As = f.Name }).ToList(), SummaryJson);
+                var onChange = type.OnChange == Snapshots.CacheChangeMode.Auto ? "auto" : "approve";
                 if (!existing.TryGetValue(id, out var row))
                 {
                     row = new DeliveryCacheDefinition { Id = id, RepoId = repoId, FirstSeenUtc = nowUtc };
                     context.DeliveryCacheDefinitions.Add(row);
                     added++;
                 }
-                else if (row.Kind == type.Kind && row.Query == type.Query && row.FieldsJson == fields
-                         && row.EntityType == type.EntityType && row.RelativePath == relative && row.MakeCurrent == cache.MakeCurrent)
+                else if (row.Kind == type.Kind && row.Query == type.Query && row.FieldsJson == fields && row.EntityType == type.EntityType
+                         && row.RelativePath == relative && row.MakeCurrent == cache.MakeCurrent && row.OnChange == onChange)
                 {
                     row.LastSeenUtc = nowUtc;
                     unchanged++;
@@ -362,13 +234,14 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                     updated++;
                 }
 
-                row.FlowName = retrieval.Name;
+                row.CacheName = cache.Name;
                 row.RelativePath = relative;
                 row.Name = type.Name;
                 row.EntityType = type.EntityType;
                 row.Kind = type.Kind;
                 row.Query = type.Query;
                 row.FieldsJson = fields;
+                row.OnChange = onChange;
                 row.MakeCurrent = cache.MakeCurrent;
                 row.LastSeenUtc = nowUtc;
             }
@@ -385,185 +258,24 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         }
 
         await context.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // A cache is named globally, like every flow: a cache another repository declares under the same name writes the
+        // same versions, which is never what either repository means.
+        if (caches.Count > 0)
+        {
+            var names = caches.Keys.ToList();
+            var shared = await context.DeliveryCacheDefinitions.AsNoTracking()
+                .Where(c => c.RepoId != repoId && names.Contains(c.CacheName))
+                .Select(c => c.CacheName)
+                .Distinct()
+                .ToListAsync(ct).ConfigureAwait(false);
+            foreach (var name in shared.Order(StringComparer.Ordinal))
+            {
+                warnings.Add($"{caches[name]}: cache '{name}' is also declared by another repository, and both would write the same versions. Rename one of them.");
+            }
+        }
+
         return new CatalogSyncExtensionResult(added, updated, unchanged, removed, invalid);
-    }
-
-    /// <summary>One reference snapshot version the sync found, and whether its items still need reading.</summary>
-    private sealed record CachedVersion(Guid Id, string Store, string Version, DateTime? CapturedUtc, bool Current, bool Stale);
-
-    /// <summary>
-    /// The versions whose items the catalog carries: the current one, then the newest by capture time, up to
-    /// <see cref="CachedVersionsRetained"/>. Capture time is the ordering that matches how an operator thinks about
-    /// the cache, and the version label breaks ties for snapshots captured in the same instant (the label is minted
-    /// from that instant, so ties are near-impossible in practice and deterministic when they happen).
-    /// </summary>
-    private static List<CachedVersion> Retain(List<CachedVersion> versions)
-        => versions
-            .OrderByDescending(v => v.Current)
-            .ThenByDescending(v => v.CapturedUtc ?? DateTime.MinValue)
-            .ThenByDescending(v => v.Version, StringComparer.Ordinal)
-            .Take(CachedVersionsRetained)
-            .ToList();
-
-    /// <summary>
-    /// Writes the items of one reference snapshot version into the catalog, so the cache can be searched where
-    /// everything else about a delivery is, and so an operator can read it as it stood at an earlier version. The
-    /// store keeps being the authority a render resolves against; these rows are the queryable copy.
-    /// </summary>
-    private static async Task SyncSnapshotItemsAsync(
-        CatalogDbContext context, Guid repoId, Guid snapshotId, string store, string version, ICollection<string> warnings, CancellationToken ct)
-    {
-        var directory = Path.Combine(store, "references", version);
-        var manifest = Path.Combine(directory, "manifest.json");
-        if (!File.Exists(manifest))
-        {
-            return;
-        }
-
-        var node = JsonNode.Parse(await File.ReadAllTextAsync(manifest, ct).ConfigureAwait(false)) as JsonObject;
-        var rows = new List<DeliverySnapshotItem>();
-        var truncated = false;
-        foreach (var name in (node?["types"] as JsonArray)?.Select(t => t?.GetValue<string>()).Where(t => !string.IsNullOrWhiteSpace(t)) ?? [])
-        {
-            var file = Path.Combine(directory, name + ".json");
-            if (!File.Exists(file))
-            {
-                continue;
-            }
-
-            var typeNode = JsonNode.Parse(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false)) as JsonObject;
-            if (typeNode is null)
-            {
-                continue;
-            }
-
-            var type = ReferenceType.FromJson(name!, typeNode);
-            foreach (var item in type.Items)
-            {
-                if (rows.Count >= MaxCachedItemsPerSnapshot)
-                {
-                    truncated = true;
-                    break;
-                }
-
-                rows.Add(new DeliverySnapshotItem
-                {
-                    SnapshotId = snapshotId,
-                    RepoId = repoId,
-                    TypeName = type.Name,
-                    EntityType = type.EntityType,
-                    RecordId = item.Id,
-                    FieldsJson = Fields(item),
-                    Terms = Terms(item),
-                });
-            }
-
-            if (truncated)
-            {
-                break;
-            }
-        }
-
-        if (truncated)
-        {
-            warnings.Add($"Reference snapshot '{version}' holds more than {MaxCachedItemsPerSnapshot} items; the catalog carries the first {MaxCachedItemsPerSnapshot} for search. The snapshot itself is complete.");
-        }
-
-        await context.DeliverySnapshotItems.Where(i => i.SnapshotId == snapshotId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
-        foreach (var chunk in rows.Chunk(CachedItemChunk))
-        {
-            context.DeliverySnapshotItems.AddRange(chunk);
-            await context.SaveChangesAsync(ct).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>The item's captured values, as the JSON the GUI renders and the API returns.</summary>
-    private static string Fields(ReferenceItem item)
-    {
-        var fields = new JsonObject();
-        foreach (var (name, value) in item.Fields.OrderBy(f => f.Key, StringComparer.Ordinal))
-        {
-            fields[name] = value.Node.DeepClone();
-        }
-
-        return fields.ToJsonString();
-    }
-
-    /// <summary>Every scalar the item holds, newline separated, so a text search over the cache is one predicate.</summary>
-    private static string Terms(ReferenceItem item)
-        => string.Join('\n', item.Fields.Values.SelectMany(v => v.Terms).Distinct(StringComparer.OrdinalIgnoreCase));
-
-    /// <summary>A cheap textual pre-check: only a retrieval flow that declares a cache is parsed.</summary>
-    private static bool LooksLikeCachingRetrieval(string yaml)
-        => yaml.Contains("flowType:", StringComparison.Ordinal)
-           && yaml.Contains(RetrievalDefinition.FlowTypeName, StringComparison.Ordinal)
-           && yaml.Contains("cache:", StringComparison.Ordinal);
-
-    private sealed record FoundSnapshot(string Kind, string Name, string Version, DateTime? CapturedUtc, bool Current, string RelativePath, string SummaryJson, bool Invalid);
-
-    private static async Task<List<FoundSnapshot>> ReadStoreAsync(string root, string store, ICollection<string> warnings, CancellationToken ct)
-    {
-        var found = new List<FoundSnapshot>();
-
-        var references = Path.Combine(store, "references");
-        if (Directory.Exists(references))
-        {
-            var current = File.Exists(Path.Combine(references, "current"))
-                ? (await File.ReadAllTextAsync(Path.Combine(references, "current"), ct).ConfigureAwait(false)).Trim()
-                : null;
-            foreach (var directory in Directory.EnumerateDirectories(references).OrderBy(d => d, StringComparer.Ordinal))
-            {
-                var manifest = Path.Combine(directory, "manifest.json");
-                if (!File.Exists(manifest))
-                {
-                    continue;
-                }
-
-                var relative = Relative(root, manifest);
-                var label = Path.GetFileName(directory);
-                try
-                {
-                    var node = JsonNode.Parse(await File.ReadAllTextAsync(manifest, ct).ConfigureAwait(false)) as JsonObject
-                        ?? throw new DeliveryException("the manifest is not a JSON object");
-                    var version = node["version"]?.GetValue<string>() ?? label;
-                    var captured = ParseInstant(node["capturedUtc"]?.GetValue<string>());
-                    var types = new JsonArray();
-                    var items = 0;
-                    foreach (var name in (node["types"] as JsonArray)?.Select(t => t?.GetValue<string>()).Where(t => !string.IsNullOrWhiteSpace(t)) ?? [])
-                    {
-                        var typeFile = Path.Combine(directory, name + ".json");
-                        var count = 0;
-                        string? entityType = null;
-                        if (File.Exists(typeFile))
-                        {
-                            var typeNode = JsonNode.Parse(await File.ReadAllTextAsync(typeFile, ct).ConfigureAwait(false)) as JsonObject;
-                            count = (typeNode?["items"] as JsonArray)?.Count ?? 0;
-                            entityType = typeNode?["entityType"]?.GetValue<string>();
-                        }
-
-                        items += count;
-                        types.Add(new JsonObject { ["name"] = name, ["entityType"] = entityType, ["items"] = count });
-                    }
-
-                    var summary = new JsonObject
-                    {
-                        ["version"] = version,
-                        ["capturedUtc"] = captured,
-                        ["contentHash"] = node["contentHash"]?.GetValue<string>(),
-                        ["types"] = types,
-                        ["items"] = items,
-                    };
-                    found.Add(new FoundSnapshot("references", label, version, captured, string.Equals(current, label, StringComparison.Ordinal), relative, summary.ToJsonString(), false));
-                }
-                catch (Exception ex) when (ex is JsonException or DeliveryException or InvalidOperationException or FormatException)
-                {
-                    warnings.Add($"{relative}: reference snapshot is unreadable ({ex.Message}).");
-                    found.Add(new FoundSnapshot("references", label, label, null, false, relative, new JsonObject { ["error"] = ex.Message }.ToJsonString(), true));
-                }
-            }
-        }
-
-        return found;
     }
 
     private static object Summarize(MappingDefinition mapping) => new
@@ -587,7 +299,6 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         Viewers = mapping.Envelope.Viewers,
     };
 
-    /// <summary>A cheap textual pre-check, so only candidate documents are parsed: every mapping declares its type.</summary>
     /// <summary>
     /// The template an invalid mapping document names. A kind or version longer than the catalog holds for a template
     /// can pin no saved template, so it counts as naming none rather than failing the row.
@@ -597,51 +308,35 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             ? named
             : null;
 
+    /// <summary>A cheap textual pre-check, so only candidate documents are parsed: every mapping declares its type.</summary>
     private static bool LooksLikeMapping(string yaml)
         => yaml.Contains("documentType:", StringComparison.Ordinal) && yaml.Contains("mapping", StringComparison.Ordinal);
 
+    /// <summary>A cheap textual pre-check: a top-level <c>flowType:</c> line whose value is <paramref name="flowType"/>, quoted or not.</summary>
+    private static bool DeclaresFlowType(string yaml, string flowType)
+    {
+        foreach (var line in yaml.AsSpan().EnumerateLines())
+        {
+            if (!line.StartsWith("flowType:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var value = line["flowType:".Length..].Trim().Trim('"').Trim('\'');
+            var comment = value.IndexOf('#');
+            if (comment >= 0)
+            {
+                value = value[..comment].TrimEnd().Trim('"').Trim('\'');
+            }
+
+            return value.Equals(flowType, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
+    }
+
     private static IEnumerable<string> EnumerateYaml(string root)
         => Walk(root).Where(f => f.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".yml", StringComparison.OrdinalIgnoreCase));
-
-    private static IEnumerable<string> EnumerateSnapshotStores(string root)
-    {
-        var pending = new Stack<string>();
-        pending.Push(root);
-        while (pending.Count > 0)
-        {
-            var directory = pending.Pop();
-            IEnumerable<string> children;
-            try
-            {
-                children = Directory.EnumerateDirectories(directory);
-            }
-            catch (IOException)
-            {
-                continue;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                continue;
-            }
-
-            foreach (var child in children.OrderBy(c => c, StringComparer.Ordinal))
-            {
-                var name = Path.GetFileName(child);
-                if (SkippedDirectories.Contains(name))
-                {
-                    continue;
-                }
-
-                if (string.Equals(name, DeliveryLayout.SnapshotsDirectoryName, StringComparison.OrdinalIgnoreCase))
-                {
-                    yield return child;
-                    continue;
-                }
-
-                pending.Push(child);
-            }
-        }
-    }
 
     private static IEnumerable<string> Walk(string root)
     {
@@ -683,9 +378,4 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
     private static string Relative(string root, string path)
         => Path.GetRelativePath(root, path).Replace('\\', '/');
-
-    private static DateTime? ParseInstant(string? text)
-        => text is not null && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
-            ? parsed.UtcDateTime
-            : null;
 }

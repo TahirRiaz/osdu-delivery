@@ -501,53 +501,22 @@ public sealed class DeliveryTemplate
     public DateTime CapturedUtc { get; set; }
 }
 
-/// <summary>A schema or reference snapshot version as the sync found it in a repository's snapshot store.</summary>
-public sealed class DeliverySnapshot
-{
-    /// <summary>Stable id: derived from the repo id, the kind and the version label.</summary>
-    public Guid Id { get; set; }
-
-    public Guid RepoId { get; set; }
-
-    /// <summary>schema or references.</summary>
-    public string Kind { get; set; } = string.Empty;
-
-    /// <summary>The OSDU kind for a schema snapshot; the version label for a reference snapshot.</summary>
-    public string Name { get; set; } = string.Empty;
-
-    /// <summary>The content-derived version: the schema hash prefix, or the reference version label.</summary>
-    public string Version { get; set; } = string.Empty;
-
-    public DateTime? CapturedUtc { get; set; }
-
-    /// <summary>Whether this reference version is the one <c>pinned</c> resolves to.</summary>
-    public bool Current { get; set; }
-
-    public string RelativePath { get; set; } = string.Empty;
-
-    /// <summary>A parsed summary (reference type names and item counts, or the schema's required properties).</summary>
-    public string SummaryJson { get; set; } = "{}";
-
-    public DateTime FirstSeenUtc { get; set; }
-
-    public DateTime LastSeenUtc { get; set; }
-}
-
 /// <summary>
-/// A cached OSDU type as a retrieval flow declares it: what the flow keeps cached for the mappings to resolve
-/// against, and which paths of each record it captures. The sync reads it out of the flow document, so the GUI
-/// shows what the cache is meant to hold without opening the repository.
+/// A cached OSDU type as a cache flow (<c>flowType: cache</c>) declares it: which records the cache holds and which paths
+/// of each it keeps. The cache flow's YAML in the repository is the only place what is cached is defined; the sync copies
+/// the declaration here so the GUI can show it beside the versions the flow's runs captured.
 /// </summary>
 public sealed class DeliveryCacheDefinition
 {
-    /// <summary>Stable id: derived from the repo id, the flow name and the cached type name.</summary>
+    /// <summary>Stable id: derived from the repo id, the cache name and the cached type name.</summary>
     public Guid Id { get; set; }
 
     public Guid RepoId { get; set; }
 
-    /// <summary>The retrieval flow that maintains this cached type.</summary>
-    public string FlowName { get; set; } = string.Empty;
+    /// <summary>The cache flow that declares the type, whose name is the cache's name: what a delivery flow names under <c>render.cache</c>.</summary>
+    public string CacheName { get; set; } = string.Empty;
 
+    /// <summary>The cache flow's file, relative to the repository root.</summary>
     public string RelativePath { get; set; } = string.Empty;
 
     /// <summary>The short name mappings use (UnitOfMeasure).</summary>
@@ -565,7 +534,10 @@ public sealed class DeliveryCacheDefinition
     /// <summary>The captured paths as JSON: <c>[{ "path": "data.Code", "as": "Code" }]</c>.</summary>
     public string FieldsJson { get; set; } = "[]";
 
-    /// <summary>Whether a refresh makes its snapshot the one <c>pinned</c> resolves to.</summary>
+    /// <summary>approve or auto: what a changed cached value of this type does to the records already built from it.</summary>
+    public string OnChange { get; set; } = "approve";
+
+    /// <summary>Whether a refresh makes the version it captures the current one, which deliveries render against.</summary>
     public bool MakeCurrent { get; set; }
 
     public DateTime FirstSeenUtc { get; set; }
@@ -574,18 +546,65 @@ public sealed class DeliveryCacheDefinition
 }
 
 /// <summary>
-/// One cached record of the current reference snapshot: its OSDU id and the values captured at the declared paths.
-/// The sync writes these so the cache is queryable where everything else about a delivery is, without reading the
-/// snapshot files. The snapshot in the store stays the authority a render resolves against.
+/// One version of a cache: the whole cache as one capture left it, written by the run that captured it. A version is
+/// never rewritten. A refresh that finds different content writes the next version, and one that finds exactly the
+/// content of the current version writes none, because a new version moves the render context of every record built
+/// against the cache. Every version stays readable for as long as the catalog exists: a delivered record's render
+/// context names the version it was rendered against, and the ledger has to be able to show what that version held.
 /// </summary>
-public sealed class DeliverySnapshotItem
+public sealed class DeliveryCacheVersion
+{
+    /// <summary>Stable id: derived from the cache name and the version label.</summary>
+    public Guid Id { get; set; }
+
+    /// <summary>The cache flow that captured it.</summary>
+    public string CacheName { get; set; } = string.Empty;
+
+    /// <summary>The label, minted from the capture instant (20260910T165153Z): sortable, unique per cache per second.</summary>
+    public string Version { get; set; } = string.Empty;
+
+    /// <summary>The version's place in the cache's history, 1 for the first; the ranges of <see cref="DeliveryCacheItem"/> count in it.</summary>
+    public int Sequence { get; set; }
+
+    public DateTime CapturedUtc { get; set; }
+
+    /// <summary>Hash of the whole content, checked on every load so a version altered after it was written is refused.</summary>
+    public string ContentHash { get; set; } = string.Empty;
+
+    /// <summary>The version that was current when this one was captured, which the capture was merged onto; null for the first.</summary>
+    public string? PreviousVersion { get; set; }
+
+    /// <summary>Whether this is the version deliveries render against unless a flow pins another.</summary>
+    public bool Current { get; set; }
+
+    /// <summary>The platform run that captured the version; null for one imported from files.</summary>
+    public Guid? RunId { get; set; }
+
+    /// <summary>Who asked for it: the run's trigger (manual:&lt;user&gt;, schedule:&lt;name&gt;), or cli:&lt;user&gt; for an import.</summary>
+    public string CapturedBy { get; set; } = string.Empty;
+
+    /// <summary>Where the content came from: the OSDU endpoint reference a capture searched, or the directory an import read.</summary>
+    public string Origin { get; set; } = string.Empty;
+
+    /// <summary>The types the version holds, by name, each with its entity type and record count: <c>[{ "name", "entityType", "items" }]</c>.</summary>
+    public string TypesJson { get; set; } = "[]";
+
+    /// <summary>How many cached records the version holds across its types.</summary>
+    public long Items { get; set; }
+}
+
+/// <summary>
+/// One cached record as a run of consecutive versions of its cache held it: the OSDU id and the values captured at the
+/// declared paths, valid from the version at <see cref="FromSequence"/> up to, and not including, the one at
+/// <see cref="ToSequence"/>, which is null while the newest version still holds it unchanged. A refresh writes rows
+/// only for the records that changed, arrived or left, so keeping every version costs rows in proportion to what moved
+/// rather than to the size of the cache times the number of captures.
+/// </summary>
+public sealed class DeliveryCacheItem
 {
     public long ItemId { get; set; }
 
-    /// <summary>The <see cref="DeliverySnapshot"/> row the item belongs to.</summary>
-    public Guid SnapshotId { get; set; }
-
-    public Guid RepoId { get; set; }
+    public string CacheName { get; set; } = string.Empty;
 
     /// <summary>The cached type's short name (UnitOfMeasure).</summary>
     public string TypeName { get; set; } = string.Empty;
@@ -595,11 +614,17 @@ public sealed class DeliverySnapshotItem
     /// <summary>The OSDU record id, without a version.</summary>
     public string RecordId { get; set; } = string.Empty;
 
-    /// <summary>The captured values as JSON, in whatever shape the paths yielded.</summary>
+    /// <summary>The captured values as JSON, in whatever shape the paths yielded, names in ordinal order.</summary>
     public string FieldsJson { get; set; } = "{}";
 
     /// <summary>Every scalar the item holds, newline separated: what a search over cached values matches on.</summary>
     public string Terms { get; set; } = string.Empty;
+
+    /// <summary>The sequence of the first version that holds the record with these values.</summary>
+    public int FromSequence { get; set; }
+
+    /// <summary>The sequence of the first version that no longer holds it so; null while the newest version still does.</summary>
+    public int? ToSequence { get; set; }
 }
 
 /// <summary>
@@ -634,6 +659,9 @@ public sealed class DeliveryCacheSetEntry
 {
     public long SetId { get; set; }
 
+    /// <summary>The cache the value was read from: the cache flow the delivery flow named under <c>render.cache</c>.</summary>
+    public string CacheName { get; set; } = string.Empty;
+
     /// <summary>The cached type's short name (UnitOfMeasure).</summary>
     public string TypeName { get; set; } = string.Empty;
 
@@ -665,6 +693,9 @@ public sealed class DeliveryUpdateTag
 
     /// <summary>What caused the tag; <c>cache</c> today.</summary>
     public string Kind { get; set; } = "cache";
+
+    /// <summary>The cache whose refresh found the change.</summary>
+    public string CacheName { get; set; } = string.Empty;
 
     public string TypeName { get; set; } = string.Empty;
 
@@ -1035,16 +1066,39 @@ public static class DeliveryModel
             e.HasIndex(t => new { t.Kind, t.Version }).IsUnique();
         });
 
-        modelBuilder.Entity<DeliverySnapshot>(e =>
+        modelBuilder.Entity<DeliveryCacheVersion>(e =>
         {
-            e.ToTable("Snapshot", SchemaName);
-            e.HasKey(s => s.Id);
-            e.Property(s => s.Kind).HasMaxLength(16).IsRequired();
-            e.Property(s => s.Name).HasMaxLength(200).IsRequired();
-            e.Property(s => s.Version).HasMaxLength(64).IsRequired();
-            e.Property(s => s.RelativePath).HasMaxLength(1000).IsRequired();
-            e.Property(s => s.SummaryJson).IsRequired();
-            e.HasIndex(s => new { s.RepoId, s.Kind, s.Name }).IsUnique();
+            e.ToTable("CacheVersion", SchemaName);
+            e.HasKey(v => v.Id);
+            e.Property(v => v.CacheName).HasMaxLength(200).IsRequired();
+            e.Property(v => v.Version).HasMaxLength(64).IsRequired();
+            e.Property(v => v.ContentHash).HasMaxLength(64).IsRequired();
+            e.Property(v => v.PreviousVersion).HasMaxLength(64);
+            e.Property(v => v.CapturedBy).HasMaxLength(200).IsRequired();
+            e.Property(v => v.Origin).HasMaxLength(1000).IsRequired();
+            e.Property(v => v.TypesJson).IsRequired();
+            e.HasIndex(v => new { v.CacheName, v.Version }).IsUnique();
+            // The sequence is what a concurrent second refresh of the same cache collides on, so two captures can never
+            // both claim the next version.
+            e.HasIndex(v => new { v.CacheName, v.Sequence }).IsUnique();
+            e.HasIndex(v => v.RunId);
+        });
+
+        modelBuilder.Entity<DeliveryCacheItem>(e =>
+        {
+            e.ToTable("CacheItem", SchemaName);
+            e.HasKey(i => i.ItemId);
+            e.Property(i => i.CacheName).HasMaxLength(200).IsRequired();
+            e.Property(i => i.TypeName).HasMaxLength(200).IsRequired();
+            e.Property(i => i.EntityType).HasMaxLength(200).IsRequired();
+            OsduId(e.Property(i => i.RecordId), sqlServer).HasMaxLength(512).IsRequired();
+            e.Property(i => i.FieldsJson).IsRequired();
+            e.Property(i => i.Terms).IsRequired();
+            // A record holds one range per distinct content: the type listing is its prefix, so this index answers both a
+            // version's listing of a type and one record's history.
+            e.HasIndex(i => new { i.CacheName, i.TypeName, i.RecordId, i.FromSequence }).IsUnique();
+            // The rows the newest version holds (ToSequence null), which a refresh compares its capture against.
+            e.HasIndex(i => new { i.CacheName, i.ToSequence });
         });
 
         modelBuilder.Entity<DeliveryCacheSet>(e =>
@@ -1060,15 +1114,16 @@ public static class DeliveryModel
         modelBuilder.Entity<DeliveryCacheSetEntry>(e =>
         {
             e.ToTable("CacheSetEntry", SchemaName);
+            e.Property(c => c.CacheName).HasMaxLength(200).IsRequired();
             e.Property(c => c.TypeName).HasMaxLength(200).IsRequired();
             OsduId(e.Property(c => c.ItemId), sqlServer).HasMaxLength(512).IsRequired();
             e.Property(c => c.Path).HasMaxLength(400).IsRequired();
             e.Property(c => c.Kind).HasMaxLength(16).IsRequired();
             e.Property(c => c.ValueHash).HasMaxLength(64).IsRequired();
             e.Property(c => c.ValueText).HasMaxLength(400).IsRequired();
-            e.HasKey(c => new { c.SetId, c.TypeName, c.ItemId, c.Path, c.Kind });
-            // The impact query: which sets hold this cached value.
-            e.HasIndex(c => new { c.TypeName, c.ItemId });
+            e.HasKey(c => new { c.SetId, c.CacheName, c.TypeName, c.ItemId, c.Path, c.Kind });
+            // The impact query: which sets hold this cached value of this cache.
+            e.HasIndex(c => new { c.CacheName, c.TypeName, c.ItemId });
         });
 
         modelBuilder.Entity<DeliveryUpdateTag>(e =>
@@ -1076,6 +1131,7 @@ public static class DeliveryModel
             e.ToTable("UpdateTag", SchemaName);
             e.HasKey(t => t.TagId);
             e.Property(t => t.Kind).HasMaxLength(16).IsRequired();
+            e.Property(t => t.CacheName).HasMaxLength(200).IsRequired();
             e.Property(t => t.TypeName).HasMaxLength(200).IsRequired();
             OsduId(e.Property(t => t.ItemId), sqlServer).HasMaxLength(512).IsRequired();
             e.Property(t => t.Path).HasMaxLength(400).IsRequired();
@@ -1089,37 +1145,23 @@ public static class DeliveryModel
             e.Property(t => t.DecidedBy).HasMaxLength(200);
             e.Property(t => t.SetIds).IsRequired();
             e.HasIndex(t => t.Status);
-            e.HasIndex(t => new { t.TypeName, t.ItemId, t.Path, t.Status });
+            e.HasIndex(t => new { t.CacheName, t.TypeName, t.ItemId, t.Path, t.Status });
         });
 
         modelBuilder.Entity<DeliveryCacheDefinition>(e =>
         {
             e.ToTable("CacheDefinition", SchemaName);
             e.HasKey(c => c.Id);
-            e.Property(c => c.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(c => c.CacheName).HasMaxLength(200).IsRequired();
             e.Property(c => c.RelativePath).HasMaxLength(1000).IsRequired();
             e.Property(c => c.Name).HasMaxLength(200).IsRequired();
             e.Property(c => c.EntityType).HasMaxLength(200).IsRequired();
             e.Property(c => c.Kind).HasMaxLength(400).IsRequired();
             e.Property(c => c.Query).HasMaxLength(4000);
             e.Property(c => c.FieldsJson).IsRequired();
-            e.HasIndex(c => new { c.RepoId, c.FlowName, c.Name }).IsUnique();
-            e.HasIndex(c => c.Name);
-        });
-
-        modelBuilder.Entity<DeliverySnapshotItem>(e =>
-        {
-            e.ToTable("SnapshotItem", SchemaName);
-            e.HasKey(i => i.ItemId);
-            e.Property(i => i.TypeName).HasMaxLength(200).IsRequired();
-            e.Property(i => i.EntityType).HasMaxLength(200).IsRequired();
-            OsduId(e.Property(i => i.RecordId), sqlServer).HasMaxLength(512).IsRequired();
-            e.Property(i => i.FieldsJson).IsRequired();
-            e.Property(i => i.Terms).IsRequired();
-            e.HasIndex(i => new { i.SnapshotId, i.TypeName, i.RecordId }).IsUnique();
-            // One cached record across every version the catalog carries: the type listing is its prefix, so this
-            // one index answers both the version-scoped listing and a value's history.
-            e.HasIndex(i => new { i.RepoId, i.TypeName, i.RecordId });
+            e.Property(c => c.OnChange).HasMaxLength(16).IsRequired();
+            e.HasIndex(c => new { c.RepoId, c.CacheName, c.Name }).IsUnique();
+            e.HasIndex(c => c.CacheName);
         });
     }
 

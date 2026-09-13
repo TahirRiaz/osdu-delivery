@@ -425,10 +425,10 @@ public class MappingRendererTests
     [Fact]
     public void Hash_is_of_the_document_so_a_new_render_context_that_renders_the_same_document_does_not_move_it()
     {
-        // Seen live: every cache refresh mints a reference snapshot version, and a hash that took the render context in
-        // re-sent every record rendered against the store, identical documents included.
+        // Seen live: every cache refresh writes a cache version, and a hash that took the render context in re-sent every
+        // record rendered against the cache, identical documents included.
         var a = Renderer().Render(Record());
-        var other = new MappingRenderer(TestSchema.Mapping(), TestSchema.Build(), TestSchema.References(), TestSchema.Context() with { ReferenceSnapshotVersion = "refs-2" });
+        var other = new MappingRenderer(TestSchema.Mapping(), TestSchema.Build(), TestSchema.References(), TestSchema.Context() with { CacheVersion = "refs-2" });
         var b = other.Render(Record());
         Assert.Equal(a.Canonical, b.Canonical);
         Assert.Equal(a.MetadataHash, b.MetadataHash);
@@ -488,7 +488,7 @@ public class PreflightTests
             """, Columns("name"));
         HasError(issues, "reads dataset.depth, which the dataset's row in the drop does not declare");
         HasError(issues, "fills a variable that template test:wks:work-product-component--Thing:1.0.0");
-        HasError(issues, "reads cache.Country, which reference snapshot 'refs-1' does not hold");
+        HasError(issues, "reads cache.Country, which cache version 'refs-1' does not hold");
         Assert.Throws<FlowValidationException>(() => Preflight.ThrowIfFailed(issues, "test"));
     }
 
@@ -539,7 +539,7 @@ public class PreflightTests
         var known = Check("  - { target: osdu.data.Unit, static: \"{param.dataPartition}:reference-data--UnitOfMeasure:m:\" }");
         Assert.DoesNotContain(known, i => i.Severity == IssueSeverity.Error);
 
-        HasError(Check("  - { target: osdu.data.Unit, static: \"dev:reference-data--UnitOfMeasure:furlong:\" }"), "is not in reference snapshot 'refs-1'");
+        HasError(Check("  - { target: osdu.data.Unit, static: \"dev:reference-data--UnitOfMeasure:furlong:\" }"), "is not in cache version 'refs-1'");
         HasError(Check("  - { target: osdu.data.Unit, static: \"dev:master-data--Wellbore:abc:\" }"), "is a master-data--Wellbore record, and osdu.data.Unit points to reference-data--UnitOfMeasure");
         HasError(Check("  - { target: osdu.data.Unit, static: metre }"), "'metre' is not an OSDU record id");
     }
@@ -857,12 +857,13 @@ public class RenderContextTests
         var context = new RenderContext
         {
             MappingReference = "M@1",
-            ReferenceSnapshotVersion = "r",
+            CacheName = "c",
+            CacheVersion = "r",
             SchemaSnapshotVersion = "s",
             Parameters = new Dictionary<string, string> { ["z"] = "1", ["a"] = "2", ["dataPartition"] = "dev" },
         };
         var canonical = context.Canonical();
-        Assert.StartsWith("{\"mapping\":\"M@1\",\"parameters\":{\"a\":\"2\",\"dataPartition\":\"dev\",\"z\":\"1\"}", canonical, StringComparison.Ordinal);
+        Assert.StartsWith("{\"cache\":\"c\",\"cacheVersion\":\"r\",\"mapping\":\"M@1\",\"parameters\":{\"a\":\"2\",\"dataPartition\":\"dev\",\"z\":\"1\"}", canonical, StringComparison.Ordinal);
         Assert.Equal(canonical, RenderContext.Parse(canonical).Canonical());
         Assert.Equal("dev", RenderContext.Parse(canonical).DataPartition);
     }

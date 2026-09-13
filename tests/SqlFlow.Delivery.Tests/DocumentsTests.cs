@@ -341,7 +341,7 @@ public class OsduIdentifierValidationTests
     private static SqlFlow.Delivery.Snapshots.RenderContext Context(string partition) => new()
     {
         MappingReference = "Thing@1.0.0",
-        ReferenceSnapshotVersion = "r1",
+        CacheVersion = "r1",
         SchemaSnapshotVersion = "s1",
         Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [SqlFlow.Delivery.Snapshots.RenderContext.DataPartitionParameter] = partition },
     };

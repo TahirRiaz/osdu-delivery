@@ -18,6 +18,7 @@ using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
 using SqlFlow.Delivery.Validation;
 
@@ -83,22 +84,27 @@ public sealed record DeliveryMappingDto(
 /// <summary>A mapping document with its text.</summary>
 public sealed record DeliveryMappingDetailDto(DeliveryMappingDto Mapping, string Yaml);
 
-/// <summary>A schema or reference snapshot version as the sync found it.</summary>
-public sealed record DeliverySnapshotDto(
-    Guid Id, Guid RepoId, string Kind, string Name, string Version, DateTime? CapturedUtc, bool Current, string RelativePath,
-    JsonElement Summary, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+/// <summary>A type a cache flow declares: what is cached, which paths are kept, what a change does, and how many records the current version holds.</summary>
+public sealed record DeliveryCacheTypeDto(string Name, string EntityType, string Kind, string? Query, JsonElement Fields, string OnChange, long Items);
 
-/// <summary>A cached OSDU type as a retrieval flow declares it: what is cached and which paths are captured.</summary>
-public sealed record DeliveryCacheDefinitionDto(
-    Guid Id, Guid RepoId, string FlowName, string RelativePath, string Name, string EntityType, string Kind, string? Query,
-    JsonElement Fields, bool MakeCurrent, long Items, string? Version, DateTime? CapturedUtc, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+/// <summary>A schedule that refreshes a cache: its cadence, or that it fires behind other schedules.</summary>
+public sealed record DeliveryCacheScheduleDto(Guid Id, string Name, string? Cron, int? IntervalSeconds, bool Chained);
+
+/// <summary>
+/// A cache as its cache flow declares it and its runs keep it: the repository and file that define it (the file is where
+/// what is cached is changed), the flow's pipeline, the OSDU endpoint reference it is captured from, the schedules that
+/// refresh it, its types, its current version with the run that captured it, and how many versions it has.
+/// </summary>
+public sealed record DeliveryCacheDto(
+    string Name, Guid RepoId, string RepoName, string RelativePath, Guid? PipelineId, string? Endpoint, bool MakeCurrent,
+    IReadOnlyList<DeliveryCacheTypeDto> Types, IReadOnlyList<DeliveryCacheScheduleDto> Schedules, DeliveryCacheVersionDto? Current, int Versions);
 
 /// <summary>
 /// One cache change and what happens about it: the cached record and path that moved, the value before and after,
 /// how many delivered manifest rows it reaches, and how far the rollout has carried it.
 /// </summary>
 public sealed record DeliveryUpdateTagDto(
-    long TagId, string Kind, string TypeName, string ItemId, string Path, string Change, string? OldValue, string? NewValue,
+    long TagId, string Kind, string Cache, string TypeName, string ItemId, string Path, string Change, string? OldValue, string? NewValue,
     string? FromVersion, string ToVersion, string Mode, string Status, string Summary, long AffectedRecords, long Processed,
     long Remaining, DateTime DetectedUtc, DateTime? DecidedUtc, string? DecidedBy, DateTime? StartedUtc, DateTime? CompletedUtc);
 
@@ -107,50 +113,45 @@ public sealed record DeliveryTagDecisionRequest(IReadOnlyList<long> TagIds, bool
 
 public sealed record DeliveryTagDecisionResult(int Decided, bool Approved);
 
-/// <summary>One cached value a record was built from, for its history page.</summary>
-public sealed record DeliveryCacheUseDto(string TypeName, string ItemId, string Path, string Kind, string Value);
+/// <summary>One cached value a record was built from, for its history page: the cache, the cached record and path, and what it held.</summary>
+public sealed record DeliveryCacheUseDto(string Cache, string TypeName, string ItemId, string Path, string Kind, string Value);
 
-/// <summary>One cached record: its OSDU id and the values captured at the declared paths, in one snapshot version.</summary>
+/// <summary>One cached record: its OSDU id and the values captured at the declared paths, as one version of its cache holds it.</summary>
 public sealed record DeliveryCachedItemDto(
-    long ItemId, Guid SnapshotId, string Version, string TypeName, string EntityType, string RecordId, JsonElement Fields);
+    long ItemId, string Cache, string Version, string TypeName, string EntityType, string RecordId, JsonElement Fields);
+
+/// <summary>One type a cache version holds, and how many records of it.</summary>
+public sealed record DeliveryCacheVersionTypeDto(string Name, string EntityType, long Items);
 
 /// <summary>
-/// One reference snapshot version of a repository's cache: what an operator picks between to read the cache as it
-/// stood then. <c>Carried</c> says whether the catalog still holds this version's items; older versions keep their
-/// row and their counts after their items are aged out, and the snapshot files stay complete either way.
+/// One version of a cache: when it was captured, whether it is the version deliveries render against, the version that was
+/// current when it was captured, the run that captured it and who asked (null run for an import from files), where the
+/// content came from, and what it holds.
 /// </summary>
 public sealed record DeliveryCacheVersionDto(
-    Guid RepoId, string RepoName, string Version, DateTime? CapturedUtc, bool Current, bool Carried, long Items);
+    string Cache, string Version, int Sequence, DateTime CapturedUtc, bool Current, string? PreviousVersion, Guid? RunId, string CapturedBy,
+    string Origin, long Items, IReadOnlyList<DeliveryCacheVersionTypeDto> Types);
 
 /// <summary>
-/// What changed in the cache between two snapshot versions: counts per type, the repositories that could not be
-/// compared, and a page of the records that differ. <c>ToVersion</c> is null when the later side is each repository's
-/// current version. The counts follow the type and search filters but not the change filter.
+/// What changed in a cache between two versions: counts per type and a page of the records that differ. The counts follow
+/// the type and search filters but not the change filter.
 /// </summary>
 public sealed record DeliveryCacheDiffDto(
-    string FromVersion, string? ToVersion, long Changed, long Added, long Removed, IReadOnlyList<DeliveryCacheDiffTypeDto> Types,
-    IReadOnlyList<DeliveryCacheDiffGapDto> Gaps, PagedResult<DeliveryCacheDiffItemDto> Items);
+    string Cache, string FromVersion, string ToVersion, long Changed, long Added, long Removed, IReadOnlyList<DeliveryCacheDiffTypeDto> Types,
+    PagedResult<DeliveryCacheDiffItemDto> Items);
 
 /// <summary>How many records of one cached type changed, arrived and left between the two versions.</summary>
 public sealed record DeliveryCacheDiffTypeDto(string TypeName, long Changed, long Added, long Removed);
-
-/// <summary>A repository in scope whose cache could not be compared, and why.</summary>
-public sealed record DeliveryCacheDiffGapDto(Guid RepoId, string RepoName, string Reason);
 
 /// <summary>
 /// One cached record that differs between the two versions: changed, added or removed, the captured values on each side
 /// (null on the side that does not hold it), and the captured names whose value moved.
 /// </summary>
 public sealed record DeliveryCacheDiffItemDto(
-    Guid RepoId, string TypeName, string EntityType, string RecordId, string Change, JsonElement? Before, JsonElement? After,
-    IReadOnlyList<string> ChangedFields);
+    string TypeName, string EntityType, string RecordId, string Change, JsonElement? Before, JsonElement? After, IReadOnlyList<string> ChangedFields);
 
-/// <summary>
-/// One version in the cache's history: the version of the same repository captured before it and, when the catalog
-/// carries both (<c>Compared</c>), how many records it changed, added and removed. The counts are null otherwise.
-/// </summary>
-public sealed record DeliveryCacheHistoryEntryDto(
-    DeliveryCacheVersionDto Version, string? PreviousVersion, bool Compared, long? Changed, long? Added, long? Removed);
+/// <summary>One version in a cache's history: the version captured before it, and how many records it changed, added and removed against that one.</summary>
+public sealed record DeliveryCacheHistoryEntryDto(DeliveryCacheVersionDto Version, string? Before, long Changed, long Added, long Removed);
 
 /// <summary>
 /// A submission. Either the manifest notification (<c>drop</c>: the preparing side has finished a drop and asks for it to
@@ -300,6 +301,9 @@ public static class DeliveryEndpoints
     /// <summary>Delivery flows the manual submission listing parses at once.</summary>
     private const int MaxManualSubmissionFlows = 500;
 
+    /// <summary>Cached type declarations the cache listing reads at once, across every cache.</summary>
+    private const int MaxCacheDefinitions = 5000;
+
     public static RouteGroupBuilder MapDeliveryReadEndpoints(this RouteGroupBuilder group)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -322,8 +326,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/activities/{activityId:long}", GetActivityAsync).WithName("GetDeliveryActivity");
         delivery.MapGet("/mappings", ListMappingsAsync).WithName("ListDeliveryMappings");
         delivery.MapGet("/mappings/{mappingId:guid}", GetMappingAsync).WithName("GetDeliveryMapping");
-        delivery.MapGet("/snapshots", ListSnapshotsAsync).WithName("ListDeliverySnapshots");
-        delivery.MapGet("/cache", ListCacheDefinitionsAsync).WithName("ListDeliveryCacheDefinitions");
+        delivery.MapGet("/caches", ListCachesAsync).WithName("ListDeliveryCaches");
         delivery.MapGet("/cache/items", ListCachedItemsAsync).WithName("ListDeliveryCachedItems");
         delivery.MapGet("/cache/versions", ListCacheVersionsAsync).WithName("ListDeliveryCacheVersions");
         delivery.MapGet("/cache/diff", CompareCacheVersionsAsync).WithName("CompareDeliveryCacheVersions");
@@ -652,31 +655,13 @@ public static class DeliveryEndpoints
         return row is null ? NotFound("mapping", mappingId) : TypedResults.Ok(new DeliveryMappingDetailDto(ToDto(row), row.Yaml));
     }
 
-    private static async Task<Ok<IReadOnlyList<DeliverySnapshotDto>>> ListSnapshotsAsync(Guid? repoId, string? kind, CatalogDbContext db, CancellationToken ct)
-    {
-        var query = db.DeliverySnapshots.AsNoTracking().AsQueryable();
-        if (repoId is { } r)
-        {
-            query = query.Where(s => s.RepoId == r);
-        }
-
-        if (!string.IsNullOrWhiteSpace(kind))
-        {
-            var k = kind.Trim().ToLowerInvariant();
-            query = query.Where(s => s.Kind == k);
-        }
-
-        var rows = await query.OrderBy(s => s.Kind).ThenBy(s => s.Name).Take(1000).ToListAsync(ct).ConfigureAwait(false);
-        return TypedResults.Ok<IReadOnlyList<DeliverySnapshotDto>>(rows.Select(ToDto).ToList());
-    }
-
     /// <summary>
-    /// The cache as the repositories declare it: one row per cached type, with the paths it captures and how many
-    /// items the current snapshot holds for it. Read-only, because the definition lives in the retrieval flow's
-    /// YAML; this is what the sync last read there.
+    /// Every cache a synced cache flow declares: where it is defined (the repository and the file, which is where what is
+    /// cached is changed), the flow's pipeline and the schedules that refresh it, each declared type with what the current
+    /// version holds of it, and the current version with the run that captured it. Read-only: a cache is defined in its
+    /// YAML and filled by its runs.
     /// </summary>
-    private static async Task<Ok<IReadOnlyList<DeliveryCacheDefinitionDto>>> ListCacheDefinitionsAsync(
-        Guid? repoId, string? search, string? version, CatalogDbContext db, CancellationToken ct)
+    private static async Task<Ok<IReadOnlyList<DeliveryCacheDto>>> ListCachesAsync(Guid? repoId, CatalogDbContext db, CancellationToken ct)
     {
         var query = db.DeliveryCacheDefinitions.AsNoTracking().AsQueryable();
         if (repoId is { } r)
@@ -684,60 +669,87 @@ public static class DeliveryEndpoints
             query = query.Where(c => c.RepoId == r);
         }
 
-        if (!string.IsNullOrWhiteSpace(search))
+        var definitions = await query.OrderBy(c => c.CacheName).ThenBy(c => c.Name).Take(MaxCacheDefinitions).ToListAsync(ct).ConfigureAwait(false);
+        if (definitions.Count == 0)
         {
-            var term = search.Trim();
-            query = query.Where(c => c.Name.Contains(term) || c.EntityType.Contains(term) || c.FlowName.Contains(term));
+            return TypedResults.Ok<IReadOnlyList<DeliveryCacheDto>>([]);
         }
 
-        var rows = await query.OrderBy(c => c.Name).ThenBy(c => c.FlowName).Take(1000).ToListAsync(ct).ConfigureAwait(false);
-        var repos = rows.Select(c => c.RepoId).Distinct().ToList();
-
-        // What the cache holds at the version being read: each repository's snapshot for it, and its items per type.
-        // The counts follow the version picker, so the declaration list never describes a version other than the one
-        // the records table is showing.
-        var resolved = await CacheVersions.ResolveAsync(db, repoId, version, ct).ConfigureAwait(false);
-        var current = resolved.Where(s => repos.Contains(s.RepoId)).ToList();
-        var snapshots = current.ToDictionary(s => s.RepoId, s => s);
-        var snapshotIds = current.Select(s => s.Id).ToList();
-        var counts = await db.DeliverySnapshotItems.AsNoTracking()
-            .Where(i => snapshotIds.Contains(i.SnapshotId))
-            .GroupBy(i => new { i.SnapshotId, i.TypeName })
-            .Select(g => new { g.Key.SnapshotId, g.Key.TypeName, Items = g.LongCount() })
+        var names = definitions.Select(d => d.CacheName).Distinct().ToList();
+        var repoIds = definitions.Select(d => d.RepoId).Distinct().ToList();
+        var repoNames = await RepoNamesAsync(db, repoIds, ct).ConfigureAwait(false);
+        var pipelines = await db.Pipelines.AsNoTracking()
+            .Where(p => repoIds.Contains(p.RepoId) && p.Kind == CacheDefinition.FlowTypeName && names.Contains(p.Name))
+            .Select(p => new { p.Id, p.RepoId, p.Name, p.SourceServer })
             .ToListAsync(ct).ConfigureAwait(false);
-        var byType = counts.ToDictionary(c => (c.SnapshotId, c.TypeName), c => c.Items);
+        var pipelineIds = pipelines.Select(p => p.Id).ToList();
+        var memberships = await db.ScheduleMembers.AsNoTracking()
+            .Where(m => pipelineIds.Contains(m.PipelineId))
+            .Select(m => new { m.PipelineId, m.ScheduleId })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var scheduleIds = memberships.Select(m => m.ScheduleId).Distinct().ToList();
+        var schedules = await db.Schedules.AsNoTracking()
+            .Where(s => scheduleIds.Contains(s.Id))
+            .Select(s => new DeliveryCacheScheduleDto(s.Id, s.Name, s.Cron, s.IntervalSeconds, s.Parents.Any()))
+            .ToListAsync(ct).ConfigureAwait(false);
+        var currentRows = await db.DeliveryCacheVersions.AsNoTracking()
+            .Where(v => names.Contains(v.CacheName) && v.Current)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var versionCounts = await db.DeliveryCacheVersions.AsNoTracking()
+            .Where(v => names.Contains(v.CacheName))
+            .GroupBy(v => v.CacheName)
+            .Select(g => new { Cache = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(g => g.Cache, g => g.Count, StringComparer.Ordinal, ct).ConfigureAwait(false);
 
-        var dtos = rows.Select(c =>
-        {
-            var snapshot = snapshots.GetValueOrDefault(c.RepoId);
-            var items = snapshot is null ? 0 : byType.GetValueOrDefault((snapshot.Id, c.Name));
-            return new DeliveryCacheDefinitionDto(
-                c.Id, c.RepoId, c.FlowName, c.RelativePath, c.Name, c.EntityType, c.Kind, c.Query, ParseJson(c.FieldsJson),
-                c.MakeCurrent, items, snapshot?.Version, snapshot?.CapturedUtc, c.FirstSeenUtc, c.LastSeenUtc);
-        }).ToList();
-        return TypedResults.Ok<IReadOnlyList<DeliveryCacheDefinitionDto>>(dtos);
+        var caches = definitions
+            .GroupBy(d => (d.RepoId, d.CacheName))
+            .Select(group =>
+            {
+                var first = group.First();
+                var pipeline = pipelines.FirstOrDefault(p => p.RepoId == first.RepoId && p.Name == first.CacheName);
+                var current = currentRows.FirstOrDefault(v => v.CacheName == first.CacheName) is { } row ? CatalogCacheStore.Info(row) : null;
+                var held = current?.Types.ToDictionary(t => t.Name, t => t.Items, StringComparer.Ordinal) ?? new Dictionary<string, long>(StringComparer.Ordinal);
+                var refreshedBy = pipeline is null
+                    ? []
+                    : memberships
+                        .Where(m => m.PipelineId == pipeline.Id)
+                        .Join(schedules, m => m.ScheduleId, s => s.Id, (_, s) => s)
+                        .OrderBy(s => s.Name, StringComparer.Ordinal)
+                        .ToList();
+                return new DeliveryCacheDto(
+                    first.CacheName, first.RepoId, repoNames.GetValueOrDefault(first.RepoId, string.Empty), first.RelativePath, pipeline?.Id,
+                    pipeline?.SourceServer, first.MakeCurrent,
+                    group.Select(d => new DeliveryCacheTypeDto(d.Name, d.EntityType, d.Kind, d.Query, ParseJson(d.FieldsJson), d.OnChange, held.GetValueOrDefault(d.Name))).ToList(),
+                    refreshedBy, current is null ? null : ToVersionDto(current), versionCounts.GetValueOrDefault(first.CacheName));
+            })
+            .ToList();
+        return TypedResults.Ok<IReadOnlyList<DeliveryCacheDto>>(caches);
     }
 
     /// <summary>
-    /// The cached records themselves, filtered by type and searched over every value they hold, so an operator can
-    /// answer "is this unit cached, and under which id" without opening a snapshot file. The listing is always
-    /// scoped to exactly one snapshot version per repository: <paramref name="version"/> names it, and without one
-    /// it is the current version, the one <c>pinned</c> resolves to. Scoping it is not a filter but a correctness
-    /// requirement, since the catalog carries several versions and their items are otherwise indistinguishable.
+    /// The cached records of one cache, filtered by type and searched over every value they hold, so an operator can answer
+    /// "is this unit cached, and under which id". The listing reads exactly one version: <paramref name="version"/> names it,
+    /// and without one it is the cache's current version, the one delivery flows render against.
     /// </summary>
-    private static async Task<Ok<PagedResult<DeliveryCachedItemDto>>> ListCachedItemsAsync(
-        Guid? repoId, string? type, string? search, string? version, int? page, int? pageSize, CatalogDbContext db, CancellationToken ct)
+    private static async Task<Results<Ok<PagedResult<DeliveryCachedItemDto>>, ProblemHttpResult>> ListCachedItemsAsync(
+        string? cache, string? type, string? search, string? version, int? page, int? pageSize, CatalogDbContext db, CancellationToken ct)
     {
-        var (p, size) = PageRequest.Normalize(page, pageSize);
-        var snapshots = await CacheVersions.ResolveAsync(db, repoId, version, ct).ConfigureAwait(false);
-        if (snapshots.Count == 0)
+        if (string.IsNullOrWhiteSpace(cache))
         {
-            return TypedResults.Ok(new PagedResult<DeliveryCachedItemDto>([], p, size, 0));
+            return NoCacheNamed();
         }
 
-        var labels = snapshots.ToDictionary(x => x.Id, x => x.Version);
-        var ids = labels.Keys.ToList();
-        var query = db.DeliverySnapshotItems.AsNoTracking().Where(i => ids.Contains(i.SnapshotId));
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        var name = cache.Trim();
+        var resolved = await CacheVersions.ResolveAsync(db, name, version, ct).ConfigureAwait(false);
+        if (resolved is null)
+        {
+            return string.IsNullOrWhiteSpace(version)
+                ? TypedResults.Ok(new PagedResult<DeliveryCachedItemDto>([], p, size, 0))
+                : UnknownCacheVersion(name, version.Trim());
+        }
+
+        var query = CacheVersions.ItemsAt(db, name, resolved.Sequence);
         if (!string.IsNullOrWhiteSpace(type))
         {
             var t = type.Trim();
@@ -756,44 +768,52 @@ public static class DeliveryEndpoints
             .Skip((p - 1) * size).Take(size)
             .ToListAsync(ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<DeliveryCachedItemDto>(
-            items.Select(i => new DeliveryCachedItemDto(
-                i.ItemId, i.SnapshotId, labels.GetValueOrDefault(i.SnapshotId, string.Empty), i.TypeName, i.EntityType, i.RecordId,
-                ParseJson(i.FieldsJson))).ToList(),
+            items.Select(i => new DeliveryCachedItemDto(i.ItemId, name, resolved.Version, i.TypeName, i.EntityType, i.RecordId, ParseJson(i.FieldsJson))).ToList(),
             p, size, total));
     }
 
-    /// <summary>
-    /// The reference snapshot versions of the cache, newest capture first: what the version picker offers, with
-    /// whether the catalog still carries each version's items and how many it holds.
-    /// </summary>
-    private static async Task<Ok<IReadOnlyList<DeliveryCacheVersionDto>>> ListCacheVersionsAsync(
-        Guid? repoId, CatalogDbContext db, CancellationToken ct)
+    /// <summary>The versions of one cache, newest first, each with the run that captured it: what the version picker offers.</summary>
+    private static async Task<Results<Ok<IReadOnlyList<DeliveryCacheVersionDto>>, ProblemHttpResult>> ListCacheVersionsAsync(
+        string? cache, CatalogDbContext db, CancellationToken ct)
     {
-        var versions = await CacheVersions.ListAsync(db, repoId, ct).ConfigureAwait(false);
-        var names = await RepoNamesAsync(db, versions.Select(v => v.RepoId), ct).ConfigureAwait(false);
-        return TypedResults.Ok<IReadOnlyList<DeliveryCacheVersionDto>>(versions.Select(v => ToVersionDto(v, names)).ToList());
+        if (string.IsNullOrWhiteSpace(cache))
+        {
+            return NoCacheNamed();
+        }
+
+        var versions = await CacheVersions.ListAsync(db, cache.Trim(), ct).ConfigureAwait(false);
+        return TypedResults.Ok<IReadOnlyList<DeliveryCacheVersionDto>>(versions.Select(ToVersionDto).ToList());
     }
 
     /// <summary>
-    /// The cache's version history, newest capture first: each version with the version of the same repository captured
-    /// before it and, when the catalog carries both, how many records it changed, added and removed. Naming a
-    /// <paramref name="type"/> narrows the counts to that cached type, so the versions that changed it can be told apart.
+    /// One cache's history, newest first: each version with the version captured before it and how many records it changed,
+    /// added and removed. Naming a <paramref name="type"/> narrows the counts to that type, so the versions that changed it
+    /// can be told apart.
     /// </summary>
-    private static async Task<Ok<IReadOnlyList<DeliveryCacheHistoryEntryDto>>> ListCacheHistoryAsync(
-        Guid? repoId, string? type, CatalogDbContext db, CancellationToken ct)
+    private static async Task<Results<Ok<IReadOnlyList<DeliveryCacheHistoryEntryDto>>, ProblemHttpResult>> ListCacheHistoryAsync(
+        string? cache, string? type, CatalogDbContext db, CancellationToken ct)
     {
-        var history = await CacheVersions.HistoryAsync(db, repoId, string.IsNullOrWhiteSpace(type) ? null : type.Trim(), ct).ConfigureAwait(false);
-        var names = await RepoNamesAsync(db, history.Select(h => h.Version.RepoId), ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(cache))
+        {
+            return NoCacheNamed();
+        }
+
+        var history = await CacheVersions.HistoryAsync(db, cache.Trim(), string.IsNullOrWhiteSpace(type) ? null : type.Trim(), ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryCacheHistoryEntryDto>>(history
-            .Select(h => new DeliveryCacheHistoryEntryDto(
-                ToVersionDto(h.Version, names), h.Previous?.Version, h.Changes is not null, h.Changes?.Changed, h.Changes?.Added, h.Changes?.Removed))
+            .Select(h => new DeliveryCacheHistoryEntryDto(ToVersionDto(h.Version), h.Before, h.Changes.Changed, h.Changes.Added, h.Changes.Removed))
             .ToList());
     }
 
-    private static DeliveryCacheVersionDto ToVersionDto(CacheVersionInfo version, Dictionary<Guid, string> repoNames)
+    private static DeliveryCacheVersionDto ToVersionDto(CacheVersionInfo version)
         => new(
-            version.RepoId, repoNames.GetValueOrDefault(version.RepoId, string.Empty), version.Version, version.CapturedUtc, version.Current,
-            version.Carried, version.Items);
+            version.CacheName, version.Version, version.Sequence, version.CapturedUtc, version.Current, version.PreviousVersion, version.RunId,
+            version.CapturedBy, version.Origin, version.Items, version.Types.Select(t => new DeliveryCacheVersionTypeDto(t.Name, t.EntityType, t.Items)).ToList());
+
+    private static ProblemHttpResult NoCacheNamed()
+        => TypedResults.Problem(title: "No cache", detail: "Name the cache to read with 'cache': the name of its cache flow.", statusCode: StatusCodes.Status400BadRequest);
+
+    private static ProblemHttpResult UnknownCacheVersion(string cache, string version)
+        => TypedResults.Problem(title: "Unknown version", detail: $"Cache '{cache}' holds no version '{version}'.", statusCode: StatusCodes.Status404NotFound);
 
     /// <summary>The names of the repositories a cache answer mentions, by id.</summary>
     private static async Task<Dictionary<Guid, string>> RepoNamesAsync(CatalogDbContext db, IEnumerable<Guid> repoIds, CancellationToken ct)
@@ -810,15 +830,19 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>
-    /// What changed in the cache between two snapshot versions: per type, the records whose captured values moved, the
-    /// records the later version added and the ones it no longer holds, a page at a time. <paramref name="to"/> defaults
-    /// to each repository's current version. A repository lacking a version, or whose records of it the catalog no longer
-    /// carries, is reported as a gap rather than compared as empty.
+    /// What changed in one cache between two versions: per type, the records whose captured values moved, the records the
+    /// later version added and the ones it no longer holds, a page at a time. <paramref name="to"/> defaults to the cache's
+    /// current version.
     /// </summary>
     private static async Task<Results<Ok<DeliveryCacheDiffDto>, ProblemHttpResult>> CompareCacheVersionsAsync(
-        string? from, string? to, Guid? repoId, string? type, string? change, string? search, int? page, int? pageSize,
+        string? cache, string? from, string? to, string? type, string? change, string? search, int? page, int? pageSize,
         CatalogDbContext db, CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(cache))
+        {
+            return NoCacheNamed();
+        }
+
         if (string.IsNullOrWhiteSpace(from))
         {
             return TypedResults.Problem(
@@ -839,10 +863,9 @@ public static class DeliveryEndpoints
         }
 
         var (p, size) = PageRequest.Normalize(page, pageSize);
-        var query = new CacheComparisonQuery(from.Trim())
+        var query = new CacheComparisonQuery(cache.Trim(), from.Trim())
         {
             ToVersion = string.IsNullOrWhiteSpace(to) ? null : to.Trim(),
-            RepoId = repoId,
             Type = string.IsNullOrWhiteSpace(type) ? null : type.Trim(),
             Change = kind,
             Search = string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
@@ -852,19 +875,17 @@ public static class DeliveryEndpoints
         var diff = await CacheVersions.CompareAsync(db, query, ct).ConfigureAwait(false);
         if (diff is null)
         {
-            var named = query.ToVersion is null ? $"'{query.FromVersion}'" : $"'{query.FromVersion}' or '{query.ToVersion}'";
+            var named = query.ToVersion is null ? $"'{query.FromVersion}' (or has no current version)" : $"'{query.FromVersion}' or '{query.ToVersion}'";
             return TypedResults.Problem(
-                title: "Unknown version", detail: $"No repository in scope holds cache version {named}.", statusCode: StatusCodes.Status404NotFound);
+                title: "Unknown version", detail: $"Cache '{query.Cache}' holds no version {named}.", statusCode: StatusCodes.Status404NotFound);
         }
 
-        var names = await RepoNamesAsync(db, diff.Gaps.Select(g => g.RepoId), ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryCacheDiffDto(
-            diff.FromVersion, diff.ToVersion, diff.Changed, diff.Added, diff.Removed,
+            diff.Cache, diff.FromVersion, diff.ToVersion, diff.Changed, diff.Added, diff.Removed,
             diff.Types.Select(t => new DeliveryCacheDiffTypeDto(t.TypeName, t.Changed, t.Added, t.Removed)).ToList(),
-            diff.Gaps.Select(g => new DeliveryCacheDiffGapDto(g.RepoId, names.GetValueOrDefault(g.RepoId, string.Empty), g.Reason)).ToList(),
             new PagedResult<DeliveryCacheDiffItemDto>(
                 diff.Items.Select(i => new DeliveryCacheDiffItemDto(
-                    i.RepoId, i.TypeName, i.EntityType, i.RecordId, i.Change.ToString().ToLowerInvariant(),
+                    i.TypeName, i.EntityType, i.RecordId, i.Change.ToString().ToLowerInvariant(),
                     i.BeforeJson is null ? null : ParseJson(i.BeforeJson),
                     i.AfterJson is null ? null : ParseJson(i.AfterJson),
                     i.ChangedFields)).ToList(),
@@ -919,7 +940,7 @@ public static class DeliveryEndpoints
 
         var uses = await ledger.ListCacheSetAsync(setId, ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryCacheUseDto>>(uses
-            .Select(u => new DeliveryCacheUseDto(u.TypeName, u.ItemId, u.Path, u.Kind.ToString().ToLowerInvariant(), u.ValueText))
+            .Select(u => new DeliveryCacheUseDto(u.CacheName, u.TypeName, u.ItemId, u.Path, u.Kind.ToString().ToLowerInvariant(), u.ValueText))
             .ToList());
     }
 
@@ -1809,12 +1830,9 @@ public static class DeliveryEndpoints
         m.FirstSeenUtc, m.LastSeenUtc);
 
     private static DeliveryUpdateTagDto ToDto(UpdateTag t) => new(
-        t.TagId, t.Kind, t.TypeName, t.ItemId, t.Path, t.Change, t.OldValue, t.NewValue, t.FromVersion, t.ToVersion, t.Mode,
+        t.TagId, t.Kind, t.CacheName, t.TypeName, t.ItemId, t.Path, t.Change, t.OldValue, t.NewValue, t.FromVersion, t.ToVersion, t.Mode,
         t.Status, t.Describe(), t.AffectedRecords, t.Processed, t.Remaining, t.DetectedUtc, t.DecidedUtc, t.DecidedBy,
         t.StartedUtc, t.CompletedUtc);
-
-    private static DeliverySnapshotDto ToDto(DeliverySnapshot s) => new(
-        s.Id, s.RepoId, s.Kind, s.Name, s.Version, s.CapturedUtc, s.Current, s.RelativePath, ParseJson(s.SummaryJson), s.FirstSeenUtc, s.LastSeenUtc);
 
     private static JsonElement? ParseJsonOrNull(string? json)
     {

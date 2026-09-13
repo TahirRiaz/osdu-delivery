@@ -338,7 +338,9 @@ test.describe.serial("templates and the mapping builder", () => {
 
     await adminPage.getByTestId("mapping-builder-repo").click();
     await adminPage.getByRole("option").filter({ hasText: "e2e-repo" }).first().click();
-    await expect(adminPage.getByTestId("mapping-builder-repo-cache")).toContainText(/holds \d+ types?/, { timeout: 15_000 });
+    // The repository's delivery flow names the sample cache, so the builder reads it without being told.
+    await expect(adminPage.getByTestId("mapping-builder-cache")).toContainText("osdu-reference-cache", { timeout: 15_000 });
+    await expect(adminPage.getByTestId("mapping-builder-cache-note")).toContainText(/holds \d+ types? at version /, { timeout: 15_000 });
 
     await adminPage.getByTestId("mapping-builder-template").click();
     await adminPage.getByRole("option").filter({ hasText: WELLLOG_KIND }).first().click();
@@ -364,7 +366,7 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(adminPage.getByTestId("mapping-builder-key-chip-log_id")).toBeVisible();
   });
 
-  test("a synced mapping opens in the builder and passes the check against the repository's cache", async ({ adminPage }) => {
+  test("a synced mapping opens in the builder and passes the check against the cache its flow reads", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-documents").click();
     await expect(adminPage.getByTestId("page-delivery-documents")).toBeVisible();
     const row = adminPage.getByTestId("delivery-mappings-table").getByTestId("table-row").filter({ hasText: "WellLog@1.4.0" }).first();
@@ -377,7 +379,8 @@ test.describe.serial("templates and the mapping builder", () => {
     // The record shape: the renderer's layout with placeholders, and the partition filled into the id once it is given.
     await detail.getByTestId("delivery-mapping-tab-shape").click();
     const shape = detail.getByTestId("delivery-mapping-shape-json");
-    await expect(shape).toContainText("dataset.source_project>", { timeout: 15_000 });
+    // The editor draws only the lines in view, so the check reads the id on the first lines rather than a deeper field.
+    await expect(shape).toContainText("<delivery key from recall", { timeout: 15_000 });
     await detail.getByTestId("delivery-mapping-shape-parameter-dataPartition").fill("opendes");
     await expect(shape).toContainText("opendes:work-product-component--WellLog:", { timeout: 15_000 });
 
@@ -385,7 +388,7 @@ test.describe.serial("templates and the mapping builder", () => {
 
     await expect(adminPage.getByTestId("page-delivery-mapping-builder")).toBeVisible();
     await expect(adminPage.getByTestId("mapping-builder-opened-from")).toContainText("mappings/WellLog@1.4.0.yaml", { timeout: 30_000 });
-    // The sample mapping renders its fixtures against the synced cache exactly, so it loads, passes and can be proposed.
+    // The sample mapping renders its fixtures against the imported cache exactly, so it loads, passes and can be proposed.
     await expect(adminPage.getByTestId("mapping-builder-valid")).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("mapping-builder-propose")).toBeEnabled();
   });

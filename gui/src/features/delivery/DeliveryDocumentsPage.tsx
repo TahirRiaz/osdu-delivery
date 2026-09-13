@@ -9,7 +9,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { isApiError } from "../../api/client";
-import { deliveryApi, type DeliveryMapping, type DeliverySnapshot } from "../../api/delivery";
+import { deliveryApi, type DeliveryMapping } from "../../api/delivery";
 import { repoApi } from "../../api/endpoints";
 import { CodeView } from "../../components/CodeView";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -97,31 +97,7 @@ const mappingColumns: Column<DeliveryMapping>[] = [
   { id: "seen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },
 ];
 
-const snapshotColumns: Column<DeliverySnapshot>[] = [
-  { id: "name", header: "Name", fill: true, floor: 140, render: (row) => <TruncatedText text={row.name} mono maxWidth={1200} /> },
-  { id: "version", header: "Version", render: (row) => <span className="font-mono text-[12px]">{row.version}</span> },
-  {
-    id: "current",
-    header: "",
-    render: (row) => (row.current ? <Badge variant="secondary" className="bg-success/15 text-success">current</Badge> : null),
-  },
-  { id: "captured", header: "Captured", render: (row) => <RelativeTime value={row.capturedUtc} absolute /> },
-  {
-    id: "summary",
-    header: "Contents",
-    render: (row) => (
-      <span>
-        {`${summaryText(row.summary, "items")} item(s)`}
-        <span className="@max-3xl/table:sr-only">
-          {` in ${Array.isArray(row.summary.types) ? row.summary.types.length : 0} type(s)`}
-        </span>
-      </span>
-    ),
-  },
-  { id: "path", header: "Path", render: (row) => <GlyphRef icon={FileCode} title="Path" body={row.relativePath} mono /> },
-];
-
-/** The mapping documents the synced repositories hold, and the reference snapshots of their cache: what every delivery flow renders with. */
+/** The mapping documents the synced repositories hold: what every delivery flow renders with. The caches they read are on the OSDU cache page. */
 export default function DeliveryDocumentsPage() {
   const [repoFilter, setRepoFilter] = useLocalStorageState("sqlflow.filters.delivery-documents.repo", ALL);
   const [selected, setSelected] = useState<string | null>(null);
@@ -129,7 +105,6 @@ export default function DeliveryDocumentsPage() {
   const repos = useQuery({ queryKey: ["repos", "all-for-delivery-documents"], queryFn: () => repoApi.list({ page: 1, pageSize: 200 }) });
   const repoId = repoFilter === ALL ? undefined : repoFilter;
   const mappings = useQuery({ queryKey: ["delivery", "mappings", repoId], queryFn: () => deliveryApi.mappings(repoId) });
-  const snapshots = useQuery({ queryKey: ["delivery", "snapshots", repoId, "references"], queryFn: () => deliveryApi.snapshots(repoId, "references") });
   const mapping = useQuery({
     queryKey: ["delivery", "mapping", selected],
     queryFn: () => deliveryApi.mapping(selected!),
@@ -143,7 +118,7 @@ export default function DeliveryDocumentsPage() {
     <Page data-testid="page-delivery-documents">
       <PageHeader
         title="Mappings"
-        subtitle="The mapping documents the repositories hold, and the reference snapshots of their cache, as the last sync found them."
+        subtitle="The mapping documents the repositories hold, as the last sync found them. The caches mappings read are on the OSDU cache page."
         actions={(
           <Button asChild size="sm" data-testid="delivery-documents-new-mapping">
             <RouterLink to="/delivery/mappings/build">
@@ -162,33 +137,17 @@ export default function DeliveryDocumentsPage() {
           </SelectContent>
         </Select>
       </FilterBar>
-      <Tabs defaultValue="mappings">
-        <TabsList data-testid="delivery-documents-tabs">
-          <TabsTrigger value="mappings" data-testid="delivery-documents-tab-mappings">Mappings</TabsTrigger>
-          <TabsTrigger value="snapshots" data-testid="delivery-documents-tab-snapshots">Snapshots</TabsTrigger>
-        </TabsList>
-        <TabsContent value="mappings" className="flex flex-col gap-3">
-          {mappings.isError && <LoadError error={mappings.error} testId="delivery-mappings-error" />}
-          <DataTable
-            columns={mappingColumns}
-            rows={mappings.data}
-            rowKey={(row) => row.id}
-            onRowClick={(row) => setSelected(row.id)}
-            emptyMessage="No mapping documents synced yet. A mapping is a YAML file with documentType: mapping under a repository's mappings directory, and the Mapping builder writes one."
-            data-testid="delivery-mappings-table"
-          />
-        </TabsContent>
-        <TabsContent value="snapshots" className="flex flex-col gap-3">
-          {snapshots.isError && <LoadError error={snapshots.error} testId="delivery-snapshots-error" />}
-          <DataTable
-            columns={snapshotColumns}
-            rows={snapshots.data}
-            rowKey={(row) => row.id}
-            emptyMessage="No reference snapshots synced yet. Capture them with sqlflow snapshot and commit the snapshots directory."
-            data-testid="delivery-snapshots-table"
-          />
-        </TabsContent>
-      </Tabs>
+      <div className="flex flex-col gap-3">
+        {mappings.isError && <LoadError error={mappings.error} testId="delivery-mappings-error" />}
+        <DataTable
+          columns={mappingColumns}
+          rows={mappings.data}
+          rowKey={(row) => row.id}
+          onRowClick={(row) => setSelected(row.id)}
+          emptyMessage="No mapping documents synced yet. A mapping is a YAML file with documentType: mapping under a repository's mappings directory, and the Mapping builder writes one."
+          data-testid="delivery-mappings-table"
+        />
+      </div>
 
       <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) { setSelected(null); } }}>
         <SheetContent className="w-full gap-0 sm:max-w-5xl" data-testid="delivery-mapping-detail">

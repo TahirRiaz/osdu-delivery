@@ -61,43 +61,15 @@ function FieldPairs({ fields }: { fields: Record<string, unknown> }) {
   );
 }
 
-/** A version as the picker lists it, once per label: the same capture across repositories is one choice. */
-interface VersionOption {
-  version: string;
-  capturedUtc: string | null;
-  current: boolean;
-  carried: boolean;
-}
-
-function versionOptions(versions: DeliveryCacheVersion[]): VersionOption[] {
-  const byLabel = new Map<string, VersionOption>();
-  for (const version of versions) {
-    const known = byLabel.get(version.version);
-    if (known === undefined) {
-      byLabel.set(version.version, {
-        version: version.version, capturedUtc: version.capturedUtc, current: version.current, carried: version.carried,
-      });
-      continue;
-    }
-
-    known.current = known.current || version.current;
-    known.carried = known.carried || version.carried;
-    known.capturedUtc = known.capturedUtc ?? version.capturedUtc;
-  }
-
-  return [...byLabel.values()];
-}
-
-/** The version picker: the current version by default, or any carried version by label, with when it was captured. */
+/** The version picker: the current version by default, or any version of the cache by label, with when it was captured. */
 export function CacheVersionPicker({ versions, value, onChange, className }: {
   versions: DeliveryCacheVersion[];
   value: string;
   onChange: (version: string) => void;
   className?: string;
 }) {
-  const options = useMemo(() => versionOptions(versions), [versions]);
   return (
-    <Select value={value} onValueChange={onChange} disabled={options.length === 0}>
+    <Select value={value} onValueChange={onChange} disabled={versions.length === 0}>
       <SelectTrigger
         size="sm"
         // The trigger centres its text as any button does; a picker reads left to right like the search beside it.
@@ -111,14 +83,11 @@ export function CacheVersionPicker({ versions, value, onChange, className }: {
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={CURRENT}>Current version</SelectItem>
-        {options.map((option) => (
-          <SelectItem key={option.version} value={option.version} disabled={!option.carried}>
+        {versions.map((option) => (
+          <SelectItem key={option.version} value={option.version}>
             <span className="font-mono text-[12px]">{option.version}</span>
-            <span className="text-[11px] text-muted-foreground">
-              {option.capturedUtc ? format(parseUtc(option.capturedUtc), "MMM d, HH:mm") : "never captured"}
-            </span>
+            <span className="text-[11px] text-muted-foreground">{format(parseUtc(option.capturedUtc), "MMM d, HH:mm")}</span>
             {option.current && <span className="text-[11px] font-medium text-primary">current</span>}
-            {!option.carried && <span className="text-[11px] text-muted-foreground">not carried</span>}
           </SelectItem>
         ))}
       </SelectContent>
@@ -127,12 +96,12 @@ export function CacheVersionPicker({ versions, value, onChange, className }: {
 }
 
 /**
- * The cached records at one snapshot version: the current one by default, or any carried version the page's picker
- * names. With a type in scope the table has one column per captured name, so a unit's code, name and id read down
- * the page; over every type the values fold into one column, since the names differ from type to type.
+ * The records of one cache at one version: the current one by default, or any version the page's picker names. With a
+ * type in scope the table has one column per captured name, so a unit's code, name and id read down the page; over every
+ * type the values fold into one column, since the names differ from type to type.
  */
-export function DeliveryCacheRecords({ repoId, type, fields, search, version, historic, onBackToCurrent }: {
-  repoId: string | undefined;
+export function DeliveryCacheRecords({ cache, type, fields, search, version, historic, onBackToCurrent }: {
+  cache: string;
   type: string | null;
   /** The names the type in scope caches its paths under, in declaration order; empty without a type in scope. */
   fields: string[];
@@ -187,8 +156,8 @@ export function DeliveryCacheRecords({ repoId, type, fields, search, version, hi
   const emptyMessage = search !== ""
     ? "No cached record holds a value, id or alias matching the search."
     : type !== null
-      ? `The version being read holds no ${type} records. Running the retrieval flow that declares the type captures them.`
-      : "No cached records yet. Running the retrieval flow that declares the cache captures them, and syncing the repository lists them here.";
+      ? `The version being read holds no ${type} records: the search the cache flow declares for the type matched none.`
+      : "No cached records yet. Refresh the cache to capture its first version.";
 
   return (
     <div className="flex flex-col gap-2">
@@ -216,9 +185,9 @@ export function DeliveryCacheRecords({ repoId, type, fields, search, version, hi
       )}
 
       <PagedTable
-        queryKey={["delivery", "cache", "items", repoId, type, search, version]}
+        queryKey={["delivery", "cache", "items", cache, type, search, version]}
         fetchPage={(page, pageSize) => deliveryApi.cachedItems({
-          page, pageSize, repoId, type: type ?? undefined, search: search || undefined, version,
+          page, pageSize, cache, type: type ?? undefined, search: search || undefined, version,
         })}
         columns={columns}
         rowKey={(row) => row.itemId}

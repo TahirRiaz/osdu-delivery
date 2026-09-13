@@ -273,7 +273,11 @@ public sealed class SubmissionIntake
                         // dependency, and the id is resolved once per distinct combination for the whole run.
                         var cacheSet = entry.Render!.CacheUsages.Count == 0
                             ? (long?)null
-                            : await _ledger.EnsureCacheSetAsync(entry.Render.CacheUsages, ct).ConfigureAwait(false);
+                            : await _ledger.EnsureCacheSetAsync(
+                                header.Mapping.Context.CacheName
+                                    ?? throw new DeliveryException($"Mapping {header.Mapping.Mapping.Reference} read cached values under a render context that names no cache; the render resolver names the cache whenever a mapping reads one."),
+                                entry.Render.CacheUsages,
+                                ct).ConfigureAwait(false);
                         pending.Add(PendingState(flow, submission, header.Mapping, entry, reference, nextBatch) with { CacheSetId = cacheSet });
                         if (pending.Count >= batchRecords)
                         {

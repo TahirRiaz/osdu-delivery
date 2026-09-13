@@ -8,10 +8,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlFlow.Catalog;
 using SqlFlow.Core.Storage;
+using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Protocols;
+using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
@@ -70,7 +72,45 @@ public sealed class SqliteCatalog : IDisposable
 
     public CatalogTemplateStore Templates(TimeProvider? time = null) => new(CreateDbContext, time);
 
+    public CatalogCacheStore Caches() => new(CreateDbContext);
+
     public void Dispose() => _connection.Dispose();
+}
+
+/// <summary>
+/// One version of one cache held in memory, as a render reads it. The engine suites share the sample cache through it, so
+/// no suite reads a database another suite is writing on the same SQLite connection; the catalog store itself is covered
+/// by its own suite.
+/// </summary>
+public sealed class FixedCacheStore : ICacheStore
+{
+    private readonly string _cache;
+    private readonly ReferenceSnapshot _snapshot;
+
+    public FixedCacheStore(string cache, ReferenceSnapshot snapshot)
+    {
+        _cache = cache;
+        _snapshot = snapshot;
+    }
+
+    public Task<string?> CurrentVersionAsync(string cache, CancellationToken ct = default)
+        => Task.FromResult(cache == _cache ? _snapshot.Version : null);
+
+    public Task<ReferenceSnapshot?> LoadAsync(string cache, string version, CancellationToken ct = default)
+        => Task.FromResult(cache == _cache && version == _snapshot.Version ? _snapshot : null);
+
+    public Task<IReadOnlyList<CacheVersionInfo>> ListVersionsAsync(string cache, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<CacheVersionInfo>>(cache == _cache
+            ?
+            [
+                new CacheVersionInfo(
+                    _cache, _snapshot.Version, 1, _snapshot.CapturedUtc.UtcDateTime, true, null, null, "tests", "sample files",
+                    _snapshot.Types.Sum(t => (long)t.Items.Count), _snapshot.Types.Select(t => new CacheVersionType(t.Name, t.EntityType, t.Items.Count)).ToList()),
+            ]
+            : []);
+
+    public Task<CacheVersionInfo> SaveAsync(string cache, ReferenceSnapshot snapshot, CacheCapture capture, bool makeCurrent, CancellationToken ct = default)
+        => throw new InvalidOperationException("The fixed sample cache is read-only; write versions through a catalog cache store.");
 }
 
 /// <summary>Records every delivery and replays configured outcomes.</summary>
@@ -261,27 +301,52 @@ public static class Samples
 
     public static string Mappings => Path.Combine(Root, "mappings");
 
-    public static string Snapshots => Path.Combine(Root, "snapshots");
-
     /// <summary>The bundled OSDU schemas the sample mappings pin, as a template import reads them.</summary>
     public static string TemplateFiles => Path.Combine(Root, "templates");
 
     public static string Flow => Path.Combine(Root, "flows", "recall-welllog.yaml");
 
+    /// <summary>The sample cache flow: what the sample cache holds.</summary>
+    public static string CacheFlow => Path.Combine(Root, "caches", "osdu-reference-cache.yaml");
+
+    /// <summary>The sample cache records, one file per cached type.</summary>
     public static string References => Path.Combine(Root, "references");
 
-    // One catalog holding the sample templates for the whole run: templates are immutable, and the store keeps every
-    // loaded version in memory, so after the warm-up a render never reaches the database behind it.
-    private static readonly Lazy<(SqliteCatalog Catalog, CatalogTemplateStore Store)> SampleCatalog = new(() =>
+    /// <summary>The name of the sample cache, which the sample delivery flow names under render.cache.</summary>
+    public const string SampleCacheName = "osdu-reference-cache";
+
+    /// <summary>When the sample cache records were captured: the version label the sample cache is imported under.</summary>
+    public static readonly DateTimeOffset SampleCacheCaptured = new(2026, 9, 8, 21, 27, 27, TimeSpan.Zero);
+
+    // One catalog holding the sample templates and the sample cache for the whole run: templates and cache versions are
+    // immutable, and after the warm-up a render never reaches the database behind them.
+    private static readonly Lazy<(SqliteCatalog Catalog, CatalogTemplateStore Store, ICacheStore Cache)> SampleCatalog = new(() =>
     {
         var catalog = new SqliteCatalog();
         var store = catalog.Templates();
         ImportSampleTemplatesAsync(store).GetAwaiter().GetResult();
-        return (catalog, store);
+        var version = ImportSampleCacheAsync(catalog.Caches()).GetAwaiter().GetResult();
+        return (catalog, store, new FixedCacheStore(SampleCacheName, version));
     });
 
     /// <summary>A template store holding the sample templates, shared by the engine tests.</summary>
     public static ITemplateStore SampleTemplates => SampleCatalog.Value.Store;
+
+    /// <summary>The sample cache at its one version, shared by the engine tests.</summary>
+    public static ICacheStore SampleCache => SampleCatalog.Value.Cache;
+
+    /// <summary>
+    /// Imports the sample cache records into <paramref name="store"/> as a version of the sample cache, checked against what
+    /// the sample cache flow declares, exactly as 'sqlflow cache import' writes them; returns the version as loaded back.
+    /// </summary>
+    public static async Task<ReferenceSnapshot> ImportSampleCacheAsync(ICacheStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
+        var builder = new SnapshotBuilder(store, flow.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());
+        var write = await builder.ImportDirectoryAsync(References, flow.Types, new CacheCapture(null, "tests", "sample files"), makeCurrent: true);
+        return (await store.LoadAsync(flow.Name, write.Snapshot.Version))!;
+    }
 
     /// <summary>Saves the sample templates into <paramref name="store"/> and loads each once, returning what was saved.</summary>
     public static async Task<IReadOnlyList<TemplateSaved>> ImportSampleTemplatesAsync(ITemplateStore store)
@@ -315,7 +380,7 @@ public static class Samples
     /// <summary>The platform file stores plus the delivery writers, exactly as the hosts register them.</summary>
     public static FileStoreRegistry Stores() => new([new LocalFileStore()], [new LocalFileWriter()], [new LocalFileReader()]);
 
-    public static EngineContext Engine(ILedger? ledger, TimeProvider? time = null, IProtocolFactory? protocols = null, ITemplateStore? templates = null)
+    public static EngineContext Engine(ILedger? ledger, TimeProvider? time = null, IProtocolFactory? protocols = null, ITemplateStore? templates = null, ICacheStore? cache = null)
     {
         var stores = Stores();
         var loader = new DeliveryDocumentLoader();
@@ -329,7 +394,8 @@ public static class Samples
             NullLoggerFactory.Instance,
             protocols ?? new DefaultProtocolFactory(new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance),
             CompositeDeliveryListener.Empty,
-            Templates: templates ?? SampleTemplates);
+            Templates: templates ?? SampleTemplates,
+            Cache: cache ?? SampleCache);
     }
 
     /// <summary>The sample flow with the network target replaced by a local placeholder (tests never call OSDU).</summary>
@@ -427,7 +493,8 @@ public static class TestSchema
     public static RenderContext Context(string mapping = "Thing@1.0.0") => new()
     {
         MappingReference = mapping,
-        ReferenceSnapshotVersion = "refs-1",
+        CacheName = "test-cache",
+        CacheVersion = "refs-1",
         SchemaSnapshotVersion = Build().Version,
         Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "dev" },
     };

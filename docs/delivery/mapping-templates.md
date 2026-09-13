@@ -296,15 +296,16 @@ Before any row is rendered (the preflight):
 
 The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I write the mapping?":
 
-1. Pick the repository the mapping will live in, and a saved template. A kind without a template is browsed, looked
-   at and saved on the Templates page first.
+1. Pick the repository the mapping will live in, a saved template, and the cache the mapping reads (the Cache picker
+   lists every cache a synced cache flow declares, and defaults to the cache the repository's delivery flow names under
+   `render.cache`). A kind without a template is browsed, looked at and saved on the Templates page first.
 2. The page lists every template variable with its type, requiredness, relationship and OSDU description.
-3. **Entries are prefilled from the cache.** Every variable that points to an entity type the repository's cache holds
+3. **Entries are prefilled from the cache.** Every variable that points to an entity type the picked cache holds
    gets a cache entry: `source: cache.<Type>.id` and a `findBy` on the type's first cached field. The person completes
    the incoming side.
 4. For each variable the person chooses dataset, repeater, cache or static, and adds modifiers, a condition and the
    required flag.
-5. The page shows the resulting YAML, checks it against the template and the repository's current cache, and either
+5. The page shows the resulting YAML, checks it against the template and the picked cache's current version, and either
    copies it or opens a pull request against the repository through the existing proposal path.
 
 An existing mapping opens in the builder with its entries filled in.
@@ -332,10 +333,11 @@ Records sent by hand, or by a source system through `POST /api/v1/delivery/submi
   `examples`, and the `constant`, `template`, `map`, `reference`, `lookup` and `deliveredReference` transforms.
   `replace`, `equals`, `split`, `date` and cache sources cover what the sample estate used.
 - Schema snapshots in the repository's snapshot store, and the `sqlflow snapshot <flow> schema` verb. Templates
-  replace them. Reference snapshots (the cache) stay where they are.
+  replace them.
 
 Rendering now needs the catalog, because templates live there. A CLI run without a catalog can still validate
-documents, and the reference cache capture is unchanged.
+documents. The reference snapshots, which this change left in the repository, have since gone the same way: a cache is
+defined by a cache flow and its versions live in the catalog ([documents.md](documents.md#cache-flow)).
 
 ## Implementation plan
 

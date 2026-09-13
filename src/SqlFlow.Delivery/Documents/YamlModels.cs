@@ -88,13 +88,13 @@ internal sealed class FlowRenderYaml
 {
     public string? Mapping { get; set; }
 
-    public string? References { get; set; }
+    public string? Cache { get; set; }
+
+    public string? CacheVersion { get; set; }
 
     public Dictionary<string, string>? Parameters { get; set; }
 
     public string? Mappings { get; set; }
-
-    public string? Snapshots { get; set; }
 }
 
 internal sealed class FlowChangeYaml
@@ -416,20 +416,45 @@ internal sealed class RetrievalYaml
 
     public RetrievalTargetYaml? Target { get; set; }
 
-    public RetrievalCacheYaml? Cache { get; set; }
+    public FlowReliabilityYaml? Reliability { get; set; }
+}
+
+internal sealed class CacheYaml
+{
+    public string? FlowType { get; set; }
+
+    public string? Name { get; set; }
+
+    public string? Description { get; set; }
+
+    public string? Batch { get; set; }
+
+    public object? Schedule { get; set; }
+
+    public object? Mode { get; set; }
+
+    public object? Lifecycle { get; set; }
+
+    public Dictionary<string, FlowParameterYaml>? Parameters { get; set; }
+
+    public CacheSourceYaml? Source { get; set; }
+
+    public bool? MakeCurrent { get; set; }
+
+    public string? OnChange { get; set; }
+
+    public List<CachedTypeYaml>? Types { get; set; }
 
     public FlowReliabilityYaml? Reliability { get; set; }
 }
 
-internal sealed class RetrievalCacheYaml
+internal sealed class CacheSourceYaml
 {
-    public List<CachedTypeYaml>? Types { get; set; }
+    public string? Endpoint { get; set; }
 
-    public bool? MakeCurrent { get; set; }
+    public TargetAuthYaml? Auth { get; set; }
 
-    public string? Snapshots { get; set; }
-
-    public string? OnChange { get; set; }
+    public Dictionary<string, string>? Headers { get; set; }
 }
 
 internal sealed class CachedTypeYaml

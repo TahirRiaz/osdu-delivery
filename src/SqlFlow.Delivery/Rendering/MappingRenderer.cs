@@ -82,7 +82,7 @@ public sealed class MappingRenderer
         var context = new RenderContext
         {
             MappingReference = mapping.Reference,
-            ReferenceSnapshotVersion = ReferenceSnapshot.Empty.Version,
+            CacheVersion = ReferenceSnapshot.Empty.Version,
             SchemaSnapshotVersion = schema.Version,
             Parameters = parameters,
         };

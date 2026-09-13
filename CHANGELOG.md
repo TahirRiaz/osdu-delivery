@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A cache is a flow of its own: `flowType: cache` declares the OSDU platform to search (`source`: endpoint, auth, and
+  headers with `data-partition-id`), the types to cache (each a `kind`, an optional `query`, the `fields` to keep as
+  bare paths or `path`/`as` pairs, and `onChange: approve | auto`), `makeCurrent`, a default `onChange`, `parameters`,
+  `reliability` and a `schedule`. The cache flow's name is the cache's identity. Its contents live only in the catalog
+  (`delivery.CacheVersion`, `delivery.CacheItem`): every version is kept, a record is stored once per run of versions
+  that held it unchanged (`FromSequence` to `ToSequence`), and a version's content hash is checked every time it is
+  loaded. Nothing writes cache data to a repository any more; the repository sync projects each cache flow's declared
+  types into `delivery.CacheDefinition` and ignores any snapshot folder. The sample estate's cache is
+  `samples/recall-welllog/caches/osdu-reference-cache.yaml`.
+- The `refresh` operation, a cache flow's default (`deliver` is taken as refresh; `plan` counts what each type's search
+  matches): it captures every declared type and writes a version, labelled from the capture instant
+  (`20260908T212727Z`) and holding exactly the declared types, only when the content differs from the current version.
+  A version records the run that captured it. Changed values that delivered records were built from are tagged as
+  before, waiting for approval under `approve` and going out on the next run under `auto`. A refresh takes no drop,
+  submission or record scope.
+- `sqlflow cache list <cache.yaml | name>` lists a cache's versions, and
+  `sqlflow cache import <cache.yaml> --from-dir <dir> [--no-current]` writes type files (`{Name}.json`, which must match the declared types, entity types and
+  captured names) as a version for work without OSDU. A cache is refreshed from OSDU with `sqlflow run <cache.yaml>`,
+  and `sqlflow check` prints the cache version a flow reads.
+- `GET /api/v1/delivery/caches` (optionally by `repoId`) describes every cache: the defining file and pipeline, the
+  endpoint, `makeCurrent`, the declared types, the schedules that refresh it, the current version and the version
+  count. `GET /cache/items`, `/cache/versions`, `/cache/history` and `/cache/diff` now require `cache=<name>`, and
+  update tags carry the cache. `GET /mapping-builder/caches` lists the caches for the mapping builder, whose draft,
+  compose, template preview and template detail take `cache` in place of `repoId`.
+- The OSDU cache page opens on a cache picker and the cache's definition: the file that defines it, View YAML, Refresh
+  now (the trigger dialog with the refresh operation), the endpoint, the schedules, the current version with who
+  captured it and its run, and the declared types with their kind, query, kept paths, `onChange` and record counts;
+  then the Records, Versions and Approvals tabs. A cache flow's pipeline page has a Cache versions tab, and the mapping
+  builder has a Cache picker defaulting to the cache the repository's delivery flow names.
 - A file too large to send through the control plane is written straight to storage:
   `POST /api/v1/delivery/dropoffs/reserve` writes the drop-off row, then hands out one write-only URL per file, and
   `POST /dropoffs/{id}/complete` closes it once they are written. Completion is decided by what storage holds, not by
@@ -67,19 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Delivery tab (a form for one record, or JSON for many) and a Records sent tab on the submission. Documented in
   [docs/delivery/submitting-records.md](docs/delivery/submitting-records.md).
 
-- A version picker on the OSDU cache page: the type counts and the cached records are read at one reference
-  snapshot version, the current one unless another is named, so the cache can be read as it stood at an earlier
-  capture. `GET /api/v1/delivery/cache/versions` lists the versions; `GET /cache` and `GET /cache/items` take
-  `version`. The repository sync now carries the records of the current version and the nine newest captures
-  behind it, dropping the records (never the snapshot row or its counts) of versions that fall out of that window.
-
 ### Fixed
-
-- The cached records list showed every snapshot version's records at once. Items were only ever written for the
-  current version but were never removed when a version stopped being current, and the listing was scoped by
-  repository and type but not by version, so a second capture would have shown each cached record once per version
-  with nothing to tell them apart and counted it as many. Every read of the cache read model is now scoped to one
-  version per repository.
 
 - Schedules carry the flow parameter values every fire supplies (`values:` in a flow's inline `schedule` block or a
   schedule library entry, `values` on `POST /api/v1/schedules`). Without them a flow that declares a required
@@ -132,8 +149,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   submissions, record history, the audit trail, mappings and snapshots, and the interventions (release,
   redeliver, verify, read back, delete, probe); the compute task read API under `/api/v1/compute/tasks`.
 - The GUI delivery pages: the delivery overview, the per-flow Delivery, Records and Submissions tabs, the record
-  page with its history and actions, the submission page, the audit trail, and the mappings and snapshots page.
-- The CLI verbs `sqlflow check` and `sqlflow snapshot`, and the delivery run options on `run` and `trigger`
+  page with its history and actions, the submission page, the audit trail, the mappings page and the OSDU cache page.
+- The CLI verbs `sqlflow check` and `sqlflow cache`, and the delivery run options on `run` and `trigger`
   (`--operation`, `--force`, `--set`, `--drop`, `--submission`, `--record`, `--publish-to`).
 - The sample estate `samples/recall-welllog`, the drop generator `tools/SampleDrop`, and the delivery test suite.
 - Runs record who requested them and the delivery counts they produced; the request body ceiling is an explicit

@@ -29,6 +29,11 @@ The estate is a git repository the control plane syncs (`.sqlflow/live-e2e/repo`
 reference snapshot captured from the same partition. Every flow authenticates with OAuth2 client credentials whose
 secret is the reference `${env:OSDU_CLIENT_SECRET}`.
 
+These live runs predate cache flows. At the time the cache was kept as reference snapshots in a store the delivery
+flows named, refreshed by the `e2e-cache-sync` retrieval flow, and this page records the runs as they happened. A
+cache is now defined by a cache flow (`flowType: cache`), captured by its `refresh` runs, and its versions live only in
+the catalog ([documents.md](documents.md#cache-flow)).
+
 | Flow | Kind and protocol | What it delivers |
 | --- | --- | --- |
 | `e2e-wellbore` | delivery, `osduRecord` | 2 `master-data--Wellbore` records |

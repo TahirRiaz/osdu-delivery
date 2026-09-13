@@ -81,8 +81,8 @@ a workflow run id. See [design.md](design.md) section 16.3.
   `protocolOptions.ddmsRoot: /api/os-wellbore-ddms` (the platform's ingress route for the DDMS, and the base the
   OSDU C# client uses); every DDMS default path is then taken under it, and the storage-owned calls resolve under
   the endpoint as they do for the other protocols. A path option the flow sets explicitly is used as written
-  either way. `ddmsRoot` must be a path starting with `/` and is refused on any other protocol. The distinction is
-  also why `sqlflow snapshot references` takes `--endpoint` to capture references from the platform.
+  either way. `ddmsRoot` must be a path starting with `/` and is refused on any other protocol. A cache flow declares
+  its own `source.endpoint`, the platform root its searches go to, so it never depends on a well log flow's endpoint.
 - Remove: `DELETE {deletePath}` is a logical deletion the DDMS can revert; `?purge=true` makes it physical. The
   DDMS has no operation on a record's versions (its only versions route is a GET listing), and versions belong to
   the storage service for every kind of record, so the history scope goes to storage. With `ddmsRoot` declared the

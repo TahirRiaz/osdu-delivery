@@ -144,6 +144,7 @@ public sealed class RunTriggerApiTests
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.ProvisionAsync(cs);
         await SampleEstate.SaveTemplatesAsync(cs);
+        await SampleEstate.SaveCacheAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var repoName = "cp_rt_" + suffix;

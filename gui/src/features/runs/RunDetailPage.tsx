@@ -209,6 +209,16 @@ function RunDetailContent({ runId }: { runId: string }) {
                 Records of this run
               </Button>
             )}
+            {run.flowKind === "cache" && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate(`/delivery/cache?cache=${encodeURIComponent(run.flowName)}`)}
+                data-testid="run-cache"
+              >
+                Open the cache
+              </Button>
+            )}
             {cancellable
               ? (
                 <Button
@@ -308,7 +318,11 @@ function RunDetailContent({ runId }: { runId: string }) {
       {run.resultJson !== null && (
         <Card className="gap-2 rounded-lg p-3" data-testid="run-result">
           <h2 className="text-[13px] font-medium">Outcome</h2>
-          <p className="text-[13px] text-muted-foreground">What the run reported when it finished: its counts, the submission it worked on, and how far it fanned out.</p>
+          <p className="text-[13px] text-muted-foreground">
+            {run.flowKind === "cache"
+              ? "What the refresh reported when it finished: the version it wrote (or that nothing changed), each type's record count and changes, and the delivered records those changes reach."
+              : "What the run reported when it finished: its counts, the submission it worked on, and how far it fanned out."}
+          </p>
           <CodeView value={prettyJson(run.resultJson)} language="json" height={220} data-testid="run-result-json" />
         </Card>
       )}
@@ -357,6 +371,7 @@ function RunDetailContent({ runId }: { runId: string }) {
           repoId={run.repoId}
           flowName={run.flowName}
           flowId={run.pipelineId}
+          flowKind={run.flowKind}
           initialParameters={{ ...(parameters ?? {}), operation: run.operation, force: run.force }}
           initialPool={run.targetPool}
         />

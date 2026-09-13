@@ -1,13 +1,19 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using SqlFlow.Catalog;
+using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine.Snapshots;
+using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
 /// The sample delivery estate (<c>samples/recall-welllog</c>) copied to a temp repository, for the platform tests
-/// that need a run to genuinely execute. The one production flow kind needs its mapping, its snapshots and a drop
-/// to render from, and the sample holds all three, so a test copies it rather than inventing a second estate that
-/// would drift from the real one. This mirrors what the GUI e2e fixture does, for the same reason.
+/// that need a run to genuinely execute. The one production flow kind needs its mapping and a drop to render from, which
+/// the sample holds, and the template and the cache it reads, which live in the catalog; a test copies the estate and
+/// saves those rather than inventing a second estate that would drift from the real one. This mirrors what the GUI e2e
+/// fixture does, for the same reason.
 /// </summary>
 internal static class SampleEstate
 {
@@ -29,7 +35,7 @@ internal static class SampleEstate
     ];
 
     /// <summary>The parts of the estate a run needs: the documents, what they render with, and the drop itself.</summary>
-    private static readonly string[] Parts = ["flows", "mappings", "snapshots", "references", "out"];
+    private static readonly string[] Parts = ["flows", "caches", "mappings", "references", "out"];
 
     /// <summary>
     /// Copies the estate into <paramref name="destination"/> and points the flow at the copied drop. The declared
@@ -66,6 +72,21 @@ internal static class SampleEstate
             var schema = TemplateSources.FromBundledJson(await File.ReadAllTextAsync(path), kind, DateTimeOffset.UtcNow, path);
             await store.SaveAsync(schema, "file " + file, "tests");
         }
+    }
+
+    /// <summary>
+    /// Writes the sample cache records into the catalog at <paramref name="connectionString"/> as a version of the sample
+    /// cache, checked against the sample cache flow, exactly as 'sqlflow cache import' does. The sample flow reads the
+    /// cache, and caches live in the catalog. A catalog that already holds the same content keeps its current version.
+    /// </summary>
+    public static async Task SaveCacheAsync(string connectionString)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        var root = Locate();
+        var flow = new DeliveryDocumentLoader().LoadCache(Path.Combine(root, "caches", "osdu-reference-cache.yaml"));
+        var store = new CatalogCacheStore(() => CatalogDatabase.Create(connectionString));
+        var builder = new SnapshotBuilder(store, flow.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
+        await builder.ImportDirectoryAsync(Path.Combine(root, "references"), flow.Types, new CacheCapture(null, "tests", "sample files"), makeCurrent: true);
     }
 
     /// <summary>

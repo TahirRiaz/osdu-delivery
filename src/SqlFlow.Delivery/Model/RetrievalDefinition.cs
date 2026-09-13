@@ -1,5 +1,3 @@
-using SqlFlow.Delivery.Snapshots;
-
 namespace SqlFlow.Delivery.Model;
 
 /// <summary>
@@ -30,12 +28,6 @@ public sealed record RetrievalDefinition
     public required RetrievalSource Source { get; init; }
 
     public required RetrievalTarget Target { get; init; }
-
-    /// <summary>
-    /// What the run caches for the mappings to resolve against, or null when the flow only lands files. A flow
-    /// that declares a cache refreshes those types in the reference snapshot store at the end of a retrieve run.
-    /// </summary>
-    public RetrievalCache? Cache { get; init; }
 
     public FlowReliability Reliability { get; init; } = new();
 
@@ -72,30 +64,6 @@ public sealed record RetrievalDefinition
     }
 
     private static bool IsReference(string value) => value.Contains("${", StringComparison.Ordinal);
-}
-
-/// <summary>
-/// The cache a retrieval flow maintains (design.md section 6.2): the reference and master-data types its mappings
-/// resolve against, captured from the same platform the flow retrieves from. Each type declares the paths to cache;
-/// whatever a path yields is kept as it is, a scalar, a set of values or a nested object. A retrieve run captures
-/// them in full and mints a new reference snapshot version, so a version always describes the whole cache.
-/// </summary>
-public sealed record RetrievalCache
-{
-    /// <summary>The types to cache; a flow with a cache section declares at least one.</summary>
-    public required IReadOnlyList<ReferenceTypeSpec> Types { get; init; }
-
-    /// <summary>Whether the minted version becomes the one a mapping's <c>pinned</c> reference setting resolves to.</summary>
-    public bool MakeCurrent { get; init; } = true;
-
-    /// <summary>The snapshot store to write to; null uses the repository layout's <c>snapshots</c> directory.</summary>
-    public string? SnapshotsDirectory { get; init; }
-
-    /// <summary>The default <c>onChange</c> for the types that do not state one.</summary>
-    public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Approve;
-
-    /// <summary>The capture spec form, which is what the snapshot engine and the CLI's spec file both run.</summary>
-    public ReferenceCaptureSpec ToCaptureSpec() => new() { Types = [.. Types] };
 }
 
 /// <summary>The OSDU side of a retrieval: the platform, the kinds and query, and how the index is paged.</summary>

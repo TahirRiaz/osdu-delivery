@@ -8,78 +8,19 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.Delivery.Catalog;
 
 /// <summary>
-/// A repository's cache as the catalog carries it, for the checks that run without a node: the cached types the
-/// repository's retrieval flows declare, and its current reference snapshot rebuilt from the catalog's copy of the items.
-/// Snapshot versions never change, so the most recently read ones are kept in memory.
+/// The types a cache holds as the catalog describes them, for the checks and the mapping builder that run without a node:
+/// what the cache flow declares, with the names its fields are cached under, then any type the current version holds that
+/// the flow no longer declares.
 /// </summary>
-public sealed class CatalogCacheReader
+public static class CatalogCacheReader
 {
-    /// <summary>How many snapshot versions stay in memory.</summary>
-    private const int RetainedSnapshots = 4;
-
-    private readonly Lock _gate = new();
-    private readonly LinkedList<(Guid SnapshotId, ReferenceSnapshot Snapshot)> _recent = new();
-
-    /// <summary>The repository's current reference snapshot, or <see cref="ReferenceSnapshot.Empty"/> when the catalog carries none.</summary>
-    public async Task<ReferenceSnapshot> CurrentAsync(CatalogDbContext db, Guid repoId, CancellationToken ct = default)
+    /// <summary>The cached types of <paramref name="cache"/>, declared ones first in name order.</summary>
+    public static async Task<IReadOnlyList<CachedTypeInfo>> TypesAsync(CatalogDbContext db, string cache, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
-        var resolved = await CacheVersions.ResolveAsync(db, repoId, version: null, ct).ConfigureAwait(false);
-        if (resolved.Count == 0)
-        {
-            return ReferenceSnapshot.Empty;
-        }
-
-        var snapshot = resolved[0];
-
-        lock (_gate)
-        {
-            var node = _recent.First;
-            while (node is not null)
-            {
-                if (node.Value.SnapshotId == snapshot.Id)
-                {
-                    _recent.Remove(node);
-                    _recent.AddFirst(node);
-                    return node.Value.Snapshot;
-                }
-
-                node = node.Next;
-            }
-        }
-
-        var rows = await db.DeliverySnapshotItems.AsNoTracking()
-            .Where(i => i.SnapshotId == snapshot.Id)
-            .Select(i => new { i.TypeName, i.EntityType, i.RecordId, i.FieldsJson })
-            .ToListAsync(ct).ConfigureAwait(false);
-        var types = rows
-            .GroupBy(r => (r.TypeName, r.EntityType))
-            .Select(g => new ReferenceType(g.Key.TypeName, g.Key.EntityType, g.Select(r => new ReferenceItem(r.RecordId, Fields(r.FieldsJson)))))
-            .ToList();
-        var captured = snapshot.CapturedUtc is { } at ? new DateTimeOffset(DateTime.SpecifyKind(at, DateTimeKind.Utc)) : DateTimeOffset.UnixEpoch;
-        var loaded = new ReferenceSnapshot(snapshot.Version, captured, types);
-
-        lock (_gate)
-        {
-            _recent.AddFirst((snapshot.Id, loaded));
-            while (_recent.Count > RetainedSnapshots)
-            {
-                _recent.RemoveLast();
-            }
-        }
-
-        return loaded;
-    }
-
-    /// <summary>
-    /// The cached types of a repository: what its retrieval flows declare, with the names their fields are cached under,
-    /// then any type the current snapshot holds that no flow declares any more.
-    /// </summary>
-    public static async Task<IReadOnlyList<CachedTypeInfo>> TypesAsync(CatalogDbContext db, Guid repoId, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(db);
+        ArgumentException.ThrowIfNullOrWhiteSpace(cache);
         var definitions = await db.DeliveryCacheDefinitions.AsNoTracking()
-            .Where(c => c.RepoId == repoId)
+            .Where(c => c.CacheName == cache)
             .OrderBy(c => c.Name)
             .Select(c => new { c.Name, c.EntityType, c.FieldsJson })
             .ToListAsync(ct).ConfigureAwait(false);
@@ -94,20 +35,16 @@ public sealed class CatalogCacheReader
             types.Add(new CachedTypeInfo(definition.Name, definition.EntityType, DeclaredFields(definition.FieldsJson)));
         }
 
-        var resolved = await CacheVersions.ResolveAsync(db, repoId, version: null, ct).ConfigureAwait(false);
-        if (resolved.Count > 0)
+        var current = await db.DeliveryCacheVersions.AsNoTracking()
+            .Where(v => v.CacheName == cache && v.Current)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (current is not null)
         {
-            var snapshot = resolved[0];
-            var held = await db.DeliverySnapshotItems.AsNoTracking()
-                .Where(i => i.SnapshotId == snapshot.Id)
-                .Select(i => new { i.TypeName, i.EntityType })
-                .Distinct()
-                .ToListAsync(ct).ConfigureAwait(false);
-            foreach (var type in held.OrderBy(t => t.TypeName, StringComparer.Ordinal))
+            foreach (var held in CatalogCacheStore.Info(current).Types.OrderBy(t => t.Name, StringComparer.Ordinal))
             {
-                if (!types.Any(t => string.Equals(t.Name, type.TypeName, StringComparison.Ordinal)))
+                if (!types.Any(t => string.Equals(t.Name, held.Name, StringComparison.Ordinal)))
                 {
-                    types.Add(new CachedTypeInfo(type.TypeName, type.EntityType, []));
+                    types.Add(new CachedTypeInfo(held.Name, held.EntityType, []));
                 }
             }
         }
@@ -133,29 +70,5 @@ public sealed class CatalogCacheReader
         {
             throw new DeliveryException($"A cache definition's fields are not valid JSON ({ex.Message}); re-sync the repository.", ex);
         }
-    }
-
-    private static Dictionary<string, ReferenceValue> Fields(string json)
-    {
-        var fields = new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase);
-        JsonObject? node;
-        try
-        {
-            node = JsonNode.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json) as JsonObject;
-        }
-        catch (JsonException ex)
-        {
-            throw new DeliveryException($"A cached record's values are not valid JSON ({ex.Message}); re-sync the repository.", ex);
-        }
-
-        foreach (var (name, value) in node ?? [])
-        {
-            if (value is not null)
-            {
-                fields[name] = ReferenceValue.From(value.DeepClone());
-            }
-        }
-
-        return fields;
     }
 }

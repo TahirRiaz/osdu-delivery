@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E } from "../playwright.config";
@@ -34,6 +35,26 @@ test.describe.serial("seed the estate via repo source sync", () => {
       expect(saved.template.version).toBe(template.version);
       expect(["created", "unchanged"]).toContain(saved.outcome);
     }
+  });
+
+  // Cache versions live in the catalog too. A refresh would search the sample's OSDU target, so the suite imports the
+  // sample reference files as the cache's first version through the CLI, the offline path an operator uses. Importing
+  // the same files again writes nothing, so a rerun against the same catalog keeps one version.
+  test("import the sample references as the first version of the cache", () => {
+    test.setTimeout(420_000);
+    const meta = fixtureMeta();
+    const output = execFileSync(
+      "dotnet",
+      [
+        "run", "--project", join(import.meta.dirname, "..", "..", "src", "SqlFlow.Cli"), "--",
+        "cache", "import", `${meta.repoDir}/caches/osdu-reference-cache.yaml`,
+        "--from-dir", `${meta.repoDir}/references`,
+        "--db", "${env:SQLFLOW_E2E_CACHE_DB}",
+        "--json",
+      ],
+      { encoding: "utf8", timeout: 400_000, env: { ...process.env, SQLFLOW_E2E_CACHE_DB: E2E.catalogDb } },
+    );
+    expect(output).toContain("osdu-reference-cache");
   });
 
   test("register the fixture repo as a source and watch it sync", async ({ adminPage }) => {

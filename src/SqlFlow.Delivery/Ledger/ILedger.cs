@@ -416,11 +416,11 @@ public sealed record PendingStaging(int Staged, IReadOnlyList<DeliveryKey> Refus
 /// <summary>Tier-0 watermark: the Delta commit version of a source table for one flow scope (design.md section 6.6).</summary>
 public sealed record SourceWatermark(Guid FlowId, string Scope, string Table, long Version, DateTime RecordedUtc, string? ContextHash = null);
 
-/// <summary>One stored dependency of a cache set: which cached path it holds, and what it held.</summary>
-public sealed record CacheUse(string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
+/// <summary>One stored dependency of a cache set: which cache and cached path it holds, and what it held.</summary>
+public sealed record CacheUse(string CacheName, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
 
 /// <summary>A cache set that holds one cached value, for the impact query.</summary>
-public sealed record CacheSetUse(long SetId, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
+public sealed record CacheSetUse(long SetId, string CacheName, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
 
 /// <summary>What one rollout pass did, and what is left of the tag.</summary>
 public sealed record UpdateRolloutBatch(long TagId, long Marked, long Processed, long Affected, bool Completed);
@@ -431,6 +431,9 @@ public sealed record UpdateTag
     public long TagId { get; init; }
 
     public string Kind { get; init; } = "cache";
+
+    /// <summary>The cache whose refresh found the change.</summary>
+    public required string CacheName { get; init; }
 
     public required string TypeName { get; init; }
 
@@ -995,20 +998,20 @@ public interface ILedger
     IAsyncEnumerable<KnownState> StreamKnownStateAsync(Guid flowId, int pageSize = 10_000, CancellationToken ct = default);
 
     /// <summary>
-    /// The id of the cache set holding exactly these values, creating it the first time it is seen. A render hands
-    /// over what it consumed and gets back one number to put on the record, so no matter how many records a run
-    /// stages, the dependency trail costs one row per distinct combination rather than one per record.
+    /// The id of the cache set holding exactly these values of <paramref name="cacheName"/>, creating it the first time it
+    /// is seen. A render hands over what it consumed and gets back one number to put on the record, so no matter how many
+    /// records a run stages, the dependency trail costs one row per distinct combination rather than one per record.
     /// </summary>
-    Task<long> EnsureCacheSetAsync(IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default);
+    Task<long> EnsureCacheSetAsync(string cacheName, IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default);
 
     /// <summary>The values behind one set, for a record's history page.</summary>
     Task<IReadOnlyList<CacheUse>> ListCacheSetAsync(long setId, CancellationToken ct = default);
 
     /// <summary>
-    /// The sets that hold a cached value of the given items, with the value each of them holds. This is the impact
-    /// query: it runs over the sets, never over the records, so it stays the same size as the cache.
+    /// The sets that hold a cached value of the given items of one cache, with the value each of them holds. This is the
+    /// impact query: it runs over the sets, never over the records, so it stays the same size as the cache.
     /// </summary>
-    Task<IReadOnlyList<CacheSetUse>> FindCacheSetsAsync(string typeName, IReadOnlyList<string> itemIds, CancellationToken ct = default);
+    Task<IReadOnlyList<CacheSetUse>> FindCacheSetsAsync(string cacheName, string typeName, IReadOnlyList<string> itemIds, CancellationToken ct = default);
 
     /// <summary>How many delivered records were built from these sets.</summary>
     Task<long> CountRecordsInSetsAsync(IReadOnlyList<long> setIds, CancellationToken ct = default);

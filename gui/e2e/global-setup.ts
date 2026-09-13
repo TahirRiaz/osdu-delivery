@@ -4,12 +4,13 @@ import { join, resolve } from "node:path";
 
 /**
  * Builds the e2e fixture: a real local git repository holding the sample delivery estate (the recall-welllog
- * flow, its pinned mappings, the captured reference snapshot, and the generated demo drop), which
- * the suite registers as a repo source through the GUI. The control plane then syncs it exactly as it would a
- * customer's remote, so pipelines, runs, schedules, mappings and the delivery pages are all exercised against
- * real documents flowing through the product's own path. The templates those mappings pin live in the catalog, not the
- * repository, so the seed spec saves them through the API. Runs use the plan operation, which renders the drop
- * against the templates, the reference snapshot and the ledger without touching an OSDU target.
+ * flow, its pinned mappings, the cache flow that declares what the mappings read, the captured reference files, and the
+ * generated demo drop), which the suite registers as a repo source through the GUI. The control plane then syncs it
+ * exactly as it would a customer's remote, so pipelines, runs, schedules, mappings and the delivery pages are all
+ * exercised against real documents flowing through the product's own path. The templates those mappings pin, and the
+ * cache versions, live in the catalog, not the repository, so the seed spec saves the templates through the API and
+ * imports the reference files as the cache's first version through the CLI. Runs use the plan operation, which renders
+ * the drop against the templates, the cache and the ledger without touching an OSDU target.
  */
 export default function globalSetup(): void {
   const here = import.meta.dirname;
@@ -19,7 +20,7 @@ export default function globalSetup(): void {
 
   rmSync(repoDir, { recursive: true, force: true });
   mkdirSync(join(repoDir, "flows"), { recursive: true });
-  for (const part of ["mappings", "snapshots", "references"]) {
+  for (const part of ["mappings", "references"]) {
     cpSync(join(samplesDir, part), join(repoDir, part), { recursive: true });
   }
 
@@ -31,8 +32,15 @@ export default function globalSetup(): void {
     .replace("location: samples/recall-welllog/out/{logSource}", `location: ${dropRoot.replace(/\\/g, "/")}/{logSource}`);
   writeFileSync(join(repoDir, "flows", "recall-welllog.yaml"), flowYaml);
 
-  // The metadata sync flow comes along without its schedule. The suite never runs it (that would need an OSDU target),
-  // but the repository sync projects its cache section, which is what the OSDU cache page reads.
+  // The cache flow comes along without its schedule. The suite never refreshes it (that would need an OSDU target): the
+  // repository sync projects what it declares, and the seed spec imports the sample references as its first version.
+  mkdirSync(join(repoDir, "caches"), { recursive: true });
+  writeFileSync(
+    join(repoDir, "caches", "osdu-reference-cache.yaml"),
+    withoutSchedule(readFileSync(join(samplesDir, "caches", "osdu-reference-cache.yaml"), "utf8"), "osdu-reference-cache"),
+  );
+
+  // The metadata sync flow comes along without its schedule too. It is a retrieval the suite never runs.
   writeFileSync(
     join(repoDir, "flows", "osdu-cache-sync.yaml"),
     withoutSchedule(readFileSync(join(samplesDir, "flows", "osdu-cache-sync.yaml"), "utf8"), "osdu-cache-sync"),
@@ -56,7 +64,6 @@ export default function globalSetup(): void {
       "  manualSubmission: true",
       "render:",
       "  mapping: Wellbore@1.0.0",
-      "  references: pinned",
       "  parameters:",
       "    dataPartition: opendes",
       "change:",

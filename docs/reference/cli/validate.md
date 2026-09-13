@@ -14,7 +14,7 @@ Parses and validates a delivery document offline: no catalog, no OSDU, no secret
 
 On success the command prints one `OK  ...` line to stdout and exits 0. On any load or validation failure it prints one `ERROR  ...` line to stderr (credential values redacted) and exits 1. Given a folder it validates every document under it, one line per file; that is the CI gate.
 
-`${env:NAME}` and `${keyvault:vault/secret}` references are kept as literal references during validation; they resolve only at run time, so validation needs neither the environment variables nor the vault to exist. What validate does not do is the delivery preflight: checking the mapping against its pinned template (saved in the catalog) and the reference snapshot, and reading a drop's manifest, is `sqlflow check` ([delivery.md](delivery.md)).
+`${env:NAME}` and `${keyvault:vault/secret}` references are kept as literal references during validation; they resolve only at run time, so validation needs neither the environment variables nor the vault to exist. What validate does not do is the delivery preflight: checking the mapping against its pinned template and the version of the cache the flow reads (both in the catalog), and reading a drop's manifest, is `sqlflow check` ([delivery.md](delivery.md)).
 
 ## Arguments
 
@@ -185,7 +185,7 @@ OK  'leaky' is valid (delivery: /drops/leaky -> https://osdu.example.com).
 
 ## See also
 
-- [sqlflow check, snapshot, template, and the delivery run options](delivery.md): the preflight gate that checks the mapping against its pinned template and the cache, the template verbs, and the run verbs.
+- [sqlflow check, cache, template, and the delivery run options](delivery.md): the preflight gate that checks the mapping against its pinned template and the cache, the cache and template verbs, and the run verbs.
 - [Document reference](../../delivery/documents.md): every key of the flow and mapping documents.
 - [Environment variables](../../environment-variables.md): secret references and the `.sqlflow/env` file.
 - [sqlflow db](db.md): the sync that projects validated documents into the catalog.

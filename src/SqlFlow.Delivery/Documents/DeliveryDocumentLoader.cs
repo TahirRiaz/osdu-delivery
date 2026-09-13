@@ -50,6 +50,17 @@ public sealed class DeliveryDocumentLoader
         return ParseRetrieval(File.ReadAllText(path), path);
     }
 
+    public CacheDefinition LoadCache(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!File.Exists(path))
+        {
+            throw new FlowValidationException($"Cache flow file not found: '{path}'.");
+        }
+
+        return ParseCache(File.ReadAllText(path), path);
+    }
+
     public MappingDefinition LoadMapping(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -61,7 +72,7 @@ public sealed class DeliveryDocumentLoader
         return ParseMapping(File.ReadAllText(path), path);
     }
 
-    /// <summary>The discriminator of a document: "delivery" or "retrieval" for a flow, "mapping" for a mapping.</summary>
+    /// <summary>The discriminator of a document: "delivery", "retrieval" or "cache" for a flow, "mapping" for a mapping.</summary>
     public string Probe(string yaml, string source = "<inline>")
     {
         var probe = Deserialize<DocumentProbeYaml>(_probe, yaml, source);
@@ -75,7 +86,7 @@ public sealed class DeliveryDocumentLoader
             return probe!.DocumentType!;
         }
 
-        throw new FlowValidationException($"{source}: the document declares no 'flowType' (delivery, retrieval) and no 'documentType: mapping'.");
+        throw new FlowValidationException($"{source}: the document declares no 'flowType' (delivery, retrieval, cache) and no 'documentType: mapping'.");
     }
 
     public FlowDefinition ParseFlow(string yaml, string source = "<inline>")
@@ -102,6 +113,19 @@ public sealed class DeliveryDocumentLoader
 
         var y = Deserialize<RetrievalYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
         return RetrievalMapper.Map(y, source);
+    }
+
+    public CacheDefinition ParseCache(string yaml, string source = "<inline>")
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        var kind = Probe(yaml, source);
+        if (!kind.Equals(CacheDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException($"{source}: expected 'flowType: {CacheDefinition.FlowTypeName}', found '{kind}'.");
+        }
+
+        var y = Deserialize<CacheYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        return CacheMapper.Map(y, source);
     }
 
     public MappingDefinition ParseMapping(string yaml, string source = "<inline>")
@@ -225,10 +249,10 @@ internal static partial class FlowMapper
             Render = new FlowRender
             {
                 Mapping = mapping,
-                References = string.IsNullOrWhiteSpace(render.References) ? "pinned" : render.References!,
+                Cache = string.IsNullOrWhiteSpace(render.Cache) ? null : render.Cache!.Trim(),
+                CacheVersion = MapCacheVersion(render, source),
                 Parameters = render.Parameters ?? new Dictionary<string, string>(StringComparer.Ordinal),
                 MappingsDirectory = string.IsNullOrWhiteSpace(render.Mappings) ? null : render.Mappings!.Trim(),
-                SnapshotsDirectory = string.IsNullOrWhiteSpace(render.Snapshots) ? null : render.Snapshots!.Trim(),
             },
             Change = new FlowChange
             {
@@ -251,6 +275,19 @@ internal static partial class FlowMapper
 
         Validate(flow, source);
         return flow;
+    }
+
+    /// <summary>The cache version a flow pins, <c>current</c> when it pins none; pinning a version of no named cache means nothing.</summary>
+    private static string MapCacheVersion(FlowRenderYaml render, string source)
+    {
+        if (string.IsNullOrWhiteSpace(render.CacheVersion))
+        {
+            return FlowRender.CurrentCacheVersion;
+        }
+
+        return string.IsNullOrWhiteSpace(render.Cache)
+            ? throw new FlowValidationException($"{source}: render.cacheVersion pins a version, but render.cache names no cache to take it from.")
+            : render.CacheVersion!.Trim();
     }
 
     private static void Validate(FlowDefinition flow, string source)

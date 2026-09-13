@@ -550,6 +550,7 @@ public sealed class DeliverySubmissionApiTests
 
             // The sample templates are saved, so the version the mapping pins is one the catalog holds.
             await SampleEstate.SaveTemplatesAsync(cs);
+            await SampleEstate.SaveCacheAsync(cs);
             using var records = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.RecordsPipeline}/source-contract");
             Assert.Equal(HttpStatusCode.OK, records.StatusCode);
             var contract = (await records.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
@@ -831,7 +832,6 @@ public sealed class DeliverySubmissionApiTests
                   payloadDetect: lastModified
                 render:
                   mapping: {{MappingReference}}
-                  references: pinned
                   parameters:
                     dataPartition: opendes
                 target:
@@ -930,7 +930,6 @@ public sealed class DeliverySubmissionApiTests
             {{(manualSubmission ? "  manualSubmission: true" : string.Empty)}}
             render:
               mapping: {{mapping}}
-              references: pinned
               parameters:
                 dataPartition: opendes
             target:

@@ -28,7 +28,8 @@ source:
 
 render:                            # the only block that changes what a document is
   mapping: WellLog@1.4.0           # pinned Name@version, never floating
-  references: pinned               # or an explicit snapshot version
+  cache: osdu-reference-cache      # the cache the mapping's cache. sources read: a cache flow's name (omit when the mapping reads no cache)
+  cacheVersion: current            # current (the default) or a version label such as 20260908T212727Z; needs render.cache
   parameters:                      # values for the parameters the mapping declares
     dataPartition: dev
 
@@ -124,8 +125,22 @@ verify: { reconcile: false }       # whether the verify pass re-queues drifted o
 
 Only `render.*`, and the template version the pinned mapping names, enter the render context. Everything else changes how a document gets there: raising
 `reliability.concurrency` or changing `target.endpoint` never redelivers a record. A moved render context (a new
-mapping version, template version or reference snapshot) renders the record again, and whether it is sent is still
+mapping version, template version or cache version) renders the record again, and whether it is sent is still
 decided by the hash of the rendered document alone, so a new cache version that renders the same document sends nothing.
+
+### The cache a flow renders with
+
+`render.cache` names the cache the mapping's `cache.<Type>` sources read: the `name` of a cache flow
+([Cache flow](#cache-flow)). `render.cacheVersion` says which version: `current`, the default, takes whichever version
+is current when the run starts and records it in the render context; a version label (`20260908T212727Z`) pins that
+version. `render.cacheVersion` without `render.cache` is refused when the flow loads. The render context records the
+cache under `cache` and the version under `cacheVersion`.
+
+A mapping that reads nothing from a cache renders against no cache, whatever the flow names, so refreshing a cache
+never moves the render context of records that never read it. A mapping that does read the cache fails before
+anything renders when `render.cache` names none, when the cache has no current version yet (run its cache flow with
+the refresh operation), or when `render.cacheVersion` pins a version the catalog does not hold. Both the cache and
+the template are read from the catalog, so rendering needs the catalog connection.
 
 ### Incremental drops: what changed since the last run
 
@@ -148,13 +163,13 @@ OSDU already holding (`unchangedAtPush`), beside the usual counts.
 ### Parameters
 
 Flow parameters are supplied by `--set name=value` or by the manifest (`parameters`). When both are present
-they must agree. `{name}` tokens are substituted in `source.location`, `source.knownState` and `source.work`, and
-in a retrieval flow's `source.query` and `target.location`.
+they must agree. `{name}` tokens are substituted in `source.location`, `source.knownState` and `source.work`,
+in a retrieval flow's `source.query` and `target.location`, and in a cache flow's `types[].query`.
 
 ### Schedules
 
 The inline `schedule` fires the flow on the platform scheduler; `operation` (deliver by default; verify, plan,
-known-state, intake or drain, and retrieve or plan on a retrieval flow) is what every fire runs, and `values`
+known-state, intake or drain; retrieve or plan on a retrieval flow; refresh or plan on a cache flow) is what every fire runs, and `values`
 supplies the flow's own parameters. A flow that declares a required parameter **must** give the schedule values for
 it: a fire supplies nothing on its own, so without them every run fails validation with "parameter 'name' is
 required". A run-now's values override the schedule's name by name, leaving the rest in place. A nightly drift pass is a second schedule in the repository's schedule
@@ -199,21 +214,6 @@ target:
   rollRecords: 100000                # records per file
   manifest: manifest.json
 
-cache:                               # optional: the OSDU cache this flow keeps current for the mappings
-  makeCurrent: true                  # the minted snapshot becomes what `references: pinned` resolves to
-  snapshots: abfss://lake@acct.dfs.core.windows.net/osdu-snapshots   # the store the cache is minted into; the delivery flows name it as render.snapshots. Default: the nearest `snapshots` directory, which a platform run refuses because it runs from a copy of the repository
-  onChange: approve                  # default for the types below: approve (wait for a decision) or auto
-  types:
-    - kind: "osdu:wks:master-data--Wellbore:1.0.0"   # optional when the flow retrieves exactly one kind
-      name: Wellbore                 # optional: derived from the entity type in the kind
-      entityType: master-data--Wellbore              # optional: derived from the kind
-      query: "*"                     # optional; {parameter} tokens
-      onChange: auto                 # optional per-type override of cache.onChange
-      fields:                        # the paths to cache; a path crosses arrays implicitly
-        - data.FacilityName
-        - path: data.NameAlias.AliasName
-          as: Alias
-
 reliability: { concurrency: 4, retry: { attempts: 4 } }   # kinds retrieved at once; the HTTP settings as on a delivery flow
 schedule: { cron: "0 3 * * *", timezone: UTC, operation: retrieve }
 ```
@@ -226,18 +226,112 @@ schedule: { cron: "0 3 * * *", timezone: UTC, operation: retrieve }
 | `source.fetchRecords` | The index holds a projection; set this to land the record as storage holds it. Ids storage cannot return are counted and listed in the manifest. |
 | `target.location` | The run's directory root. Without a `{run}` token every run gets a timestamped directory beneath it, so runs never overwrite each other. |
 | `target.rollRecords` | A new file every this many records: `part-00001.jsonl[.gz]`, `part-00002...` under a directory named after the kind. |
-| `cache.types` | The OSDU types this flow keeps cached for the mappings to resolve against ([design.md](design.md) section 6.2). A retrieve run sweeps each in full and mints a reference snapshot version merged onto the current one, so a version always describes the whole cache. |
-| `cache.types[].fields` | The paths to cache, written bare (`data.Code`, cached as `Code`) or as `{ path: ..., as: ... }`. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object. A path crosses arrays implicitly, so `data.NameAlias.AliasName` reaches through an array of objects and caches the set of aliases it finds. A path that yields nothing on every record is reported at capture. |
-| `cache.onChange` | What a changed cached value does to the records already built from it. `approve` (the default) tags them and holds them back until someone approves the update in the GUI; `auto` tags them and lets the next run carry the new document. Set per flow and overridden per type, because a code list that is corrected in place and a master-data name that is edited daily do not deserve the same treatment. |
 
-The cache sweep is independent of `source.incremental`: the window governs which records land as files, while the
-cache is captured in full, because a cache holding only the last hour's changes cannot answer a lookup.
+A run's directory holds the files per kind and the manifest: the flow, the run, the window, every file with its
+record count and uncompressed bytes, and per kind the records storage could not read back. The ledger's
+`delivery.Retrieval` row carries the same counts, the outcome and the run id; the pipeline's Retrievals tab lists
+them. The operations are `retrieve` (the default for a retrieval flow) and `plan` (count what the query matches,
+write nothing).
 
-A refresh does not only mint a version. Every delivered manifest row points at the set of cached values it was built
+A retrieval flow lands records as files and nothing else. The cache the mappings resolve against is defined and
+captured by a cache flow.
+
+## Cache flow
+
+The reference and master data the mappings resolve against ([design.md](design.md) section 6.2). A cache flow is the
+one place a cache is defined: the OSDU platform to search, the types to cache, and for each type the paths of a record
+to keep. Its `name` is the cache's name, which a delivery flow names under `render.cache`. The sample estate's cache
+flow, `samples/recall-welllog/caches/osdu-reference-cache.yaml`:
+
+```yaml
+flowType: cache
+name: osdu-reference-cache
+batch: recall
+
+source:
+  endpoint: ${env:PETRODB_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  headers:
+    Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
+    data-partition-id: opendes
+
+# A changed cached value rewrites the documents built from it, so by default the affected records are tagged and wait for
+# someone to approve the update. Per type this can be relaxed where the change is always a correction.
+onChange: approve
+
+types:
+  - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+    name: UnitOfMeasure
+    fields: [data.Code, data.Name, data.ID]
+  - kind: "osdu:wks:reference-data--LogCurveBusinessValue:*"
+    name: LogCurveBusinessValue
+    fields: [data.Code, data.Name]
+  - kind: "osdu:wks:reference-data--VerticalMeasurementType:*"
+    name: VerticalMeasurementType
+    fields: [data.Code, data.Name]
+  - kind: "osdu:wks:master-data--Wellbore:*"
+    name: Wellbore
+    # A wellbore that gains an alias or is renamed is still the same wellbore, and the mappings only write its id, so
+    # these changes carry themselves rather than queueing a decision.
+    onChange: auto
+    fields:
+      - data.FacilityName
+      # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a drop
+      # naming a wellbore by any one of them resolves to the same record.
+      - path: data.NameAlias.AliasName
+        as: Alias
+
+reliability:
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+
+# Nightly, well before the hourly delivery runs, so a delivery renders against a cache captured the same day.
+schedule:
+  cron: "0 2 * * *"
+```
+
+| Key | Meaning |
+| --- | --- |
+| `name` | Required. The cache's name: the flow's pipeline identity, and what a delivery flow names under `render.cache`. A cache is named globally: the sync warns when a second file, or another repository, declares the same name, and the first file wins. |
+| `description` | Optional text describing the cache. |
+| `parameters` | Optional, as on a delivery flow; `{name}` tokens usable in a type's `query`. A token no parameter declares is refused. |
+| `source.endpoint`, `source.auth`, `source.headers` | The OSDU platform the types are searched on, written as `target` is on a delivery flow: `${env:NAME}` and `${keyvault:vault/secret}` references and the same auth types. `data-partition-id` is required, because every search carries it. |
+| `types` | Required, at least one: the OSDU types the cache holds. Each type's name is unique within the cache, because a mapping reads a type by its name. |
+| `types[].kind` | Required. The kind searched, `authority:source:entityType:version` with wildcards per segment. |
+| `types[].name`, `types[].entityType` | Optional. The entity type is derived from the kind, and the name from the entity type (`reference-data--UnitOfMeasure` gives `UnitOfMeasure`). A kind that names no entity type needs `entityType`. |
+| `types[].query` | Optional Lucene query narrowing the type; `*` when omitted. |
+| `types[].fields` | Required: the paths to keep, written bare (`data.Code`, cached as `Code`) or as `{ path: ..., as: ... }`. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object. A path crosses arrays implicitly, so `data.NameAlias.AliasName` reaches through an array of objects and caches the set of aliases it finds. A path that yields nothing on every record is reported at capture. |
+| `onChange`, `types[].onChange` | What a changed cached value does to the records already built from it. `approve` (the default) tags them and holds them back until someone approves the update in the GUI; `auto` tags them and lets the next run carry the new document. Set for the flow and overridden per type, because a code list that is corrected in place and a master-data name that is edited daily do not deserve the same treatment. |
+| `makeCurrent` | Optional, default `true`: a refresh makes the version it writes the current one, which delivery flows render against unless they pin another. With `false`, a new version is kept beside the current one. |
+| `reliability` | The HTTP settings, as on a delivery flow. |
+| `schedule` | The platform envelope, as on every flow; a fire runs a refresh. |
+
+A cache flow's operations are `refresh` and `plan`. `refresh` is the default: a run triggered without an operation, a
+scheduled fire and a run asking for `deliver` all refresh. `plan` counts what each type's search matches and writes
+nothing. A cache flow takes no drop, submission, record or partition scope; only its parameter values.
+
+A refresh sweeps every declared type in full through the search cursor and keeps the declared paths of every hit,
+because a cache holding only the last hour's changes cannot answer a lookup. It then writes the result into the
+catalog as the next version of the cache, labelled from the capture instant (`20260908T212727Z`), unless the content
+is exactly what the current version holds: then nothing is written, and nothing built from the cache renders again. A
+version holds exactly the types the flow declares, so a type taken out of the flow leaves the cache with the next
+version. It records the run that captured it and who asked, and it is kept for as long as the catalog exists, because
+the render context of a delivered record names the version it was rendered against. A refresh therefore needs the
+catalog connection. Nothing about a cache is written to the repository: the file defines the cache, and its runs fill
+the catalog ([ledger.md](ledger.md)).
+
+A refresh does not only write a version. Every delivered manifest row points at the set of cached values it was built
 from, so the refresh compares the new version against the one it replaces and raises one tag per changed value: the
-cached record, the path, the value the replaced version held and the one the new version holds, and how many
-delivered records it reaches. Each set is judged by the value it holds, so a set already built from the new value is
-not touched. A tag under `approve` holds those records back (a plan skips them, so OSDU keeps the documents it has)
+cache, the cached record, the path, the value the replaced version held and the one the new version holds, and how
+many delivered records it reaches. Each set is judged by the value it holds, so a set already built from the new value
+is not touched. A tag under `approve` holds those records back (a plan skips them, so OSDU keeps the documents it has)
 until someone approves or rejects it; a tag under `auto` is approved as it is written. If a value moves again after
 approval but before the rollout carried it, the tag reopens, because the approval was for the value someone looked
 at.
@@ -245,15 +339,13 @@ at.
 An approved change is carried out in batches by the control plane (`ControlPlane:CacheRollout`: `BatchSize`
 records per batch, `BatchesPerPass` batches every `PollSeconds`), so a change reaching millions of records drains
 at a set pace rather than in one statement, and resumes where it stopped after a restart. The redelivery is
-metadata only: a cached value that changed rewrites the manifest row and never re-uploads its payload. The GUI's
-OSDU cache page shows all of it: what each flow declares, what the current snapshot holds, and the changes with
-their record counts and rollout progress.
+metadata only: a cached value that changed rewrites the manifest row and never re-uploads its payload.
 
-A run's directory holds the files per kind and the manifest: the flow, the run, the window, every file with its
-record count and uncompressed bytes, and per kind the records storage could not read back. The ledger's
-`delivery.Retrieval` row carries the same counts, the outcome and the run id; the pipeline's Retrievals tab lists
-them. The operations are `retrieve` (the default for a retrieval flow) and `plan` (count what the query matches,
-write nothing).
+The GUI's OSDU cache page shows all of it: what a cache declares and in which file, the versions its runs captured and
+what each changed, the records of any version, and the changes with their record counts and rollout progress. A cache
+flow's pipeline page lists its versions on the Cache versions tab, and `sqlflow cache list` prints them. For work
+without an OSDU platform, `sqlflow cache import <cache.yaml> --from-dir <dir>` writes type files as a version
+([cli/delivery.md](../reference/cli/delivery.md#cache)).
 
 ## Mapping
 
@@ -376,7 +468,7 @@ line that finds one record wins. Modifiers change the dataset value before it is
 and are never modified.
 
 Fields are named as the capture stored them (the path without its `data.` root, or the `as` it declared; see the
-retrieval flow's `cache.types[].fields`), or as a path inside one (`NameAlias.AliasName`) when the field was cached
+cache flow's `types[].fields`), or as a path inside one (`NameAlias.AliasName`) when the field was cached
 whole. A field holding a set matches on any one of its values, so a record with three aliases is found by any of them.
 An exact match wins, and case is ignored only when that finds exactly one record: OSDU codes that differ only by case
 are different records (`ft` is the foot and `fT` the femtotesla, `s/m` second per metre and `S/m` siemens per metre).
@@ -478,12 +570,12 @@ is rendered, and with no OSDU call:
 4. Every property the schema requires in `data` has an entry, and none of those entries is `required: false`.
 5. Every dataset column and child dataset the mapping reads, the dataset key's and the label's included, exists in the
    drop, when the drop is known.
-6. Every cached type exists in the reference snapshot and holds the field the source reads. A `findBy` field the cache
+6. Every cached type exists in the cache version the render reads and holds the field the source reads. A `findBy` field the cache
    does not hold is a warning; a type holding none of them is an error, because it would hold every record at run time.
 7. A `cache.<Type>.id` source resolves to the entity type the schema expects for its target: `osdu.data.WellboreID`
    reads only a cached type of `master-data--Wellbore`.
 8. A static value on a relationship is an OSDU id of an entity type the relationship allows, and exists in the
-   reference snapshot when the snapshot holds that entity type.
+   cache version the render reads when that version holds that entity type.
 9. Every parameter the mapping requires has a value, the flow supplies none the mapping does not declare, and every
    `{param.name}` token has a value.
 10. Every fixture renders exactly as declared, and without holds, under this context.

@@ -55,16 +55,17 @@ scan, the catalog sync, the run queue, and the GUI work from those headers alone
 ## The delivery domain
 
 The delivery domain (`src/SqlFlow.Delivery`, documented in [delivery/README.md](delivery/README.md)) holds the
-production flow kinds: `delivery`, and `retrieval` for the reverse direction (OSDU's search index paged into
-files on the lake, incremental by watermark, one ledger row per run). A delivery flow names a drop (a storage location the preparing side writes: a manifest,
+production flow kinds: `delivery`; `retrieval` for the reverse direction (OSDU's search index paged into
+files on the lake, incremental by watermark, one ledger row per run); and `cache`, which defines the reference and
+master data the mappings resolve against and captures it from OSDU into versioned caches in the catalog. A delivery flow names a drop (a storage location the preparing side writes: a manifest,
 parquet record scopes, payload chunks), a pinned mapping (how rows become OSDU records of one kind, which
-columns identify a record, which values resolve against reference data), and an OSDU target (endpoint, auth
-and header references, the delivery protocol). The mapping and the reference snapshots of the OSDU cache it
-renders with live in the flow's repository and are synced into the catalog as read models; the template the mapping pins
-(the OSDU schema of its kind) is saved in the catalog itself. Running the flow means:
+columns identify a record, which values resolve against reference data), the cache the mapping reads (`render.cache`),
+and an OSDU target (endpoint, auth and header references, the delivery protocol). The mapping it renders with lives in
+the flow's repository and is synced into the catalog as a read model; the template the mapping pins (the OSDU schema of
+its kind) and every version of the cache are held in the catalog itself. Running the flow means:
 
 1. **Intake**: register the drop's submission under its manifest id, stream every record through the pinned
-   mapping against its pinned template and reference snapshot, and decide per record what changed (source versions, fingerprints,
+   mapping against its pinned template and the cache version it reads, and decide per record what changed (source versions, fingerprints,
    independent metadata and payload hashes); write the pending work to the ledger and the rendered documents
    to work batch files on the flow's work location.
 2. **Deliver**: lease work batches, send their records through the flow's protocol (a batched record write; a
@@ -77,7 +78,7 @@ renders with live in the flow's repository and are synced into the catalog as re
    redelivery when the flow reconciles. **Known state** publishes the compact view the preparing side reads.
 
 A delivery run is a platform run: its operation (deliver, verify, plan, known-state, intake, drain; retrieve
-on a retrieval flow), scope and force flag are its run parameters, its log is the run trace, and its counts are projected onto the run row. The ledger
+on a retrieval flow; refresh on a cache flow), scope and force flag are its run parameters, its log is the run trace, and its counts are projected onto the run row. The ledger
 (the `delivery` schema of the catalog) holds submissions, records, attempts, source watermarks and the audit
 trail of interventions (release, redeliver, delete, verify) with who did them, when, and the run they ran in.
 The target-side interventions (probe, read back, delete) run on a node as compute tasks. Statistics, record

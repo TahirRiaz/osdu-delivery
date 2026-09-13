@@ -34,8 +34,9 @@ public sealed class CacheImpactAnalyzer
     /// value it matched by no longer resolves; a value nothing read changes nothing.
     /// </summary>
     public async Task<CacheImpactResult> AnalyzeAsync(
-        ReferenceType? previous, ReferenceType current, CacheChangeMode mode, string? fromVersion, string toVersion, CancellationToken ct = default)
+        string cacheName, ReferenceType? previous, ReferenceType current, CacheChangeMode mode, string? fromVersion, string toVersion, CancellationToken ct = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cacheName);
         ArgumentNullException.ThrowIfNull(current);
         ArgumentException.ThrowIfNullOrWhiteSpace(toVersion);
         if (previous is null)
@@ -54,12 +55,12 @@ public sealed class CacheImpactAnalyzer
             return new CacheImpactResult(current.Name, 0, 0, 0, 0);
         }
 
-        var holders = await _ledger.FindCacheSetsAsync(current.Name, moved, ct).ConfigureAwait(false);
+        var holders = await _ledger.FindCacheSetsAsync(cacheName, current.Name, moved, ct).ConfigureAwait(false);
         if (holders.Count == 0)
         {
             _logger.LogInformation(
-                "Cache {Type}: {Moved} item(s) changed in {Version}, none of them held by a set any delivered record was built from.",
-                current.Name, moved.Count, toVersion);
+                "Cache {Cache} type {Type}: {Moved} item(s) changed in {Version}, none of them held by a set any delivered record was built from.",
+                cacheName, current.Name, moved.Count, toVersion);
             return new CacheImpactResult(current.Name, moved.Count, 0, 0, 0);
         }
 
@@ -89,6 +90,7 @@ public sealed class CacheImpactAnalyzer
             records += affected;
             tags.Add(new UpdateTag
             {
+                CacheName = cacheName,
                 TypeName = sample.TypeName,
                 ItemId = sample.ItemId,
                 Path = sample.Path,
@@ -105,8 +107,8 @@ public sealed class CacheImpactAnalyzer
 
         var written = await _ledger.TagUpdatesAsync(tags, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
         _logger.LogInformation(
-            "Cache {Type}: {Moved} item(s) changed in {Version}; {Tags} change(s) reach {Records} delivered record(s) ({Mode}), {Written} new tag(s).",
-            current.Name, moved.Count, toVersion, tags.Count, records, mode.ToString().ToLowerInvariant(), written);
+            "Cache {Cache} type {Type}: {Moved} item(s) changed in {Version}; {Tags} change(s) reach {Records} delivered record(s) ({Mode}), {Written} new tag(s).",
+            cacheName, current.Name, moved.Count, toVersion, tags.Count, records, mode.ToString().ToLowerInvariant(), written);
         return new CacheImpactResult(current.Name, moved.Count, tags.Count, records, written);
     }
 

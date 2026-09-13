@@ -1517,11 +1517,12 @@ public sealed class CatalogLedger : ILedger
         }
     }
 
-    public async Task<long> EnsureCacheSetAsync(IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default)
+    public async Task<long> EnsureCacheSetAsync(string cacheName, IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cacheName);
         ArgumentNullException.ThrowIfNull(usages);
         var entries = Canonical(usages);
-        var hash = SetHash(entries);
+        var hash = SetHash(cacheName, entries);
         if (_cacheSets.TryGetValue(hash, out var known))
         {
             return known;
@@ -1553,6 +1554,7 @@ public sealed class CatalogLedger : ILedger
             db.DeliveryCacheSetEntries.Add(new DeliveryCacheSetEntry
             {
                 SetId = set.SetId,
+                CacheName = cacheName,
                 TypeName = usage.TypeName,
                 ItemId = Truncate(usage.ItemId, 512)!,
                 Path = Truncate(usage.Path, 400)!,
@@ -1589,13 +1591,14 @@ public sealed class CatalogLedger : ILedger
         await using var db = Open();
         var rows = await db.DeliveryCacheSetEntries.AsNoTracking()
             .Where(e => e.SetId == setId)
-            .OrderBy(e => e.TypeName).ThenBy(e => e.Path)
+            .OrderBy(e => e.CacheName).ThenBy(e => e.TypeName).ThenBy(e => e.Path)
             .ToListAsync(ct).ConfigureAwait(false);
-        return rows.Select(e => new CacheUse(e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)).ToList();
+        return rows.Select(e => new CacheUse(e.CacheName, e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)).ToList();
     }
 
-    public async Task<IReadOnlyList<CacheSetUse>> FindCacheSetsAsync(string typeName, IReadOnlyList<string> itemIds, CancellationToken ct = default)
+    public async Task<IReadOnlyList<CacheSetUse>> FindCacheSetsAsync(string cacheName, string typeName, IReadOnlyList<string> itemIds, CancellationToken ct = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cacheName);
         ArgumentException.ThrowIfNullOrWhiteSpace(typeName);
         ArgumentNullException.ThrowIfNull(itemIds);
         if (itemIds.Count == 0)
@@ -1609,9 +1612,9 @@ public sealed class CatalogLedger : ILedger
         {
             var ids = chunk.ToList();
             var rows = await db.DeliveryCacheSetEntries.AsNoTracking()
-                .Where(e => e.TypeName == typeName && ids.Contains(e.ItemId))
+                .Where(e => e.CacheName == cacheName && e.TypeName == typeName && ids.Contains(e.ItemId))
                 .ToListAsync(ct).ConfigureAwait(false);
-            found.AddRange(rows.Select(e => new CacheSetUse(e.SetId, e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)));
+            found.AddRange(rows.Select(e => new CacheSetUse(e.SetId, e.CacheName, e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)));
         }
 
         return found;
@@ -1652,7 +1655,7 @@ public sealed class CatalogLedger : ILedger
         foreach (var tag in tags)
         {
             var open = await db.DeliveryUpdateTags.FirstOrDefaultAsync(
-                t => t.TypeName == tag.TypeName && t.ItemId == tag.ItemId && t.Path == tag.Path
+                t => t.CacheName == tag.CacheName && t.TypeName == tag.TypeName && t.ItemId == tag.ItemId && t.Path == tag.Path
                      && (t.Status == "pending" || t.Status == "approved" || t.Status == "rolling"),
                 ct).ConfigureAwait(false);
             if (open is not null)
@@ -1681,6 +1684,7 @@ public sealed class CatalogLedger : ILedger
             db.DeliveryUpdateTags.Add(new DeliveryUpdateTag
             {
                 Kind = tag.Kind,
+                CacheName = tag.CacheName,
                 TypeName = tag.TypeName,
                 ItemId = Truncate(tag.ItemId, 512)!,
                 Path = Truncate(tag.Path, 400)!,
@@ -1877,8 +1881,8 @@ public sealed class CatalogLedger : ILedger
             .ThenBy(u => u.Kind)
             .ToList();
 
-    private static string SetHash(IReadOnlyList<Snapshots.CacheUsage> entries)
-        => Hashing.ContentHash.Of(string.Join('\n', entries.Select(e => $"{e.TypeName}|{e.ItemId}|{e.Path}|{KindText(e.Kind)}|{e.ValueHash}")));
+    private static string SetHash(string cacheName, IReadOnlyList<Snapshots.CacheUsage> entries)
+        => Hashing.ContentHash.Of(cacheName + "\n" + string.Join('\n', entries.Select(e => $"{e.TypeName}|{e.ItemId}|{e.Path}|{KindText(e.Kind)}|{e.ValueHash}")));
 
     private static string KindText(Snapshots.CacheUsageKind kind) => kind == Snapshots.CacheUsageKind.Match ? "match" : "value";
 
@@ -1895,6 +1899,7 @@ public sealed class CatalogLedger : ILedger
     {
         TagId = t.TagId,
         Kind = t.Kind,
+        CacheName = t.CacheName,
         TypeName = t.TypeName,
         ItemId = t.ItemId,
         Path = t.Path,

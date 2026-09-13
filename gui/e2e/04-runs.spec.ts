@@ -14,7 +14,7 @@ test.describe.serial("runs", () => {
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
     await adminPage.getByTestId("trigger-flow").fill("recall");
     await adminPage.getByRole("option", { name: "recall-welllog" }).click();
-    // A plan renders the demo drop against the snapshots and the ledger without touching an OSDU target, so the
+    // A plan renders the demo drop against the cache and the ledger without touching an OSDU target, so the
     // run succeeds on any machine; the flow parameter names which drop to read.
     await adminPage.getByTestId("trigger-operation").click();
     await adminPage.getByRole("option", { name: "Plan (dry run)" }).click();

@@ -49,21 +49,11 @@ public sealed class ReferenceSnapshot
     }
 
     /// <summary>
-    /// A new snapshot carrying this one's types with <paramref name="refreshed"/> replacing (or adding) the types it
-    /// names. A capture that covers part of the estate mints a full version this way, so a snapshot version always
-    /// describes the whole cache rather than the slice one run happened to refresh.
+    /// The same content with every type's records in ordinal order of their ids: the order a version is stored and loaded
+    /// in, so the content hash of what a capture found and of what the catalog holds for it can be compared.
     /// </summary>
-    public ReferenceSnapshot With(string version, DateTimeOffset capturedUtc, IEnumerable<ReferenceType> refreshed)
-    {
-        ArgumentNullException.ThrowIfNull(refreshed);
-        var merged = new Dictionary<string, ReferenceType>(_types, StringComparer.OrdinalIgnoreCase);
-        foreach (var type in refreshed)
-        {
-            merged[type.Name] = type;
-        }
-
-        return new ReferenceSnapshot(version, capturedUtc, merged.Values);
-    }
+    public ReferenceSnapshot Normalized()
+        => new(Version, CapturedUtc, _types.Values.Select(t => new ReferenceType(t.Name, t.EntityType, t.Items.OrderBy(i => i.Id, StringComparer.Ordinal))));
 }
 
 /// <summary>All items of one reference (or master-data) type, indexed on the fields a mapping may match by.</summary>

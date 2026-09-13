@@ -108,6 +108,7 @@ const columns: Column<DeliveryUpdateTag>[] = [
     render: (row) => (
       <span className="flex flex-col gap-0.5">
         <span className="font-mono text-[12px]">
+          <span className="text-muted-foreground">{row.cache} · </span>
           {row.typeName}<span className="text-muted-foreground">.</span>{row.path}
         </span>
         <RecordId id={row.itemId} maxWidth={300} />
@@ -178,6 +179,9 @@ function TagDetail({ tag, onDecided }: { tag: DeliveryUpdateTag; onDecided: () =
           {tag.newValue === null
             ? <span className="font-mono text-[12px] text-destructive">gone</span>
             : <span className="break-all font-mono text-[12px]">{tag.newValue}</span>}
+        </DetailPair>
+        <DetailPair label="Cache">
+          <span className="font-mono text-[12px]">{tag.cache}</span>
         </DetailPair>
         <DetailPair label="Versions">
           <span className="inline-flex items-center gap-1.5 font-mono text-[12px]">
@@ -326,7 +330,7 @@ export function DeliveryCacheApprovals({ pendingTotal }: { pendingTotal: number 
             <EmptyState
               icon={<ShieldCheck />}
               title="Nothing needs approval"
-              description="A change waits here only when a record already delivered to OSDU was built from the value that moved. Every change a version made, delivered or not, is under History."
+              description="A change waits here only when a record already delivered to OSDU was built from the value that moved. Every change a version made, delivered or not, is under Versions."
               data-testid="delivery-cache-approvals-empty"
             />
           </Card>

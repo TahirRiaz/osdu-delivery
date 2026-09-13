@@ -270,7 +270,7 @@ public static partial class Preflight
             var cached = references.Types.Where(t => string.Equals(t.EntityType, entityType, StringComparison.Ordinal)).ToList();
             if (cached.Count > 0 && cached.All(t => t.Match("id", match.Groups["id"].Value) is null))
             {
-                issues.Add(ValidationIssue.Error($"{name}: '{value}' is not in reference snapshot '{references.Version}', which caches {entityType} as {string.Join(", ", cached.Select(t => t.Name))}."));
+                issues.Add(ValidationIssue.Error($"{name}: '{value}' is not in cache version '{references.Version}', which caches {entityType} as {string.Join(", ", cached.Select(t => t.Name))}."));
             }
         }
     }
@@ -283,7 +283,7 @@ public static partial class Preflight
         {
             var available = references.Types.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
             issues.Add(ValidationIssue.Error(
-                $"{name} reads cache.{source.CacheType}, which reference snapshot '{references.Version}' does not hold. Cached: {(available.Count == 0 ? "nothing" : string.Join(", ", available))}."));
+                $"{name} reads cache.{source.CacheType}, which cache version '{references.Version}' does not hold. Cached: {(available.Count == 0 ? "nothing" : string.Join(", ", available))}."));
             return;
         }
 
@@ -292,19 +292,19 @@ public static partial class Preflight
         var known = fields.Where(f => cached.HasField(f) || cached.MeansRecordId(f)).ToList();
         if (known.Count == 0)
         {
-            issues.Add(ValidationIssue.Error($"{name} finds {cached.Name} by {string.Join(" or ", fields)}, and reference snapshot '{references.Version}' caches none of those. Cached: {cachedFields}."));
+            issues.Add(ValidationIssue.Error($"{name} finds {cached.Name} by {string.Join(" or ", fields)}, and cache version '{references.Version}' caches none of those. Cached: {cachedFields}."));
         }
         else
         {
             foreach (var field in fields.Except(known, StringComparer.OrdinalIgnoreCase))
             {
-                issues.Add(ValidationIssue.Warning($"{name} finds {cached.Name} by '{field}', which reference snapshot '{references.Version}' does not cache. Cached: {cachedFields}."));
+                issues.Add(ValidationIssue.Warning($"{name} finds {cached.Name} by '{field}', which cache version '{references.Version}' does not cache. Cached: {cachedFields}."));
             }
         }
 
         if (!source.ReadsRecordId && !cached.MeansRecordId(source.CacheField!) && cached.Items.All(item => cached.Value(item, source.CacheField!) is null))
         {
-            issues.Add(ValidationIssue.Error($"{name} reads '{source.CacheField}' out of {cached.Name}, which reference snapshot '{references.Version}' does not cache. Cached: {cachedFields}."));
+            issues.Add(ValidationIssue.Error($"{name} reads '{source.CacheField}' out of {cached.Name}, which cache version '{references.Version}' does not cache. Cached: {cachedFields}."));
         }
 
         // 8. A cached id resolves to the entity type the schema expects for the target.

@@ -1,4 +1,4 @@
-# sqlflow check, snapshot, template, and the delivery run options
+# sqlflow check, cache, template, and the delivery run options
 
 ## check
 
@@ -7,35 +7,48 @@ sqlflow check <flow.yaml> [--drop <location>] [--set name=value]... [--db <ref>]
 ```
 
 Everything checkable without OSDU: the flow and the pinned mapping parse, the template the mapping pins loads from the
-catalog, the reference snapshot the flow renders with loads from the repository's snapshot store, the render context
-is built, and the mapping is checked against the template and the cache (the preflight gate,
-[mapping-templates.md](../../delivery/mapping-templates.md#checks)). When the drop is present at the flow's declared
-location (or named with `--drop`), the manifest is parsed and every column and child dataset the mapping reads is
-checked against what it declares. Exit 0 on success, 1 on a validation failure, which names the file.
+catalog, the version of the cache the flow names under `render.cache` loads from the catalog (its current version, or
+the one `render.cacheVersion` pins), the render context is built, and the mapping is checked against the template and
+the cache (the preflight gate, [mapping-templates.md](../../delivery/mapping-templates.md#checks)). A mapping that reads
+nothing from a cache is checked without one, and the output says so (`cache  none (the mapping reads nothing from a
+cache)`). When the drop is present at the flow's declared location (or named with `--drop`), the manifest is parsed and
+every column and child dataset the mapping reads is checked against what it declares. Exit 0 on success, 1 on a
+validation failure, which names the file.
 
-Templates live in the catalog, so `check` needs the catalog connection: `--db <ref>`, or `SQLFLOW_CATALOG_DB`. Without
-one it fails saying so; the check that needs no catalog is `sqlflow validate` ([validate.md](validate.md)).
+Templates and caches live in the catalog, so `check` needs the catalog connection: `--db <ref>`, or
+`SQLFLOW_CATALOG_DB`. Without one it fails saying so; the check that needs no catalog is `sqlflow validate`
+([validate.md](validate.md)).
 
 `--set` supplies the flow's own parameters (`logSource=STAT_COMP`), which the drop location is rendered from.
 `--json` prints the resolved facts (flow id, mapping reference, the template's kind and version, render context,
-layout, and the manifest and warnings when the drop was checked).
+layout, the cache read with its name, version and type count (null when the mapping reads no cache), and the manifest
+and warnings when the drop was checked).
 
-## snapshot
+## cache
 
 ```bash
-sqlflow snapshot <flow.yaml> references [--from-dir <dir> | --spec <spec.json> [--endpoint <url>]] [--no-current]
-sqlflow snapshot <flow.yaml> list [--db <ref>]
+sqlflow cache list <cache.yaml | cache name> [--db <ref>] [--json]
+sqlflow cache import <cache.yaml> --from-dir <dir> [--no-current] [--db <ref>] [--json]
 ```
 
-`references` captures a reference snapshot of the OSDU cache into the snapshot store the flow's repository layout
-locates (`snapshots/` next to the flow, or `render.snapshots`). It mints an immutable version (`yyyyMMddTHHmmssZ`) and,
-unless `--no-current`, moves the pointer `pinned` resolves to. `--from-dir` reads a folder of reference JSON; otherwise
-`--spec` names the capture spec and the flow's target endpoint, auth and headers are used (`--endpoint` overrides the
-endpoint). Commit the snapshot store with the flow.
+The versions of a cache, which live in the catalog and nowhere else
+([documents.md](../../delivery/documents.md#cache-flow)). A cache is defined by a cache flow (`flowType: cache`) and
+named by it. Both forms need the catalog connection (`--db <ref>`, or `SQLFLOW_CATALOG_DB`); without one they fail with
+`Caches live in the catalog. Run 'sqlflow cache' with --db <conn-ref>, or set the catalog variable.`
 
-`list` prints the store's reference snapshot versions, marking the current one, and the template the flow's mapping
-pins: saved (with when), not saved, or not checked when no catalog connection was given. Templates are not in the
-snapshot store; `sqlflow template` saves them in the catalog.
+| Verb | What it does |
+| --- | --- |
+| `list` | Takes the cache flow's file (whose `name` is the cache) or the cache's name, and prints every version, newest first: its label, `current` against the current one, how many records in how many types, when it was captured, by whom, and in which run. A cache with no version yet says to run its cache flow with the refresh operation. With `--json`, each version also carries its sequence, the version before it, where its content came from and the record count per type. |
+| `import` | Writes the type files in `--from-dir` as a version of the cache, for work without an OSDU platform (the sample estate keeps such files under `samples/recall-welllog/references`). A file is `{Name}.json`: the type's entity type and its records, each an `id` and the captured values. The files have to be exactly what the cache flow declares: a file for every declared type and none for a type it does not declare, each under the declared entity type, and no value under a name the type does not capture. Anything else is refused, naming every mismatch, and nothing is written. The version is recorded as captured by `cli:<user>`, with no run, and becomes current when the flow's `makeCurrent` is true (the default) and `--no-current` is not given. |
+
+Files that hold exactly what the current version holds write nothing, as a refresh that finds nothing new writes
+nothing: `cache <name>: the files hold exactly what version <version> holds, so nothing was written`. With `--json` an
+import reports the cache, the version, whether it was `written`, whether it is `current`, and the type and record
+counts.
+
+A cache is captured from OSDU by running its cache flow, the same run its schedule fires: `sqlflow run <cache.yaml>`
+(the `refresh` operation, a cache flow's default), or `--operation plan` to count what each type's search matches
+without writing anything. Nothing about a cache is written to the repository.
 
 ## template
 
@@ -74,7 +87,7 @@ refused.
 
 | Option | Meaning |
 | --- | --- |
-| `--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve` | What the run does. Default deliver; a retrieval flow runs retrieve by default and accepts plan. `intake` plans a drop into work batches without delivering, `drain` delivers the pending batches of a submission (`--submission`) or of the whole flow without reading the drop. |
+| `--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve\|refresh` | What the run does. Default deliver; a retrieval flow runs retrieve by default and accepts plan; a cache flow runs refresh by default (deliver is taken as refresh) and accepts plan. `intake` plans a drop into work batches without delivering, `drain` delivers the pending batches of a submission (`--submission`) or of the whole flow without reading the drop. A refresh captures every type the cache flow declares, so it takes no `--drop`, `--submission` or `--record`. |
 | `--force` | Push past the change gates: plan every record even when no source table advanced, re-plan a completed submission, verify recently verified records. |
 | `--set name=value` | A flow parameter value; repeatable. |
 | `--drop <location>` | Read this drop instead of the flow's declared source location. |
@@ -82,13 +95,14 @@ refused.
 | `--record <key>` | Scope the run to this delivery key; repeatable. With deliver, the records are redelivered regardless of what OSDU holds, and the run re-plans the drop even when no source table advanced or the submission already completed, so the redelivery is never skipped; with verify, only they are checked. |
 | `--redeliver all\|metadata\|payload` | With `--record` on a deliver run: what of those records is sent again. Default all. |
 | `--publish-to <location>` | Where a known-state publication is written; without it the flow's `source.knownState` (with the flow parameters substituted) is used. |
-| `--db <ref>` | The catalog connection (default `${env:SQLFLOW_CATALOG_DB}`). With it the ledger is live and the run is recorded. A delivery flow needs it for every operation: `deliver`, `plan` and `intake` render against the template saved there, and `verify`, `known-state` and `drain` work on the ledger. A retrieval flow runs without it. |
+| `--db <ref>` | The catalog connection (default `${env:SQLFLOW_CATALOG_DB}`). With it the ledger is live and the run is recorded. A delivery flow needs it for every operation: `deliver`, `plan` and `intake` render against the template and the cache version saved there, and `verify`, `known-state` and `drain` work on the ledger. A cache flow's `refresh` needs it, because the versions it writes live there. A retrieval flow runs without it. |
 
 The parameters are validated once, at the boundary, and recorded on the run so the history says what was
 asked. The run's result carries the submission and the record counts (planned, delivered, held, failed,
-unchanged), which the run page and the runs list show.
+unchanged), which the run page and the runs list show; a refresh's result carries the version the cache holds after
+it, the version it replaced, whether a version was written, and per type what was captured and what its changes reach.
 
 ## Exit codes
 
-`check`, `snapshot` and `template` exit 0 on success and 1 on a failure, which prints one `ERROR` line naming the
+`check`, `cache` and `template` exit 0 on success and 1 on a failure, which prints one `ERROR` line naming the
 problem. `run` exits 0 when the run succeeded and 1 when it failed; Ctrl+C exits 130.

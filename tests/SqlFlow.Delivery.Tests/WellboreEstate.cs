@@ -6,8 +6,8 @@ using SqlFlow.Delivery.Model;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The estate the inline submission suites run against: the sample Wellbore master-data mapping and the snapshots it
-/// renders with, copied to a temp repository, plus a flow that delivers wellbores through the storage service. Manual
+/// The estate the inline submission suites run against: the sample Wellbore master-data mapping, which reads nothing from a
+/// cache, copied to a temp repository, plus a flow that delivers wellbores through the storage service. Manual
 /// submission is wellbore master data, so this is the shape the suites exercise. The default flow streams no payload
 /// files; <see cref="PayloadFlow"/> is the same estate delivering files, where each record points at where its files
 /// already sit instead of carrying them.
@@ -25,7 +25,6 @@ internal sealed class WellboreEstate : IDisposable
     {
         Root = Samples.NewTempDirectory();
         CopyDirectory(Samples.Mappings, Path.Combine(Root, "mappings"));
-        CopyDirectory(Samples.Snapshots, Path.Combine(Root, "snapshots"));
         Directory.CreateDirectory(Path.Combine(Root, "flows"));
         FlowFile = WriteFlow(FlowName, Flow(FlowName, MappingReference));
     }
@@ -60,7 +59,6 @@ internal sealed class WellboreEstate : IDisposable
         {{sourceExtra ?? string.Empty}}
         render:
           mapping: {{mapping}}
-          references: pinned
           parameters:
             dataPartition: opendes
         change:

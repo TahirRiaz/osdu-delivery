@@ -1,6 +1,7 @@
 using SqlFlow.Core;
 using SqlFlow.Core.Model;
 using SqlFlow.Core.Storage;
+using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.SampleDrop;
 using SqlFlow.Delivery.Snapshots;
@@ -221,44 +222,156 @@ public class DropReaderTests
     }
 }
 
-public class FileSnapshotStoreTests
+/// <summary>
+/// The cache store over the catalog: a version round-trips whole and is never rewritten, a version writes only the records
+/// that moved against the newest one, every earlier version still reads exactly as it was written, and a version whose
+/// records were altered afterwards is refused.
+/// </summary>
+public sealed class CatalogCacheStoreTests : IDisposable
 {
-    [Fact]
-    public async Task Reference_snapshots_round_trip_and_are_immutable()
-    {
-        var root = Samples.NewTempDirectory();
-        var store = new FileSnapshotStore(root, Samples.Stores());
+    private const string Cache = "units";
 
-        Assert.Null(await store.CurrentReferenceVersionAsync());
+    private static readonly CacheCapture Capture = new(Guid.Parse("0195c9a2-7f30-7c44-9c1e-0aa1b2c3d4e5"), "manual:tester", "${env:PETRODB_URL}");
+
+    private readonly SqliteCatalog _catalog = new();
+
+    public void Dispose() => _catalog.Dispose();
+
+    private static ReferenceSnapshot Units(string version, params (string Code, string Name)[] units) => new(
+        version,
+        new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+        [
+            new ReferenceType(
+                "UnitOfMeasure", "reference-data--UnitOfMeasure",
+                units.Select(u => ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:" + u.Code, new Dictionary<string, string> { ["Code"] = u.Code, ["Name"] = u.Name }))),
+            new ReferenceType(
+                "Wellbore", "master-data--Wellbore",
+                [ReferenceItem.FromText("dev:master-data--Wellbore:abc", new Dictionary<string, string> { ["FacilityName"] = "NO 1/1-A" })]),
+        ]);
+
+    [Fact]
+    public async Task A_version_round_trips_is_made_current_and_is_never_rewritten()
+    {
+        var store = _catalog.Caches();
+        Assert.Null(await store.CurrentVersionAsync(Cache));
+
         var references = TestSchema.References();
-        await store.SaveReferencesAsync(references, makeCurrent: true);
-        Assert.Equal("refs-1", await store.CurrentReferenceVersionAsync());
-        var back = await store.LoadReferencesAsync("refs-1");
+        var saved = await store.SaveAsync(Cache, references, Capture, makeCurrent: true);
+        Assert.True(saved.Current);
+        Assert.Equal(1, saved.Sequence);
+        Assert.Null(saved.PreviousVersion);
+        Assert.Equal(Capture.RunId, saved.RunId);
+        Assert.Equal("manual:tester", saved.CapturedBy);
+        Assert.Equal(3, saved.Items);
+        Assert.Equal(["UnitOfMeasure", "Wellbore"], saved.Types.Select(t => t.Name));
+        Assert.Equal("refs-1", await store.CurrentVersionAsync(Cache));
+
+        // Read through a store that has never seen it, so the records come from the catalog and not from memory.
+        var back = await _catalog.Caches().LoadAsync(Cache, "refs-1");
         Assert.NotNull(back);
-        Assert.Equal(references.ContentHash(), back!.ContentHash());
+        Assert.Equal(references.Normalized().ContentHash(), back.ContentHash());
         Assert.Equal("dev:reference-data--UnitOfMeasure:ft", back.Type("UnitOfMeasure")!.Match("Code", "ft")!.Id);
-        Assert.Equal(["refs-1"], await store.ListReferenceVersionsAsync());
-        await Assert.ThrowsAsync<DeliveryException>(() => store.SaveReferencesAsync(references, makeCurrent: false));
+        Assert.Single(await store.ListVersionsAsync(Cache));
+
+        await Assert.ThrowsAsync<DeliveryException>(() => store.SaveAsync(Cache, references, Capture, makeCurrent: false));
+
+        // A cache is its name: another cache holds nothing of this one.
+        Assert.Null(await store.CurrentVersionAsync("other"));
+        Assert.Null(await store.LoadAsync("other", "refs-1"));
     }
 
     [Fact]
-    public async Task Edited_reference_snapshots_are_detected()
+    public async Task A_version_writes_only_the_records_that_moved_and_every_earlier_version_reads_as_it_was()
     {
-        var root = Samples.NewTempDirectory();
-        var store = new FileSnapshotStore(root, Samples.Stores());
-        await store.SaveReferencesAsync(TestSchema.References(), makeCurrent: true);
-        var file = Path.Combine(root, "references", "refs-1", "UnitOfMeasure.json");
-        File.WriteAllText(file, File.ReadAllText(file).Replace("metre", "meter", StringComparison.Ordinal));
-        await Assert.ThrowsAsync<DeliveryException>(() => store.LoadReferencesAsync("refs-1"));
+        var store = _catalog.Caches();
+        var first = Units("v1", ("m", "metre"), ("ft", "foot"));
+        var second = Units("v2", ("m", "Metre"), ("km", "kilometre"));
+        await store.SaveAsync(Cache, first, Capture, makeCurrent: true);
+        var saved = await store.SaveAsync(Cache, second, Capture, makeCurrent: true);
+        Assert.Equal("v1", saved.PreviousVersion);
+
+        // The first version wrote three rows; the second only the renamed metre and the new kilometre. The wellbore did not
+        // move, so its one row covers both versions.
+        await using (var db = _catalog.CreateDbContext())
+        {
+            var rows = db.DeliveryCacheItems.Where(i => i.CacheName == Cache).ToList();
+            Assert.Equal(5, rows.Count);
+            Assert.Equal(2, rows.Count(r => r.ToSequence == 2));
+            Assert.Single(rows, r => r.TypeName == "Wellbore" && r.FromSequence == 1 && r.ToSequence == null);
+        }
+
+        var reader = _catalog.Caches();
+        Assert.Equal(first.Normalized().ContentHash(), (await reader.LoadAsync(Cache, "v1"))!.ContentHash());
+        Assert.Equal(second.Normalized().ContentHash(), (await reader.LoadAsync(Cache, "v2"))!.ContentHash());
+        Assert.Equal("v2", await reader.CurrentVersionAsync(Cache));
+        Assert.Equal(["v2", "v1"], (await reader.ListVersionsAsync(Cache)).Select(v => v.Version));
     }
 
     [Fact]
-    public async Task The_sample_snapshot_store_loads()
+    public async Task A_version_not_made_current_leaves_the_current_one_where_it_is()
     {
-        var store = new FileSnapshotStore(Samples.Snapshots, Samples.Stores());
-        var current = await store.CurrentReferenceVersionAsync();
-        Assert.NotNull(current);
-        var references = await store.LoadReferencesAsync(current!);
-        Assert.True(references!.HasType("UnitOfMeasure"));
+        var store = _catalog.Caches();
+        await store.SaveAsync(Cache, Units("v1", ("m", "metre")), Capture, makeCurrent: true);
+        var candidate = await store.SaveAsync(Cache, Units("v2", ("m", "meter")), Capture, makeCurrent: false);
+        Assert.False(candidate.Current);
+        Assert.Equal("v1", await store.CurrentVersionAsync(Cache));
+
+        await store.SaveAsync(Cache, Units("v3", ("m", "Metre")), Capture, makeCurrent: true);
+        Assert.Equal("v3", await store.CurrentVersionAsync(Cache));
+        Assert.Equal(["v3"], (await store.ListVersionsAsync(Cache)).Where(v => v.Current).Select(v => v.Version));
+        Assert.Equal("meter", (await _catalog.Caches().LoadAsync(Cache, "v2"))!.Type("UnitOfMeasure")!.Items.Single().Fields["Name"].Text);
+    }
+
+    [Fact]
+    public async Task A_type_that_matched_no_record_is_still_held_by_its_version()
+    {
+        var store = _catalog.Caches();
+        var snapshot = new ReferenceSnapshot("v1", DateTimeOffset.UnixEpoch, [new ReferenceType("VerticalMeasurementType", "reference-data--VerticalMeasurementType", [])]);
+        await store.SaveAsync(Cache, snapshot, Capture, makeCurrent: true);
+
+        var back = await _catalog.Caches().LoadAsync(Cache, "v1");
+        Assert.True(back!.HasType("VerticalMeasurementType"));
+        Assert.Equal(snapshot.ContentHash(), back.ContentHash());
+    }
+
+    [Fact]
+    public async Task A_version_whose_records_were_altered_after_it_was_written_is_refused()
+    {
+        await _catalog.Caches().SaveAsync(Cache, TestSchema.References(), Capture, makeCurrent: true);
+        await using (var db = _catalog.CreateDbContext())
+        {
+            foreach (var row in db.DeliveryCacheItems.Where(i => i.CacheName == Cache && i.TypeName == "UnitOfMeasure").ToList())
+            {
+                row.FieldsJson = row.FieldsJson.Replace("metre", "meter", StringComparison.Ordinal);
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        var ex = await Assert.ThrowsAsync<DeliveryException>(() => _catalog.Caches().LoadAsync(Cache, "refs-1"));
+        Assert.Contains("altered after the version was written", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_type_holding_one_record_twice_is_refused_before_anything_is_written()
+    {
+        var store = _catalog.Caches();
+        var twice = ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:m", new Dictionary<string, string> { ["Code"] = "m" });
+        var snapshot = new ReferenceSnapshot("v1", DateTimeOffset.UnixEpoch, [new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure", [twice, twice])]);
+
+        var ex = await Assert.ThrowsAsync<DeliveryException>(() => store.SaveAsync(Cache, snapshot, Capture, makeCurrent: true));
+        Assert.Contains("more than once", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(await store.ListVersionsAsync(Cache));
+    }
+
+    [Fact]
+    public async Task The_sample_cache_imports_as_its_cache_flow_declares_it()
+    {
+        var store = _catalog.Caches();
+        var version = await Samples.ImportSampleCacheAsync(store);
+        Assert.Equal("20260908T212727Z", version.Version);
+        Assert.Equal(version.Version, await store.CurrentVersionAsync(Samples.SampleCacheName));
+        Assert.True(version.HasType("UnitOfMeasure"));
+        Assert.True(version.HasType("Wellbore"));
     }
 }

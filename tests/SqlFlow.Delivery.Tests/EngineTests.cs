@@ -828,7 +828,7 @@ public class EndToEndTests : IDisposable
         // The unit the two gamma ray logs matched by moves, and the change waits for a decision, so their sets are
         // gated. The third log does not read it.
         var impact = await new CacheImpactAnalyzer(ledger, _clock, NullLogger.Instance)
-            .AnalyzeAsync(GammaRayUnit("gAPI"), GammaRayUnit("gAPI-2"), CacheChangeMode.Approve, "20260908T212727Z", "20260909T000000Z");
+            .AnalyzeAsync(Samples.SampleCacheName, GammaRayUnit("gAPI"), GammaRayUnit("gAPI-2"), CacheChangeMode.Approve, "20260908T212727Z", "20260909T000000Z");
         Assert.NotEqual(0, impact.Changes);
         Assert.NotEmpty(await ledger.GatedCacheSetsAsync());
 

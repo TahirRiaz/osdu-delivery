@@ -11,6 +11,8 @@ using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Identity;
+using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
 using Xunit;
 
@@ -144,7 +146,7 @@ public sealed class DeliveryTemplateApiTests
     }
 
     [SkippableFact]
-    public async Task The_builder_drafts_from_the_repository_cache_and_checks_what_it_writes()
+    public async Task The_builder_drafts_from_a_cache_and_checks_what_it_writes()
     {
         var cs = CatalogTestDb.Require();
         await CatalogDatabase.ProvisionAsync(cs);
@@ -163,24 +165,51 @@ public sealed class DeliveryTemplateApiTests
         var flowName = "welllog-tpl-" + suffix;
         var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
         var sourceId = Guid.NewGuid();
-        await SeedRepositoryAsync(cs, repoName, repoId, sourceId, flowName, pipelineId);
+        var cacheName = "cp-cache-" + suffix;
+        await SeedRepositoryAsync(cs, repoName, repoId, sourceId, flowName, pipelineId, cacheName);
         try
         {
             var repos = await ReadAsync<List<DeliveryBuilderRepoDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/mapping-builder/repos"));
             var repo = Assert.Single(repos, r => r.RepoId == repoId);
             Assert.Equal(sourceId, repo.SourceId);
-            Assert.Equal(ReferenceVersion, repo.CacheVersion);
             var flow = Assert.Single(repo.Flows);
             Assert.Equal("WellLog@1.4.0", flow.Mapping);
+            Assert.Equal(cacheName, flow.Cache);
             Assert.Equal("opendes", flow.Parameters["dataPartition"]);
-            Assert.Equal(["FacilityName"], Assert.Single(repo.CacheTypes, c => c.Name == "Wellbore").Fields);
 
-            var detail = await ReadAsync<DeliveryTemplateDetailDto>(await SendAsync(client, author, HttpMethod.Get, DetailUrl(WellLogKind, WellLogVersion) + "&repoId=" + repoId));
+            var caches = await ReadAsync<List<DeliveryBuilderCacheDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/mapping-builder/caches"));
+            var cache = Assert.Single(caches, c => c.Name == cacheName);
+            Assert.Equal(repoId, cache.RepoId);
+            Assert.Equal(ReferenceVersion, cache.CurrentVersion);
+            Assert.Equal(["FacilityName"], Assert.Single(cache.Types, c => c.Name == "Wellbore").Fields);
+
+            // The cache page reads the same cache: the file that defines it, its types with what the current version holds of
+            // each, and the version with who captured it.
+            var listed = await ReadAsync<List<DeliveryCacheDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/caches?repoId=" + repoId));
+            var described = Assert.Single(listed);
+            Assert.Equal(cacheName, described.Name);
+            Assert.Equal("caches/" + cacheName + ".yaml", described.RelativePath);
+            Assert.Equal(ReferenceVersion, described.Current!.Version);
+            Assert.Equal("tests", described.Current.CapturedBy);
+            Assert.Equal(1, described.Versions);
+            Assert.Equal(2, Assert.Single(described.Types, t => t.Name == "Wellbore").Items);
+            var wellbores = await ReadAsync<PagedResult<DeliveryCachedItemDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/items?cache={cacheName}&type=Wellbore"));
+            Assert.Equal(2, wellbores.Total);
+            Assert.All(wellbores.Items, item => Assert.Equal(ReferenceVersion, item.Version));
+            var history = await ReadAsync<List<DeliveryCacheHistoryEntryDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/history?cache={cacheName}"));
+            var only = Assert.Single(history);
+            Assert.Null(only.Before);
+            using (var unnamed = await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/cache/items"))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, unnamed.StatusCode);
+            }
+
+            var detail = await ReadAsync<DeliveryTemplateDetailDto>(await SendAsync(client, author, HttpMethod.Get, DetailUrl(WellLogKind, WellLogVersion) + "&cache=" + cacheName));
             Assert.Equal(["UnitOfMeasure"], Assert.Single(detail.Variables, v => v.Path == "osdu.data.Curves[].CurveUnit").CacheTypes);
 
             var draft = await ReadAsync<MappingDraft>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/draft", new
             {
-                repoId, kind = WellLogKind, version = WellLogVersion, name = "WellLog", mappingVersion = "9.0.0", system = "recall",
+                cache = cacheName, kind = WellLogKind, version = WellLogVersion, name = "WellLog", mappingVersion = "9.0.0", system = "recall",
             }));
             var prefilled = Assert.Single(draft.Entries, e => e.Target == "osdu.data.WellboreID");
             Assert.True(prefilled.Prefilled);
@@ -193,7 +222,7 @@ public sealed class DeliveryTemplateApiTests
             Assert.Empty(parsed.Issues);
             Assert.NotNull(parsed.Draft);
             var parameters = new Dictionary<string, string> { ["dataPartition"] = "opendes" };
-            var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { repoId, draft = parsed.Draft, parameters }));
+            var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { cache = cacheName, draft = parsed.Draft, parameters }));
             Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
             Assert.Contains("target: osdu.data.WellboreID", checkedSample.Yaml, StringComparison.Ordinal);
 
@@ -213,18 +242,18 @@ public sealed class DeliveryTemplateApiTests
                     ? e with { CacheType = "UnitOfMeasure", FindBy = [new MappingDraftFind("Code", "wellbore_uwi", null)] }
                     : e).ToList(),
             };
-            var refused = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { repoId, draft = wrong, parameters }));
+            var refused = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { cache = cacheName, draft = wrong, parameters }));
             Assert.False(refused.Valid);
             Assert.Contains(refused.Issues, i => i.Severity == "error" && i.Message.Contains("writes the id of a cached UnitOfMeasure", StringComparison.Ordinal));
 
-            // Without a repository there is no cache to check against, and the check says so.
-            var noCache = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { repoId = (Guid?)null, draft = parsed.Draft, parameters }));
+            // Without a cache named there is nothing to check the cache entries against, and the check says so.
+            var noCache = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { cache = (string?)null, draft = parsed.Draft, parameters }));
             Assert.False(noCache.Valid);
-            Assert.Contains(noCache.Issues, i => i.Message.Contains("reads cache.Wellbore, which reference snapshot 'none' does not hold", StringComparison.Ordinal));
+            Assert.Contains(noCache.Issues, i => i.Message.Contains("reads cache.Wellbore, which cache version 'none' does not hold", StringComparison.Ordinal));
         }
         finally
         {
-            await CleanupAsync(cs, repoId, flowName);
+            await CleanupAsync(cs, repoId, flowName, cacheName);
         }
     }
 
@@ -341,10 +370,10 @@ public sealed class DeliveryTemplateApiTests
 
     /// <summary>
     /// A repository as the sync would leave it: a tracked source, one delivery flow that renders with the sample WellLog
-    /// mapping, the cache definitions of the sample metadata sync, and the sample reference snapshot's items as the current
-    /// cache version.
+    /// mapping and names the cache, the cache definitions its cache flow declares, and the sample cache records as the
+    /// current version of the cache, written the way a refresh writes a version.
     /// </summary>
-    private static async Task SeedRepositoryAsync(string cs, string repoName, Guid repoId, Guid sourceId, string flowName, Guid pipelineId)
+    private static async Task SeedRepositoryAsync(string cs, string repoName, Guid repoId, Guid sourceId, string flowName, Guid pipelineId, string cacheName)
     {
         var now = DateTime.UtcNow;
         await using var db = CatalogDatabase.Create(cs);
@@ -365,6 +394,7 @@ public sealed class DeliveryTemplateApiTests
                   location: C:/drops/{flowName}
                 render:
                   mapping: WellLog@1.4.0
+                  cache: {cacheName}
                   parameters:
                     dataPartition: opendes
                 target:
@@ -388,32 +418,17 @@ public sealed class DeliveryTemplateApiTests
             ["Wellbore"] = """[{"path":"data.FacilityName","as":"FacilityName"}]""",
         };
 
-        var snapshotId = Guid.NewGuid();
-        db.DeliverySnapshots.Add(new DeliverySnapshot
-        {
-            Id = snapshotId,
-            RepoId = repoId,
-            Kind = "references",
-            Name = ReferenceVersion,
-            Version = ReferenceVersion,
-            CapturedUtc = now,
-            Current = true,
-            RelativePath = "snapshots/references/" + ReferenceVersion + "/manifest.json",
-            SummaryJson = "{}",
-            FirstSeenUtc = now,
-            LastSeenUtc = now,
-        });
-
+        var types = new List<ReferenceType>();
         foreach (var (type, declared) in fields)
         {
-            var file = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(SampleRoot, "snapshots", "references", ReferenceVersion, type + ".json")))!.AsObject();
+            var file = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(SampleRoot, "references", type + ".json")))!.AsObject();
             var entityType = file["entityType"]!.GetValue<string>();
             db.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
             {
                 Id = Guid.NewGuid(),
                 RepoId = repoId,
-                FlowName = "osdu-cache-sync",
-                RelativePath = "flows/osdu-cache-sync.yaml",
+                CacheName = cacheName,
+                RelativePath = "caches/" + cacheName + ".yaml",
                 Name = type,
                 EntityType = entityType,
                 Kind = "osdu:wks:" + entityType + ":*",
@@ -422,39 +437,20 @@ public sealed class DeliveryTemplateApiTests
                 FirstSeenUtc = now,
                 LastSeenUtc = now,
             });
-
-            foreach (var item in file["items"]!.AsArray().OfType<JsonObject>())
-            {
-                var values = new JsonObject();
-                foreach (var (name, value) in item)
-                {
-                    if (name != "id")
-                    {
-                        values[name] = value?.DeepClone();
-                    }
-                }
-
-                db.DeliverySnapshotItems.Add(new DeliverySnapshotItem
-                {
-                    SnapshotId = snapshotId,
-                    RepoId = repoId,
-                    TypeName = type,
-                    EntityType = entityType,
-                    RecordId = item["id"]!.GetValue<string>(),
-                    FieldsJson = values.ToJsonString(),
-                    Terms = string.Join('\n', values.Select(kv => kv.Value?.ToString() ?? string.Empty)),
-                });
-            }
+            types.Add(ReferenceType.FromJson(type, file));
         }
 
         await db.SaveChangesAsync();
+
+        var store = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
+        await store.SaveAsync(cacheName, new ReferenceSnapshot(ReferenceVersion, new DateTimeOffset(now), types), new CacheCapture(null, "tests", "sample files"), makeCurrent: true);
     }
 
-    private static async Task CleanupAsync(string cs, Guid repoId, string flowName)
+    private static async Task CleanupAsync(string cs, Guid repoId, string flowName, string cacheName)
     {
         await using var db = CatalogDatabase.Create(cs);
-        await db.DeliverySnapshotItems.Where(i => i.RepoId == repoId).ExecuteDeleteAsync();
-        await db.DeliverySnapshots.Where(s => s.RepoId == repoId).ExecuteDeleteAsync();
+        await db.DeliveryCacheItems.Where(i => i.CacheName == cacheName).ExecuteDeleteAsync();
+        await db.DeliveryCacheVersions.Where(v => v.CacheName == cacheName).ExecuteDeleteAsync();
         await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
         await db.ComputeTasks.Where(t => t.SourceRef == flowName).ExecuteDeleteAsync();
         await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();

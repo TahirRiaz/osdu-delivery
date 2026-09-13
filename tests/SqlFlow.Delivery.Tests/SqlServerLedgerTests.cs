@@ -1,8 +1,10 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
+using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Snapshots;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -63,38 +65,87 @@ public class SqlServerLedgerTests
         var cs = ConnectionString.Value!;
         await CatalogDatabase.ProvisionAsync(cs);
 
-        var snapshot = Guid.NewGuid();
+        var cache = "case-" + Guid.NewGuid().ToString("N");
         const string Foot = "test:reference-data--UnitOfMeasure:ft";
         const string Femtotesla = "test:reference-data--UnitOfMeasure:fT";
-        await using (var db = CatalogDatabase.Create(cs))
-        {
-            db.DeliverySnapshotItems.AddRange(new[] { Foot, Femtotesla }.Select(id => new DeliverySnapshotItem
-            {
-                SnapshotId = snapshot,
-                RepoId = snapshot,
-                TypeName = "UnitOfMeasure",
-                EntityType = "reference-data--UnitOfMeasure",
-                RecordId = id,
-                Terms = id,
-            }));
-            await db.SaveChangesAsync();
-        }
+        var store = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
+        var units = new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
+        [
+            ReferenceItem.FromText(Foot, new Dictionary<string, string> { ["Code"] = "ft", ["Name"] = "foot" }),
+            ReferenceItem.FromText(Femtotesla, new Dictionary<string, string> { ["Code"] = "fT", ["Name"] = "femtotesla" }),
+        ]);
 
-        await using (var db = CatalogDatabase.Create(cs))
+        try
         {
-            try
-            {
-                var found = await db.DeliverySnapshotItems
-                    .Where(i => i.SnapshotId == snapshot && i.RecordId == Foot)
-                    .Select(i => i.RecordId)
-                    .ToListAsync();
-                Assert.Equal([Foot], found);
-            }
-            finally
-            {
-                await db.DeliverySnapshotItems.Where(i => i.SnapshotId == snapshot).ExecuteDeleteAsync();
-            }
+            await store.SaveAsync(cache, new ReferenceSnapshot("v1", DateTimeOffset.UtcNow, [units]), new CacheCapture(null, "tests", "seeded"), makeCurrent: true);
+
+            await using var db = CatalogDatabase.Create(cs);
+            var found = await db.DeliveryCacheItems
+                .Where(i => i.CacheName == cache && i.RecordId == Foot)
+                .Select(i => i.RecordId)
+                .ToListAsync();
+            Assert.Equal([Foot], found);
+
+            var loaded = await new CatalogCacheStore(() => CatalogDatabase.Create(cs)).LoadAsync(cache, "v1");
+            Assert.Equal(2, loaded!.Type("UnitOfMeasure")!.Items.Count);
         }
+        finally
+        {
+            await CleanupCacheAsync(cs, cache);
+        }
+    }
+
+    [SkippableFact]
+    public async Task A_cache_version_writes_and_reads_its_ranges_on_sql_server()
+    {
+        // The store's transaction, its range updates and the binary comparison of stored values, on the real server.
+        Skip.IfNot(
+            Reachable.Value,
+            "The SQL Server ledger tests need a reachable, disposable catalog database. Set SQLFLOW_TEST_DB, for example via the git-ignored .sqlflow/env file.");
+        var cs = ConnectionString.Value!;
+        await CatalogDatabase.ProvisionAsync(cs);
+
+        var cache = "ranges-" + Guid.NewGuid().ToString("N");
+        var store = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
+        var capture = new CacheCapture(Guid.NewGuid(), "tests", "seeded");
+        static ReferenceSnapshot Units(string version, string metreName) => new(version, DateTimeOffset.UtcNow,
+        [
+            new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
+            [
+                ReferenceItem.FromText("test:reference-data--UnitOfMeasure:m", new Dictionary<string, string> { ["Code"] = "m", ["Name"] = metreName }),
+                ReferenceItem.FromText("test:reference-data--UnitOfMeasure:ft", new Dictionary<string, string> { ["Code"] = "ft", ["Name"] = "foot" }),
+            ]),
+        ]);
+
+        try
+        {
+            await store.SaveAsync(cache, Units("v1", "metre"), capture, makeCurrent: true);
+            var second = await store.SaveAsync(cache, Units("v2", "Metre"), capture, makeCurrent: true);
+            Assert.Equal("v1", second.PreviousVersion);
+            Assert.Equal(capture.RunId, second.RunId);
+
+            var reader = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
+            Assert.Equal("v2", await reader.CurrentVersionAsync(cache));
+            Assert.Equal("metre", (await reader.LoadAsync(cache, "v1"))!.Type("UnitOfMeasure")!.Match("Code", "m")!.Fields["Name"].Text);
+            Assert.Equal("Metre", (await reader.LoadAsync(cache, "v2"))!.Type("UnitOfMeasure")!.Match("Code", "m")!.Fields["Name"].Text);
+
+            // A change of case is a change: only the metre moved, and the foot's one row covers both versions.
+            await using var db = CatalogDatabase.Create(cs);
+            var diff = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(cache, "v1"));
+            Assert.Equal((1L, 0L, 0L), (diff!.Changed, diff.Added, diff.Removed));
+            Assert.Equal(3, await db.DeliveryCacheItems.CountAsync(i => i.CacheName == cache));
+        }
+        finally
+        {
+            await CleanupCacheAsync(cs, cache);
+        }
+    }
+
+    private static async Task CleanupCacheAsync(string cs, string cache)
+    {
+        await using var db = CatalogDatabase.Create(cs);
+        await db.DeliveryCacheItems.Where(i => i.CacheName == cache).ExecuteDeleteAsync();
+        await db.DeliveryCacheVersions.Where(v => v.CacheName == cache).ExecuteDeleteAsync();
     }
 
     private RecordState Work(string name, Guid submission, string reference, string metadataHash, DateTime modified) => new()

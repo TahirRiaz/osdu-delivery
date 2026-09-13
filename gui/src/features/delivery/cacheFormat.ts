@@ -1,4 +1,4 @@
-import type { DeliveryCacheDefinition, DeliveryCacheField } from "../../api/delivery";
+import type { DeliveryCache, DeliveryCacheField, DeliveryCacheSchedule } from "../../api/delivery";
 
 /** A cached value on one line: a scalar as itself, a set as its values, an object as its JSON. */
 export function cachedText(value: unknown): string {
@@ -56,59 +56,46 @@ export function compareFamilies(a: string, b: string): number {
   return rankA !== rankB ? rankA - rankB : a.localeCompare(b);
 }
 
-/** One cached type across every repository in scope: the same name declared in two repositories is one entry. */
+/** One type of the cache in scope, as the definition card and the type picker show it. */
 export interface CachedTypeSummary {
   name: string;
   entityType: string;
   family: string;
-  /** The records the version being read holds for the type, over every repository in scope. */
+  kind: string;
+  query: string | null;
+  /** The records the current version holds of the type. */
   items: number;
   /** The captured paths by the name they are cached under, in declaration order. */
   fields: DeliveryCacheField[];
-  /** The retrieval flows that keep the type current. */
-  flows: string[];
-  /** How many repositories declare it. */
-  repos: number;
-  /** Whether a refresh of the type moves the pin, so deliveries read what it captured. */
-  movesPin: boolean;
+  /** approve or auto: what a changed value does to the records built from it. */
+  onChange: string;
 }
 
-/** The declarations folded by type name and sorted the way the type list shows them: by family, then by name. */
-export function summarizeTypes(definitions: DeliveryCacheDefinition[]): CachedTypeSummary[] {
-  const byName = new Map<string, CachedTypeSummary & { repoIds: Set<string> }>();
-  for (const definition of definitions) {
-    const existing = byName.get(definition.name);
-    if (existing === undefined) {
-      byName.set(definition.name, {
-        name: definition.name,
-        entityType: definition.entityType,
-        family: entityFamily(definition.entityType),
-        items: definition.items,
-        fields: [...definition.fields],
-        flows: [definition.flowName],
-        repos: 1,
-        repoIds: new Set([definition.repoId]),
-        movesPin: definition.makeCurrent,
-      });
-      continue;
-    }
+/** The types a cache declares, sorted the way the type list shows them: by family, then by name. */
+export function summarizeTypes(cache: DeliveryCache | null): CachedTypeSummary[] {
+  return (cache?.types ?? [])
+    .map((type) => ({
+      name: type.name,
+      entityType: type.entityType,
+      family: entityFamily(type.entityType),
+      kind: type.kind,
+      query: type.query,
+      items: type.items,
+      fields: type.fields,
+      onChange: type.onChange,
+    }))
+    .sort((a, b) => compareFamilies(a.family, b.family) || a.name.localeCompare(b.name));
+}
 
-    existing.items += definition.items;
-    existing.repoIds.add(definition.repoId);
-    existing.repos = existing.repoIds.size;
-    existing.movesPin = existing.movesPin || definition.makeCurrent;
-    if (!existing.flows.includes(definition.flowName)) {
-      existing.flows.push(definition.flowName);
-    }
-
-    for (const field of definition.fields) {
-      if (!existing.fields.some((known) => known.as === field.as)) {
-        existing.fields.push(field);
-      }
-    }
+/** A schedule's cadence in words: its cron, its interval, or that it fires behind other schedules. */
+export function scheduleCadence(schedule: DeliveryCacheSchedule): string {
+  if (schedule.cron !== null && schedule.cron.trim() !== "") {
+    return `${schedule.name}: cron ${schedule.cron}`;
   }
 
-  return [...byName.values()]
-    .map(({ repoIds: _repoIds, ...summary }) => summary)
-    .sort((a, b) => compareFamilies(a.family, b.family) || a.name.localeCompare(b.name));
+  if (schedule.intervalSeconds !== null) {
+    return `${schedule.name}: every ${schedule.intervalSeconds}s`;
+  }
+
+  return schedule.chained ? `${schedule.name}: after the schedules it follows` : schedule.name;
 }

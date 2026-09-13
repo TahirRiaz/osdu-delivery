@@ -226,7 +226,7 @@ public sealed class Planner
 
     /// <summary>Opens the drop, checks it against the flow and the mapping, and applies the tier-0 gate.</summary>
     /// <param name="flow">The flow whose drop is planned.</param>
-    /// <param name="resolved">The pinned render inputs (mapping, schema and reference snapshots).</param>
+    /// <param name="resolved">The pinned render inputs (mapping, template and cache version).</param>
     /// <param name="parameters">The resolved flow parameter values.</param>
     /// <param name="dropLocation">The drop root to read.</param>
     /// <param name="force">Skip the tier-0 whole-run gate: plan every record even when no source table advanced.</param>

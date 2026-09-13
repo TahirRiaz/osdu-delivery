@@ -18,21 +18,21 @@ public sealed record ResolvedMapping(
 
 /// <summary>
 /// Resolves a flow's <c>render</c> block into a <see cref="ResolvedMapping"/>: the pinned mapping from the repository, the
-/// template version the mapping pins from the catalog, the reference snapshot the flow pins (or the store's current one for
-/// <c>pinned</c>), and the mapping parameters the flow supplies. The preflight runs before anything is returned.
+/// template version the mapping pins from the catalog, the version of the cache the flow names (its current version, or
+/// the one the flow pins) from the catalog, and the mapping parameters the flow supplies. The preflight runs before
+/// anything is returned.
 /// </summary>
 public sealed class RenderResolver
 {
     private readonly MappingCatalog _mappings;
-    private readonly ISnapshotStore _snapshots;
+    private readonly ICacheStore? _cache;
     private readonly ITemplateStore? _templates;
 
-    public RenderResolver(MappingCatalog mappings, ISnapshotStore snapshots, ITemplateStore? templates)
+    public RenderResolver(MappingCatalog mappings, ICacheStore? cache, ITemplateStore? templates)
     {
         ArgumentNullException.ThrowIfNull(mappings);
-        ArgumentNullException.ThrowIfNull(snapshots);
         _mappings = mappings;
-        _snapshots = snapshots;
+        _cache = cache;
         _templates = templates;
     }
 
@@ -52,32 +52,7 @@ public sealed class RenderResolver
             ?? throw new FlowValidationException(
                 $"{where}: mapping {mapping.Reference} pins template {mapping.Template}, which is not saved in the catalog. Save it on the Templates page, or with 'sqlflow template import'.");
 
-        var usesCache = mapping.Entries.Any(e => e.Source?.Kind == MappingSourceKind.Cache);
-        ReferenceSnapshot references;
-        if (flow.Render.References.Equals("pinned", StringComparison.OrdinalIgnoreCase))
-        {
-            var current = await _snapshots.CurrentReferenceVersionAsync(ct).ConfigureAwait(false);
-            if (current is null)
-            {
-                if (usesCache)
-                {
-                    throw new FlowValidationException(
-                        $"{where}: render.references is 'pinned' but the snapshot store has no current reference snapshot. Capture one with 'sqlflow snapshot references'.");
-                }
-
-                references = ReferenceSnapshot.Empty;
-            }
-            else
-            {
-                references = await _snapshots.LoadReferencesAsync(current, ct).ConfigureAwait(false)
-                    ?? throw new FlowValidationException($"{where}: the current reference snapshot '{current}' is missing from the store.");
-            }
-        }
-        else
-        {
-            references = await _snapshots.LoadReferencesAsync(flow.Render.References, ct).ConfigureAwait(false)
-                ?? throw new FlowValidationException($"{where}: reference snapshot '{flow.Render.References}' does not exist in the store.");
-        }
+        var references = await CacheAsync(flow, mapping, where, ct).ConfigureAwait(false);
 
         var parameters = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (name, declared) in mapping.Parameters)
@@ -96,7 +71,8 @@ public sealed class RenderResolver
         var context = new RenderContext
         {
             MappingReference = mapping.Reference,
-            ReferenceSnapshotVersion = references.Version,
+            CacheName = ReferenceEquals(references, ReferenceSnapshot.Empty) ? null : flow.Render.Cache,
+            CacheVersion = references.Version,
             SchemaSnapshotVersion = schema.Version,
             Parameters = parameters,
         };
@@ -105,5 +81,41 @@ public sealed class RenderResolver
         Preflight.ThrowIfFailed(issues, where);
         var renderer = new MappingRenderer(mapping, schema, references, context);
         return new ResolvedMapping(mapping, schema, references, context, renderer);
+    }
+
+    /// <summary>
+    /// The version of the cache a render reads. A mapping that reads nothing from a cache renders against no cache at all,
+    /// whatever the flow names, so refreshing a cache never moves the render context of records that never read it.
+    /// </summary>
+    private async Task<ReferenceSnapshot> CacheAsync(FlowDefinition flow, MappingDefinition mapping, string where, CancellationToken ct)
+    {
+        var readsCache = mapping.Entries.Any(e => e.Source?.Kind == MappingSourceKind.Cache);
+        if (!readsCache)
+        {
+            return ReferenceSnapshot.Empty;
+        }
+
+        if (flow.Render.Cache is not { } cache)
+        {
+            throw new FlowValidationException(
+                $"{where}: mapping {mapping.Reference} reads the cache, so render.cache must name the cache it reads: the name of a cache flow (a document with flowType: cache).");
+        }
+
+        if (_cache is null)
+        {
+            throw new FlowValidationException(
+                $"{where}: render.cache names cache '{cache}', and caches live in the catalog, which this host was started without. Start it with the catalog connection (--db, or the catalog variable).");
+        }
+
+        var version = flow.Render.CacheVersion;
+        if (version.Equals(FlowRender.CurrentCacheVersion, StringComparison.OrdinalIgnoreCase))
+        {
+            version = await _cache.CurrentVersionAsync(cache, ct).ConfigureAwait(false)
+                ?? throw new FlowValidationException(
+                    $"{where}: cache '{cache}' has no current version. Run the cache flow '{cache}' with the refresh operation to capture one.");
+        }
+
+        return await _cache.LoadAsync(cache, version, ct).ConfigureAwait(false)
+            ?? throw new FlowValidationException($"{where}: render.cacheVersion pins version {version} of cache '{cache}', which the catalog does not hold.");
     }
 }

@@ -1,8 +1,0 @@
-{
-  "types": [
-    { "name": "UnitOfMeasure", "entityType": "reference-data--UnitOfMeasure", "kind": "osdu:wks:reference-data--UnitOfMeasure:*", "fields": ["data.Code", "data.Name", "data.ID"] },
-    { "name": "LogCurveBusinessValue", "entityType": "reference-data--LogCurveBusinessValue", "kind": "osdu:wks:reference-data--LogCurveBusinessValue:*", "fields": ["data.Code", "data.Name"] },
-    { "name": "VerticalMeasurementType", "entityType": "reference-data--VerticalMeasurementType", "kind": "osdu:wks:reference-data--VerticalMeasurementType:*", "fields": ["data.Code", "data.Name"] },
-    { "name": "Wellbore", "entityType": "master-data--Wellbore", "kind": "osdu:wks:master-data--Wellbore:*", "fields": ["data.FacilityName"] }
-  ]
-}

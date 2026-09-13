@@ -38,7 +38,10 @@ public sealed partial record RunParameters
     /// <summary>Retrieve: a retrieval flow's run, paging OSDU's search index into files on the lake.</summary>
     public const string RetrieveOperation = "retrieve";
 
-    public static readonly IReadOnlyList<string> Operations = [DeliverOperation, VerifyOperation, PlanOperation, KnownStateOperation, IntakeOperation, DrainOperation, RetrieveOperation];
+    /// <summary>Refresh: a cache flow's run, capturing the types it declares from OSDU into a new version of the cache in the catalog.</summary>
+    public const string RefreshOperation = "refresh";
+
+    public static readonly IReadOnlyList<string> Operations = [DeliverOperation, VerifyOperation, PlanOperation, KnownStateOperation, IntakeOperation, DrainOperation, RetrieveOperation, RefreshOperation];
 
     /// <summary>A scoped redelivery sends the record's document and its payload again.</summary>
     public const string RedeliverAll = "all";
@@ -176,6 +179,11 @@ public sealed partial record RunParameters
         if (string.Equals(Operation, RetrieveOperation, StringComparison.OrdinalIgnoreCase) && (SubmissionId is not null || RecordKeys.Count > 0 || !string.IsNullOrWhiteSpace(Drop)))
         {
             throw new SqlFlowException("A retrieval covers the whole flow; it takes no drop, submission or record scope.");
+        }
+
+        if (string.Equals(Operation, RefreshOperation, StringComparison.OrdinalIgnoreCase) && (SubmissionId is not null || RecordKeys.Count > 0 || !string.IsNullOrWhiteSpace(Drop)))
+        {
+            throw new SqlFlowException("A cache refresh captures every type the cache declares; it takes no drop, submission or record scope.");
         }
 
         if (Partitions.Count > MaxPartitions)

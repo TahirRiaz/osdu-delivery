@@ -16,15 +16,19 @@ using SqlFlow.Delivery.Validation;
 namespace SqlFlow.Cli;
 
 /// <summary>
-/// The delivery kind's own verbs: <c>check</c> (everything checkable offline for one flow: the mapping against its
-/// pinned template, the reference snapshot, and the drop's manifest when the drop is present), <c>snapshot</c> (capture
-/// or list the reference snapshots of the cache a flow renders against), and <c>template</c> (capture, import, list,
-/// show and delete the templates in the catalog, docs/delivery/mapping-templates.md).
+/// The delivery kind's own verbs: <c>check</c> (everything checkable for one flow: the mapping against its pinned template,
+/// the version of the cache it reads, and the drop's manifest when the drop is present), <c>cache</c> (list the versions
+/// of a cache, or import one from type files for offline work), and <c>template</c> (capture, import, list, show and
+/// delete the templates in the catalog, docs/delivery/mapping-templates.md). A cache is captured from OSDU by running its
+/// cache flow (<c>sqlflow run &lt;cache.yaml&gt;</c>), the same run the platform schedules.
 /// </summary>
 internal static class DeliveryVerbs
 {
     private const string TemplateUsage =
         "Usage: sqlflow template (capture --kind <kind> [--release <tag>] | import <schema.json> --kind <kind> [--release <tag>] | import --from-dir <dir> --kind <kind> | list | show --kind <kind> [--version <version>] | delete --kind <kind> --version <version>) [--db <conn-ref>] [--json]";
+
+    private const string CacheUsage =
+        "Usage: sqlflow cache (list <cache.yaml | cache name> | import <cache.yaml> --from-dir <dir> [--no-current]) [--db <conn-ref>] [--json]";
 
     public static async Task<int> CheckAsync(IServiceProvider provider, string flowPath, string[] args, bool json, CancellationToken ct)
     {
@@ -42,7 +46,14 @@ internal static class DeliveryVerbs
             ["renderContext"] = JsonNode.Parse(runtime.Mapping.Context.Canonical()),
             ["drop"] = runtime.DropLocation,
             ["mappings"] = runtime.Layout.MappingsDirectory,
-            ["snapshots"] = runtime.Layout.SnapshotsRoot,
+            ["cache"] = runtime.Mapping.Context.CacheName is { } cacheName
+                ? new JsonObject
+                {
+                    ["name"] = cacheName,
+                    ["version"] = runtime.Mapping.References.Version,
+                    ["types"] = runtime.Mapping.References.Types.Count,
+                }
+                : null,
         };
 
         // The drop is checked when it is there (or was named explicitly); a flow whose drop has not landed yet still
@@ -76,10 +87,11 @@ internal static class DeliveryVerbs
         Console.WriteLine($"OK  {runtime.Flow.Name} ({runtime.Flow.Id:D})");
         Console.WriteLine($"    mapping     {runtime.Mapping.Mapping.Reference}");
         Console.WriteLine($"    template    {runtime.Mapping.Mapping.Template} (saved {runtime.Mapping.Schema.CapturedUtc:u})");
-        Console.WriteLine($"    references  {runtime.Mapping.References.Version} ({runtime.Mapping.References.Types.Count} type(s))");
+        Console.WriteLine(runtime.Mapping.Context.CacheName is { } name
+            ? $"    cache       {name} version {runtime.Mapping.References.Version} ({runtime.Mapping.References.Types.Count} type(s))"
+            : "    cache       none (the mapping reads nothing from a cache)");
         Console.WriteLine($"    context     {runtime.Mapping.Context.Hash()[..16]}");
         Console.WriteLine($"    mappings    {runtime.Layout.MappingsDirectory}");
-        Console.WriteLine($"    snapshots   {runtime.Layout.SnapshotsRoot}");
         Console.WriteLine(dropChecked
             ? $"    drop        {runtime.DropLocation} (manifest and source bindings checked)"
             : $"    drop        {runtime.DropLocation} (not present; documents validated without it)");
@@ -91,73 +103,89 @@ internal static class DeliveryVerbs
         return 0;
     }
 
-    public static async Task<int> SnapshotAsync(IServiceProvider provider, string flowPath, string[] positional, string[] args, CancellationToken ct)
+    public static async Task<int> CacheAsync(IServiceProvider provider, string[] positional, string[] args, bool json, CancellationToken ct)
     {
         var engine = provider.GetRequiredService<EngineContext>();
-        var flow = engine.Documents.LoadFlow(flowPath);
-        var layout = DeliveryLayout.Resolve(flow);
-        var (mappings, store) = FlowRuntime.RenderInputs(engine, flow);
-        var builder = new SnapshotBuilder(store, engine.Time, engine.Loggers.CreateLogger<SnapshotBuilder>());
-        var verb = positional.Length > 2 ? positional[2].ToLowerInvariant() : string.Empty;
+        var verb = positional.Length > 1 ? positional[1].ToLowerInvariant() : string.Empty;
+        var target = positional.Length > 2 ? positional[2] : throw new FlowValidationException(CacheUsage);
+        var store = engine.Cache
+            ?? throw new FlowValidationException("Caches live in the catalog. Run 'sqlflow cache' with --db <conn-ref>, or set the catalog variable.");
 
         switch (verb)
         {
-            case "references":
+            case "list":
             {
-                var makeCurrent = !args.Contains("--no-current");
-                ReferenceSnapshot snapshot;
-                if (Program.GetOption(args, "--from-dir") is { } directory)
+                var name = File.Exists(target) ? engine.Documents.LoadCache(target).Name : target;
+                var versions = await store.ListVersionsAsync(name, ct).ConfigureAwait(false);
+                if (json)
                 {
-                    snapshot = await builder.ReferencesFromDirectoryAsync(directory, makeCurrent, ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    var specPath = Program.GetOption(args, "--spec")
-                        ?? throw new FlowValidationException("Usage: sqlflow snapshot <flow.yaml> references (--from-dir <dir> | --spec <spec.json> [--endpoint <url>]) [--no-current]");
-                    var spec = ReferenceCaptureSpec.Parse(await File.ReadAllTextAsync(specPath, ct).ConfigureAwait(false), specPath);
-                    using var osdu = await ConnectAsync(flow.Target.Endpoint, flow.Target.Auth, flow.Target.Headers, flow.Reliability, args, engine, ct).ConfigureAwait(false);
-                    snapshot = await builder.ReferencesFromOsduAsync(osdu, spec, makeCurrent, ct).ConfigureAwait(false);
+                    Console.WriteLine(CanonicalJson.Pretty(new JsonArray(versions.Select(v => (JsonNode)Describe(v)).ToArray())));
+                    return 0;
                 }
 
-                Console.WriteLine($"references {snapshot.Version} ({snapshot.Types.Count} type(s), {snapshot.Types.Sum(t => t.Items.Count)} item(s)){(makeCurrent ? ", now current" : string.Empty)} -> {layout.SnapshotsRoot}");
+                if (versions.Count == 0)
+                {
+                    Console.WriteLine($"cache {name} holds no version yet; run its cache flow with the refresh operation to capture one");
+                }
+
+                foreach (var v in versions)
+                {
+                    var run = v.RunId is { } runId ? $" in run {runId:D}" : string.Empty;
+                    Console.WriteLine(
+                        $"{v.Version}  {(v.Current ? "current" : "       ")}  {v.Items} record(s) in {v.Types.Count} type(s), captured {v.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} by {v.CapturedBy}{run}");
+                }
+
                 return 0;
             }
 
-            case "list":
+            case "import":
             {
-                Console.WriteLine($"snapshot store {layout.SnapshotsRoot}");
-                var current = await store.CurrentReferenceVersionAsync(ct).ConfigureAwait(false);
-                var versions = await store.ListReferenceVersionsAsync(ct).ConfigureAwait(false);
-                if (versions.Count == 0)
+                var cache = engine.Documents.LoadCache(target);
+                var directory = Path.GetFullPath(Program.GetOption(args, "--from-dir") ?? throw new FlowValidationException(CacheUsage));
+                var builder = new SnapshotBuilder(store, cache.Name, engine.Time, engine.Loggers.CreateLogger<SnapshotBuilder>());
+                var write = await builder.ImportDirectoryAsync(
+                    directory, cache.Types, new CacheCapture(null, "cli:" + Environment.UserName, $"files under {directory}"),
+                    cache.MakeCurrent && !args.Contains("--no-current"), ct).ConfigureAwait(false);
+                var current = string.Equals(await store.CurrentVersionAsync(cache.Name, ct).ConfigureAwait(false), write.Snapshot.Version, StringComparison.Ordinal);
+                if (json)
                 {
-                    Console.WriteLine("  no reference snapshots captured yet");
+                    Console.WriteLine(CanonicalJson.Pretty(new JsonObject
+                    {
+                        ["cache"] = cache.Name,
+                        ["version"] = write.Snapshot.Version,
+                        ["written"] = write.Written,
+                        ["current"] = current,
+                        ["types"] = write.Snapshot.Types.Count,
+                        ["records"] = write.Snapshot.Types.Sum(t => t.Items.Count),
+                    }));
+                    return 0;
                 }
 
-                foreach (var version in versions)
-                {
-                    Console.WriteLine($"  references {version}{(version == current ? "  (current)" : string.Empty)}");
-                }
-
-                var mapping = mappings.Load(flow.Render.Mapping);
-                if (engine.Templates is not { } templates)
-                {
-                    Console.WriteLine($"  template {mapping.Template}: not checked (templates live in the catalog; add --db)");
-                }
-                else
-                {
-                    var template = await templates.LoadAsync(mapping.Template, ct).ConfigureAwait(false);
-                    Console.WriteLine(template is null
-                        ? $"  template {mapping.Template}: not saved (save it on the Templates page, or with 'sqlflow template import')"
-                        : $"  template {mapping.Template} (saved {template.CapturedUtc:u})");
-                }
-
+                Console.WriteLine(write.Written
+                    ? $"cache {cache.Name}: version {write.Snapshot.Version} written with {write.Snapshot.Types.Count} type(s) and {write.Snapshot.Types.Sum(t => t.Items.Count)} record(s){(current ? ", now current" : ", not made current")}"
+                    : $"cache {cache.Name}: the files hold exactly what version {write.Snapshot.Version} holds, so nothing was written");
                 return 0;
             }
 
             default:
-                throw new FlowValidationException("Usage: sqlflow snapshot <flow.yaml> (references | list) ...");
+                throw new FlowValidationException(CacheUsage);
         }
     }
+
+    private static JsonObject Describe(CacheVersionInfo v) => new()
+    {
+        ["cache"] = v.CacheName,
+        ["version"] = v.Version,
+        ["sequence"] = v.Sequence,
+        ["current"] = v.Current,
+        ["capturedUtc"] = v.CapturedUtc.ToString("O", CultureInfo.InvariantCulture),
+        ["capturedBy"] = v.CapturedBy,
+        ["runId"] = v.RunId?.ToString("D"),
+        ["origin"] = v.Origin,
+        ["previousVersion"] = v.PreviousVersion,
+        ["records"] = v.Items,
+        ["types"] = new JsonArray(v.Types.Select(t => (JsonNode)new JsonObject { ["name"] = t.Name, ["entityType"] = t.EntityType, ["records"] = t.Items }).ToArray()),
+    };
 
     public static async Task<int> TemplateAsync(IServiceProvider provider, string[] positional, string[] args, bool json, CancellationToken ct)
     {
@@ -342,12 +370,4 @@ internal static class DeliveryVerbs
         TemplateVariableShape.Whole => $"whole {v.Type}",
         _ => v.Type,
     };
-
-    /// <summary>
-    /// An OSDU connection over a flow's endpoint (or an explicit <c>--endpoint</c>), auth and headers, their references
-    /// resolved by <see cref="OsduConnection.CreateAsync"/> like every other capture's.
-    /// </summary>
-    private static Task<OsduConnection> ConnectAsync(
-        string endpoint, TargetAuth auth, IReadOnlyDictionary<string, string> headers, FlowReliability reliability, string[] args, EngineContext engine, CancellationToken ct)
-        => OsduConnection.CreateAsync(Program.GetOption(args, "--endpoint") ?? endpoint, auth, headers, reliability, engine.Secrets, ct: ct);
 }

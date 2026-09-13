@@ -10,7 +10,7 @@ Everything below is taken from the sample estate:
 | The drop | `samples/recall-welllog/out/STAT_COMP` | The values: one row per log, one row per curve. |
 | The mapping | `samples/recall-welllog/mappings/WellLog@1.4.0.yaml` | Which template variable each entry fills, and where its value comes from: a drop column, the OSDU cache, or a static value. |
 | The flow | `samples/recall-welllog/flows/recall-welllog.yaml` | Which mapping to use, the data partition, and where the record is sent. |
-| The OSDU cache | `samples/recall-welllog/snapshots/references` | The OSDU ids that reference properties resolve to (units, wellbores, business values). |
+| The OSDU cache | `samples/recall-welllog/caches/osdu-reference-cache.yaml`, captured into the catalog by its runs (or imported from `samples/recall-welllog/references`) | The OSDU ids that reference properties resolve to (units, wellbores, business values). |
 | The template | `samples/recall-welllog/templates/osdu_wks_work-product-component--WellLog_1.4.0.json`, saved in the catalog as template version `26a3c3441882db4f` | The types and structure. It is the file 1 schema. |
 
 ## How a value gets from the drop into the record

@@ -1,13 +1,11 @@
 using System.Globalization;
-using System.Text.RegularExpressions;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Model;
-using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>Maps a parsed retrieval document onto <see cref="RetrievalDefinition"/> and validates what YAML cannot.</summary>
-internal static partial class RetrievalMapper
+internal static class RetrievalMapper
 {
     private static readonly HashSet<string> RunTokens = new(StringComparer.Ordinal) { "run", "date" };
 
@@ -38,7 +36,7 @@ internal static partial class RetrievalMapper
 
         foreach (var kind in kinds)
         {
-            if (!KindPattern().IsMatch(kind))
+            if (!OsduKind.IsValid(kind))
             {
                 throw new FlowValidationException($"{source}: source kind '{kind}' is not authority:source:entityType:version (wildcards allowed per segment).");
             }
@@ -84,154 +82,11 @@ internal static partial class RetrievalMapper
                 RollRecords = target.RollRecords ?? 100_000,
                 Manifest = string.IsNullOrWhiteSpace(target.Manifest) ? "manifest.json" : target.Manifest!.Trim(),
             },
-            Cache = MapCache(y.Cache, kinds, source),
             Reliability = FlowMapper.MapReliability(y.Reliability, source),
         };
 
         Validate(flow, source);
         return flow;
-    }
-
-    /// <summary>
-    /// Maps the <c>cache</c> section: the reference and master-data types the flow keeps cached for its mappings.
-    /// A type's name and entity type are derived from its kind when they are not spelled out, and a flow that
-    /// retrieves exactly one kind may leave the kind out too, so the common case is a name and a list of paths.
-    /// </summary>
-    private static RetrievalCache? MapCache(RetrievalCacheYaml? cache, IReadOnlyList<string> kinds, string source)
-    {
-        if (cache is null)
-        {
-            return null;
-        }
-
-        var declared = cache.Types ?? [];
-        if (declared.Count == 0)
-        {
-            throw new FlowValidationException($"{source}: cache declares no types. Remove the cache section, or list the types to cache under cache.types.");
-        }
-
-        var defaultMode = FlowMapper.ParseEnum(cache.OnChange, CacheChangeMode.Approve, "cache.onChange", source);
-        var types = new List<ReferenceTypeSpec>();
-        for (var i = 0; i < declared.Count; i++)
-        {
-            var where = $"cache.types[{i}]";
-            var type = declared[i];
-            var kind = string.IsNullOrWhiteSpace(type.Kind)
-                ? kinds.Count == 1
-                    ? kinds[0]
-                    : throw new FlowValidationException($"{source}: {where} needs a kind, because the flow retrieves {kinds.Count} kinds.")
-                : type.Kind!.Trim();
-
-            if (!KindPattern().IsMatch(kind))
-            {
-                throw new FlowValidationException($"{source}: {where}.kind '{kind}' is not authority:source:entityType:version (wildcards allowed per segment).");
-            }
-
-            var entityType = string.IsNullOrWhiteSpace(type.EntityType) ? EntityTypeOf(kind, where, source) : type.EntityType!.Trim();
-            var name = string.IsNullOrWhiteSpace(type.Name) ? ShortNameOf(entityType) : type.Name!.Trim();
-            var spec = new ReferenceTypeSpec
-            {
-                Name = name,
-                EntityType = entityType,
-                Kind = kind,
-                Query = string.IsNullOrWhiteSpace(type.Query) ? "*" : type.Query!.Trim(),
-                OnChange = FlowMapper.ParseEnum(type.OnChange, defaultMode, $"{where}.onChange", source),
-                Fields = MapCachedFields(type.Fields, $"{where}.fields", source),
-            };
-
-            try
-            {
-                spec.Validate();
-            }
-            catch (FlowValidationException ex)
-            {
-                throw new FlowValidationException($"{source}: {where} - {ex.Message}", ex);
-            }
-
-            types.Add(spec);
-        }
-
-        if (types.Select(t => t.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != types.Count)
-        {
-            throw new FlowValidationException($"{source}: cache.types declares the same type name more than once.");
-        }
-
-        return new RetrievalCache
-        {
-            Types = types,
-            OnChange = defaultMode,
-            MakeCurrent = cache.MakeCurrent ?? true,
-            SnapshotsDirectory = string.IsNullOrWhiteSpace(cache.Snapshots) ? null : cache.Snapshots!.Trim(),
-        };
-    }
-
-    /// <summary>Reads a field list where an entry is either a path or a path with the name to cache it under.</summary>
-    private static List<ReferenceFieldSpec> MapCachedFields(IReadOnlyList<object>? fields, string where, string source)
-    {
-        if (fields is null || fields.Count == 0)
-        {
-            throw new FlowValidationException($"{source}: {where} lists no paths to cache.");
-        }
-
-        var mapped = new List<ReferenceFieldSpec>();
-        for (var i = 0; i < fields.Count; i++)
-        {
-            switch (fields[i])
-            {
-                case string path when !string.IsNullOrWhiteSpace(path):
-                    mapped.Add(new ReferenceFieldSpec(path));
-                    break;
-                case IDictionary<object, object?> entry:
-                    mapped.Add(MapCachedField(entry, $"{where}[{i}]", source));
-                    break;
-                default:
-                    throw new FlowValidationException(
-                        $"{source}: {where}[{i}] is neither a path nor a 'path'/'as' pair.");
-            }
-        }
-
-        return mapped;
-    }
-
-    private static ReferenceFieldSpec MapCachedField(IDictionary<object, object?> entry, string where, string source)
-    {
-        string? path = null;
-        string? name = null;
-        foreach (var (key, value) in entry)
-        {
-            switch (key.ToString()?.ToLowerInvariant())
-            {
-                case "path":
-                    path = value?.ToString();
-                    break;
-                case "as":
-                case "name":
-                    name = value?.ToString();
-                    break;
-                default:
-                    throw new FlowValidationException($"{source}: {where} has no '{key}' setting; a cached field takes 'path' and 'as'.");
-            }
-        }
-
-        return string.IsNullOrWhiteSpace(path)
-            ? throw new FlowValidationException($"{source}: {where} needs a 'path'.")
-            : new ReferenceFieldSpec(path!, name);
-    }
-
-    /// <summary>The entity type inside a kind (osdu:wks:reference-data--UnitOfMeasure:1.0.0).</summary>
-    private static string EntityTypeOf(string kind, string where, string source)
-    {
-        var segments = kind.Split(':');
-        return segments.Length >= 3 && !segments[2].Contains('*', StringComparison.Ordinal)
-            ? segments[2]
-            : throw new FlowValidationException($"{source}: {where} needs an entityType, because kind '{kind}' does not name one.");
-    }
-
-    /// <summary>The short name a mapping uses (reference-data--UnitOfMeasure becomes UnitOfMeasure).</summary>
-    private static string ShortNameOf(string entityType)
-    {
-        var separator = entityType.LastIndexOf("--", StringComparison.Ordinal);
-        return separator >= 0 ? entityType[(separator + 2)..] : entityType;
     }
 
     private static RetrievalIncremental? MapIncremental(RetrievalIncrementalYaml? i, string source)
@@ -334,7 +189,4 @@ internal static partial class RetrievalMapper
             throw new FlowValidationException($"{source}: reliability.concurrency must be at least 1.");
         }
     }
-
-    [GeneratedRegex(@"^[\w.*-]+:[\w.*-]+:[\w.*-]+:[\d.*]+$")]
-    private static partial Regex KindPattern();
 }

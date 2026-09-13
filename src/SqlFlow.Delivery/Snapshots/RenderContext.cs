@@ -19,7 +19,11 @@ public sealed partial record RenderContext
 
     public required string MappingReference { get; init; }
 
-    public required string ReferenceSnapshotVersion { get; init; }
+    /// <summary>The cache the render read, named by its cache flow; null when the mapping reads no cache.</summary>
+    public string? CacheName { get; init; }
+
+    /// <summary>The version of the cache the render read; <c>none</c> when it read no cache.</summary>
+    public required string CacheVersion { get; init; }
 
     public required string SchemaSnapshotVersion { get; init; }
 
@@ -65,10 +69,15 @@ public sealed partial record RenderContext
         var node = new JsonObject
         {
             ["mapping"] = MappingReference,
-            ["references"] = ReferenceSnapshotVersion,
+            ["cacheVersion"] = CacheVersion,
             ["schema"] = SchemaSnapshotVersion,
             ["parameters"] = parameters,
         };
+        if (CacheName is not null)
+        {
+            node["cache"] = CacheName;
+        }
+
         return CanonicalJson.ToString(node);
     }
 
@@ -89,7 +98,8 @@ public sealed partial record RenderContext
         return new RenderContext
         {
             MappingReference = node["mapping"]?.GetValue<string>() ?? string.Empty,
-            ReferenceSnapshotVersion = node["references"]?.GetValue<string>() ?? string.Empty,
+            CacheName = node["cache"]?.GetValue<string>(),
+            CacheVersion = node["cacheVersion"]?.GetValue<string>() ?? string.Empty,
             SchemaSnapshotVersion = node["schema"]?.GetValue<string>() ?? string.Empty,
             Parameters = parameters,
         };

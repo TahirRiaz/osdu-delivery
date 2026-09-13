@@ -32,7 +32,7 @@ internal static class Program
         var needsFile = command is not ("auth" or "db" or "worker" or "runs" or "user"
             or "health" or "login" or "logout" or "trigger" or "groups"
             or "whoami" or "doctor" or "summary" or "nodes" or "schedules" or "repos" or "pipelines"
-            or "search" or "completions" or "template");
+            or "search" or "completions" or "template" or "cache");
         if (positional.Length < (needsFile ? 2 : 1) || args.Any(a => a is "-h" or "--help"))
         {
             PrintUsage();
@@ -96,8 +96,8 @@ internal static class Program
                 case "check":
                     return await DeliveryVerbs.CheckAsync(provider, file, args, args.Contains("--json"), CancellationToken.None).ConfigureAwait(false);
 
-                case "snapshot":
-                    return await DeliveryVerbs.SnapshotAsync(provider, file, positional, args, CancellationToken.None).ConfigureAwait(false);
+                case "cache":
+                    return await DeliveryVerbs.CacheAsync(provider, positional, args, args.Contains("--json"), CancellationToken.None).ConfigureAwait(false);
 
                 case "template":
                     return await DeliveryVerbs.TemplateAsync(provider, positional, args, args.Contains("--json"), CancellationToken.None).ConfigureAwait(false);
@@ -852,9 +852,9 @@ internal static class Program
         });
 
         AddCliEngine(services);
-        // The ledger and the templates ride on the catalog connection a run was given (--db, or the catalog variable).
-        // Without one the engine validates documents and captures reference snapshots, and says what is missing when
-        // asked to check, plan or deliver.
+        // The ledger, the templates and the caches ride on the catalog connection a run was given (--db, or the catalog
+        // variable). Without one the engine validates documents, and says what is missing when asked to check, plan,
+        // deliver or refresh a cache.
         services.AddDeliveryLedger(sp => HasCatalogConnection(args) && ResolveCatalogConnection(sp, args) is { } catalog ? () => CatalogDatabase.Create(catalog) : null);
         if (json)
         {
@@ -900,16 +900,18 @@ internal static class Program
                                [--json]            (the CI gate: exit 0 only when every document is valid)
               sqlflow check    <flow.yaml>         The delivery preflight: the mapping against its pinned template, the
                                [--drop <location>] [--set name=value]... [--json] [--db <conn-ref>]
-                                                   reference snapshot, and the drop's manifest when the drop is present
-                                                   (needs --db: templates live in the catalog)
-              sqlflow snapshot <flow.yaml> references [--from-dir <dir> | --spec <spec.json> [--endpoint <url>]] [--no-current]
-              sqlflow snapshot <flow.yaml> list    Capture or list the reference snapshots of the cache the flow renders against
+                                                   version of the cache it reads, and the drop's manifest when the drop is
+                                                   present (needs --db: templates and caches live in the catalog)
+              sqlflow cache list <cache.yaml|name> The versions of a cache: when each was captured, by which run, what it holds
+              sqlflow cache import <cache.yaml> --from-dir <dir> [--no-current]
+                                                   Write type files as a version of the cache, for offline work (needs --db).
+                                                   A cache is captured from OSDU by running its cache flow: sqlflow run <cache.yaml>
               sqlflow template capture --kind <kind> [--release <tag>]   (from the OSDU data definitions, newest release by default)
               sqlflow template import <schema.json> --kind <kind> [--release <tag>]   (or --from-dir <data definitions> --kind <kind>)
               sqlflow template list | show --kind <kind> [--version <v>] | delete --kind <kind> --version <v>
                                                    The templates in the catalog: OSDU schemas mappings pin (needs --db)
               sqlflow run      <flow.yaml>         Execute the flow (Ctrl+C aborts the in-flight work)
-                               [--operation deliver|verify|plan|known-state|intake|drain|retrieve] [--force] [--set name=value]...
+                               [--operation deliver|verify|plan|known-state|intake|drain|retrieve|refresh] [--force] [--set name=value]...
                                [--drop <location>] [--submission <id>] [--record <key>]... [--redeliver all|metadata|payload] [--publish-to <location>]
                                [--log-level info|debug|trace] [--json] [--db <conn-ref>] [--no-db-sync]
               sqlflow auth     [--scope storage|keyvault|arm|<uri>]
@@ -949,7 +951,7 @@ internal static class Program
                                                    Sign in and store a personal access token for the URL.
               sqlflow logout                       Revoke the stored token server-side and remove it locally.
               sqlflow trigger  --repo <name|id> --flow <f> [--pool <p>] [--commit <sha>] [--preview] [--follow]
-                               [--operation deliver|verify|plan|known-state|intake|drain|retrieve] [--force] [--set name=value]...
+                               [--operation deliver|verify|plan|known-state|intake|drain|retrieve|refresh] [--force] [--set name=value]...
                                [--drop <location>] [--submission <id>] [--record <key>]... [--redeliver all|metadata|payload] [--publish-to <location>]
                                                    Enqueue a run on the fleet (POST /runs). --preview shows what would
                                                    run without enqueuing; --follow attaches to the live trace.

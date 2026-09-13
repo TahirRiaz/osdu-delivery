@@ -119,6 +119,6 @@ configured surface fails its probe.
 
 - [The control plane](../concepts/control-plane.md): the API these verbs call.
 - [Authentication and identity](../concepts/authentication-and-identity.md): tokens, scopes, the device grant.
-- [`sqlflow check`, `snapshot`, `template`, and the delivery run options](delivery.md)
+- [`sqlflow check`, `cache`, `template`, and the delivery run options](delivery.md)
 - [`sqlflow db`](db.md), [`sqlflow worker`](worker.md), [`sqlflow validate`](validate.md), [`sqlflow auth`](auth.md)
 - [Environment variables and secrets](../../environment-variables.md)

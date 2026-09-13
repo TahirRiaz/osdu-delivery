@@ -21,11 +21,12 @@ takes their place.
 ## Status
 
 The platform is stripped to what OSDU Delivery needs and the delivery domain is grafted onto it: the `delivery`
-flow kind (mapping rendering, snapshots, the four OSDU protocols, the streaming intake with work batches and
+flow kind (mapping rendering, the four OSDU protocols, the streaming intake with work batches and
 fan-out, the lease-and-retry worker), the `retrieval` flow kind (OSDU's search index into files on the lake),
-the ledger in the catalog, the delivery API, the CLI verbs, and the GUI pages (delivery overview, per-flow
-stats, records and submissions, the record page with its history and interventions, the audit trail, mappings
-and snapshots). The solution builds warning-free, the three test suites pass, and the GUI builds. What is
+the `cache` flow kind (the reference and master data the mappings resolve against, captured from OSDU into
+versioned caches in the catalog), the ledger in the catalog, the delivery API, the CLI verbs, and the GUI pages
+(delivery overview, per-flow stats, records and submissions, the record page with its history and interventions,
+the audit trail, mappings, templates, and the OSDU cache). The solution builds warning-free, the three test suites pass, and the GUI builds. What is
 not there yet: lineage across delivery flows, and an OSDU emulator for end-to-end tests against a live target.
 
 ## Repository layout
@@ -40,10 +41,10 @@ not there yet: lineage across delivery flows, and an OSDU emulator for end-to-en
 | `src/SqlFlow.Azure` | Azure credentials, Key Vault references, blob storage |
 | `src/SqlFlow.Node` | The compute node: claims queued runs, executes them, streams the trace |
 | `src/SqlFlow.ControlPlane` | The API and coordination host: auth, catalog, runs, schedules, sync, notifications |
-| `src/SqlFlow.Delivery` | The delivery domain: the `delivery` and `retrieval` flow kinds, mapping rendering, snapshots, drops, the four OSDU protocols, the ledger over the catalog, the worker and the fan-out, the run executors, the compute operations |
-| `src/SqlFlow.Cli` | The `sqlflow` command line: validate, check, snapshot, run, worker, db, and the remote verbs |
+| `src/SqlFlow.Delivery` | The delivery domain: the `delivery`, `retrieval` and `cache` flow kinds, mapping rendering, the cache store over the catalog, drops, the four OSDU protocols, the ledger over the catalog, the worker and the fan-out, the run executors, the compute operations |
+| `src/SqlFlow.Cli` | The `sqlflow` command line: validate, check, cache, template, run, worker, db, and the remote verbs |
 | `gui/` | The React + TypeScript workbench over the API |
-| `samples/recall-welllog` | A complete sample estate: a flow, its mapping, captured snapshots, reference data, a generated drop |
+| `samples/recall-welllog` | A complete sample estate: a delivery flow, its mappings, the cache flow they read, sample cache records to import, a generated drop |
 | `tools/SampleDrop` | Generates realistic drops for the samples and the tests |
 | `tests/` | The core, control plane and delivery suites |
 
@@ -85,7 +86,10 @@ cd gui && npm run dev
 ## Trying the sample
 
 ```bash
-# the preflight gate over the sample estate: mapping against the schema snapshot, the reference snapshot, the drop
+# write the sample cache records as a version of the cache the sample flow reads (caches live in the catalog)
+dotnet run --project src/SqlFlow.Cli -- cache import samples/recall-welllog/caches/osdu-reference-cache.yaml --from-dir samples/recall-welllog/references
+
+# the preflight gate over the sample estate: the mapping against its saved template and the cache, the drop
 dotnet run --project src/SqlFlow.Cli -- check samples/recall-welllog/flows/recall-welllog.yaml --set logSource=demo
 
 # render the demo drop and report what a delivery would do; nothing is written anywhere
@@ -96,7 +100,7 @@ dotnet run --project tools/SampleDrop -- samples/recall-welllog/out demo --varia
 ```
 
 Register the `samples/recall-welllog` folder (or a git repository holding it) as a repo source in the GUI to see
-the flow, its mappings and snapshots, and to deliver, verify and intervene from the Delivery pages. See
+the flows, the mappings and the OSDU cache, and to deliver, verify and intervene from the Delivery pages. See
 [docs/delivery/README.md](docs/delivery/README.md).
 
 ## Documentation

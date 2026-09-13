@@ -16,13 +16,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { isApiError } from "../../api/client";
 import { pipelineApi, repoApi, runApi, scheduleApi } from "../../api/endpoints";
 import type { RunOperation, RunParameters } from "../../api/types";
-import { DELIVERY_OPERATIONS, RETRIEVAL_OPERATIONS } from "../../api/types";
+import { CACHE_OPERATIONS, DELIVERY_OPERATIONS, RETRIEVAL_OPERATIONS } from "../../api/types";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { CorrelationError } from "../../components/CorrelationError";
 import { useRunDock } from "./RunDockContext";
 
 export interface TriggerRunDialogProps {
-  /** The flow's kind when the launching context knows it; a retrieval flow offers retrieve and plan. */
+  /** The flow's kind when the launching context knows it; a retrieval flow offers retrieve and plan, a cache flow refresh and plan. */
   flowKind?: string | null;
   open: boolean;
   onClose: () => void;
@@ -47,6 +47,7 @@ const OPERATION_LABELS: Record<RunOperation, string> = {
   "intake": "Intake (plan into batches)",
   "drain": "Drain (deliver pending batches)",
   "retrieve": "Retrieve (OSDU into lake files)",
+  "refresh": "Refresh (capture the cache)",
 };
 
 const OPERATION_HINTS: Record<RunOperation, string> = {
@@ -57,6 +58,7 @@ const OPERATION_HINTS: Record<RunOperation, string> = {
   "intake": "Read the flow's drop, plan it against the ledger and write the rendered documents to work batches; nothing reaches OSDU until a drain.",
   "drain": "Deliver the pending work batches of a submission (or of the whole flow) to OSDU; the drop is not read.",
   "retrieve": "Page the flow's kinds out of OSDU's search index into JSON Lines files on the lake, continuing from the last run's watermark; force restarts at the declared start.",
+  "refresh": "Search OSDU for every type the cache flow declares and, when anything changed, write a new version of the cache into the catalog. Records built from a value that moved are tagged, to wait for approval or go out on the next run as the flow says.",
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -130,7 +132,7 @@ export function TriggerRunDialog({
   useEffect(() => {
     if (open) {
       setPool(initialPool ?? "");
-      setOperation(initialParameters?.operation ?? (flowKind === "retrieval" ? "retrieve" : "deliver"));
+      setOperation(initialParameters?.operation ?? (flowKind === "retrieval" ? "retrieve" : flowKind === "cache" ? "refresh" : "deliver"));
       setForce(initialParameters?.force ?? false);
       setValuesText(Object.entries(initialParameters?.values ?? {}).map(([name, value]) => `${name}=${value}`).join("\n"));
       setDrop(initialParameters?.drop ?? "");
@@ -202,10 +204,11 @@ export function TriggerRunDialog({
     },
   });
 
-  // A retrieval flow runs retrieve and plan; every other kind the delivery operations. The kind comes from the
-  // launching context, or from the repo's pipeline list for a free-choice launch.
+  // A retrieval flow runs retrieve and plan, a cache flow refresh and plan; every other kind the delivery operations. The
+  // kind comes from the launching context, or from the repo's pipeline list for a free-choice launch.
   const selectedKind = flowKind ?? pipelines.data?.items.find((p) => p.name === effectiveFlow)?.kind ?? null;
-  const operations = selectedKind === "retrieval" ? RETRIEVAL_OPERATIONS : DELIVERY_OPERATIONS;
+  const operations = selectedKind === "retrieval" ? RETRIEVAL_OPERATIONS : selectedKind === "cache" ? CACHE_OPERATIONS : DELIVERY_OPERATIONS;
+  const deliveryKind = selectedKind !== "retrieval" && selectedKind !== "cache";
   useEffect(() => {
     if (!operations.includes(operation)) {
       setOperation(operations[0]);
@@ -221,9 +224,11 @@ export function TriggerRunDialog({
     [pipelines.data],
   );
 
-  const readsDrop = operation === "deliver" || operation === "plan" || operation === "intake";
-  const takesSubmission = operation === "deliver" || operation === "intake" || operation === "drain";
-  const takesRecordScope = operation === "deliver" || operation === "verify";
+  // Drops, submissions and record scopes belong to delivery flows; a retrieval or cache flow takes its parameter values only.
+  const readsDrop = deliveryKind && (operation === "deliver" || operation === "plan" || operation === "intake");
+  const takesValues = readsDrop || !deliveryKind;
+  const takesSubmission = deliveryKind && (operation === "deliver" || operation === "intake" || operation === "drain");
+  const takesRecordScope = deliveryKind && (operation === "deliver" || operation === "verify");
   const parsedValues = parseValues(valuesText);
   const recordKeys = lines(recordKeysText);
   const trimmedSubmission = submissionId.trim();
@@ -231,7 +236,7 @@ export function TriggerRunDialog({
 
   // Client-side mirror of RunParameters.Validate, so obvious mistakes are caught before the round trip (the server
   // validates authoritatively and its ProblemDetails still renders if anything slips through).
-  const parameterError = readsDrop && parsedValues.error !== null
+  const parameterError = takesValues && parsedValues.error !== null
     ? parsedValues.error
     : takesSubmission && trimmedSubmission !== "" && !UUID.test(trimmedSubmission)
       ? "The submission id must be a UUID."
@@ -250,7 +255,7 @@ export function TriggerRunDialog({
       commitSha: commitSha.trim() === "" ? null : commitSha.trim(),
       operation,
       force,
-      values: readsDrop && Object.keys(parsedValues.values).length > 0 ? parsedValues.values : undefined,
+      values: takesValues && Object.keys(parsedValues.values).length > 0 ? parsedValues.values : undefined,
       drop: readsDrop && drop.trim() !== "" ? drop.trim() : null,
       submissionId: takesSubmission && trimmedSubmission !== "" ? trimmedSubmission : null,
       recordKeys: takesRecordScope && recordKeys.length > 0 ? recordKeys : undefined,
@@ -371,21 +376,23 @@ export function TriggerRunDialog({
                 </p>
               </div>
               {readsDrop && (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={`${idPrefix}-drop`}>Drop location</Label>
+                  <Input
+                    id={`${idPrefix}-drop`}
+                    className="h-8 font-mono"
+                    placeholder="abfss://drops@lake.dfs.core.windows.net/recall/2026-09-01"
+                    value={drop}
+                    onChange={(event) => setDrop(event.target.value)}
+                    data-testid="trigger-drop"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Read this drop instead of the flow&apos;s declared source location.
+                  </p>
+                </div>
+              )}
+              {takesValues && (
                 <>
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor={`${idPrefix}-drop`}>Drop location</Label>
-                    <Input
-                      id={`${idPrefix}-drop`}
-                      className="h-8 font-mono"
-                      placeholder="abfss://drops@lake.dfs.core.windows.net/recall/2026-09-01"
-                      value={drop}
-                      onChange={(event) => setDrop(event.target.value)}
-                      data-testid="trigger-drop"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Read this drop instead of the flow&apos;s declared source location.
-                    </p>
-                  </div>
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor={`${idPrefix}-values`}>Flow parameters</Label>
                     <Textarea

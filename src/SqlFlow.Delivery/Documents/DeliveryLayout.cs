@@ -3,17 +3,14 @@ using SqlFlow.Delivery.Model;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// Where a flow's mappings and snapshots live. A flow repository keeps them next to its flows (design.md section
-/// 10.1): <c>mappings/</c> holds the pinned mapping documents, <c>snapshots/</c> the reference snapshots of the cache.
-/// Templates live in the catalog. A flow may name either explicitly under <c>render</c> (relative to the flow file, or a storage URI
-/// for snapshots); otherwise the nearest directory of that name walking up from the flow file is used, so a flow
-/// three folders deep in a repository still finds the repository's shared mappings.
+/// Where a flow's mappings live. A flow repository keeps them next to its flows (design.md section 10.1) in
+/// <c>mappings/</c>. Templates and caches live in the catalog. A flow may name the directory explicitly under
+/// <c>render.mappings</c> (relative to the flow file); otherwise the nearest directory of that name walking up from the
+/// flow file is used, so a flow three folders deep in a repository still finds the repository's shared mappings.
 /// </summary>
-public sealed record DeliveryLayout(string MappingsDirectory, string SnapshotsRoot)
+public sealed record DeliveryLayout(string MappingsDirectory)
 {
     public const string MappingsDirectoryName = "mappings";
-
-    public const string SnapshotsDirectoryName = "snapshots";
 
     private const int MaxAscent = 16;
 
@@ -24,31 +21,14 @@ public sealed record DeliveryLayout(string MappingsDirectory, string SnapshotsRo
             ? Path.GetDirectoryName(Path.GetFullPath(path)) ?? Directory.GetCurrentDirectory()
             : Directory.GetCurrentDirectory();
 
-        return new DeliveryLayout(
-            Locate(baseDirectory, flow.Render.MappingsDirectory, MappingsDirectoryName),
-            Locate(baseDirectory, flow.Render.SnapshotsDirectory, SnapshotsDirectoryName));
-    }
-
-    /// <summary>
-    /// The snapshot store a document at <paramref name="sourcePath"/> writes to and reads from: the directory it
-    /// declares, or the nearest <c>snapshots</c> directory above it. A retrieval flow that maintains the cache
-    /// resolves its store exactly as a delivery flow that renders against it does.
-    /// </summary>
-    public static string ResolveSnapshots(string? sourcePath, string? declared)
-    {
-        var baseDirectory = sourcePath is { } path
-            ? Path.GetDirectoryName(Path.GetFullPath(path)) ?? Directory.GetCurrentDirectory()
-            : Directory.GetCurrentDirectory();
-        return Locate(baseDirectory, declared, SnapshotsDirectoryName);
+        return new DeliveryLayout(Locate(baseDirectory, flow.Render.MappingsDirectory, MappingsDirectoryName));
     }
 
     private static string Locate(string baseDirectory, string? declared, string name)
     {
         if (!string.IsNullOrWhiteSpace(declared))
         {
-            return declared.Contains("://", StringComparison.Ordinal)
-                ? declared
-                : Path.GetFullPath(Path.Combine(baseDirectory, declared));
+            return Path.GetFullPath(Path.Combine(baseDirectory, declared));
         }
 
         var current = baseDirectory;

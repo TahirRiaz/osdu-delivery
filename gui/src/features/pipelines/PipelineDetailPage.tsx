@@ -27,6 +27,7 @@ import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { formatDurationSeconds } from "../../lib/time";
 import { projectOf } from "../repos/project";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
+import { DeliveryCacheHistory } from "../delivery/DeliveryCacheHistory";
 import { DeliveryFlowPanel } from "../delivery/DeliveryFlowPanel";
 import { RetrievalFlowPanel } from "../delivery/RetrievalFlowPanel";
 
@@ -133,6 +134,7 @@ export default function PipelineDetailPage() {
 
   const isDelivery = detail.kind === "delivery";
   const isRetrieval = detail.kind === "retrieval";
+  const isCache = detail.kind === "cache";
 
   return (
     <Page data-testid="page-pipeline-detail">
@@ -226,12 +228,13 @@ export default function PipelineDetailPage() {
         <DetailPair label="Last seen"><RelativeTime value={detail.lastSeenUtc} absolute /></DetailPair>
       </DetailHeaderCard>
 
-      <Tabs defaultValue={requestedTab ?? (isDelivery ? "delivery" : isRetrieval ? "retrievals" : "yaml")}>
+      <Tabs defaultValue={requestedTab ?? (isDelivery ? "delivery" : isRetrieval ? "retrievals" : isCache ? "versions" : "yaml")}>
         <TabsList data-testid="pipeline-tabs">
           {isDelivery && <TabsTrigger value="delivery" data-testid="pipeline-tab-delivery">Delivery</TabsTrigger>}
           {isDelivery && <TabsTrigger value="records" data-testid="pipeline-tab-records">Records</TabsTrigger>}
           {isDelivery && <TabsTrigger value="submissions" data-testid="pipeline-tab-submissions">Submissions</TabsTrigger>}
           {isRetrieval && <TabsTrigger value="retrievals" data-testid="pipeline-tab-retrievals">Retrievals</TabsTrigger>}
+          {isCache && <TabsTrigger value="versions" data-testid="pipeline-tab-versions">Cache versions</TabsTrigger>}
           <TabsTrigger value="yaml" data-testid="pipeline-tab-yaml">YAML</TabsTrigger>
           <TabsTrigger value="runs" data-testid="pipeline-tab-runs">Runs</TabsTrigger>
           <TabsTrigger value="schedules" data-testid="pipeline-tab-schedules">Schedules</TabsTrigger>
@@ -256,6 +259,22 @@ export default function PipelineDetailPage() {
         {isRetrieval && (
           <TabsContent value="retrievals">
             <RetrievalFlowPanel pipelineId={detail.id} />
+          </TabsContent>
+        )}
+        {isCache && (
+          <TabsContent value="versions" className="flex flex-col gap-2">
+            <p className="text-[12.5px] text-muted-foreground">
+              Every version this cache flow captured into the catalog. What it holds, and the changes waiting for approval, are on the{" "}
+              <RouterLink
+                to={`/delivery/cache?cache=${encodeURIComponent(detail.name)}`}
+                className="text-primary hover:underline"
+                data-testid="pipeline-cache-link"
+              >
+                OSDU cache page
+              </RouterLink>
+              .
+            </p>
+            <DeliveryCacheHistory cache={detail.name} type={null} />
           </TabsContent>
         )}
         <TabsContent value="yaml">

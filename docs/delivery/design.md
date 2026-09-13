@@ -165,7 +165,7 @@ mutually inconsistent.
 |---|---|---|---|
 | Source data | Databricks / Recall | Continuous | The drop, plus a declared source contract |
 | Mapping | This repository | Deliberate, gated | A versioned mapping document |
-| Reference snapshot | OSDU | Periodic sync | Versioned, immutable |
+| Cache (reference and master data) | OSDU, captured into the catalog by a cache flow | Refresh runs | Versioned, immutable |
 | Template (the target schema) | OSDU, saved in the catalog | Pinned by the mapping | Versioned, immutable |
 
 ### 4.1 The render context
@@ -173,8 +173,12 @@ mutually inconsistent.
 The three non-source inputs are pinned together as a **render context**:
 
 ```
-renderContext = (mappingVersion, referenceSnapshotVersion, templateVersion)
+renderContext = (mappingVersion, cache and cacheVersion, templateVersion)
 ```
+
+The flow names the cache (`render.cache`); a render reads the version that is current when the run starts,
+unless the flow pins one (`render.cacheVersion`), and the ledger's render context records both under `cache` and
+`cacheVersion`. A mapping that reads nothing from a cache renders against no cache at all.
 
 It is fixed for a render, recorded in the ledger against every document produced, and it
 enters the content hash. That single construct gives reproducibility, correct
@@ -293,7 +297,7 @@ reinvented full reload. That means canonical JSON with sorted keys, normalised n
 formatting, and no run-varying content.
 
 This is one reason the reference data has to move out of an in-memory per-replica cache
-and into a versioned snapshot. Today the same input can render differently on two
+and into a versioned cache that every render names by version. Today the same input can render differently on two
 replicas, or before and after a refresh interval, and `OsduReferenceCachesHostedService`
 logs initial-load failures and continues by design, so a replica can serve from an empty
 reference set with no signal.
@@ -314,33 +318,43 @@ value at a path inside it, which is how a mapping builds a document out of cache
 rather than only pointing at it. A type or field the cache does not hold fails the
 preflight gate rather than holding every record at run time.
 
-**Who fills it.** The retrieval flow that syncs a kind's metadata declares the cache it
-maintains (`cache.types` in its document, section 15). A retrieve run sweeps each declared
-type in full, merges the result onto the current snapshot and mints a new version, so a
-version always describes the whole cache rather than the slice one run refreshed. The
-capture is deliberately not the retrieval's incremental window: a cache holding only the
-last hour's changes cannot answer a lookup. The store it mints into has to outlive the run: the
-platform runs a flow from a staged or checked-out copy of its repository, so a retrieval flow
-that keeps the cache names a durable store (a storage URI or an absolute path on shared storage)
-that the delivery flows render from as well, and a refresh whose store resolves inside the copy
-is refused before anything is retrieved.
+**Who fills it.** A cache is defined by a flow of its own, `flowType: cache`
+([documents.md](documents.md#cache-flow)): the OSDU platform to search, the types to cache
+(each a kind, an optional query and the paths to keep), and what a changed value does. The
+cache flow's name is the cache's name, and a delivery flow reads the cache by that name
+under `render.cache`. A run of the cache flow, the `refresh` operation that its schedule
+fires, sweeps every declared type in full through the search cursor and writes a new
+version of the cache into the catalog, so a version always describes the whole cache and
+holds exactly the types the flow declares: a type taken out of the flow leaves the cache
+with the next version. The capture is deliberately never incremental: a cache holding only
+the last hour's changes cannot answer a lookup. A refresh that finds exactly what the
+current version holds (the same content hash) writes no version at all, because a version
+label enters the render context, and a new label for unchanged content would render every
+record built from the cache again for nothing; refreshing as often as anyone likes is free.
+Each version records the run that captured it and who asked, so a cached value can be
+traced to the capture that produced it. Version labels are minted from the capture instant
+(`20260908T212727Z`).
 
-**Where it is visible.** The repository sync carries the definitions and the records of the
-recent snapshot versions into the catalog (`delivery.CacheDefinition`,
-`delivery.SnapshotItem`), so the GUI's OSDU cache page shows what each flow declares, what
-a version holds and searches the cached values. Those rows are a read model; the snapshot
-in the store stays the authority a render resolves against, which is what keeps a plan
-working without a call to OSDU.
+**Where it lives.** In the catalog, and only there (`delivery.CacheVersion`,
+`delivery.CacheItem`). The repository holds the definition and nothing else: OSDU Delivery
+reads git and never writes to it, so no capture is committed and no run writes into the
+copy of the repository it executes from. Every version is kept, because a delivered
+record's render context names the version it was rendered against and the ledger has to be
+able to show what that version held. Items are stored by version range, one row per record
+per run of consecutive versions that held it unchanged, so a refresh writes rows only for
+the records that changed, arrived or left, and keeping every version costs rows in
+proportion to what moved rather than to the size of the cache times the number of captures.
+Each version carries the hash of its whole content, checked every time it is loaded, so a
+version altered after it was written is refused rather than rendered against. A render
+reads its version from the catalog, which is what keeps a plan working without a call to
+OSDU.
 
-Every read of that read model is scoped to exactly one version per repository, the current
-one unless another is named. That is not a filter but a correctness requirement: the
-catalog carries several versions at once and their records are otherwise indistinguishable,
-so an unscoped listing would show one cached record several times over and count it as
-many. The sync carries the current version and the nine newest captures behind it; a
-version that falls out of that window keeps its snapshot row and its counts and loses only
-its records, because the snapshot files remain complete and are what a render reads. The
-window is what keeps the read model proportional to what an operator looks back through
-rather than to how often the cache has been refreshed.
+**Where it is visible.** The repository sync projects each cache flow's declared types
+(`delivery.CacheDefinition`), so the GUI's OSDU cache page shows what a cache declares, in
+which file, beside the versions its runs captured, and searches the cached values. Every
+read of a cache's records names one cache and one version, the current one unless another
+is named: versions share rows, so a listing that was not scoped to one would show a cached
+record once per version and count it as many.
 
 **What a new version does to what is already delivered.** A cache is an input to every
 document built from it, so a changed value means delivered records no longer match what
@@ -661,7 +675,7 @@ source:
 
 render:
   mapping: WellLog@1.4.0
-  references: pinned
+  cache: osdu-reference-cache
 
 change:
   detect: renderedHash
@@ -751,8 +765,8 @@ Before any render, and with no OSDU call:
 
 1. Every dataset column and child dataset the mapping reads exists in the drop's declared
    schema.
-2. Every cached type the mapping reads exists in the reference snapshot, with the fields it
-   finds by and reads.
+2. Every cached type the mapping reads exists in the cache version the render reads, with
+   the fields it finds by and reads.
 3. Every property the template requires in `data` has an entry that may not be left out.
 4. Every target is a variable of the pinned template, with an agreeing shape, and every
    cached or static reference points at an entity type the schema allows.
@@ -808,19 +822,20 @@ The delivery domain runs on the platform's verbs and API; there is no separate d
 
 | Operation | Where | Behaviour |
 |---|---|---|
-| `check` | CLI: `sqlflow check <flow.yaml>` | Everything checkable without OSDU: document parse, the mapping against its pinned template (read from the catalog) and the reference snapshot and, when the drop is present, the manifest and the columns the mapping reads. |
-| `plan` | CLI: `sqlflow run <flow.yaml> --operation plan`; GUI and API: a run with operation `plan` | Renders documents and reports what would be created, updated, skipped or held. Works without OSDU, against the pinned template and reference snapshot. Changes nothing. |
+| `check` | CLI: `sqlflow check <flow.yaml>` | Everything checkable without OSDU: document parse, the mapping against its pinned template and the version of the cache the flow names (both read from the catalog) and, when the drop is present, the manifest and the columns the mapping reads. |
+| `plan` | CLI: `sqlflow run <flow.yaml> --operation plan`; GUI and API: a run with operation `plan` | Renders documents and reports what would be created, updated, skipped or held. Works without OSDU, against the pinned template and the cache version read from the catalog. Changes nothing. |
 | `deliver` | CLI: `sqlflow run <flow.yaml>`; GUI and API: a run, a schedule fire, or `POST /api/v1/delivery/submissions` with a drop or with records (section 3.4) | Executes a submission: intake, plan into the ledger, deliver what changed. |
 | `verify` | a run with operation `verify` (the record page queues one scoped to the record) | The drift pass: compares OSDU's current version against `targetVersion`. |
 | `known-state` | a run with operation `known-state` | Publishes the compact known state the preparing side reads. |
 | `intake`, `drain` | the fan-out members a deliver run enqueues (section 16.4); also runnable by hand | `intake` registers and plans a drop (or some of its partitions) into work batches without delivering; `drain` delivers the pending batches of a submission (or of the whole flow) without reading the drop. |
 | `retrieve` | a run on a retrieval flow (its default); `plan` on the same flow counts | Pages OSDU's search index into files on the lake (section 15). |
-| `snapshot` | CLI: `sqlflow snapshot <flow.yaml> references`, `list` | Captures a reference snapshot into the snapshot store and mints a new version; lists the versions with the template the flow's mapping pins. |
+| `refresh` | a run on a cache flow (its default, and what its schedule fires); `plan` on the same flow counts what each type's search matches | Captures every type the cache flow declares and writes a new version of the cache into the catalog when the content moved, then tags the changes that reach delivered records (section 6.2). |
+| `cache` | CLI: `sqlflow cache list`, `sqlflow cache import` | Lists a cache's versions; writes type files as a version of the cache for work without OSDU. |
 | `template` | CLI: `sqlflow template capture`, `import`, `list`, `show`, `delete`; the GUI's Templates page | Saves an OSDU schema as an immutable template version in the catalog, from the OSDU data definitions (the Open Group's public repository, or a local checkout of it) or from a bundled schema file. |
 | release, redeliver, delete, read back, probe | the GUI record and flow pages; `POST /api/v1/delivery/records/{key}/...` | Interventions, recorded in the ledger's activity trail under the user who asked. The ones that touch OSDU (delete, read back, probe) run on a node as compute tasks. |
 
-`plan` working without OSDU is a direct consequence of pinning the references as snapshots
-and the schemas as templates. It is also the single most valuable operational feature
+`plan` working without OSDU is a direct consequence of reading the reference data as a cache
+version and the schemas as templates, both from the catalog. It is also the single most valuable operational feature
 here, because it makes a mapping change previewable against real records before it
 touches a governed store.
 
@@ -849,7 +864,7 @@ kind (`src/SqlFlow.Delivery`). What the domain takes from the platform, and what
   ran as a run, a run in the history.
 - **File stores, the secret chain and redaction.** Local and Azure Blob reads, `${env:...}`
   and `${keyvault:...}` references, secrets redacted before any log or row. The delivery
-  domain adds only the writers it needs (snapshots, the known state).
+  domain adds only the writers it needs (work batches, the known state).
 - **The HTTP reliability stack.** The delivery copies in `src/SqlFlow.Delivery/Http` keep
   their vendored headers because they diverged from the platform's originals: a request
   factory per attempt so a binary payload streams and retries, no charset handling.
@@ -861,10 +876,11 @@ kind (`src/SqlFlow.Delivery`). What the domain takes from the platform, and what
   carries what each record went through, linked to the run id.
 - A flow's own parameters (`parameters:`) are substituted into the drop location and travel
   as run parameter values, recorded on the run and on the submission.
-- The mapping and the reference snapshots live in the flow's repository (`mappings/`,
-  `snapshots/`), synced into the catalog as read models and never edited through the API;
-  a mapping the GUI's mapping builder writes reaches the repository as a pull request. The
-  templates the mappings pin live in the catalog itself, and a saved version never changes.
+- The mapping lives in the flow's repository (`mappings/`), and a cache is defined there by
+  its cache flow; both are synced into the catalog as read models and never edited through
+  the API, and a mapping the GUI's mapping builder writes reaches the repository as a pull
+  request. The templates the mappings pin and every version of every cache live in the
+  catalog itself, and a saved template or cache version never changes.
 
 ### 12.3 Streaming and retry coexist
 
@@ -973,7 +989,7 @@ whatever the chunk holds. The bytes still stream past unparsed.
 ## 15. Reading from OSDU
 
 Reads in service of writing were always here: the verify pass by id, the schema fetches
-templates are saved from, and the reference snapshot captures. Bulk inbound is the
+templates are saved from, and the cache refresh (section 6.2). Bulk inbound is the
 retrieval kind, `flowType: retrieval`, added because the lake needs OSDU's records back
 without a second export pipeline ([decisions/0008](decisions/0008-retrieval-lands-raw-records.md)).
 
@@ -994,7 +1010,7 @@ the last one as well, so ending only on a null cursor is how a walk pages foreve
 cursor that comes back unchanged is the same page again. A walk that stops before the
 end (a failure, a cancellation) releases the cursor
 (`DELETE /api/search/v2/query_with_cursor/{cursor}`) rather than leaving the search
-context to expire. The reference capture in section 11 pages the same way for the same
+context to expire. A cache refresh (section 6.2) pages the same way for the same
 reasons.
 
 The index holds a projection of each record. When the flow needs the whole record it sets
@@ -1105,7 +1121,7 @@ These block schema design and should be settled first.
 2. **Deterministic client-supplied OSDU ids.** Confirm OSDU and the data partition accept
    them for the kinds in scope. If yes, adopt; most of section 2 dissolves.
 3. **Where rendering runs.** petrodb-api with the runtime renderer, or the delivery
-   service. Either works and the snapshots are neutral, but it determines whether the
+   service. Either works and the pinned inputs are neutral, but it determines whether the
    translate renderer is vendored.
 4. **Storage access.** Whether the delivery service's Radix identity can be granted read on
    the drop container, and the UC external-location grant for the drop. On the critical
@@ -1127,7 +1143,7 @@ These block schema design and should be settled first.
 1. Settle decisions 1, 2 and 4.
 2. Build the ledger schema and the record-grained lease-and-retry worker. This is the
    artifact everything else depends on and it survives whichever engine runs it.
-3. Pin the reference data as snapshots and the schemas as templates. Rendering becomes
+3. Pin the reference data as cache versions and the schemas as templates. Rendering becomes
    reproducible, and `plan` starts working without OSDU.
 4. Move the mapping from generated to interpreted, proving byte-identical output against
    the 56 example fixtures before and after.

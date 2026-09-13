@@ -1,6 +1,6 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Http;
@@ -11,116 +11,157 @@ using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Engine.Snapshots;
 
+/// <summary>What writing a capture into a cache did.</summary>
+/// <param name="Snapshot">The version written, or the current version when the capture found exactly what it holds.</param>
+/// <param name="Written">False when the capture matched the current version, so no version was written.</param>
+public sealed record CacheWrite(ReferenceSnapshot Snapshot, bool Written);
+
 /// <summary>
-/// The cache capture's engine (design.md section 11): captures reference snapshots from OSDU, or from local files for
-/// offline work, and mints immutable versions in the store.
+/// The cache capture's engine (design.md section 6.2): captures the types of a cache from OSDU, or reads them from type
+/// files for offline work, and writes a version of the cache into the store when the content differs from the current
+/// version. A version holds exactly the types captured, so a type taken out of the cache flow leaves the cache with the
+/// next version rather than lingering in every version after it.
 /// </summary>
 public sealed partial class SnapshotBuilder
 {
-    private readonly ISnapshotStore _store;
+    private readonly ICacheStore _store;
+    private readonly string _cache;
     private readonly TimeProvider _time;
     private readonly ILogger<SnapshotBuilder> _logger;
 
-    public SnapshotBuilder(ISnapshotStore store, TimeProvider time, ILogger<SnapshotBuilder> logger)
+    public SnapshotBuilder(ICacheStore store, string cache, TimeProvider time, ILogger<SnapshotBuilder> logger)
     {
         ArgumentNullException.ThrowIfNull(store);
+        ArgumentException.ThrowIfNullOrWhiteSpace(cache);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
         _store = store;
+        _cache = cache;
         _time = time;
         _logger = logger;
     }
 
-    /// <summary>Builds a reference snapshot from local type files ({Name}.json in the store's type format) and mints a version.</summary>
-    public async Task<ReferenceSnapshot> ReferencesFromDirectoryAsync(string directory, bool makeCurrent, CancellationToken ct = default)
+    /// <summary>Mints a version label from a capture instant: sortable, unique per cache per second.</summary>
+    public static string MintVersion(DateTimeOffset capturedUtc) => capturedUtc.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Reads every type file in <paramref name="directory"/> (<c>{Name}.json</c>: the entity type and its items, each an
+    /// <c>id</c> and the cached values) and writes them as a version of the cache. The files have to hold exactly the types
+    /// the cache flow declares, each under its declared entity type and with no value the type does not capture, because the
+    /// cache flow is the definition of what the cache holds and an import is no way around it.
+    /// </summary>
+    public async Task<CacheWrite> ImportDirectoryAsync(
+        string directory, IReadOnlyList<ReferenceTypeSpec> declared, CacheCapture capture, bool makeCurrent, CancellationToken ct = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+        ArgumentNullException.ThrowIfNull(declared);
+        ArgumentNullException.ThrowIfNull(capture);
+        if (!Directory.Exists(directory))
+        {
+            throw new DeliveryException($"The directory '{directory}' to import cached types from does not exist.");
+        }
+
         var types = new List<ReferenceType>();
         foreach (var file in Directory.EnumerateFiles(directory, "*.json").OrderBy(f => f, StringComparer.Ordinal))
         {
-            var name = Path.GetFileNameWithoutExtension(file);
-            if (name.Equals("manifest", StringComparison.OrdinalIgnoreCase))
+            JsonObject node;
+            try
             {
+                node = JsonNode.Parse(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false)) as JsonObject
+                    ?? throw new DeliveryException($"Cached type file '{file}' is not a JSON object.");
+            }
+            catch (JsonException ex)
+            {
+                throw new DeliveryException($"Cached type file '{file}' is not valid JSON ({ex.Message}).", ex);
+            }
+
+            types.Add(ReferenceType.FromJson(Path.GetFileNameWithoutExtension(file), node));
+        }
+
+        if (types.Count == 0)
+        {
+            throw new DeliveryException($"The directory '{directory}' holds no cached type files ({{Name}}.json), so there is nothing to import.");
+        }
+
+        CheckDeclared(types, declared, directory);
+        return await WriteAsync(types, capture, makeCurrent, ct).ConfigureAwait(false);
+    }
+
+    private void CheckDeclared(IReadOnlyList<ReferenceType> types, IReadOnlyList<ReferenceTypeSpec> declared, string directory)
+    {
+        var problems = new List<string>();
+        foreach (var spec in declared.Where(spec => !types.Any(t => t.Name.Equals(spec.Name, StringComparison.OrdinalIgnoreCase))))
+        {
+            problems.Add($"{spec.Name}.json is missing, and cache '{_cache}' declares {spec.Name}");
+        }
+
+        foreach (var type in types)
+        {
+            if (declared.FirstOrDefault(spec => spec.Name.Equals(type.Name, StringComparison.OrdinalIgnoreCase)) is not { } spec)
+            {
+                problems.Add($"{type.Name}.json holds a type cache '{_cache}' does not declare");
                 continue;
             }
 
-            var node = JsonNode.Parse(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false)) as JsonObject
-                ?? throw new DeliveryException($"Reference file '{file}' is not a JSON object.");
-            types.Add(ReferenceType.FromJson(name, node));
+            if (!type.EntityType.Equals(spec.EntityType, StringComparison.Ordinal))
+            {
+                problems.Add($"{type.Name}.json holds entity type {type.EntityType}, and cache '{_cache}' declares {spec.EntityType}");
+            }
+
+            var captured = spec.Fields.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var name in type.FieldNames.Where(name => !captured.Contains(name)))
+            {
+                problems.Add($"{type.Name}.json holds values under '{name}', which cache '{_cache}' does not capture for {spec.Name}");
+            }
         }
 
-        var captured = _time.GetUtcNow();
-        var snapshot = new ReferenceSnapshot(Storage.FileSnapshotStore.MintVersion(captured), captured, types);
-        if (await UnchangedAsync(snapshot, ct).ConfigureAwait(false) is { } unchanged)
+        if (problems.Count > 0)
         {
-            return unchanged;
+            throw new DeliveryException($"The files under '{directory}' are not what cache '{_cache}' declares, so nothing was imported: {string.Join("; ", problems)}.");
         }
-
-        await _store.SaveReferencesAsync(snapshot, makeCurrent, ct).ConfigureAwait(false);
-        _logger.LogInformation("Reference snapshot {Version} saved with {Count} type(s){Current}.", snapshot.Version, types.Count, makeCurrent ? " (current)" : string.Empty);
-        return snapshot;
     }
 
-    /// <summary>Captures reference and master data through the OSDU search service and mints a version.</summary>
-    public async Task<ReferenceSnapshot> ReferencesFromOsduAsync(OsduConnection osdu, ReferenceCaptureSpec spec, bool makeCurrent, CancellationToken ct = default)
+    /// <summary>Captures every type of <paramref name="spec"/> through the OSDU search service and writes them as a version of the cache.</summary>
+    public async Task<CacheWrite> CaptureAsync(OsduConnection osdu, ReferenceCaptureSpec spec, CacheCapture capture, bool makeCurrent, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(osdu);
         ArgumentNullException.ThrowIfNull(spec);
-        var types = new List<ReferenceType>();
+        ArgumentNullException.ThrowIfNull(capture);
+        var types = new List<ReferenceType>(spec.Types.Count);
         foreach (var typeSpec in spec.Types)
         {
             types.Add(await CaptureTypeAsync(osdu, typeSpec, ct).ConfigureAwait(false));
         }
 
-        var captured = _time.GetUtcNow();
-        var version = Storage.FileSnapshotStore.MintVersion(captured);
-
-        // A capture covers the types it declares, which may be part of the estate. Merging onto the current
-        // snapshot keeps a version meaning "the whole cache as of this capture", so a mapping that resolves a type
-        // this spec does not mention still finds it.
-        var current = await CurrentAsync(ct).ConfigureAwait(false);
-        var snapshot = current is null
-            ? new ReferenceSnapshot(version, captured, types)
-            : current.With(version, captured, types);
-
-        if (await UnchangedAsync(snapshot, ct).ConfigureAwait(false) is { } unchanged)
-        {
-            return unchanged;
-        }
-
-        await _store.SaveReferencesAsync(snapshot, makeCurrent, ct).ConfigureAwait(false);
-        _logger.LogInformation(
-            "Reference snapshot {Version} saved with {Count} type(s), {Refreshed} of them refreshed{Current}.",
-            snapshot.Version, snapshot.Types.Count, types.Count, makeCurrent ? " (current)" : string.Empty);
-        return snapshot;
+        return await WriteAsync(types, capture, makeCurrent, ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// The current snapshot when a capture produced byte-identical content, or null when the content really moved.
-    ///
-    /// A reference version is a timestamp, and it enters the render context, so minting one for a capture that
-    /// found nothing new would change every record's metadata hash and redeliver the whole estate for no reason.
-    /// Schema snapshots are already content-addressed and immune to this; comparing content here gives reference
-    /// snapshots the same property, so recapturing defensively is free.
+    /// Writes the types as the next version, unless they are exactly what the current version holds. A version label is a
+    /// timestamp and it enters the render context, so writing one for a capture that found nothing new would change the
+    /// metadata hash of every record built from the cache and deliver them all again for no reason. Comparing content makes
+    /// refreshing a cache as often as anyone likes free.
     /// </summary>
-    private async Task<ReferenceSnapshot?> UnchangedAsync(ReferenceSnapshot captured, CancellationToken ct)
+    private async Task<CacheWrite> WriteAsync(IReadOnlyList<ReferenceType> types, CacheCapture capture, bool makeCurrent, CancellationToken ct)
     {
-        var current = await CurrentAsync(ct).ConfigureAwait(false);
-        if (current is null || !string.Equals(current.ContentHash(), captured.ContentHash(), StringComparison.Ordinal))
+        var captured = _time.GetUtcNow();
+        var snapshot = new ReferenceSnapshot(MintVersion(captured), captured, types).Normalized();
+        var currentVersion = await _store.CurrentVersionAsync(_cache, ct).ConfigureAwait(false);
+        if (currentVersion is not null
+            && await _store.LoadAsync(_cache, currentVersion, ct).ConfigureAwait(false) is { } current
+            && string.Equals(current.ContentHash(), snapshot.ContentHash(), StringComparison.Ordinal))
         {
-            return null;
+            _logger.LogInformation(
+                "Cache {Cache}: the capture found exactly what the current version {Version} holds, so no version was written and nothing built from the cache renders again.",
+                _cache, current.Version);
+            return new CacheWrite(current, Written: false);
         }
 
+        var saved = await _store.SaveAsync(_cache, snapshot, capture, makeCurrent, ct).ConfigureAwait(false);
         _logger.LogInformation(
-            "Reference capture matched the current snapshot {Version} exactly; keeping it rather than minting a version that would re-render every record.",
-            current.Version);
-        return current;
-    }
-
-    /// <summary>The snapshot a refresh builds on: the current version, or null when the store holds none.</summary>
-    private async Task<ReferenceSnapshot?> CurrentAsync(CancellationToken ct)
-    {
-        var version = await _store.CurrentReferenceVersionAsync(ct).ConfigureAwait(false);
-        return version is null ? null : await _store.LoadReferencesAsync(version, ct).ConfigureAwait(false);
+            "Cache {Cache}: version {Version} written with {Types} type(s) and {Items} record(s){Current}.",
+            _cache, saved.Version, saved.Types.Count, saved.Items, saved.Current ? ", now current" : ", not made current");
+        return new CacheWrite(snapshot, Written: true);
     }
 }
 
@@ -139,7 +180,8 @@ public sealed partial class SnapshotBuilder
         ArgumentNullException.ThrowIfNull(typeSpec);
         typeSpec.Validate();
 
-        var items = new List<ReferenceItem>();
+        var items = new Dictionary<string, ReferenceItem>(StringComparer.Ordinal);
+        var repeated = 0;
         var coverage = typeSpec.Fields.ToDictionary(f => f.Name, _ => 0, StringComparer.OrdinalIgnoreCase);
         string? cursor = null;
         string? previousCursor = null;
@@ -171,9 +213,22 @@ public sealed partial class SnapshotBuilder
                 {
                     foreach (var hit in results.OfType<JsonObject>())
                     {
-                        if (Project(hit, typeSpec.Fields, coverage) is { } item)
+                        if (Project(hit, typeSpec.Fields) is not { } item)
                         {
-                            items.Add(item);
+                            continue;
+                        }
+
+                        // A record the index hands back twice across pages is the same record: it is cached once, and
+                        // counted once towards what each path covered.
+                        if (!items.TryAdd(item.Id, item))
+                        {
+                            repeated++;
+                            continue;
+                        }
+
+                        foreach (var name in item.Fields.Keys)
+                        {
+                            coverage[name]++;
                         }
                     }
                 }
@@ -205,6 +260,13 @@ public sealed partial class SnapshotBuilder
             }
         }
 
+        if (repeated > 0)
+        {
+            _logger.LogWarning(
+                "Reference type {Type}: the search returned {Repeated} record(s) of kind {Kind} more than once; each is cached once.",
+                typeSpec.Name, repeated, typeSpec.Kind);
+        }
+
         if (items.Count == 0)
         {
             // Nothing matched at all: the paths are not the question, the kind and the query are.
@@ -226,7 +288,7 @@ public sealed partial class SnapshotBuilder
         _logger.LogInformation(
             "Captured {Count} {Type} item(s) with {Fields}.",
             items.Count, typeSpec.Name, string.Join(", ", typeSpec.Fields.Select(f => $"{f.Name}={coverage[f.Name]}")));
-        return new ReferenceType(typeSpec.Name, typeSpec.EntityType, items.OrderBy(i => i.Id, StringComparer.Ordinal));
+        return new ReferenceType(typeSpec.Name, typeSpec.EntityType, items.Values.OrderBy(i => i.Id, StringComparer.Ordinal));
     }
 
     /// <summary>
@@ -247,7 +309,7 @@ public sealed partial class SnapshotBuilder
     }
 
     /// <summary>Projects one search hit onto the declared paths, keeping whatever shape each path yields.</summary>
-    private static ReferenceItem? Project(JsonObject hit, IReadOnlyList<ReferenceFieldSpec> fields, Dictionary<string, int> coverage)
+    private static ReferenceItem? Project(JsonObject hit, IReadOnlyList<ReferenceFieldSpec> fields)
     {
         var id = hit["id"]?.GetValue<string>();
         if (string.IsNullOrWhiteSpace(id))
@@ -265,14 +327,13 @@ public sealed partial class SnapshotBuilder
             }
 
             values[field.Name] = ReferenceValue.OfMany(hits);
-            coverage[field.Name]++;
         }
 
         return new ReferenceItem(id, values);
     }
 }
 
-/// <summary>A read-only OSDU connection for snapshot capture: the flow's target auth and headers against an OSDU base URL.</summary>
+/// <summary>A read-only OSDU connection for a cache capture: a flow's auth and headers against an OSDU base URL.</summary>
 public sealed class OsduConnection : IDisposable
 {
     private readonly HttpRuntime _http;

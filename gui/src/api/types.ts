@@ -106,7 +106,7 @@ export interface RepoSyncResult {
   runsAdded: number;
   runsSkipped: number;
   runsFailed: number;
-  /** The document families the sync extensions reconcile (mappings, snapshots). */
+  /** The document families the sync extensions reconcile (mappings, cache definitions). */
   documentsAdded: number;
   documentsUpdated: number;
   documentsUnchanged: number;
@@ -250,15 +250,18 @@ export interface RunDetail {
 }
 
 /** The operations a delivery run performs. */
-export type RunOperation = "deliver" | "verify" | "plan" | "known-state" | "intake" | "drain" | "retrieve";
+export type RunOperation = "deliver" | "verify" | "plan" | "known-state" | "intake" | "drain" | "retrieve" | "refresh";
 
-export const RUN_OPERATIONS: readonly RunOperation[] = ["deliver", "verify", "plan", "known-state", "intake", "drain", "retrieve"];
+export const RUN_OPERATIONS: readonly RunOperation[] = ["deliver", "verify", "plan", "known-state", "intake", "drain", "retrieve", "refresh"];
 
 /** The operations a delivery flow runs. */
 export const DELIVERY_OPERATIONS: readonly RunOperation[] = ["deliver", "verify", "plan", "known-state", "intake", "drain"];
 
 /** The operations a retrieval flow runs. */
 export const RETRIEVAL_OPERATIONS: readonly RunOperation[] = ["retrieve", "plan"];
+
+/** The operations a cache flow runs. */
+export const CACHE_OPERATIONS: readonly RunOperation[] = ["refresh", "plan"];
 
 /** The per-run parameters as the run row stores them (parametersJson) and as a trigger sends them. */
 export interface RunParameters {

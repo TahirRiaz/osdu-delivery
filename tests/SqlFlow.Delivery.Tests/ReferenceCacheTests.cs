@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Drops;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
@@ -209,42 +210,46 @@ public class ReferenceCacheTests
         Assert.Equal([("NameAlias", "AliasName")], ReferenceField.Prefixes("data.NameAlias.AliasName"));
     }
 
-    [Fact]
-    public void Capture_spec_reads_paths_written_either_way()
-    {
-        var spec = ReferenceCaptureSpec.Parse("""
-            {
-              "types": [
-                {
-                  "name": "Wellbore",
-                  "entityType": "master-data--Wellbore",
-                  "kind": "osdu:wks:master-data--Wellbore:*",
-                  "fields": ["data.FacilityName", { "path": "data.NameAlias.AliasName", "as": "Alias" }]
-                }
-              ]
-            }
-            """, "spec.json");
+    /// <summary>A cache flow over the given <c>types:</c> block (list items indented by two spaces).</summary>
+    private static CacheDefinition CacheFlow(string types, string extra = "") => new DeliveryDocumentLoader().ParseCache(
+        """
+        flowType: cache
+        name: osdu-reference-cache
+        source:
+          endpoint: https://osdu.example.com
+          headers: { data-partition-id: opendes }
 
-        var type = Assert.Single(spec.Types);
+        """ + extra + "\ntypes:\n" + types + "\n",
+        "caches/osdu-reference-cache.yaml");
+
+    [Fact]
+    public void A_cache_flow_reads_paths_written_either_way()
+    {
+        var cache = CacheFlow("""
+              - kind: "osdu:wks:master-data--Wellbore:*"
+                name: Wellbore
+                fields:
+                  - data.FacilityName
+                  - path: data.NameAlias.AliasName
+                    as: Alias
+            """);
+
+        var type = Assert.Single(cache.Types);
         Assert.Equal(["FacilityName", "Alias"], type.Fields.Select(f => f.Name));
         Assert.Equal(["data.FacilityName", "data.NameAlias.AliasName"], type.Fields.Select(f => f.Path));
     }
 
     [Fact]
-    public void Capture_spec_rejects_two_paths_under_one_name()
+    public void A_cache_flow_refuses_two_paths_under_one_name()
     {
-        var ex = Assert.Throws<FlowValidationException>(() => ReferenceCaptureSpec.Parse("""
-            {
-              "types": [
-                {
-                  "name": "Wellbore",
-                  "entityType": "master-data--Wellbore",
-                  "kind": "osdu:wks:master-data--Wellbore:*",
-                  "fields": ["data.FacilityName", { "path": "data.NameAlias.AliasName", "as": "FacilityName" }]
-                }
-              ]
-            }
-            """, "spec.json"));
+        var ex = Assert.Throws<FlowValidationException>(() => CacheFlow("""
+              - kind: "osdu:wks:master-data--Wellbore:*"
+                name: Wellbore
+                fields:
+                  - data.FacilityName
+                  - path: data.NameAlias.AliasName
+                    as: FacilityName
+            """));
         Assert.Contains("two paths under the name 'FacilityName'", ex.Message, StringComparison.Ordinal);
     }
 
@@ -252,19 +257,11 @@ public class ReferenceCacheTests
     public void A_cached_field_called_ID_is_allowed_and_shadows_the_record_id()
     {
         // OSDU reference data carries data.ID, and the sample estate caches it. Only the exact key 'id' collides.
-        var spec = ReferenceCaptureSpec.Parse("""
-            {
-              "types": [
-                {
-                  "name": "UnitOfMeasure",
-                  "entityType": "reference-data--UnitOfMeasure",
-                  "kind": "osdu:wks:reference-data--UnitOfMeasure:*",
-                  "fields": ["data.Code", "data.ID"]
-                }
-              ]
-            }
-            """, "spec.json");
-        Assert.Equal(["Code", "ID"], Assert.Single(spec.Types).Fields.Select(f => f.Name));
+        var cache = CacheFlow("""
+              - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+                fields: [data.Code, data.ID]
+            """);
+        Assert.Equal(["Code", "ID"], Assert.Single(cache.Types).Fields.Select(f => f.Name));
 
         var type = new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
         [
@@ -274,103 +271,119 @@ public class ReferenceCacheTests
         Assert.Null(type.Match("id", "dev:reference-data--UnitOfMeasure:m"));
         Assert.False(type.MeansRecordId("id"));
 
-        var ex = Assert.Throws<FlowValidationException>(() => ReferenceCaptureSpec.Parse("""
-            {
-              "types": [
-                {
-                  "name": "UnitOfMeasure",
-                  "entityType": "reference-data--UnitOfMeasure",
-                  "kind": "osdu:wks:reference-data--UnitOfMeasure:*",
-                  "fields": [{ "path": "data.Code", "as": "id" }]
-                }
-              ]
-            }
-            """, "spec.json"));
+        var ex = Assert.Throws<FlowValidationException>(() => CacheFlow("""
+              - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+                fields:
+                  - path: data.Code
+                    as: id
+            """));
         Assert.Contains("the key the record id is written under", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Retrieval_flow_declares_the_cache_it_maintains()
+    public void A_cache_flow_declares_what_the_cache_holds()
     {
-        var flow = new DeliveryDocumentLoader().ParseRetrieval("""
-            flowType: retrieval
-            name: osdu-metadata-sync
-            source:
-              endpoint: https://osdu.example.com
-              headers: { data-partition-id: opendes }
-              kinds: [osdu:wks:master-data--Wellbore:1.0.0]
-            target:
-              location: lake/metadata
-            cache:
-              types:
-                - fields:
-                    - data.FacilityName
-                    - path: data.NameAlias.AliasName
-                      as: Alias
-            """, "sync.yaml");
+        var cache = CacheFlow(
+            """
+              - kind: osdu:wks:master-data--Wellbore:1.0.0
+                onChange: auto
+                fields: [data.FacilityName]
+              - kind: osdu:wks:reference-data--UnitOfMeasure:1.0.0
+                query: data.Code:m*
+                fields: [data.Code]
+            """,
+            "onChange: approve\n");
 
-        Assert.NotNull(flow.Cache);
-        var cache = flow.Cache!;
+        Assert.Equal("osdu-reference-cache", cache.Name);
         Assert.True(cache.MakeCurrent);
-        var type = Assert.Single(cache.Types);
-        Assert.Equal("Wellbore", type.Name);
-        Assert.Equal("master-data--Wellbore", type.EntityType);
-        Assert.Equal("osdu:wks:master-data--Wellbore:1.0.0", type.Kind);
-        Assert.Equal("*", type.Query);
-        Assert.Equal(["FacilityName", "Alias"], type.Fields.Select(f => f.Name));
+        Assert.Equal("https://osdu.example.com", cache.Source.Endpoint);
+        var wellbore = cache.Types[0];
+        Assert.Equal("Wellbore", wellbore.Name);
+        Assert.Equal("master-data--Wellbore", wellbore.EntityType);
+        Assert.Equal("*", wellbore.Query);
+        Assert.Equal(CacheChangeMode.Auto, wellbore.OnChange);
+        var units = cache.Types[1];
+        Assert.Equal("UnitOfMeasure", units.Name);
+        Assert.Equal("data.Code:m*", units.Query);
+        Assert.Equal(CacheChangeMode.Approve, units.OnChange);
     }
 
     [Fact]
-    public void A_platform_run_refuses_to_mint_the_cache_into_the_copy_of_the_repository_it_runs_from()
+    public void A_cached_type_names_its_kind_and_a_query_uses_only_declared_parameters()
     {
-        // Seen live: a refresh ran from the staged copy of its flow, minted a version with no previous one into a
-        // snapshots directory beside that copy, and the deliveries rendering against the cache never saw it.
-        var flow = new DeliveryDocumentLoader().ParseRetrieval("""
+        var noKind = Assert.Throws<FlowValidationException>(() => CacheFlow("""
+              - name: Wellbore
+                entityType: master-data--Wellbore
+                fields: [data.FacilityName]
+            """));
+        Assert.Contains("types[0].kind is required", noKind.Message, StringComparison.Ordinal);
+
+        var token = Assert.Throws<FlowValidationException>(() => CacheFlow("""
+              - kind: osdu:wks:master-data--Wellbore:1.0.0
+                query: data.Country:{country}
+                fields: [data.FacilityName]
+            """));
+        Assert.Contains("'{country}', which is not declared under parameters", token.Message, StringComparison.Ordinal);
+
+        var none = Assert.Throws<FlowValidationException>(() => CacheFlow(string.Empty));
+        Assert.Contains("types is required", none.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_retrieval_flow_declares_no_cache()
+    {
+        // What is cached is defined by a cache flow alone; a cache section on a retrieval flow is an unknown key.
+        Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseRetrieval("""
             flowType: retrieval
             name: osdu-metadata-sync
             source:
               endpoint: https://osdu.example.com
               headers: { data-partition-id: opendes }
               kinds: [osdu:wks:master-data--Wellbore:1.0.0]
-            target:
-              location: lake/metadata
-            cache:
-              types:
-                - fields: [data.FacilityName]
-            """, "sync.yaml") with { SourcePath = Path.Combine(Path.GetTempPath(), "sqlflow-copy", "flows", "sync.yaml") };
-        var cache = flow.Cache!;
-
-        var problem = ReferenceCacheRefresher.StoreProblem(flow, cache, ephemeralWorkingCopy: true);
-        Assert.NotNull(problem);
-        Assert.Contains("cache.snapshots", problem, StringComparison.Ordinal);
-        Assert.Contains("render.snapshots", problem, StringComparison.Ordinal);
-        Assert.NotNull(ReferenceCacheRefresher.StoreProblem(flow, cache with { SnapshotsDirectory = "../snapshots" }, ephemeralWorkingCopy: true));
-
-        // A durable store is fine from any copy, and a run from a working tree of its own may keep the nearest store.
-        Assert.Null(ReferenceCacheRefresher.StoreProblem(flow, cache with { SnapshotsDirectory = "abfss://lake@account.dfs.core.windows.net/osdu/snapshots" }, ephemeralWorkingCopy: true));
-        Assert.Null(ReferenceCacheRefresher.StoreProblem(flow, cache with { SnapshotsDirectory = Path.Combine(Path.GetTempPath(), "shared-snapshots") }, ephemeralWorkingCopy: true));
-        Assert.Null(ReferenceCacheRefresher.StoreProblem(flow, cache, ephemeralWorkingCopy: false));
-    }
-
-    [Fact]
-    public void Retrieval_flow_needs_a_kind_per_cached_type_when_it_syncs_several()
-    {
-        var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseRetrieval("""
-            flowType: retrieval
-            name: osdu-metadata-sync
-            source:
-              endpoint: https://osdu.example.com
-              headers: { data-partition-id: opendes }
-              kinds:
-                - osdu:wks:master-data--Wellbore:1.0.0
-                - osdu:wks:reference-data--UnitOfMeasure:1.0.0
             target:
               location: lake/metadata
             cache:
               types:
                 - fields: [data.FacilityName]
             """, "sync.yaml"));
-        Assert.Contains("needs a kind", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_delivery_flow_pins_a_version_only_of_a_cache_it_names()
+    {
+        var sample = File.ReadAllText(Samples.Flow);
+        var loader = new DeliveryDocumentLoader();
+        Assert.Equal(Samples.SampleCacheName, loader.ParseFlow(sample, "flow.yaml").Render.Cache);
+
+        var pinned = loader.ParseFlow(sample.Replace("cache: osdu-reference-cache", "cache: osdu-reference-cache\n  cacheVersion: 20260908T212727Z", StringComparison.Ordinal), "flow.yaml");
+        Assert.Equal("20260908T212727Z", pinned.Render.CacheVersion);
+
+        var ex = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
+            sample.Replace("cache: osdu-reference-cache", "cacheVersion: 20260908T212727Z", StringComparison.Ordinal), "flow.yaml"));
+        Assert.Contains("render.cache names no cache", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_mapping_that_reads_the_cache_renders_only_against_a_cache_the_flow_names_and_the_catalog_holds()
+    {
+        var engine = Samples.Engine(ledger: null);
+        var values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" };
+        var flow = Samples.LocalFlow(Samples.NewTempDirectory());
+
+        using (var runtime = await FlowRuntime.CreateAsync(engine, flow, values, dropOverride: null))
+        {
+            Assert.Equal(Samples.SampleCacheName, runtime.Mapping.Context.CacheName);
+            Assert.Equal("20260908T212727Z", runtime.Mapping.Context.CacheVersion);
+        }
+
+        var unnamed = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { Cache = null } }, values, dropOverride: null));
+        Assert.Contains("render.cache must name the cache it reads", unnamed.Message, StringComparison.Ordinal);
+
+        var unknown = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { Cache = "no-such-cache" } }, values, dropOverride: null));
+        Assert.Contains("cache 'no-such-cache' has no current version", unknown.Message, StringComparison.Ordinal);
+
+        var missingVersion = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { CacheVersion = "19990101T000000Z" } }, values, dropOverride: null));
+        Assert.Contains("which the catalog does not hold", missingVersion.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -387,10 +400,9 @@ public class ReferenceCacheTests
         var curveUnit = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].CurveUnit");
         Assert.Equal("m3/m3", curveUnit.Modifiers.Single(m => m.Kind == ModifierKind.Replace).Replacements["V/V"]);
 
-        var store = new FileSnapshotStore(Samples.Snapshots, Samples.Stores());
-        var version = await store.CurrentReferenceVersionAsync();
+        var version = await Samples.SampleCache.CurrentVersionAsync(Samples.SampleCacheName);
         Assert.NotNull(version);
-        var references = await store.LoadReferencesAsync(version);
+        var references = await Samples.SampleCache.LoadAsync(Samples.SampleCacheName, version);
         Assert.NotNull(references);
         var schema = await Samples.SampleTemplates.LoadAsync(mapping.Template);
         Assert.NotNull(schema);
@@ -398,7 +410,8 @@ public class ReferenceCacheTests
         var context = new RenderContext
         {
             MappingReference = mapping.Reference,
-            ReferenceSnapshotVersion = references.Version,
+            CacheName = Samples.SampleCacheName,
+            CacheVersion = references.Version,
             SchemaSnapshotVersion = schema.Version,
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "opendes" },
         };

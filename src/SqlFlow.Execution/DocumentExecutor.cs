@@ -41,12 +41,6 @@ public sealed record DocumentExecutionOptions
     /// records nothing live; the events are still collected into the run.json <c>events</c> array and projected
     /// at completion, so the artifact stays authoritative either way.</summary>
     public IFlowEventSink? EventSink { get; init; }
-
-    /// <summary>True when the flow executes from a copy of its repository the node made for runs: a staged YAML version
-    /// or a commit checkout, shared by version and never pushed back. Whatever a run writes beside its flow there is seen
-    /// by no other run, so a kind that keeps durable state next to its documents must not write it there. The CLI and a
-    /// run from the node's synced repository root leave it false.</summary>
-    public bool EphemeralWorkingCopy { get; init; }
 }
 
 /// <summary>The uniform outcome of running one flow document, whatever its kind: the terminal facts. The
