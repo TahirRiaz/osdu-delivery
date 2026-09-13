@@ -51,17 +51,26 @@ builder.Services.AddDeliveryLedger(sp => () => new CatalogDbContext(sp.GetRequir
 // The repositories' caches as the catalog carries them, for the mapping builder's checks; recent versions stay in memory.
 builder.Services.AddSingleton<SqlFlow.Delivery.Catalog.CatalogCacheReader>();
 // The OSDU data definitions (the Open Group's public repository of OSDU schemas) the Templates page browses and saves
-// templates from. A release is read at the commit its tag names, so what was read is cached for the process.
-builder.Services.AddHttpClient(OsduDataDefinitions.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(options.SchemaRepository.TimeoutSeconds));
+// templates from, kept as a local copy: each release downloaded once as one archive and read from disk after that, the
+// release list read again when older than RefreshMinutes or when someone syncs. Timeouts are per request, set by the class.
+builder.Services.AddHttpClient(OsduDataDefinitions.HttpClientName, client => client.Timeout = Timeout.InfiniteTimeSpan);
 builder.Services.AddSingleton(sp =>
 {
     var clients = sp.GetRequiredService<IHttpClientFactory>();
+    var repository = options.SchemaRepository;
     return new OsduDataDefinitions(
         () => clients.CreateClient(OsduDataDefinitions.HttpClientName),
-        options.SchemaRepository.ApiUrl,
-        options.SchemaRepository.WebUrl,
+        repository.ApiUrl,
+        repository.WebUrl,
+        string.IsNullOrWhiteSpace(repository.CacheDirectory) ? OsduDataDefinitions.DefaultCacheDirectory : repository.CacheDirectory,
+        TimeSpan.FromMinutes(repository.RefreshMinutes),
+        TimeSpan.FromMinutes(repository.DownloadTimeoutMinutes),
         sp.GetRequiredService<TimeProvider>());
 });
+if (options.SchemaRepository.WarmOnStart)
+{
+    builder.Services.AddHostedService<DataDefinitionsWarmupService>();
+}
 builder.Services.AddSingleton<CatalogSync>();
 builder.Services.AddSingleton<CatalogConnectionProvider>();
 builder.Services.AddSingleton<TokenIssuer>();
@@ -394,6 +403,7 @@ v1.MapGroup(string.Empty).RequireAuthorization("operate")
     .MapNodeControlEndpoints()
     .MapComputeTaskControlEndpoints()
     .MapDeliveryWriteEndpoints()
+    .MapDeliveryTemplateOperateEndpoints()
     .MapDropOffWriteEndpoints();
 
 // The author surface: proposing pipelines to a source repo as a pull request pushes a branch under the source's own

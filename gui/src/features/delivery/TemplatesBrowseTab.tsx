@@ -1,6 +1,6 @@
 import { useDeferredValue, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ExternalLink, Eye, FlaskConical, Loader2, Save } from "lucide-react";
+import { Archive, ExternalLink, Eye, FlaskConical, GitCompareArrows, Loader2, RefreshCw, Save } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,11 +11,13 @@ import { Switch } from "@/components/ui/switch";
 import { deliveryApi, type DeliveryOsduSchema } from "../../api/delivery";
 import { DataTable, type Column } from "../../components/DataTable";
 import { FilterBar } from "../../components/FilterBar";
+import { IconAction } from "../../components/IconAction";
 import { LinkRef } from "../../components/LinkRef";
 import { RelativeTime } from "../../components/RelativeTime";
 import { SearchInput } from "../../components/SearchInput";
 import { StatePill } from "../../components/StatusBadge";
 import { KindText } from "./KindText";
+import { kindStem, TemplateCompareSheet, type CompareStart } from "./TemplateCompareSheet";
 import { ProblemView, problemText, TaskProgress, TemplateSheet } from "./TemplateSheet";
 
 /** The most rows the table renders at once; the search narrows the rest. */
@@ -67,12 +69,13 @@ function RepositoryLink({ href, children, testId }: { href: string; children: Re
  * every OSDU kind. Pick a release (the newest by default), find a kind with one search, look at it laid out as a template
  * and save it. The control plane reads the repository; the schemas are public, so no flow, credential or node is involved.
  */
-export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
+export function TemplatesBrowseTab({ canAuthor, canOperate }: { canAuthor: boolean; canOperate: boolean }) {
   const queryClient = useQueryClient();
   const [pickedRelease, setPickedRelease] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [allVersions, setAllVersions] = useState(false);
   const [viewing, setViewing] = useState<Viewing | null>(null);
+  const [comparing, setComparing] = useState<CompareStart | null>(null);
   const term = useDeferredValue(search);
 
   const releases = useQuery({
@@ -80,7 +83,20 @@ export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
     queryFn: deliveryApi.osduReleases,
     staleTime: 10 * 60_000,
   });
-  const release = pickedRelease ?? releases.data?.[0]?.name ?? null;
+  const release = pickedRelease ?? releases.data?.releases[0]?.name ?? null;
+  const chosenRelease = releases.data?.releases.find((candidate) => candidate.name === release);
+
+  // Syncing reads the release list again and brings the release in view into the local copy.
+  const sync = useMutation({
+    mutationFn: () => deliveryApi.osduSync(release),
+    onSuccess: (result) => {
+      toast.success(result.downloaded.length === 0
+        ? `Synced with the OSDU data definitions: ${result.releases.length} releases, and the release in view is already on disk.`
+        : `Synced with the OSDU data definitions: ${result.releases.length} releases; downloaded ${result.downloaded.join(", ")}.`);
+      void queryClient.invalidateQueries({ queryKey: ["delivery", "osdu-definitions"] });
+    },
+    onError: (error) => toast.error(problemText(error)),
+  });
 
   // A release is a tag at a fixed commit, so what it publishes never changes while the page is open.
   const index = useQuery({
@@ -160,6 +176,25 @@ export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
     setViewing({ release: index.data.release.name, kind });
   };
 
+  // A comparison opens on the version before this one in the release, or on the same version in the release before it.
+  const compare = (kind: string) => {
+    if (index.data === undefined) {
+      return;
+    }
+
+    const current = index.data.release.name;
+    const versions = index.data.schemas.filter((schema) => kindStem(schema.kind) === kindStem(kind));
+    const older = versions[versions.findIndex((schema) => schema.kind === kind) + 1];
+    if (older !== undefined && versions.some((schema) => schema.kind === kind)) {
+      setComparing({ from: { release: current, kind: older.kind }, to: { release: current, kind } });
+      return;
+    }
+
+    const names = (releases.data?.releases ?? []).map((candidate) => candidate.name);
+    const previous = names[names.indexOf(current) + 1] ?? current;
+    setComparing({ from: { release: previous, kind }, to: { release: current, kind } });
+  };
+
   const columns: Column<BrowseRow>[] = [
     { id: "kind", header: "Kind", fill: true, render: (row) => <KindText kind={row.schema.kind} /> },
     { id: "status", header: "Status", render: (row) => <StatusCell schema={row.schema} /> },
@@ -182,6 +217,12 @@ export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
             title="In the OSDU data definitions"
             testId={`templates-browse-link-${row.schema.kind}`}
             copyTestId={`templates-browse-copy-${row.schema.kind}`}
+          />
+          <IconAction
+            label="Compare versions"
+            icon={<GitCompareArrows />}
+            onClick={(event) => { event.stopPropagation(); compare(row.schema.kind); }}
+            data-testid={`templates-browse-compare-${row.schema.kind}`}
           />
           <Button
             variant="outline"
@@ -235,10 +276,11 @@ export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
                 <SelectValue placeholder={releases.isError ? "Unavailable" : "Loading releases"} />
               </SelectTrigger>
               <SelectContent>
-                {(releases.data ?? []).map((candidate, i) => (
+                {(releases.data?.releases ?? []).map((candidate, i) => (
                   <SelectItem key={candidate.name} value={candidate.name}>
                     <span className="font-mono">{candidate.name}</span>
                     {i === 0 && <span className="text-[11px] text-muted-foreground">newest</span>}
+                    {candidate.local && <span className="text-[11px] text-success" data-testid={`templates-browse-local-${candidate.name}`}>on disk</span>}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -256,6 +298,24 @@ export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
             <Switch checked={allVersions} onCheckedChange={setAllVersions} data-testid="templates-browse-all-versions" />
             Every version
           </Label>
+          <div className="flex items-center gap-2 sm:ml-auto">
+            {releases.data?.syncedUtc != null && (
+              <span className="text-xs text-muted-foreground" data-testid="templates-browse-synced">
+                Synced <RelativeTime value={releases.data.syncedUtc} />
+              </span>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => sync.mutate()}
+              disabled={!canOperate || sync.isPending || releases.data === undefined}
+              title={canOperate ? "Read the release list again, and download the release in view when it is not on disk" : "Syncing takes the operate scope."}
+              data-testid="templates-browse-sync"
+            >
+              {sync.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              Sync with the repository
+            </Button>
+          </div>
         </FilterBar>
         <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground" data-testid="templates-browse-summary">
           {listed === undefined
@@ -279,7 +339,14 @@ export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
 
       {releases.isError && <ProblemView error={releases.error} testId="templates-browse-error" />}
       {index.isError && <ProblemView error={index.error} testId="templates-browse-error" />}
-      {!releases.isError && !index.isError && rows === undefined && <Skeleton className="h-64 w-full rounded-lg" />}
+      {!releases.isError && !index.isError && rows === undefined && (chosenRelease !== undefined && !chosenRelease.local
+        ? (
+          <TaskProgress
+            label={`Downloading release ${chosenRelease.name} into the local copy; it is read from disk from then on`}
+            testId="templates-browse-downloading"
+          />
+        )
+        : <Skeleton className="h-64 w-full rounded-lg" />)}
 
       {shownRows !== undefined && (
         <DataTable
@@ -297,6 +364,14 @@ export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
         />
       )}
 
+      {comparing !== null && (
+        <TemplateCompareSheet
+          key={`${comparing.from.release} ${comparing.from.kind} ${comparing.to.release} ${comparing.to.kind}`}
+          start={comparing}
+          onClose={() => setComparing(null)}
+        />
+      )}
+
       <TemplateSheet
         open={viewing !== null}
         onClose={() => setViewing(null)}
@@ -311,6 +386,21 @@ export function TemplatesBrowseTab({ canAuthor }: { canAuthor: boolean }) {
         actions={file.data !== undefined && preview.data !== undefined ? (
           <span className="inline-flex items-center gap-3">
             <RepositoryLink href={file.data.webUrl} testId="templates-browse-source-link">View the source</RepositoryLink>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const kind = viewing?.kind;
+                setViewing(null);
+                if (kind !== undefined) {
+                  compare(kind);
+                }
+              }}
+              data-testid="templates-browse-sheet-compare"
+            >
+              <GitCompareArrows />
+              Compare versions
+            </Button>
             {canAuthor && (
               <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending} data-testid="templates-browse-save">
                 {save.isPending ? <Loader2 className="animate-spin" /> : <Save />}

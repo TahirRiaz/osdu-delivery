@@ -23,12 +23,30 @@ template:
 - **Browse OSDU.** The canonical OSDU schemas are the OSDU data definitions, the Open Group's public repository at
   <https://community.opengroup.org/osdu/data/data-definitions>. Pick one of its releases (a version tag; the newest is
   the default) and search the record kinds it publishes, which its `Generated/SchemaStatus.json` lists. The control
-  plane reads the repository's GitLab API itself: the schemas are public, so no flow, credential or node is involved.
-  `ControlPlane:SchemaRepository` points it at a mirror when community.opengroup.org is out of reach.
+  plane keeps a local copy of the repository on disk: the first time a release is read, its whole `Generated` folder is
+  downloaded as one archive and unpacked, and every file of it is read from disk from then on, across restarts. The
+  release list is kept beside it, read again when it is older than `ControlPlane:SchemaRepository:RefreshMinutes` (a
+  day) and whenever someone presses **Sync with the repository**, which also downloads the release in view when it is
+  not on disk; the page says when the list was last read, and marks the releases on disk. The newest release is
+  downloaded when the control plane starts. The schemas are public, so no flow, credential or node is involved.
+  `ControlPlane:SchemaRepository` points it at a mirror (`ApiUrl`, `WebUrl`) when community.opengroup.org is out of
+  reach, and `CacheDirectory` moves the local copy.
 - **Look at a schema.** Open a kind to see it laid out as a template: every variable with its type, requiredness,
   relationships, unit context and OSDU's description. The control plane reads the kind's file under `Generated` at the
   commit the release tag names, with every file it refers to, and bundles them; nothing is stored yet. The kind links
   to its file in the repository.
+- **Compare versions.** Pick two versions of a kind, each from any release, and see whether anything changed. The
+  verdict comes first: no change (the same file, or files that differ only in the version identifiers each carries), or
+  how many breaking, additive and wording changes there are. Every variable that differs is listed with what changed
+  about it. Breaking means a mapping written for the older version can stop rendering or render a record the newer
+  version does not accept: a variable removed, its type, format, pattern, unit context or writer changed, a property
+  that became required where the older version already has the object holding it, or an entity type it no longer
+  points to. Additive means something a mapping may now use: a new optional variable, a property no longer required, a
+  new entity type it points to. Wording means only a title or description changed. The two schema files are shown side
+  by side exactly as the release publishes them, and so is every shared schema they refer to that differs, paired by
+  name across versions (`AbstractFacility` 1.0.0 against 1.1.0): a kind's own file can be the same in two releases
+  while a schema it refers to changed under the same version, and that is where its template's changes come from. A release's versions are taken as they are; nothing is judged by
+  the status a release gives them.
 - **Save it.** Saving stores exactly the schema that was shown as a template version, and from then on mappings can
   pin it. The template's origin names the release, its commit and the file.
 - **Import a file.** A schema of one's own, which the data definitions do not publish, is uploaded as a bundled schema

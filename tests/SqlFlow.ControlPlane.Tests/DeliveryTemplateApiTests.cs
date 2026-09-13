@@ -1,3 +1,5 @@
+using System.Formats.Tar;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -224,7 +226,9 @@ public sealed class DeliveryTemplateApiTests
         await CatalogDatabase.ProvisionAsync(cs);
         using var handler = new DataDefinitionsHandler();
         using var http = new HttpClient(handler, disposeHandler: false);
-        var definitions = new OsduDataDefinitions(() => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, TimeProvider.System);
+        using var cache = new TemporaryDirectory();
+        var definitions = new OsduDataDefinitions(
+            () => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, cache.Path, Timeout.InfiniteTimeSpan, TimeSpan.FromMinutes(1), TimeProvider.System);
         await using var factory = Factory(cs).WithServices(services => services.AddSingleton(definitions));
         using var client = factory.CreateClient();
         var reader = await TokenAsync(client, "read");
@@ -234,14 +238,20 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
         }
 
-        var release = Assert.Single(await ReadAsync<List<DeliveryOsduReleaseDto>>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/releases")));
+        var listed = await ReadAsync<DeliveryOsduReleasesDto>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/releases"));
+        Assert.NotNull(listed.SyncedUtc);
+        var release = Assert.Single(listed.Releases);
         Assert.Equal("v0.30.0", release.Name);
         Assert.Equal(DataDefinitionsHandler.Commit, release.Commit);
+
+        // Listing the releases downloads nothing: a release comes into the local copy when it is first read.
+        Assert.False(release.Local);
         Assert.Equal("https://community.opengroup.org/osdu/data/data-definitions/-/tree/v0.30.0/Generated", release.WebUrl.AbsoluteUri);
 
         // The index lists the record kinds only: the abstract schema it also names is a building block.
         var index = await ReadAsync<DeliveryOsduSchemaIndexDto>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/schemas"));
-        var wellbore = Assert.Single(index.Schemas);
+        Assert.Equal(2, index.Schemas.Count);
+        var wellbore = Assert.Single(index.Schemas, s => s.Kind == WellboreKind);
         Assert.Equal(WellboreKind, wellbore.Kind);
         Assert.Equal("https://community.opengroup.org/osdu/data/data-definitions/-/blob/v0.30.0/Generated/master-data/Wellbore.1.3.0.json", wellbore.WebUrl.AbsoluteUri);
 
@@ -271,6 +281,53 @@ public sealed class DeliveryTemplateApiTests
         {
             Assert.Equal(HttpStatusCode.BadRequest, notKind.StatusCode);
         }
+
+        // Two versions of the kind compare variable by variable, and as their files are published.
+        const string OlderKind = "osdu:wks:master-data--Wellbore:1.0.0";
+        var comparison = await ReadAsync<DeliveryOsduComparisonDto>(await SendAsync(
+            client, reader, HttpMethod.Get,
+            $"/api/v1/delivery/templates/osdu/compare?fromRelease=v0.30.0&fromKind={Uri.EscapeDataString(OlderKind)}&toRelease=v0.30.0&toKind={Uri.EscapeDataString(WellboreKind)}"));
+        Assert.False(comparison.SameFile);
+        Assert.False(comparison.OnlyIdentifiersDiffer);
+        Assert.False(comparison.SameTemplate);
+        Assert.Equal(("DEVELOPMENT", "PUBLISHED"), (comparison.From.Status, comparison.To.Status));
+        Assert.Contains("\"Name\"", comparison.From.FileText, StringComparison.Ordinal);
+        Assert.Equal("https://community.opengroup.org/osdu/data/data-definitions/-/blob/v0.30.0/Generated/master-data/Wellbore.1.0.0.json", comparison.From.WebUrl.AbsoluteUri);
+        var removed = Assert.Single(comparison.Changes, c => c.Path == "osdu.data.Name");
+        Assert.Equal(("Removed", "Breaking"), (removed.Change, removed.Impact));
+        var added = Assert.Single(comparison.Changes, c => c.Path == "osdu.data.FacilityName");
+        Assert.Equal(("Added", "Additive"), (added.Change, added.Impact));
+        Assert.Equal((1, 1, 0), (comparison.Breaking, comparison.Additive, comparison.Wording));
+
+        // Both versions refer to the same access control list schema, which is the same in both, so no shared schema differs.
+        Assert.Equal(1, comparison.SameReferencedFiles);
+        Assert.Empty(comparison.ReferencedFiles);
+
+        var same = await ReadAsync<DeliveryOsduComparisonDto>(await SendAsync(
+            client, reader, HttpMethod.Get, $"/api/v1/delivery/templates/osdu/compare?fromKind={Uri.EscapeDataString(WellboreKind)}&toKind={Uri.EscapeDataString(WellboreKind)}"));
+        Assert.True(same.SameFile && same.SameTemplate);
+        Assert.Empty(same.Changes);
+
+        using (var otherKind = await SendAsync(
+            client, reader, HttpMethod.Get, $"/api/v1/delivery/templates/osdu/compare?fromKind={Uri.EscapeDataString("osdu:wks:master-data--Well:1.0.0")}&toKind={Uri.EscapeDataString(WellboreKind)}"))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, otherKind.StatusCode);
+            Assert.Contains("different kinds", await otherKind.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+
+        // A sync reads the release list again and downloads the newest release when it is not on disk. It sits in the operate
+        // group, which takes a signed-in caller: an anonymous one is refused.
+        using (var anonymousSync = await client.PostAsJsonAsync(new Uri("/api/v1/delivery/templates/osdu/sync", UriKind.Relative), new { release = (string?)null }, Web))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymousSync.StatusCode);
+        }
+
+        var operate = await TokenAsync(client, "read", "operate");
+        var sync = await ReadAsync<DeliveryOsduSyncDto>(await SendAsync(client, operate, HttpMethod.Post, "/api/v1/delivery/templates/osdu/sync", new { release = (string?)null }));
+        var synced = Assert.Single(sync.Releases);
+        Assert.True(synced.Local);
+        Assert.Empty(sync.Downloaded);
+        Assert.Equal(1, handler.Archives);
     }
 
     /// <summary>
@@ -444,37 +501,81 @@ public sealed class DeliveryTemplateApiTests
         }
     }
 
-    /// <summary>The OSDU data definitions' GitLab API, reduced to one release whose tree holds a Wellbore schema and the abstract schema it refers to.</summary>
+    /// <summary>
+    /// The OSDU data definitions' GitLab API, reduced to one release: its tag, and its Generated folder (a Wellbore schema
+    /// in two versions and the abstract schema they refer to) as the tar.gz archive GitLab serves.
+    /// </summary>
     private sealed class DataDefinitionsHandler : HttpMessageHandler
     {
         public const string Commit = "99f8fc88d8ad838b5738ac5ad92ac643538b5766";
 
         private static readonly Dictionary<string, string> Files = new(StringComparer.Ordinal)
         {
-            ["Generated/SchemaStatus.json"] = """{ "osdu:wks:master-data--Wellbore:1.3.0": "PUBLISHED", "osdu:wks:AbstractAccessControlList:1.0.0": "PUBLISHED" }""",
-            ["Generated/master-data/Wellbore.1.3.0.json"] = """
+            ["SchemaStatus.json"] = """{ "osdu:wks:master-data--Wellbore:1.0.0": "DEVELOPMENT", "osdu:wks:master-data--Wellbore:1.3.0": "PUBLISHED", "osdu:wks:AbstractAccessControlList:1.0.0": "PUBLISHED" }""",
+            ["master-data/Wellbore.1.0.0.json"] = """
+                { "x-osdu-schema-source": "osdu:wks:master-data--Wellbore:1.0.0", "type": "object",
+                  "properties": { "acl": { "$ref": "../abstract/AbstractAccessControlList.1.0.0.json" }, "data": { "type": "object", "properties": { "Name": { "type": "string" } } } } }
+                """,
+            ["master-data/Wellbore.1.3.0.json"] = """
                 { "x-osdu-schema-source": "osdu:wks:master-data--Wellbore:1.3.0", "type": "object",
                   "properties": { "acl": { "$ref": "../abstract/AbstractAccessControlList.1.0.0.json" }, "data": { "type": "object", "properties": { "FacilityName": { "type": "string" } } } } }
                 """,
-            ["Generated/abstract/AbstractAccessControlList.1.0.0.json"] = """{ "type": "object", "properties": { "owners": { "type": "array", "items": { "type": "string" } } } }""",
+            ["abstract/AbstractAccessControlList.1.0.0.json"] = """{ "type": "object", "properties": { "owners": { "type": "array", "items": { "type": "string" } } } }""",
         };
+
+        private int _archives;
+
+        /// <summary>How many times the release's archive was downloaded.</summary>
+        public int Archives => _archives;
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            var path = Uri.UnescapeDataString(request.RequestUri!.AbsolutePath);
-            string? body = null;
+            var path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/repository/tags", StringComparison.Ordinal))
             {
-                body = $$"""[ { "name": "v0.30.0", "commit": { "id": "{{Commit}}", "committed_date": "2026-07-17T14:55:57.000+08:00" } } ]""";
-            }
-            else if (request.RequestUri.Query.Contains("ref=" + Commit, StringComparison.Ordinal))
-            {
-                body = Files.FirstOrDefault(f => path.EndsWith("/repository/files/" + f.Key + "/raw", StringComparison.Ordinal)).Value;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent($$"""[ { "name": "v0.30.0", "commit": { "id": "{{Commit}}", "committed_date": "2026-07-17T14:55:57.000+08:00" } } ]""", Encoding.UTF8, "application/json"),
+                });
             }
 
-            return Task.FromResult(body is null
-                ? new HttpResponseMessage(HttpStatusCode.NotFound)
-                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") });
+            if (path.EndsWith("/repository/archive.tar.gz", StringComparison.Ordinal) && request.RequestUri.Query.Contains("sha=" + Commit, StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _archives);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Archive()) });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+
+        private static byte[] Archive()
+        {
+            using var buffer = new MemoryStream();
+            using (var gzip = new GZipStream(buffer, CompressionLevel.Fastest, leaveOpen: true))
+            using (var tar = new TarWriter(gzip, TarEntryFormat.Pax, leaveOpen: true))
+            {
+                var top = $"data-definitions-v0.30.0-{Commit}-Generated/";
+                foreach (var (file, json) in Files)
+                {
+                    tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, top + "Generated/" + file) { DataStream = new MemoryStream(Encoding.UTF8.GetBytes(json)) });
+                }
+            }
+
+            return buffer.ToArray();
+        }
+    }
+
+    /// <summary>A folder under the temp folder for one test, removed afterwards.</summary>
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "sqlflow_dd_" + Guid.NewGuid().ToString("N"));
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path))
+            {
+                Directory.Delete(Path, recursive: true);
+            }
         }
     }
 }

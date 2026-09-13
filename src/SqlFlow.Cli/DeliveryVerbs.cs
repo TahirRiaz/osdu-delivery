@@ -179,8 +179,10 @@ internal static class DeliveryVerbs
                 }
 
                 var kind = Program.GetOption(args, "--kind") ?? throw new FlowValidationException(TemplateUsage);
-                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-                var definitions = new OsduDataDefinitions(() => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, engine.Time);
+                using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+                var definitions = new OsduDataDefinitions(
+                    () => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, OsduDataDefinitions.DefaultCacheDirectory,
+                    OsduDataDefinitions.DefaultFreshness, OsduDataDefinitions.DefaultDownloadTimeout, engine.Time);
                 var file = await definitions.FetchAsync(Program.GetOption(args, "--release"), kind, ct).ConfigureAwait(false);
                 return Report(await store.SaveAsync(file.Schema, file.Origin, actor, ct).ConfigureAwait(false), json);
             }

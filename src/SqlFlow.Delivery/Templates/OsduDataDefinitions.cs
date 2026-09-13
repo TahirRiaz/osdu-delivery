@@ -1,6 +1,10 @@
 using System.Collections.Concurrent;
+using System.Formats.Tar;
 using System.Globalization;
+using System.IO.Compression;
 using System.Net;
+using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -22,18 +26,27 @@ public sealed record DataDefinitionsSchema(string Kind, string EntityType, strin
 /// <summary>Every record schema one release publishes, by entity type and newest version first.</summary>
 public sealed record DataDefinitionsIndex(DataDefinitionsRelease Release, IReadOnlyList<DataDefinitionsSchema> Schemas);
 
-/// <summary>A kind's schema bundled from one release, and the file it was bundled from.</summary>
-public sealed record DataDefinitionsSchemaFile(DataDefinitionsRelease Release, string Path, SchemaSnapshot Schema)
+/// <summary>
+/// A kind's schema bundled from one release, the file it was bundled from, and every file the bundle read (the kind's own
+/// file first, then the shared schemas it refers to), each a path under <see cref="OsduDataDefinitions.TreeRoot"/>.
+/// </summary>
+public sealed record DataDefinitionsSchemaFile(DataDefinitionsRelease Release, string Path, SchemaSnapshot Schema, IReadOnlyList<string> Files)
 {
     /// <summary>Where a template saved from it came from, as the template's origin records it: the release, its commit and the file.</summary>
     public string Origin
         => $"OSDU data definitions {Release.Name} ({(Release.Commit.Length > 12 ? Release.Commit[..12] : Release.Commit)}) {OsduDataDefinitions.TreeRoot}/{Path}";
 }
 
+/// <summary>A kind's schema file exactly as a release publishes it, unbundled, with the status the release gives it.</summary>
+public sealed record DataDefinitionsPublishedFile(DataDefinitionsRelease Release, string Path, string? Status, string Text);
+
+/// <summary>What a sync did: the releases as the repository lists them now, when that list was read, and the releases it downloaded.</summary>
+public sealed record DataDefinitionsSync(IReadOnlyList<DataDefinitionsRelease> Releases, DateTimeOffset SyncedUtc, IReadOnlyList<string> Downloaded);
+
 /// <summary>
 /// The OSDU data definitions could not answer. <see cref="NotFound"/> when what was asked for is not in them (a release, or
-/// a kind a release does not publish); otherwise the repository could not be reached, refused, or answered with something
-/// other than what it serves.
+/// a kind a release does not publish); otherwise the repository could not be reached, refused, sent something other than
+/// what it serves, or the local copy could not be written or read.
 /// </summary>
 public sealed class DataDefinitionsException : DeliveryException
 {
@@ -53,13 +66,14 @@ public sealed class DataDefinitionsException : DeliveryException
 }
 
 /// <summary>
-/// The OSDU data definitions: the Open Group's public repository of the OSDU schemas
-/// (<see cref="DefaultWebUrl"/>), the canonical source of every <c>osdu:wks</c> kind. It is read through the repository's
-/// GitLab API one release at a time: a release is a version tag, its <c>Generated/SchemaStatus.json</c> lists every kind it
-/// publishes, and a kind's schema is its file under <c>Generated</c>, bundled with every file it refers to exactly as a
-/// local checkout bundles (<see cref="TemplateSources.FromDirectoryAsync"/>). Files are read at the commit the tag names,
-/// so what was read never changes and stays cached for the life of the instance; the list of releases is read again after
-/// a few minutes.
+/// The OSDU data definitions: the Open Group's public repository of the OSDU schemas (<see cref="DefaultWebUrl"/>), the
+/// canonical source of every <c>osdu:wks</c> kind, kept as a local copy. A release is a version tag; the first time a
+/// release is read, its whole <c>Generated</c> folder is downloaded as one archive through the repository's GitLab API and
+/// unpacked under <see cref="CacheDirectory"/>, and from then on every file of it is read from disk, across restarts. The
+/// release list is kept on disk beside it, read again from the repository when it is older than the freshness given, and
+/// on demand by <see cref="SyncAsync"/>. A release's <c>Generated/SchemaStatus.json</c> lists every kind it publishes, and
+/// a kind's schema is its file under <c>Generated</c>, bundled with every file it refers to exactly as a local checkout
+/// bundles (<see cref="TemplateSources.FromDirectoryAsync"/>).
 /// </summary>
 public sealed class OsduDataDefinitions
 {
@@ -72,46 +86,80 @@ public sealed class OsduDataDefinitions
     /// <summary>The release's index: every kind it publishes, with its status.</summary>
     public const string IndexFile = "SchemaStatus.json";
 
-    /// <summary>The largest file read. The release index, the largest file, is a few hundred kilobytes.</summary>
-    private const int MaxFileBytes = 16 * 1024 * 1024;
+    /// <summary>The largest page of the tag list read.</summary>
+    private const int MaxListBytes = 4 * 1024 * 1024;
 
-    /// <summary>The release tags one read asks for, newest first; the repository has published a few dozen.</summary>
-    private const int TagPage = 100;
+    /// <summary>The largest file of a release kept. The release index, the largest file, is a few hundred kilobytes.</summary>
+    private const long MaxFileBytes = 16L * 1024 * 1024;
+
+    /// <summary>The most a release's Generated folder may unpack to; a release unpacks to a few tens of megabytes.</summary>
+    private const long MaxReleaseBytes = 1024L * 1024 * 1024;
+
+    private const int TagPageSize = 100;
+
+    private const int MaxTagPages = 50;
 
     private const int MaxCachedIndexes = 16;
 
     private const int MaxCachedFiles = 8192;
 
-    private static readonly TimeSpan ReleasesFreshFor = TimeSpan.FromMinutes(10);
+    /// <summary>How long one page of the tag list may take.</summary>
+    private static readonly TimeSpan ListTimeout = TimeSpan.FromMinutes(2);
 
-    /// <summary>How old the list must be before a release it does not name makes it read again.</summary>
+    /// <summary>How old the release list must be before a release it does not name makes it read the list again.</summary>
     private static readonly TimeSpan ReleasesRereadAfter = TimeSpan.FromMinutes(1);
+
+    private static readonly JsonSerializerOptions StoreJson = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
     private readonly Func<HttpClient> _client;
     private readonly Uri _api;
+    private readonly string _releasesFile;
+    private readonly TimeSpan _freshness;
+    private readonly TimeSpan _downloadTimeout;
     private readonly TimeProvider _time;
     private readonly ConcurrentDictionary<string, DataDefinitionsIndex> _indexes = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _files = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Lazy<Task>> _downloads = new(StringComparer.Ordinal);
     private ReleaseList? _releases;
 
     /// <param name="client">The HTTP client for a request; the caller owns its lifetime.</param>
     /// <param name="apiUrl">The GitLab API URL of the data definitions project, such as <see cref="DefaultApiUrl"/>.</param>
     /// <param name="webUrl">The project's web page, such as <see cref="DefaultWebUrl"/>, which links point into.</param>
+    /// <param name="cacheDirectory">Where the local copy lives: one folder per release commit, and the release list.</param>
+    /// <param name="freshness">How old the release list may be before it is read again; <see cref="Timeout.InfiniteTimeSpan"/> keeps it until a sync.</param>
+    /// <param name="downloadTimeout">How long downloading one release may take.</param>
     /// <param name="time">The clock the release list and the captured schemas are stamped with.</param>
-    public OsduDataDefinitions(Func<HttpClient> client, Uri apiUrl, Uri webUrl, TimeProvider time)
+    public OsduDataDefinitions(
+        Func<HttpClient> client, Uri apiUrl, Uri webUrl, string cacheDirectory, TimeSpan freshness, TimeSpan downloadTimeout, TimeProvider time)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(apiUrl);
         ArgumentNullException.ThrowIfNull(webUrl);
+        ArgumentException.ThrowIfNullOrWhiteSpace(cacheDirectory);
         ArgumentNullException.ThrowIfNull(time);
         if (!apiUrl.IsAbsoluteUri || !webUrl.IsAbsoluteUri)
         {
             throw new ArgumentException("The data definitions' API and web URLs must be absolute.");
         }
 
+        if (freshness < TimeSpan.Zero && freshness != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(nameof(freshness), freshness, "The freshness is zero or more, or Timeout.InfiniteTimeSpan.");
+        }
+
+        if (downloadTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(downloadTimeout), downloadTimeout, "The download timeout must be positive.");
+        }
+
         _client = client;
         _api = WithTrailingSlash(apiUrl);
         WebUrl = WithTrailingSlash(webUrl);
+        CacheDirectory = Path.GetFullPath(cacheDirectory);
+        var source = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(_api.AbsoluteUri)))[..16];
+        _releasesFile = Path.Combine(CacheDirectory, $"releases-{source}.json");
+        _freshness = freshness;
+        _downloadTimeout = downloadTimeout;
         _time = time;
     }
 
@@ -121,8 +169,26 @@ public sealed class OsduDataDefinitions
     /// <summary>The web page of the Open Group's data definitions project.</summary>
     public static Uri DefaultWebUrl { get; } = new("https://community.opengroup.org/osdu/data/data-definitions/");
 
+    /// <summary>The local copy's default place: <c>sqlflow/osdu-data-definitions</c> under the temp folder.</summary>
+    public static string DefaultCacheDirectory { get; } = Path.Combine(Path.GetTempPath(), "sqlflow", "osdu-data-definitions");
+
+    /// <summary>How old the release list may be before it is read again: a day, since releases come a few times a year and a sync reads it at once.</summary>
+    public static TimeSpan DefaultFreshness { get; } = TimeSpan.FromDays(1);
+
+    /// <summary>How long downloading one release may take.</summary>
+    public static TimeSpan DefaultDownloadTimeout { get; } = TimeSpan.FromMinutes(15);
+
     /// <summary>The project's web page.</summary>
     public Uri WebUrl { get; }
+
+    /// <summary>Where the local copy lives.</summary>
+    public string CacheDirectory { get; }
+
+    /// <summary>When the release list was last read from the repository, or null before it has been read or loaded.</summary>
+    public DateTimeOffset? SyncedUtc => _releases?.ReadUtc;
+
+    /// <summary>Whether the release is in the local copy, so reading it needs no download.</summary>
+    public bool IsLocal(DataDefinitionsRelease release) => Directory.Exists(Path.Combine(ReleaseDirectory(release), TreeRoot));
 
     /// <summary>The release's schema folder on the project's web page.</summary>
     public Uri ReleaseWebUrl(DataDefinitionsRelease release)
@@ -161,6 +227,29 @@ public sealed class OsduDataDefinitions
         }
 
         return found ?? throw new DataDefinitionsException($"The OSDU data definitions have no release '{wanted}'; the latest is {releases[0].Name}.", notFound: true);
+    }
+
+    /// <summary>
+    /// Reads the release list again from the repository and makes sure the release named <paramref name="release"/> (the
+    /// newest when none is named) is in the local copy, downloading it when it is not.
+    /// </summary>
+    public async Task<DataDefinitionsSync> SyncAsync(string? release, CancellationToken ct = default)
+    {
+        var releases = await ReleasesAsync(reread: true, ct).ConfigureAwait(false);
+        var syncedUtc = _releases?.ReadUtc ?? _time.GetUtcNow();
+        var wanted = string.IsNullOrWhiteSpace(release)
+            ? releases[0]
+            : releases.FirstOrDefault(r => string.Equals(r.Name, release.Trim(), StringComparison.Ordinal))
+                ?? throw new DataDefinitionsException($"The OSDU data definitions have no release '{release.Trim()}'; the latest is {releases[0].Name}.", notFound: true);
+
+        var downloaded = new List<string>();
+        if (!IsLocal(wanted))
+        {
+            await EnsureLocalAsync(wanted, ct).ConfigureAwait(false);
+            downloaded.Add(wanted.Name);
+        }
+
+        return new DataDefinitionsSync(releases, syncedUtc, downloaded);
     }
 
     /// <summary>Every record schema the release publishes (the newest release when none is named).</summary>
@@ -224,48 +313,122 @@ public sealed class OsduDataDefinitions
         TemplateSources.RequireKind(wanted);
         var chosen = await ReleaseAsync(release, ct).ConfigureAwait(false);
         var path = SchemaBundler.KindPath(wanted);
+        var files = new List<string>();
         var bundled = await SchemaBundler.BundleTreeAsync(path, async (file, token) =>
         {
+            files.Add(file);
             var what = $"{TreeRoot}/{file} at {chosen.Name}";
             return Parse(await ReadFileAsync(chosen, file, token).ConfigureAwait(false), what) as JsonObject
                 ?? throw new DataDefinitionsException($"{what} is not a JSON object.", notFound: false);
         }, ct).ConfigureAwait(false);
 
         var schema = TemplateSources.Validated(wanted, bundled, _time.GetUtcNow(), $"{TreeRoot}/{path} at {chosen.Name}");
-        return new DataDefinitionsSchemaFile(chosen, path, schema);
+        return new DataDefinitionsSchemaFile(chosen, path, schema, files);
+    }
+
+    /// <summary>
+    /// A file of the release's schema tree exactly as published, by its path under <see cref="TreeRoot"/>, such as one of
+    /// the files a bundle read (<see cref="DataDefinitionsSchemaFile.Files"/>).
+    /// </summary>
+    public Task<string> FileTextAsync(DataDefinitionsRelease release, string path, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(release);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!IsTreePath(path))
+        {
+            throw new ArgumentException($"'{path}' is not a path inside the data definitions' {TreeRoot} folder.", nameof(path));
+        }
+
+        return ReadFileAsync(release, path, ct);
+    }
+
+    /// <summary>
+    /// A kind's schema file as the release (the newest when none is named) publishes it, before any reference is resolved,
+    /// and the status the release's index gives it (null when the index does not list the kind).
+    /// </summary>
+    public async Task<DataDefinitionsPublishedFile> PublishedFileAsync(string? release, string kind, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        var wanted = kind.Trim();
+        TemplateSources.RequireKind(wanted);
+        var index = await IndexAsync(release, ct).ConfigureAwait(false);
+        var path = SchemaBundler.KindPath(wanted);
+        var text = await ReadFileAsync(index.Release, path, ct).ConfigureAwait(false);
+        var status = index.Schemas.FirstOrDefault(s => string.Equals(s.Kind, wanted, StringComparison.Ordinal))?.Status;
+        return new DataDefinitionsPublishedFile(index.Release, path, status, text);
     }
 
     private async Task<IReadOnlyList<DataDefinitionsRelease>> ReleasesAsync(bool reread, CancellationToken ct)
     {
-        var cached = _releases;
-        if (!reread && cached is not null && _time.GetUtcNow() - cached.ReadUtc < ReleasesFreshFor)
+        var known = _releases ?? await LoadStoredReleasesAsync(ct).ConfigureAwait(false);
+        if (!reread && known is not null && Fresh(known.ReadUtc))
         {
-            return cached.Releases;
+            _releases = known;
+            return known.Releases;
         }
 
+        IReadOnlyList<DataDefinitionsRelease> read;
+        try
+        {
+            read = await ReadTagsAsync(ct).ConfigureAwait(false);
+        }
+        catch (DataDefinitionsException ex) when (!reread && !ex.NotFound && known is not null)
+        {
+            // The repository is out of reach and a list read before is on disk: keep serving it, with the time it was read,
+            // which the page shows. A sync asks for a fresh list and reports the failure instead.
+            _releases = known;
+            return known.Releases;
+        }
+
+        var list = new ReleaseList(read, _time.GetUtcNow());
+        await StoreReleasesAsync(list, ct).ConfigureAwait(false);
+        _releases = list;
+        return read;
+    }
+
+    private async Task<IReadOnlyList<DataDefinitionsRelease>> ReadTagsAsync(CancellationToken ct)
+    {
         const string what = "the list of release tags";
-        var text = await GetTextAsync(string.Create(CultureInfo.InvariantCulture, $"repository/tags?per_page={TagPage}"), what, ct).ConfigureAwait(false);
-        if (Parse(text, what) is not JsonArray tags)
-        {
-            throw new DataDefinitionsException($"The OSDU data definitions answered {what} with something other than a list.", notFound: false);
-        }
-
         var releases = new List<DataDefinitionsRelease>();
-        foreach (var tag in tags.OfType<JsonObject>())
+        string? page = "1";
+        for (var pages = 0; page is not null; pages++)
         {
-            var name = Text(tag, "name");
-            var commit = tag["commit"] as JsonObject;
-            var id = commit is null ? null : Text(commit, "id");
-            if (name is null || id is null || name.Length < 2 || name[0] != 'v' || VersionNumbers(name[1..]) is null)
+            if (pages == MaxTagPages)
             {
-                continue;
+                throw new DataDefinitionsException(
+                    string.Create(CultureInfo.InvariantCulture, $"The OSDU data definitions at {WebUrl} list more than {MaxTagPages * TagPageSize} tags, more than a release list holds."),
+                    notFound: false);
             }
 
-            DateTimeOffset? published = commit is not null && Text(commit, "committed_date") is { } date
-                && DateTimeOffset.TryParse(date, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
-                    ? parsed.ToUniversalTime()
-                    : null;
-            releases.Add(new DataDefinitionsRelease(name, id, published));
+            var (text, next) = await GetListPageAsync(
+                string.Create(CultureInfo.InvariantCulture, $"repository/tags?per_page={TagPageSize}&page={page}"), what, ct).ConfigureAwait(false);
+            if (Parse(text, what) is not JsonArray tags)
+            {
+                throw new DataDefinitionsException($"The OSDU data definitions answered {what} with something other than a list.", notFound: false);
+            }
+
+            foreach (var tag in tags.OfType<JsonObject>())
+            {
+                var name = Text(tag, "name");
+                var commit = tag["commit"] as JsonObject;
+                var id = commit is null ? null : Text(commit, "id");
+                if (name is null || id is null || name.Length < 2 || name[0] != 'v' || VersionNumbers(name[1..]) is null || !IsCommitId(id))
+                {
+                    continue;
+                }
+
+                DateTimeOffset? published = commit is not null && Text(commit, "committed_date") is { } date
+                    && DateTimeOffset.TryParse(date, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+                        ? parsed.ToUniversalTime()
+                        : null;
+                releases.Add(new DataDefinitionsRelease(name, id, published));
+            }
+
+            page = string.IsNullOrWhiteSpace(next) ? null : next.Trim();
+            if (page is not null && !page.All(char.IsAsciiDigit))
+            {
+                throw new DataDefinitionsException($"The OSDU data definitions answered {what} with a next page '{page}' that is not a page number.", notFound: false);
+            }
         }
 
         if (releases.Count == 0)
@@ -274,8 +437,60 @@ public sealed class OsduDataDefinitions
         }
 
         releases.Sort((a, b) => CompareVersions(b.Name[1..], a.Name[1..]));
-        _releases = new ReleaseList(releases, _time.GetUtcNow());
         return releases;
+    }
+
+    private async Task<ReleaseList?> LoadStoredReleasesAsync(CancellationToken ct)
+    {
+        if (!File.Exists(_releasesFile))
+        {
+            return null;
+        }
+
+        try
+        {
+            var stream = File.OpenRead(_releasesFile);
+            await using (stream.ConfigureAwait(false))
+            {
+                var stored = await JsonSerializer.DeserializeAsync<StoredReleases>(stream, StoreJson, ct).ConfigureAwait(false);
+                return stored is { Releases.Count: > 0 } && stored.Releases.All(r => IsCommitId(r.Commit))
+                    ? new ReleaseList(stored.Releases, stored.ReadUtc)
+                    : null;
+            }
+        }
+        catch (JsonException)
+        {
+            // A damaged list is not an answer: the list is read again from the repository, which rewrites the file.
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new DataDefinitionsException($"The release list of the local copy at {CacheDirectory} could not be read: {ex.Message}", notFound: false, ex);
+        }
+    }
+
+    private async Task StoreReleasesAsync(ReleaseList list, CancellationToken ct)
+    {
+        var temporary = _releasesFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            Directory.CreateDirectory(CacheDirectory);
+            var stream = File.Create(temporary);
+            await using (stream.ConfigureAwait(false))
+            {
+                await JsonSerializer.SerializeAsync(stream, new StoredReleases(list.ReadUtc, [.. list.Releases]), StoreJson, ct).ConfigureAwait(false);
+            }
+
+            File.Move(temporary, _releasesFile, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new DataDefinitionsException($"The release list could not be written to the local copy at {CacheDirectory}: {ex.Message}", notFound: false, ex);
+        }
+        finally
+        {
+            DeleteQuietly(temporary);
+        }
     }
 
     private async Task<string> ReadFileAsync(DataDefinitionsRelease release, string path, CancellationToken ct)
@@ -286,9 +501,30 @@ public sealed class OsduDataDefinitions
             return cached;
         }
 
-        var full = TreeRoot + "/" + path;
-        var text = await GetTextAsync(
-            $"repository/files/{Uri.EscapeDataString(full)}/raw?ref={Uri.EscapeDataString(release.Commit)}", $"{full} at {release.Name}", ct).ConfigureAwait(false);
+        await EnsureLocalAsync(release, ct).ConfigureAwait(false);
+        var what = $"{TreeRoot}/{path} at {release.Name}";
+        var file = Path.Combine(ReleaseDirectory(release), TreeRoot, path.Replace('/', Path.DirectorySeparatorChar));
+        string text;
+        try
+        {
+            var info = new FileInfo(file);
+            if (!info.Exists)
+            {
+                throw new DataDefinitionsException($"The OSDU data definitions have no {what}.", notFound: true);
+            }
+
+            if (info.Length > MaxFileBytes)
+            {
+                throw new DataDefinitionsException(string.Create(CultureInfo.InvariantCulture, $"{what} holds more than {MaxFileBytes / 1024 / 1024} MB, more than any schema file holds."), notFound: false);
+            }
+
+            text = (await File.ReadAllTextAsync(file, ct).ConfigureAwait(false)).TrimStart('﻿');
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new DataDefinitionsException($"{what} could not be read from the local copy at {CacheDirectory}: {ex.Message}", notFound: false, ex);
+        }
+
         if (_files.Count >= MaxCachedFiles)
         {
             _files.Clear();
@@ -298,21 +534,195 @@ public sealed class OsduDataDefinitions
         return text;
     }
 
-    private async Task<string> GetTextAsync(string relative, string what, CancellationToken ct)
+    /// <summary>Makes sure the release is in the local copy; readers of a release being downloaded wait for the one download.</summary>
+    private async Task EnsureLocalAsync(DataDefinitionsRelease release, CancellationToken ct)
     {
-        var url = new Uri(_api, relative);
+        if (IsLocal(release))
+        {
+            return;
+        }
+
+        var download = _downloads.GetOrAdd(release.Commit, _ => new Lazy<Task>(() => DownloadAsync(release), LazyThreadSafetyMode.ExecutionAndPublication));
+        try
+        {
+            // The download is shared by every reader of the release, so one reader giving up does not cancel it.
+            await download.Value.WaitAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            // A finished download leaves the table, and so does a failed one, so the next reader tries again.
+            if (download.Value.IsCompleted)
+            {
+                _downloads.TryRemove(new KeyValuePair<string, Lazy<Task>>(release.Commit, download));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Downloads the release's Generated folder as one archive and unpacks it into a staging folder, which is then renamed
+    /// into place, so a release folder in the local copy is always complete.
+    /// </summary>
+    private async Task DownloadAsync(DataDefinitionsRelease release)
+    {
+        var target = ReleaseDirectory(release);
+        var what = $"the {TreeRoot} folder of release {release.Name}";
+        var staging = Path.Combine(CacheDirectory, ".download-" + Guid.NewGuid().ToString("N"));
+        var stagingRoot = Path.GetFullPath(staging) + Path.DirectorySeparatorChar;
+        using var timeout = new CancellationTokenSource(_downloadTimeout);
+        try
+        {
+            Directory.CreateDirectory(staging);
+            var url = new Uri(_api, $"repository/archive.tar.gz?sha={Uri.EscapeDataString(release.Commit)}&path={TreeRoot}");
+            using var response = await SendAsync(url, what, timeout.Token, CancellationToken.None).ConfigureAwait(false);
+            var body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+            await using (body.ConfigureAwait(false))
+            {
+                var gzip = new GZipStream(body, CompressionMode.Decompress);
+                await using (gzip.ConfigureAwait(false))
+                {
+                    var tar = new TarReader(gzip);
+                    await using (tar.ConfigureAwait(false))
+                    {
+                        long unpacked = 0;
+                        while (await tar.GetNextEntryAsync(copyData: false, timeout.Token).ConfigureAwait(false) is { } entry)
+                        {
+                            if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile))
+                            {
+                                continue;
+                            }
+
+                            // The archive holds one top folder named for the project, release and commit; the tree is under it.
+                            var slash = entry.Name.IndexOf('/', StringComparison.Ordinal);
+                            var relative = slash < 0 ? null : entry.Name[(slash + 1)..];
+                            if (relative is null || !relative.StartsWith(TreeRoot + "/", StringComparison.Ordinal))
+                            {
+                                continue;
+                            }
+
+                            var file = Path.GetFullPath(Path.Combine(staging, relative.Replace('/', Path.DirectorySeparatorChar)));
+                            if (!IsTreePath(relative[(TreeRoot.Length + 1)..]) || !file.StartsWith(stagingRoot, StringComparison.Ordinal))
+                            {
+                                throw new DataDefinitionsException($"{what}: the archive entry '{entry.Name}' leads outside the release folder.", notFound: false);
+                            }
+
+                            unpacked += entry.Length;
+                            if (entry.Length > MaxFileBytes || unpacked > MaxReleaseBytes)
+                            {
+                                throw new DataDefinitionsException(
+                                    string.Create(CultureInfo.InvariantCulture, $"{what} unpacks to more than a release holds (the entry '{entry.Name}' holds {entry.Length} bytes)."),
+                                    notFound: false);
+                            }
+
+                            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+                            await entry.ExtractToFileAsync(file, overwrite: false, timeout.Token).ConfigureAwait(false);
+                        }
+                    }
+                }
+            }
+
+            if (!Directory.Exists(Path.Combine(staging, TreeRoot)))
+            {
+                throw new DataDefinitionsException($"The OSDU data definitions have no {TreeRoot} folder at release {release.Name}.", notFound: true);
+            }
+
+            try
+            {
+                Directory.Move(staging, target);
+            }
+            catch (IOException) when (Directory.Exists(Path.Combine(target, TreeRoot)))
+            {
+                // Another process published the same release first: its folder holds the same commit's files.
+            }
+        }
+        catch (OperationCanceledException ex) when (timeout.IsCancellationRequested)
+        {
+            throw new DataDefinitionsException(
+                string.Create(CultureInfo.InvariantCulture, $"{what} did not finish downloading from {WebUrl} within {_downloadTimeout.TotalMinutes:0.#} minutes."), notFound: false, ex);
+        }
+        catch (HttpIOException ex)
+        {
+            throw new DataDefinitionsException($"The download of {what} from {WebUrl} broke off: {ex.Message}", notFound: false, ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new DataDefinitionsException($"The download of {what} from {WebUrl} failed: {ex.Message}", notFound: false, ex);
+        }
+        catch (InvalidDataException ex)
+        {
+            throw new DataDefinitionsException($"{what} arrived as an archive that could not be read: {ex.Message}", notFound: false, ex);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new DataDefinitionsException($"{what} could not be written to the local copy at {CacheDirectory}: {ex.Message}", notFound: false, ex);
+        }
+        finally
+        {
+            DeleteQuietly(staging);
+        }
+    }
+
+    private async Task<(string Text, string? NextPage)> GetListPageAsync(string relative, string what, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(ListTimeout);
+        using var response = await SendAsync(new Uri(_api, relative), what, timeout.Token, ct).ConfigureAwait(false);
+        var next = response.Headers.TryGetValues("X-Next-Page", out var values) ? values.FirstOrDefault() : null;
+        if (response.Content.Headers.ContentLength is > MaxListBytes)
+        {
+            throw ListTooLarge(what);
+        }
+
+        try
+        {
+            var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+            await using (stream.ConfigureAwait(false))
+            {
+                using var buffer = new MemoryStream();
+                var chunk = new byte[81920];
+                int read;
+                while ((read = await stream.ReadAsync(chunk, timeout.Token).ConfigureAwait(false)) > 0)
+                {
+                    if (buffer.Length + read > MaxListBytes)
+                    {
+                        throw ListTooLarge(what);
+                    }
+
+                    buffer.Write(chunk, 0, read);
+                }
+
+                return (Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length).TrimStart('﻿'), next);
+            }
+        }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            throw new DataDefinitionsException($"The OSDU data definitions at {WebUrl} did not finish sending {what} in time.", notFound: false, ex);
+        }
+        catch (HttpIOException ex)
+        {
+            throw new DataDefinitionsException($"{what} from {WebUrl} broke off: {ex.Message}", notFound: false, ex);
+        }
+    }
+
+    /// <summary>Sends a GET and returns a successful response; <paramref name="caller"/> tells a caller's cancellation from a timeout.</summary>
+    private async Task<HttpResponseMessage> SendAsync(Uri url, string what, CancellationToken token, CancellationToken caller)
+    {
         HttpResponseMessage response;
         try
         {
-            response = await _client().GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            response = await _client().GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
         }
         catch (HttpRequestException ex)
         {
             throw new DataDefinitionsException($"The OSDU data definitions at {WebUrl} could not be reached for {what}: {ex.Message}", notFound: false, ex);
         }
-        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (!caller.IsCancellationRequested)
         {
             throw new DataDefinitionsException($"The OSDU data definitions at {WebUrl} did not answer in time for {what}.", notFound: false, ex);
+        }
+
+        if (response.IsSuccessStatusCode)
+        {
+            return response;
         }
 
         using (response)
@@ -322,41 +732,55 @@ public sealed class OsduDataDefinitions
                 throw new DataDefinitionsException($"The OSDU data definitions have no {what}.", notFound: true);
             }
 
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new DataDefinitionsException(
-                    string.Create(CultureInfo.InvariantCulture, $"The OSDU data definitions at {WebUrl} answered {(int)response.StatusCode} {response.ReasonPhrase} for {what}."),
-                    notFound: false);
-            }
-
-            if (response.Content.Headers.ContentLength is > MaxFileBytes)
-            {
-                throw TooLarge(what);
-            }
-
-            var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            await using (stream.ConfigureAwait(false))
-            {
-                using var buffer = new MemoryStream();
-                var chunk = new byte[81920];
-                int read;
-                while ((read = await stream.ReadAsync(chunk, ct).ConfigureAwait(false)) > 0)
-                {
-                    if (buffer.Length + read > MaxFileBytes)
-                    {
-                        throw TooLarge(what);
-                    }
-
-                    buffer.Write(chunk, 0, read);
-                }
-
-                return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length).TrimStart('﻿');
-            }
+            throw new DataDefinitionsException(
+                string.Create(CultureInfo.InvariantCulture, $"The OSDU data definitions at {WebUrl} answered {(int)response.StatusCode} {response.ReasonPhrase} for {what}."),
+                notFound: false);
         }
     }
 
-    private static DataDefinitionsException TooLarge(string what)
-        => new(string.Create(CultureInfo.InvariantCulture, $"The OSDU data definitions answered {what} with more than {MaxFileBytes / 1024 / 1024} MB, more than any schema file holds."), notFound: false);
+    private string ReleaseDirectory(DataDefinitionsRelease release)
+    {
+        ArgumentNullException.ThrowIfNull(release);
+        return IsCommitId(release.Commit)
+            ? Path.Combine(CacheDirectory, release.Commit)
+            : throw new DataDefinitionsException($"Release {release.Name} names '{release.Commit}', which is not a commit id.", notFound: false);
+    }
+
+    private bool Fresh(DateTimeOffset readUtc)
+        => _freshness == Timeout.InfiniteTimeSpan || _time.GetUtcNow() - readUtc < _freshness;
+
+    private static bool IsCommitId(string value) => value.Length is >= 7 and <= 64 && value.All(char.IsAsciiHexDigit);
+
+    /// <summary>A forward-slash path inside the tree: no root, no empty, current or parent segment, no backslash.</summary>
+    private static bool IsTreePath(string path)
+        => !path.StartsWith('/') && !path.Contains('\\') && path.Split('/').All(segment => segment is not ("" or "." or ".."));
+
+    private static DataDefinitionsException ListTooLarge(string what)
+        => new(string.Create(CultureInfo.InvariantCulture, $"The OSDU data definitions answered {what} with more than {MaxListBytes / 1024 / 1024} MB, more than a tag list holds."), notFound: false);
+
+    /// <summary>Removes a staging folder or a temporary file this instance made; one it cannot remove yet is left for the operating system's temp cleanup.</summary>
+    private static void DeleteQuietly(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+            else if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // A file still held open (an antivirus scan, say) keeps the leftover; it never holds a published release.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // As above: the leftover sits under a staging name no reader ever opens.
+        }
+    }
 
     private static JsonNode? Parse(string text, string what)
     {
@@ -421,4 +845,7 @@ public sealed class OsduDataDefinitions
         => url.AbsoluteUri.EndsWith('/') ? url : new Uri(url.AbsoluteUri + "/");
 
     private sealed record ReleaseList(IReadOnlyList<DataDefinitionsRelease> Releases, DateTimeOffset ReadUtc);
+
+    /// <summary>The release list as the local copy keeps it on disk.</summary>
+    private sealed record StoredReleases(DateTimeOffset ReadUtc, List<DataDefinitionsRelease> Releases);
 }

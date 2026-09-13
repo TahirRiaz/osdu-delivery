@@ -888,6 +888,21 @@ export interface DeliveryOsduRelease {
   commit: string;
   publishedUtc: string | null;
   webUrl: string;
+  /** The release is in the control plane's local copy, so reading it needs no download. */
+  local: boolean;
+}
+
+/** The releases, newest first, and when the control plane last read the list from the repository. */
+export interface DeliveryOsduReleases {
+  syncedUtc: string | null;
+  releases: DeliveryOsduRelease[];
+}
+
+/** What a sync did: the release list as read just now, and the releases it downloaded into the local copy. */
+export interface DeliveryOsduSync {
+  syncedUtc: string;
+  releases: DeliveryOsduRelease[];
+  downloaded: string[];
 }
 
 /** A record schema a release publishes: its kind, its status in the release, and its file with a link to it. */
@@ -917,6 +932,69 @@ export interface DeliveryOsduSchemaFile {
   webUrl: string;
   origin: string;
   schema: Record<string, unknown>;
+}
+
+/** What a difference between two template versions means for a mapping written for the older one. */
+export type DeliveryTemplateChangeImpact = "Breaking" | "Additive" | "Wording";
+
+/** A field of a variable that differs between the versions; `before` is null for a new variable, `after` for a removed one. */
+export interface DeliveryTemplateFieldChange {
+  /** type, format, pattern, keyValueType, unitContext, role, nested, required, relationships, title or description. */
+  field: string;
+  before: string | null;
+  after: string | null;
+  impact: DeliveryTemplateChangeImpact;
+}
+
+/** A variable that differs between two versions of a template. */
+export interface DeliveryTemplateVariableChange {
+  path: string;
+  change: "Added" | "Removed" | "Changed";
+  impact: DeliveryTemplateChangeImpact;
+  role: DeliveryTemplateRole;
+  fields: DeliveryTemplateFieldChange[];
+}
+
+/** One side of a comparison: a kind's version in a release, its status there, the template version it saves as, and its file as published. */
+export interface DeliveryOsduComparisonSide {
+  kind: string;
+  release: DeliveryOsduRelease;
+  path: string;
+  webUrl: string;
+  status: string | null;
+  templateVersion: string;
+  fileText: string;
+}
+
+/** A shared schema file the two versions refer to whose published text differs; a path, link and text are null where a version does not refer to it. */
+export interface DeliveryOsduReferencedFile {
+  /** The file's name without its version, such as AbstractFacility. */
+  name: string;
+  fromPath: string | null;
+  toPath: string | null;
+  fromWebUrl: string | null;
+  toWebUrl: string | null;
+  fromText: string | null;
+  toText: string | null;
+}
+
+/** Two versions of a kind from the OSDU data definitions, compared as files and variable by variable. */
+export interface DeliveryOsduComparison {
+  from: DeliveryOsduComparisonSide;
+  to: DeliveryOsduComparisonSide;
+  sameFile: boolean;
+  /** The files say the same thing once each one's own kind and file name are set aside. */
+  onlyIdentifiersDiffer: boolean;
+  sameTemplate: boolean;
+  breaking: number;
+  additive: number;
+  wording: number;
+  unchanged: number;
+  changes: DeliveryTemplateVariableChange[];
+  /** How many of the shared schema files both versions refer to are the same. */
+  sameReferencedFiles: number;
+  /** The shared schema files that differ, or that only one version refers to. */
+  referencedFiles: DeliveryOsduReferencedFile[];
 }
 
 /** A cached type of a repository's cache: the name mappings read it by, its entity type, and the fields it captures. */
@@ -1111,13 +1189,24 @@ export const deliveryApi = {
   previewTemplate: (kind: string, schema: Record<string, unknown>, repoId?: string | null) =>
     post<DeliveryTemplateDetail>("/api/v1/delivery/templates/preview", { kind, schema, repoId: repoId ?? null }),
   /** The releases of the OSDU data definitions (the Open Group's public schema repository), newest first; a 502 when it cannot be read. */
-  osduReleases: () => get<DeliveryOsduRelease[]>("/api/v1/delivery/templates/osdu/releases"),
+  osduReleases: () => get<DeliveryOsduReleases>("/api/v1/delivery/templates/osdu/releases"),
+  /** Reads the release list again from the repository and downloads `release` (the newest when omitted) when it is not local; needs the operate scope. */
+  osduSync: (release?: string | null) =>
+    post<DeliveryOsduSync>("/api/v1/delivery/templates/osdu/sync", { release: release ?? null }),
   /** Every record kind a release of the OSDU data definitions publishes; a 404 for a release it does not have. */
   osduSchemas: (release: string) =>
     get<DeliveryOsduSchemaIndex>("/api/v1/delivery/templates/osdu/schemas", { release }),
   /** One kind's schema from a release, bundled with every schema it refers to. Nothing is saved; a 404 for a kind the release does not publish. */
   osduSchema: (release: string, kind: string) =>
     get<DeliveryOsduSchemaFile>("/api/v1/delivery/templates/osdu/schema", { release, kind }),
+  /** Two versions of one kind, each from a release, compared as published files and variable by variable; a 400 for two different kinds. */
+  osduCompare: (from: { release: string; kind: string }, to: { release: string; kind: string }) =>
+    get<DeliveryOsduComparison>("/api/v1/delivery/templates/osdu/compare", {
+      fromRelease: from.release,
+      fromKind: from.kind,
+      toRelease: to.release,
+      toKind: to.kind,
+    }),
   /** Saves a bundled schema as a template version; saving one already saved changes nothing. */
   saveTemplate: (kind: string, schema: Record<string, unknown>, origin: string) =>
     post<DeliveryTemplateSaved>("/api/v1/delivery/templates", { kind, schema, origin }),

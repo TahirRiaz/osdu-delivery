@@ -55,7 +55,7 @@ characters), which a mapping pins under `template`. Every form needs the catalog
 
 | Verb | What it does |
 | --- | --- |
-| `capture` | Reads the kind's schema from the OSDU data definitions, the Open Group's public repository (<https://community.opengroup.org/osdu/data/data-definitions>): its file under `Generated` at the commit the release tag names, with every file it refers to, bundled into one document and saved. The newest release unless `--release <tag>` names one; the origin records the release, commit and file. |
+| `capture` | Reads the kind's schema from the OSDU data definitions, the Open Group's public repository (<https://community.opengroup.org/osdu/data/data-definitions>): its file under `Generated` at the commit the release tag names, with every file it refers to, bundled into one document and saved. A release is downloaded once, as its `Generated` folder in one archive, into the local copy under the temp folder (`sqlflow/osdu-data-definitions`), the same copy a control plane on the machine uses, and read from disk after that. The newest release unless `--release <tag>` names one; the origin records the release, commit and file. |
 | `import <schema.json>` | Saves a bundled schema file, one whose every `$ref` points into its own `definitions`: the form `capture` saves, and the one the sample estate keeps under `samples/recall-welllog/templates`. For a schema of one's own that the data definitions do not publish. |
 | `import --from-dir <dir>` | Bundles the kind's schema from a local checkout of the OSDU data definitions (its `Generated` folder) and saves it, exactly as `capture` bundles it from the repository. |
 | `list` | Every saved version: kind, version, when and by whom it was saved, and where it came from. |

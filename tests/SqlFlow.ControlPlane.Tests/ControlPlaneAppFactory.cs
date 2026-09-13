@@ -99,6 +99,8 @@ public sealed class ControlPlaneAppFactory : WebApplicationFactory<Program>
         builder.UseSetting("ControlPlane:Scheduler:PollSeconds", "1");
         // A 1-second managed-sync tick so the end-to-end sync test runs promptly; the shipped default is 30s.
         builder.UseSetting("ControlPlane:ManagedSync:PollSeconds", "1");
+        // No clone of the public OSDU data definitions at startup: a test that browses them hands the host its own local repository.
+        builder.UseSetting("ControlPlane:SchemaRepository:WarmOnStart", "false");
 
         foreach (var (key, value) in _settings)
         {

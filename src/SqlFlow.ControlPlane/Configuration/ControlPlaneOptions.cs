@@ -541,9 +541,10 @@ public sealed class CacheRolloutOptions
 }
 
 /// <summary>
-/// The OSDU data definitions the Templates page browses: the Open Group's public repository of OSDU schemas, read through
-/// its GitLab API (section <c>ControlPlane:SchemaRepository</c>). The defaults are the public repository; point both URLs
-/// at a mirror of it when the control plane cannot reach community.opengroup.org.
+/// The OSDU data definitions the Templates page browses (section <c>ControlPlane:SchemaRepository</c>): the Open Group's
+/// public repository of OSDU schemas, read through its GitLab API into a local copy on disk, one release at a time. The
+/// defaults are the public repository; point both URLs at a mirror of it when the control plane cannot reach
+/// community.opengroup.org.
 /// </summary>
 public sealed class SchemaRepositoryOptions
 {
@@ -553,16 +554,30 @@ public sealed class SchemaRepositoryOptions
     /// <summary>The project's web page, which the page links to a release's schema files on.</summary>
     public Uri WebUrl { get; set; } = OsduDataDefinitions.DefaultWebUrl;
 
-    /// <summary>Seconds one request to the repository may take.</summary>
-    public int TimeoutSeconds { get; set; } = 30;
+    /// <summary>Where the local copy lives; empty means <c>sqlflow/osdu-data-definitions</c> under the temp folder.</summary>
+    public string? CacheDirectory { get; set; }
+
+    /// <summary>Minutes the release list may age before it is read again from the repository; a sync reads it at once. Default a day.</summary>
+    public int RefreshMinutes { get; set; } = 1440;
+
+    /// <summary>Minutes downloading one release may take. Default 15.</summary>
+    public int DownloadTimeoutMinutes { get; set; } = 15;
+
+    /// <summary>Brings the local copy up (the release list, and the newest release when it is not on disk) when the control plane starts. Default on.</summary>
+    public bool WarmOnStart { get; set; } = true;
 
     public void Validate()
     {
         RequireHttpUrl(ApiUrl, nameof(ApiUrl));
         RequireHttpUrl(WebUrl, nameof(WebUrl));
-        if (TimeoutSeconds is < 1 or > 600)
+        if (RefreshMinutes is < 1 or > 10080)
         {
-            throw new InvalidOperationException("ControlPlane:SchemaRepository:TimeoutSeconds must be between 1 and 600.");
+            throw new InvalidOperationException("ControlPlane:SchemaRepository:RefreshMinutes must be between 1 and 10080 (a week).");
+        }
+
+        if (DownloadTimeoutMinutes is < 1 or > 240)
+        {
+            throw new InvalidOperationException("ControlPlane:SchemaRepository:DownloadTimeoutMinutes must be between 1 and 240.");
         }
     }
 

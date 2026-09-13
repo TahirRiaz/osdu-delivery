@@ -19,6 +19,7 @@ const RELEASE = {
   commit: "99f8fc88d8ad838b5738ac5ad92ac643538b5766",
   publishedUtc: "2026-07-17T06:55:57Z",
   webUrl: `${DATA_DEFINITIONS}/-/tree/v0.30.0/Generated`,
+  local: true,
 };
 const WELLBORE_URL = `${DATA_DEFINITIONS}/-/blob/v0.30.0/Generated/master-data/Wellbore.1.3.0.json`;
 
@@ -104,7 +105,9 @@ test.describe.serial("templates and the mapping builder", () => {
       readFileSync(join(import.meta.dirname, "..", "..", "samples", "recall-welllog", "templates", WELLBORE_FILE), "utf8"),
     );
     const asked: string[] = [];
-    await adminPage.route(releases, (route) => route.fulfill({ json: [RELEASE, { ...RELEASE, name: "v0.29.1", commit: "0".repeat(40) }] }));
+    const sync = /\/api\/v1\/delivery\/templates\/osdu\/sync$/;
+    await adminPage.route(sync, (route) => route.fulfill({ json: { syncedUtc: "2026-09-13T11:00:00Z", releases: [RELEASE], downloaded: ["v0.30.0"] } }));
+    await adminPage.route(releases, (route) => route.fulfill({ json: { syncedUtc: "2026-09-13T10:00:00Z", releases: [RELEASE, { ...RELEASE, name: "v0.29.1", commit: "0".repeat(40), local: false }] } }));
     await adminPage.route(schemas, (route) => {
       asked.push(route.request().url());
       return route.fulfill({
@@ -141,6 +144,11 @@ test.describe.serial("templates and the mapping builder", () => {
       await expect(adminPage.getByTestId("templates-browse-release")).toContainText("v0.30.0", { timeout: 15_000 });
       await expect(adminPage.getByTestId("templates-browse-summary")).toContainText("2 record types");
       await expect(adminPage.getByTestId("templates-browse-repository-link")).toHaveAttribute("href", RELEASE.webUrl);
+
+      // The local copy says when it last read the release list, and syncing reads it again and says what it downloaded.
+      await expect(adminPage.getByTestId("templates-browse-synced")).toContainText("Synced");
+      await adminPage.getByTestId("templates-browse-sync").click();
+      await expect(adminPage.getByText(/Synced with the OSDU data definitions: 1 releases; downloaded v0\.30\.0/).first()).toBeVisible({ timeout: 15_000 });
       const rows = adminPage.getByTestId("templates-browse-results").getByTestId("table-row");
       await expect(rows).toHaveCount(2);
       await expect(adminPage.getByTestId("templates-browse-status-osdu:wks:master-data--Well:1.2.0")).toHaveText("In development");
@@ -165,9 +173,112 @@ test.describe.serial("templates and the mapping builder", () => {
       expect(asked.length).toBeGreaterThan(1);
       expect(asked.every((url) => new URL(url).searchParams.get("release") === "v0.30.0")).toBe(true);
     } finally {
+      await adminPage.unroute(sync);
       await adminPage.unroute(releases);
       await adminPage.unroute(schemas);
       await adminPage.unroute(schema);
+    }
+  });
+
+  test("two versions of a kind compare with a verdict, every variable change and the files side by side", async ({ adminPage }) => {
+    const releases = /\/api\/v1\/delivery\/templates\/osdu\/releases$/;
+    const schemas = /\/api\/v1\/delivery\/templates\/osdu\/schemas(\?|$)/;
+    const compare = /\/api\/v1\/delivery\/templates\/osdu\/compare(\?|$)/;
+    const OLDER_KIND = "osdu:wks:master-data--Wellbore:1.0.0";
+    const side = (kind: string, path: string, templateVersion: string, fileText: string) => ({
+      kind, release: RELEASE, path, webUrl: `${DATA_DEFINITIONS}/-/blob/v0.30.0/Generated/${path}`, status: "PUBLISHED", templateVersion, fileText,
+    });
+    const comparison = {
+      from: side(OLDER_KIND, "master-data/Wellbore.1.0.0.json", "5694d203047e3aae", `{\n  "x-osdu-schema-source": "${OLDER_KIND}",\n  "Name": "string"\n}\n`),
+      to: side(WELLBORE_KIND, "master-data/Wellbore.1.3.0.json", WELLBORE_VERSION, `{\n  "x-osdu-schema-source": "${WELLBORE_KIND}",\n  "FacilityName": "string"\n}\n`),
+      sameFile: false,
+      onlyIdentifiersDiffer: false,
+      sameTemplate: false,
+      breaking: 1,
+      additive: 1,
+      wording: 1,
+      unchanged: 40,
+      changes: [
+        { path: "osdu.data.Name", change: "Removed", impact: "Breaking", role: "Mapping", fields: [{ field: "type", before: "string", after: null, impact: "Breaking" }] },
+        { path: "osdu.data.FacilityName", change: "Added", impact: "Additive", role: "Mapping", fields: [{ field: "type", before: null, after: "string", impact: "Additive" }] },
+        { path: "osdu.data.Depth", change: "Changed", impact: "Wording", role: "Mapping", fields: [{ field: "description", before: "Depth.", after: "Measured depth.", impact: "Wording" }] },
+      ],
+      sameReferencedFiles: 3,
+      referencedFiles: [
+        {
+          name: "AbstractFacility",
+          fromPath: "abstract/AbstractFacility.1.0.0.json",
+          toPath: "abstract/AbstractFacility.1.1.0.json",
+          fromWebUrl: `${DATA_DEFINITIONS}/-/blob/v0.30.0/Generated/abstract/AbstractFacility.1.0.0.json`,
+          toWebUrl: `${DATA_DEFINITIONS}/-/blob/v0.30.0/Generated/abstract/AbstractFacility.1.1.0.json`,
+          fromText: "{\n  \"FacilityName\": \"string\"\n}\n",
+          toText: "{\n  \"FacilityName\": \"string\",\n  \"FacilityOperators\": \"array\"\n}\n",
+        },
+      ],
+    };
+    const compared: URL[] = [];
+    await adminPage.route(releases, (route) => route.fulfill({ json: { syncedUtc: "2026-09-13T10:00:00Z", releases: [RELEASE, { ...RELEASE, name: "v0.29.1", commit: "0".repeat(40), local: false }] } }));
+    await adminPage.route(schemas, (route) => route.fulfill({
+      json: {
+        release: RELEASE,
+        schemas: [
+          osduSchema(WELLBORE_KIND, "master-data--Wellbore", "1.3.0", "PUBLISHED", "master-data/Wellbore.1.3.0.json"),
+          osduSchema(OLDER_KIND, "master-data--Wellbore", "1.0.0", "PUBLISHED", "master-data/Wellbore.1.0.0.json"),
+        ],
+      },
+    }));
+    await adminPage.route(compare, (route) => {
+      compared.push(new URL(route.request().url()));
+      return route.fulfill({ json: comparison });
+    });
+
+    try {
+      await openTemplates(adminPage);
+      await adminPage.getByTestId("templates-tab-browse").click();
+      await expect(adminPage.getByTestId("templates-browse-summary")).toContainText("1 record type", { timeout: 15_000 });
+
+      // Compare opens on the version before this one in the same release.
+      await adminPage.getByTestId(`templates-browse-compare-${WELLBORE_KIND}`).click();
+      const sheet = adminPage.getByTestId("templates-compare-sheet");
+      await expect(sheet.getByTestId("templates-compare-from-version")).toContainText("1.0.0", { timeout: 15_000 });
+      await expect(sheet.getByTestId("templates-compare-to-version")).toContainText("1.3.0");
+
+      // The verdict first, then every variable that differs, with what it means for a mapping of the older version.
+      await expect(sheet.getByTestId("templates-compare-count-breaking")).toHaveText("1 breaking", { timeout: 15_000 });
+      await expect(sheet.getByTestId("templates-compare-count-additive")).toHaveText("1 additive");
+      await expect(sheet.getByTestId("templates-compare-count-wording")).toHaveText("1 wording");
+      await expect(sheet.getByTestId("templates-compare-change-osdu.data.Name")).toHaveText("Removed");
+      await expect(sheet.getByTestId("templates-compare-impact-osdu.data.Name")).toHaveText("Breaking");
+      await expect(sheet.getByTestId("templates-compare-field-osdu.data.Depth-description")).toContainText("reworded");
+      const changeRows = sheet.getByTestId("templates-compare-changes-table").getByTestId("table-row");
+      await expect(changeRows).toHaveCount(3);
+      await sheet.getByTestId("templates-compare-show-wording").click();
+      await expect(changeRows).toHaveCount(2);
+
+      // The files as the releases publish them, side by side.
+      await sheet.getByTestId("templates-compare-tab-files").click();
+      await expect(sheet.getByTestId("templates-compare-files")).toBeVisible();
+      await expect(sheet.getByTestId("templates-compare-files-original")).toContainText(OLDER_KIND);
+      await expect(sheet.getByTestId("templates-compare-to-link")).toHaveAttribute("href", `${DATA_DEFINITIONS}/-/blob/v0.30.0/Generated/master-data/Wellbore.1.3.0.json`);
+
+      // The shared schemas the versions refer to that differ are there to compare too.
+      await expect(sheet.getByTestId("templates-compare-referenced-summary")).toHaveText("1 shared schema it refers to differs; 3 are the same.");
+      await sheet.getByTestId("templates-compare-file-picker").click();
+      await adminPage.getByRole("option").filter({ hasText: "AbstractFacility" }).click();
+      await expect(sheet.getByTestId("templates-compare-files-original")).toContainText("abstract/AbstractFacility.1.0.0.json");
+      await expect(sheet.getByTestId("templates-compare-to-link")).toHaveAttribute("href", `${DATA_DEFINITIONS}/-/blob/v0.30.0/Generated/abstract/AbstractFacility.1.1.0.json`);
+
+      const first = compared[0];
+      expect([first.searchParams.get("fromKind"), first.searchParams.get("toKind")]).toEqual([OLDER_KIND, WELLBORE_KIND]);
+      expect([first.searchParams.get("fromRelease"), first.searchParams.get("toRelease")]).toEqual(["v0.30.0", "v0.30.0"]);
+
+      // Swapping compares the other way round.
+      await sheet.getByTestId("templates-compare-swap").click();
+      await expect.poll(() => compared.some((url) => url.searchParams.get("fromKind") === WELLBORE_KIND && url.searchParams.get("toKind") === OLDER_KIND)).toBe(true);
+    } finally {
+      await adminPage.unroute(releases);
+      await adminPage.unroute(schemas);
+      await adminPage.unroute(compare);
     }
   });
 

@@ -100,6 +100,7 @@ export default function TemplatesPage() {
   const queryClient = useQueryClient();
   const { hasScope } = useAuth();
   const canAuthor = hasScope("author");
+  const canOperate = hasScope("operate");
   const [searchParams, setSearchParams] = useSearchParams();
   const [storedTab, setTab] = useLocalStorageState<string>("sqlflow.templates.tab", "saved");
   const tab: TemplatesTab = TABS.includes(storedTab) ? (storedTab as TemplatesTab) : "saved";
@@ -206,7 +207,7 @@ export default function TemplatesPage() {
           )}
         </TabsContent>
         <TabsContent value="browse" forceMount className="data-[state=inactive]:hidden">
-          <TemplatesBrowseTab canAuthor={canAuthor} />
+          <TemplatesBrowseTab canAuthor={canAuthor} canOperate={canOperate} />
         </TabsContent>
         <TabsContent value="import" forceMount className="data-[state=inactive]:hidden">
           <TemplatesImportTab canAuthor={canAuthor} />
