@@ -22,6 +22,10 @@ public static class SchemaBundler
         ArgumentNullException.ThrowIfNull(resolve);
 
         var bundled = (JsonObject)root.DeepClone();
+        // Where the schema keeps its definitions, so the bundle puts them back in the same place. Only the keys after that
+        // place move when both are removed, so the earlier of the two is still the position to restore.
+        var positions = new[] { bundled.IndexOf("definitions"), bundled.IndexOf("$defs") }.Where(i => i >= 0).ToList();
+        var position = positions.Count > 0 ? positions.Min() : -1;
         var definitions = bundled["definitions"] as JsonObject ?? new JsonObject();
         bundled.Remove("definitions");
         bundled.Remove("$defs");
@@ -90,14 +94,18 @@ public static class SchemaBundler
             }
         }
 
-        var sorted = new JsonObject();
-        foreach (var kv in definitions.OrderBy(d => d.Key, StringComparer.Ordinal).ToList())
+        // The schema keeps the order it was written in: its definitions go back where it had them (at the end when it had
+        // none), its own definitions first, then each referenced file as its first reference is reached. The version is the
+        // hash of the canonical form, so none of this moves it.
+        if (position >= 0)
         {
-            definitions.Remove(kv.Key);
-            sorted[kv.Key] = kv.Value;
+            bundled.Insert(Math.Min(position, bundled.Count), "definitions", definitions);
+        }
+        else
+        {
+            bundled["definitions"] = definitions;
         }
 
-        bundled["definitions"] = sorted;
         return bundled;
     }
 
@@ -112,6 +120,20 @@ public static class SchemaBundler
         ArgumentException.ThrowIfNullOrWhiteSpace(rootPath);
         ArgumentNullException.ThrowIfNull(read);
         var root = await read(rootPath, ct).ConfigureAwait(false);
+        return await BundleTreeAsync(rootPath, root, read, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Bundles <paramref name="root"/> as though it were the file at <paramref name="rootPath"/> of an OSDU data definitions
+    /// tree, such as a published schema file brought in from outside the tree: its references are resolved relative to that
+    /// path, and <paramref name="read"/> is asked only for the files it refers to, each once.
+    /// </summary>
+    public static async Task<JsonObject> BundleTreeAsync(
+        string rootPath, JsonObject root, Func<string, CancellationToken, Task<JsonObject>> read, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rootPath);
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(read);
 
         // The file each definition was read from, by the name it is bundled under: a reference is relative to the file it is in.
         var files = new Dictionary<string, string>(StringComparer.Ordinal) { [rootPath] = rootPath };

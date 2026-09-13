@@ -39,7 +39,8 @@ Everything the platform already reads ([../environment-variables.md](../environm
    (the newest release, or `--release <tag>`), and reports the template version, which is the version the mapping pins
    under `template`. The reference capture uses the flow's target endpoint and credentials (`--endpoint` overrides the
    endpoint). Without access to the data definitions,
-   `sqlflow template import` saves a bundled schema file instead, and once the repository is synced (step 4) the GUI's
+   `sqlflow template import` saves a bundled schema file instead (a file as the data definitions publish it needs a
+   release of them for the shared schemas it refers to), and once the repository is synced (step 4) the GUI's
    Templates page browses OSDU and saves a template through the flow's connection on a node.
 4. Register the repository as a source in the GUI (Repos) and sync it. The flow appears as a pipeline of kind
    `delivery`; its mappings appear under Mappings, each with the template it pins.
@@ -229,7 +230,7 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 | `sqlflow snapshot <flow.yaml> references [--from-dir <dir> \| --spec <spec.json> [--endpoint <url>]] [--no-current]` | Capture a reference snapshot and move the pin. A capture from OSDU refreshes the types its spec declares and merges them onto the current snapshot, so the minted version holds the whole cache. |
 | `sqlflow snapshot <flow.yaml> list [--db <ref>]` | The reference snapshot versions the flow's snapshot store holds, and whether the template its mapping pins is saved. |
 | `sqlflow template capture --kind <kind> [--release <tag>]` | Save a kind's schema from the OSDU data definitions as a template version (the newest release by default). |
-| `sqlflow template import <schema.json> --kind <kind>`, `sqlflow template import --from-dir <dir> --kind <kind>` | Save a template from a bundled schema file, or from a local checkout of the OSDU data definitions. |
+| `sqlflow template import <schema.json> --kind <kind> [--release <tag>]`, `sqlflow template import --from-dir <dir> --kind <kind>` | Save a template from a schema file, or from a local checkout of the OSDU data definitions. A bundled file is saved as it is; a file as the data definitions publish it, referring to `../abstract/...` schemas, has those read from `--release` (the newest by default), and the template's origin names the release. |
 | `sqlflow template list \| show --kind <kind> [--version <v>] \| delete --kind <kind> --version <v>` | The saved templates, one laid out variable by variable, and deleting a version no synced mapping pins. Every `template` verb needs the catalog connection (`--db <ref>`). |
 | `sqlflow trigger --repo <r> --flow <f> [the same run options]` | Queue a run on the fleet. |
 

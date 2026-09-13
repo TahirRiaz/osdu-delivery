@@ -190,7 +190,7 @@ export default function DeliveryDocumentsPage() {
       </Tabs>
 
       <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) { setSelected(null); } }}>
-        <SheetContent className="w-full gap-0 sm:max-w-3xl" data-testid="delivery-mapping-detail">
+        <SheetContent className="w-full gap-0 sm:max-w-5xl" data-testid="delivery-mapping-detail">
           <SheetHeader>
             <SheetTitle>{detail?.mapping.reference ?? "Mapping"}</SheetTitle>
             <SheetDescription>
@@ -220,7 +220,7 @@ export default function DeliveryDocumentsPage() {
                   )}
                 </div>
                 {detail.mapping.message && <p className="text-[13px] text-destructive">{detail.mapping.message}</p>}
-                <CodeView value={detail.yaml} language="yaml" height={560} data-testid="delivery-mapping-yaml" />
+                <CodeView value={detail.yaml} language="yaml" fill data-testid="delivery-mapping-yaml" />
               </>
             )}
           </div>

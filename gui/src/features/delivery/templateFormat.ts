@@ -21,6 +21,20 @@ export function pathDepth(path: string): number {
   return Math.max(0, path.split(".").length - 2);
 }
 
+/**
+ * The variable that holds a path: osdu.data for osdu.data.Name, osdu.data.Curves for osdu.data.Curves[].CurveUnit. Null for
+ * a property of the record itself (osdu.data, osdu.id), which no variable holds.
+ */
+export function holderPath(path: string): string | null {
+  const at = path.lastIndexOf(".");
+  if (at <= 0) {
+    return null;
+  }
+
+  const holder = path.slice(0, at).replace(/\[\]$/, "");
+  return holder === "osdu" ? null : holder;
+}
+
 /** A path split into what leads to the variable and the variable's own name, so the name can stand out. */
 export function splitPath(path: string): { parent: string; leaf: string } {
   const at = path.lastIndexOf(".");

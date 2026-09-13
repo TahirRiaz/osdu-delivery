@@ -376,16 +376,27 @@ export function TemplatesBrowseTab({ canAuthor, canOperate }: { canAuthor: boole
         open={viewing !== null}
         onClose={() => setViewing(null)}
         title={viewing?.kind ?? "Schema"}
-        description={file.data !== undefined
-          ? `From the OSDU data definitions ${file.data.release.name} (commit ${file.data.release.commit.slice(0, 12)}), Generated/${file.data.path}. Nothing is saved until you save it.`
-          : "Read from the OSDU data definitions. Nothing is saved until you save it."}
+        source={file.data !== undefined ? (
+          <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5">
+            <a
+              href={file.data.webUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-w-0 items-center gap-1 text-primary underline-offset-4 hover:underline"
+              data-testid="templates-browse-source-link"
+            >
+              <span className="min-w-0 break-all">{`OSDU data definitions ${file.data.release.name}, Generated/${file.data.path}`}</span>
+              <ExternalLink className="size-3.5 shrink-0" aria-hidden />
+            </a>
+            <span className="font-mono text-muted-foreground">{file.data.release.commit.slice(0, 12)}</span>
+          </span>
+        ) : null}
         progress={progress}
         problem={problem}
         detail={file.data !== undefined ? preview.data : undefined}
         previewSchema={file.data?.schema}
         actions={file.data !== undefined && preview.data !== undefined ? (
-          <span className="inline-flex items-center gap-3">
-            <RepositoryLink href={file.data.webUrl} testId="templates-browse-source-link">View the source</RepositoryLink>
+          <span className="inline-flex items-center gap-2">
             <Button
               variant="outline"
               size="sm"

@@ -450,7 +450,7 @@ public sealed class DeliveryMapping
     /// <summary>The OSDU kind of the template the mapping fills.</summary>
     public string Kind { get; set; } = string.Empty;
 
-    /// <summary>The template version the mapping pins; empty when the document did not parse.</summary>
+    /// <summary>The template version the mapping pins, also for a document that fails to load; empty when it names none.</summary>
     public string TemplateVersion { get; set; } = string.Empty;
 
     public string RelativePath { get; set; } = string.Empty;

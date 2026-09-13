@@ -395,7 +395,7 @@ public sealed class InlineDropTests : IDisposable
         version: 1.0.0
         template:
           kind: osdu:wks:master-data--Wellbore:1.3.0
-          version: a110ad82c3b60a1e
+          version: 58d6bdbd9d066a06
         dataset:
           system: recall
           key: [dataset.facility_name]

@@ -3,6 +3,9 @@ using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Core;
+using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
 using Xunit;
@@ -202,6 +205,93 @@ public sealed class CatalogTemplateStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task A_mapping_document_that_fails_to_load_still_pins_the_template_it_names()
+    {
+        var store = _db.Templates();
+        await store.SaveAsync(TestSchema.Build(), "file thing.json", "tests");
+        var root = Path.Combine(Path.GetTempPath(), "sqlflow-template-pin-" + Guid.NewGuid().ToString("N"));
+        var repoId = Guid.NewGuid();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "mappings"));
+            // The unknown key fails the strict parse; the template block is still readable.
+            await File.WriteAllTextAsync(Path.Combine(root, "mappings", "Thing@1.0.0.yaml"), $"""
+                documentType: mapping
+                name: Thing
+                version: 1.0.0
+                template:
+                  kind: {TestSchema.Kind}
+                  version: {TestSchema.Template.Version}
+                notAKey: true
+                """);
+            // Unreadable YAML names no template at all.
+            await File.WriteAllTextAsync(Path.Combine(root, "mappings", "Broken.yaml"), "documentType: mapping\ntemplate: [unclosed\n");
+
+            await SyncAsync(repoId, root);
+            await using (var db = _db.CreateDbContext())
+            {
+                var rows = await db.DeliveryMappings.AsNoTracking().OrderBy(m => m.RelativePath).ToListAsync();
+                Assert.Equal(2, rows.Count);
+                Assert.All(rows, r => Assert.Equal("invalid", r.Status));
+                Assert.Equal(string.Empty, rows[0].TemplateVersion);
+                Assert.Equal(TestSchema.Kind, rows[1].Kind);
+                Assert.Equal(TestSchema.Template.Version, rows[1].TemplateVersion);
+            }
+
+            var refused = await Assert.ThrowsAsync<DeliveryException>(() => store.DeleteAsync(TestSchema.Template));
+            Assert.Contains("pinned by mapping(s)", refused.Message, StringComparison.Ordinal);
+
+            // A second sync of the unchanged documents keeps the pin.
+            await SyncAsync(repoId, root);
+            await Assert.ThrowsAsync<DeliveryException>(() => store.DeleteAsync(TestSchema.Template));
+
+            // Once the document is gone from the repository, nothing pins the version and it can be deleted.
+            File.Delete(Path.Combine(root, "mappings", "Thing@1.0.0.yaml"));
+            await SyncAsync(repoId, root);
+            await store.DeleteAsync(TestSchema.Template);
+            Assert.Null(await store.LoadAsync(TestSchema.Template));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private async Task SyncAsync(Guid repoId, string root)
+    {
+        await using var db = _db.CreateDbContext();
+        await new DeliveryCatalogSync(new DeliveryDocumentLoader())
+            .SyncAsync(db, repoId, root, DateTime.UtcNow, new List<string>(), CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_saved_schema_is_stored_and_read_back_in_the_order_it_was_written()
+    {
+        // Neither the top-level keys, the properties nor the data properties are in alphabetical order.
+        const string json = """{"type":"object","title":"Thing","properties":{"kind":{"type":"string"},"data":{"type":"object","properties":{"Zeta":{"type":"string"},"Name":{"type":"string","description":"café"},"Alpha":{"type":"number"}}},"acl":{"type":"object","properties":{"viewers":{"type":"array","items":{"type":"string"}}}}}}""";
+        var schema = SchemaSnapshot.Parse(TestSchema.Kind, json, DateTimeOffset.UnixEpoch);
+        var saved = await _db.Templates().SaveAsync(schema, "file ordered.json", "tests");
+
+        await using (var db = _db.CreateDbContext())
+        {
+            Assert.Equal(json, (await db.DeliveryTemplates.SingleAsync()).SchemaJson);
+        }
+
+        // A new store reads the catalog row rather than the schema it was handed, as a restarted control plane does.
+        var loaded = await _db.Templates().LoadAsync(saved.Template.Reference);
+        Assert.NotNull(loaded);
+        Assert.Equal(schema.Version, loaded.Version);
+        Assert.Equal(["type", "title", "properties"], loaded.Root.Select(p => p.Key));
+        Assert.Equal(
+            ["osdu.kind", "osdu.data", "osdu.data.Zeta", "osdu.data.Name", "osdu.data.Alpha", "osdu.acl", "osdu.acl.viewers"],
+            OsduTemplate.From(loaded).Variables.Select(v => v.Path.Text));
+        Assert.Equal(OsduTemplate.From(schema).Variables.Select(v => v.Path.Text), OsduTemplate.From(loaded).Variables.Select(v => v.Path.Text));
+    }
+
+    [Fact]
     public async Task A_template_whose_stored_schema_no_longer_hashes_to_its_version_is_refused()
     {
         await _db.Templates().SaveAsync(TestSchema.Build(), "file thing.json", "tests");
@@ -223,10 +313,28 @@ public class TemplateSourcesTests
     private const string Kind = "test:wks:work-product-component--Thing:1.0.0";
 
     [Fact]
+    public async Task A_bundled_schema_keeps_the_order_it_was_written_in()
+    {
+        var files = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["master-data/Thing.1.0.0.json"] = """{"title":"Thing","definitions":{"Own":{"type":"string"}},"type":"object","properties":{"data":{"allOf":[{"$ref":"../abstract/Zulu.1.0.0.json"},{"$ref":"../abstract/Alpha.1.0.0.json"}]}}}""",
+            ["abstract/Zulu.1.0.0.json"] = """{"$id":"https://example.test/Zulu.1.0.0.json","type":"object","properties":{"Z":{"type":"string"}}}""",
+            ["abstract/Alpha.1.0.0.json"] = """{"$id":"https://example.test/Alpha.1.0.0.json","type":"object","properties":{"A":{"type":"string"}}}""",
+        };
+
+        var bundled = await SchemaBundler.BundleTreeAsync(
+            "master-data/Thing.1.0.0.json", (path, _) => Task.FromResult((JsonObject)JsonNode.Parse(files[path])!));
+
+        // The definitions stay where the schema had them; its own come first, then each file in the order it is referred to.
+        Assert.Equal(["title", "definitions", "type", "properties"], bundled.Select(p => p.Key));
+        Assert.Equal(["Own", "Zulu.1.0.0", "Alpha.1.0.0"], Assert.IsType<JsonObject>(bundled["definitions"]).Select(d => d.Key));
+    }
+
+    [Fact]
     public void The_sample_schemas_are_saved_as_the_versions_the_sample_mappings_pin()
     {
         Assert.Equal("26a3c3441882db4f", Samples.SampleTemplate(Samples.WellLogKind).Version);
-        Assert.Equal("a110ad82c3b60a1e", Samples.SampleTemplate(Samples.WellboreKind).Version);
+        Assert.Equal("58d6bdbd9d066a06", Samples.SampleTemplate(Samples.WellboreKind).Version);
     }
 
     [Theory]

@@ -58,7 +58,10 @@ holds the kind, the version, the schema itself, when it was saved, by whom, and 
 
 **Template versions do not change.** A version is its content, so it can never be edited. Saving the same schema again
 changes nothing. Saving a schema that differs from every saved version of its kind adds a new version beside them,
-which a mapping only uses once it pins it. A version can be deleted only while no synced mapping pins it.
+which a mapping only uses once it pins it. A version can be deleted only while no synced mapping pins it. A mapping
+document that fails to load still pins the version its `template` block names, so a template cannot be deleted from
+under a mapping that is waiting for a fix. The Templates page disables Delete, and says which pins hold it, while any
+does; the API and the CLI refuse the delete with the mappings named.
 
 **What a template looks like.** Every property of the schema becomes a variable, named by its path in the record and
 prefixed with `osdu.`:

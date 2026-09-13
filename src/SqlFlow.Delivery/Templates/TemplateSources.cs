@@ -41,17 +41,30 @@ public static class TemplateSources
         ArgumentNullException.ThrowIfNull(json);
         ArgumentException.ThrowIfNullOrWhiteSpace(where);
         RequireKind(kind);
-        JsonObject root;
+        return Validated(kind, ParseObject(json, where), capturedUtc, where);
+    }
+
+    /// <summary>
+    /// Whether the schema refers to anything outside itself, as a schema file the OSDU data definitions publish refers to the
+    /// shared schemas beside it (<c>../abstract/AbstractAccessControlList.1.0.0.json</c>).
+    /// </summary>
+    public static bool RefersOutside(JsonObject schema)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        return References(schema).Any(reference => !reference.StartsWith('#'));
+    }
+
+    /// <summary>Schema text as the JSON object a schema is; <paramref name="where"/> names it in the error.</summary>
+    internal static JsonObject ParseObject(string json, string where)
+    {
         try
         {
-            root = JsonNode.Parse(json) as JsonObject ?? throw new DeliveryException($"{where}: the schema is not a JSON object.");
+            return JsonNode.Parse(json) as JsonObject ?? throw new DeliveryException($"{where}: the schema is not a JSON object.");
         }
         catch (JsonException ex)
         {
             throw new DeliveryException($"{where}: the schema is not valid JSON ({ex.Message}).", ex);
         }
-
-        return Validated(kind, root, capturedUtc, where);
     }
 
     /// <summary>A bundled schema as a template is saved from it: it describes the kind, refers to nothing outside itself, and declares <c>data</c>.</summary>

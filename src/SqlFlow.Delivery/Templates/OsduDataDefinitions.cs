@@ -34,7 +34,27 @@ public sealed record DataDefinitionsSchemaFile(DataDefinitionsRelease Release, s
 {
     /// <summary>Where a template saved from it came from, as the template's origin records it: the release, its commit and the file.</summary>
     public string Origin
-        => $"OSDU data definitions {Release.Name} ({(Release.Commit.Length > 12 ? Release.Commit[..12] : Release.Commit)}) {OsduDataDefinitions.TreeRoot}/{Path}";
+        => $"OSDU data definitions {Release.Name} ({OsduDataDefinitions.ShortCommit(Release)}) {OsduDataDefinitions.TreeRoot}/{Path}";
+}
+
+/// <summary>
+/// A schema brought in from outside the data definitions (an uploaded file, pasted JSON), as a template is saved from it.
+/// <see cref="Release"/> is the release its references were read from, and <see cref="Files"/> the files read, each a path
+/// under <see cref="OsduDataDefinitions.TreeRoot"/>; null and empty for a schema that arrived bundled.
+/// </summary>
+public sealed record ImportedSchema(SchemaSnapshot Schema, DataDefinitionsRelease? Release, IReadOnlyList<string> Files)
+{
+    /// <summary>
+    /// Where a template saved from it came from: <paramref name="source"/> (such as <c>file WellboreTest.1.5.1.json</c>), and
+    /// the release and commit its references were read from when they were.
+    /// </summary>
+    public string Origin(string source)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(source);
+        return Release is null
+            ? source
+            : $"{source}, references from OSDU data definitions {Release.Name} ({OsduDataDefinitions.ShortCommit(Release)})";
+    }
 }
 
 /// <summary>A kind's schema file exactly as a release publishes it, unbundled, with the status the release gives it.</summary>
@@ -314,16 +334,45 @@ public sealed class OsduDataDefinitions
         var chosen = await ReleaseAsync(release, ct).ConfigureAwait(false);
         var path = SchemaBundler.KindPath(wanted);
         var files = new List<string>();
-        var bundled = await SchemaBundler.BundleTreeAsync(path, async (file, token) =>
-        {
-            files.Add(file);
-            var what = $"{TreeRoot}/{file} at {chosen.Name}";
-            return Parse(await ReadFileAsync(chosen, file, token).ConfigureAwait(false), what) as JsonObject
-                ?? throw new DataDefinitionsException($"{what} is not a JSON object.", notFound: false);
-        }, ct).ConfigureAwait(false);
+        var bundled = await SchemaBundler.BundleTreeAsync(path, (file, token) => ReadSchemaFileAsync(chosen, file, files, token), ct).ConfigureAwait(false);
 
         var schema = TemplateSources.Validated(wanted, bundled, _time.GetUtcNow(), $"{TreeRoot}/{path} at {chosen.Name}");
         return new DataDefinitionsSchemaFile(chosen, path, schema, files);
+    }
+
+    /// <summary>
+    /// A schema brought in from outside the data definitions, checked as a template is saved from it. A schema whose every
+    /// reference is already in its definitions is taken as it is, and reads nothing. A schema that refers to the shared
+    /// schemas of the data definitions, as every file a release publishes does, is bundled with those files from the release
+    /// named (the newest when none is), resolved as though it were the kind's own file in that release. <paramref name="where"/>
+    /// names the schema in errors.
+    /// </summary>
+    public async Task<ImportedSchema> ImportAsync(string json, string kind, string? release, string where, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(json);
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(where);
+        var wanted = kind.Trim();
+        TemplateSources.RequireKind(wanted);
+        var root = TemplateSources.ParseObject(json, where);
+        if (!TemplateSources.RefersOutside(root))
+        {
+            return new ImportedSchema(TemplateSources.Validated(wanted, root, _time.GetUtcNow(), where), null, []);
+        }
+
+        var chosen = await ReleaseAsync(release, ct).ConfigureAwait(false);
+        var path = SchemaBundler.KindPath(wanted);
+        var files = new List<string>();
+        var bundled = await SchemaBundler.BundleTreeAsync(path, root, (file, token) => ReadSchemaFileAsync(chosen, file, files, token), ct).ConfigureAwait(false);
+        var schema = TemplateSources.Validated(wanted, bundled, _time.GetUtcNow(), $"{where} with its references from {chosen.Name}");
+        return new ImportedSchema(schema, chosen, files);
+    }
+
+    /// <summary>The first twelve characters of the release's commit, as an origin names it.</summary>
+    public static string ShortCommit(DataDefinitionsRelease release)
+    {
+        ArgumentNullException.ThrowIfNull(release);
+        return release.Commit.Length > 12 ? release.Commit[..12] : release.Commit;
     }
 
     /// <summary>
@@ -532,6 +581,15 @@ public sealed class OsduDataDefinitions
 
         _files[key] = text;
         return text;
+    }
+
+    /// <summary>A schema file of the release as a bundle reads it, noted in <paramref name="files"/> in the order it is read.</summary>
+    private async Task<JsonObject> ReadSchemaFileAsync(DataDefinitionsRelease release, string file, List<string> files, CancellationToken ct)
+    {
+        files.Add(file);
+        var what = $"{TreeRoot}/{file} at {release.Name}";
+        return Parse(await ReadFileAsync(release, file, ct).ConfigureAwait(false), what) as JsonObject
+            ?? throw new DataDefinitionsException($"{what} is not a JSON object.", notFound: false);
     }
 
     /// <summary>Makes sure the release is in the local copy; readers of a release being downloaded wait for the one download.</summary>

@@ -29,7 +29,7 @@ public sealed class DeliveryTemplateApiTests
     private const string WellLogVersion = "26a3c3441882db4f";
     private const string WellLogFile = "osdu_wks_work-product-component--WellLog_1.4.0.json";
     private const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
-    private const string WellboreVersion = "a110ad82c3b60a1e";
+    private const string WellboreVersion = "58d6bdbd9d066a06";
     private const string WellboreFile = "osdu_wks_master-data--Wellbore_1.3.0.json";
     private const string ReferenceVersion = "20260908T212727Z";
 

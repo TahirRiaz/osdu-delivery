@@ -5,6 +5,7 @@ import { ClipboardPaste, Cloud, FileJson, Trash2, type LucideIcon } from "lucide
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { cn } from "@/lib/utils";
 import { deliveryApi, type DeliveryTemplate } from "../../api/delivery";
@@ -149,11 +150,29 @@ export default function TemplatesPage() {
       void queryClient.invalidateQueries({ queryKey: ["delivery", "templates"] });
     },
     onError: (error) => {
-      // A 409 names the synced mappings that still pin the version; the sheet keeps the problem in view too.
+      // A 409 names the synced mappings that pinned the version since the sheet was read; the sheet keeps the problem in
+      // view, and reads the version again so Delete shows the pins that now hold it.
       setDeleteOpen(false);
       toast.error(problemText(error));
+      void queryClient.invalidateQueries({ queryKey: ["delivery", "templates"] });
     },
   });
+
+  // A version a synced mapping pins cannot be deleted, so Delete is not offered for it; the API refuses it regardless.
+  const pinnedBy = detail.data?.saved?.pinnedBy ?? 0;
+  const deleteButton = (
+    <Button
+      variant="outline"
+      size="sm"
+      className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+      onClick={() => setDeleteOpen(true)}
+      disabled={remove.isPending || pinnedBy > 0}
+      data-testid="templates-delete"
+    >
+      <Trash2 />
+      Delete
+    </Button>
+  );
 
   const term = search.trim().toLowerCase();
   const rows = templates.data === undefined
@@ -218,24 +237,24 @@ export default function TemplatesPage() {
         open={selected !== null}
         onClose={closeSheet}
         title={selected?.kind ?? "Template"}
-        description={selected !== null ? `Saved version ${selected.version}, as the catalog holds it.` : ""}
+        source={null}
         progress={null}
         problem={detail.isError
           ? <ProblemView error={detail.error} testId="templates-detail-error" />
           : remove.isError ? <ProblemView error={remove.error} testId="templates-delete-error" /> : null}
         detail={detail.data}
         actions={canAuthor && detail.data !== undefined ? (
-          <Button
-            variant="outline"
-            size="sm"
-            className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-            onClick={() => setDeleteOpen(true)}
-            disabled={remove.isPending}
-            data-testid="templates-delete"
-          >
-            <Trash2 />
-            Delete
-          </Button>
+          pinnedBy > 0 ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                {/* A disabled button takes no pointer or focus, so the wrapper is what carries the reason. */}
+                <span tabIndex={0} className="inline-flex rounded-md" data-testid="templates-delete-blocked">{deleteButton}</span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                {`Pinned by ${pinnedBy} synced mapping${pinnedBy === 1 ? "" : "s"}. Move ${pinnedBy === 1 ? "it" : "them"} to another template version before deleting this one.`}
+              </TooltipContent>
+            </Tooltip>
+          ) : deleteButton
         ) : undefined}
         busy={remove.isPending}
         testId="templates-saved-sheet"
@@ -245,7 +264,7 @@ export default function TemplatesPage() {
         title="Delete this template version"
         message={selected === null
           ? ""
-          : `Delete ${selected.kind} version ${selected.version}? No mapping can pin it afterwards. While a synced mapping pins it, the delete is refused.`}
+          : `Delete ${selected.kind} version ${selected.version}? No synced mapping pins it. A mapping that names it later has nothing to render against until the same schema is saved again.`}
         confirmLabel="Delete"
         danger
         busy={remove.isPending}

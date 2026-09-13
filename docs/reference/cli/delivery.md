@@ -41,7 +41,7 @@ snapshot store; `sqlflow template` saves them in the catalog.
 
 ```bash
 sqlflow template capture --kind <kind> [--release <tag>] [--db <ref>] [--json]
-sqlflow template import <schema.json> --kind <kind> [--db <ref>] [--json]
+sqlflow template import <schema.json> --kind <kind> [--release <tag>] [--db <ref>] [--json]
 sqlflow template import --from-dir <dir> --kind <kind> [--db <ref>] [--json]
 sqlflow template list [--db <ref>] [--json]
 sqlflow template show --kind <kind> [--version <version>] [--db <ref>] [--json]
@@ -56,7 +56,7 @@ characters), which a mapping pins under `template`. Every form needs the catalog
 | Verb | What it does |
 | --- | --- |
 | `capture` | Reads the kind's schema from the OSDU data definitions, the Open Group's public repository (<https://community.opengroup.org/osdu/data/data-definitions>): its file under `Generated` at the commit the release tag names, with every file it refers to, bundled into one document and saved. A release is downloaded once, as its `Generated` folder in one archive, into the local copy under the temp folder (`sqlflow/osdu-data-definitions`), the same copy a control plane on the machine uses, and read from disk after that. The newest release unless `--release <tag>` names one; the origin records the release, commit and file. |
-| `import <schema.json>` | Saves a bundled schema file, one whose every `$ref` points into its own `definitions`: the form `capture` saves, and the one the sample estate keeps under `samples/recall-welllog/templates`. For a schema of one's own that the data definitions do not publish. |
+| `import <schema.json>` | Saves a schema file of one's own. A bundled file, one whose every `$ref` points into its own `definitions` (the form `capture` saves, and the one the sample estate keeps under `samples/recall-welllog/templates`), is saved as it is. A file as the data definitions publish it, such as a release's schema downloaded and given a kind of its own, refers to the shared schemas beside it (`../abstract/...`); those are read from `--release` (the newest by default) and bundled in exactly as `capture` bundles them, and the template's origin names the release and its commit. |
 | `import --from-dir <dir>` | Bundles the kind's schema from a local checkout of the OSDU data definitions (its `Generated` folder) and saves it, exactly as `capture` bundles it from the repository. |
 | `list` | Every saved version: kind, version, when and by whom it was saved, and where it came from. |
 | `show` | One version laid out as a template: every variable with its shape, whether the schema requires it, who writes it (a mapping, OSDU Delivery or OSDU), the entity types it points to and its unit context. Without `--version`, the most recently saved version of the kind. |

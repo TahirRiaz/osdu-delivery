@@ -87,11 +87,16 @@ public sealed record DeliveryOsduComparisonDto(
     int Breaking, int Additive, int Wording, int Unchanged, IReadOnlyList<DeliveryTemplateVariableChangeDto> Changes,
     int SameReferencedFiles, IReadOnlyList<DeliveryOsduReferencedFileDto> ReferencedFiles);
 
-/// <summary>A bundled schema to lay out as a template without saving it.</summary>
-public sealed record DeliveryTemplatePreviewRequest(string Kind, JsonElement Schema, Guid? RepoId);
+/// <summary>A schema to lay out as a template without saving it.</summary>
+/// <remarks>
+/// A schema that refers to the shared schemas of the OSDU data definitions, as a file a release publishes does, is bundled
+/// with them from <c>Release</c> (the newest release when it is null).
+/// </remarks>
+public sealed record DeliveryTemplatePreviewRequest(string Kind, JsonElement Schema, Guid? RepoId, string? Release);
 
-/// <summary>A bundled schema to save as a template version, and where it came from.</summary>
-public sealed record DeliveryTemplateSaveRequest(string Kind, JsonElement Schema, string Origin);
+/// <summary>A schema to save as a template version, and where it came from.</summary>
+/// <remarks>Its references to the OSDU data definitions are read from <c>Release</c>, as a preview reads them, and the saved origin names the release.</remarks>
+public sealed record DeliveryTemplateSaveRequest(string Kind, JsonElement Schema, string Origin, string? Release);
 
 /// <summary>What saving did: <c>created</c> for a new version, <c>unchanged</c> for one already saved.</summary>
 public sealed record DeliveryTemplateSavedDto(DeliveryTemplateDto Template, string Outcome);
@@ -207,27 +212,24 @@ public static class DeliveryTemplateEndpoints
         var schema = await templates.LoadAsync(reference, ct).ConfigureAwait(false);
         return schema is null
             ? Problem($"There is no saved template {reference}.", StatusCodes.Status404NotFound, "Not found")
-            : TypedResults.Text(Delivery.Json.CanonicalJson.Pretty(schema.Root), "application/json");
+            : TypedResults.Text(Delivery.Json.DocumentJson.Indented(schema.Root), "application/json");
     }
 
     private static async Task<Results<Ok<DeliveryTemplateDetailDto>, ProblemHttpResult>> PreviewTemplateAsync(
-        DeliveryTemplatePreviewRequest request, ITemplateStore templates, CatalogDbContext db, TimeProvider clock, CancellationToken ct)
+        DeliveryTemplatePreviewRequest request, ITemplateStore templates, OsduDataDefinitions definitions, CatalogDbContext db, CancellationToken ct)
     {
-        if (request is null || string.IsNullOrWhiteSpace(request.Kind))
+        if (request is null || string.IsNullOrWhiteSpace(request.Kind) || request.Schema.ValueKind == JsonValueKind.Undefined)
         {
-            return Problem("A preview needs the kind and the bundled schema.", StatusCodes.Status400BadRequest);
+            return Problem("A preview needs the kind and the schema.", StatusCodes.Status400BadRequest);
         }
 
-        SchemaSnapshot schema;
-        try
+        var (imported, problem) = await ImportAsync(request.Schema, request.Kind, request.Release, definitions, ct).ConfigureAwait(false);
+        if (imported is null)
         {
-            schema = TemplateSources.FromBundledJson(request.Schema.GetRawText(), request.Kind.Trim(), clock.GetUtcNow(), "the schema");
-        }
-        catch (Exception ex) when (ex is DeliveryException or FlowValidationException)
-        {
-            return Problem(ex.Message, StatusCodes.Status400BadRequest, "Not a record schema");
+            return problem!;
         }
 
+        var schema = imported.Schema;
         var info = (await templates.ListAsync(ct).ConfigureAwait(false)).FirstOrDefault(t => t.Kind == schema.Kind && t.Version == schema.Version);
         var pins = await PinsAsync(db, ct).ConfigureAwait(false);
         var cache = request.RepoId is { } r ? await CatalogCacheReader.TypesAsync(db, r, ct).ConfigureAwait(false) : [];
@@ -390,24 +392,21 @@ public static class DeliveryTemplateEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryTemplateSavedDto>, ProblemHttpResult>> SaveTemplateAsync(
-        DeliveryTemplateSaveRequest request, ITemplateStore templates, CatalogDbContext db, TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
+        DeliveryTemplateSaveRequest request, ITemplateStore templates, OsduDataDefinitions definitions, CatalogDbContext db, ClaimsPrincipal user, CancellationToken ct)
     {
-        if (request is null || string.IsNullOrWhiteSpace(request.Kind) || string.IsNullOrWhiteSpace(request.Origin))
+        if (request is null || string.IsNullOrWhiteSpace(request.Kind) || string.IsNullOrWhiteSpace(request.Origin)
+            || request.Schema.ValueKind == JsonValueKind.Undefined)
         {
-            return Problem("Saving a template needs the kind, the bundled schema, and where it came from.", StatusCodes.Status400BadRequest);
+            return Problem("Saving a template needs the kind, the schema, and where it came from.", StatusCodes.Status400BadRequest);
         }
 
-        SchemaSnapshot schema;
-        try
+        var (imported, problem) = await ImportAsync(request.Schema, request.Kind, request.Release, definitions, ct).ConfigureAwait(false);
+        if (imported is null)
         {
-            schema = TemplateSources.FromBundledJson(request.Schema.GetRawText(), request.Kind.Trim(), clock.GetUtcNow(), "the schema");
-        }
-        catch (Exception ex) when (ex is DeliveryException or FlowValidationException)
-        {
-            return Problem(ex.Message, StatusCodes.Status400BadRequest, "Not a record schema");
+            return problem!;
         }
 
-        var saved = await templates.SaveAsync(schema, request.Origin.Trim(), RequestActor.Label(user), ct).ConfigureAwait(false);
+        var saved = await templates.SaveAsync(imported.Schema, imported.Origin(request.Origin.Trim()), RequestActor.Label(user), ct).ConfigureAwait(false);
         var pins = await PinsAsync(db, ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryTemplateSavedDto(
             ToDto(saved.Template, pins), saved.Outcome == TemplateSaveOutcome.Created ? "created" : "unchanged"));
@@ -642,6 +641,37 @@ public static class DeliveryTemplateEndpoints
 
     /// <summary>A version as a comparison reads it: its file as published, and bundled as a template.</summary>
     private sealed record ComparedSide(DataDefinitionsPublishedFile File, DataDefinitionsSchemaFile Bundled);
+
+    /// <summary>
+    /// The schema a preview or a save was sent, as a template: taken as it is when it arrived bundled, or bundled with the
+    /// shared schemas of the OSDU data definitions it refers to, read from <paramref name="release"/>. A schema that is not a
+    /// record schema, or refers to a file or release the data definitions do not hold, is a 400; data definitions that could
+    /// not be read are a 502.
+    /// </summary>
+    private static async Task<(ImportedSchema? Schema, ProblemHttpResult? Problem)> ImportAsync(
+        JsonElement schema, string kind, string? release, OsduDataDefinitions definitions, CancellationToken ct)
+    {
+        try
+        {
+            return (await definitions.ImportAsync(schema.GetRawText(), kind.Trim(), release, "the schema", ct).ConfigureAwait(false), null);
+        }
+        catch (FlowValidationException ex)
+        {
+            return (null, Problem(ex.Message, StatusCodes.Status400BadRequest, "Not a record schema"));
+        }
+        catch (DataDefinitionsException ex) when (ex.NotFound)
+        {
+            return (null, Problem(ex.Message, StatusCodes.Status400BadRequest, "Not in the OSDU data definitions"));
+        }
+        catch (DataDefinitionsException ex)
+        {
+            return (null, Unavailable(ex));
+        }
+        catch (DeliveryException ex)
+        {
+            return (null, Problem(ex.Message, StatusCodes.Status400BadRequest, "Not a record schema"));
+        }
+    }
 
     /// <summary>What the data definitions could not answer: 404 for what they do not hold, 502 when they could not be read.</summary>
     private static ProblemHttpResult Unavailable(DataDefinitionsException ex)

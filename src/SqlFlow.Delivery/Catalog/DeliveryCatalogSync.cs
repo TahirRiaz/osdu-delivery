@@ -8,6 +8,7 @@ using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Templates;
 using ContentHash = SqlFlow.Delivery.Hashing.ContentHash;
 
 namespace SqlFlow.Delivery.Catalog;
@@ -42,6 +43,11 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
     /// <summary>Rows per insert batch, so a large cache does not build one enormous command.</summary>
     private const int CachedItemChunk = 2_000;
+
+    /// <summary>The widths of <c>delivery.Template</c>'s kind and version, which a mapping row's pin mirrors.</summary>
+    private const int MaxTemplateKindLength = 200;
+
+    private const int MaxTemplateVersionLength = 64;
 
     private readonly DeliveryDocumentLoader _documents;
 
@@ -110,6 +116,9 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 continue;
             }
 
+            // The template the document pins. A document that fails to load still names one, and still pins it: deleting
+            // that template would leave the fix with nothing to render against.
+            var pinned = mapping?.Template ?? NamedTemplate(yaml);
             var hash = ContentHash.Of(yaml);
             if (!existing.TryGetValue(id, out var row))
             {
@@ -119,6 +128,10 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             }
             else if (row.ContentHash == hash && row.RelativePath == relative)
             {
+                // The pin is derived again for an unchanged document too, so what counts as a pin follows this build
+                // rather than the build that first synced the row.
+                row.Kind = mapping?.Kind ?? pinned?.Kind ?? string.Empty;
+                row.TemplateVersion = pinned?.Version ?? string.Empty;
                 row.LastSeenUtc = nowUtc;
                 unchanged++;
                 if (mapping is null)
@@ -136,8 +149,8 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             row.Reference = reference;
             row.Name = mapping?.Name ?? Path.GetFileNameWithoutExtension(file);
             row.Version = mapping?.Version ?? string.Empty;
-            row.Kind = mapping?.Kind ?? string.Empty;
-            row.TemplateVersion = mapping?.Template.Version ?? string.Empty;
+            row.Kind = mapping?.Kind ?? pinned?.Kind ?? string.Empty;
+            row.TemplateVersion = pinned?.Version ?? string.Empty;
             row.RelativePath = relative;
             row.ContentHash = hash;
             row.Yaml = yaml;
@@ -575,6 +588,15 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     };
 
     /// <summary>A cheap textual pre-check, so only candidate documents are parsed: every mapping declares its type.</summary>
+    /// <summary>
+    /// The template an invalid mapping document names. A kind or version longer than the catalog holds for a template
+    /// can pin no saved template, so it counts as naming none rather than failing the row.
+    /// </summary>
+    private TemplateReference? NamedTemplate(string yaml)
+        => _documents.TemplateNamedBy(yaml) is { } named && named.Kind.Length <= MaxTemplateKindLength && named.Version.Length <= MaxTemplateVersionLength
+            ? named
+            : null;
+
     private static bool LooksLikeMapping(string yaml)
         => yaml.Contains("documentType:", StringComparison.Ordinal) && yaml.Contains("mapping", StringComparison.Ordinal);
 

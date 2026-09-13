@@ -1,6 +1,7 @@
 using SqlFlow.Core;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Templates;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
@@ -116,6 +117,30 @@ public sealed class DeliveryDocumentLoader
         return MappingMapper.Map(y, source);
     }
 
+    /// <summary>
+    /// The template a mapping document names in its <c>template</c> block, read without validating anything else, or
+    /// null when the document is not readable YAML or names no complete template. A document that fails to load still
+    /// pins what it names, so the template cannot be deleted from under a mapping that is only waiting for a fix.
+    /// </summary>
+    public TemplateReference? TemplateNamedBy(string yaml)
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        TemplateProbeYaml? probe;
+        try
+        {
+            probe = _probe.Deserialize<TemplateProbeYaml>(yaml);
+        }
+        catch (YamlException)
+        {
+            // Unreadable YAML, or a template block of the wrong shape, names no template. ParseMapping reports why.
+            return null;
+        }
+
+        var kind = probe?.Template?.Kind?.Trim();
+        var version = probe?.Template?.Version?.Trim();
+        return string.IsNullOrEmpty(kind) || string.IsNullOrEmpty(version) ? null : new TemplateReference(kind, version);
+    }
+
     private static T? Deserialize<T>(IDeserializer deserializer, string yaml, string source)
     {
         try
@@ -129,6 +154,12 @@ public sealed class DeliveryDocumentLoader
                 : ex.Message;
             throw new FlowValidationException($"{source}: invalid YAML at line {ex.Start.Line}, column {ex.Start.Column} - {detail}", ex);
         }
+    }
+
+    /// <summary>Only the template block of a mapping document; every other key is ignored.</summary>
+    private sealed class TemplateProbeYaml
+    {
+        public MappingTemplateYaml? Template { get; set; }
     }
 }
 

@@ -10,7 +10,7 @@ import { expect, test } from "./helpers";
 // everything after them (the preview, the save) run against the real control plane.
 
 const WELLBORE_KIND = "osdu:wks:master-data--Wellbore:1.3.0";
-const WELLBORE_VERSION = "a110ad82c3b60a1e";
+const WELLBORE_VERSION = "58d6bdbd9d066a06";
 const WELLBORE_FILE = "osdu_wks_master-data--Wellbore_1.3.0.json";
 
 const DATA_DEFINITIONS = "https://community.opengroup.org/osdu/data/data-definitions";
@@ -59,24 +59,36 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(sheet.getByTestId("templates-view-saved")).toContainText("Pinned by 1 synced mapping");
 
     // The variables a mapping fills are listed; what OSDU Delivery and OSDU write themselves shows only on request.
+    // The tree opens fully folded; opening the data section shows what it holds.
+    await expect(sheet.getByTestId("templates-view-variable-osdu.data")).toBeVisible();
+    await expect(sheet.getByTestId("templates-view-variable-osdu.data.FacilityName")).toHaveCount(0);
+    await sheet.getByTestId("templates-view-variable-osdu.data").click();
     await expect(sheet.getByTestId("templates-view-variable-osdu.data.FacilityName")).toBeVisible();
     await expect(sheet.getByTestId("templates-view-variable-osdu.id")).toHaveCount(0);
     await sheet.getByTestId("templates-view-show-written").click();
     await expect(sheet.getByTestId("templates-view-variable-osdu.id")).toBeVisible();
 
-    // Each writer is marked apart from what a mapping fills: its own label and glyph, and no marker on a mapping's variable.
-    await expect(sheet.getByTestId("templates-view-role-osdu.createTime")).toHaveText("OSDU sets it");
+    // Each writer is marked apart from what a mapping fills: a glyph named for the writer, and no marker on a mapping's variable.
+    await expect(sheet.getByTestId("templates-view-role-osdu.createTime")).toHaveAttribute("aria-label", "OSDU sets it");
     await expect(sheet.getByTestId("templates-view-role-osdu.createTime").locator("svg")).toHaveCount(1);
-    await expect(sheet.getByTestId("templates-view-role-osdu.id")).toHaveText("OSDU Delivery writes it");
+    await expect(sheet.getByTestId("templates-view-role-osdu.id")).toHaveAttribute("aria-label", "OSDU Delivery writes it");
     await expect(sheet.getByTestId("templates-view-role-osdu.data.FacilityName")).toHaveCount(0);
+
+    // Selecting a variable in the tree lays out its properties beside it.
+    await sheet.getByTestId("templates-view-variable-osdu.id").click();
+    await expect(sheet.getByTestId("templates-view-properties-path")).toHaveText("osdu.id");
+    await expect(sheet.getByTestId("templates-view-properties-role")).toHaveText("OSDU Delivery writes it");
+    await sheet.getByTestId("templates-view-variable-osdu.data.FacilityName").click();
+    await expect(sheet.getByTestId("templates-view-properties-path")).toHaveText("osdu.data.FacilityName");
+    await expect(sheet.getByTestId("templates-view-properties-role")).toHaveCount(0);
 
     await sheet.getByTestId("templates-view-tab-schema").click();
     await expect(sheet.getByTestId("templates-view-schema-json")).toBeVisible({ timeout: 15_000 });
 
-    // The synced Wellbore mapping pins this version, so the delete is refused and names the mapping that holds it.
-    await sheet.getByTestId("templates-delete").click();
-    await adminPage.getByTestId("confirm-dialog-confirm").click();
-    await expect(adminPage.getByText(/pinned by mapping\(s\) Wellbore@1\.0\.0/).first()).toBeVisible({ timeout: 15_000 });
+    // The synced Wellbore mapping pins this version, so Delete sits beside the saved state disabled, and says why.
+    await expect(sheet.getByTestId("templates-view-actions").getByTestId("templates-delete")).toBeDisabled();
+    await sheet.getByTestId("templates-delete-blocked").hover();
+    await expect(adminPage.getByText(/Pinned by 1 synced mapping\. Move it to another template version/).first()).toBeVisible();
     await expect(rows.filter({ hasText: WELLBORE_KIND })).toHaveCount(1);
   });
 
@@ -85,8 +97,11 @@ test.describe.serial("templates and the mapping builder", () => {
     await adminPage.getByTestId("templates-tab-import").click();
 
     const schema = readFileSync(join(import.meta.dirname, "..", "..", "samples", "recall-welllog", "templates", WELLBORE_FILE), "utf8");
-    await adminPage.getByTestId("templates-import-kind").fill(WELLBORE_KIND);
+    // The kind is asked for until the schema names its own, and then it is read from the schema.
+    await expect(adminPage.getByTestId("templates-import-kind")).toBeVisible();
     await adminPage.getByTestId("templates-import-json").fill(schema);
+    await expect(adminPage.getByTestId("templates-import-kind-declared")).toHaveText(WELLBORE_KIND);
+    await expect(adminPage.getByTestId("templates-import-kind")).toHaveCount(0);
     await adminPage.getByTestId("templates-import-preview").click();
 
     // A version is the schema's content, so the same file lays out as the version the catalog already holds.
@@ -95,6 +110,21 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(sheet.getByTestId("templates-view-state")).toHaveText("saved");
     await sheet.getByTestId("templates-import-save").click();
     await expect(adminPage.getByText(/was already saved, so nothing changed/).first()).toBeVisible({ timeout: 15_000 });
+  });
+
+  test("a schema is saved straight from the import form, and opens as the saved version", async ({ adminPage }) => {
+    await openTemplates(adminPage);
+    await adminPage.getByTestId("templates-tab-import").click();
+
+    const schema = readFileSync(join(import.meta.dirname, "..", "..", "samples", "recall-welllog", "templates", WELLBORE_FILE), "utf8");
+    await adminPage.getByTestId("templates-import-json").fill(schema);
+    await adminPage.getByTestId("templates-import-save-now").click();
+
+    await expect(adminPage.getByText(/was already saved, so nothing changed/).first()).toBeVisible({ timeout: 15_000 });
+    const sheet = adminPage.getByTestId("templates-import-sheet");
+    await expect(sheet.getByTestId("templates-view-kind")).toHaveText(WELLBORE_KIND, { timeout: 15_000 });
+    await expect(sheet.getByTestId("templates-view-version")).toHaveText(WELLBORE_VERSION);
+    await expect(sheet.getByTestId("templates-view-state")).toHaveText("saved");
   });
 
   test("the OSDU data definitions are browsed by release, and a kind opens as the template it saves as", async ({ adminPage }) => {
@@ -247,13 +277,32 @@ test.describe.serial("templates and the mapping builder", () => {
       await expect(sheet.getByTestId("templates-compare-count-breaking")).toHaveText("1 breaking", { timeout: 15_000 });
       await expect(sheet.getByTestId("templates-compare-count-additive")).toHaveText("1 additive");
       await expect(sheet.getByTestId("templates-compare-count-wording")).toHaveText("1 wording");
-      await expect(sheet.getByTestId("templates-compare-change-osdu.data.Name")).toHaveText("Removed");
-      await expect(sheet.getByTestId("templates-compare-impact-osdu.data.Name")).toHaveText("Breaking");
-      await expect(sheet.getByTestId("templates-compare-field-osdu.data.Depth-description")).toContainText("reworded");
-      const changeRows = sheet.getByTestId("templates-compare-changes-table").getByTestId("table-row");
+      // The list opens with the impact headings open and every variable folded; a variable opens onto its fields.
+      const changeRows = sheet.getByTestId("templates-compare-change-row");
       await expect(changeRows).toHaveCount(3);
-      await sheet.getByTestId("templates-compare-show-wording").click();
+      await expect(sheet.getByTestId("templates-compare-group-breaking").getByTestId("templates-compare-change-osdu.data.Name")).toHaveText("Removed");
+      await expect(sheet.getByTestId("templates-compare-field-osdu.data.Name-type")).toHaveCount(0);
+      await sheet.getByTestId("templates-compare-change-toggle-osdu.data.Name").click();
+      await expect(sheet.getByTestId("templates-compare-field-osdu.data.Name-type")).toBeVisible();
+      await sheet.getByTestId("templates-compare-group-toggle-breaking").click();
       await expect(changeRows).toHaveCount(2);
+      await sheet.getByTestId("templates-compare-expand-all").click();
+      await expect(sheet.getByTestId("templates-compare-expand-all")).toHaveText("Collapse all");
+      await expect(sheet.getByTestId("templates-compare-group-additive").getByTestId("templates-compare-change-osdu.data.FacilityName")).toHaveText("Added");
+
+      // What changed is marked in place: the words a description lost, and the words it gained.
+      const depthDescription = sheet.getByTestId("templates-compare-field-osdu.data.Depth-description");
+      await expect(depthDescription.locator("del")).toHaveText("Depth");
+      await expect(depthDescription.locator("ins")).toHaveText("Measured depth");
+
+      // The impact filter narrows the list to one impact, counting what each holds.
+      await expect(changeRows).toHaveCount(3);
+      await expect(sheet.getByTestId("templates-compare-impact-filter-wording")).toContainText("1");
+      await sheet.getByTestId("templates-compare-impact-filter-breaking").click();
+      await expect(changeRows).toHaveCount(1);
+      await expect(sheet.getByTestId("templates-compare-group-wording")).toHaveCount(0);
+      await sheet.getByTestId("templates-compare-impact-filter-all").click();
+      await expect(changeRows).toHaveCount(3);
 
       // The files as the releases publish them, side by side.
       await sheet.getByTestId("templates-compare-tab-files").click();

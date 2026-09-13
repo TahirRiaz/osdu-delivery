@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { Loader2 } from "lucide-react";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { isApiError } from "../../api/client";
 import type { ComputeTask, DeliveryTemplateDetail } from "../../api/delivery";
 import { CorrelationError } from "../../components/CorrelationError";
 import { RunStatusBadge } from "../../components/StatusBadge";
+import { TemplateHeader } from "./TemplateHeader";
 import { TemplateView } from "./TemplateView";
 
 /** The API's problem detail for a failed call, or the error's own text: what a failure toast says. */
@@ -37,8 +38,8 @@ interface TemplateSheetProps {
   onClose: () => void;
   /** The kind the sheet is about, known before the template is laid out. */
   title: string;
-  /** Where the template comes from. */
-  description: string;
+  /** Where a template not yet saved is read from, for the header's facts; null for a saved version, which names its own origin. */
+  source: ReactNode | null;
   /** Progress while the schema is fetched or laid out. */
   progress: ReactNode;
   /** A failure to show above the template, or instead of it. */
@@ -55,21 +56,23 @@ interface TemplateSheetProps {
 
 /** The side sheet every template opens in on the Templates page: a saved version, a schema fetched from OSDU, or an imported file. */
 export function TemplateSheet({
-  open, onClose, title, description, progress, problem, detail, previewSchema, actions, busy = false, testId,
+  open, onClose, title, source, progress, problem, detail, previewSchema, actions, busy = false, testId,
 }: TemplateSheetProps) {
   const waiting = detail === undefined && progress === null && problem === null;
   return (
     <Sheet open={open} onOpenChange={(next) => { if (!next && !busy) { onClose(); } }}>
-      <SheetContent className="w-full gap-0 sm:max-w-5xl" data-testid={testId}>
-        <SheetHeader>
-          <SheetTitle className="break-all pr-6 font-mono text-[14px]">{title}</SheetTitle>
-          <SheetDescription>{description}</SheetDescription>
-        </SheetHeader>
-        <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
+      <SheetContent
+        className="w-full gap-0 sm:max-w-5xl"
+        // Focus lands on the sheet itself rather than the header's first button, whose tooltip would otherwise open with it.
+        onOpenAutoFocus={(event) => { event.preventDefault(); (event.currentTarget as HTMLElement).focus(); }}
+        data-testid={testId}
+      >
+        <TemplateHeader kind={title} detail={detail} source={source} actions={actions} />
+        <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4 pt-3">
           {problem}
           {progress}
           {waiting && <Skeleton className="h-64 w-full rounded-lg" />}
-          {detail !== undefined && <TemplateView detail={detail} previewSchema={previewSchema} actions={actions} />}
+          {detail !== undefined && <TemplateView detail={detail} previewSchema={previewSchema} />}
         </div>
       </SheetContent>
     </Sheet>

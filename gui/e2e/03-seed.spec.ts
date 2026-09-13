@@ -19,7 +19,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
     const session = await adminSession(request);
     const templates = [
       { kind: "osdu:wks:work-product-component--WellLog:1.4.0", file: "osdu_wks_work-product-component--WellLog_1.4.0.json", version: "26a3c3441882db4f" },
-      { kind: "osdu:wks:master-data--Wellbore:1.3.0", file: "osdu_wks_master-data--Wellbore_1.3.0.json", version: "a110ad82c3b60a1e" },
+      { kind: "osdu:wks:master-data--Wellbore:1.3.0", file: "osdu_wks_master-data--Wellbore_1.3.0.json", version: "58d6bdbd9d066a06" },
     ];
     for (const template of templates) {
       const schema: unknown = JSON.parse(

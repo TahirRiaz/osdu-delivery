@@ -24,7 +24,7 @@ namespace SqlFlow.Cli;
 internal static class DeliveryVerbs
 {
     private const string TemplateUsage =
-        "Usage: sqlflow template (capture --kind <kind> [--release <tag>] | import <schema.json> --kind <kind> | import --from-dir <dir> --kind <kind> | list | show --kind <kind> [--version <version>] | delete --kind <kind> --version <version>) [--db <conn-ref>] [--json]";
+        "Usage: sqlflow template (capture --kind <kind> [--release <tag>] | import <schema.json> --kind <kind> [--release <tag>] | import --from-dir <dir> --kind <kind> | list | show --kind <kind> [--version <version>] | delete --kind <kind> --version <version>) [--db <conn-ref>] [--json]";
 
     public static async Task<int> CheckAsync(IServiceProvider provider, string flowPath, string[] args, bool json, CancellationToken ct)
     {
@@ -180,31 +180,27 @@ internal static class DeliveryVerbs
 
                 var kind = Program.GetOption(args, "--kind") ?? throw new FlowValidationException(TemplateUsage);
                 using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-                var definitions = new OsduDataDefinitions(
-                    () => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, OsduDataDefinitions.DefaultCacheDirectory,
-                    OsduDataDefinitions.DefaultFreshness, OsduDataDefinitions.DefaultDownloadTimeout, engine.Time);
-                var file = await definitions.FetchAsync(Program.GetOption(args, "--release"), kind, ct).ConfigureAwait(false);
+                var file = await DataDefinitions(http, engine.Time).FetchAsync(Program.GetOption(args, "--release"), kind, ct).ConfigureAwait(false);
                 return Report(await store.SaveAsync(file.Schema, file.Origin, actor, ct).ConfigureAwait(false), json);
             }
 
             case "import":
             {
                 var kind = Program.GetOption(args, "--kind") ?? throw new FlowValidationException(TemplateUsage);
-                SchemaSnapshot schema;
-                string origin;
                 if (Program.GetOption(args, "--from-dir") is { } directory)
                 {
-                    schema = await TemplateSources.FromDirectoryAsync(directory, kind, engine.Time, ct).ConfigureAwait(false);
-                    origin = $"data definitions under {Path.GetFullPath(directory)}";
-                }
-                else
-                {
-                    var file = positional.Length > 2 ? positional[2] : throw new FlowValidationException(TemplateUsage);
-                    schema = TemplateSources.FromBundledJson(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false), kind, engine.Time.GetUtcNow(), file);
-                    origin = $"file {Path.GetFileName(file)}";
+                    var schema = await TemplateSources.FromDirectoryAsync(directory, kind, engine.Time, ct).ConfigureAwait(false);
+                    return Report(await store.SaveAsync(schema, $"data definitions under {Path.GetFullPath(directory)}", actor, ct).ConfigureAwait(false), json);
                 }
 
-                return Report(await store.SaveAsync(schema, origin, actor, ct).ConfigureAwait(false), json);
+                // A bundled file is saved as it is. A file as the data definitions publish it is bundled with the shared schemas
+                // it refers to from --release (the newest when it is not given), exactly as the Templates page imports it.
+                var path = positional.Length > 2 ? positional[2] : throw new FlowValidationException(TemplateUsage);
+                using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+                var imported = await DataDefinitions(http, engine.Time)
+                    .ImportAsync(await File.ReadAllTextAsync(path, ct).ConfigureAwait(false), kind, Program.GetOption(args, "--release"), path, ct)
+                    .ConfigureAwait(false);
+                return Report(await store.SaveAsync(imported.Schema, imported.Origin($"file {Path.GetFileName(path)}"), actor, ct).ConfigureAwait(false), json);
             }
 
             case "list":
@@ -293,6 +289,12 @@ internal static class DeliveryVerbs
                 throw new FlowValidationException(TemplateUsage);
         }
     }
+
+    /// <summary>The OSDU data definitions over <paramref name="http"/>, kept in the default local copy.</summary>
+    private static OsduDataDefinitions DataDefinitions(HttpClient http, TimeProvider time)
+        => new(
+            () => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, OsduDataDefinitions.DefaultCacheDirectory,
+            OsduDataDefinitions.DefaultFreshness, OsduDataDefinitions.DefaultDownloadTimeout, time);
 
     private static int Report(TemplateSaved saved, bool json)
     {

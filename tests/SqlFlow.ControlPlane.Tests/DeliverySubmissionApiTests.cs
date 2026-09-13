@@ -29,7 +29,7 @@ public sealed class DeliverySubmissionApiTests
         documentType: mapping
         name: Wellbore
         version: 1.0.0
-        template: { kind: "osdu:wks:master-data--Wellbore:1.3.0", version: a110ad82c3b60a1e }
+        template: { kind: "osdu:wks:master-data--Wellbore:1.3.0", version: 58d6bdbd9d066a06 }
         dataset: { system: recall, key: [dataset.facility_name], label: "{dataset.facility_name}" }
         parameters:
           dataPartition: { required: true }
@@ -512,7 +512,7 @@ public sealed class DeliverySubmissionApiTests
             Assert.Null(records.PayloadName);
             // The listing says what the flow's records become: the template version its synced mapping fills.
             Assert.Equal("osdu:wks:master-data--Wellbore:1.3.0", records.TemplateKind);
-            Assert.Equal("a110ad82c3b60a1e", records.TemplateVersion);
+            Assert.Equal("58d6bdbd9d066a06", records.TemplateVersion);
             // A flow whose mapping the catalog has not synced has no template to name.
             var unsyncedFlow = Assert.Single(flows, f => f.FlowName == estate.UnsyncedMappingFlow);
             Assert.Null(unsyncedFlow.TemplateKind);
@@ -559,7 +559,7 @@ public sealed class DeliverySubmissionApiTests
             Assert.Equal(MappingReference, contract.MappingReference);
             Assert.Equal("OsduRecord", contract.Protocol);
             // The template version the mapping fills, and the dataset a record is a row of.
-            Assert.Equal(new DeliverySourceTemplateDto("osdu:wks:master-data--Wellbore:1.3.0", "a110ad82c3b60a1e", Saved: true), contract.Template);
+            Assert.Equal(new DeliverySourceTemplateDto("osdu:wks:master-data--Wellbore:1.3.0", "58d6bdbd9d066a06", Saved: true), contract.Template);
             Assert.Equal("recall", contract.System);
             Assert.Equal(["facility_name"], contract.Key);
             Assert.Equal("{dataset.facility_name}", contract.Label);
@@ -851,7 +851,7 @@ public sealed class DeliverySubmissionApiTests
                 Name = "Wellbore",
                 Version = "1.0.0",
                 Kind = "osdu:wks:master-data--Wellbore:1.3.0",
-                TemplateVersion = "a110ad82c3b60a1e",
+                TemplateVersion = "58d6bdbd9d066a06",
                 RelativePath = "mappings/Wellbore@1.0.0.yaml",
                 ContentHash = new string('0', 64),
                 Yaml = MappingYaml,
@@ -872,7 +872,7 @@ public sealed class DeliverySubmissionApiTests
                 ContentHash = new string('1', 64),
                 Yaml = MappingYaml
                     .Replace("name: Wellbore", "name: WellboreUnsaved", StringComparison.Ordinal)
-                    .Replace("version: a110ad82c3b60a1e", "version: " + UnsavedTemplateVersion, StringComparison.Ordinal),
+                    .Replace("version: 58d6bdbd9d066a06", "version: " + UnsavedTemplateVersion, StringComparison.Ordinal),
                 Status = "valid",
                 FirstSeenUtc = now,
                 LastSeenUtc = now,

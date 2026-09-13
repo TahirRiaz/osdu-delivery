@@ -130,7 +130,9 @@ public sealed class CatalogTemplateStore : ITemplateStore
                 Id = IdOf(reference),
                 Kind = schema.Kind,
                 Version = schema.Version,
-                SchemaJson = CanonicalJson.ToString(schema.Root),
+                // Stored in the order the schema was written, so it reads back, and lays out its variables, as authored.
+                // The version is the hash of the canonical form, so the order does not move it.
+                SchemaJson = DocumentJson.Compact(schema.Root),
                 Origin = Bounded(origin, 1000),
                 CapturedBy = Bounded(actor, 200),
                 CapturedUtc = _time.GetUtcNow().UtcDateTime,

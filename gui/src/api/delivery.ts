@@ -1185,9 +1185,12 @@ export const deliveryApi = {
   /** The saved template's bundled schema as JSON text, exactly as it was saved. */
   templateSchema: (kind: string, version: string) =>
     getText(`/api/v1/delivery/templates/schema?${new URLSearchParams({ kind, version }).toString()}`),
-  /** Lays out a bundled schema as a template without saving it; a 400 says why the JSON is not a record schema. */
-  previewTemplate: (kind: string, schema: Record<string, unknown>, repoId?: string | null) =>
-    post<DeliveryTemplateDetail>("/api/v1/delivery/templates/preview", { kind, schema, repoId: repoId ?? null }),
+  /**
+   * Lays out a schema as a template without saving it; a 400 says why the JSON is not a record schema. A schema that refers
+   * to the shared schemas of the OSDU data definitions has them read from `release` (the newest when omitted).
+   */
+  previewTemplate: (kind: string, schema: Record<string, unknown>, repoId?: string | null, release?: string | null) =>
+    post<DeliveryTemplateDetail>("/api/v1/delivery/templates/preview", { kind, schema, repoId: repoId ?? null, release: release ?? null }),
   /** The releases of the OSDU data definitions (the Open Group's public schema repository), newest first; a 502 when it cannot be read. */
   osduReleases: () => get<DeliveryOsduReleases>("/api/v1/delivery/templates/osdu/releases"),
   /** Reads the release list again from the repository and downloads `release` (the newest when omitted) when it is not local; needs the operate scope. */
@@ -1207,9 +1210,12 @@ export const deliveryApi = {
       toRelease: to.release,
       toKind: to.kind,
     }),
-  /** Saves a bundled schema as a template version; saving one already saved changes nothing. */
-  saveTemplate: (kind: string, schema: Record<string, unknown>, origin: string) =>
-    post<DeliveryTemplateSaved>("/api/v1/delivery/templates", { kind, schema, origin }),
+  /**
+   * Saves a schema as a template version; saving one already saved changes nothing. References to the OSDU data definitions
+   * are read from `release`, as a preview reads them, and the saved origin names the release.
+   */
+  saveTemplate: (kind: string, schema: Record<string, unknown>, origin: string, release?: string | null) =>
+    post<DeliveryTemplateSaved>("/api/v1/delivery/templates", { kind, schema, origin, release: release ?? null }),
   /** Deletes a saved template version; refused with a 409 while a synced mapping pins it. */
   deleteTemplate: (kind: string, version: string) =>
     del<void>(`/api/v1/delivery/templates?${new URLSearchParams({ kind, version }).toString()}`),

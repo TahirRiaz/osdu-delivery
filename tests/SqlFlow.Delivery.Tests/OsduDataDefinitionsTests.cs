@@ -4,6 +4,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
+using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Templates;
 using Xunit;
 
@@ -131,6 +132,52 @@ public sealed class OsduDataDefinitionsTests : IDisposable
         }
 
         Assert.Equal(file.Schema.Version, (await TemplateSources.FromDirectoryAsync(root, WellboreKind, clock)).Version);
+    }
+
+    [Fact]
+    public async Task A_published_schema_file_brought_in_from_outside_is_bundled_with_the_files_it_refers_to_from_a_release()
+    {
+        var repository = new Repository();
+        using var http = repository.Client();
+        var definitions = Definitions(http, Timeout.InfiniteTimeSpan);
+
+        // A release's own Wellbore file, downloaded and given a kind of its own, as someone making a schema of their own does.
+        const string kind = "osdu:wks:master-data--WellboreTest:1.5.1";
+        var text = Tree["master-data/Wellbore.1.3.0.json"].Replace(WellboreKind, kind, StringComparison.Ordinal);
+
+        var imported = await definitions.ImportAsync(text, kind, "v0.30.0", "file WellboreTest.1.5.1.json");
+        Assert.Equal("v0.30.0", imported.Release?.Name);
+        Assert.Equal(["abstract/AbstractAccessControlList.1.0.0.json", "abstract/AbstractFacility.1.1.0.json"], imported.Files);
+        Assert.Equal(["AbstractAccessControlList.1.0.0", "AbstractFacility.1.1.0"], Assert.IsType<JsonObject>(imported.Schema.Root["definitions"]).Select(d => d.Key));
+        Assert.Equal(kind, imported.Schema.Kind);
+        Assert.Equal(
+            $"file WellboreTest.1.5.1.json, references from OSDU data definitions v0.30.0 ({ReleaseCommit[..12]})",
+            imported.Origin("file WellboreTest.1.5.1.json"));
+
+        // It lays out exactly as the release's own file does, since it refers to the same shared schemas.
+        var published = await definitions.FetchAsync("v0.30.0", WellboreKind);
+        Assert.Equal(
+            OsduTemplate.From(published.Schema).Variables.Select(v => v.Path.Text),
+            OsduTemplate.From(imported.Schema).Variables.Select(v => v.Path.Text));
+
+        // A schema that arrives bundled is taken as it is, reads no release, and saves as the same version.
+        var bundled = await definitions.ImportAsync(DocumentJson.Compact(imported.Schema.Root), kind, release: null, "pasted schema");
+        Assert.Null(bundled.Release);
+        Assert.Empty(bundled.Files);
+        Assert.Equal(imported.Schema.Version, bundled.Schema.Version);
+        Assert.Equal("pasted schema", bundled.Origin("pasted schema"));
+
+        // A shared schema the release does not hold is named, and so is a release the data definitions do not have.
+        var missing = await Assert.ThrowsAsync<DataDefinitionsException>(() => definitions.ImportAsync(
+            text.Replace("AbstractFacility.1.1.0", "AbstractFacility.9.9.9", StringComparison.Ordinal), kind, null, "file WellboreTest.1.5.1.json"));
+        Assert.True(missing.NotFound);
+        Assert.Contains("Generated/abstract/AbstractFacility.9.9.9.json at v0.30.0", missing.Message, StringComparison.Ordinal);
+        var noRelease = await Assert.ThrowsAsync<DataDefinitionsException>(() => definitions.ImportAsync(text, kind, "v9.9.9", "file WellboreTest.1.5.1.json"));
+        Assert.True(noRelease.NotFound);
+
+        // The kind the schema declares is still the kind it is saved as.
+        var other = await Assert.ThrowsAsync<DeliveryException>(() => definitions.ImportAsync(text, "osdu:wks:master-data--Other:1.0.0", "v0.30.0", "file WellboreTest.1.5.1.json"));
+        Assert.Contains($"describes '{kind}'", other.Message, StringComparison.Ordinal);
     }
 
     [Fact]
