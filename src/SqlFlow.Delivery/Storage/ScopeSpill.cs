@@ -142,6 +142,7 @@ internal static class RowCodec
     private const byte Real = 4;
     private const byte Instant = 5;
     private const byte Uuid = 6;
+    private const byte Exact = 7;
 
     public static void Write(Stream stream, Guid key, SourceRow row)
     {
@@ -175,6 +176,10 @@ internal static class RowCodec
                 case double d:
                     writer.Write(Real);
                     writer.Write(d);
+                    break;
+                case decimal m:
+                    writer.Write(Exact);
+                    writer.Write(m);
                     break;
                 case DateTimeOffset dto:
                     writer.Write(Instant);
@@ -210,6 +215,7 @@ internal static class RowCodec
                 Real => reader.ReadDouble(),
                 Instant => new DateTimeOffset(reader.ReadInt64(), TimeSpan.Zero),
                 Uuid => new Guid(reader.ReadBytes(16)),
+                Exact => reader.ReadDecimal(),
                 var tag => throw new DeliveryException($"Corrupt spill file: unknown value tag {tag}."),
             };
         }

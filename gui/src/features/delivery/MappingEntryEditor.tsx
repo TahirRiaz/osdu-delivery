@@ -18,7 +18,8 @@ import type {
   MappingDraftEntry, MappingDraftInput, MappingDraftIssue, MappingDraftModifier, MappingDraftModifierKind,
 } from "../../api/delivery";
 import {
-  emptyEntry, inputsFor, KEY_NAME, knownColumns, MODIFIER_KINDS, newModifier, parseJson, repeaterOf, staticModeFor,
+  DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, inputsFor, KEY_NAME, knownColumns, MODIFIER_KINDS, newModifier, NO_GROUP, parseJson,
+  repeaterOf, staticModeFor,
   type StaticMode,
 } from "./mappingDraft";
 import { shapeText } from "./templateFormat";
@@ -851,6 +852,34 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                       data-testid={`mapping-builder-entry-modifier-format-${index}`}
                     />
                     <span>empty reads ISO 8601</span>
+                  </div>
+                )}
+                {modifier.kind === "number" && (
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span>decimals after</span>
+                    <Select value={modifier.decimalSeparator ?? "."} onValueChange={(value) => updateModifier(index, { decimalSeparator: value })}>
+                      <SelectTrigger size="sm" className="h-7 w-28" data-testid={`mapping-builder-entry-modifier-decimal-${index}`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {DECIMAL_SEPARATORS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <span>digit groups split by</span>
+                    <Select
+                      value={modifier.groupSeparator ?? NO_GROUP}
+                      onValueChange={(value) => updateModifier(index, { groupSeparator: value === NO_GROUP ? null : value })}
+                    >
+                      <SelectTrigger size="sm" className="h-7 w-32" data-testid={`mapping-builder-entry-modifier-group-${index}`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {GROUP_SEPARATORS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    {modifier.groupSeparator !== null && modifier.groupSeparator === (modifier.decimalSeparator ?? ".") && (
+                      <span className="text-destructive">the two separators must differ</span>
+                    )}
                   </div>
                 )}
               </div>

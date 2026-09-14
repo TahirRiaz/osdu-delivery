@@ -141,7 +141,7 @@ public class SchemaSnapshotTests
 
 public class MappingRendererTests
 {
-    private static SourceRecord Record(string name = "well-1", string? depth = "12.5", string? unit = "m", string? flag = "REGULAR", string? wellbore = "NO 1/1-A", bool curves = true)
+    private static SourceRecord Record(string name = "well-1", string? depth = "12.5", string? unit = "m", string? flag = "REGULAR", string? wellbore = "NO 1/1-A", bool curves = true, string? when = "01.09.2026")
         => new()
         {
             Row = SourceRow.FromStrings(new Dictionary<string, string?>
@@ -151,7 +151,7 @@ public class MappingRendererTests
                 ["unit"] = unit,
                 ["wb"] = wellbore,
                 ["flag"] = flag,
-                ["when"] = "01.09.2026",
+                ["when"] = when,
                 ["pass"] = "MAIN,REPEAT",
             }),
             Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase)
@@ -412,6 +412,278 @@ public class MappingRendererTests
         Assert.Contains(result.Holds, h => h.Contains("'well-1' is not a date/time in the format dd.MM.yyyy", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("2026-09-01", "2026-09-01T00:00:00Z")]
+    [InlineData(" 2026-09-01 ", "2026-09-01T00:00:00Z")]
+    [InlineData("2026-09-01T10:15:30Z", "2026-09-01T10:15:30Z")]
+    [InlineData("2026-09-01t10:15:30z", "2026-09-01T10:15:30Z")]
+    [InlineData("2026-09-01T12:15:30+02:00", "2026-09-01T10:15:30Z")]
+    [InlineData("2026-09-01T05:15:30-0500", "2026-09-01T10:15:30Z")]
+    [InlineData("2026-09-01 10:15", "2026-09-01T10:15:00Z")]
+    [InlineData("2026-09-01T10:15:30.1250000Z", "2026-09-01T10:15:30.125Z")]
+    [InlineData("2022-07-22T00:00:00.000000", "2022-07-22T00:00:00Z")]
+    public void The_date_modifier_reads_ISO_8601_and_writes_an_RFC_3339_UTC_date_time(string incoming, string expected)
+    {
+        var result = Renderer("""
+              - target: osdu.data.When
+                source: dataset.when
+                modifiers: [date]
+            """).Render(Record(when: incoming));
+        Assert.False(result.IsHeld, string.Join("; ", result.Holds));
+        Assert.Equal(expected, result.Document["data"]!["When"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("01/09/2026")]
+    [InlineData("09/01/2026")]
+    [InlineData("12:30")]
+    [InlineData("Sep 1 2026")]
+    [InlineData("1 September 2026")]
+    [InlineData("2026-02-30")]
+    [InlineData("20260901")]
+    [InlineData("26-09-01")]
+    [InlineData("2026-09-01T25:00")]
+    [InlineData("2026-09-01T10:15:30.123456789Z")]
+    public void The_date_modifier_never_guesses_at_a_form_that_is_not_ISO_8601(string incoming)
+    {
+        var result = Renderer("""
+              - target: osdu.data.When
+                source: dataset.when
+                modifiers: [date]
+                required: false
+            """).Render(Record(when: incoming));
+        Assert.True(result.IsHeld);
+        Assert.Contains(result.Holds, h => h.Contains($"'{incoming}' is not an ISO 8601 date or date-time", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("dd.MM.yyyy", "01.09.2026", "2026-09-01T00:00:00Z")]
+    [InlineData("yyyyMMdd", "20260901", "2026-09-01T00:00:00Z")]
+    [InlineData("dd MMM yyyy HH:mm", "01 Sep 2026 10:15", "2026-09-01T10:15:00Z")]
+    [InlineData("MM/dd/yyyy HH:mm:ss.fff", "04/01/2016 20:15:26.289", "2016-04-01T20:15:26.289Z")]
+    [InlineData("yyyy-MM-dd'T'HH:mm:sszzz", "2026-09-01T12:15:30+02:00", "2026-09-01T10:15:30Z")]
+    public void The_date_modifier_reads_exactly_the_format_given(string format, string incoming, string expected)
+    {
+        var result = Renderer($$"""
+              - target: osdu.data.When
+                source: dataset.when
+                modifiers: [{ date: "{{format}}" }]
+            """).Render(Record(when: incoming));
+        Assert.False(result.IsHeld, string.Join("; ", result.Holds));
+        Assert.Equal(expected, result.Document["data"]!["When"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("2026-09-01", "[date]")]
+    [InlineData("2026-09-01T00:00:00Z", "[date]")]
+    [InlineData("01.09.2026", "[{ date: dd.MM.yyyy }]")]
+    [InlineData("2026-09-01T23:30:00Z", "[{ split: { separator: T, part: 1 } }, date]")]
+    public void Where_the_template_takes_a_date_the_date_modifier_writes_a_full_date(string incoming, string modifiers)
+    {
+        var result = Renderer($$"""
+              - target: osdu.data.Day
+                source: dataset.when
+                modifiers: {{modifiers}}
+            """).Render(Record(when: incoming));
+        Assert.False(result.IsHeld, string.Join("; ", result.Holds));
+        Assert.Equal("2026-09-01", result.Document["data"]!["Day"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void A_time_of_day_where_the_template_takes_a_date_holds_rather_than_being_dropped()
+    {
+        var result = Renderer("""
+              - target: osdu.data.Day
+                source: dataset.when
+                modifiers: [date]
+            """).Render(Record(when: "2026-09-01T10:15:30Z"));
+        Assert.True(result.IsHeld);
+        Assert.Contains(result.Holds, h => h.Contains("osdu.data.Day: '2026-09-01T10:15:30+00:00' has a time of day, but the template takes a date", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_timestamp_from_the_drop_is_written_in_the_form_its_property_takes()
+    {
+        static SourceRecord Stamped(DateTimeOffset stamp) => new()
+        {
+            Row = new SourceRow(new Dictionary<string, object?> { ["name"] = "well-1", ["depth"] = 12.5, ["stamp"] = stamp }),
+        };
+
+        var renderer = Renderer("""
+              - target: osdu.data.When
+                source: dataset.stamp
+              - target: osdu.data.Day
+                source: dataset.stamp
+            """);
+
+        var midnight = renderer.Render(Stamped(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero)));
+        Assert.False(midnight.IsHeld, string.Join("; ", midnight.Holds));
+        Assert.Equal("2026-09-01T00:00:00Z", midnight.Document["data"]!["When"]!.GetValue<string>());
+        Assert.Equal("2026-09-01", midnight.Document["data"]!["Day"]!.GetValue<string>());
+
+        var afternoon = renderer.Render(Stamped(new DateTimeOffset(2026, 9, 1, 14, 0, 0, TimeSpan.Zero)));
+        Assert.True(afternoon.IsHeld);
+        Assert.Contains(afternoon.Holds, h => h.Contains("osdu.data.Day: '2026-09-01T14:00:00+00:00' has a time of day", StringComparison.Ordinal));
+    }
+
+    private static SourceRecord Valued(object? value) => new()
+    {
+        Row = new SourceRow(new Dictionary<string, object?> { ["name"] = "well-1", ["depth"] = 12.5, ["v"] = value }),
+    };
+
+    /// <summary>The canonical JSON a render wrote at one data property, after checking the record is not held.</summary>
+    private static string Written(RenderResult result, string property)
+    {
+        Assert.False(result.IsHeld, string.Join("; ", result.Holds));
+        return CanonicalJson.ToString(result.Document["data"]![property]);
+    }
+
+    [Theory]
+    [InlineData("12.5", "12.5")]
+    [InlineData(" -0.25 ", "-0.25")]
+    [InlineData("+7", "7")]
+    [InlineData("12.0", "12")]
+    [InlineData("1e3", "1000")]
+    [InlineData(".5", "0.5")]
+    [InlineData("-0", "0")]
+    [InlineData("9007199254740993", "9007199254740993")]
+    public void Text_is_written_as_the_number_it_states(string incoming, string expected)
+        => Assert.Equal(expected, Written(Renderer("  - { target: osdu.data.Weight, source: dataset.v }").Render(Valued(incoming)), "Weight"));
+
+    [Theory]
+    [InlineData("12,5", "separators this entry does not read")]
+    [InlineData("1,234.5", "separators this entry does not read")]
+    [InlineData("1 234", "separators this entry does not read")]
+    [InlineData("NaN", "NaN and Infinity are not numbers")]
+    [InlineData("-Infinity", "NaN and Infinity are not numbers")]
+    [InlineData("1e400", "beyond the range of a double")]
+    [InlineData("1e-400", "too close to zero")]
+    [InlineData("abc", "not written as a number")]
+    [InlineData("0x10", "not written as a number")]
+    [InlineData("12.5 m", "not written as a number")]
+    [InlineData("١٢", "not written as a number")]
+    public void Text_that_does_not_state_a_number_holds_with_the_reason(string incoming, string reason)
+    {
+        var result = Renderer("  - { target: osdu.data.Weight, source: dataset.v, required: false }").Render(Valued(incoming));
+        Assert.True(result.IsHeld);
+        Assert.Contains(result.Holds, h => h.Contains($"osdu.data.Weight: value '{incoming}' is not a valid number", StringComparison.Ordinal) && h.Contains(reason, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_number_from_the_drop_is_written_in_the_form_its_property_takes()
+    {
+        const string Weight = "  - { target: osdu.data.Weight, source: dataset.v }";
+        Assert.Equal("12.3", Written(Renderer(Weight).Render(Valued(12.3f)), "Weight"));
+        Assert.Equal("12.5", Written(Renderer(Weight).Render(Valued(12.50m)), "Weight"));
+        Assert.Equal(CanonicalJson.FormatDouble((double)1234567890.123456789m), Written(Renderer(Weight).Render(Valued(1234567890.123456789m)), "Weight"));
+        Assert.Equal("9007199254740993", Written(Renderer(Weight).Render(Valued(9007199254740993L)), "Weight"));
+
+        const string Symbol = "  - { target: osdu.data.Symbol, source: dataset.v }";
+        Assert.Equal("\"1234567890.123456789\"", Written(Renderer(Symbol).Render(Valued(1234567890.123456789m)), "Symbol"));
+        Assert.Equal("\"12.5\"", Written(Renderer(Symbol).Render(Valued(12.50m)), "Symbol"));
+        Assert.Equal("\"0.0001\"", Written(Renderer(Symbol).Render(Valued(0.0001m)), "Symbol"));
+        Assert.Equal("\"12.3\"", Written(Renderer(Symbol).Render(Valued(12.3f)), "Symbol"));
+
+        foreach (var entry in new[] { Weight, Symbol, "  - { target: osdu.data.Count, source: dataset.v }" })
+        {
+            var infinite = Renderer(entry).Render(Valued(double.PositiveInfinity));
+            Assert.True(infinite.IsHeld);
+            Assert.Contains(infinite.Holds, h => h.Contains("NaN and Infinity are not numbers", StringComparison.Ordinal));
+        }
+    }
+
+    [Theory]
+    [InlineData("12", "Count", "12")]
+    [InlineData("12.0", "Count", "12")]
+    [InlineData("1e3", "Count", "1000")]
+    [InlineData("-2147483648", "Small", "-2147483648")]
+    [InlineData("3000000000", "Big", "3000000000")]
+    [InlineData("9223372036854775807", "Big", "9223372036854775807")]
+    public void Text_fills_an_integer_when_it_is_a_whole_number_in_range(string incoming, string property, string expected)
+        => Assert.Equal(expected, Written(Renderer($"  - {{ target: osdu.data.{property}, source: dataset.v }}").Render(Valued(incoming)), property));
+
+    [Theory]
+    [InlineData("12.5", "Count", "it has a fraction")]
+    [InlineData("3000000000", "Small", "the template declares int32 here")]
+    [InlineData("9223372036854775808", "Big", "outside the 64-bit range")]
+    [InlineData("1e30", "Big", "outside the 64-bit range")]
+    [InlineData("true", "Count", "not written as a number")]
+    public void Text_that_is_not_a_whole_number_in_range_holds_an_integer(string incoming, string property, string reason)
+    {
+        var result = Renderer($"  - {{ target: osdu.data.{property}, source: dataset.v }}").Render(Valued(incoming));
+        Assert.True(result.IsHeld);
+        Assert.Contains(result.Holds, h => h.Contains($"osdu.data.{property}: value '{incoming}' is not a valid integer", StringComparison.Ordinal) && h.Contains(reason, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_number_from_the_drop_fills_an_integer_only_when_it_is_exactly_a_whole_number_in_range()
+    {
+        static string Filled(string property, object value)
+            => Written(Renderer($"  - {{ target: osdu.data.{property}, source: dataset.v }}").Render(Valued(value)), property);
+
+        static void Holds(string property, object value, string reason)
+        {
+            var result = Renderer($"  - {{ target: osdu.data.{property}, source: dataset.v }}").Render(Valued(value));
+            Assert.True(result.IsHeld);
+            Assert.Contains(result.Holds, h => h.Contains($"osdu.data.{property}: value", StringComparison.Ordinal) && h.Contains(reason, StringComparison.Ordinal));
+        }
+
+        Assert.Equal("12", Filled("Count", 12.0));
+        Assert.Equal("7", Filled("Count", 7.00m));
+        Assert.Equal("9007199254740992", Filled("Count", 9007199254740992.0));
+        Assert.Equal("3000000000", Filled("Big", 3000000000L));
+
+        // An unchecked cast would have written long.MaxValue for each of the first two.
+        Holds("Count", 1e19, "outside the 64-bit range");
+        Holds("Count", 9007199254740994.0, "beyond 2^53");
+        Holds("Count", 12.5, "it has a fraction");
+        Holds("Small", 3000000000L, "the template declares int32 here");
+        Holds("Count", true, "a boolean is not a number");
+    }
+
+    [Theory]
+    [InlineData("12,5", "{ decimal: \",\" }", "12.5")]
+    [InlineData("1 234 567,89", "{ decimal: \",\", group: \" \" }", "1234567.89")]
+    [InlineData("1 234,5", "{ decimal: \",\", group: \" \" }", "1234.5")]
+    [InlineData("1 234,5", "{ decimal: \",\", group: \" \" }", "1234.5")]
+    [InlineData("1.234.567,89", "{ decimal: \",\", group: \".\" }", "1234567.89")]
+    [InlineData("1234,5", "{ decimal: \",\", group: \".\" }", "1234.5")]
+    [InlineData("1,234,567.89", "{ group: \",\" }", "1234567.89")]
+    [InlineData("1'234.5", "{ group: \"'\" }", "1234.5")]
+    [InlineData("−5,5", "{ decimal: \",\" }", "-5.5")]
+    public void The_number_modifier_reads_text_written_with_the_separators_it_is_given(string incoming, string settings, string expected)
+    {
+        var result = Renderer($"  - {{ target: osdu.data.Weight, source: dataset.v, modifiers: [{{ number: {settings} }}] }}").Render(Valued(incoming));
+        Assert.Equal(expected, Written(result, "Weight"));
+    }
+
+    [Theory]
+    [InlineData("1.23,5", "{ decimal: \",\", group: \".\" }")]
+    [InlineData("1.234,5", "{ decimal: \",\" }")]
+    [InlineData("12.5", "{ decimal: \",\" }")]
+    [InlineData("1,2,3", "{ group: \",\" }")]
+    [InlineData("12,", "{ group: \",\" }")]
+    public void The_number_modifier_holds_text_its_separators_do_not_read_rather_than_guess(string incoming, string settings)
+    {
+        var result = Renderer($"  - {{ target: osdu.data.Weight, source: dataset.v, required: false, modifiers: [{{ number: {settings} }}] }}").Render(Valued(incoming));
+        Assert.True(result.IsHeld);
+        Assert.Contains(result.Holds, h => h.Contains($"osdu.data.Weight: value '{incoming}' is not a valid number", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_number_modifier_writes_text_as_its_shortest_exact_form()
+    {
+        var result = Renderer("  - { target: osdu.data.Symbol, source: dataset.v, modifiers: [{ number: { decimal: \",\", group: \" \" } }] }").Render(Valued("1 234,50"));
+        Assert.Equal("\"1234.5\"", Written(result, "Symbol"));
+    }
+
+    [Fact]
+    public void A_list_of_dates_writes_each_item_in_the_form_its_items_take()
+    {
+        var result = Renderer("  - { target: osdu.data.Days, source: dataset.v, modifiers: [date] }").Render(Valued("2026-09-01T00:00:00Z"));
+        Assert.Equal("[\"2026-09-01\"]", Written(result, "Days"));
+    }
+
     [Fact]
     public void Holds_on_schema_required_property_missing_and_bad_number()
     {
@@ -521,6 +793,29 @@ public class PreflightTests
         HasError(Check("  - { target: osdu.data.Nested, source: dataset.name }"), "is one value");
         HasError(Check("  - { target: osdu.data.Symbol, static: { a: b } }"), "a static object cannot be written");
         HasError(Check("  - { target: osdu.data.Symbol, source: dataset.flag, modifiers: [{ equals: yes }] }"), "the last modifier is equals");
+        HasError(Check("  - { target: osdu.data.Count, source: dataset.when, modifiers: [date] }"), "the last modifier is date, which gives a date written as text");
+        HasError(Check("  - { target: osdu.data.Clock, source: dataset.when, modifiers: [date] }"), "takes a time string, which a date is not written as");
+        HasError(Check("  - { target: osdu.data.IsRegular, source: dataset.v, modifiers: [number] }"), "the last modifier is number, which gives a number, but the template takes a boolean");
+        HasError(Check("  - { target: osdu.data.When, source: dataset.v, modifiers: [number] }"), "takes a date-time string, which a number is not written as");
+        foreach (var target in new[] { "Weight", "Count", "Small", "Symbol" })
+        {
+            Assert.DoesNotContain(Check($"  - {{ target: osdu.data.{target}, source: dataset.v, modifiers: [number] }}"), i => i.Message.Contains("the last modifier is number", StringComparison.Ordinal));
+        }
+
+        // A list of values is judged by each item's type and format.
+        HasError(Check("  - { target: osdu.data.Days, source: dataset.v, modifiers: [number] }"), "takes a list of date strings, which a number is not written as");
+        Assert.DoesNotContain(Check("  - { target: osdu.data.Days, source: dataset.v, modifiers: [date] }"), i => i.Message.Contains("the last modifier is date", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Warns_when_a_date_property_takes_dataset_text_without_the_date_modifier()
+    {
+        const string Warning = "add the date modifier so every record carries the RFC 3339 form";
+        Assert.Contains(Check("  - { target: osdu.data.When, source: dataset.when }"), i => i.Severity == IssueSeverity.Warning && i.Message.Contains(Warning, StringComparison.Ordinal));
+        Assert.Contains(Check("  - { target: osdu.data.Day, source: dataset.when }"), i => i.Severity == IssueSeverity.Warning && i.Message.Contains(Warning, StringComparison.Ordinal));
+        Assert.Contains(Check("  - { target: osdu.data.Days, source: dataset.when }"), i => i.Severity == IssueSeverity.Warning && i.Message.Contains("takes a list of date strings", StringComparison.Ordinal) && i.Message.Contains(Warning, StringComparison.Ordinal));
+        Assert.DoesNotContain(Check("  - { target: osdu.data.When, source: dataset.when, modifiers: [date, trim] }"), i => i.Message.Contains(Warning, StringComparison.Ordinal));
+        Assert.DoesNotContain(Check("  - { target: osdu.data.Symbol, source: dataset.when }"), i => i.Message.Contains(Warning, StringComparison.Ordinal));
     }
 
     [Fact]

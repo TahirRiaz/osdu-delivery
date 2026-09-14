@@ -201,6 +201,26 @@ public class YamlDocumentLoaderTests
     }
 
     [Fact]
+    public void Mapping_parse_reads_the_number_modifier_and_its_separators()
+    {
+        var loader = new DeliveryDocumentLoader();
+        Modifier Only(string modifiers) => Assert.Single(loader
+            .ParseMapping(TestSchema.MappingDocument($"  - {{ target: osdu.data.Weight, source: dataset.a, modifiers: {modifiers} }}"), "m.yaml")
+            .Entries.Single(e => e.Target.Text == "osdu.data.Weight").Modifiers);
+
+        var plain = Only("[number]");
+        Assert.Equal(ModifierKind.Number, plain.Kind);
+        Assert.Equal(".", plain.DecimalSeparator);
+        Assert.Null(plain.GroupSeparator);
+        Assert.Equal("number", plain.ToString());
+
+        var european = Only("[{ number: { decimal: \",\", group: \" \" } }]");
+        Assert.Equal(",", european.DecimalSeparator);
+        Assert.Equal(" ", european.GroupSeparator);
+        Assert.Equal("number(decimal ',', group ' ')", european.ToString());
+    }
+
+    [Fact]
     public void Mapping_parse_reads_sources_and_refuses_what_is_malformed()
     {
         var loader = new DeliveryDocumentLoader();
@@ -224,6 +244,21 @@ public class YamlDocumentLoaderTests
         Assert.Contains("no entry repeats osdu.data.Curves", Refused("  - { target: \"osdu.data.Curves[].CurveID\", source: dataset.curves.curve_id }"), StringComparison.Ordinal);
         Assert.Contains("only an entry inside a repeater", Refused("  - { target: osdu.data.Symbol, source: dataset.curves.curve_id }"), StringComparison.Ordinal);
         Assert.Contains("is not a modifier", Refused("  - { target: osdu.data.Symbol, source: dataset.a, modifiers: [shout] }"), StringComparison.Ordinal);
+        Assert.Contains("the date format 'MM.yyyy' has no day of the month", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: MM.yyyy }] }"), StringComparison.Ordinal);
+        Assert.Contains("reads a two-digit year", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: dd.MM.yy }] }"), StringComparison.Ordinal);
+        Assert.Contains("has no year", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: dd.MM }] }"), StringComparison.Ordinal);
+        Assert.Contains("is one letter", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: d }] }"), StringComparison.Ordinal);
+        Assert.Contains("never closed", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: \"dd.MM.yyyy 'at\" }] }"), StringComparison.Ordinal);
+        Assert.Contains("date takes the input format as text", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: [dd.MM.yyyy] }] }"), StringComparison.Ordinal);
+        Assert.Contains("number takes '.' or ',' as its decimal separator, not ';'", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: { decimal: \";\" } }] }"), StringComparison.Ordinal);
+        Assert.Contains("cannot use ',' both between digit groups and before the decimals", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: { decimal: \",\", group: \",\" } }] }"), StringComparison.Ordinal);
+        Assert.Contains("cannot use '.' both between digit groups", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: { group: \".\" } }] }"), StringComparison.Ordinal);
+        Assert.Contains("as its group separator, not '-'", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: { group: \"-\" } }] }"), StringComparison.Ordinal);
+        Assert.Contains("number takes 'decimal' and 'group', not 'thousands'", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: { thousands: \",\" } }] }"), StringComparison.Ordinal);
+        Assert.Contains("number takes its separators", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: \",\" }] }"), StringComparison.Ordinal);
+        Assert.Contains("is NaN or Infinity, which a JSON record cannot carry", Refused("  - { target: osdu.data.Weight, static: .inf }"), StringComparison.Ordinal);
+        Assert.Contains("is NaN or Infinity, which a JSON record cannot carry", Refused("  - { target: osdu.data.Aliases, static: [a, .nan] }"), StringComparison.Ordinal);
+        Assert.Contains("is NaN or Infinity, which a JSON record cannot carry", Refused("  - { target: osdu.data.Nested, static: { Inner: -.inf } }"), StringComparison.Ordinal);
         Assert.Contains("split needs the part", Refused("  - { target: osdu.data.Symbol, source: dataset.a, modifiers: [{ split: { separator: x } }] }"), StringComparison.Ordinal);
         Assert.Contains("appliesWhen 'dataset.a equals b'", Refused("  - { target: osdu.data.Symbol, source: dataset.a, appliesWhen: dataset.a equals b }"), StringComparison.Ordinal);
         Assert.Contains("compares cache.Wellbore", Refused("  - { target: osdu.data.Unit, source: cache.UnitOfMeasure.id, findBy: cache.Wellbore.Code = dataset.a }"), StringComparison.Ordinal);

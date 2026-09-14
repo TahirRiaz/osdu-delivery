@@ -456,8 +456,9 @@ internal static partial class MappingMapper
                     "upper" => new Modifier { Kind = ModifierKind.Upper },
                     "lower" => new Modifier { Kind = ModifierKind.Lower },
                     "date" => new Modifier { Kind = ModifierKind.Date },
+                    "number" => new Modifier { Kind = ModifierKind.Number, DecimalSeparator = Rendering.NumberValues.DecimalPoint },
                     "split" or "replace" or "equals" => throw new FlowValidationException($"{where}: '{name}' needs settings, such as {Example(name)}."),
-                    _ => throw new FlowValidationException($"{where}: '{name}' is not a modifier. The modifiers are trim, upper, lower, split, replace, equals and date."),
+                    _ => throw new FlowValidationException($"{where}: '{name}' is not a modifier. The modifiers are trim, upper, lower, split, replace, equals, date and number."),
                 };
 
             case IDictionary<object, object> map when map.Count == 1:
@@ -471,16 +472,67 @@ internal static partial class MappingMapper
                         "equals" => settings is null or IDictionary<object, object> or IList<object>
                             ? throw new FlowValidationException($"{where}: equals compares with one text, such as {Example("equals")}.")
                             : new Modifier { Kind = ModifierKind.Equals, Text = Convert.ToString(settings, CultureInfo.InvariantCulture) },
-                        "date" => settings is IDictionary<object, object> or IList<object>
-                            ? throw new FlowValidationException($"{where}: date takes the input format as text, such as date: dd.MM.yyyy.")
-                            : new Modifier { Kind = ModifierKind.Date, Text = settings is null ? null : Convert.ToString(settings, CultureInfo.InvariantCulture) },
-                        _ => throw new FlowValidationException($"{where}: '{modifier}' is not a modifier. The modifiers are trim, upper, lower, split, replace, equals and date."),
+                        "date" => Date(settings, where),
+                        "number" => Number(settings, where),
+                        _ => throw new FlowValidationException($"{where}: '{modifier}' is not a modifier. The modifiers are trim, upper, lower, split, replace, equals, date and number."),
                     };
                 }
 
             default:
                 throw new FlowValidationException($"{where}: a modifier is a name, such as trim, or one setting, such as {Example("split")}.");
         }
+    }
+
+    /// <summary>A date modifier: no setting reads ISO 8601, and a format is refused when it could not read a whole date.</summary>
+    private static Modifier Date(object? settings, string where)
+    {
+        if (settings is IDictionary<object, object> or IList<object>)
+        {
+            throw new FlowValidationException($"{where}: date takes the input format as text, such as date: dd.MM.yyyy.");
+        }
+
+        var format = settings is null ? string.Empty : Convert.ToString(settings, CultureInfo.InvariantCulture) ?? string.Empty;
+        if (format.Length == 0)
+        {
+            return new Modifier { Kind = ModifierKind.Date };
+        }
+
+        return Rendering.DateValues.FormatProblem(format) is { } problem
+            ? throw new FlowValidationException($"{where}: the date format '{format}' {problem}.")
+            : new Modifier { Kind = ModifierKind.Date, Text = format };
+    }
+
+    /// <summary>
+    /// A number modifier: no setting reads '.' before the decimals and no group separator. The separators are checked here,
+    /// when the mapping is read, so a mapping that could never read a number is refused before any row is rendered.
+    /// </summary>
+    private static Modifier Number(object? settings, string where)
+    {
+        if (settings is null)
+        {
+            return new Modifier { Kind = ModifierKind.Number, DecimalSeparator = Rendering.NumberValues.DecimalPoint };
+        }
+
+        var options = settings as IDictionary<object, object>
+            ?? throw new FlowValidationException($"{where}: number takes its separators, such as {Example("number")}.");
+        foreach (var option in options.Keys.Select(o => Convert.ToString(o, CultureInfo.InvariantCulture)))
+        {
+            if (option is not ("decimal" or "group"))
+            {
+                throw new FlowValidationException($"{where}: number takes 'decimal' and 'group', not '{option}'.");
+            }
+        }
+
+        var point = options.TryGetValue("decimal", out var d) && d is not null
+            ? Convert.ToString(d, CultureInfo.InvariantCulture) ?? string.Empty
+            : Rendering.NumberValues.DecimalPoint;
+        var group = options.TryGetValue("group", out var g) && g is not null ? Convert.ToString(g, CultureInfo.InvariantCulture) ?? string.Empty : null;
+        if (Rendering.NumberValues.SeparatorsProblem(point, group) is { } problem)
+        {
+            throw new FlowValidationException($"{where}: number {problem}.");
+        }
+
+        return new Modifier { Kind = ModifierKind.Number, DecimalSeparator = point, GroupSeparator = group };
     }
 
     private static Modifier Split(object? settings, string where)
@@ -537,6 +589,7 @@ internal static partial class MappingMapper
     {
         "split" => "split: { separator: \",\", part: 1 }",
         "replace" => "replace: { GAPI: gAPI }",
+        "number" => "number: { decimal: \",\", group: \" \" }",
         _ => "equals: REGULAR",
     };
 
@@ -574,8 +627,11 @@ internal static partial class MappingMapper
         byte or sbyte or short or ushort or int or uint or long => JsonValue.Create(Convert.ToInt64(value, CultureInfo.InvariantCulture)),
         ulong number when number <= long.MaxValue => JsonValue.Create((long)number),
         ulong number => JsonValue.Create(number),
+        // YAML reads .nan and .inf as floating-point values, and a record cannot carry either, inside a list or an object included.
+        double number when !double.IsFinite(number) => throw NonFiniteStatic(number, where),
         double number => JsonValue.Create(number),
-        float number => JsonValue.Create((double)number),
+        float number when !float.IsFinite(number) => throw NonFiniteStatic(number, where),
+        float number => JsonValue.Create(Rendering.NumberValues.Widen(number)),
         decimal number => JsonValue.Create((double)number),
         IDictionary<object, object> map => new JsonObject(map.Select(kv => new KeyValuePair<string, JsonNode?>(
             Convert.ToString(kv.Key, CultureInfo.InvariantCulture) ?? string.Empty,
@@ -584,6 +640,9 @@ internal static partial class MappingMapper
             ?? throw new FlowValidationException($"{where}: a static list holds an empty item.")).ToArray()),
         _ => JsonValue.Create(Convert.ToString(value, CultureInfo.InvariantCulture)),
     };
+
+    private static FlowValidationException NonFiniteStatic(object number, string where)
+        => new($"{where}: static value {Convert.ToString(number, CultureInfo.InvariantCulture)} is NaN or Infinity, which a JSON record cannot carry (RFC 8259).");
 
     [GeneratedRegex(@"^[0-9a-f]{16}$")]
     private static partial Regex TemplateVersionPattern();

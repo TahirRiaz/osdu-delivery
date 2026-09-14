@@ -78,6 +78,7 @@ public class ScopeSpillTests
                 ["curve_id"] = "GR" + i,
                 ["ordinal"] = (long)i,
                 ["depth"] = 1.5 * i,
+                ["exact"] = 1234567890.123456789m + i,
                 ["flag"] = i % 2 == 0,
                 ["when"] = when.AddMinutes(i),
                 ["ref"] = keys[i],
@@ -103,6 +104,7 @@ public class ScopeSpillTests
         Assert.Equal("GR7", sample.GetString("curve_id"));
         Assert.Equal(7L, sample.Get("ordinal"));
         Assert.Equal(10.5, sample.Get("depth"));
+        Assert.Equal(1234567897.123456789m, sample.Get("exact"));
         Assert.Equal(false, sample.Get("flag"));
         Assert.Equal(when.AddMinutes(7), sample.Get("when"));
         Assert.Equal(keys[7], sample.Get("ref"));

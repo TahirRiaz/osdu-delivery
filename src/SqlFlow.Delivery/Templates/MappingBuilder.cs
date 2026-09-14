@@ -94,8 +94,10 @@ public sealed record MappingDraftEntry
 /// <summary>One findBy line: the cached field, and the column (<c>column</c> or <c>child.column</c>) or literal it must equal.</summary>
 public sealed record MappingDraftFind(string Field, string? Column, string? Literal);
 
-/// <summary>One modifier: trim, upper, lower, split, replace, equals or date, with its settings.</summary>
-public sealed record MappingDraftModifier(string Kind, string? Separator = null, int? Part = null, IReadOnlyList<MappingDraftReplacement>? Replacements = null, string? Text = null);
+/// <summary>One modifier: trim, upper, lower, split, replace, equals, date or number, with its settings.</summary>
+public sealed record MappingDraftModifier(
+    string Kind, string? Separator = null, int? Part = null, IReadOnlyList<MappingDraftReplacement>? Replacements = null, string? Text = null,
+    string? DecimalSeparator = null, string? GroupSeparator = null);
 
 public sealed record MappingDraftReplacement(string From, string To);
 
@@ -420,7 +422,9 @@ public static partial class MappingBuilder
                 m.Separator,
                 m.Part,
                 m.Replacements.Count == 0 ? null : m.Replacements.Select(kv => new MappingDraftReplacement(kv.Key, kv.Value)).ToList(),
-                m.Text)).ToList(),
+                m.Text,
+                m.DecimalSeparator,
+                m.GroupSeparator)).ToList(),
             AppliesWhen = entry.AppliesWhen is { } condition
                 ? new MappingDraftCondition(
                     ColumnText(condition.Column),
@@ -661,7 +665,17 @@ public static partial class MappingBuilder
     {
         switch (modifier.Kind)
         {
-            case "trim" or "upper" or "lower" or "date":
+            case "trim" or "upper" or "lower":
+                break;
+            case "date" when !string.IsNullOrEmpty(modifier.Text) && Rendering.DateValues.FormatProblem(modifier.Text) is { } problem:
+                error($"{target}: the date format '{modifier.Text}' {problem}.", target);
+                break;
+            case "date":
+                break;
+            case "number" when Rendering.NumberValues.SeparatorsProblem(modifier.DecimalSeparator, modifier.GroupSeparator) is { } separators:
+                error($"{target}: number {separators}.", target);
+                break;
+            case "number":
                 break;
             case "split" when string.IsNullOrEmpty(modifier.Separator) || modifier.Part is not > 0:
                 error($"{target}: split needs a separator and the part to keep, counting from one.", target);
@@ -690,6 +704,8 @@ public static partial class MappingBuilder
         "replace" => "replace: { " + string.Join(", ", (modifier.Replacements ?? []).Select(r => FlowScalar(r.From) + ": " + FlowScalar(r.To))) + " }",
         "equals" => "equals: " + Scalar(modifier.Text ?? string.Empty),
         "date" when !string.IsNullOrEmpty(modifier.Text) => "date: " + Scalar(modifier.Text),
+        "number" when modifier.GroupSeparator is not null || modifier.DecimalSeparator is not (null or ".")
+            => "number: { decimal: " + FlowScalar(modifier.DecimalSeparator ?? ".") + (modifier.GroupSeparator is null ? string.Empty : ", group: " + FlowScalar(modifier.GroupSeparator)) + " }",
         _ => modifier.Kind,
     };
 

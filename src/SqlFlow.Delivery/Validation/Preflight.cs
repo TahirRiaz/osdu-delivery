@@ -164,6 +164,8 @@ public static partial class Preflight
             issues.Add(ValidationIssue.Error($"{name}: the last modifier is equals, which gives true or false, but the template takes a {variable.Type} at {entry.Target.Text}."));
         }
 
+        CheckWrittenForm(entry, variable, renderer, issues, name);
+
         if (entry.IsStatic)
         {
             CheckStatic(entry, variable, references, renderer, issues, name);
@@ -171,6 +173,59 @@ public static partial class Preflight
         else if (entry.Source!.Kind == MappingSourceKind.Cache)
         {
             CheckCache(entry, variable, references, issues, name);
+        }
+    }
+
+    /// <summary>
+    /// Whether a dataset value's last modifier gives what the variable takes, judged by the variable itself or, for a list
+    /// of values, by each item's type and format: a number modifier must fill a number, an integer or unformatted text, and a
+    /// date modifier text whose format a date is written as. Text filling a date or date-time without the date modifier is
+    /// written as it arrives, which is warned about because whatever reads the record expects the RFC 3339 form.
+    /// </summary>
+    private static void CheckWrittenForm(MappingEntry entry, TemplateVariable variable, MappingRenderer renderer, List<ValidationIssue> issues, string name)
+    {
+        if (entry.Source?.Kind != MappingSourceKind.DatasetColumn)
+        {
+            return;
+        }
+
+        var target = entry.Target.Text;
+        var listed = variable.Shape == TemplateVariableShape.ValueList;
+        var written = listed ? variable.ItemType ?? "any" : variable.Type;
+        var format = listed ? renderer.Schema.Resolve(entry.Target.SchemaPath)?.ItemFormat : variable.Format;
+        string Described(string textFormat) => listed ? $"a list of {textFormat} strings" : $"a {textFormat} string";
+        var last = entry.Modifiers.Count > 0 ? entry.Modifiers[^1].Kind : (ModifierKind?)null;
+
+        if (last == ModifierKind.Number)
+        {
+            if (written is not ("number" or "integer" or "string" or "any"))
+            {
+                issues.Add(ValidationIssue.Error($"{name}: the last modifier is number, which gives a number, but the template takes a {written} at {target}."));
+            }
+            else if (written == "string" && format is { } numberFormat)
+            {
+                issues.Add(ValidationIssue.Error($"{name}: the last modifier is number, but {target} takes {Described(numberFormat)}, which a number is not written as."));
+            }
+        }
+
+        if (last == ModifierKind.Date)
+        {
+            if (written is not ("string" or "any"))
+            {
+                issues.Add(ValidationIssue.Error($"{name}: the last modifier is date, which gives a date written as text, but the template takes a {written} at {target}."));
+            }
+            else if (format is { } dateFormat && !Rendering.DateValues.Writes(dateFormat))
+            {
+                issues.Add(ValidationIssue.Error($"{name}: the last modifier is date, but {target} takes {Described(dateFormat)}, which a date is not written as."));
+            }
+        }
+        else if (variable.Shape is TemplateVariableShape.Value or TemplateVariableShape.ValueList && written == "string"
+            && format is Rendering.DateValues.DateFormat or Rendering.DateValues.DateTimeFormat
+            && !entry.Modifiers.Any(m => m.Kind == ModifierKind.Date))
+        {
+            // A non-ISO value is only right when the record's meta describes its format, so this warns rather than refuses.
+            issues.Add(ValidationIssue.Warning(
+                $"{name}: {target} takes {Described(format)}, and a text value from {entry.Source} is written as it arrives; add the date modifier so every record carries the RFC 3339 form."));
         }
     }
 

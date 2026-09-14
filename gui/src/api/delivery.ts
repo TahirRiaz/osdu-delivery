@@ -1069,7 +1069,7 @@ export interface DeliveryBuilderCache {
 /** Where a draft entry's value comes from: a dataset column, a child dataset's rows, a cached record, or a fixed value. */
 export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static";
 
-export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date";
+export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date" | "number";
 
 export type MappingDraftConditionOperator = "is" | "isNot" | "isEmpty" | "isNotEmpty";
 
@@ -1093,13 +1093,20 @@ export interface MappingDraftReplacement {
   to: string;
 }
 
-/** One modifier with its settings: split takes a separator and a part, replace its pairs, equals its text, date an optional format in text. */
+/**
+ * One modifier with its settings: split takes a separator and a part, replace its pairs, equals its text, date an optional
+ * format in text, and number its decimal and group separators.
+ */
 export interface MappingDraftModifier {
   kind: MappingDraftModifierKind;
   separator: string | null;
   part: number | null;
   replacements: MappingDraftReplacement[] | null;
   text: string | null;
+  /** number: the separator before the decimals, "." or ",". */
+  decimalSeparator: string | null;
+  /** number: the separator between groups of three digits, or null when the value is written without one. */
+  groupSeparator: string | null;
 }
 
 /** An appliesWhen: the dataset column (without `dataset.`), the operator, and the text for is and isNot. */

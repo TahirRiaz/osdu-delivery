@@ -22,7 +22,25 @@ export const DATASET_COLUMN = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)?$/;
 /** A key under an object with free keys (a tag name): anything but dots, brackets and whitespace. */
 export const KEY_NAME = /^[^.[\]\s]+$/;
 
-export const MODIFIER_KINDS: readonly MappingDraftModifierKind[] = ["trim", "upper", "lower", "split", "replace", "equals", "date"];
+export const MODIFIER_KINDS: readonly MappingDraftModifierKind[] = ["trim", "upper", "lower", "split", "replace", "equals", "date", "number"];
+
+/** The separators a number modifier reads before the decimals. */
+export const DECIMAL_SEPARATORS: readonly { value: string; label: string }[] = [
+  { value: ".", label: "point ." },
+  { value: ",", label: "comma ," },
+];
+
+/** The group separator choice that stands for none; a select item cannot carry an empty value. */
+export const NO_GROUP = "none";
+
+/** The separators a number modifier reads between groups of three digits; a space also stands for a no-break or thin space. */
+export const GROUP_SEPARATORS: readonly { value: string; label: string }[] = [
+  { value: NO_GROUP, label: "none" },
+  { value: ",", label: "comma ," },
+  { value: ".", label: "point ." },
+  { value: " ", label: "space" },
+  { value: "'", label: "apostrophe '" },
+];
 
 /** An entry with no settings beyond its target and input. */
 export function emptyEntry(target: string, input: MappingDraftInput): MappingDraftEntry {
@@ -48,16 +66,18 @@ export function emptyEntry(target: string, input: MappingDraftInput): MappingDra
 export function newModifier(kind: MappingDraftModifierKind): MappingDraftModifier {
   switch (kind) {
     case "split":
-      return { kind, separator: "", part: 1, replacements: null, text: null };
+      return { kind, separator: "", part: 1, replacements: null, text: null, decimalSeparator: null, groupSeparator: null };
     case "replace":
-      return { kind, separator: null, part: null, replacements: [{ from: "", to: "" }], text: null };
+      return { kind, separator: null, part: null, replacements: [{ from: "", to: "" }], text: null, decimalSeparator: null, groupSeparator: null };
     case "equals":
-      return { kind, separator: null, part: null, replacements: null, text: "" };
+      return { kind, separator: null, part: null, replacements: null, text: "", decimalSeparator: null, groupSeparator: null };
+    case "number":
+      return { kind, separator: null, part: null, replacements: null, text: null, decimalSeparator: ".", groupSeparator: null };
     case "trim":
     case "upper":
     case "lower":
     case "date":
-      return { kind, separator: null, part: null, replacements: null, text: null };
+      return { kind, separator: null, part: null, replacements: null, text: null, decimalSeparator: null, groupSeparator: null };
   }
 }
 

@@ -216,10 +216,15 @@ compared. Cache values are OSDU's own and are never modified.
 | split | `- split: { separator: ",", part: 1 }` | `"MAIN,REPEAT"` | `"MAIN"` |
 | replace | `- replace: { GAPI: gAPI }` | `"GAPI"` | `"gAPI"` |
 | equals | `- equals: REGULAR` | `"REGULAR"` or `"DISCRETE"` | `true` or `false` |
-| date | `- date` or `- date: dd.MM.yyyy` | `"01.09.2026"` | `"2026-09-01T00:00:00Z"` |
+| date | `- date` or `- date: dd.MM.yyyy` | `"01.09.2026"` | `"2026-09-01T00:00:00Z"`, or `"2026-09-01"` where the template takes a date |
+| number | `- number` or `- number: { decimal: ",", group: " " }` | `"1 234,5"` | `1234.5` |
 
 `part` counts from one. A separator of a single space splits on any run of whitespace. `replace` leaves a value it
-does not list unchanged. `equals` compares trimmed text and ignores case.
+does not list unchanged. `equals` compares trimmed text and ignores case. `date` writes the RFC 3339 form the
+property's `format` names: a full-date for `date`, and a UTC date-time otherwise. Without a format it reads ISO 8601
+only and never guesses at a form such as `01/02/2026`; [documents.md](documents.md#date) has the rules. `number` reads
+text written with the separators it is given; how any value becomes a number, an integer in its format's range, or text
+is in [documents.md](documents.md#number).
 
 ### appliesWhen
 

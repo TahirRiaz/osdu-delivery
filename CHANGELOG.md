@@ -132,9 +132,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /delivery/submissions/{id}/content` returns the records one carried. The GUI has Submit records on a flow's
   Delivery tab (a form for one record, or JSON for many) and a Records sent tab on the submission. Documented in
   [docs/delivery/submitting-records.md](docs/delivery/submitting-records.md).
+- The `number` modifier reads text written with other separators: `- number: { decimal: ",", group: " " }` reads
+  `"1 234,5"` as `1234.5`. `decimal` is `.` or `,`; `group` is `,`, `.`, a space (a no-break or thin space counts as
+  one) or `'`, never the same as `decimal`. The separators are checked when the mapping is read, every digit group
+  after the first is exactly three digits, and a value the modifier cannot read holds the record. The mapping builder
+  offers it with both separators. Documented in [docs/delivery/documents.md](docs/delivery/documents.md#number).
 
 ### Fixed
 
+- A `NaN`, an `Infinity` or a number beyond a double's range no longer fails a whole run at the canonical JSON writer:
+  from text or a numeric column it holds that record with a reason, and a static `.nan` or `.inf`, alone or inside a
+  static list or object, is refused when the mapping is read. Should a non-finite value ever reach the writer, the
+  failure names the record.
+- A double beyond the 64-bit range, or an `Infinity`, filling an `integer` property holds the record instead of being
+  written as `9223372036854775807`. A double beyond 2^53 holds too, because the integer it stands for is not known
+  exactly, and a value outside `int32` holds where the template declares that format.
+- A manifest's chunk-count column no longer truncates a fractional, NaN or infinite count; only a whole count is read.
 - Schedules carry the flow parameter values every fire supplies (`values:` in a flow's inline `schedule` block or a
   schedule library entry, `values` on `POST /api/v1/schedules`). Without them a flow that declares a required
   parameter could not be scheduled at all: the fire supplied nothing and every run failed validation. A run-now's
@@ -200,6 +213,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `date` modifier writes the form the property's `format` names, as JSON Schema draft-07 defines it from RFC 3339:
+  `2026-09-01` for `date`, and a UTC date-time such as `2026-09-01T10:15:30Z` otherwise. Without a format it reads
+  ISO 8601 only, and `01/02/2026`, `12:30` or `Sep 1 2026` holds the record instead of being guessed at. A format must
+  name a four-digit year, a month and a day of the month, and is checked when the mapping is read. A value with a time
+  of day holds where the property takes a date. The preflight refuses a `date` modifier on a property that is not text
+  or takes a `time`, and warns when a `date` or `date-time` property, or a list of them, is filled from a dataset column
+  without it. A timestamp column is written in its property's form with or without the modifier. Records whose
+  rendered dates change form redeliver.
+- A value becomes a number in the form its property takes: a `number` property takes a whole value exactly and any
+  other as the nearest double, an `integer` property a whole value inside its `int32` or `int64` range (text such as
+  `12.0` and `1e3` included), and a text property the shortest text that reads back as the same number. Text is read
+  strictly, with a hint when it is written with separators the entry does not read. A Parquet float column is read as
+  the value written (`12.3`, not `12.300000190734863`), a decimal column keeps its exact value, and a NaN is an empty
+  value. A float or decimal column in `dataset.key` keys records by that text, so such a record's delivery key can
+  change, and records whose rendered numbers change redeliver. Documented in
+  [docs/delivery/documents.md](docs/delivery/documents.md#number).
 - The catalog schema is created from the EF model and there are no migrations: `CatalogDatabase.ProvisionAsync`
   (explicit) and `ProvisionExistingAsync` (guarded) replace the migrate pair, both verifying the database against
   the model afterwards and refusing to run when a table the model declares is missing, naming it. `sqlflow db

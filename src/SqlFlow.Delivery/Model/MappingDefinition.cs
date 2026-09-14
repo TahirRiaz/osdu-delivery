@@ -172,6 +172,7 @@ public enum ModifierKind
     Replace,
     Equals,
     Date,
+    Number,
 }
 
 /// <summary>One change to an incoming dataset value.</summary>
@@ -188,8 +189,14 @@ public sealed record Modifier
     /// <summary>For replace: incoming values and what each becomes; values it does not list pass unchanged.</summary>
     public IReadOnlyDictionary<string, string> Replacements { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
 
-    /// <summary>For equals: the text the value is compared with; for date: the input format, or null for ISO 8601 and common forms.</summary>
+    /// <summary>For equals: the text the value is compared with; for date: the .NET format the value is written in, or null for an ISO 8601 date or date-time.</summary>
     public string? Text { get; init; }
+
+    /// <summary>For number: the separator before the decimals, '.' or ','.</summary>
+    public string? DecimalSeparator { get; init; }
+
+    /// <summary>For number: the separator between groups of three digits, or null when the value is written without one.</summary>
+    public string? GroupSeparator { get; init; }
 
     public override string ToString() => Kind switch
     {
@@ -197,6 +204,8 @@ public sealed record Modifier
         ModifierKind.Replace => "replace(" + string.Join(", ", Replacements.Select(kv => kv.Key + ": " + kv.Value)) + ")",
         ModifierKind.Equals => $"equals({Text})",
         ModifierKind.Date => Text is null ? "date" : $"date({Text})",
+        ModifierKind.Number when GroupSeparator is null && DecimalSeparator is null or "." => "number",
+        ModifierKind.Number => $"number(decimal '{DecimalSeparator ?? "."}'" + (GroupSeparator is null ? string.Empty : $", group '{GroupSeparator}'") + ")",
         _ => Kind.ToString().ToLowerInvariant(),
     };
 }

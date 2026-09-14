@@ -82,6 +82,27 @@ public class MappingBuilderTests
     }
 
     [Fact]
+    public void A_number_modifier_is_written_back_with_its_separators()
+    {
+        var loader = new DeliveryDocumentLoader();
+        var original = loader.ParseMapping(TestSchema.MappingDocument("""
+              - { target: osdu.data.Weight, source: dataset.a, modifiers: [number] }
+              - { target: osdu.data.Symbol, source: dataset.b, modifiers: [{ number: { decimal: ",", group: " " } }] }
+              - { target: osdu.data.Count, source: dataset.c, modifiers: [{ number: { decimal: ",", group: "." } }] }
+              - { target: osdu.data.Big, source: dataset.d, modifiers: [{ number: { group: "'" } }] }
+            """), "m.yaml");
+        var draft = MappingBuilder.FromDefinition(original);
+
+        var yaml = MappingBuilder.ToYaml(draft);
+        var again = MappingBuilder.FromDefinition(loader.ParseMapping(yaml, "m.yaml"));
+
+        Assert.Equal(JsonSerializer.Serialize(draft, Json), JsonSerializer.Serialize(again, Json));
+        Assert.Contains("- number\n", yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+        Assert.Contains("number: { decimal: \",\", group: \" \" }", yaml, StringComparison.Ordinal);
+        Assert.Contains("number: { decimal: \".\", group: \"'\" }", yaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Incomplete_entries_are_named_by_their_target()
     {
         var draft = new MappingDraft
@@ -103,10 +124,14 @@ public class MappingBuilderTests
                 new MappingDraftEntry { Target = "data.Nope", Input = MappingDraftInput.Dataset, Column = "a" },
                 new MappingDraftEntry { Target = "osdu.data.When", Input = MappingDraftInput.Dataset, Column = "a", AppliesWhen = new MappingDraftCondition("a", "is", "one\ntwo") },
                 new MappingDraftEntry { Target = "osdu.data.Name", Input = MappingDraftInput.Dataset, Column = "name" },
+                new MappingDraftEntry { Target = "osdu.data.Day", Input = MappingDraftInput.Dataset, Column = "a", Modifiers = [new MappingDraftModifier("date", Text: "dd.MM.yy")] },
+                new MappingDraftEntry { Target = "osdu.data.Weight", Input = MappingDraftInput.Dataset, Column = "a", Modifiers = [new MappingDraftModifier("number", DecimalSeparator: ",", GroupSeparator: ",")] },
             ],
         };
 
         var issues = MappingBuilder.Incomplete(draft);
+        Assert.Contains(issues, i => i.Target == "osdu.data.Weight" && i.Message.Contains("number cannot use ',' both between digit groups and before the decimals", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Target == "osdu.data.Day" && i.Message.Contains("the date format 'dd.MM.yy' reads a two-digit year", StringComparison.Ordinal));
         Assert.Contains(issues, i => i.Target == "osdu.data.Name" && i.Message.Contains("choose the dataset column", StringComparison.Ordinal));
         Assert.Contains(issues, i => i.Target == "osdu.data.Name" && i.Message.Contains("more than one entry", StringComparison.Ordinal));
         Assert.Contains(issues, i => i.Target == "osdu.data.Curves" && i.Message.Contains("child dataset", StringComparison.Ordinal));

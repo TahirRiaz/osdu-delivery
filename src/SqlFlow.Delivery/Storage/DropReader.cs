@@ -386,9 +386,12 @@ public sealed class DropReader : IDropReader
             return ca.CompareTo(b);
         }
 
-        if (a is long or double && b is long or double)
+        if (a is long or double or decimal && b is long or double or decimal)
         {
-            return Convert.ToDouble(a, CultureInfo.InvariantCulture).CompareTo(Convert.ToDouble(b, CultureInfo.InvariantCulture));
+            // Exact when neither side is a double; a double compares as a double, the precision it was written with.
+            return a is double || b is double
+                ? Convert.ToDouble(a, CultureInfo.InvariantCulture).CompareTo(Convert.ToDouble(b, CultureInfo.InvariantCulture))
+                : Convert.ToDecimal(a, CultureInfo.InvariantCulture).CompareTo(Convert.ToDecimal(b, CultureInfo.InvariantCulture));
         }
 
         return string.CompareOrdinal(SourceRow.Stringify(a), SourceRow.Stringify(b));

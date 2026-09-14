@@ -201,7 +201,17 @@ public sealed class MappingRenderer
         Assemble(document, new RowValues(this, record, holds, usages), holds);
 
         var normalized = (JsonObject)CanonicalJson.Normalize(document)!;
-        var canonical = CanonicalJson.ToString(normalized);
+        string canonical;
+        try
+        {
+            canonical = CanonicalJson.ToString(normalized);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Every value a row, the cache or a static entry gives is checked before it reaches the document, so this is an
+            // engine defect; the failure names the record so it can be found from the log line alone.
+            throw new DeliveryException($"{sourceKey}: the rendered record{(targetId is null ? string.Empty : " " + targetId)} cannot be written as canonical JSON ({ex.Message})", ex);
+        }
         // The hash is of the document alone (design.md section 6.3). The render context decides when a record is rendered
         // again, since a moved mapping version or cache version re-renders it; the document decides whether it is sent.
         var metadataHash = ContentHash.Of(canonical);

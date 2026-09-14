@@ -140,6 +140,56 @@ public class ParquetAndLocalStoreTests
     }
 
     [Fact]
+    public void Numbers_are_read_as_the_values_they_were_written_as()
+    {
+        Assert.Equal(12.3, ParquetScopeReader.Normalize(12.3f));
+        Assert.Equal("12.3", Rendering.SourceRow.Stringify(ParquetScopeReader.Normalize(12.3f)));
+        Assert.Null(ParquetScopeReader.Normalize(float.NaN));
+        Assert.Null(ParquetScopeReader.Normalize(double.NaN));
+        Assert.Equal(double.PositiveInfinity, ParquetScopeReader.Normalize(double.PositiveInfinity));
+        Assert.Equal(1234567890.123456789m, ParquetScopeReader.Normalize(1234567890.123456789m));
+        Assert.Equal((decimal)ulong.MaxValue, ParquetScopeReader.Normalize(ulong.MaxValue));
+
+        // A decimal's text drops trailing zeros and never a digit, so a whole or short decimal keys exactly as its double did.
+        Assert.Equal("12.5", Rendering.SourceRow.Stringify(12.500m));
+        Assert.Equal("0", Rendering.SourceRow.Stringify(-0.00m));
+        Assert.Equal("0.0000001", Rendering.SourceRow.Stringify(0.0000001m));
+
+        Assert.True(DropReader.CompareValues(2.5m, 3.0) < 0);
+        Assert.True(DropReader.CompareValues(10L, 9.5m) > 0);
+        Assert.Equal(0, DropReader.CompareValues(3L, 3.0m));
+    }
+
+    [Fact]
+    public async Task A_parquet_decimal_and_float_are_read_exactly_and_a_NaN_as_missing()
+    {
+        var dir = Samples.NewTempDirectory();
+        var file = Path.Combine(dir, "numbers.parquet");
+        var columns = new (string, Type)[] { ("m", typeof(decimal)), ("f", typeof(float)), ("d", typeof(double)) };
+        var rows = new List<IReadOnlyDictionary<string, object?>>
+        {
+            new Dictionary<string, object?> { ["m"] = 1234567890.123456789m, ["f"] = 12.3f, ["d"] = double.NaN },
+        };
+        await using (var stream = File.Create(file))
+        {
+            await ParquetScopeReader.WriteAsync(stream, columns, rows);
+        }
+
+        await using var read = File.OpenRead(file);
+        var back = new List<Rendering.SourceRow>();
+        await foreach (var row in ParquetScopeReader.ReadRowsAsync(read, null))
+        {
+            back.Add(row);
+        }
+
+        var only = Assert.Single(back);
+        Assert.Equal(1234567890.123456789m, only.Get("m"));
+        Assert.Equal("1234567890.123456789", only.GetString("m"));
+        Assert.Equal(12.3, only.Get("f"));
+        Assert.Null(only.Get("d"));
+    }
+
+    [Fact]
     public async Task Local_store_lists_by_glob_and_writes_atomically()
     {
         var dir = Samples.NewTempDirectory();

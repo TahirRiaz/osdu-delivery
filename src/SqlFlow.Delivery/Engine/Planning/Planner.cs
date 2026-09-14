@@ -746,7 +746,9 @@ public sealed class Planner
         return row.Get(column) switch
         {
             long l when l >= 0 => (int)Math.Min(l, int.MaxValue),
-            double d when d >= 0 => (int)Math.Min(d, int.MaxValue),
+            // A count is a whole number: a fraction, NaN or Infinity declares no count rather than a truncated one.
+            double d when d >= 0 && double.IsFinite(d) && Math.Floor(d) == d => (int)Math.Min(d, int.MaxValue),
+            decimal m when m >= 0 && decimal.Truncate(m) == m => (int)Math.Min(m, int.MaxValue),
             string s when long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed >= 0 => (int)Math.Min(parsed, int.MaxValue),
             _ => null,
         };

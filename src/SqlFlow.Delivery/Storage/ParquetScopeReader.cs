@@ -190,17 +190,21 @@ public static class ParquetScopeReader
         }
     }
 
-    /// <summary>Collapses the parquet CLR types to the small set the renderer understands.</summary>
+    /// <summary>
+    /// Collapses the parquet CLR types to the small set the renderer understands. A float is read as the number it was
+    /// written as (12.3, not the 12.300000190734863 its bits widen to), a decimal and an unsigned 64-bit value keep their
+    /// exact value, and a NaN is read as a missing value, which is how numpy and pandas store one.
+    /// </summary>
     public static object? Normalize(object? value) => value switch
     {
         null => null,
         string s => s,
         bool b => b,
         byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture),
-        ulong ul => ul <= long.MaxValue ? (long)ul : (double)ul,
-        float f => (double)f,
-        double d => d,
-        decimal m => (double)m,
+        ulong ul => ul <= long.MaxValue ? (long)ul : (decimal)ul,
+        float f => float.IsNaN(f) ? null : Rendering.NumberValues.Widen(f),
+        double d => double.IsNaN(d) ? null : d,
+        decimal m => m,
         DateTime dt => new DateTimeOffset(dt.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(dt, DateTimeKind.Utc) : dt.ToUniversalTime()),
         DateTimeOffset dto => dto.ToUniversalTime(),
         DateOnly d => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),

@@ -542,14 +542,74 @@ one, and holds the record where it takes a single value, unless the set holds ex
 | split | `- split: { separator: ",", part: 1 }` | `"MAIN,REPEAT"` | `"MAIN"` |
 | replace | `- replace: { GAPI: gAPI }` | `"GAPI"` | `"gAPI"` |
 | equals | `- equals: REGULAR` | `"REGULAR"` or `"DISCRETE"` | `true` or `false` |
-| date | `- date` or `- date: dd.MM.yyyy` | `"01.09.2026"` | `"2026-09-01T00:00:00Z"` |
+| date | `- date` or `- date: dd.MM.yyyy` | `"01.09.2026"` | `"2026-09-01T00:00:00Z"`, or `"2026-09-01"` where the template takes a date |
+| number | `- number` or `- number: { decimal: ",", group: " " }` | `"1 234,5"` | `1234.5` |
 
 `part` counts from one; a part the value does not have, or an empty one, gives an empty value. A separator of a single
 space splits on any run of whitespace. `replace` matches the trimmed value exactly, then ignoring case when exactly one
 listed value matches, and returns a value it does not list trimmed and otherwise as it is. `equals` compares trimmed
-text and ignores case, and an entry whose last modifier is `equals` must fill a boolean. `date` reads ISO 8601 and the
-common forms, or exactly the format given, as UTC unless the value carries an offset, and writes a UTC date-time; a
-value that is not a date holds the record whatever `required` says.
+text and ignores case, and an entry whose last modifier is `equals` must fill a boolean.
+
+#### date
+
+`date` writes a value in the form the template's `format` names. OSDU schemas are JSON Schema draft-07, where the
+`date-time`, `date` and `time` formats are the RFC 3339 `date-time`, `full-date` and `full-time` forms. Where the
+template takes a `date`, the modifier writes `2026-09-01`. Anywhere else it writes an RFC 3339 date-time in UTC,
+`2026-09-01T10:15:30Z`, the form OSDU's own `createTime` and `modifyTime` take. An entry whose last modifier is `date`
+must fill text, and never a `time`.
+
+| Written as | Reads | Refuses |
+| --- | --- | --- |
+| `- date` | ISO 8601 only: `2026-09-01`; or a date, `T` or a space, and a time of hours and minutes with optional seconds and up to seven fractional digits, followed by `Z`, an offset (`+02:00` or `+0200`), or nothing. `t` and `z` may be lower case. | `01/02/2026` (either month), `12:30` (a time takes the day the render ran), `Sep 1 2026`, `20260901`, `2026-02-30` |
+| `- date: dd.MM.yyyy` | Exactly that .NET date format, such as `yyyyMMdd` or `dd MMM yyyy HH:mm`. | A format without a four-digit year (`yy` does not say its century), a month and a day of the month, a one-letter standard pattern, an unclosed quote. These are refused when the mapping is read. |
+
+A value without an offset is taken as UTC. A timestamp from the drop, such as a Parquet timestamp column, is a date
+already and is written in its property's form with or without the modifier.
+
+A value `date` cannot read holds the record whatever `required` says. So does a value with a time of day where the
+template takes a date, because writing it would drop the time: take the date part first, with
+`- split: { separator: T, part: 1 }` before `- date`.
+
+Without `date`, a text value is written exactly as it arrives, so the preflight warns about every entry that fills a
+`date` or `date-time` property, or a list of them, from a dataset column without it: whatever reads the record expects
+the RFC 3339 form. A list of values is judged by its items throughout: `date` and `number` must give what each item takes.
+OSDU's frame of reference guidance allows a non-ISO value when the record's `meta` describes its format with a
+`DateTime` item, which is the one case for leaving the modifier off.
+
+#### number
+
+How a value becomes a number depends on the property it fills. JSON (RFC 8259) carries no `NaN` or `Infinity`, and a
+double (IEEE 754 binary64) is the precision every reader of a record agrees on.
+
+| The property takes | A value is written as | The record is held for |
+| --- | --- | --- |
+| `number` | The number: a whole value exactly (`12.0` is `12`), anything else as the nearest double, so a decimal with more digits than a double holds is rounded to it. | `NaN` or `Infinity`; text beyond a double's range, or too close to zero to be told apart from it. |
+| `integer` | The whole number, `12.0` and `1e3` included. | A fraction; a value outside the range its format declares (`int32`: -2147483648 to 2147483647, otherwise 64 bits); a double beyond 2^53, where a double no longer holds every whole number exactly, so the integer it stands for is not known. |
+| text | The shortest text that reads back as the same number: `12.5` from a double, every digit of a decimal without trailing zeros. | `NaN` or `Infinity`. |
+
+Text is read as digits with an optional sign, `.` before the decimals and an optional exponent: `-1234.5`, `1.2E-3`.
+A value written any other way holds the record rather than being guessed at, because `12,5` is twelve and a half or,
+with `,` between digit groups, a hundred and twenty-five. `number` reads text written with other separators:
+
+| Written as | Incoming value | Result |
+| --- | --- | --- |
+| `- number: { decimal: "," }` | `"12,5"` | `12.5` |
+| `- number: { decimal: ",", group: " " }` | `"1 234 567,89"`, a no-break or thin space counting as a space | `1234567.89` |
+| `- number: { decimal: ",", group: "." }` | `"1.234.567,89"` | `1234567.89` |
+| `- number: { group: "," }` | `"1,234,567.89"` | `1234567.89` |
+
+`decimal` is `.` (the default) or `,`. `group` is `,`, `.`, a space or `'`, never the same as `decimal`, and without it
+no group separator is read. The separators are checked when the mapping is read. After the first group of one to three
+digits every group is exactly three, so `1.23,5` holds rather than being read as 123.5. The sign may be the Unicode
+minus (`−`). A value `number` cannot read holds the record whatever `required` says, and an entry whose last modifier
+is `number` must fill a number, an integer, or text without a `format`.
+
+Values from the drop are read as the numbers they were written as. A Parquet float column gives `12.3`, not the
+`12.300000190734863` its bits widen to; a decimal column keeps its exact value until the property decides its form; and
+a `NaN` is an empty value, the way numpy and pandas store a missing one, so `required` decides. The dataset key, the
+label and conditions read the same text, so a float or decimal key column keys a record by its written value. A static
+number is written as it is, and YAML's `.nan` and `.inf`, alone or inside a static list or object, are refused when the
+mapping is read, because a record cannot carry them.
 
 ### appliesWhen
 
@@ -570,7 +630,8 @@ The four access and legal entries take none.
 | The dataset value is empty after modifiers | Record held | Variable left out |
 | The cache has no matching record | Record held | Variable left out |
 | The cache has several matching records | Record held | Record held |
-| A `date` modifier cannot read the value | Record held | Record held |
+| A `date` or `number` modifier cannot read the value | Record held | Record held |
+| A value cannot take the property's type (`NaN` or `Infinity`, a fraction for an integer, a value out of range) | Record held | Record held |
 | A repeater's child dataset has no rows with values | Record held | Variable left out |
 | `appliesWhen` is false | Variable left out | Variable left out |
 

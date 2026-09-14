@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -89,7 +88,7 @@ internal static partial class EntryValues
 
         if (type == SchemaType.Array && property!.ItemScalarType is { } itemType && itemType != SchemaType.Object)
         {
-            var itemFormat = property.Items?["format"] is JsonValue f && f.TryGetValue<string>(out var text) ? text : null;
+            var itemFormat = property?.ItemFormat;
             return new JsonArray(JsonValue.Create(Placeholder(entry, itemFormat is not null ? $"{itemFormat} string" : Name(itemType))));
         }
 
@@ -203,14 +202,26 @@ internal static partial class EntryValues
                     result = text is null ? null : string.Equals(text.Trim(), modifier.Text?.Trim(), StringComparison.OrdinalIgnoreCase);
                     break;
                 case ModifierKind.Date:
-                    if (!TryDate(result, modifier.Text, out var date))
+                    if (!DateValues.TryRead(result, modifier.Text, out var date))
                     {
-                        holds.Add($"{path}: '{text}' is not a date/time{(modifier.Text is null ? string.Empty : " in the format " + modifier.Text)}");
+                        holds.Add(modifier.Text is null
+                            ? $"{path}: '{text}' is not an ISO 8601 date or date-time, such as 2026-09-01 or 2026-09-01T10:15:30Z; give the format it is written in, such as date: dd.MM.yyyy"
+                            : $"{path}: '{text}' is not a date/time in the format {modifier.Text}");
                         result = null;
                         return false;
                     }
 
                     result = date;
+                    break;
+                case ModifierKind.Number:
+                    if (!NumberValues.TryRead(result, modifier.DecimalSeparator, modifier.GroupSeparator, out var number, out var numberProblem))
+                    {
+                        holds.Add($"{path}: {numberProblem}");
+                        result = null;
+                        return false;
+                    }
+
+                    result = number;
                     break;
                 default:
                     throw new DeliveryException($"{path}: modifier '{modifier.Kind}' is not supported.");
@@ -253,36 +264,6 @@ internal static partial class EntryValues
 
         var loose = replacements.Where(kv => string.Equals(kv.Key, value, StringComparison.OrdinalIgnoreCase)).ToList();
         return loose.Count == 1 ? loose[0].Value : value;
-    }
-
-    private static bool TryDate(object value, string? format, out string date)
-    {
-        date = string.Empty;
-        switch (value)
-        {
-            case DateTimeOffset offset:
-                date = Json.CanonicalJson.FormatDateTime(offset);
-                return true;
-            case DateTime moment:
-                date = SourceRow.Stringify(moment)!;
-                return true;
-        }
-
-        var text = SourceRow.Stringify(value)?.Trim();
-        if (string.IsNullOrEmpty(text))
-        {
-            return false;
-        }
-
-        var ok = format is not null
-            ? DateTimeOffset.TryParseExact(text, format, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
-            : DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out parsed);
-        if (ok)
-        {
-            date = Json.CanonicalJson.FormatDateTime(parsed);
-        }
-
-        return ok;
     }
 
     /// <summary>
@@ -438,14 +419,15 @@ internal static partial class EntryValues
     /// <summary>
     /// Converts a value to the type its variable declares: text becomes a number, an integer or a boolean where the schema
     /// says so, a single value bound to a list becomes a list of one, and a set of values fills a list or holds a single
-    /// value. A value that cannot take the type holds the record with a reason naming the target.
+    /// value. A date is written in the form the variable's format takes. A value that cannot take the type holds the record
+    /// with a reason naming the target.
     /// </summary>
     private static JsonNode? Convert(object raw, SchemaProperty? property, string path, List<string> holds)
     {
         var type = property?.Type ?? SchemaType.Any;
         if (raw is JsonArray set)
         {
-            return ConvertSet(set, type, property?.ItemScalarType, path, holds);
+            return ConvertSet(set, property, path, holds);
         }
 
         if (raw is JsonObject obj)
@@ -462,21 +444,22 @@ internal static partial class EntryValues
         var scalar = raw is JsonValue value ? Native(value) : raw;
         if (type == SchemaType.Array && property?.ItemScalarType is { } itemType)
         {
-            var single = Scalar(scalar, itemType, path, holds);
+            var single = Scalar(scalar, itemType, property?.ItemFormat, path, holds);
             return single is null ? null : new JsonArray(single);
         }
 
-        return Scalar(scalar, type, path, holds);
+        return Scalar(scalar, type, property?.Format, path, holds);
     }
 
-    private static JsonNode? ConvertSet(JsonArray set, SchemaType type, SchemaType? itemScalarType, string path, List<string> holds)
+    private static JsonNode? ConvertSet(JsonArray set, SchemaProperty? property, string path, List<string> holds)
     {
-        if (type is SchemaType.Array && itemScalarType is { } itemType)
+        var type = property?.Type ?? SchemaType.Any;
+        if (type is SchemaType.Array && property?.ItemScalarType is { } itemType)
         {
             var items = new JsonArray();
             foreach (var element in set)
             {
-                if (element is not null && Scalar(Native(element), itemType, path, holds) is { } converted)
+                if (element is not null && Scalar(Native(element), itemType, property?.ItemFormat, path, holds) is { } converted)
                 {
                     items.Add(converted);
                 }
@@ -492,40 +475,47 @@ internal static partial class EntryValues
 
         if (set.Count == 1 && set[0] is { } only)
         {
-            return Scalar(Native(only), type, path, holds);
+            return Scalar(Native(only), type, property?.Format, path, holds);
         }
 
         holds.Add($"{path}: {set.Count} values were given but the template takes one {Name(type)}; read one value or fill a list");
         return null;
     }
 
-    private static JsonNode? Scalar(object raw, SchemaType type, string path, List<string> holds)
+    private static JsonNode? Scalar(object raw, SchemaType type, string? format, string path, List<string> holds)
     {
+        if (DateValues.IsDate(raw) && type is SchemaType.String or SchemaType.Any)
+        {
+            var written = DateValues.Write(raw, format, out var dateProblem);
+            if (written is null)
+            {
+                holds.Add($"{path}: {dateProblem}");
+                return null;
+            }
+
+            return JsonValue.Create(written);
+        }
+
+        // A number is written in the form its property takes: a number, an integer in its format's range, or its shortest text.
+        string? problem;
+        switch (type)
+        {
+            case SchemaType.Number:
+                return Written(NumberValues.ToNumber(raw, out problem), problem, path, holds);
+            case SchemaType.Integer:
+                return Written(NumberValues.ToInteger(raw, format, out problem), problem, path, holds);
+            case SchemaType.Any when NumberValues.IsNumber(raw):
+                return Written(NumberValues.ToNumber(raw, out problem), problem, path, holds);
+            case SchemaType.String when NumberValues.IsNumber(raw):
+                return Written(NumberValues.ToText(raw, out problem) is { } text ? JsonValue.Create(text) : null, problem, path, holds);
+        }
+
         try
         {
             switch (type)
             {
                 case SchemaType.String:
                     return JsonValue.Create(SourceRow.Stringify(raw));
-                case SchemaType.Number:
-                    return raw switch
-                    {
-                        double d => JsonValue.Create(d),
-                        float f => JsonValue.Create((double)f),
-                        long l => JsonValue.Create(l),
-                        int i => JsonValue.Create((long)i),
-                        decimal m => JsonValue.Create((double)m),
-                        bool => throw new FormatException("a boolean is not a number"),
-                        _ => JsonValue.Create(double.Parse(SourceRow.Stringify(raw)!, NumberStyles.Float, CultureInfo.InvariantCulture)),
-                    };
-                case SchemaType.Integer:
-                    return raw switch
-                    {
-                        long l => JsonValue.Create(l),
-                        int i => JsonValue.Create((long)i),
-                        double d when Math.Floor(d) == d => JsonValue.Create((long)d),
-                        _ => JsonValue.Create(long.Parse(SourceRow.Stringify(raw)!, NumberStyles.Integer, CultureInfo.InvariantCulture)),
-                    };
                 case SchemaType.Boolean:
                     return raw switch
                     {
@@ -539,11 +529,22 @@ internal static partial class EntryValues
                     return JsonValue.Create(Clr(raw));
             }
         }
-        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException)
+        catch (Exception ex) when (ex is FormatException or InvalidCastException)
         {
             holds.Add($"{path}: value '{SourceRow.Stringify(raw)}' is not a valid {Name(type)} ({ex.Message})");
             return null;
         }
+    }
+
+    /// <summary>A converted value, or the reason it could not be converted added as a hold naming the target.</summary>
+    private static JsonNode? Written(JsonNode? value, string? problem, string path, List<string> holds)
+    {
+        if (value is null)
+        {
+            holds.Add($"{path}: {problem}");
+        }
+
+        return value;
     }
 
     /// <summary>A JSON value as the CLR value the conversions expect, so a cached or static value converts like a dataset value.</summary>
@@ -557,15 +558,8 @@ internal static partial class EntryValues
         }
         : node;
 
-    private static object Clr(object raw) => raw switch
-    {
-        string or bool or long or double => raw,
-        int i => (long)i,
-        short s => (long)s,
-        float f => (double)f,
-        decimal m => (double)m,
-        _ => SourceRow.Stringify(raw)!,
-    };
+    /// <summary>A value that is not a number or a date, for a variable the template does not type: text and booleans as they are, anything else as its text.</summary>
+    private static object Clr(object raw) => raw is string or bool ? raw : SourceRow.Stringify(raw)!;
 
     private static bool ParseBool(string text)
     {
@@ -584,7 +578,6 @@ internal static partial class EntryValues
     }
 
     private static string Name(SchemaType type) => type.ToString().ToLowerInvariant();
-
     [GeneratedRegex(@"\s+")]
     private static partial Regex Whitespace();
 

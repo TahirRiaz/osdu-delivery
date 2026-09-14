@@ -309,6 +309,9 @@ public sealed record SchemaProperty(
 {
     public string? Format => Schema["format"] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
+    /// <summary>The format of each item of a list of values (a list of dates, say), when the schema declares one.</summary>
+    public string? ItemFormat => Items?["format"] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
     /// <summary>The element type of an array of scalars, or null for arrays of objects / non-arrays.</summary>
     public SchemaType? ItemScalarType
     {
