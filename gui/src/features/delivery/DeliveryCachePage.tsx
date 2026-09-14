@@ -38,7 +38,7 @@ function isTab(value: string | null): value is Tab {
 
 /**
  * The OSDU cache: the reference and master data every delivered document is built from, one cache per OSDU partition. The
- * header names the partition and the cache flow files that fill it, with View YAML and Refresh for them; a summary row says
+ * header names the partition and the cache flow files that fill it, with Cache files and Refresh for them; a summary row says
  * which version deliveries read, how much it holds, how it is refreshed and whether anything waits for a decision. Below
  * are the working tabs: the records, the versions, the changes a refresh found, and the definition, with a searchable type
  * picker in the tab bar for the tabs a type narrows. The partition, the tab and the type live in the URL, so a link lands on
@@ -177,25 +177,46 @@ function CacheSubtitle({ cache }: { cache: DeliveryCache }) {
 }
 
 /**
- * View YAML and Refresh for the cache flows filling the partition: two buttons when one flow fills it, two menus naming the
- * flows when several do, because a refresh runs one flow's capture, not the partition's.
+ * Where the cache flow files are, as a filter on Pipelines: every cache flow, narrowed to the repository when one repository
+ * holds every flow filling the partition. A partition can be filled by several files, so the header points at the list of
+ * them rather than at one file; each row of the Definition tab still opens its own file.
+ */
+function cacheFilesLink(flows: DeliveryCacheFlow[]): string {
+  const repos = new Set(flows.map((flow) => flow.repoId));
+  const params = new URLSearchParams({ kind: "cache" });
+  if (repos.size === 1) {
+    params.set("repo", [...repos][0]);
+  }
+
+  return `/pipelines?${params.toString()}`;
+}
+
+/**
+ * The header's actions for the cache flows filling the partition: Cache files opens them as a filter on Pipelines, and
+ * Refresh runs one flow's capture (a button when one flow fills the partition, a menu naming the flows when several do,
+ * because a refresh captures what one flow declares, not the partition's whole cache).
  */
 function CacheFlowActions({ flows, onRefresh }: { flows: DeliveryCacheFlow[]; onRefresh: (flow: DeliveryCacheFlow) => void }) {
   const runnable = flows.filter((flow) => flow.pipelineId !== null);
+  const files = (
+    <Button asChild size="sm" variant="outline" data-testid="delivery-cache-files">
+      <RouterLink to={cacheFilesLink(flows)}>
+        <ScrollText />
+        Cache files
+        <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{flows.length}</span>
+      </RouterLink>
+    </Button>
+  );
+
   if (runnable.length === 0) {
-    return null;
+    return files;
   }
 
   if (runnable.length === 1) {
     const flow = runnable[0];
     return (
       <>
-        <Button asChild size="sm" variant="outline" data-testid="delivery-cache-view-yaml">
-          <RouterLink to={`/pipelines/${flow.pipelineId}?tab=yaml`}>
-            <ScrollText />
-            View YAML
-          </RouterLink>
-        </Button>
+        {files}
         <Button size="sm" onClick={() => onRefresh(flow)} data-testid="delivery-cache-refresh">
           <Play />
           Refresh now
@@ -206,26 +227,7 @@ function CacheFlowActions({ flows, onRefresh }: { flows: DeliveryCacheFlow[]; on
 
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button size="sm" variant="outline" data-testid="delivery-cache-view-yaml">
-            <ScrollText />
-            View YAML
-            <ChevronDown />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuLabel>Cache flow files</DropdownMenuLabel>
-          {runnable.map((flow) => (
-            <DropdownMenuItem key={`${flow.repoId}:${flow.name}`} asChild>
-              <RouterLink to={`/pipelines/${flow.pipelineId}?tab=yaml`} data-testid={`delivery-cache-view-yaml-${flow.name}`}>
-                <span className="font-mono text-[12px]">{flow.relativePath}</span>
-                <span className="text-[11px] text-muted-foreground">{flow.repoName}</span>
-              </RouterLink>
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {files}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button size="sm" data-testid="delivery-cache-refresh">

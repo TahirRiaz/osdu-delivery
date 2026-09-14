@@ -62,7 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CacheSetEntry` and `UpdateTag` carry the partition, and `delivery.CacheMember` is new), so an existing catalog has to
   be re-minted.
 - The OSDU cache page shows one partition's cache: the header names the partition and the cache flow files filling it,
-  with View YAML and Refresh now (menus naming the flows when several fill it) and a partition picker. A summary row
+  with Cache files (Pipelines filtered to the cache flows, and to their repository when one holds them all), Refresh
+  now (a menu naming the flows when several fill it) and a partition picker. Pipelines takes `?repo=` and `?kind=` from
+  a link, and its kind filter lists the flow kinds there are: delivery, retrieval and cache. A summary row
   gives the current version with the flow that wrote it, the records it holds, how it is refreshed, and whether
   changes are automatic or how many wait for approval; a banner with Review changes appears whenever any do. A
   searchable type picker in the tab bar scopes the Records and Versions tabs; the Changes tab lists what refreshes

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { ChevronDown, FolderGit2 } from "lucide-react";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
@@ -21,8 +21,8 @@ import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { groupByProject, pipelineMatches } from "./pipelineGroups";
 import { ProjectGroup } from "./ProjectGroup";
 
-/** Every flow kind the loader recognises, acquisition-first then transform/utility (see YamlDocumentLoader). */
-const kinds = ["file", "ing", "api", "cpy", "sftp", "exp", "trl", "sp", "inv", "hc", "scm", "batch", "cal"];
+/** Every flow kind the control plane registers (DeliveryFlowKind, RetrievalFlowKind, CacheFlowKind), by the flowType it reads. */
+const kinds = ["delivery", "retrieval", "cache"];
 
 /** The radix Select cannot carry an empty-string item value, so "all" stands in for the unfiltered choice. */
 const ALL = "all";
@@ -76,11 +76,25 @@ function RepoGroup({
 }
 
 /** All pipelines across repos, grouped as a repo -> project folder tree. Server-side filters (repo, kind, active) shape
- * the fetched set; a free-text box narrows it in the browser by name, path, kind, or project. */
+ * the fetched set; a free-text box narrows it in the browser by name, path, kind, or project. A link can set the repo and
+ * the kind (?repo=, ?kind=, as the OSDU cache page's Cache files does); picking a filter here replaces what the link set. */
 export default function PipelinesPage() {
   const navigate = useNavigate();
-  const [repoFilter, setRepoFilter] = useLocalStorageState("sqlflow.filters.pipelines.repo", "");
-  const [kindFilter, setKindFilter] = useLocalStorageState("sqlflow.filters.pipelines.kind", "");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [storedRepo, setStoredRepo] = useLocalStorageState("sqlflow.filters.pipelines.repo", "");
+  const [storedKind, setStoredKind] = useLocalStorageState("sqlflow.filters.pipelines.kind", "");
+  const repoFilter = searchParams.get("repo") ?? storedRepo;
+  const kindFilter = searchParams.get("kind") ?? storedKind;
+  const choose = (key: "repo" | "kind", store: (value: string) => void) => (value: string) => {
+    store(value);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete(key);
+      return next;
+    }, { replace: true });
+  };
+  const setRepoFilter = choose("repo", setStoredRepo);
+  const setKindFilter = choose("kind", setStoredKind);
   const [activeFilter, setActiveFilter] = useLocalStorageState("sqlflow.filters.pipelines.active", "");
   const [search, setSearch] = useLocalStorageState("sqlflow.filters.pipelines.name", "");
   const [runBatch, setRunBatch] = useState<{ repoId: string; flowName: string } | null>(null);
@@ -163,6 +177,8 @@ export default function PipelinesPage() {
       <PipelinesTree
         query={query}
         needle={needle}
+        // A search or a kind picks out a few pipelines: their groups open, so what was asked for is in view.
+        open={needle !== "" || kindFilter !== ""}
         singleRepo={repoFilter !== ""}
         repoNameById={repoNameById}
         onOpen={(id) => navigate(`/pipelines/${id}`)}
@@ -184,10 +200,12 @@ export default function PipelinesPage() {
 /** Renders the fetched pipelines as the grouped tree, plus the load/error/empty/no-match states and the fetch-cap
  * note. Split out so the page component stays about filters and wiring. */
 function PipelinesTree({
-  query, needle, singleRepo, repoNameById, onOpen, onRunBatch,
+  query, needle, open, singleRepo, repoNameById, onOpen, onRunBatch,
 }: {
   query: UseQueryResult<FetchResult>;
   needle: string;
+  /** Whether the groups open: a search or a kind filter narrows the tree to what someone asked for. */
+  open: boolean;
   singleRepo: boolean;
   repoNameById: Map<string, string>;
   onOpen: (pipelineId: string) => void;
@@ -247,8 +265,8 @@ function PipelinesTree({
             project={project}
             rows={rows}
             repoId={rows[0].repoId}
-            filtered={needle !== ""}
-            defaultOpen={needle !== ""}
+            filtered={open}
+            defaultOpen={open}
             onOpen={onOpen}
             onRunBatch={onRunBatch}
           />
@@ -280,7 +298,7 @@ function PipelinesTree({
           repoId={repoId}
           repoName={name}
           pipelines={pipelines}
-          filtered={needle !== ""}
+          filtered={open}
           onOpen={onOpen}
           onRunBatch={onRunBatch}
         />

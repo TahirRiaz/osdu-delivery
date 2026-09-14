@@ -201,9 +201,12 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   (`POST /api/v1/repos/sources/{id}/proposals`). An existing synced mapping opens with its entries filled in.
 - **OSDU cache** (Workspace): the reference and master data every delivered document is built from, one cache per OSDU
   partition. The header names the partition and the cache flow file that fills it (or how many flows fill it, with
-  every file on hover), with View YAML (the cache flow's pipeline page) and Refresh now (the trigger dialog on the
-  cache flow, with the refresh operation); when several flows fill the partition both are menus naming the flows,
-  since a refresh runs one flow's capture. A partition picker joins them when the synced cache flows fill more than
+  every file on hover), with Cache files and Refresh now. Cache files opens Pipelines filtered to the cache flows
+  (`?kind=cache`, and `?repo=` when one repository holds every flow filling the partition), since a partition can be
+  filled by several files; Refresh now opens the trigger dialog on the cache flow with the refresh operation, and is a
+  menu naming the flows when several fill the partition, since a refresh runs one flow's capture. A link to Pipelines
+  can set its repository and kind filters (`?repo=`, `?kind=`), and a kind filter opens the groups it narrows the tree
+  to. A partition picker joins them when the synced cache flows fill more than
   one partition. A summary row follows: the current version with the flow that wrote it, when and for whom, how many
   records it holds in how many types, whether a schedule refreshes it, and either that changes are automatic or how
   many wait for approval. Whenever a change waits, a banner says so with Review changes. A searchable type picker at

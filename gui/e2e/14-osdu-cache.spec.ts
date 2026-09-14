@@ -69,8 +69,17 @@ test.describe.serial("osdu cache", () => {
     await adminPage.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
 
-    await adminPage.getByTestId("delivery-cache-view-yaml").click();
+    // Cache files lists every cache flow file as a filter on Pipelines, since a partition can be filled by several.
+    await expect(adminPage.getByTestId("delivery-cache-files")).toContainText("1");
+    await adminPage.getByTestId("delivery-cache-files").click();
+    await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
+    await expect(adminPage.getByTestId("filter-kind")).toHaveText(/cache/);
+    const cacheRow = adminPage.getByTestId("table-row").filter({ hasText: CACHE });
+    await expect(cacheRow.first()).toBeVisible({ timeout: 30_000 });
+    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" })).toHaveCount(0);
+    await cacheRow.first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
+    await adminPage.getByTestId("pipeline-tab-yaml").click();
     await expect(adminPage.getByTestId("pipeline-yaml")).toContainText("flowType: cache", { timeout: 15_000 });
 
     // The cache flow's own page lists its versions and links back to the cache.
