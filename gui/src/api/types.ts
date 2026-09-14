@@ -97,6 +97,16 @@ export interface RepoTree {
   truncated: boolean;
 }
 
+/** One YAML document of a repository, secret-redacted, read where the tree is read (git or the root path). */
+export interface RepoFile {
+  path: string;
+  readFrom: string;
+  sizeBytes: number;
+  yaml: string;
+  /** The text stops at the preview cap; the file holds more. */
+  truncated: boolean;
+}
+
 export interface RepoSyncResult {
   pipelinesAdded: number;
   pipelinesUpdated: number;

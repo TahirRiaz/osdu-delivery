@@ -142,6 +142,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `npm run lint` in `gui/`: ESLint 10 with the TypeScript, React hooks and React refresh rules, failing on any
   warning. The GUI's existing findings are fixed at their source, and the hooks, contexts, constants and variants
   helpers that component files exported now live in `.ts` modules beside them.
+- The repo view previews the YAML documents a repository holds. A folder lists every file, the registered flows' own
+  documents marked `pipeline`, and a `.yaml` or `.yml` file opens a sheet with its text as it stands on the synced
+  branch or under the repo's root path; a flow document adds a Schedules tab with every schedule that runs the flow and
+  an Open flow link, and a schedule library one with the schedules it declares. `GET /api/v1/repos/{id}/file?path=`
+  serves one such document, secret-redacted and cut at a million characters (`truncated` says so), refusing a path
+  that climbs out of the repository or into `.git`, a file that is not YAML, and binary content. The schedule list takes
+  `definitionPath` to narrow to the schedules one file declares, and a pipeline's Schedules tab shows each schedule's
+  name, trigger in words and operation.
 
 ### Fixed
 

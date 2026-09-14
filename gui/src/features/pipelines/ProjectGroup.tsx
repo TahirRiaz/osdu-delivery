@@ -1,4 +1,4 @@
-import { ChevronDown, File, Folder, Play } from "lucide-react";
+import { ChevronDown, File, FileCode2, Folder, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { PipelineSummary, RepoTreeEntry } from "../../api/types";
 import { ActiveBadge } from "../../components/StatusBadge";
 import { formatBytes } from "../../lib/time";
+import { isYamlPath } from "../repos/project";
 
 /** One project (repo-root folder) of pipelines: a collapsible card with the flows in a table, and under them the
  * folder's other files when the caller read the repository itself. A project that holds a batch flow (kind: batch)
@@ -16,14 +17,16 @@ import { formatBytes } from "../../lib/time";
  * `filtered` keys the collapsible so it remounts (and springs back open) when a search starts or clears, surfacing a
  * matching flow in a project the user had collapsed. */
 export function ProjectGroup({
-  project, rows, files = [], repoId, filtered, defaultOpen = false, onOpen, onRunBatch,
+  project, rows, files = [], repoId, filtered, defaultOpen = false, onOpen, onRunBatch, onOpenFile,
 }: {
   project: string;
   rows: PipelineSummary[];
-  /** The folder's files that are NOT registered pipelines (SQL scripts, docs, excluded flows), from the repo's own
-   * content listing. Empty where the caller has only the catalog (the pipelines page), which leaves the card exactly
-   * as it was: the flows and nothing else. */
+  /** Every file in the folder, the registered flows' own documents included, from the repo's own content listing.
+   * Empty where the caller has only the catalog (the pipelines page), which leaves the card exactly as it was: the
+   * flows and nothing else. */
   files?: RepoTreeEntry[];
+  /** Opens the preview of one YAML file. Without it the file rows are a plain listing. */
+  onOpenFile?: (path: string) => void;
   repoId: string;
   filtered: boolean;
   /** Whether the flow table starts expanded. Projects stay collapsed so a repo with dozens of them reads as a
@@ -35,6 +38,8 @@ export function ProjectGroup({
   const inactive = rows.filter((r) => !r.active).length;
   // The project's batch flow (if any): the wave-ordered "run the whole project" entry point.
   const batch = rows.find((r) => r.kind === "batch" && r.active);
+  // The files the catalog imported as pipelines, marked in the file list so a flow's document reads as one.
+  const flowPaths = new Set(rows.map((r) => r.relativePath));
   return (
     <Collapsible key={`${project}:${filtered ? "filtered" : "all"}`} defaultOpen={defaultOpen}>
       <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid="repo-project">
@@ -115,19 +120,34 @@ export function ProjectGroup({
             <div className="border-t" data-testid="project-files">
               <Table>
                 <TableBody>
-                  {files.map((f) => (
-                    <TableRow key={f.path} data-testid="project-file-row">
-                      <TableCell className="w-6 px-3 py-1.5">
-                        <File className="size-3.5 text-muted-foreground" />
-                      </TableCell>
-                      <TableCell className="px-3 py-1.5">
-                        <span className="font-mono text-xs text-muted-foreground">{f.path}</span>
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap px-3 py-1.5 text-right text-xs text-muted-foreground">
-                        {formatBytes(f.sizeBytes)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {files.map((f) => {
+                    // YAML is what the estate is written in, so it is what opens; every other file is listed only.
+                    const previewable = onOpenFile !== undefined && isYamlPath(f.path);
+                    return (
+                      <TableRow
+                        key={f.path}
+                        className={previewable ? "cursor-pointer hover:bg-accent/50" : undefined}
+                        onClick={previewable ? () => onOpenFile?.(f.path) : undefined}
+                        data-previewable={previewable}
+                        data-testid="project-file-row"
+                      >
+                        <TableCell className="w-6 px-3 py-1.5">
+                          {previewable
+                            ? <FileCode2 className="size-3.5 text-muted-foreground" />
+                            : <File className="size-3.5 text-muted-foreground" />}
+                        </TableCell>
+                        <TableCell className="px-3 py-1.5">
+                          <span className={previewable ? "font-mono text-xs" : "font-mono text-xs text-muted-foreground"}>
+                            {f.path}
+                          </span>
+                          {flowPaths.has(f.path) && <Badge variant="outline" className="ml-2">pipeline</Badge>}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap px-3 py-1.5 text-right text-xs text-muted-foreground">
+                          {formatBytes(f.sizeBytes)}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>

@@ -108,6 +108,98 @@ public sealed class RepoTreeApiTests
     }
 
     [SkippableFact]
+    public async Task File_ForLocalPathRepo_ServesYamlRedactedAndRefusesEverythingElse()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repoName = "cp_file_" + suffix;
+        var repoId = FlowIdentity.FromName(repoName);
+        var now = DateTime.UtcNow;
+
+        var root = Path.Combine(Path.GetTempPath(), "sqlflow_file_" + suffix);
+        var outside = root + "_outside.yaml";
+        Directory.CreateDirectory(Path.Combine(root, "flows"));
+        Directory.CreateDirectory(Path.Combine(root, "mappings", "wellbore"));
+        Directory.CreateDirectory(Path.Combine(root, ".git"));
+        await File.WriteAllTextAsync(
+            Path.Combine(root, "flows", "orders.yaml"),
+            "name: orders\nsource:\n  connection: Server=db;Password=not-a-real-one;\n");
+        await File.WriteAllTextAsync(Path.Combine(root, "mappings", "wellbore", "Wellbore@1.0.0.yml"), "kind: Wellbore\n");
+        await File.WriteAllTextAsync(Path.Combine(root, "flows", "large.yaml"), string.Concat(Enumerable.Repeat("a: b\n", 220_000)));
+        await File.WriteAllBytesAsync(Path.Combine(root, "flows", "packed.yaml"), [0x6B, 0x00, 0x01, 0x02]);
+        await File.WriteAllTextAsync(Path.Combine(root, "README.md"), "# repo\n");
+        await File.WriteAllTextAsync(Path.Combine(root, ".git", "config.yaml"), "core: {}\n");
+        await File.WriteAllTextAsync(outside, "escaped: true\n");
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                db.Repos.Add(new CatalogRepo
+                {
+                    Id = repoId,
+                    Name = repoName,
+                    RemoteUrl = null,
+                    RootPath = root,
+                    FirstSeenUtc = now,
+                    LastSyncUtc = now,
+                });
+                await db.SaveChangesAsync();
+            }
+
+            using var client = factory.CreateClient();
+            var token = await IssueReadTokenAsync(client);
+            string FileUri(string path) => $"/api/v1/repos/{repoId}/file?path={Uri.EscapeDataString(path)}";
+
+            // A flow document is served as written, less the credential it embeds: the same redaction the catalog's
+            // copy of a flow gets.
+            var flow = await GetJsonAsync<RepoFileDto>(client, token, FileUri("flows/orders.yaml"));
+            Assert.Equal("flows/orders.yaml", flow.Path);
+            Assert.Equal("disk", flow.ReadFrom);
+            Assert.False(flow.Truncated);
+            Assert.True(flow.SizeBytes > 0);
+            Assert.Contains("name: orders", flow.Yaml, StringComparison.Ordinal);
+            Assert.DoesNotContain("not-a-real-one", flow.Yaml, StringComparison.Ordinal);
+            Assert.Contains("[redacted]", flow.Yaml, StringComparison.Ordinal);
+
+            // A nested .yml, asked for with Windows separators, is the same document under its forward-slashed path.
+            var mapping = await GetJsonAsync<RepoFileDto>(client, token, FileUri("mappings\\wellbore\\Wellbore@1.0.0.yml"));
+            Assert.Equal("mappings/wellbore/Wellbore@1.0.0.yml", mapping.Path);
+            Assert.Equal("kind: Wellbore\n", mapping.Yaml);
+
+            // A document past the cap is cut there and says so.
+            var large = await GetJsonAsync<RepoFileDto>(client, token, FileUri("flows/large.yaml"));
+            Assert.True(large.Truncated);
+            Assert.Equal(RepoTreeEndpoints.MaxPreviewChars, large.Yaml.Length);
+            Assert.Equal(1_100_000, large.SizeBytes);
+
+            // Anything but a readable YAML document inside the repository is refused, with the reason as the title.
+            await AssertProblemAsync(client, token, FileUri("README.md"), HttpStatusCode.BadRequest, "No preview");
+            await AssertProblemAsync(client, token, FileUri("flows/packed.yaml"), HttpStatusCode.BadRequest, "No preview");
+            await AssertProblemAsync(client, token, FileUri("../" + Path.GetFileName(outside)), HttpStatusCode.BadRequest, "Invalid path");
+            await AssertProblemAsync(client, token, FileUri(".git/config.yaml"), HttpStatusCode.BadRequest, "Invalid path");
+            await AssertProblemAsync(client, token, $"/api/v1/repos/{repoId}/file", HttpStatusCode.BadRequest, "Invalid path");
+            await AssertProblemAsync(client, token, FileUri("flows/missing.yaml"), HttpStatusCode.NotFound, "Not found");
+            await AssertProblemAsync(
+                client, token, $"/api/v1/repos/{Guid.NewGuid()}/file?path=flows/orders.yaml", HttpStatusCode.NotFound, "Not found");
+        }
+        finally
+        {
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+            }
+
+            Directory.Delete(root, recursive: true);
+            File.Delete(outside);
+        }
+    }
+
+    [SkippableFact]
     public async Task Tree_ForRepoWithNoSourceAndNoPath_ReportsWhyItCannotBeListed()
     {
         var cs = CatalogTestDb.Require();
@@ -172,6 +264,16 @@ public sealed class RepoTreeApiTests
         var value = await response.Content.ReadFromJsonAsync<T>();
         Assert.NotNull(value);
         return value;
+    }
+
+    private static async Task AssertProblemAsync(
+        HttpClient client, string token, string relativeUri, HttpStatusCode status, string title)
+    {
+        using var response = await SendAsync(client, HttpMethod.Get, relativeUri, token);
+        Assert.Equal(status, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemPayload>();
+        Assert.NotNull(problem);
+        Assert.Equal(title, problem.Title);
     }
 
     private static Task<HttpResponseMessage> SendAsync(HttpClient client, HttpMethod method, string relativeUri, string token)

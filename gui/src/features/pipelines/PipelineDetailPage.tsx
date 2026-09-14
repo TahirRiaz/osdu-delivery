@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isApiError } from "../../api/client";
 import { pipelineApi, runApi, scheduleApi } from "../../api/endpoints";
-import type { RunSummary, Schedule } from "../../api/types";
+import type { RunSummary } from "../../api/types";
 import { CodeView } from "../../components/CodeView";
 import { ConnectionRef } from "../../components/ConnectionRef";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -21,7 +21,7 @@ import { Mono } from "../../components/Mono";
 import { Page } from "../../components/Page";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
-import { ActiveBadge, RunStatusBadge, ScheduleStateBadge } from "../../components/StatusBadge";
+import { ActiveBadge, RunStatusBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTabTitle } from "../../layout/workbench/useWorkbenchTabs";
 import { formatDurationSeconds } from "../../lib/time";
@@ -30,6 +30,7 @@ import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { DeliveryCacheFlowVersions } from "../delivery/DeliveryCacheFlowVersions";
 import { DeliveryFlowPanel } from "../delivery/DeliveryFlowPanel";
 import { RetrievalFlowPanel } from "../delivery/RetrievalFlowPanel";
+import { scheduleColumns } from "../schedules/scheduleColumns";
 
 /** Definition JSON arrives as one compact string; pretty-print it, falling back to the raw text if malformed. */
 function prettyJson(raw: string): string {
@@ -38,14 +39,6 @@ function prettyJson(raw: string): string {
   } catch {
     return raw;
   }
-}
-
-function scheduleTrigger(row: Schedule): string {
-  if (row.cron !== null) {
-    return row.cron;
-  }
-
-  return row.intervalSeconds !== null ? `every ${row.intervalSeconds}s` : "-";
 }
 
 const numeric = (value: number | null | undefined) => (
@@ -71,24 +64,6 @@ const runColumns: Column<RunSummary>[] = [
     header: "Commit",
     render: (row) => <Mono>{row.commitSha?.slice(0, 10) ?? "-"}</Mono>,
   },
-];
-
-const scheduleColumns: Column<Schedule>[] = [
-  { id: "trigger", header: "Trigger", render: (row) => <Mono>{scheduleTrigger(row)}</Mono> },
-  { id: "timezone", header: "Timezone", render: (row) => row.timezone },
-  {
-    id: "state",
-    header: "State",
-    render: (row) => (
-      <span className="inline-flex items-center gap-1">
-        <ScheduleStateBadge enabled={row.enabled} paused={row.paused} />
-        {row.catchup && <Badge variant="outline">catchup</Badge>}
-      </span>
-    ),
-  },
-  { id: "source", header: "Source", render: (row) => <Badge variant="outline">{row.source}</Badge> },
-  { id: "nextFire", header: "Next fire", render: (row) => <RelativeTime value={row.nextFireUtc} /> },
-  { id: "lastFire", header: "Last fire", render: (row) => <RelativeTime value={row.lastFireUtc} /> },
 ];
 
 /** One pipeline: its definition facts, the YAML and parsed definition, its run history, and its schedules. */

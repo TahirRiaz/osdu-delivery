@@ -10,7 +10,7 @@ import type {
   NotificationDelivery, NotificationDigest, NotificationDigestSummary, NotificationQueuedDelivery,
   NotificationSubscription, PagedResult, PipelineBatch, PipelineDetail, PipelineSummary,
   ProposalCreated, ProposeFilesRequest,
-  RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, RepoTree,
+  RegisterRepoSourceRequest, Repo, RepoDeletionResult, RepoSource, RepoSourceRegistered, RepoSyncResult, RepoFile, RepoTree,
   Role, RunDetail, RunEventPurgeResult, RunGroup, RunScope, RunScopePreview, RunSummary,
   RunTraceEntry, RunTraceRetention, RunTraceRetentionUpdate, RunTraceStorage, RunTriggerAccepted,
   RunTriggerRequest, Schedule, ScheduleCreated, ScheduleDefinition, SchedulePlan, ScheduleRunAccepted,
@@ -57,6 +57,9 @@ export const repoApi = {
   // Everything the repository holds on its synced branch, not only the flows the catalog imported: the folder outline
   // the repo view lists its projects from. 400s for a repo with no git source and no reachable root path.
   tree: (id: string) => get<RepoTree>(`/api/v1/repos/${id}/tree`),
+  // One YAML document from the same place the tree is read, secret-redacted: the repo view's file preview. 400s for
+  // a file that is not YAML or a path outside the repository, 404 for a file that is not there.
+  file: (id: string, path: string) => get<RepoFile>(`/api/v1/repos/${id}/file`, { path }),
   // Re-sync a CLI/local-path repo from its recorded root path. Refused server-side for a git-source-managed repo,
   // which syncs via its source instead.
   syncLocal: (id: string) => post<RepoSyncResult>(`/api/v1/repos/${id}/sync`),
@@ -176,6 +179,8 @@ export interface ScheduleListQuery extends PageQuery {
   enabled?: boolean;
   /** Free-text substring of the schedule name, matched server-side so it spans every page, not just the one shown. */
   search?: string;
+  /** The repo-relative file that declares the schedules (a schedules.yaml, or a flow with an inline block). */
+  definitionPath?: string;
 }
 
 export const scheduleApi = {

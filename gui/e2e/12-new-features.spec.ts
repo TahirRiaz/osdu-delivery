@@ -49,6 +49,36 @@ test.describe.serial("new features", () => {
     await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first()).toBeVisible();
   });
 
+  test("a YAML file in the repo opens a preview of its document and its schedules", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-repos").click();
+    await adminPage.getByTestId("table-row").filter({ hasText: "e2e-repo" }).first().click();
+    await expect(adminPage.getByTestId("repo-projects")).toBeVisible({ timeout: 15_000 });
+
+    // Every file of a folder is listed, the flow's own document included, and a YAML file opens.
+    const flowsFolder = adminPage.getByTestId("repo-project").filter({ hasText: "flows" });
+    await flowsFolder.getByText("flows").click();
+    const flowFile = flowsFolder.getByTestId("project-file-row").filter({ hasText: "flows/recall-welllog.yaml" });
+    await expect(flowFile).toHaveAttribute("data-previewable", "true");
+    await flowFile.click();
+
+    const sheet = adminPage.getByTestId("repo-file-sheet");
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByTestId("repo-file-yaml").getByText("recall-welllog").first()).toBeVisible({ timeout: 30_000 });
+    await expect(sheet.getByTestId("repo-file-flow-link")).toBeVisible();
+
+    // A flow file carries the schedules that run the flow; the fixture flows join none.
+    await sheet.getByTestId("repo-file-tab-schedules").click();
+    await expect(sheet.getByTestId("paged-table")).toBeVisible();
+    await adminPage.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
+
+    // Anything that is not YAML is listed only.
+    const referencesFolder = adminPage.getByTestId("repo-project").filter({ hasText: "references" });
+    await referencesFolder.getByText("references").click();
+    await expect(referencesFolder.getByTestId("project-file-row").filter({ hasText: "references/README.md" }))
+      .toHaveAttribute("data-previewable", "false");
+  });
+
   test("a catch-up schedule says it backfills missed occurrences", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-schedules").click();
     await expect(adminPage.getByTestId("page-schedules")).toBeVisible();

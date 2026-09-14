@@ -574,6 +574,67 @@ public sealed class ScheduleApiTests
         }
     }
 
+    [SkippableFact]
+    [Trait("Category", "Integration")]
+    public async Task ListSchedules_WithDefinitionPath_ListsTheSchedulesThatFileDeclares()
+    {
+        // The repo view's preview of a schedules.yaml lists what that file declares: its own entries, not a flow's
+        // inline block in another file and not an API-created schedule with no file at all.
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        var (repoId, flowName) = NewIds();
+
+        await using var factory = new ControlPlaneAppFactory().WithCatalog(cs);
+
+        try
+        {
+            await SeedActivePipeline(cs, repoId, flowName);
+            var now = DateTime.UtcNow;
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                foreach (var (suffix, path, source) in new (string, string?, string)[]
+                {
+                    ("_nightly", "schedules/schedules.yaml", "yaml"),
+                    ("_hourly", "schedules/schedules.yaml", "yaml"),
+                    ("_inline", "flows/" + flowName + ".flow.yaml", "yaml"),
+                    ("_api", null, "api"),
+                })
+                {
+                    db.Schedules.Add(new CatalogSchedule
+                    {
+                        Id = Guid.NewGuid(), RepoId = repoId, Name = flowName + suffix, Cron = "0 4 * * *",
+                        Timezone = "UTC", Enabled = true, Source = source, DefinitionPath = path,
+                        NextFireUtc = now.AddYears(1), CreatedUtc = now, UpdatedUtc = now,
+                    });
+                }
+
+                await db.SaveChangesAsync();
+            }
+
+            using var client = factory.CreateClient();
+            var token = await IssueTokenAsync(client, ["read"]);
+
+            var library = await GetJsonAsync<PagedResult<ScheduleDto>>(
+                client, token, $"/api/v1/schedules?repoId={repoId}&definitionPath=schedules/schedules.yaml");
+            Assert.Equal(2L, library.Total);
+            Assert.Equal(new[] { flowName + "_hourly", flowName + "_nightly" }, library.Items.Select(s => s.Name).ToArray());
+
+            // A backslashed spelling names the same file.
+            var inline = await GetJsonAsync<PagedResult<ScheduleDto>>(
+                client, token, $"/api/v1/schedules?repoId={repoId}&definitionPath={Uri.EscapeDataString("flows\\" + flowName + ".flow.yaml")}");
+            Assert.Equal(flowName + "_inline", Assert.Single(inline.Items).Name);
+
+            // A file that declares nothing is an empty page, never a fall back to the whole repo.
+            var none = await GetJsonAsync<PagedResult<ScheduleDto>>(
+                client, token, $"/api/v1/schedules?repoId={repoId}&definitionPath=mappings/Wellbore.yaml");
+            Assert.Equal(0L, none.Total);
+        }
+        finally
+        {
+            await Cleanup(cs, repoId);
+        }
+    }
+
     private static CatalogRun SeedGroupRun(
         Guid runId, Guid pipelineId, Guid repoId, string flowName, Guid groupId, string status, DateTime writtenUtc)
         => new()

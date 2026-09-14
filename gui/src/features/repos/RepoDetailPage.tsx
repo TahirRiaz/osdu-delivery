@@ -25,14 +25,15 @@ import { fetchAllPipelines } from "../pipelines/fetchAllPipelines";
 import { groupByProject, pipelineMatches } from "../pipelines/pipelineGroups";
 import { ProjectGroup } from "../pipelines/ProjectGroup";
 import { projectOf } from "./project";
+import { RepoFileSheet } from "./RepoFileSheet";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
 import { useSyncTracePanel } from "./useSyncTracePanel";
 
 /** The most repos/sources a single control plane realistically holds; one page covers the by-name lookup. */
 const SOURCE_LOOKUP_CAP = 200;
 
-/** One top-level folder of a repository: the pipelines the catalog imported from it, and the files under it that are
- * not registered flows (SQL scripts, docs, flows the source excludes). */
+/** One top-level folder of a repository: the pipelines the catalog imported from it, and every file under it, the
+ * flows' own documents included. */
 interface RepoFolder {
   project: string;
   pipelines: PipelineSummary[];
@@ -43,9 +44,9 @@ interface RepoFolder {
  * The repo's folder outline: every top-level folder the REPOSITORY holds, not only the ones the catalog imported a
  * flow from. The catalog knows only the flow files a sync selected, so a folder of SQL scripts or of excluded flows
  * would otherwise be invisible here even though it is part of the repo. The two are merged by project (root folder):
- * the pipelines come from the catalog (with their kind, wave, and active state), the rest of the folder from the
- * repo's own content listing. With no listing available the outline degrades to exactly what it was before, the
- * projects that hold pipelines.
+ * the pipelines come from the catalog (with their kind, wave, and active state), the folder's files from the repo's
+ * own content listing, all of them, so a folder reads as the repository holds it. With no listing available the
+ * outline degrades to exactly what it was before, the projects that hold pipelines.
  */
 function foldersOf(pipelines: PipelineSummary[], tree: RepoTree | undefined): RepoFolder[] {
   const byProject = new Map<string, RepoFolder>();
@@ -64,7 +65,6 @@ function foldersOf(pipelines: PipelineSummary[], tree: RepoTree | undefined): Re
   }
 
   if (tree !== undefined) {
-    const registered = new Set(pipelines.map((p) => p.relativePath));
     for (const entry of tree.entries) {
       if (entry.isFolder) {
         // A top-level folder anchors a project even when nothing under it was imported. Deeper folders need no entry
@@ -72,9 +72,6 @@ function foldersOf(pipelines: PipelineSummary[], tree: RepoTree | undefined): Re
         if (!entry.path.includes("/")) {
           folderFor(entry.path);
         }
-        continue;
-      }
-      if (registered.has(entry.path)) {
         continue;
       }
       folderFor(projectOf(entry.path)).files.push(entry);
@@ -112,6 +109,9 @@ function RepoProjects({
   onOpen: (pipelineId: string) => void;
   onRunBatch: (repoId: string, flowName: string) => void;
 }) {
+  // The YAML file whose preview sheet is open, by repo-relative path.
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+
   // Every page of the repo's flows, not just the first: the API clamps a page at 200 rows, so a single request drops
   // whole project folders off the end of the alphabet with nothing on screen to say so.
   const query = useQuery({
@@ -212,9 +212,18 @@ function RepoProjects({
           defaultOpen={needle !== ""}
           onOpen={onOpen}
           onRunBatch={onRunBatch}
+          onOpenFile={setPreviewPath}
         />
       ))}
       {treeNote}
+      {previewPath !== null && (
+        <RepoFileSheet
+          repoId={repoId}
+          path={previewPath}
+          pipeline={pipelines.find((p) => p.relativePath === previewPath)}
+          onClose={() => setPreviewPath(null)}
+        />
+      )}
     </div>
   );
 }

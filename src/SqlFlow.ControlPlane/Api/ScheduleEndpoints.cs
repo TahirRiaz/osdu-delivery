@@ -119,13 +119,13 @@ public static class ScheduleEndpoints
 
     /// <summary>
     /// The schedules, paged and ordered by name, narrowed by repo, membership (<c>pipelineId</c>), origin
-    /// (<c>source</c>), <c>enabled</c>, and a free-text <c>search</c> over the name. The search is server-side
-    /// because the paging is: an estate runs hundreds of schedules, so filtering only the rows of the page in hand
-    /// would hide every match on the pages behind it.
+    /// (<c>source</c>), <c>enabled</c>, the file that declares them (<c>definitionPath</c>), and a free-text
+    /// <c>search</c> over the name. The search is server-side because the paging is: an estate runs hundreds of
+    /// schedules, so filtering only the rows of the page in hand would hide every match on the pages behind it.
     /// </summary>
     private static async Task<Ok<PagedResult<ScheduleDto>>> ListSchedulesAsync(
         CatalogDbContext db, Guid? repoId, Guid? pipelineId, string? source, bool? enabled, string? search,
-        int? page, int? pageSize, CancellationToken ct)
+        string? definitionPath, int? page, int? pageSize, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
         var query = db.Schedules.AsNoTracking().AsQueryable();
@@ -151,6 +151,14 @@ public static class ScheduleEndpoints
         if (enabled is { } e)
         {
             query = query.Where(s => s.Enabled == e);
+        }
+
+        if (!string.IsNullOrWhiteSpace(definitionPath))
+        {
+            // "Which schedules does this file declare?", for the repo view's preview of a schedules.yaml. The sync
+            // records the path repo-relative and forward-slashed, so a backslashed spelling is folded to match.
+            var file = definitionPath.Trim().Replace('\\', '/').Trim('/');
+            query = query.Where(s => s.DefinitionPath == file);
         }
 
         if (!string.IsNullOrWhiteSpace(search))
