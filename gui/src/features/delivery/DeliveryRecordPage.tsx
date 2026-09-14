@@ -22,9 +22,9 @@ import { IdChip } from "../../components/IdChip";
 import { Page } from "../../components/Page";
 import { RelativeTime } from "../../components/RelativeTime";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useTabTitle } from "../../layout/workbench/TabsContext";
+import { useTabTitle } from "../../layout/workbench/useWorkbenchTabs";
 import { BlockedBadge, RecordStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
-import { prettyJson } from "./DeliveryFlowPanel";
+import { prettyJson } from "./prettyJson";
 import { RemovalDialog } from "./RemovalDialog";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
 

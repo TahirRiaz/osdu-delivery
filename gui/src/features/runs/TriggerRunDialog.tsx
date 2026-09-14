@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CalendarClock, Loader2, Play } from "lucide-react";
@@ -19,7 +19,7 @@ import type { RunOperation, RunParameters } from "../../api/types";
 import { CACHE_OPERATIONS, DELIVERY_OPERATIONS, RETRIEVAL_OPERATIONS } from "../../api/types";
 import { ComboBoxField } from "../../components/ComboBoxField";
 import { CorrelationError } from "../../components/CorrelationError";
-import { useRunDock } from "./RunDockContext";
+import { useRunDock } from "./useRunDock";
 
 export interface TriggerRunDialogProps {
   /** The flow's kind when the launching context knows it; a retrieval flow offers retrieve and plan, a cache flow refresh and plan. */
@@ -127,9 +127,12 @@ export function TriggerRunDialog({
   const [submissionId, setSubmissionId] = useState("");
   const [recordKeysText, setRecordKeysText] = useState("");
   const [publishTo, setPublishTo] = useState("");
+  // Starts closed so a dialog mounted already open is seeded on its first render too.
+  const [wasOpen, setWasOpen] = useState(false);
 
   // Seed the form once per open, so a Re-run opens with the prior run's parameters and a fresh launch opens clean.
-  useEffect(() => {
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (open) {
       setPool(initialPool ?? "");
       setOperation(initialParameters?.operation ?? (flowKind === "retrieval" ? "retrieve" : flowKind === "cache" ? "refresh" : "deliver"));
@@ -140,8 +143,7 @@ export function TriggerRunDialog({
       setRecordKeysText((initialParameters?.recordKeys ?? []).join("\n"));
       setPublishTo(initialParameters?.publishTo ?? "");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }
 
   const repos = useQuery({
     queryKey: ["repos", "all-for-trigger"],
@@ -209,11 +211,11 @@ export function TriggerRunDialog({
   const selectedKind = flowKind ?? pipelines.data?.items.find((p) => p.name === effectiveFlow)?.kind ?? null;
   const operations = selectedKind === "retrieval" ? RETRIEVAL_OPERATIONS : selectedKind === "cache" ? CACHE_OPERATIONS : DELIVERY_OPERATIONS;
   const deliveryKind = selectedKind !== "retrieval" && selectedKind !== "cache";
-  useEffect(() => {
-    if (!operations.includes(operation)) {
-      setOperation(operations[0]);
-    }
-  }, [operations, operation]);
+  // An operation the kind does not run falls back to its first one. The render that seeds an opening is skipped, so the
+  // check judges the seeded operation on the render that follows rather than the one it replaces.
+  if (open === wasOpen && !operations.includes(operation)) {
+    setOperation(operations[0]);
+  }
 
   const repoOptions = useMemo<ComboOption[]>(
     () => (repos.data?.items ?? []).map((repo) => ({ value: repo.id, label: repo.name })),

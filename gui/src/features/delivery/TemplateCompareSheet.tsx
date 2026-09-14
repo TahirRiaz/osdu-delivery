@@ -31,7 +31,7 @@ import { SearchInput } from "../../components/SearchInput";
 import { StatePill } from "../../components/StatusBadge";
 import { HeadClippedText } from "./HeadClippedText";
 import { condenseDiff, diffList, diffText, type DiffPart } from "./textDiff";
-import { entityName, roleLabel, splitPath } from "./templateFormat";
+import { entityName, kindStem, roleLabel, splitPath } from "./templateFormat";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
 
 /** One side of a comparison: a release of the OSDU data definitions, and a version of the kind in it. */
@@ -44,11 +44,6 @@ export interface CompareSide {
 export interface CompareStart {
   from: CompareSide;
   to: CompareSide;
-}
-
-/** authority:source:entityType, which every version of a kind shares. */
-export function kindStem(kind: string): string {
-  return kind.split(":").slice(0, 3).join(":");
 }
 
 const CHANGE_VISUAL: Record<DeliveryTemplateVariableChange["change"], { tone: "success" | "destructive" | "info"; icon: LucideIcon }> = {

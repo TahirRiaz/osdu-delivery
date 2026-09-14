@@ -5,7 +5,7 @@ import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isApiError } from "../../api/client";
 import { nodeApi } from "../../api/endpoints";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth } from "../../auth/useAuth";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 
 /** Clears every offline node out of the fleet registry in one go. The list accumulates a dead row per worker pod

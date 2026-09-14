@@ -35,6 +35,7 @@ The control plane must allow this origin in `ControlPlane:Cors:AllowedOrigins`
 npm ci
 npm run dev        # http://localhost:5173
 npm run typecheck
+npm run lint       # ESLint, no warnings allowed
 npm run build      # tsc + vite build into dist/
 ```
 

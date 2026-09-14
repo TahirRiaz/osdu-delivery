@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { defineSqlflowTheme, sqlflowEditorTheme } from "@/lib/monacoTheme";
-import { useThemeMode } from "../theme/ThemeModeContext";
+import { useThemeMode } from "../theme/useThemeMode";
 import "../lib/monacoSetup";
 
 interface CodeViewProps {

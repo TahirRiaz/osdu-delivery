@@ -1,25 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { isApiError, setAuthToken, setUnauthorizedHandler } from "../api/client";
 import { authApi } from "../api/endpoints";
 import type { EntraProviderInfo } from "../api/types";
 import { saveLoginPrefs } from "./loginPrefs";
 import { signInWithEntra } from "./msal";
-
-/** The signed-in session as the GUI holds it. The token also lives in the API client for request headers. */
-export interface Session {
-  token: string;
-  subject: string;
-  /** The user's role; null for a bootstrap-secret session (which has scopes but no user behind it). */
-  role: string | null;
-  scopes: string[];
-  expiresAtMs: number;
-  /** Which storage backer holds this session, and so whether it outlives the tab. Derived from where it was found
-   * on restore rather than trusted from the stored payload. */
-  remember: boolean;
-  /** Whether this session may roll onto a fresh token. True for a user-backed sign-in; false for the break-glass
-   * bootstrap session, which the server refuses to renew and which is meant to lapse. */
-  renewable: boolean;
-}
+import { AuthContext, type AuthContextValue, type Session } from "./useAuth";
 
 /** A session as the sign-in paths build it, before the provider stamps on how it is stored and whether it rolls. */
 type NewSession = Omit<Session, "remember" | "renewable">;
@@ -37,19 +22,6 @@ const RENEW_FLOOR_MS = 30_000;
  * shorter than the renew lead, where the lead alone would want to roll immediately and every fresh token would want
  * the same again: this turns that spin into a steady cadence. */
 const RENEW_MIN_DELAY_MS = 60_000;
-
-interface AuthContextValue {
-  session: Session | null;
-  /** Set when the previous session ended involuntarily (expiry or a 401), so the login page can say why. */
-  sessionEndedReason: string | null;
-  hasScope: (scope: string) => boolean;
-  loginLocal: (username: string, password: string, remember: boolean) => Promise<void>;
-  loginEntra: (entra: EntraProviderInfo, remember: boolean) => Promise<void>;
-  loginBootstrap: (secret: string) => Promise<void>;
-  logout: () => void;
-}
-
-const AuthContext = createContext<AuthContextValue | null>(null);
 
 const STORAGE_KEY = "sqlflow.session";
 
@@ -325,13 +297,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }), [session, sessionEndedReason, loginLocal, loginEntra, loginBootstrap, logout]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
-
-export function useAuth(): AuthContextValue {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error("useAuth must be used inside AuthProvider.");
-  }
-
-  return context;
 }

@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { RunDockContext, type RunDockApi } from "./useRunDock";
 
 /** The run groups the dock is watching, persisted so a launched run survives a tab switch or a full reload: the
  * whole point is that closing the pre-flight sheet (or navigating away) never strands a running execution. */
@@ -8,19 +9,6 @@ const GROUPS_KEY = "sqlflow.rundock.groups";
 const MINIMIZED_KEY = "sqlflow.rundock.minimized";
 /** A cap so a long session cannot grow the tracked list without bound; the oldest tracked group falls off first. */
 const MAX_TRACKED = 12;
-
-export interface RunDockApi {
-  /** The tracked group ids, oldest first. */
-  groupIds: string[];
-  minimized: boolean;
-  /** Start (or keep) watching a run group and pop the dock open, so a freshly launched run is immediately visible. */
-  track: (groupId: string) => void;
-  /** Stop watching a group (the user dismissed its chip, or it 404'd / finished and auto-expired). */
-  untrack: (groupId: string) => void;
-  setMinimized: (minimized: boolean) => void;
-}
-
-const RunDockContext = createContext<RunDockApi | null>(null);
 
 /** Reads the persisted id list defensively: a corrupt or hand-edited value yields an empty list, never a throw. */
 function readGroups(): string[] {
@@ -93,13 +81,4 @@ export function RunDockProvider({ children }: { children: ReactNode }) {
   );
 
   return <RunDockContext.Provider value={api}>{children}</RunDockContext.Provider>;
-}
-
-export function useRunDock(): RunDockApi {
-  const ctx = useContext(RunDockContext);
-  if (ctx === null) {
-    throw new Error("useRunDock must be used inside <RunDockProvider>");
-  }
-
-  return ctx;
 }

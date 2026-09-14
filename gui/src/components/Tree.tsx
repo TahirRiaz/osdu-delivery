@@ -7,6 +7,7 @@ import {
 import { ChevronDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useTreeState } from "./treeState";
 
 /**
  * The workbench tree primitives, shared by every explorer-style view (the catalog tree, the schema-change
@@ -16,25 +17,7 @@ import { cn } from "@/lib/utils";
  * TreeContext and renders whatever branches it has.
  */
 
-export interface TreeState {
-  /** Every id that is currently expanded (the user's own expansion plus the auto-revealed chains). */
-  expanded: ReadonlySet<string>;
-  toggle: (id: string) => void;
-  setOpen: (id: string, open: boolean) => void;
-  selectedId: string | null;
-  select: (id: string) => void;
-}
-
-export const TreeContext = createContext<TreeState | null>(null);
 const DepthContext = createContext(0);
-
-export function useTreeState(): TreeState {
-  const tree = useContext(TreeContext);
-  if (tree === null) {
-    throw new Error("TreeNode rendered outside the catalog tree provider.");
-  }
-  return tree;
-}
 
 /** Pixels of indentation per tree depth level. */
 const TREE_INDENT = 14;

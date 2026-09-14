@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Clock3, KeyRound, Loader2, Power, PowerOff, TriangleAlert } from "lucide-react";
@@ -18,7 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { isApiError } from "../../api/client";
 import { tokenApi } from "../../api/endpoints";
 import type { AccessToken, CreatedAccessToken } from "../../api/types";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth } from "../../auth/useAuth";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CopyButton } from "../../components/CopyButton";
 import { CorrelationError } from "../../components/CorrelationError";
@@ -269,7 +269,14 @@ export default function AccessTokensPage() {
 
   const tokensQuery = useQuery({ queryKey: ["access-tokens"], queryFn: tokenApi.list });
   const tokens = tokensQuery.data;
-  const nowMs = Date.now();
+  // Expiry is judged against a clock held in state rather than read during render. It advances every half minute, so a
+  // token that lapses while the page is open turns expired, and never trails the fetch of the list it judges.
+  const [clockMs, setClockMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockMs(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const nowMs = Math.max(clockMs, tokensQuery.dataUpdatedAt);
 
   const revoke = useMutation({
     mutationFn: (token: AccessToken) => tokenApi.revoke(token.id),

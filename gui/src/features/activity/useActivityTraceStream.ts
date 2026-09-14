@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { activityApi } from "../../api/endpoints";
 import type { ActivityEvent } from "../../api/types";
 
@@ -29,19 +29,25 @@ export function useActivityTraceStream(
   nonce: number,
   onEnded?: () => void,
 ): LiveActivityTrace {
-  const [entries, setEntries] = useState<ActivityEvent[]>([]);
+  // The lines are held with the stream they came from: a re-opened stream starts from nothing, and a line from a
+  // stream being replaced never lands in its successor.
+  const stream = JSON.stringify([kind, subject, nonce]);
+  const [trace, setTrace] = useState<{ stream: string; entries: ActivityEvent[]; ended: boolean }>(
+    { stream, entries: [], ended: false },
+  );
   const [connected, setConnected] = useState(false);
-  const [ended, setEnded] = useState(false);
   // The latest callback without re-subscribing the stream when the parent re-renders.
-  const onEndedRef = useRef(onEnded);
-  onEndedRef.current = onEnded;
+  const notifyEnded = useEffectEvent(() => onEnded?.());
+
+  if (trace.stream !== stream) {
+    setTrace({ stream, entries: [], ended: false });
+  }
 
   useEffect(() => {
     let disposed = false;
     const controller = new AbortController();
     const cursor = { afterId: 0 };
-    setEntries([]);
-    setEnded(false);
+    const opened = JSON.stringify([kind, subject, nonce]);
 
     const run = async () => {
       while (!disposed) {
@@ -52,7 +58,9 @@ export function useActivityTraceStream(
               const entry = JSON.parse(frame.data) as ActivityEvent;
               // The tail never re-sends a row and the cursor resumes past what we hold, so append unconditionally.
               cursor.afterId = Math.max(cursor.afterId, entry.id);
-              setEntries((previous) => [...previous, entry]);
+              setTrace((previous) => (previous.stream === opened
+                ? { ...previous, entries: [...previous.entries, entry] }
+                : previous));
             } else if (frame.event === "end") {
               endedNow = true;
             }
@@ -66,8 +74,8 @@ export function useActivityTraceStream(
 
         if (endedNow) {
           if (!disposed) {
-            setEnded(true);
-            onEndedRef.current?.();
+            setTrace((previous) => (previous.stream === opened ? { ...previous, ended: true } : previous));
+            notifyEnded();
           }
 
           return;
@@ -90,5 +98,5 @@ export function useActivityTraceStream(
     };
   }, [kind, subject, nonce]);
 
-  return { entries, connected, ended };
+  return { entries: trace.entries, connected, ended: trace.ended };
 }

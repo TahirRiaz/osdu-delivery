@@ -8,7 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { isApiError } from "../../api/client";
 import { nodeApi } from "../../api/endpoints";
 import type { Node } from "../../api/types";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth } from "../../auth/useAuth";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 
 /** Restarts one node: a confirmation, then a request the worker honors on its next heartbeat (drain, then exit) so

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { runApi } from "../../api/endpoints";
 import type { RunTraceEntry } from "../../api/types";
 
@@ -32,11 +32,17 @@ export interface LiveRunTrace {
  * the authoritative at-rest timeline. The subscription closes when `live` turns false or the component unmounts.
  */
 export function useRunTraceStream(runId: string, live: boolean, onEnded: () => void): LiveRunTrace {
-  const [entries, setEntries] = useState<RunTraceEntry[]>([]);
+  // The entries are held with the subscription that produced them: a new subscription (another run, or the same run
+  // going live again) starts from nothing, while a stream that stops leaves its entries in place.
+  const subscription = live ? runId : null;
+  const [trace, setTrace] = useState<{ subscription: string | null; entries: RunTraceEntry[] }>({ subscription, entries: [] });
   const [connected, setConnected] = useState(false);
   // The latest callback without re-subscribing the stream when the parent re-renders.
-  const onEndedRef = useRef(onEnded);
-  onEndedRef.current = onEnded;
+  const notifyEnded = useEffectEvent(() => onEnded());
+
+  if (trace.subscription !== subscription) {
+    setTrace({ subscription, entries: subscription === null ? trace.entries : [] });
+  }
 
   useEffect(() => {
     if (!live) {
@@ -46,7 +52,6 @@ export function useRunTraceStream(runId: string, live: boolean, onEnded: () => v
     let disposed = false;
     const controller = new AbortController();
     const cursors = { afterEventId: 0 };
-    setEntries([]);
 
     const run = async () => {
       while (!disposed) {
@@ -58,7 +63,9 @@ export function useRunTraceStream(runId: string, live: boolean, onEnded: () => v
               // The tail never re-sends a row and the cursor resumes past what we hold, so append unconditionally;
               // the sort only keeps the timeline stable.
               cursors.afterEventId = Math.max(cursors.afterEventId, entry.id);
-              setEntries((previous) => [...previous, entry].sort(compareEntries));
+              setTrace((previous) => (previous.subscription === runId || previous.subscription === null
+                ? { ...previous, entries: [...previous.entries, entry].sort(compareEntries) }
+                : previous));
             } else if (frame.event === "end") {
               ended = true;
             }
@@ -72,7 +79,7 @@ export function useRunTraceStream(runId: string, live: boolean, onEnded: () => v
 
         if (ended) {
           if (!disposed) {
-            onEndedRef.current();
+            notifyEnded();
           }
 
           return;
@@ -95,5 +102,5 @@ export function useRunTraceStream(runId: string, live: boolean, onEnded: () => v
     };
   }, [runId, live]);
 
-  return { entries, connected };
+  return { entries: trace.entries, connected };
 }

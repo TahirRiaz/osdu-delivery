@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { CircleCheck, Clock3, Loader2, TriangleAlert, User } from "lucide-react";
 import { runApi } from "../../api/endpoints";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth } from "../../auth/useAuth";
 import { pollingInterval, useRateLimitPause } from "../../hooks/usePolling";
 
 /** One page-1 probe per state: the PagedResult total is the count, the items are discarded. */

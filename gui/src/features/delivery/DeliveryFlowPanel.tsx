@@ -26,6 +26,7 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { SearchInput } from "../../components/SearchInput";
 import { TruncatedText } from "../../components/TruncatedText";
 import { BlockedBadge, RecordStatusBadge, SubmissionStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
+import { prettyJson } from "./prettyJson";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
 import { SubmitDropDialog } from "./SubmitDropDialog";
 import { SubmitRecordsDialog } from "./SubmitRecordsDialog";
@@ -421,12 +422,4 @@ export function SubmissionCounts({ submission }: { submission: DeliverySubmissio
       ))}
     </div>
   );
-}
-
-export function prettyJson(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    return raw;
-  }
 }

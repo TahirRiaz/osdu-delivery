@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { usePanel } from "../../layout/workbench/PanelContext";
+import { usePanel } from "../../layout/workbench/usePanel";
 import { ActivityTracePanel } from "../activity/ActivityTracePanel";
 
 /** The activity-trace kind a managed git repo sync writes under (mirrors ActivityKinds.RepoSync server-side). */

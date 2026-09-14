@@ -137,6 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one) or `'`, never the same as `decimal`. The separators are checked when the mapping is read, every digit group
   after the first is exactly three digits, and a value the modifier cannot read holds the record. The mapping builder
   offers it with both separators. Documented in [docs/delivery/documents.md](docs/delivery/documents.md#number).
+- `npm run lint` in `gui/`: ESLint 10 with the TypeScript, React hooks and React refresh rules, failing on any
+  warning. The GUI's existing findings are fixed at their source, and the hooks, contexts, constants and variants
+  helpers that component files exported now live in `.ts` modules beside them.
 
 ### Fixed
 
@@ -148,6 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written as `9223372036854775807`. A double beyond 2^53 holds too, because the integer it stands for is not known
   exactly, and a value outside `int32` holds where the template declares that format.
 - A manifest's chunk-count column no longer truncates a fractional, NaN or infinite count; only a whole count is read.
+- Two delivery tests that cut lines from raw YAML literals by matching `\n` normalize line endings first, so they pass
+  on a CRLF checkout.
 - Schedules carry the flow parameter values every fire supplies (`values:` in a flow's inline `schedule` block or a
   schedule library entry, `values` on `POST /api/v1/schedules`). Without them a flow that declares a required
   parameter could not be scheduled at all: the fire supplied nothing and every run failed validation. A run-now's
@@ -210,6 +215,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The search box answers from the ledger as well: a delivery key, or an OSDU id, source key or label prefix,
   across every flow, from indexed columns.
 - `source.knownState` declares where a known-state run publishes when the run names no location.
+
+### Security
+
+- GUI dependencies are updated within their declared ranges to clear the advisories `npm audit` reported for
+  `react-router-dom`, `postcss`, `browserslist`, `nanoid` and `baseline-browser-mapping`.
 
 ### Changed
 

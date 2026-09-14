@@ -16,7 +16,7 @@ import {
   deliveryApi, type DeliveryMappingComposeResult, type DeliveryTemplateVariable, type MappingDraft, type MappingDraftEntry,
   type MappingDraftIssue,
 } from "../../api/delivery";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth } from "../../auth/useAuth";
 import { CodeView } from "../../components/CodeView";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CopyButton } from "../../components/CopyButton";
@@ -25,12 +25,14 @@ import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RichTooltip } from "../../components/RichTooltip";
 import { OutcomePill } from "../../components/StatusBadge";
-import { MappingBuilderVariables, variableRows } from "./MappingBuilderVariables";
+import { MappingBuilderVariables } from "./MappingBuilderVariables";
 import { MappingEntryEditor, type EntryEditorTarget } from "./MappingEntryEditor";
 import { MappingProposeSheet } from "./MappingProposeSheet";
 import { COLUMN_NAME, emptyEntry, putEntry } from "./mappingDraft";
 import { entityName, parseTemplateKey, templateKey } from "./templateFormat";
-import { ProblemView, problemText } from "./TemplateSheet";
+import { problemText } from "./problemText";
+import { ProblemView } from "./TemplateSheet";
+import { variableRows } from "./variableRows";
 
 /** How long the draft has to stay unchanged before it is written and checked again. */
 const COMPOSE_DELAY_MS = 500;

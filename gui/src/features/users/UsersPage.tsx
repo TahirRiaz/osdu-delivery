@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth } from "../../auth/useAuth";
 import { isApiError } from "../../api/client";
 import { userApi } from "../../api/endpoints";
 import type { Role, User } from "../../api/types";

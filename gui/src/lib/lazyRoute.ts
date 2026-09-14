@@ -56,10 +56,10 @@ function claimReload(name: string): boolean {
 }
 
 /** lazy() for route components, recovering from the stale-chunk 404 a tab hits when it survives a deploy. */
-export function lazyRoute<T extends ComponentType<any>>(
+export function lazyRoute<P extends object>(
   name: string,
-  factory: () => Promise<{ default: T }>,
-): LazyExoticComponent<T> {
+  factory: () => Promise<{ default: ComponentType<P> }>,
+): LazyExoticComponent<ComponentType<P>> {
   return lazy(async () => {
     try {
       const module = await factory();

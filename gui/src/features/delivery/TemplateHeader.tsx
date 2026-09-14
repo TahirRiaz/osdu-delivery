@@ -7,12 +7,7 @@ import type { DeliveryTemplateDetail } from "../../api/delivery";
 import { CopyButton } from "../../components/CopyButton";
 import { RelativeTime } from "../../components/RelativeTime";
 import { StatePill } from "../../components/StatusBadge";
-import { entityName } from "./templateFormat";
-
-/** Where a template was read from, as a fact reads it: "file Wellbore.json" becomes "File Wellbore.json". */
-export function originText(origin: string): string {
-  return origin === "" ? origin : `${origin[0].toUpperCase()}${origin.slice(1)}`;
-}
+import { entityName, originText } from "./templateFormat";
 
 /** One fact about the template: a glyph, the value, and its name for assistive tech. */
 function Fact({ icon: Icon, label, children, testId }: { icon: LucideIcon; label: string; children: ReactNode; testId?: string }) {

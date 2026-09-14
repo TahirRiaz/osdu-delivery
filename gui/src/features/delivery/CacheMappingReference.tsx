@@ -6,7 +6,7 @@ import { TruncatedText } from "../../components/TruncatedText";
 import { CACHE_ID_FIELD, cacheEntryExample, cacheReference, cachedCell, type CachedTypeSummary } from "./cacheFormat";
 
 /** What cache.<Type>.id renders: the record's OSDU id with the trailing colon an OSDU relationship carries. */
-export function relationshipId(recordId: string): string {
+function relationshipId(recordId: string): string {
   return recordId.endsWith(":") ? recordId : `${recordId}:`;
 }
 

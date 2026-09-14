@@ -22,7 +22,8 @@ import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
 import { pollingInterval } from "../../hooks/usePolling";
-import { useThemeMode } from "../../theme/ThemeModeContext";
+import { applyBrandMode } from "../../theme/branding";
+import { useThemeMode, type ThemeMode } from "../../theme/useThemeMode";
 
 // One even grid for the KPI cards (and their loading skeletons), so the headline numbers read as a designed
 // row instead of a ragged flex wrap.
@@ -42,6 +43,24 @@ function RunStateTooltip({ active, payload, label }: TooltipProps<number, string
   );
 }
 
+/** The chart's literal colors under a theme mode, read off the root element's design tokens. */
+function chartColorsFor(mode: ThemeMode) {
+  // Stamping the mode first (idempotent: the theme provider stamps the same one) makes the tokens read below the
+  // ones of `mode`, which is what lets the memo key on it.
+  applyBrandMode(mode);
+  const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return {
+    queued: token("--warning"),
+    running: token("--info"),
+    succeeded: token("--success"),
+    failed: token("--destructive"),
+    cancelled: token("--muted-foreground"),
+    axis: token("--muted-foreground"),
+    grid: token("--border"),
+    cursor: token("--muted"),
+  };
+}
+
 /** The operator's landing page: headline counts linking into each area plus the run-state distribution. */
 export default function DashboardPage() {
   const { mode } = useThemeMode();
@@ -55,20 +74,7 @@ export default function DashboardPage() {
   // axis/grid tokens are read off the root element with getComputedStyle: the chart uses the exact same
   // custom properties as the rest of the app, re-read whenever the theme flips. Run states are status
   // colors by definition and never take chart-series slots.
-  const chartColors = useMemo(() => {
-    const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    return {
-      queued: token("--warning"),
-      running: token("--info"),
-      succeeded: token("--success"),
-      failed: token("--destructive"),
-      cancelled: token("--muted-foreground"),
-      axis: token("--muted-foreground"),
-      grid: token("--border"),
-      cursor: token("--muted"),
-    };
-    // The mode value is the re-read trigger: the tokens themselves come from the stylesheet.
-  }, [mode]);
+  const chartColors = useMemo(() => chartColorsFor(mode), [mode]);
 
   if (query.isError) {
     return (

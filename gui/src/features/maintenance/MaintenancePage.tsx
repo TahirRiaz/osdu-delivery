@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Database, Info, ListTree, Loader2, Trash2 } from "lucide-react";
@@ -66,11 +66,7 @@ export default function MaintenancePage() {
   const [daysInput, setDaysInput] = useState("");
   const [retentionInit, setRetentionInit] = useState(false);
 
-  useEffect(() => {
-    if (!storage || retentionInit) {
-      return;
-    }
-
+  if (storage && !retentionInit) {
     if (storage.retentionDays === null) {
       setKeepForever(true);
       setDaysInput("");
@@ -80,7 +76,7 @@ export default function MaintenancePage() {
     }
 
     setRetentionInit(true);
-  }, [storage, retentionInit]);
+  }
 
   const parsedDays = Number.parseInt(daysInput, 10);
   const retentionValue = keepForever ? null : parsedDays;

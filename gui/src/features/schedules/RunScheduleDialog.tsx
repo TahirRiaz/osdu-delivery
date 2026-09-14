@@ -21,7 +21,8 @@ import {
   Zap,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge, badgeVariants } from "@/components/ui/badge";
+import { Badge } from "@/components/ui/badge";
+import { badgeVariants } from "@/components/ui/badge-variants";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -37,7 +38,7 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CorrelationError } from "../../components/CorrelationError";
 import { RelativeTime } from "../../components/RelativeTime";
 import { seriesColor } from "../../theme/branding";
-import { useRunDock } from "../runs/RunDockContext";
+import { useRunDock } from "../runs/useRunDock";
 import { useRunGroupStream } from "../runs/useRunGroupStream";
 
 /** The status a plan member shows on the board: the live run status once a fire is underway, or "pending" before

@@ -12,8 +12,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useAuth } from "../../auth/AuthContext";
-import { useThemeMode } from "../../theme/ThemeModeContext";
+import { useAuth } from "../../auth/useAuth";
+import { useThemeMode } from "../../theme/useThemeMode";
 import { SideBarSearch, SideBarSections } from "./SideBar";
 
 /**

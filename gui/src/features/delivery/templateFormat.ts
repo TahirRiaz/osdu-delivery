@@ -87,3 +87,13 @@ export function parseTemplateKey(key: string): { kind: string; version: string }
   const at = key.lastIndexOf(" ");
   return at <= 0 || at === key.length - 1 ? null : { kind: key.slice(0, at), version: key.slice(at + 1) };
 }
+
+/** authority:source:entityType, which every version of a kind shares. */
+export function kindStem(kind: string): string {
+  return kind.split(":").slice(0, 3).join(":");
+}
+
+/** Where a template was read from, as a fact reads it: "file Wellbore.json" becomes "File Wellbore.json". */
+export function originText(origin: string): string {
+  return origin === "" ? origin : `${origin[0].toUpperCase()}${origin.slice(1)}`;
+}

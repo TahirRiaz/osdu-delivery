@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { ChevronDown } from "lucide-react";
 import { SearchInput } from "@/components/SearchInput";
 import { cn } from "@/lib/utils";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth } from "../../auth/useAuth";
 import { navGroups, selectedNavPath, type NavGroup } from "../nav";
 
 const SECTIONS_KEY = "sqlflow.workbench.sections";
@@ -47,11 +47,9 @@ export function SideBarSections({ reveal, onNavigate }: SideBarSectionsProps) {
   }, [collapsed]);
 
   // The activity bar revealed a group: expand it and bring it into view.
-  useEffect(() => {
-    if (reveal === null) {
-      return;
-    }
-
+  const [revealed, setRevealed] = useState<SideBarSectionsProps["reveal"]>(null);
+  if (reveal !== null && reveal !== revealed) {
+    setRevealed(reveal);
     setCollapsed((current) => {
       if (!current.has(reveal.id)) {
         return current;
@@ -61,6 +59,13 @@ export function SideBarSections({ reveal, onNavigate }: SideBarSectionsProps) {
       next.delete(reveal.id);
       return next;
     });
+  }
+
+  useEffect(() => {
+    if (reveal === null) {
+      return;
+    }
+
     document.getElementById(`sidebar-section-${reveal.id}`)?.scrollIntoView({ block: "nearest" });
   }, [reveal]);
 

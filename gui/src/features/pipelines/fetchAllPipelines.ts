@@ -26,7 +26,7 @@ export async function fetchAllPipelines(
   filters: { repoId?: string; kind?: string; active?: boolean },
 ): Promise<FetchResult> {
   const items: PipelineSummary[] = [];
-  let total = 0;
+  let total: number;
   let page = 1;
   for (;;) {
     const res = await pipelineApi.list({ ...filters, page, pageSize: PAGE_SIZE });

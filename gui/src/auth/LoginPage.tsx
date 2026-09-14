@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { authApi } from "../api/endpoints";
 import { isApiError } from "../api/client";
 import { CorrelationError } from "../components/CorrelationError";
-import { useAuth } from "./AuthContext";
+import { useAuth } from "./useAuth";
 import { readLoginPrefs } from "./loginPrefs";
 
 /** Which sign-in path is in flight, so only the button that started the work shows the spinner. */

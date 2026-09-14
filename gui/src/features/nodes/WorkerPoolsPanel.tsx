@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { isApiError } from "../../api/client";
 import { nodeApi } from "../../api/endpoints";
 import type { WorkerPool, WorkerPoolScaleRequest } from "../../api/types";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth } from "../../auth/useAuth";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
 import { RelativeTime } from "../../components/RelativeTime";

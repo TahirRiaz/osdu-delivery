@@ -17,8 +17,10 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { SearchInput } from "../../components/SearchInput";
 import { StatePill } from "../../components/StatusBadge";
 import { KindText } from "./KindText";
-import { kindStem, TemplateCompareSheet, type CompareStart } from "./TemplateCompareSheet";
-import { ProblemView, problemText, TaskProgress, TemplateSheet } from "./TemplateSheet";
+import { TemplateCompareSheet, type CompareStart } from "./TemplateCompareSheet";
+import { kindStem } from "./templateFormat";
+import { problemText } from "./problemText";
+import { ProblemView, TaskProgress, TemplateSheet } from "./TemplateSheet";
 
 /** The most rows the table renders at once; the search narrows the rest. */
 const MAX_ROWS = 200;

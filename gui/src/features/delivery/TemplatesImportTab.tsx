@@ -9,8 +9,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { deliveryApi, type DeliveryTemplateDetail, type DeliveryTemplateSaved } from "../../api/delivery";
-import { originText } from "./TemplateHeader";
-import { ProblemView, problemText, TemplateSheet } from "./TemplateSheet";
+import { originText } from "./templateFormat";
+import { problemText } from "./problemText";
+import { ProblemView, TemplateSheet } from "./TemplateSheet";
 
 /** The largest schema file the page reads. A bundled OSDU schema runs to a few hundred kilobytes. */
 const MaxSchemaMegabytes = 10;

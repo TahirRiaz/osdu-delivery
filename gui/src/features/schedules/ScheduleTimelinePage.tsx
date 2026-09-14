@@ -17,7 +17,8 @@ import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { pollingInterval } from "../../hooks/usePolling";
 import { formatDurationSeconds } from "../../lib/time";
-import { ScheduleTimelineChart, statusTone, type ScheduleTimelineHandle, type StatusTone } from "./ScheduleTimelineChart";
+import { ScheduleTimelineChart, type ScheduleTimelineHandle } from "./ScheduleTimelineChart";
+import { statusTone, type StatusTone } from "./statusTone";
 import { buildRows, computeStats, DEFAULT_RANGE_KEY, RANGE_PRESETS, rangeByKey } from "./timeline";
 
 const DAY_MS = 86_400_000;

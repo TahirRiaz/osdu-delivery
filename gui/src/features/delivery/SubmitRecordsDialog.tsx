@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CircleAlert, Loader2, TriangleAlert } from "lucide-react";
@@ -183,7 +183,10 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
     enabled: open,
   });
 
-  useEffect(() => {
+  // Every opening starts from an empty form.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (open) {
       setMode("form");
       setFields({});
@@ -195,7 +198,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
       setPayloadLocation("");
       setPayloadHash("");
     }
-  }, [open]);
+  }
 
   const submit = useMutation({
     mutationFn: deliveryApi.submit,

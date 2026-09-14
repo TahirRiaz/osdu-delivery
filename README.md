@@ -56,7 +56,7 @@ purpose; the product name is OSDU Delivery.
 ```bash
 dotnet build SqlFlow.sln
 dotnet test SqlFlow.sln
-cd gui && npm ci && npm run build
+cd gui && npm ci && npm run lint && npm run build
 ```
 
 Requires the [.NET 9 SDK](https://dotnet.microsoft.com/download) and Node.js. The DB-backed suites need

@@ -234,7 +234,8 @@ public sealed class RetrievalTests : IDisposable
     public async Task Full_records_are_read_back_from_storage_the_ones_it_cannot_return_are_listed_and_a_plan_counts()
     {
         var root = Samples.NewTempDirectory();
-        var yaml = Yaml
+        // The raw literal takes the line endings the file was checked out with, so they are made "\n" before a line is cut.
+        var yaml = Yaml.ReplaceLineEndings("\n")
             .Replace("kinds: [\"osdu:wks:master-data--Wellbore:1.*.*\", \"osdu:wks:master-data--Well:1.*.*\"]", "kind: " + Wellbore, StringComparison.Ordinal)
             .Replace("pageSize: 2", "pageSize: 3\n  fetchRecords: true\n  fetchParallelism: 2", StringComparison.Ordinal)
             .Replace("  incremental: { field: modifyTime, since: \"2026-01-01T00:00:00Z\", lagMinutes: 5 }\n", string.Empty, StringComparison.Ordinal)

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { runApi } from "../../api/endpoints";
 import type { RunSummary } from "../../api/types";
 
@@ -30,11 +30,17 @@ export interface LiveRunGroup {
  * the component unmounts.
  */
 export function useRunGroupStream(groupId: string, live: boolean, onEnded: () => void): LiveRunGroup {
-  const [members, setMembers] = useState<RunSummary[]>([]);
+  // The members are held with the subscription that produced them: a new subscription (another group, or the same
+  // group going live again) starts from nothing, while a stream that stops leaves its last members in place.
+  const subscription = live ? groupId : null;
+  const [group, setGroup] = useState<{ subscription: string | null; members: RunSummary[] }>({ subscription, members: [] });
   const [connected, setConnected] = useState(false);
   // The latest callback without re-subscribing the stream when the parent re-renders.
-  const onEndedRef = useRef(onEnded);
-  onEndedRef.current = onEnded;
+  const notifyEnded = useEffectEvent(() => onEnded());
+
+  if (group.subscription !== subscription) {
+    setGroup({ subscription, members: subscription === null ? group.members : [] });
+  }
 
   useEffect(() => {
     if (!live) {
@@ -44,7 +50,6 @@ export function useRunGroupStream(groupId: string, live: boolean, onEnded: () =>
     let disposed = false;
     const controller = new AbortController();
     const byRunId = new Map<string, RunSummary>();
-    setMembers([]);
 
     const run = async () => {
       while (!disposed) {
@@ -54,7 +59,10 @@ export function useRunGroupStream(groupId: string, live: boolean, onEnded: () =>
             if (frame.event === "member") {
               const member = JSON.parse(frame.data) as RunSummary;
               byRunId.set(member.runId, member);
-              setMembers([...byRunId.values()].sort(compareMembers));
+              const members = [...byRunId.values()].sort(compareMembers);
+              setGroup((previous) => (previous.subscription === groupId || previous.subscription === null
+                ? { ...previous, members }
+                : previous));
             } else if (frame.event === "end") {
               ended = true;
             }
@@ -68,7 +76,7 @@ export function useRunGroupStream(groupId: string, live: boolean, onEnded: () =>
 
         if (ended) {
           if (!disposed) {
-            onEndedRef.current();
+            notifyEnded();
           }
 
           return;
@@ -91,5 +99,5 @@ export function useRunGroupStream(groupId: string, live: boolean, onEnded: () =>
     };
   }, [groupId, live]);
 
-  return { members, connected };
+  return { members: group.members, connected };
 }

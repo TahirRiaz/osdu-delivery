@@ -36,28 +36,6 @@ export interface EntryEditorTarget {
   session: number;
 }
 
-/** The variable a key under an object with free keys is, the way the template resolves it. */
-export function keyVariable(holder: DeliveryTemplateVariable, target: string): DeliveryTemplateVariable {
-  const type = holder.keyValueType ?? "string";
-  return {
-    path: target,
-    shape: type === "object" || type === "array" || type === "any" ? "Whole" : "Value",
-    type,
-    itemType: null,
-    format: null,
-    required: false,
-    role: "Mapping",
-    relationships: [],
-    pattern: null,
-    unitContext: null,
-    title: null,
-    description: holder.description,
-    keyValueType: null,
-    nested: false,
-    cacheTypes: [],
-  };
-}
-
 type Choice = "None" | MappingDraftInput;
 
 const CHOICE_LABELS: Record<Choice, string> = {

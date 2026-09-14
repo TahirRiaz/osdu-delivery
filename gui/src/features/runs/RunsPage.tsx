@@ -19,7 +19,8 @@ import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { PagedTable, type Column, type TableGrouping } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
-import { RunStatusBadge, rollupStatus } from "../../components/StatusBadge";
+import { rollupStatus } from "../../components/rollupStatus";
+import { RunStatusBadge } from "../../components/StatusBadge";
 import { formatDurationSeconds } from "../../lib/time";
 import { TriggerRunDialog } from "./TriggerRunDialog";
 

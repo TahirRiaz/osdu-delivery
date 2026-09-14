@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { cn } from "@/lib/utils";
 import { deliveryApi, type DeliveryTemplate } from "../../api/delivery";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth } from "../../auth/useAuth";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { DataTable, type Column } from "../../components/DataTable";
 import { FilterBar } from "../../components/FilterBar";
@@ -22,7 +22,8 @@ import { TruncatedText } from "../../components/TruncatedText";
 import { KindText } from "./KindText";
 import { TemplatesBrowseTab } from "./TemplatesBrowseTab";
 import { TemplatesImportTab } from "./TemplatesImportTab";
-import { ProblemView, problemText, TemplateSheet } from "./TemplateSheet";
+import { problemText } from "./problemText";
+import { ProblemView, TemplateSheet } from "./TemplateSheet";
 
 type TemplatesTab = "saved" | "browse" | "import";
 

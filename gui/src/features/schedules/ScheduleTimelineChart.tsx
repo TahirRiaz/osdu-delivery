@@ -1,28 +1,10 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RunStatus } from "../../api/types";
 import { brandToken } from "../../theme/branding";
-import { useThemeMode } from "../../theme/ThemeModeContext";
+import { useThemeMode } from "../../theme/useThemeMode";
 import { formatDurationSeconds } from "../../lib/time";
+import { statusTone } from "./statusTone";
 import type { RunBar, TimelineRow } from "./timeline";
-
-/** The status tones the timeline draws with (DESIGN.md 3.2): status colors are reserved for run states, and
- * cancelled/skipped/none read as muted. One mapping shared by the chart and the page's legend. */
-export type StatusTone = "success" | "destructive" | "info" | "warning" | "muted";
-
-export function statusTone(status: RunStatus | null): StatusTone {
-  switch (status) {
-    case "succeeded":
-      return "success";
-    case "failed":
-      return "destructive";
-    case "running":
-      return "info";
-    case "queued":
-      return "warning";
-    default:
-      return "muted";
-  }
-}
 
 /** The design tokens the SVG draws with, read off the document via getComputedStyle (the SVG attributes need
  * resolved color strings). Cached per theme mode; a flip re-reads them. Never hex literals. */
@@ -157,7 +139,6 @@ export const ScheduleTimelineChart = forwardRef<ScheduleTimelineHandle, Schedule
   const { mode } = useThemeMode();
   // Token values change when the `dark` class flips on <html>; `mode` keys the cache so a theme switch
   // re-reads them (getComputedStyle has no reactivity of its own).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const palette = useMemo(readPalette, [mode]);
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);

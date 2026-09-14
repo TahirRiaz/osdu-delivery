@@ -23,7 +23,7 @@ import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { ActiveBadge, RunStatusBadge, ScheduleStateBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useTabTitle } from "../../layout/workbench/TabsContext";
+import { useTabTitle } from "../../layout/workbench/useWorkbenchTabs";
 import { formatDurationSeconds } from "../../lib/time";
 import { projectOf } from "../repos/project";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";

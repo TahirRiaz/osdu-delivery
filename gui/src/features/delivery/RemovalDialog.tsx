@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CircleAlert, Loader2, RotateCcwSquare, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -114,15 +114,17 @@ function requestFor(selection: RemovalSelection, scope: RemovalScope): DeliveryR
 export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, singleLabel, onQueued }: RemovalDialogProps) {
   const [scope, setScope] = useState<RemovalScope>("record");
   const [typed, setTyped] = useState("");
+  const [wasOpen, setWasOpen] = useState(open);
 
   // Every opening starts from the reversible scope with an empty confirmation, so a purge is never one click away
   // from the last thing the operator did.
-  useEffect(() => {
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (open) {
       setScope("record");
       setTyped("");
     }
-  }, [open]);
+  }
 
   const request = useMemo(() => requestFor(selection, scope), [selection, scope]);
   const preview = useQuery({

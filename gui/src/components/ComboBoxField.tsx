@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronsUpDown, Loader2, X } from "lucide-react";
 import { Command, CommandEmpty, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
@@ -92,24 +92,26 @@ export function ComboBoxField<T>(props: ComboBoxFieldProps<T>) {
       })();
   const [text, setText] = useState(selectedLabel);
 
-  useEffect(() => {
+  // A picker that becomes disabled (its upstream scope cleared) must not leave its list hanging open.
+  if (disabled === true && open) {
+    setOpen(false);
+  }
+
+  // While the list is closed the input shows the selection itself, so an external change shows at once; opening the
+  // list starts the editable text from it.
+  const inputText = open ? text : selectedLabel;
+  const openList = () => {
     if (!open) {
       setText(selectedLabel);
+      setOpen(true);
     }
-  }, [open, selectedLabel]);
-
-  // A picker that becomes disabled (its upstream scope cleared) must not leave its list hanging open.
-  useEffect(() => {
-    if (disabled === true) {
-      setOpen(false);
-    }
-  }, [disabled]);
+  };
 
   // With the untouched selection in the box, show every option (so re-opening the list is a browse, not a
   // one-item filter); once the user edits the text, filter by it. In server-search mode the caller already
   // filtered the options, so they pass through untouched.
-  const filter = text.trim().toLowerCase();
-  const matches = onSearchChange !== undefined || filter === "" || text === selectedLabel
+  const filter = inputText.trim().toLowerCase();
+  const matches = onSearchChange !== undefined || filter === "" || inputText === selectedLabel
     ? options
     : options.filter((option) => labelOf(option).toLowerCase().includes(filter));
 
@@ -131,7 +133,7 @@ export function ComboBoxField<T>(props: ComboBoxFieldProps<T>) {
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       {label !== undefined && <Label htmlFor={inputId}>{label}</Label>}
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover open={open} onOpenChange={(next) => (next ? openList() : setOpen(false))}>
         <PopoverAnchor asChild>
           <div ref={anchorRef} className="relative">
             <Input
@@ -142,13 +144,13 @@ export function ComboBoxField<T>(props: ComboBoxFieldProps<T>) {
               aria-label={label === undefined ? ariaLabel : undefined}
               autoComplete="off"
               placeholder={placeholder}
-              value={text}
+              value={inputText}
               disabled={disabled}
               data-testid={testId}
-              onClick={() => setOpen(true)}
+              onClick={openList}
               onKeyDown={(event) => {
                 if (event.key === "ArrowDown") {
-                  setOpen(true);
+                  openList();
                 }
               }}
               onChange={(event) => {

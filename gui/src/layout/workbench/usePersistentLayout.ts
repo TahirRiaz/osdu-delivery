@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useState } from "react";
 import type { Layout, LayoutChangedMeta } from "react-resizable-panels";
 
 /**
@@ -11,24 +11,23 @@ export function usePersistentLayout(storageKey: string): {
   onLayoutChanged: (layout: Layout, meta: LayoutChangedMeta) => void;
 } {
   // Read once per mount: the group applies defaultLayout on mount only, so re-reads are pointless.
-  const initial = useRef<Layout | undefined>(undefined);
-  const loaded = useRef(false);
-  if (!loaded.current) {
-    loaded.current = true;
+  const [defaultLayout] = useState<Layout | undefined>(() => {
     try {
       const raw = window.localStorage.getItem(storageKey);
       if (raw !== null) {
         const parsed: unknown = JSON.parse(raw);
         if (typeof parsed === "object" && parsed !== null
           && Object.values(parsed).every((size) => typeof size === "number")) {
-          initial.current = parsed as Layout;
+          return parsed as Layout;
         }
       }
     } catch {
       // A corrupt store just means the default sizes apply.
-      initial.current = undefined;
+      return undefined;
     }
-  }
+
+    return undefined;
+  });
 
   const onLayoutChanged = useCallback((layout: Layout, meta: LayoutChangedMeta) => {
     if (meta.isUserInteraction) {
@@ -36,5 +35,5 @@ export function usePersistentLayout(storageKey: string): {
     }
   }, [storageKey]);
 
-  return { defaultLayout: initial.current, onLayoutChanged };
+  return { defaultLayout, onLayoutChanged };
 }

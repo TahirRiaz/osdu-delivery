@@ -1,14 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { applyBrandMode } from "./branding";
-
-type ThemeMode = "light" | "dark";
-
-interface ThemeModeValue {
-  mode: ThemeMode;
-  toggle: () => void;
-}
-
-const ThemeModeContext = createContext<ThemeModeValue | null>(null);
+import { ThemeModeContext, type ThemeMode, type ThemeModeValue } from "./useThemeMode";
 
 const STORAGE_KEY = "sqlflow.theme";
 
@@ -54,13 +46,4 @@ export function ThemeModeProvider({ children }: { children: ReactNode }) {
   }), [mode]);
 
   return <ThemeModeContext.Provider value={value}>{children}</ThemeModeContext.Provider>;
-}
-
-export function useThemeMode(): ThemeModeValue {
-  const context = useContext(ThemeModeContext);
-  if (!context) {
-    throw new Error("useThemeMode must be used inside ThemeModeProvider.");
-  }
-
-  return context;
 }

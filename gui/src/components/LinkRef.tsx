@@ -27,7 +27,7 @@ interface LinkRefProps {
  * Whether a location can actually be opened from a browser. A location is free text and is just as often a
  * workbook path or a share as it is a report URL, and only http(s) survives a click.
  */
-export function isFollowable(url: string): boolean {
+function isFollowable(url: string): boolean {
   const value = url.trim().toLowerCase();
   return value.startsWith("http://") || value.startsWith("https://");
 }

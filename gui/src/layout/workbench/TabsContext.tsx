@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useState,
@@ -9,34 +7,9 @@ import {
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { routeTitle } from "../nav";
-
-export interface WorkbenchTab {
-  /** The tab's identity: one tab per pathname (query-string changes update the same tab). */
-  path: string;
-  /** The full URL (path + search) last seen for this tab, restored on activation. */
-  url: string;
-  title: string;
-}
-
-interface TabsValue {
-  tabs: WorkbenchTab[];
-  /** The pathname of the routed page, i.e. the active tab. */
-  activePath: string;
-  activate: (tab: WorkbenchTab) => void;
-  close: (path: string) => void;
-  /** Closes every tab except the given one. */
-  closeOthers: (path: string) => void;
-  /** Closes every tab sitting to the left of the given one. */
-  closeToLeft: (path: string) => void;
-  /** Closes every tab sitting to the right of the given one. */
-  closeToRight: (path: string) => void;
-  closeAll: () => void;
-  setTitle: (path: string, title: string) => void;
-}
+import { TabsContext, type TabsValue, type WorkbenchTab } from "./useWorkbenchTabs";
 
 const HOME_PATH = "/";
-
-const TabsContext = createContext<TabsValue | null>(null);
 
 const STORAGE_KEY = "sqlflow.workbench.tabs";
 
@@ -72,26 +45,28 @@ export function TabsProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [tabs, setTabs] = useState<WorkbenchTab[]>(loadStoredTabs);
+  const [routedUrl, setRoutedUrl] = useState<string | null>(null);
 
   // The routed location is the source of truth: it opens new tabs and refreshes the active tab's URL.
-  useEffect(() => {
-    const path = location.pathname;
-    const url = path + location.search;
+  const locationPath = location.pathname;
+  const locationUrl = locationPath + location.search;
+  if (routedUrl !== locationUrl) {
+    setRoutedUrl(locationUrl);
     setTabs((current) => {
-      const index = current.findIndex((tab) => tab.path === path);
+      const index = current.findIndex((tab) => tab.path === locationPath);
       if (index >= 0) {
-        if (current[index].url === url) {
+        if (current[index].url === locationUrl) {
           return current;
         }
 
         const next = [...current];
-        next[index] = { ...next[index], url };
+        next[index] = { ...next[index], url: locationUrl };
         return next;
       }
 
-      return [...current, { path, url, title: routeTitle(path).title }];
+      return [...current, { path: locationPath, url: locationUrl, title: routeTitle(locationPath).title }];
     });
-  }, [location.pathname, location.search]);
+  }
 
   useEffect(() => {
     window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(tabs));
@@ -189,25 +164,4 @@ export function TabsProvider({ children }: { children: ReactNode }) {
   }), [tabs, location.pathname, activate, close, closeOthers, closeToLeft, closeToRight, closeAll, setTitle]);
 
   return <TabsContext.Provider value={value}>{children}</TabsContext.Provider>;
-}
-
-export function useWorkbenchTabs(): TabsValue {
-  const context = useContext(TabsContext);
-  if (!context) {
-    throw new Error("useWorkbenchTabs must be used inside TabsProvider.");
-  }
-
-  return context;
-}
-
-/** Reported by detail pages once their data loads, so the tab reads "orders_ods" instead of "Pipeline". */
-export function useTabTitle(title: string | undefined): void {
-  const { setTitle } = useWorkbenchTabs();
-  const { pathname } = useLocation();
-
-  useEffect(() => {
-    if (title !== undefined && title !== "") {
-      setTitle(pathname, title);
-    }
-  }, [title, pathname, setTitle]);
 }

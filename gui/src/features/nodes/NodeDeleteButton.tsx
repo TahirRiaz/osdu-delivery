@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { isApiError } from "../../api/client";
 import { nodeApi } from "../../api/endpoints";
 import type { Node } from "../../api/types";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth } from "../../auth/useAuth";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 
 /** Removes a dead node from the fleet registry. Offered only for offline nodes (a live node would just re-register

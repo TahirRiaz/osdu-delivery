@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import type { RunGroup } from "../../api/types";
 import { runApi } from "../../api/endpoints";
 import { pollingInterval } from "../../hooks/usePolling";
-import { useRunDock } from "./RunDockContext";
+import { useRunDock } from "./useRunDock";
 
 /** A finished chip lingers this long so the operator registers the outcome, then removes itself rather than piling
  * up in the tray. A chip that is still executing never expires; the user can dismiss any chip by hand. */

@@ -69,8 +69,9 @@ public class YamlDocumentLoaderTests
             Assert.Contains(names, refused.Message, StringComparison.Ordinal);
         }
 
-        // A metadata-only flow declares it and keeps it.
-        var metadata = streaming
+        // A metadata-only flow declares it and keeps it. The raw literal takes the line endings the file was checked out
+        // with, so they are made "\n" before a line is cut.
+        var metadata = streaming.ReplaceLineEndings("\n")
             .Replace("  payloads: { curves: \"curves/{deliveryKey}/chunk_*.parquet\" }\n", string.Empty, StringComparison.Ordinal)
             .Replace("  protocolOptions: { payload: curves, recordMethod: POST }\n", string.Empty, StringComparison.Ordinal)
             .Replace("osduWellLog", "osduRecord", StringComparison.Ordinal);

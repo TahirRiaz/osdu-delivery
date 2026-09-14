@@ -16,7 +16,7 @@ git clone <this repository>
 cd osdu-delivery
 dotnet build SqlFlow.sln
 dotnet test SqlFlow.sln
-cd gui && npm ci && npm run build
+cd gui && npm ci && npm run lint && npm run build
 ```
 
 The pure tests need no database. The DB-backed suites read a connection string from the `SQLFLOW_TEST_DB`
@@ -44,8 +44,10 @@ contributors:
 
 - Modern C#: nullable reference types, file-scoped namespaces, `record` for data, primary constructors,
   `async`/`CancellationToken` for I/O.
-- Style is enforced by `.editorconfig` and analyzers. `dotnet build SqlFlow.sln` must be warning-clean, and
-  `npm run build` in `gui/` must pass the type check.
+- Style is enforced by `.editorconfig` and analyzers. `dotnet build SqlFlow.sln` must be warning-clean, and in
+  `gui/` both `npm run lint` (ESLint, no warnings allowed) and `npm run build` (the type check and the bundle) must
+  pass. Fix a lint finding at its source; a component file exports only components, so a hook, a context, a constant or
+  a variants helper lives in a `.ts` module beside it.
 - No TODOs, stubs, or placeholders: every change you hand in is finished.
 - Add or update tests for behavior changes.
 

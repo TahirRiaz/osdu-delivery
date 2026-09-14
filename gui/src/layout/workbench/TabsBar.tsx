@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { routeTitle } from "../nav";
-import { useWorkbenchTabs, type WorkbenchTab } from "./TabsContext";
+import { useWorkbenchTabs, type WorkbenchTab } from "./useWorkbenchTabs";
 
 function copyLink(tab: WorkbenchTab): void {
   navigator.clipboard

@@ -11,7 +11,8 @@ import { Textarea } from "@/components/ui/textarea";
 import type { DeliveryBuilderRepo } from "../../api/delivery";
 import { repoSourceApi } from "../../api/endpoints";
 import { LinkRef } from "../../components/LinkRef";
-import { ProblemView, problemText } from "./TemplateSheet";
+import { problemText } from "./problemText";
+import { ProblemView } from "./TemplateSheet";
 
 interface MappingProposeSheetProps {
   open: boolean;
@@ -49,11 +50,21 @@ export function MappingProposeSheet({ open, onClose, repo, sourceId, name, versi
     onError: (error) => toast.error(problemText(error)),
   });
 
+  // Every opening, and another mapping while open, starts from the default title and an empty description.
+  const seedFor = open ? defaultTitle : null;
+  const [seededFor, setSeededFor] = useState(seedFor);
+  if (seedFor !== seededFor) {
+    setSeededFor(seedFor);
+    if (seedFor !== null) {
+      setTitle(seedFor);
+      setBody("");
+    }
+  }
+
+  // The mutation is an external store, so the last opening's pull request or failure is cleared from it afterwards.
   const { reset } = propose;
   useEffect(() => {
     if (open) {
-      setTitle(defaultTitle);
-      setBody("");
       reset();
     }
   }, [open, defaultTitle, reset]);

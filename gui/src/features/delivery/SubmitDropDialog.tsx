@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
@@ -56,14 +56,17 @@ export function SubmitDropDialog({ open, onClose, pipelineId, flowName }: Submit
   const [drop, setDrop] = useState("");
   const [valuesText, setValuesText] = useState("");
   const [force, setForce] = useState(false);
+  const [wasOpen, setWasOpen] = useState(open);
 
-  useEffect(() => {
+  // Every opening starts from an empty form.
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (open) {
       setDrop("");
       setValuesText("");
       setForce(false);
     }
-  }, [open]);
+  }
 
   const submit = useMutation({
     mutationFn: deliveryApi.submit,

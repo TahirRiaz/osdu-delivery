@@ -30,7 +30,8 @@ import { FilterBar } from "../../components/FilterBar";
 import { IconAction } from "../../components/IconAction";
 import { SearchInput } from "../../components/SearchInput";
 import { StatePill } from "../../components/StatusBadge";
-import { TreeContext, TreeNode, type TreeState } from "../../components/Tree";
+import { TreeNode } from "../../components/Tree";
+import { TreeContext, type TreeState } from "../../components/treeState";
 import { usePersistentLayout } from "../../layout/workbench/usePersistentLayout";
 import { holderPath, roleLabel, shapeText, splitPath } from "./templateFormat";
 

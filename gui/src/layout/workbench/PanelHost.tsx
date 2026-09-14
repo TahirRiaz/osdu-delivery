@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { usePanel } from "./PanelContext";
+import { usePanel } from "./usePanel";
 
 /**
  * The bottom panel surface (DESIGN.md section 6): an uppercase title header with a close button, the

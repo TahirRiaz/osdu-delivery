@@ -8,7 +8,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
-import { useThemeMode } from "@/theme/ThemeModeContext"
+import { useThemeMode } from "@/theme/useThemeMode"
 
 const Toaster = ({ ...props }: ToasterProps) => {
   const { mode } = useThemeMode()

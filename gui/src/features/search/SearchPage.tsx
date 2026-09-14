@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
@@ -72,11 +72,13 @@ export default function SearchPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const q = (searchParams.get("q") ?? "").trim();
   const [term, setTerm] = useState(q);
+  const [mirroredQ, setMirroredQ] = useState(q);
 
   // The title-bar search navigates here while this page is already mounted: mirror the new term into the input.
-  useEffect(() => {
+  if (q !== mirroredQ) {
+    setMirroredQ(q);
     setTerm(q);
-  }, [q]);
+  }
 
   const submit = (event: FormEvent) => {
     event.preventDefault();

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { DiffEditor, type Monaco } from "@monaco-editor/react";
 import { defineSqlflowTheme, sqlflowEditorTheme } from "@/lib/monacoTheme";
-import { useThemeMode } from "../theme/ThemeModeContext";
+import { useThemeMode } from "../theme/useThemeMode";
 import "../lib/monacoSetup";
 
 interface CodeDiffViewProps {

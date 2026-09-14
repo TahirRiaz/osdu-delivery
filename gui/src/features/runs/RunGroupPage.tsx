@@ -24,7 +24,7 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { RunStatusBadge } from "../../components/StatusBadge";
 import { TruncatedText } from "../../components/TruncatedText";
 import { pollingInterval } from "../../hooks/usePolling";
-import { useTabTitle } from "../../layout/workbench/TabsContext";
+import { useTabTitle } from "../../layout/workbench/useWorkbenchTabs";
 import { formatDurationSeconds } from "../../lib/time";
 import { useRunGroupStream } from "./useRunGroupStream";
 

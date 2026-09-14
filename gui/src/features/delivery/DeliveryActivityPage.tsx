@@ -14,7 +14,7 @@ import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { SearchInput } from "../../components/SearchInput";
 import { TruncatedText } from "../../components/TruncatedText";
-import { prettyJson } from "./DeliveryFlowPanel";
+import { prettyJson } from "./prettyJson";
 
 const ALL = "all";
 const KINDS = ["deliver", "submit", "work", "verify", "known-state", "release", "redeliver", "delete"];

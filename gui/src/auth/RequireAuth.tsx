@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import { useAuth } from "./AuthContext";
+import { useAuth } from "./useAuth";
 
 /** Route guard: unauthenticated visits are sent to the login page, which returns them here after sign-in. */
 export function RequireAuth({ children }: { children: ReactNode }) {

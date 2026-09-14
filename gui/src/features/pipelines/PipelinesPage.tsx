@@ -18,7 +18,8 @@ import { PageHeader } from "../../components/PageHeader";
 import { SearchInput } from "../../components/SearchInput";
 import { fetchAllPipelines, type FetchResult } from "./fetchAllPipelines";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
-import { groupByProject, pipelineMatches, ProjectGroup } from "./ProjectGroup";
+import { groupByProject, pipelineMatches } from "./pipelineGroups";
+import { ProjectGroup } from "./ProjectGroup";
 
 /** Every flow kind the loader recognises, acquisition-first then transform/utility (see YamlDocumentLoader). */
 const kinds = ["file", "ing", "api", "cpy", "sftp", "exp", "trl", "sp", "inv", "hc", "scm", "batch", "cal"];

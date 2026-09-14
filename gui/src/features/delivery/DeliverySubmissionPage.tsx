@@ -19,9 +19,10 @@ import { IdChip } from "../../components/IdChip";
 import { Page } from "../../components/Page";
 import { RelativeTime } from "../../components/RelativeTime";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useTabTitle } from "../../layout/workbench/TabsContext";
+import { useTabTitle } from "../../layout/workbench/useWorkbenchTabs";
 import { SubmissionStatusBadge } from "./DeliveryBadges";
-import { prettyJson, SubmissionCounts } from "./DeliveryFlowPanel";
+import { SubmissionCounts } from "./DeliveryFlowPanel";
+import { prettyJson } from "./prettyJson";
 
 /** Everything the ledger holds about one drop: what it was, how it went, every attempt it produced, and the runs
  * that carried it, with a way back to the records it touched. */

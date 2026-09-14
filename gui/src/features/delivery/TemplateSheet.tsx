@@ -9,11 +9,6 @@ import { RunStatusBadge } from "../../components/StatusBadge";
 import { TemplateHeader } from "./TemplateHeader";
 import { TemplateView } from "./TemplateView";
 
-/** The API's problem detail for a failed call, or the error's own text: what a failure toast says. */
-export function problemText(error: unknown): string {
-  return isApiError(error) ? error.detail ?? error.title : String(error);
-}
-
 /** A failed call, rendered the one way API failures render: the problem with its correlation id. */
 export function ProblemView({ error, testId }: { error: unknown; testId?: string }) {
   return isApiError(error)
