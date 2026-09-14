@@ -25,7 +25,7 @@ internal static class CacheMapper
             kv => kv.Key,
             kv => new FlowParameter { Required = kv.Value.Required, Default = kv.Value.Default, Description = kv.Value.Description },
             StringComparer.Ordinal);
-        var defaultMode = FlowMapper.ParseEnum(y.OnChange, CacheChangeMode.Approve, "onChange", source);
+        var defaultMode = FlowMapper.ParseEnum(y.OnChange, CacheChangeMode.Auto, "onChange", source);
 
         return new CacheDefinition
         {

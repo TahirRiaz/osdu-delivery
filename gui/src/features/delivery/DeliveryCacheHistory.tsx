@@ -372,6 +372,8 @@ export function DeliveryCacheHistory({ cache, type }: { cache: string; type: str
     {
       id: "capturedBy",
       header: "Captured by",
+      fill: true,
+      floor: 160,
       render: (entry) => (
         <span className="flex flex-col">
           {entry.version.runId !== null
@@ -385,7 +387,7 @@ export function DeliveryCacheHistory({ cache, type }: { cache: string; type: str
                 run {entry.version.runId.slice(0, 8)}
               </RouterLink>
             )
-            : <TruncatedText text={entry.version.origin} maxWidth={220} className="text-[12px]" />}
+            : <TruncatedText text={entry.version.origin} maxWidth={1200} className="text-[12px]" />}
           <span className="text-[11px] text-muted-foreground">{entry.version.capturedBy}</span>
         </span>
       ),
@@ -397,13 +399,6 @@ export function DeliveryCacheHistory({ cache, type }: { cache: string; type: str
       render: (entry) => <span className="font-mono tabular-nums">{entry.version.items.toLocaleString()}</span>,
     },
     { id: "changes", header: type ? `Changes to ${type}` : "Changes", render: (entry) => <ChangeCounts entry={entry} /> },
-    {
-      id: "previous",
-      header: "Compared with",
-      render: (entry) => (
-        <span className="font-mono text-[12px] text-muted-foreground">{entry.before ?? "-"}</span>
-      ),
-    },
   ];
 
   return (

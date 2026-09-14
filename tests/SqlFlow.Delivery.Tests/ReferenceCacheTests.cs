@@ -309,6 +309,23 @@ public class ReferenceCacheTests
     }
 
     [Fact]
+    public void A_changed_cached_value_goes_out_on_the_next_run_unless_a_type_opts_into_approval()
+    {
+        var cache = CacheFlow(
+            """
+              - kind: osdu:wks:master-data--Wellbore:1.0.0
+                fields: [data.FacilityName]
+              - kind: osdu:wks:reference-data--UnitOfMeasure:1.0.0
+                onChange: approve
+                fields: [data.Code]
+            """);
+
+        Assert.Equal(CacheChangeMode.Auto, cache.OnChange);
+        Assert.Equal(CacheChangeMode.Auto, cache.Types[0].OnChange);
+        Assert.Equal(CacheChangeMode.Approve, cache.Types[1].OnChange);
+    }
+
+    [Fact]
     public void A_cached_type_names_its_kind_and_a_query_uses_only_declared_parameters()
     {
         var noKind = Assert.Throws<FlowValidationException>(() => CacheFlow("""

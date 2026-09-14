@@ -16,6 +16,12 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    watch: {
+      // The e2e suite builds its fixture repository under e2e/.fixtures and runs flows that write work files there while
+      // the dev server is up; watching them made the server crash on a file the run held open (EBUSY). None of it is
+      // source the GUI loads.
+      ignored: ["**/e2e/**", "**/test-results/**", "**/playwright-report/**"],
+    },
   },
   build: {
     outDir: "dist",

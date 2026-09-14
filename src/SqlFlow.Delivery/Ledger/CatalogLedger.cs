@@ -1719,20 +1719,20 @@ public sealed class CatalogLedger : ILedger
         return await db.DeliveryCacheSets.AsNoTracking().Where(c => c.Gated).Select(c => c.SetId).ToListAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, CancellationToken ct = default)
+    public async Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, string? cacheName = null, CancellationToken ct = default)
     {
         await using var db = Open();
-        var rows = await TagQuery(db, status)
+        var rows = await TagQuery(db, status, cacheName)
             .OrderByDescending(t => t.TagId)
             .Skip(Math.Max(0, offset)).Take(Math.Clamp(max, 1, 1000))
             .ToListAsync(ct).ConfigureAwait(false);
         return rows.Select(ToTag).ToList();
     }
 
-    public async Task<int> CountTagsAsync(string? status, CancellationToken ct = default)
+    public async Task<int> CountTagsAsync(string? status, string? cacheName = null, CancellationToken ct = default)
     {
         await using var db = Open();
-        return await TagQuery(db, status).CountAsync(ct).ConfigureAwait(false);
+        return await TagQuery(db, status, cacheName).CountAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<int> DecideTagsAsync(IReadOnlyList<long> tagIds, bool approve, string actor, DateTime nowUtc, CancellationToken ct = default)
@@ -1858,13 +1858,19 @@ public sealed class CatalogLedger : ILedger
         await SetGateAsync(db, setIds.Where(id => !stillGated.Contains(id)).ToList(), gated: false, ct).ConfigureAwait(false);
     }
 
-    private static IQueryable<DeliveryUpdateTag> TagQuery(CatalogDbContext db, string? status)
+    private static IQueryable<DeliveryUpdateTag> TagQuery(CatalogDbContext db, string? status, string? cacheName)
     {
         var query = db.DeliveryUpdateTags.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(status))
         {
             var s = status.Trim().ToLowerInvariant();
             query = query.Where(t => t.Status == s);
+        }
+
+        if (!string.IsNullOrWhiteSpace(cacheName))
+        {
+            var cache = cacheName.Trim();
+            query = query.Where(t => t.CacheName == cache);
         }
 
         return query;

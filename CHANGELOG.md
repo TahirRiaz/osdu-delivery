@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A cache is a flow of its own: `flowType: cache` declares the OSDU platform to search (`source`: endpoint, auth, and
   headers with `data-partition-id`), the types to cache (each a `kind`, an optional `query`, the `fields` to keep as
-  bare paths or `path`/`as` pairs, and `onChange: approve | auto`), `makeCurrent`, a default `onChange`, `parameters`,
+  bare paths or `path`/`as` pairs, and `onChange: auto | approve`), `makeCurrent`, a default `onChange` (`auto` unless the flow opts into approval), `parameters`,
   `reliability` and a `schedule`. The cache flow's name is the cache's identity. Its contents live only in the catalog
   (`delivery.CacheVersion`, `delivery.CacheItem`): every version is kept, a record is stored once per run of versions
   that held it unchanged (`FromSequence` to `ToSequence`), and a version's content hash is checked every time it is
@@ -33,10 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   count. `GET /cache/items`, `/cache/versions`, `/cache/history` and `/cache/diff` now require `cache=<name>`, and
   update tags carry the cache. `GET /mapping-builder/caches` lists the caches for the mapping builder, whose draft,
   compose, template preview and template detail take `cache` in place of `repoId`.
-- The OSDU cache page opens on a cache picker and the cache's definition: the file that defines it, View YAML, Refresh
-  now (the trigger dialog with the refresh operation), the endpoint, the schedules, the current version with who
-  captured it and its run, and the declared types with their kind, query, kept paths, `onChange` and record counts;
-  then the Records, Versions and Approvals tabs. A cache flow's pipeline page has a Cache versions tab, and the mapping
+- The OSDU cache page names the cache and the file that defines it, with View YAML and Refresh now (the trigger dialog
+  with the refresh operation) beside it. A summary row gives the current version with who captured it, the records it
+  holds, how it is refreshed, and whether changes are automatic or how many wait for approval; a banner with Review
+  changes appears whenever any do. The declared types sit in a list on the left and scope the Records and Versions tabs;
+  the Changes tab lists what refreshes changed, with Approve and Reject in each waiting row, and the Definition tab reads
+  back the endpoint, the schedules and each type's kind, query, kept paths and `onChange`. The tab, cache and type are
+  in the URL. `GET /cache/tags` takes `cache` to list one cache's changes. A cache flow's pipeline page has a Cache versions tab, and the mapping
   builder has a Cache picker defaulting to the cache the repository's delivery flow names.
 - A file too large to send through the control plane is written straight to storage:
   `POST /api/v1/delivery/dropoffs/reserve` writes the drop-off row, then hands out one write-only URL per file, and

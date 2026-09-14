@@ -114,6 +114,12 @@ public sealed class CacheChangeTests : IDisposable
         Assert.Equal(2, there.AffectedRecords);
         var tag = Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0));
         Assert.Equal("other-units", tag.CacheName);
+
+        // The cache page lists one cache's changes: the other cache has none to show or count.
+        Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0, "other-units"));
+        Assert.Equal(1, await Ledger.CountTagsAsync("pending", "other-units"));
+        Assert.Empty(await Ledger.ListTagsAsync("pending", 10, 0, CacheName));
+        Assert.Equal(0, await Ledger.CountTagsAsync(null, CacheName));
     }
 
     [Fact]

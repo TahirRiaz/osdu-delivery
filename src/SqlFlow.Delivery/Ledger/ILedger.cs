@@ -1026,10 +1026,10 @@ public interface ILedger
     /// <summary>The gated sets, which a plan reads once per run to know which records are held back.</summary>
     Task<IReadOnlyList<long>> GatedCacheSetsAsync(CancellationToken ct = default);
 
-    /// <summary>The tags in a status, newest first.</summary>
-    Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, CancellationToken ct = default);
+    /// <summary>The tags in a status, newest first; with a cache name, only the changes that cache's refreshes found.</summary>
+    Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, string? cacheName = null, CancellationToken ct = default);
 
-    Task<int> CountTagsAsync(string? status, CancellationToken ct = default);
+    Task<int> CountTagsAsync(string? status, string? cacheName = null, CancellationToken ct = default);
 
     /// <summary>
     /// Decides tags: approving lets the rollout carry the change out, rejecting leaves the delivered documents

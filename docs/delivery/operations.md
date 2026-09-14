@@ -196,40 +196,44 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   entry takes its value from the dataset, a repeater, the cache or a static value, with its modifiers, condition and
   required flag, and the YAML and its checks against the template and the cache's current version follow every edit. The mapping is copied, or proposed to the repository as a pull request through the proposal endpoint
   (`POST /api/v1/repos/sources/{id}/proposals`). An existing synced mapping opens with its entries filled in.
-- **OSDU cache** (Workspace): the reference and master data every delivered document is built from. A cache picker in
-  the header chooses among the caches the synced cache flows declare. A definition card comes first and says what the
-  cache is: the file that defines it, View YAML (the cache flow's pipeline page) and Refresh now (the trigger dialog on
-  the cache flow, with the refresh operation), the endpoint it is captured from, the schedules that refresh it, the
-  current version with when and by whom it was captured and a link to the run, how many versions it holds, and the
-  declared types, each with the kind it is searched as and its query, the paths it keeps, what a changed value does
-  (waits for approval, or goes out on the next run) and how many records the current version holds. Picking a type
-  scopes the tabs below to it. One filter row carries the search over every cached value, id and alias (typing brings
-  the Records tab forward), a searchable type picker (each type with its family, how many records it holds and the
-  names it captures) and the version picker. The definition is read-only because it lives in the cache flow's file in
-  git; the decision on a change is the one thing made here.
-- **Records.** The cached records at the version being read, searched over every value they hold (id, code, name,
-  alias). With a type in scope the table has one column per captured name, so a unit's code, name and id read down
-  the page; over every type the values fold into one column. The repeated part of an OSDU id (partition and entity
-  type) steps back so the column reads by what tells the records apart. A row opens the record: its captured values
-  by name, the JSON as captured, and the version it is the record as of.
-- **Reading the cache as it stood.** The version picker in the filter row reads the records at one version. It opens
-  on the current version, the one deliveries render against unless a flow pins another; picking an earlier one says
-  so on the page, because nothing shown then is what a render would read today. Every version the cache flow's runs
-  captured stays readable.
+- **OSDU cache** (Workspace): the reference and master data every delivered document is built from. The header names
+  the cache and the cache flow file that defines it, with View YAML (the cache flow's pipeline page) and Refresh now
+  (the trigger dialog on the cache flow, with the refresh operation); a cache picker joins them when the synced cache
+  flows declare more than one cache. A summary row follows: the current version with when and by whom it was captured,
+  how many records it holds in how many types, whether a schedule refreshes it, and either that changes are automatic
+  or how many wait for approval. Whenever a change waits, a banner says so with Review changes. The declared types sit
+  in a list on the left, grouped by family, each with its record count and a shield when its changes wait for
+  approval; picking one scopes the Records and Versions tabs, and All types lifts the scope. The tab, the cache and
+  the type are in the URL, so a link opens the same view. The definition is read-only because it lives in the cache
+  flow's file in git; the decision on a change is the one thing made here.
+- **Records.** The cached records at the version being read, with the search over every value they hold (id, code,
+  name, alias) and the version picker in the tab's own toolbar. With a type in scope the table has one column per
+  captured name, so a unit's code, name and id read down the page; over every type each row names its type, shows the
+  part of the id that tells the records apart (the whole id on hover) and folds the values into one column. A row
+  opens the record: its captured values by name, the JSON as captured, and the version it is the record as of.
+- **Reading the cache as it stood.** The version picker opens on the current version, the one deliveries render
+  against unless a flow pins another; picking an earlier one says so above the table, because nothing shown then is
+  what a render would read today. Every version the cache flow's runs captured stays readable.
+- **Definition.** What the cache flow file declares, as the last sync found it: the file, the endpoint the types are
+  captured from, the schedules, whether a new version becomes current, and each type with the kind it is searched as
+  and its query, the paths it keeps, and what a changed value does (next run, or needs approval).
 - **Versions.** Every version, newest first, each with what captured it (the run and who asked, or an import from
   files) and what it changed compared with the version captured before it (so many changed, added, removed, or no
   changes), with the counts for the type in scope when one is picked and the versions that left it untouched folded
   away. Picking a version raises its changes in the workbench bottom panel, so the list stays in view: changed
   records with the captured values that moved, before and after, records the version added, and records it no longer
   holds, narrowed by a change kind and a search. A row opens both sides. Versions covers the whole cache, which is
-  what separates it from Approvals: Approvals holds only the changes that reach records already delivered, so a refresh
-  that moved values nothing was built from shows in the history and leaves Approvals empty.
-- **Approvals.** The cache changes that reach records already delivered, by state (awaiting approval, approved,
-  rolling out, rolled out, rejected), each with the value before and after, how many delivered records it reaches
-  and how far the rollout has carried it. Picking a change raises it in the bottom panel with both values in full,
-  the versions it moved between, who decided it and when, and the Approve and Reject buttons while it is still open.
-  Selecting changes raises a toolbar in the table that says how many delivered records the decision would redeliver,
-  and approves or rejects them in bulk.
+  what separates it from Changes: Changes holds only the changes that reach records already delivered, so a refresh
+  that moved values nothing was built from shows in the versions and leaves Changes empty.
+- **Changes.** The changes this cache's refreshes found in values delivered records were built from, by state
+  (waiting for approval, approved, rolling out, rolled out, rejected, or all), each with the value before and after,
+  how many delivered records it reaches and how far the rollout has carried it. A line above the list says which types
+  ask for approval. By default every type updates automatically (`onChange: auto`), so a change is approved as it is
+  found and shows here as a rollout, and the list opens on all changes; when a type asks for approval
+  (`onChange: approve`) the list opens on the changes waiting, and each waiting row carries Approve and Reject.
+  Picking a change raises it in the bottom panel with both values in full, the versions it moved between, who decided
+  it and when, and the same decision while it is still open. Selecting waiting changes raises a toolbar that says how
+  many delivered records the decision would redeliver, and approves or rejects them in bulk.
 - **Runs**: a delivery run is a platform run; its trace streams live and its parameters, record counts and
   result show on the run page; a fan-out member shows its root and slot. Re-run repeats the same parameters.
   The trigger dialog offers the operations the flow's kind runs.

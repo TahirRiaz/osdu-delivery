@@ -6,12 +6,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { cn } from "@/lib/utils";
 import { deliveryApi, type DeliveryUpdateTag } from "../../api/delivery";
 import { CopyButton } from "../../components/CopyButton";
 import { DetailPair } from "../../components/DetailPair";
 import { EmptyState } from "../../components/EmptyState";
+import { IconAction } from "../../components/IconAction";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RelativeTime } from "../../components/RelativeTime";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -21,12 +21,15 @@ import { RecordId } from "./DeliveryCacheRecords";
 /** The bottom panel content ids this surface owns. */
 const PANEL = "cache-tag:";
 
+const ALL = "all";
+
 const statuses: { value: string; label: string }[] = [
-  { value: "pending", label: "Awaiting approval" },
+  { value: "pending", label: "Waiting for approval" },
   { value: "approved", label: "Approved" },
   { value: "rolling", label: "Rolling out" },
   { value: "applied", label: "Rolled out" },
   { value: "rejected", label: "Rejected" },
+  { value: ALL, label: "All" },
 ];
 
 const statusLabel = Object.fromEntries(statuses.map((s) => [s.value, s.label])) as Record<string, string>;
@@ -38,9 +41,9 @@ const changeTone: Record<string, string> = {
 };
 
 /**
- * The one decision this page makes, as the toolbar and the detail panel both make it: approving hands the change to
- * the batched rollout, rejecting leaves OSDU with what it holds. Every cache query refreshes afterwards, since the
- * change leaves the pending list and the summary's count moves with it.
+ * The one decision this surface makes, as the row buttons, the toolbar and the detail panel all make it: approving hands
+ * the change to the batched rollout, rejecting leaves OSDU with what it holds. Every cache query refreshes afterwards,
+ * since the change leaves the pending list and the counts move with it.
  */
 function useDecideTags(onDecided?: () => void) {
   const queryClient = useQueryClient();
@@ -73,7 +76,7 @@ function ValueChange({ row, maxWidth }: { row: DeliveryUpdateTag; maxWidth: numb
 /** How far the rollout has carried the change, or why it has not started. */
 function Rollout({ row }: { row: DeliveryUpdateTag }) {
   if (row.status === "pending") {
-    return <span className="text-[12px] text-muted-foreground">waiting for a decision</span>;
+    return <span className="text-[12px] text-warning">waiting for a decision</span>;
   }
 
   if (row.status === "rejected") {
@@ -83,7 +86,7 @@ function Rollout({ row }: { row: DeliveryUpdateTag }) {
   const done = row.affectedRecords === 0 ? 1 : row.processed / row.affectedRecords;
   return (
     <span className="inline-flex items-center gap-2">
-      <span className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+      <span className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
         <span
           className={cn("block h-full", row.status === "applied" ? "bg-success" : "bg-primary")}
           style={{ width: `${Math.round(done * 100)}%` }}
@@ -96,34 +99,65 @@ function Rollout({ row }: { row: DeliveryUpdateTag }) {
   );
 }
 
+/** Approve and reject for one waiting change, right in its row, so a decision never needs the row opened first. */
+function RowDecision({ tag }: { tag: DeliveryUpdateTag }) {
+  const decide = useDecideTags();
+  if (tag.status !== "pending") {
+    return null;
+  }
+
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      <IconAction
+        label="Approve: the next runs carry the update"
+        icon={<Check />}
+        className="text-success hover:text-success"
+        disabled={decide.isPending}
+        onClick={(event) => {
+          event.stopPropagation();
+          decide.mutate({ ids: [tag.tagId], approve: true });
+        }}
+        data-testid="delivery-cache-row-approve"
+      />
+      <IconAction
+        label="Reject: OSDU keeps what it holds"
+        icon={<X />}
+        className="text-destructive hover:text-destructive"
+        disabled={decide.isPending}
+        onClick={(event) => {
+          event.stopPropagation();
+          decide.mutate({ ids: [tag.tagId], approve: false });
+        }}
+        data-testid="delivery-cache-row-reject"
+      />
+    </span>
+  );
+}
+
 const columns: Column<DeliveryUpdateTag>[] = [
-  {
-    id: "change",
-    header: "Change",
-    render: (row) => <Badge variant="secondary" className={changeTone[row.change] ?? ""}>{row.change}</Badge>,
-  },
   {
     id: "what",
     header: "Cached value",
     render: (row) => (
       <span className="flex flex-col gap-0.5">
-        <span className="font-mono text-[12px]">
-          <span className="text-muted-foreground">{row.cache} · </span>
-          {row.typeName}<span className="text-muted-foreground">.</span>{row.path}
+        <span className="inline-flex items-center gap-1.5 font-mono text-[12px]">
+          <Badge variant="secondary" className={changeTone[row.change] ?? ""}>{row.change}</Badge>
+          {row.typeName}<span className="-mx-1 text-muted-foreground">.</span>{row.path}
         </span>
         <RecordId id={row.itemId} maxWidth={300} />
       </span>
     ),
   },
-  { id: "values", header: "Was / is now", render: (row) => <ValueChange row={row} maxWidth={180} /> },
+  { id: "values", header: "Was / is now", fill: true, floor: 180, render: (row) => <ValueChange row={row} maxWidth={180} /> },
   {
     id: "records",
-    header: "Records",
+    header: "Delivered records",
     align: "right",
     render: (row) => <span className="font-mono tabular-nums">{row.affectedRecords.toLocaleString()}</span>,
   },
   { id: "progress", header: "Rollout", render: (row) => <Rollout row={row} /> },
-  { id: "detected", header: "Detected", render: (row) => <RelativeTime value={row.detectedUtc} /> },
+  { id: "detected", header: "Found", render: (row) => <RelativeTime value={row.detectedUtc} absolute={false} /> },
+  { id: "decide", header: "", align: "right", render: (row) => <RowDecision tag={row} /> },
 ];
 
 /**
@@ -180,9 +214,6 @@ function TagDetail({ tag, onDecided }: { tag: DeliveryUpdateTag; onDecided: () =
             ? <span className="font-mono text-[12px] text-destructive">gone</span>
             : <span className="break-all font-mono text-[12px]">{tag.newValue}</span>}
         </DetailPair>
-        <DetailPair label="Cache">
-          <span className="font-mono text-[12px]">{tag.cache}</span>
-        </DetailPair>
         <DetailPair label="Versions">
           <span className="inline-flex items-center gap-1.5 font-mono text-[12px]">
             <span className="text-muted-foreground">{tag.fromVersion ?? "-"}</span>
@@ -197,8 +228,8 @@ function TagDetail({ tag, onDecided }: { tag: DeliveryUpdateTag; onDecided: () =
           </span>
         </DetailPair>
         <DetailPair label="Rollout"><Rollout row={tag} /></DetailPair>
-        <DetailPair label="Mode">{tag.mode === "auto" ? "automatic: approved as detected" : "needs approval"}</DetailPair>
-        <DetailPair label="Detected"><RelativeTime value={tag.detectedUtc} /></DetailPair>
+        <DetailPair label="Mode">{tag.mode === "auto" ? "automatic: approved as found" : "needs approval"}</DetailPair>
+        <DetailPair label="Found"><RelativeTime value={tag.detectedUtc} /></DetailPair>
         <DetailPair label="Decided">
           {tag.decidedUtc === null
             ? <span className="text-muted-foreground">not yet</span>
@@ -223,18 +254,29 @@ function TagDetail({ tag, onDecided }: { tag: DeliveryUpdateTag; onDecided: () =
 }
 
 /**
- * The cache changes that reach records already delivered, by state, and the one decision this page makes: whether
- * such a change goes out. A row raises the change in the workbench bottom panel, with both values in full and the
- * decision buttons; selecting rows raises a toolbar in the table that decides them in bulk and says how many
- * delivered records the decision reaches before it is taken.
+ * The changes one cache's refreshes found in values delivered records were built from, and what became of each. By
+ * default a change goes out on the next run on its own and shows here as a rollout; a type whose cache flow asks for
+ * approval holds its changes here until someone decides, with Approve and Reject in the row, in bulk from a selection,
+ * and in the panel a row opens. The list opens on the changes waiting for a decision when there can be any, and on
+ * every change otherwise.
  */
-export function DeliveryCacheApprovals({ pendingTotal }: { pendingTotal: number | undefined }) {
-  const [status, setStatus] = useLocalStorageState("sqlflow.filters.delivery-cache.tag-status", "pending");
+export function DeliveryCacheApprovals({ cache, approvalTypes, pendingTotal }: {
+  cache: string;
+  /** The types of the cache whose changes wait for approval; empty when every change goes out on its own. */
+  approvalTypes: string[];
+  /** How many of the cache's changes wait for a decision; undefined while it loads. */
+  pendingTotal: number | undefined;
+}) {
+  const [chosen, setChosen] = useState<string | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [openTag, setOpenTag] = useState<DeliveryUpdateTag | null>(null);
   // The affected counts of every row seen so far, so a selection that spans pages still adds up.
   const [affected, setAffected] = useState<ReadonlyMap<string, number>>(new Map());
   const { ownedId, show, close } = useOwnedPanel(PANEL);
+
+  const approval = approvalTypes.length > 0 || (pendingTotal ?? 0) > 0;
+  const status = chosen ?? (approval ? "pending" : ALL);
+  const pending = status === "pending";
 
   const raise = useCallback((tag: DeliveryUpdateTag) => show(
     String(tag.tagId),
@@ -269,7 +311,6 @@ export function DeliveryCacheApprovals({ pendingTotal }: { pendingTotal: number 
   const decide = useDecideTags(() => setSelected(new Set()));
   const decideSelected = (approve: boolean) => decide.mutate({ ids: [...selected].map(Number), approve });
   const reach = [...selected].reduce((sum, id) => sum + (affected.get(id) ?? 0), 0);
-  const pending = status === "pending";
   const highlighted = open && openTag !== null ? String(openTag.tagId) : null;
 
   const toolbar = pending && selected.size > 0
@@ -295,34 +336,41 @@ export function DeliveryCacheApprovals({ pendingTotal }: { pendingTotal: number 
 
   return (
     <div className="flex flex-col gap-2">
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        size="sm"
-        value={status}
-        onValueChange={(value) => {
-          if (value !== "") {
-            setStatus(value);
-            setSelected(new Set());
-          }
-        }}
-        aria-label="Change state"
-        data-testid="delivery-cache-tag-status"
-      >
-        {statuses.map((option) => (
-          <ToggleGroupItem
-            key={option.value}
-            value={option.value}
-            className="h-8 gap-1.5 text-[13px]"
-            data-testid={`delivery-cache-tag-status-${option.value}`}
-          >
-            {option.label}
-            {option.value === "pending" && pendingTotal !== undefined && pendingTotal > 0 && (
-              <span className="rounded-full bg-warning/15 px-1.5 font-mono text-[11px] tabular-nums text-warning">{pendingTotal}</span>
-            )}
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={status}
+          onValueChange={(value) => {
+            if (value !== "") {
+              setChosen(value);
+              setSelected(new Set());
+            }
+          }}
+          aria-label="Change state"
+          data-testid="delivery-cache-tag-status"
+        >
+          {statuses.map((option) => (
+            <ToggleGroupItem
+              key={option.value}
+              value={option.value}
+              className="h-8 gap-1.5 px-2.5 text-[13px]"
+              data-testid={`delivery-cache-tag-status-${option.value}`}
+            >
+              {option.label}
+              {option.value === "pending" && (pendingTotal ?? 0) > 0 && (
+                <span className="rounded-full bg-warning/15 px-1.5 font-mono text-[11px] tabular-nums text-warning">{pendingTotal}</span>
+              )}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        <span className="text-[12px] text-muted-foreground" data-testid="delivery-cache-approval-rule">
+          {approvalTypes.length === 0
+            ? "Every type updates automatically."
+            : `Approval is on for ${approvalTypes.join(", ")}.`}
+        </span>
+      </div>
 
       {pending && pendingTotal === 0
         ? (
@@ -330,15 +378,17 @@ export function DeliveryCacheApprovals({ pendingTotal }: { pendingTotal: number 
             <EmptyState
               icon={<ShieldCheck />}
               title="Nothing needs approval"
-              description="A change waits here only when a record already delivered to OSDU was built from the value that moved. Every change a version made, delivered or not, is under Versions."
+              description={approvalTypes.length === 0
+                ? "No type of this cache asks for approval, so a changed value reaches the delivered records on the next run without waiting here. To look at a type's changes first, set onChange: approve on it in the cache flow file."
+                : "A change waits here only when a record already delivered to OSDU was built from a value that moved in a type that asks for approval."}
               data-testid="delivery-cache-approvals-empty"
             />
           </Card>
         )
         : (
           <PagedTable
-            queryKey={["delivery", "cache", "tags", status]}
-            fetchPage={(page, pageSize) => deliveryApi.updateTags({ page, pageSize, status })}
+            queryKey={["delivery", "cache", "tags", cache, status]}
+            fetchPage={(page, pageSize) => deliveryApi.updateTags({ page, pageSize, cache, status: status === ALL ? undefined : status })}
             columns={columns}
             rowKey={(row) => String(row.tagId)}
             onRowClick={(row) => {
@@ -349,7 +399,9 @@ export function DeliveryCacheApprovals({ pendingTotal }: { pendingTotal: number 
             selection={pending ? { selected, onChange: setSelected } : undefined}
             toolbar={toolbar}
             onPageLoaded={onPageLoaded}
-            emptyMessage={pending ? "Nothing needs approval." : "No changes in this state."}
+            emptyMessage={status === ALL
+              ? "No refresh of this cache has changed a value a delivered record was built from."
+              : "No changes in this state."}
             data-testid="delivery-cache-tags-table"
           />
         )}

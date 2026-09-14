@@ -44,10 +44,10 @@ public sealed record ReferenceTypeSpec
     public string Query { get; init; } = "*";
 
     /// <summary>
-    /// What a change to this type's cached values does to the records built from them: wait for approval (the default,
-    /// because a reference change rewrites delivered documents) or update on the next run.
+    /// What a change to this type's cached values does to the records built from them: update on the next run (the default)
+    /// or, where a flow opts in, wait for an operator to approve the update.
     /// </summary>
-    public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Approve;
+    public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Auto;
 
     /// <summary>Rejects a type that captures nothing, or two paths cached under one name.</summary>
     public void Validate()

@@ -28,9 +28,9 @@ source:
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
     data-partition-id: opendes
 
-# A changed cached value rewrites the documents built from it, so by default the affected records are tagged and wait for
-# someone to approve the update. Per type this can be relaxed where the change is always a correction.
-onChange: approve
+# A changed cached value rewrites the documents built from it. By default (onChange: auto) the affected records are tagged
+# and the next run delivers them. Where a change should be looked at first, onChange: approve (here for every type, or on
+# one type) holds the affected records until someone approves the update on the OSDU cache page.
 
 types:
   - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
@@ -44,9 +44,6 @@ types:
     fields: [data.Code, data.Name]
   - kind: "osdu:wks:master-data--Wellbore:*"
     name: Wellbore
-    # A wellbore that gains an alias or is renamed is still the same wellbore, and the mappings only write its id, so
-    # these changes carry themselves rather than queueing a decision.
-    onChange: auto
     fields:
       - data.FacilityName
       # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a drop

@@ -262,9 +262,9 @@ source:
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
     data-partition-id: opendes
 
-# A changed cached value rewrites the documents built from it, so by default the affected records are tagged and wait for
-# someone to approve the update. Per type this can be relaxed where the change is always a correction.
-onChange: approve
+# A changed cached value rewrites the documents built from it. By default (onChange: auto) the affected records are tagged
+# and the next run delivers them. Where a change should be looked at first, onChange: approve (here for every type, or on
+# one type) holds the affected records until someone approves the update on the OSDU cache page.
 
 types:
   - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
@@ -278,9 +278,6 @@ types:
     fields: [data.Code, data.Name]
   - kind: "osdu:wks:master-data--Wellbore:*"
     name: Wellbore
-    # A wellbore that gains an alias or is renamed is still the same wellbore, and the mappings only write its id, so
-    # these changes carry themselves rather than queueing a decision.
-    onChange: auto
     fields:
       - data.FacilityName
       # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a drop
@@ -308,7 +305,7 @@ schedule:
 | `types[].name`, `types[].entityType` | Optional. The entity type is derived from the kind, and the name from the entity type (`reference-data--UnitOfMeasure` gives `UnitOfMeasure`). A kind that names no entity type needs `entityType`. |
 | `types[].query` | Optional Lucene query narrowing the type; `*` when omitted. |
 | `types[].fields` | Required: the paths to keep, written bare (`data.Code`, cached as `Code`) or as `{ path: ..., as: ... }`. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object. A path crosses arrays implicitly, so `data.NameAlias.AliasName` reaches through an array of objects and caches the set of aliases it finds. A path that yields nothing on every record is reported at capture. |
-| `onChange`, `types[].onChange` | What a changed cached value does to the records already built from it. `approve` (the default) tags them and holds them back until someone approves the update in the GUI; `auto` tags them and lets the next run carry the new document. Set for the flow and overridden per type, because a code list that is corrected in place and a master-data name that is edited daily do not deserve the same treatment. |
+| `onChange`, `types[].onChange` | What a changed cached value does to the records already built from it. `auto` (the default) tags them and lets the next run carry the new document; `approve` is an option that tags them and holds them back until someone approves the update on the OSDU cache page. Set for the flow and overridden per type, so a single type whose changes should be looked at first can opt in while the rest update on their own. |
 | `makeCurrent` | Optional, default `true`: a refresh makes the version it writes the current one, which delivery flows render against unless they pin another. With `false`, a new version is kept beside the current one. |
 | `reliability` | The HTTP settings, as on a delivery flow. |
 | `schedule` | The platform envelope, as on every flow; a fire runs a refresh. |

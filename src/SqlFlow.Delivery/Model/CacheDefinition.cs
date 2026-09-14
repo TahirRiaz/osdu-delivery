@@ -37,7 +37,7 @@ public sealed record CacheDefinition
     public required IReadOnlyList<ReferenceTypeSpec> Types { get; init; }
 
     /// <summary>The default <c>onChange</c> for the types that do not state one.</summary>
-    public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Approve;
+    public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Auto;
 
     /// <summary>Whether a refresh makes the version it writes the current one, which delivery flows render against by default.</summary>
     public bool MakeCurrent { get; init; } = true;

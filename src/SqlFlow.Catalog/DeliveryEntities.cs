@@ -535,7 +535,7 @@ public sealed class DeliveryCacheDefinition
     public string FieldsJson { get; set; } = "[]";
 
     /// <summary>approve or auto: what a changed cached value of this type does to the records already built from it.</summary>
-    public string OnChange { get; set; } = "approve";
+    public string OnChange { get; set; } = "auto";
 
     /// <summary>Whether a refresh makes the version it captures the current one, which deliveries render against.</summary>
     public bool MakeCurrent { get; set; }

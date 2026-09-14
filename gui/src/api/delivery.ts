@@ -1287,7 +1287,7 @@ export const deliveryApi = {
   cacheHistory: (cache: string, type?: string) =>
     get<DeliveryCacheHistoryEntry[]>("/api/v1/delivery/cache/history", { cache, type }),
   /** The cache changes delivered records were built from, by status: pending, approved, rolling, rejected, applied. */
-  updateTags: (query: PageQuery & { status?: string }) =>
+  updateTags: (query: PageQuery & { status?: string; cache?: string }) =>
     get<PagedResult<DeliveryUpdateTag>>("/api/v1/delivery/cache/tags", query as QueryParams),
   /** Approves or rejects tags; approving lets the next run carry the new document to OSDU. */
   decideTags: (tagIds: number[], approve: boolean) =>

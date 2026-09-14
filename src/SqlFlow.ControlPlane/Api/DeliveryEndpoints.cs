@@ -894,14 +894,15 @@ public static class DeliveryEndpoints
 
     /// <summary>
     /// The cache changes delivered records were built from: one row per change with what it reaches, filtered by
-    /// status (pending, approved, rolling, rejected, applied).
+    /// status (pending, approved, rolling, rejected, applied) and, with <c>cache</c>, narrowed to the changes one cache's
+    /// refreshes found.
     /// </summary>
     private static async Task<Ok<PagedResult<DeliveryUpdateTagDto>>> ListUpdateTagsAsync(
-        string? status, int? page, int? pageSize, ILedger ledger, CancellationToken ct)
+        string? status, string? cache, int? page, int? pageSize, ILedger ledger, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
-        var tags = await ledger.ListTagsAsync(status, size, (p - 1) * size, ct).ConfigureAwait(false);
-        var total = await ledger.CountTagsAsync(status, ct).ConfigureAwait(false);
+        var tags = await ledger.ListTagsAsync(status, size, (p - 1) * size, cache, ct).ConfigureAwait(false);
+        var total = await ledger.CountTagsAsync(status, cache, ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<DeliveryUpdateTagDto>(tags.Select(ToDto).ToList(), p, size, total));
     }
 

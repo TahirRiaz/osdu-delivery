@@ -385,8 +385,9 @@ different values of one path: a set already holding the new value is not touched
 record, the path, the value the replaced version held and the one the new version holds,
 and how many delivered records it reaches.
 One decision covers all of them, because asking an operator to approve twelve million rows
-is not asking anything. The cached type's `onChange` says what the tag means: `auto`
-approves it as it is written; `approve` holds the affected sets until an operator decides.
+is not asking anything. The cached type's `onChange` says what the tag means: `auto`, the default,
+approves it as it is written; `approve`, an option a cache flow or one of its types opts
+into, holds the affected sets until an operator decides.
 A run counts what the gate holds back as awaiting approval, never as unchanged: the change
 is rendered and ready, and a decision is what the estate is waiting on.
 The gate is real, and it has to be: the render context moved with the cache version, so

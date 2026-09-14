@@ -11,12 +11,13 @@ import { CopyButton } from "../../components/CopyButton";
 import { DetailPair } from "../../components/DetailPair";
 import { PagedTable, type Column } from "../../components/PagedTable";
 import { RichTooltip } from "../../components/RichTooltip";
+import { SearchInput } from "../../components/SearchInput";
 import { StatePill } from "../../components/StatusBadge";
 import { TruncatedText, useClipped } from "../../components/TruncatedText";
 import { parseUtc } from "../../lib/time";
 import { cachedCell, splitRecordId } from "./cacheFormat";
 
-/** The picker's value for "whichever version is current", which is what the page opens on. */
+/** The picker's value for "whichever version is current", which is what the records open on. */
 export const CURRENT = "current";
 
 /**
@@ -24,10 +25,23 @@ export const CURRENT = "current";
  * tells records apart in full. The prefix gives way first when the cell runs out of room, so a column of ids stays
  * readable by its tails, and the whole id is revealed on hover only when something is actually hidden.
  */
-export function RecordId({ id, maxWidth = 360 }: { id: string; maxWidth?: number }) {
+export function RecordId({ id, maxWidth = 360, tailOnly = false }: {
+  id: string;
+  maxWidth?: number;
+  /** Shows only the part that tells records apart, for a row that already names the type; the whole id is on hover. */
+  tailOnly?: boolean;
+}) {
   const { prefix, tail } = splitRecordId(id);
   const [prefixRef, prefixClipped] = useClipped(prefix);
   const [tailRef, tailClipped] = useClipped(tail);
+
+  if (tailOnly) {
+    return (
+      <RichTooltip body={id} mono>
+        <span className="inline-block truncate align-bottom font-mono text-[12px]" style={{ maxWidth }}>{tail}</span>
+      </RichTooltip>
+    );
+  }
 
   const body = (
     <span className="inline-flex max-w-full items-baseline align-bottom font-mono text-[12px]" style={{ maxWidth }}>
@@ -96,24 +110,29 @@ export function CacheVersionPicker({ versions, value, onChange, className }: {
 }
 
 /**
- * The records of one cache at one version: the current one by default, or any version the page's picker names. With a
- * type in scope the table has one column per captured name, so a unit's code, name and id read down the page; over every
- * type the values fold into one column, since the names differ from type to type.
+ * The records of one cache, with the search and the version to read in the tab's own toolbar: they narrow these records
+ * and nothing else on the page. The current version is read by default. With a type in scope the table has one column
+ * per captured name, so a unit's code, name and id read down the page; over every type the values fold into one column,
+ * since the names differ from type to type.
  */
-export function DeliveryCacheRecords({ cache, type, fields, search, version, historic, onBackToCurrent }: {
+export function DeliveryCacheRecords({ cache, type, fields, versions }: {
   cache: string;
   type: string | null;
   /** The names the type in scope caches its paths under, in declaration order; empty without a type in scope. */
   fields: string[];
-  /** The page's search term over every cached value, id and alias. */
-  search: string;
-  /** The version to read; undefined for the current one. */
-  version: string | undefined;
-  /** The version being read when it is not the current one. */
-  historic: DeliveryCacheVersion | null;
-  onBackToCurrent: () => void;
+  /** The cache's versions, newest first, for the version picker. */
+  versions: DeliveryCacheVersion[];
 }) {
   const [item, setItem] = useState<DeliveryCachedItem | null>(null);
+  const [search, setSearch] = useState("");
+  // The picker holds a version label; CURRENT follows whichever version is current rather than freezing on one.
+  const [picked, setPicked] = useState<string>(CURRENT);
+
+  // A label the cache no longer lists would read as an empty cache rather than a stale pick, so it falls back to current.
+  const versionFilter = picked === CURRENT || versions.some((v) => v.version === picked) ? picked : CURRENT;
+  const reading = versions.find((v) => (versionFilter === CURRENT ? v.current : v.version === versionFilter));
+  const historic = reading !== undefined && !reading.current ? reading : null;
+  const version = versionFilter === CURRENT ? undefined : versionFilter;
 
   const columns = useMemo<Column<DeliveryCachedItem>[]>(() => {
     if (type !== null && fields.length > 0) {
@@ -134,11 +153,14 @@ export function DeliveryCacheRecords({ cache, type, fields, search, version, his
       ];
     }
 
-    // The values fold into one column, which takes the width the id leaves.
+    // The values fold into one column, which takes the width the id leaves. Over every type the row already names the
+    // type, so the id shows only the part that tells the records apart.
     const id: Column<DeliveryCachedItem> = {
       id: "recordId",
-      header: "OSDU id",
-      render: (row) => <RecordId id={row.recordId} maxWidth={type === null ? 260 : 240} />,
+      header: type === null ? "Record" : "OSDU id",
+      render: (row) => (type === null
+        ? <RecordId id={row.recordId} maxWidth={220} tailOnly />
+        : <RecordId id={row.recordId} maxWidth={240} />),
     };
     const values: Column<DeliveryCachedItem> = {
       id: "values", header: "Cached values", fill: true, floor: 200, render: (row) => <FieldPairs fields={row.fields} />,
@@ -161,6 +183,18 @@ export function DeliveryCacheRecords({ cache, type, fields, search, version, his
 
   return (
     <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search values, ids and aliases"
+          label="Search cached records"
+          className="sm:w-80"
+          testId="delivery-cache-search"
+        />
+        <CacheVersionPicker versions={versions} value={versionFilter} onChange={setPicked} className="w-full sm:w-64" />
+      </div>
+
       {historic !== null && (
         <div
           role="status"
@@ -169,14 +203,14 @@ export function DeliveryCacheRecords({ cache, type, fields, search, version, his
         >
           <History className="size-4 shrink-0 text-warning" />
           <span>
-            Reading the cache as it stood at <span className="font-mono">{historic.version}</span>. Deliveries resolve
-            against the current version, so nothing here is what a render would read today.
+            Reading the cache as it stood at <span className="font-mono">{historic.version}</span>. Deliveries read the
+            current version.
           </span>
           <Button
             variant="outline"
             size="xs"
             className="ml-auto"
-            onClick={onBackToCurrent}
+            onClick={() => setPicked(CURRENT)}
             data-testid="delivery-cache-back-to-current"
           >
             Back to current
