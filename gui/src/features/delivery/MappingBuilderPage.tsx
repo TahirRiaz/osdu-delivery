@@ -37,7 +37,7 @@ const COMPOSE_DELAY_MS = 500;
 
 /** What a compose request carries, kept as one JSON text so an unchanged draft is recognised and not checked again. */
 interface ComposeRequest {
-  cache: string | null;
+  scope: string | null;
   draft: MappingDraft;
   parameters: Record<string, string>;
 }
@@ -47,10 +47,10 @@ function bareColumn(text: string): string {
 }
 
 /**
- * The mapping builder: pick a saved template, the cache the mapping reads and the repository it lives in, and fill the
- * template's variables from the dataset, the cache and static values. The page writes the mapping as YAML and checks it
- * against the template and the cache's current version as it changes. An existing mapping opens with its entries filled
- * in, reading the cache its repository's delivery flow names.
+ * The mapping builder: pick a saved template, the partition whose cache the mapping reads and the repository it lives in,
+ * and fill the template's variables from the dataset, the cache and static values. The page writes the mapping as YAML and
+ * checks it against the template and the cache's current version as it changes. An existing mapping opens with its entries
+ * filled in, reading the cache of the partition its repository's delivery flow delivers to.
  */
 export default function MappingBuilderPage() {
   const { hasScope } = useAuth();
@@ -59,7 +59,7 @@ export default function MappingBuilderPage() {
   const mappingId = searchParams.get("mappingId");
 
   const [repoId, setRepoId] = useState("");
-  // The cache picked; empty follows the cache the check's delivery flow names.
+  // The partition cache picked; empty follows the partition the check's delivery flow delivers to.
   const [cacheChoice, setCacheChoice] = useState("");
   const [templateChoice, setTemplateChoice] = useState("");
   const [name, setName] = useState("");
@@ -116,12 +116,12 @@ export default function MappingBuilderPage() {
 
   const reference = `${name.trim()}@${mappingVersion.trim()}`;
   const checkFlow = repo === null ? null : repo.flows.find((flow) => flow.mapping === reference) ?? repo.flows[0] ?? null;
-  const cacheName = cacheChoice !== "" ? cacheChoice : checkFlow?.cache ?? "";
-  const cache = (caches.data ?? []).find((candidate) => candidate.name === cacheName) ?? null;
+  const cacheScope = cacheChoice !== "" ? cacheChoice : checkFlow?.cacheScope ?? "";
+  const cache = (caches.data ?? []).find((candidate) => candidate.scope === cacheScope) ?? null;
 
   const detail = useQuery({
-    queryKey: ["delivery", "templates", "detail", draft?.templateKind ?? null, draft?.templateVersion ?? null, cache?.name ?? null],
-    queryFn: () => deliveryApi.templateDetail(draft!.templateKind, draft!.templateVersion, cache?.name),
+    queryKey: ["delivery", "templates", "detail", draft?.templateKind ?? null, draft?.templateVersion ?? null, cache?.scope ?? null],
+    queryFn: () => deliveryApi.templateDetail(draft!.templateKind, draft!.templateVersion, cache?.scope),
     enabled: draft !== null,
     // A cache change keeps the variables in view while their cached types load; another template never does.
     placeholderData: (previous, previousQuery) => (previousQuery !== undefined
@@ -162,14 +162,14 @@ export default function MappingBuilderPage() {
 
   const composeKey = composedDraft === null
     ? null
-    : JSON.stringify({ cache: cache?.name ?? null, draft: composedDraft, parameters: checkValues } satisfies ComposeRequest);
+    : JSON.stringify({ scope: cache?.scope ?? null, draft: composedDraft, parameters: checkValues } satisfies ComposeRequest);
   const settledKey = useDebouncedValue(composeKey, COMPOSE_DELAY_MS);
   const compose = useQuery({
     queryKey: ["delivery", "mapping-builder", "compose", settledKey],
     queryFn: () => {
       const request = JSON.parse(settledKey!) as ComposeRequest;
       return deliveryApi.composeMapping(
-        request.cache, request.draft, Object.keys(request.parameters).length > 0 ? request.parameters : null,
+        request.scope, request.draft, Object.keys(request.parameters).length > 0 ? request.parameters : null,
       );
     },
     enabled: settledKey !== null,
@@ -193,7 +193,7 @@ export default function MappingBuilderPage() {
       }
 
       return deliveryApi.draftMapping({
-        cache: cache?.name ?? null,
+        scope: cache?.scope ?? null,
         kind: chosenTemplate.kind,
         version: chosenTemplate.version,
         name: name.trim(),
@@ -395,16 +395,16 @@ export default function MappingBuilderPage() {
                 </p>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="mapping-builder-cache">Cache</Label>
-                <Select value={cache?.name ?? ""} onValueChange={setCacheChoice}>
+                <Label htmlFor="mapping-builder-cache">Partition cache</Label>
+                <Select value={cache?.scope ?? ""} onValueChange={setCacheChoice}>
                   <SelectTrigger id="mapping-builder-cache" size="sm" className="h-8 w-full" data-testid="mapping-builder-cache">
-                    <SelectValue placeholder={caches.data === undefined ? "Loading the caches" : caches.data.length === 0 ? "No cache is defined" : "Pick a cache"} />
+                    <SelectValue placeholder={caches.data === undefined ? "Loading the caches" : caches.data.length === 0 ? "No cache is defined" : "Pick a partition"} />
                   </SelectTrigger>
                   <SelectContent>
                     {(caches.data ?? []).map((candidate) => (
-                      <SelectItem key={candidate.name} value={candidate.name}>
-                        <span className="font-mono text-[12px]">{candidate.name}</span>
-                        <span className="text-[11px] text-muted-foreground">{candidate.repoName}</span>
+                      <SelectItem key={candidate.scope} value={candidate.scope}>
+                        <span className="font-mono text-[12px]">{candidate.scope}</span>
+                        <span className="text-[11px] text-muted-foreground">{candidate.flows.join(", ")}</span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -413,8 +413,8 @@ export default function MappingBuilderPage() {
                   {cache === null
                     ? "Without a cache nothing is prefilled from it, and cache entries are not checked."
                     : cache.currentVersion === null
-                      ? `${cache.name} has no version yet, so nothing is prefilled from it. Refresh it on the OSDU cache page.`
-                      : `${cache.name} holds ${cache.types.length} type${cache.types.length === 1 ? "" : "s"} at version ${cache.currentVersion}.`}
+                      ? `The cache of ${cache.scope} has no version yet, so nothing is prefilled from it. Refresh one of its cache flows on the OSDU cache page.`
+                      : `The cache of ${cache.scope} holds ${cache.types.length} type${cache.types.length === 1 ? "" : "s"} at version ${cache.currentVersion}.`}
                 </p>
               </div>
               <div className="flex flex-col gap-1.5">

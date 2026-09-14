@@ -176,14 +176,9 @@ public sealed record FlowRender
     public const string CurrentCacheVersion = "current";
 
     /// <summary>
-    /// The cache the mapping's <c>cache.</c> sources read: the name of a cache flow (<c>flowType: cache</c>). Null for a flow
-    /// whose mapping reads nothing from a cache.
-    /// </summary>
-    public string? Cache { get; init; }
-
-    /// <summary>
-    /// The version of the cache a render reads: <c>current</c> (the default) takes the cache's current version when the run
-    /// starts and records it in the render context; a version label pins that version.
+    /// The version of the cache a render reads, the cache of the partition the flow delivers to: <c>current</c> (the default)
+    /// takes the partition cache's current version when the run starts and records it in the render context; a version label
+    /// pins that version.
     /// </summary>
     public string CacheVersion { get; init; } = CurrentCacheVersion;
 

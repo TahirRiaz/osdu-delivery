@@ -388,9 +388,9 @@ internal static partial class EntryValues
         return Missing(entry, $"{path}: no {typeName} matches {described}{fold} in {version}", holds);
     }
 
-    /// <summary>The cache version a render read, as a hold reason names it: "version 20260910T165153Z of cache 'osdu-reference-cache'".</summary>
+    /// <summary>The cache version a render read, as a hold reason names it: "version 20260910T165153Z of the cache of partition 'opendes'".</summary>
     private static string CacheLabel(RenderContext context)
-        => context.CacheName is null ? $"cache version {context.CacheVersion}" : $"version {context.CacheVersion} of cache '{context.CacheName}'";
+        => context.CacheScope is null ? $"cache version {context.CacheVersion}" : $"version {context.CacheVersion} of the cache of partition '{context.CacheScope}'";
 
     private static object? Select(MappingEntry entry, ReferenceType type, ReferenceItem hit, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
     {

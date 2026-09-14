@@ -12,7 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class CacheVersionComparisonTests : IDisposable
 {
-    private const string Cache = "osdu-reference-cache";
+    private const string Scope = "opendes";
     private const string First = "20260901T100000Z";
     private const string Earlier = "20260910T100000Z";
     private const string Later = "20260911T100000Z";
@@ -29,7 +29,7 @@ public sealed class CacheVersionComparisonTests : IDisposable
         await SeedEstateAsync();
 
         await using var db = _catalog.CreateDbContext();
-        var diff = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Earlier));
+        var diff = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Earlier));
 
         Assert.NotNull(diff);
         Assert.Equal(Later, diff.ToVersion);
@@ -75,26 +75,26 @@ public sealed class CacheVersionComparisonTests : IDisposable
         await SeedEstateAsync();
         await using var db = _catalog.CreateDbContext();
 
-        var second = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Earlier) { Skip = 1, Take = 1 });
+        var second = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Earlier) { Skip = 1, Take = 1 });
         Assert.NotNull(second);
         Assert.Equal(3, second.Total);
         Assert.Equal(UomId("km"), Assert.Single(second.Items).RecordId);
 
-        var third = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Earlier) { Skip = 2, Take = 5 });
+        var third = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Earlier) { Skip = 2, Take = 5 });
         Assert.Equal(UomId("ft"), Assert.Single(third!.Items).RecordId);
 
         // A change filter narrows the items, while the per-type counts keep describing every kind of change.
-        var removed = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Earlier) { Change = CacheItemChange.Removed });
+        var removed = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Earlier) { Change = CacheItemChange.Removed });
         Assert.Equal(1, removed!.Total);
         Assert.Equal(UomId("ft"), Assert.Single(removed.Items).RecordId);
         Assert.Equal((1L, 1L, 1L), (removed.Changed, removed.Added, removed.Removed));
 
-        var wellbores = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Earlier) { Type = "Wellbore" });
+        var wellbores = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Earlier) { Type = "Wellbore" });
         Assert.Equal(0, wellbores!.Total);
         Assert.Empty(wellbores.Types);
 
         // Search matches a value either side holds, not only the id.
-        var kilo = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Earlier) { Search = "kilo" });
+        var kilo = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Earlier) { Search = "kilo" });
         Assert.Equal(UomId("km"), Assert.Single(kilo!.Items).RecordId);
     }
 
@@ -104,11 +104,11 @@ public sealed class CacheVersionComparisonTests : IDisposable
         await SeedEstateAsync();
         await using var db = _catalog.CreateDbContext();
 
-        var named = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Earlier) { ToVersion = Later });
-        var current = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Earlier));
+        var named = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Earlier) { ToVersion = Later });
+        var current = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Earlier));
         Assert.Equal(current!.Total, named!.Total);
 
-        var same = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Later) { ToVersion = Later });
+        var same = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Later) { ToVersion = Later });
         Assert.Equal(0, same!.Total);
         Assert.Empty(same.Items);
     }
@@ -119,22 +119,22 @@ public sealed class CacheVersionComparisonTests : IDisposable
         await SeedEstateAsync();
         await using var db = _catalog.CreateDbContext();
 
-        Assert.Null(await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, "19990101T000000Z")));
-        Assert.Null(await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Earlier) { ToVersion = "19990101T000000Z" }));
+        Assert.Null(await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,"19990101T000000Z")));
+        Assert.Null(await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Earlier) { ToVersion = "19990101T000000Z" }));
 
-        // A version label names a version of one cache: another cache holding the same label is not this one.
-        await SeedAsync("other-cache", Earlier, Uom("m", "metre"));
-        Assert.Null(await CacheVersions.CompareAsync(db, new CacheComparisonQuery("other-cache", Earlier) { ToVersion = Later }));
+        // A version label names a version of one partition's cache: another partition's cache holding the same label is not this one.
+        await SeedAsync("other-partition", Earlier, Uom("m", "metre"));
+        Assert.Null(await CacheVersions.CompareAsync(db, new CacheComparisonQuery("other-partition", Earlier) { ToVersion = Later }));
     }
 
     [Fact]
     public async Task The_history_says_what_each_version_changed_against_the_one_captured_before_it()
     {
-        await SeedAsync(Cache, First, Uom("m", "metre"), Wellbore("A", "NO 1/1-A"));
+        await SeedAsync(Scope,First, Uom("m", "metre"), Wellbore("A", "NO 1/1-A"));
         await SeedEstateAsync();
         await using var db = _catalog.CreateDbContext();
 
-        var history = await CacheVersions.HistoryAsync(db, Cache, type: null);
+        var history = await CacheVersions.HistoryAsync(db, Scope,type: null);
         Assert.Equal(new[] { Later, Earlier, First }, history.Select(h => h.Version.Version));
         Assert.True(history[0].Version.Current);
 
@@ -150,21 +150,21 @@ public sealed class CacheVersionComparisonTests : IDisposable
         Assert.Equal(new CacheChangeCounts(0, 2, 0), history[2].Changes);
 
         // Narrowed to a type the later version did not touch, the same version changed nothing.
-        var wellbores = await CacheVersions.HistoryAsync(db, Cache, "Wellbore");
+        var wellbores = await CacheVersions.HistoryAsync(db, Scope,"Wellbore");
         Assert.Equal(new CacheChangeCounts(0, 0, 0), wellbores[0].Changes);
     }
 
     [Fact]
     public async Task A_value_that_changed_and_changed_back_is_no_difference_between_the_ends()
     {
-        await SeedAsync(Cache, First, Uom("m", "metre"));
-        await SeedAsync(Cache, Earlier, Uom("m", "meter"));
-        await SeedAsync(Cache, Later, Uom("m", "metre"));
+        await SeedAsync(Scope,First, Uom("m", "metre"));
+        await SeedAsync(Scope,Earlier, Uom("m", "meter"));
+        await SeedAsync(Scope,Later, Uom("m", "metre"));
         await using var db = _catalog.CreateDbContext();
 
-        Assert.Equal(0, (await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, First) { ToVersion = Later }))!.Total);
-        Assert.Equal(1, (await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, First) { ToVersion = Earlier }))!.Changed);
-        Assert.Equal(new CacheChangeCounts(1, 0, 0), (await CacheVersions.HistoryAsync(db, Cache, type: null))[0].Changes);
+        Assert.Equal(0, (await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,First) { ToVersion = Later }))!.Total);
+        Assert.Equal(1, (await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,First) { ToVersion = Earlier }))!.Changed);
+        Assert.Equal(new CacheChangeCounts(1, 0, 0), (await CacheVersions.HistoryAsync(db, Scope,type: null))[0].Changes);
     }
 
     [Fact]
@@ -173,25 +173,28 @@ public sealed class CacheVersionComparisonTests : IDisposable
         await SeedEstateAsync();
         await using var db = _catalog.CreateDbContext();
 
-        var counts = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Cache, Earlier) { Take = 0 });
+        var counts = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(Scope,Earlier) { Take = 0 });
         Assert.Equal(3, counts!.Total);
         Assert.Empty(counts.Items);
     }
 
     private async Task SeedEstateAsync()
     {
-        await SeedAsync(Cache, Earlier, Uom("m", "metre"), Uom("ft", "foot"), Uom("fT", "femtotesla"), Wellbore("A", "NO 1/1-A"));
-        await SeedAsync(Cache, Later, Uom("m", "Metre"), Uom("fT", "femtotesla"), Uom("km", "kilometre"), Wellbore("A", "NO 1/1-A"));
+        await SeedAsync(Scope,Earlier, Uom("m", "metre"), Uom("ft", "foot"), Uom("fT", "femtotesla"), Wellbore("A", "NO 1/1-A"));
+        await SeedAsync(Scope,Later, Uom("m", "Metre"), Uom("fT", "femtotesla"), Uom("km", "kilometre"), Wellbore("A", "NO 1/1-A"));
     }
 
-    private Task SeedAsync(string cache, string version, params Item[] items)
+    /// <summary>
+    /// Merges one capture holding every type of <paramref name="items"/> into the partition's cache, captured at the instant
+    /// <paramref name="version"/> names, so the version it writes carries that label.
+    /// </summary>
+    private async Task SeedAsync(string scope, string version, params Item[] items)
     {
         var captured = DateTimeOffset.ParseExact(version, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal);
-        var snapshot = new ReferenceSnapshot(
-            version,
-            captured,
-            items.GroupBy(i => (i.Type, i.EntityType)).Select(g => new ReferenceType(g.Key.Type, g.Key.EntityType, g.Select(i => i.Record))));
-        return _catalog.Caches().SaveAsync(cache, snapshot, Capture, makeCurrent: true);
+        var types = items.GroupBy(i => (i.Type, i.EntityType)).Select(g => new ReferenceType(g.Key.Type, g.Key.EntityType, g.Select(i => i.Record))).ToList();
+        var write = await _catalog.Caches().MergeAsync(scope, "osdu-reference-cache", types, Capture, captured);
+        Assert.True(write.Written);
+        Assert.Equal(version, write.Snapshot.Version);
     }
 
     private static string UomId(string code) => "test:reference-data--UnitOfMeasure:" + code;

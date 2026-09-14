@@ -15,6 +15,7 @@ import { SearchInput } from "../../components/SearchInput";
 import { StatePill } from "../../components/StatusBadge";
 import { TruncatedText, useClipped } from "../../components/TruncatedText";
 import { parseUtc } from "../../lib/time";
+import { RecordMappingReference } from "./CacheMappingReference";
 import { cachedCell, splitRecordId } from "./cacheFormat";
 
 /** The picker's value for "whichever version is current", which is what the records open on. */
@@ -115,8 +116,9 @@ export function CacheVersionPicker({ versions, value, onChange, className }: {
  * per captured name, so a unit's code, name and id read down the page; over every type the values fold into one column,
  * since the names differ from type to type.
  */
-export function DeliveryCacheRecords({ cache, type, fields, versions }: {
-  cache: string;
+export function DeliveryCacheRecords({ scope, type, fields, versions }: {
+  /** The partition whose cache the records belong to. */
+  scope: string;
   type: string | null;
   /** The names the type in scope caches its paths under, in declaration order; empty without a type in scope. */
   fields: string[];
@@ -219,9 +221,9 @@ export function DeliveryCacheRecords({ cache, type, fields, versions }: {
       )}
 
       <PagedTable
-        queryKey={["delivery", "cache", "items", cache, type, search, version]}
+        queryKey={["delivery", "cache", "items", scope, type, search, version]}
         fetchPage={(page, pageSize) => deliveryApi.cachedItems({
-          page, pageSize, cache, type: type ?? undefined, search: search || undefined, version,
+          page, pageSize, scope, type: type ?? undefined, search: search || undefined, version,
         })}
         columns={columns}
         rowKey={(row) => row.itemId}
@@ -272,6 +274,7 @@ export function DeliveryCacheRecords({ cache, type, fields, versions }: {
                       </div>
                     )}
                 </section>
+                <RecordMappingReference item={item} names={detailNames} />
                 <section className="flex flex-col gap-2">
                   <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">As captured</h3>
                   <CodeView value={JSON.stringify(item.fields, null, 2)} language="json" height={360} data-testid="delivery-cache-item-json" />

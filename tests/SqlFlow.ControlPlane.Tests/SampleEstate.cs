@@ -75,9 +75,10 @@ internal static class SampleEstate
     }
 
     /// <summary>
-    /// Writes the sample cache records into the catalog at <paramref name="connectionString"/> as a version of the sample
-    /// cache, checked against the sample cache flow, exactly as 'sqlflow cache import' does. The sample flow reads the
-    /// cache, and caches live in the catalog. A catalog that already holds the same content keeps its current version.
+    /// Merges the sample cache records into the cache of the sample partition in the catalog at
+    /// <paramref name="connectionString"/>, checked against the sample cache flow, exactly as 'sqlflow cache import' does. The
+    /// sample flow reads the cache of the partition it delivers to, and caches live in the catalog. A catalog that already
+    /// holds the same content keeps its current version.
     /// </summary>
     public static async Task SaveCacheAsync(string connectionString)
     {
@@ -85,8 +86,8 @@ internal static class SampleEstate
         var root = Locate();
         var flow = new DeliveryDocumentLoader().LoadCache(Path.Combine(root, "caches", "osdu-reference-cache.yaml"));
         var store = new CatalogCacheStore(() => CatalogDatabase.Create(connectionString));
-        var builder = new SnapshotBuilder(store, flow.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
-        await builder.ImportDirectoryAsync(Path.Combine(root, "references"), flow.Types, new CacheCapture(null, "tests", "sample files"), makeCurrent: true);
+        var builder = new SnapshotBuilder(store, flow.Scope, flow.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
+        await builder.ImportDirectoryAsync(Path.Combine(root, "references"), flow.Types, new CacheCapture(null, "tests", "sample files"));
     }
 
     /// <summary>

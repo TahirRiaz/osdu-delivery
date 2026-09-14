@@ -161,15 +161,19 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     }
 
     /// <summary>
-    /// The types the repository's cache flows declare (<c>flowType: cache</c>): the definition side of each cache, so the GUI
-    /// can show what a cache holds, which paths it keeps and which file to change, next to the versions its runs captured.
+    /// The types the repository's cache flows declare (<c>flowType: cache</c>): which records each flow captures into the cache
+    /// of its partition, and which paths of them it keeps. A refresh reads every declaration of its partition, so it fetches
+    /// every path the partition keeps for a type, and the GUI shows which files fill a partition's cache. A declaration that
+    /// disagrees with another flow's declaration of the same type for the partition, another entity type or a name cached
+    /// from another path, is left out with a warning, because merged, one name would hold two meanings.
     /// </summary>
     private async Task<CatalogSyncExtensionResult> SyncCacheDefinitionsAsync(
         CatalogDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
     {
         var existing = await context.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).AsTracking().ToDictionaryAsync(c => c.Id, ct).ConfigureAwait(false);
         var seen = new HashSet<Guid>();
-        var caches = new Dictionary<string, string>(StringComparer.Ordinal);
+        var flows = new Dictionary<string, string>(StringComparer.Ordinal);
+        var parsed = new List<(CacheDefinition Cache, string Relative)>();
         int added = 0, updated = 0, unchanged = 0, invalid = 0;
 
         foreach (var file in EnumerateYaml(root))
@@ -204,14 +208,47 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 continue;
             }
 
-            if (!caches.TryAdd(cache.Name, relative))
+            if (!flows.TryAdd(cache.Name, relative))
             {
-                warnings.Add($"{relative}: cache '{cache.Name}' is already declared by {caches[cache.Name]}; the first file wins.");
+                warnings.Add($"{relative}: cache flow '{cache.Name}' is already declared by {flows[cache.Name]}; the first file wins.");
                 continue;
             }
 
+            parsed.Add((cache, relative));
+        }
+
+        // What the other repositories declare for the same partitions: this repository's declarations have to agree with them.
+        var scopes = parsed.Select(p => p.Cache.Scope).Distinct(StringComparer.Ordinal).ToList();
+        var names = flows.Keys.ToList();
+        var elsewhere = await context.DeliveryCacheDefinitions.AsNoTracking()
+            .Where(c => c.RepoId != repoId && scopes.Contains(c.Scope) && !names.Contains(c.FlowName))
+            .Select(c => new { c.Scope, c.FlowName, c.Name, c.EntityType, c.Kind, c.Query, c.FieldsJson, c.Endpoint })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var declared = scopes.ToDictionary(
+            scope => scope,
+            scope => elsewhere
+                .Where(c => c.Scope == scope)
+                .Select(c => new Snapshots.CacheTypeDeclaration(
+                    c.FlowName, c.Name, c.EntityType, c.Kind, c.Query ?? "*", CatalogCacheStore.ParseFields(c.FieldsJson, c.FlowName, c.Name), Snapshots.CacheChangeMode.Auto))
+                .ToList(),
+            StringComparer.Ordinal);
+
+        foreach (var (cache, relative) in parsed)
+        {
+            var scope = cache.Scope;
+            var endpoint = Clip(cache.Source.Endpoint, 1000);
             foreach (var type in cache.Types)
             {
+                var problems = new Snapshots.CacheDeclaration(scope, declared[scope]).Conflicts(cache.Name, type);
+                if (problems.Count > 0)
+                {
+                    invalid++;
+                    warnings.Add(
+                        $"{relative}: {type.Name} is left out of the cache of partition '{scope}', because {string.Join("; ", problems)}. Make the declarations agree, or give the type another name.");
+                    continue;
+                }
+
+                declared[scope].Add(new Snapshots.CacheTypeDeclaration(cache.Name, type.Name, type.EntityType, type.Kind, type.Query, type.Fields, type.OnChange));
                 var id = FlowIdentity.FromName($"delivery-cache/{repoId:N}/{cache.Name}/{type.Name}");
                 seen.Add(id);
                 var fields = JsonSerializer.Serialize(type.Fields.Select(f => new { f.Path, As = f.Name }).ToList(), SummaryJson);
@@ -223,7 +260,8 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                     added++;
                 }
                 else if (row.Kind == type.Kind && row.Query == type.Query && row.FieldsJson == fields && row.EntityType == type.EntityType
-                         && row.RelativePath == relative && row.MakeCurrent == cache.MakeCurrent && row.OnChange == onChange)
+                         && row.RelativePath == relative && row.OnChange == onChange && row.FlowName == cache.Name && row.Scope == scope
+                         && row.Endpoint == endpoint)
                 {
                     row.LastSeenUtc = nowUtc;
                     unchanged++;
@@ -234,7 +272,9 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                     updated++;
                 }
 
-                row.CacheName = cache.Name;
+                row.FlowName = cache.Name;
+                row.Scope = scope;
+                row.Endpoint = endpoint;
                 row.RelativePath = relative;
                 row.Name = type.Name;
                 row.EntityType = type.EntityType;
@@ -242,16 +282,17 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 row.Query = type.Query;
                 row.FieldsJson = fields;
                 row.OnChange = onChange;
-                row.MakeCurrent = cache.MakeCurrent;
                 row.LastSeenUtc = nowUtc;
             }
         }
 
         var removed = 0;
+        var released = new List<(string Scope, string Flow, string Type)>();
         foreach (var (id, row) in existing)
         {
             if (!seen.Contains(id))
             {
+                released.Add((row.Scope, row.FlowName, row.Name));
                 context.DeliveryCacheDefinitions.Remove(row);
                 removed++;
             }
@@ -259,19 +300,47 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
         await context.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        // A cache is named globally, like every flow: a cache another repository declares under the same name writes the
-        // same versions, which is never what either repository means.
-        if (caches.Count > 0)
+        // A flow that no longer declares a type for a partition holds none of its records there: its membership goes, so the
+        // next capture of the type by another flow lets go of what only this flow kept.
+        foreach (var (scope, flow, type) in released)
         {
-            var names = caches.Keys.ToList();
+            if (await context.DeliveryCacheDefinitions.AnyAsync(c => c.Scope == scope && c.FlowName == flow && c.Name == type, ct).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            await context.DeliveryCacheMembers
+                .Where(m => m.Scope == scope && m.FlowName == flow && m.TypeName == type)
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        }
+
+        // A partition has one cache holding what every one of its cache flows captures, so those flows should search one platform.
+        foreach (var scope in scopes)
+        {
+            var endpoints = parsed.Where(p => p.Cache.Scope == scope).Select(p => Clip(p.Cache.Source.Endpoint, 1000))
+                .Concat(elsewhere.Where(c => c.Scope == scope).Select(c => c.Endpoint))
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToList();
+            if (endpoints.Count > 1)
+            {
+                warnings.Add(
+                    $"The cache flows of partition '{scope}' search different endpoints ({string.Join(", ", endpoints)}); the partition's one cache holds what all of them capture, so they should name the same OSDU platform.");
+            }
+        }
+
+        // A cache flow is named globally, like every flow: the same flow declared by another repository captures into the same
+        // partition's cache under the same name, which is never what either repository means.
+        if (flows.Count > 0)
+        {
             var shared = await context.DeliveryCacheDefinitions.AsNoTracking()
-                .Where(c => c.RepoId != repoId && names.Contains(c.CacheName))
-                .Select(c => c.CacheName)
+                .Where(c => c.RepoId != repoId && names.Contains(c.FlowName))
+                .Select(c => c.FlowName)
                 .Distinct()
                 .ToListAsync(ct).ConfigureAwait(false);
             foreach (var name in shared.Order(StringComparer.Ordinal))
             {
-                warnings.Add($"{caches[name]}: cache '{name}' is also declared by another repository, and both would write the same versions. Rename one of them.");
+                warnings.Add($"{flows[name]}: cache flow '{name}' is also declared by another repository, and both would capture into the cache under the same name. Rename one of them.");
             }
         }
 
@@ -378,4 +447,6 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
     private static string Relative(string root, string path)
         => Path.GetRelativePath(root, path).Replace('\\', '/');
+
+    private static string Clip(string text, int length) => text.Length <= length ? text : text[..length];
 }

@@ -1517,12 +1517,12 @@ public sealed class CatalogLedger : ILedger
         }
     }
 
-    public async Task<long> EnsureCacheSetAsync(string cacheName, IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default)
+    public async Task<long> EnsureCacheSetAsync(string scope, IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(cacheName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         ArgumentNullException.ThrowIfNull(usages);
         var entries = Canonical(usages);
-        var hash = SetHash(cacheName, entries);
+        var hash = SetHash(scope, entries);
         if (_cacheSets.TryGetValue(hash, out var known))
         {
             return known;
@@ -1554,7 +1554,7 @@ public sealed class CatalogLedger : ILedger
             db.DeliveryCacheSetEntries.Add(new DeliveryCacheSetEntry
             {
                 SetId = set.SetId,
-                CacheName = cacheName,
+                Scope = scope,
                 TypeName = usage.TypeName,
                 ItemId = Truncate(usage.ItemId, 512)!,
                 Path = Truncate(usage.Path, 400)!,
@@ -1591,14 +1591,14 @@ public sealed class CatalogLedger : ILedger
         await using var db = Open();
         var rows = await db.DeliveryCacheSetEntries.AsNoTracking()
             .Where(e => e.SetId == setId)
-            .OrderBy(e => e.CacheName).ThenBy(e => e.TypeName).ThenBy(e => e.Path)
+            .OrderBy(e => e.Scope).ThenBy(e => e.TypeName).ThenBy(e => e.Path)
             .ToListAsync(ct).ConfigureAwait(false);
-        return rows.Select(e => new CacheUse(e.CacheName, e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)).ToList();
+        return rows.Select(e => new CacheUse(e.Scope, e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)).ToList();
     }
 
-    public async Task<IReadOnlyList<CacheSetUse>> FindCacheSetsAsync(string cacheName, string typeName, IReadOnlyList<string> itemIds, CancellationToken ct = default)
+    public async Task<IReadOnlyList<CacheSetUse>> FindCacheSetsAsync(string scope, string typeName, IReadOnlyList<string> itemIds, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(cacheName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         ArgumentException.ThrowIfNullOrWhiteSpace(typeName);
         ArgumentNullException.ThrowIfNull(itemIds);
         if (itemIds.Count == 0)
@@ -1612,9 +1612,9 @@ public sealed class CatalogLedger : ILedger
         {
             var ids = chunk.ToList();
             var rows = await db.DeliveryCacheSetEntries.AsNoTracking()
-                .Where(e => e.CacheName == cacheName && e.TypeName == typeName && ids.Contains(e.ItemId))
+                .Where(e => e.Scope == scope && e.TypeName == typeName && ids.Contains(e.ItemId))
                 .ToListAsync(ct).ConfigureAwait(false);
-            found.AddRange(rows.Select(e => new CacheSetUse(e.SetId, e.CacheName, e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)));
+            found.AddRange(rows.Select(e => new CacheSetUse(e.SetId, e.Scope, e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)));
         }
 
         return found;
@@ -1655,7 +1655,7 @@ public sealed class CatalogLedger : ILedger
         foreach (var tag in tags)
         {
             var open = await db.DeliveryUpdateTags.FirstOrDefaultAsync(
-                t => t.CacheName == tag.CacheName && t.TypeName == tag.TypeName && t.ItemId == tag.ItemId && t.Path == tag.Path
+                t => t.Scope == tag.Scope && t.TypeName == tag.TypeName && t.ItemId == tag.ItemId && t.Path == tag.Path
                      && (t.Status == "pending" || t.Status == "approved" || t.Status == "rolling"),
                 ct).ConfigureAwait(false);
             if (open is not null)
@@ -1684,7 +1684,7 @@ public sealed class CatalogLedger : ILedger
             db.DeliveryUpdateTags.Add(new DeliveryUpdateTag
             {
                 Kind = tag.Kind,
-                CacheName = tag.CacheName,
+                Scope = tag.Scope,
                 TypeName = tag.TypeName,
                 ItemId = Truncate(tag.ItemId, 512)!,
                 Path = Truncate(tag.Path, 400)!,
@@ -1719,20 +1719,20 @@ public sealed class CatalogLedger : ILedger
         return await db.DeliveryCacheSets.AsNoTracking().Where(c => c.Gated).Select(c => c.SetId).ToListAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, string? cacheName = null, CancellationToken ct = default)
+    public async Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, string? scope = null, CancellationToken ct = default)
     {
         await using var db = Open();
-        var rows = await TagQuery(db, status, cacheName)
+        var rows = await TagQuery(db, status, scope)
             .OrderByDescending(t => t.TagId)
             .Skip(Math.Max(0, offset)).Take(Math.Clamp(max, 1, 1000))
             .ToListAsync(ct).ConfigureAwait(false);
         return rows.Select(ToTag).ToList();
     }
 
-    public async Task<int> CountTagsAsync(string? status, string? cacheName = null, CancellationToken ct = default)
+    public async Task<int> CountTagsAsync(string? status, string? scope = null, CancellationToken ct = default)
     {
         await using var db = Open();
-        return await TagQuery(db, status, cacheName).CountAsync(ct).ConfigureAwait(false);
+        return await TagQuery(db, status, scope).CountAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<int> DecideTagsAsync(IReadOnlyList<long> tagIds, bool approve, string actor, DateTime nowUtc, CancellationToken ct = default)
@@ -1858,7 +1858,7 @@ public sealed class CatalogLedger : ILedger
         await SetGateAsync(db, setIds.Where(id => !stillGated.Contains(id)).ToList(), gated: false, ct).ConfigureAwait(false);
     }
 
-    private static IQueryable<DeliveryUpdateTag> TagQuery(CatalogDbContext db, string? status, string? cacheName)
+    private static IQueryable<DeliveryUpdateTag> TagQuery(CatalogDbContext db, string? status, string? scope)
     {
         var query = db.DeliveryUpdateTags.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(status))
@@ -1867,10 +1867,10 @@ public sealed class CatalogLedger : ILedger
             query = query.Where(t => t.Status == s);
         }
 
-        if (!string.IsNullOrWhiteSpace(cacheName))
+        if (!string.IsNullOrWhiteSpace(scope))
         {
-            var cache = cacheName.Trim();
-            query = query.Where(t => t.CacheName == cache);
+            var cache = scope.Trim();
+            query = query.Where(t => t.Scope == cache);
         }
 
         return query;
@@ -1887,8 +1887,8 @@ public sealed class CatalogLedger : ILedger
             .ThenBy(u => u.Kind)
             .ToList();
 
-    private static string SetHash(string cacheName, IReadOnlyList<Snapshots.CacheUsage> entries)
-        => Hashing.ContentHash.Of(cacheName + "\n" + string.Join('\n', entries.Select(e => $"{e.TypeName}|{e.ItemId}|{e.Path}|{KindText(e.Kind)}|{e.ValueHash}")));
+    private static string SetHash(string scope, IReadOnlyList<Snapshots.CacheUsage> entries)
+        => Hashing.ContentHash.Of(scope + "\n" + string.Join('\n', entries.Select(e => $"{e.TypeName}|{e.ItemId}|{e.Path}|{KindText(e.Kind)}|{e.ValueHash}")));
 
     private static string KindText(Snapshots.CacheUsageKind kind) => kind == Snapshots.CacheUsageKind.Match ? "match" : "value";
 
@@ -1905,7 +1905,7 @@ public sealed class CatalogLedger : ILedger
     {
         TagId = t.TagId,
         Kind = t.Kind,
-        CacheName = t.CacheName,
+        Scope = t.Scope,
         TypeName = t.TypeName,
         ItemId = t.ItemId,
         Path = t.Path,

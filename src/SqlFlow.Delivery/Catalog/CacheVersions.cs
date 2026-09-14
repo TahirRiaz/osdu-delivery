@@ -23,7 +23,7 @@ public enum CacheItemChange
 /// search filters narrow the counts and the items alike; the change filter narrows the items only, so the counts keep
 /// describing every kind of change.
 /// </summary>
-public sealed record CacheComparisonQuery(string Cache, string FromVersion)
+public sealed record CacheComparisonQuery(string Scope, string FromVersion)
 {
     public string? ToVersion { get; init; }
 
@@ -63,7 +63,7 @@ public sealed record CacheComparisonItem(
 
 /// <summary>What changed in a cache between two versions: counts per type, and one page of the records that differ.</summary>
 public sealed record CacheComparison(
-    string Cache, string FromVersion, string ToVersion, IReadOnlyList<CacheComparisonTypeCount> Types, long Total, IReadOnlyList<CacheComparisonItem> Items)
+    string Scope, string FromVersion, string ToVersion, IReadOnlyList<CacheComparisonTypeCount> Types, long Total, IReadOnlyList<CacheComparisonItem> Items)
 {
     public long Changed => Types.Sum(t => t.Changed);
 
@@ -73,7 +73,7 @@ public sealed record CacheComparison(
 }
 
 /// <summary>
-/// Reads of a cache across its versions. A record's row is valid over a range of consecutive versions, so a version's
+/// Reads of a partition cache across its versions. A record's row is valid over a range of consecutive versions, so a version's
 /// records are the rows whose range covers its sequence, and what one version changed is the rows that begin or end at
 /// it: a record that changed ends one row and begins another at the same version.
 /// </summary>
@@ -83,12 +83,12 @@ public static class CacheVersions
     public const int MaxVersions = 500;
 
     /// <summary>The versions of a cache, newest first.</summary>
-    public static async Task<IReadOnlyList<CacheVersionInfo>> ListAsync(CatalogDbContext db, string cache, CancellationToken ct = default)
+    public static async Task<IReadOnlyList<CacheVersionInfo>> ListAsync(CatalogDbContext db, string scope, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
-        ArgumentException.ThrowIfNullOrWhiteSpace(cache);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         var rows = await db.DeliveryCacheVersions.AsNoTracking()
-            .Where(v => v.CacheName == cache)
+            .Where(v => v.Scope == scope)
             .OrderByDescending(v => v.Sequence)
             .Take(MaxVersions)
             .ToListAsync(ct).ConfigureAwait(false);
@@ -96,11 +96,11 @@ public static class CacheVersions
     }
 
     /// <summary>The named version of a cache, or its current version when none is named; null when there is no such version.</summary>
-    public static async Task<DeliveryCacheVersion?> ResolveAsync(CatalogDbContext db, string cache, string? version, CancellationToken ct = default)
+    public static async Task<DeliveryCacheVersion?> ResolveAsync(CatalogDbContext db, string scope, string? version, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
-        ArgumentException.ThrowIfNullOrWhiteSpace(cache);
-        var query = db.DeliveryCacheVersions.AsNoTracking().Where(v => v.CacheName == cache);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        var query = db.DeliveryCacheVersions.AsNoTracking().Where(v => v.Scope == scope);
         if (string.IsNullOrWhiteSpace(version))
         {
             query = query.Where(v => v.Current);
@@ -115,11 +115,11 @@ public static class CacheVersions
     }
 
     /// <summary>The rows a version of a cache holds: every record whose range covers the version's sequence.</summary>
-    public static IQueryable<DeliveryCacheItem> ItemsAt(CatalogDbContext db, string cache, int sequence)
+    public static IQueryable<DeliveryCacheItem> ItemsAt(CatalogDbContext db, string scope, int sequence)
     {
         ArgumentNullException.ThrowIfNull(db);
         return db.DeliveryCacheItems.AsNoTracking()
-            .Where(i => i.CacheName == cache && i.FromSequence <= sequence && (i.ToSequence == null || i.ToSequence > sequence));
+            .Where(i => i.Scope == scope && i.FromSequence <= sequence && (i.ToSequence == null || i.ToSequence > sequence));
     }
 
     /// <summary>
@@ -127,17 +127,17 @@ public static class CacheVersions
     /// changed, added and removed against that version. With a <paramref name="type"/> the counts cover that type alone,
     /// which is what lets a reader find the versions that changed it. Three grouped queries answer every version at once.
     /// </summary>
-    public static async Task<IReadOnlyList<CacheHistoryEntry>> HistoryAsync(CatalogDbContext db, string cache, string? type, CancellationToken ct = default)
+    public static async Task<IReadOnlyList<CacheHistoryEntry>> HistoryAsync(CatalogDbContext db, string scope, string? type, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
-        ArgumentException.ThrowIfNullOrWhiteSpace(cache);
-        var versions = await ListAsync(db, cache, ct).ConfigureAwait(false);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        var versions = await ListAsync(db, scope, ct).ConfigureAwait(false);
         if (versions.Count == 0)
         {
             return [];
         }
 
-        var items = db.DeliveryCacheItems.AsNoTracking().Where(i => i.CacheName == cache);
+        var items = db.DeliveryCacheItems.AsNoTracking().Where(i => i.Scope == scope);
         if (!string.IsNullOrWhiteSpace(type))
         {
             var name = type.Trim();
@@ -187,21 +187,21 @@ public static class CacheVersions
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(query);
-        ArgumentException.ThrowIfNullOrWhiteSpace(query.Cache);
+        ArgumentException.ThrowIfNullOrWhiteSpace(query.Scope);
         ArgumentException.ThrowIfNullOrWhiteSpace(query.FromVersion);
         ArgumentOutOfRangeException.ThrowIfNegative(query.Skip);
         ArgumentOutOfRangeException.ThrowIfNegative(query.Take);
 
-        var cache = query.Cache.Trim();
-        var earlier = await ResolveAsync(db, cache, query.FromVersion, ct).ConfigureAwait(false);
-        var later = await ResolveAsync(db, cache, query.ToVersion, ct).ConfigureAwait(false);
+        var scope = query.Scope.Trim();
+        var earlier = await ResolveAsync(db, scope, query.FromVersion, ct).ConfigureAwait(false);
+        var later = await ResolveAsync(db, scope, query.ToVersion, ct).ConfigureAwait(false);
         if (earlier is null || later is null)
         {
             return null;
         }
 
-        var before = ItemsAt(db, cache, earlier.Sequence);
-        var after = ItemsAt(db, cache, later.Sequence);
+        var before = ItemsAt(db, scope, earlier.Sequence);
+        var after = ItemsAt(db, scope, later.Sequence);
         if (!string.IsNullOrWhiteSpace(query.Type))
         {
             var type = query.Type.Trim();
@@ -302,7 +302,7 @@ public static class CacheVersions
             }
         }
 
-        return new CacheComparison(cache, earlier.Version, later.Version, types, total, page);
+        return new CacheComparison(scope, earlier.Version, later.Version, types, total, page);
     }
 
     /// <summary>

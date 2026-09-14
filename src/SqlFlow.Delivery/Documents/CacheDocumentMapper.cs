@@ -21,6 +21,15 @@ internal static class CacheMapper
                 $"{source}: source.headers must declare a non-empty '{FlowMapper.PartitionHeader}'. Every OSDU service requires it and rejects a request without it.");
         }
 
+        // The partition names the cache the flow fills, so it has to be one a cache can be kept under.
+        _ = CacheScope.Normalize(partition, $"{source}: source.headers");
+
+        if (y.MakeCurrent is not null)
+        {
+            throw new FlowValidationException(
+                $"{source}: makeCurrent is not a setting any more: every version a refresh writes becomes the current version of its partition's cache. Remove it.");
+        }
+
         var parameters = (y.Parameters ?? []).ToDictionary(
             kv => kv.Key,
             kv => new FlowParameter { Required = kv.Value.Required, Default = kv.Value.Default, Description = kv.Value.Description },
@@ -42,7 +51,6 @@ internal static class CacheMapper
             },
             Types = MapTypes(y.Types, defaultMode, parameters, source),
             OnChange = defaultMode,
-            MakeCurrent = y.MakeCurrent ?? true,
             Reliability = FlowMapper.MapReliability(y.Reliability, source),
         };
     }

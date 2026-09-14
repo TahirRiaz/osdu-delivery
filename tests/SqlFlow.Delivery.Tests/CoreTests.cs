@@ -857,7 +857,7 @@ public class RenderContextTests
         var context = new RenderContext
         {
             MappingReference = "M@1",
-            CacheName = "c",
+            CacheScope = "c",
             CacheVersion = "r",
             SchemaSnapshotVersion = "s",
             Parameters = new Dictionary<string, string> { ["z"] = "1", ["a"] = "2", ["dataPartition"] = "dev" },

@@ -9,38 +9,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A cache is a flow of its own: `flowType: cache` declares the OSDU platform to search (`source`: endpoint, auth, and
-  headers with `data-partition-id`), the types to cache (each a `kind`, an optional `query`, the `fields` to keep as
-  bare paths or `path`/`as` pairs, and `onChange: auto | approve`), `makeCurrent`, a default `onChange` (`auto` unless the flow opts into approval), `parameters`,
-  `reliability` and a `schedule`. The cache flow's name is the cache's identity. Its contents live only in the catalog
-  (`delivery.CacheVersion`, `delivery.CacheItem`): every version is kept, a record is stored once per run of versions
-  that held it unchanged (`FromSequence` to `ToSequence`), and a version's content hash is checked every time it is
-  loaded. Nothing writes cache data to a repository any more; the repository sync projects each cache flow's declared
-  types into `delivery.CacheDefinition` and ignores any snapshot folder. The sample estate's cache is
-  `samples/recall-welllog/caches/osdu-reference-cache.yaml`.
+- A cache is filled by flows of their own, and a catalog keeps one cache per OSDU data partition. `flowType: cache`
+  declares the OSDU platform to search (`source`: endpoint, auth, and headers with `data-partition-id`, which names the
+  partition whose cache the flow fills), the types to cache (each a `kind`, an optional `query`, the `fields` to keep as
+  bare paths or `path`/`as` pairs, and `onChange: auto | approve`), a default `onChange` (`auto` unless the flow opts
+  into approval), `parameters`, `reliability` and a `schedule`. A delivery flow reads the cache of the partition in its
+  `target.headers.data-partition-id`, so no flow names a cache: `render.cache` is removed and a flow document that
+  still declares it is refused, `render.cacheVersion` pins a version of the partition's cache, and the render context's
+  `cache` holds the partition. A partition is an id segment or a `${env:...}` or `${keyvault:...}` reference, and
+  partitions compare as written. The cache's contents live only in the catalog (`delivery.CacheVersion`,
+  `delivery.CacheItem` and `delivery.CacheMember`, keyed by the partition): every version is kept, a record is stored
+  once per partition and per run of versions that held it unchanged (`FromSequence` to `ToSequence`), and a version's
+  content hash is checked every time it is loaded. Nothing writes cache data to a repository any more; the repository
+  sync projects each cache flow's declared types, with the partition it fills and the endpoint it searches, into
+  `delivery.CacheDefinition` and ignores any snapshot folder. The sample estate's cache flow is
+  `samples/recall-welllog/caches/osdu-reference-cache.yaml`, filling partition `opendes`.
+- Several cache flows, in one repository or in several, may fill one partition, and the cache holds the union of what
+  they declare: flows declaring a type under the same name share one type, a refresh fetches every path any synced flow
+  declares for it, every flow's query adds records, and the type's changes wait for approval when any flow declaring it
+  says `approve`. A captured record replaces what the cache held for it, whichever flow captured it; a record the
+  capturing flow no longer finds leaves only when no other flow's last capture still holds it, which
+  `delivery.CacheMember` records per record and flow. Types a capture does not cover are untouched, except a type no
+  synced flow declares any more, which is removed. Two declarations of one type for a partition that disagree on the
+  entity type, or cache one field name from different paths, are refused: the sync leaves the declaration synced second
+  out with a warning, and a refresh of a conflicting flow fails before capturing. The sync also warns when the cache
+  flows of one partition search different endpoints, and when two repositories declare the same cache flow name.
 - The `refresh` operation, a cache flow's default (`deliver` is taken as refresh; `plan` counts what each type's search
-  matches): it captures every declared type and writes a version, labelled from the capture instant
-  (`20260908T212727Z`) and holding exactly the declared types, only when the content differs from the current version.
-  A version records the run that captured it. Changed values that delivered records were built from are tagged as
-  before, waiting for approval under `approve` and going out on the next run under `auto`. A refresh takes no drop,
-  submission or record scope.
-- `sqlflow cache list <cache.yaml | name>` lists a cache's versions, and
-  `sqlflow cache import <cache.yaml> --from-dir <dir> [--no-current]` writes type files (`{Name}.json`, which must match the declared types, entity types and
-  captured names) as a version for work without OSDU. A cache is refreshed from OSDU with `sqlflow run <cache.yaml>`,
-  and `sqlflow check` prints the cache version a flow reads.
-- `GET /api/v1/delivery/caches` (optionally by `repoId`) describes every cache: the defining file and pipeline, the
-  endpoint, `makeCurrent`, the declared types, the schedules that refresh it, the current version and the version
-  count. `GET /cache/items`, `/cache/versions`, `/cache/history` and `/cache/diff` now require `cache=<name>`, and
-  update tags carry the cache. `GET /mapping-builder/caches` lists the caches for the mapping builder, whose draft,
-  compose, template preview and template detail take `cache` in place of `repoId`.
-- The OSDU cache page names the cache and the file that defines it, with View YAML and Refresh now (the trigger dialog
-  with the refresh operation) beside it. A summary row gives the current version with who captured it, the records it
-  holds, how it is refreshed, and whether changes are automatic or how many wait for approval; a banner with Review
-  changes appears whenever any do. A searchable type picker in the tab bar scopes the Records and Versions tabs;
-  the Changes tab lists what refreshes changed, with Approve and Reject in each waiting row, and the Definition tab reads
-  back the endpoint, the schedules and each type's kind, query, kept paths and `onChange`. The tab, cache and type are
-  in the URL. `GET /cache/tags` takes `cache` to list one cache's changes. A cache flow's pipeline page has a Cache versions tab, and the mapping
-  builder has a Cache picker defaulting to the cache the repository's delivery flow names.
+  matches): it captures every declared type and merges it into the partition's cache, writing a version only when the
+  merge changes the cached content. Versions form one line per partition and the newest is always current:
+  `makeCurrent` is removed, and a cache flow that still declares it is refused. A version is labelled from the capture
+  instant (`20260908T212727Z`, with the sequence appended when two captures of a partition share a second) and records
+  the cache flow and the run that wrote it; a concurrent write of the same partition fails and asks for the refresh to
+  be run again. Changed values that delivered records were built from are tagged as before, waiting for approval under
+  `approve` and going out on the next run under `auto`. A refresh takes no drop, submission or record scope, and its
+  result names the partition, the flow, the version the cache holds after it and the one it replaced.
+- `sqlflow cache list <partition | cache.yaml>` lists the versions of a partition's cache (a cache flow's file lists the
+  partition it fills), each naming the cache flow that wrote it, and
+  `sqlflow cache import <cache.yaml> --from-dir <dir>` merges type files (`{Name}.json`, which must match the flow's
+  declared types, entity types and captured names) into the flow's partition as that flow's capture, for work without
+  OSDU. A cache is refreshed from OSDU with `sqlflow run <cache.yaml>`, and `sqlflow check` prints the partition and the
+  cache version a flow reads.
+- `GET /api/v1/delivery/caches` (optionally by `repoId`, the partitions that repository's cache flows fill) returns one
+  entry per partition: its `scope`, the cache flows filling it (file, pipeline, endpoint, schedules and declared types),
+  the types it holds as those flows together declare them (each flow's kind, query and `onChange`, and every kept path
+  with the flows declaring it), the current version and the version count. `GET /cache/items`, `/cache/versions`,
+  `/cache/history` and `/cache/diff` require `scope=<partition>`, `/cache/tags` takes an optional `scope`, and cache
+  versions (with the `flow` that wrote them), update tags and a record's cache uses carry the `scope`.
+  `GET /mapping-builder/caches` lists every partition's cache for the mapping builder, a builder flow carries the
+  `cacheScope` it delivers to, and the draft, compose, template preview and template detail take `scope` in place of
+  `repoId`.
+- The catalog schema changed for the partition cache (`delivery.CacheDefinition`, `CacheVersion`, `CacheItem`,
+  `CacheSetEntry` and `UpdateTag` carry the partition, and `delivery.CacheMember` is new), so an existing catalog has to
+  be re-minted.
+- The OSDU cache page shows one partition's cache: the header names the partition and the cache flow files filling it,
+  with View YAML and Refresh now (menus naming the flows when several fill it) and a partition picker. A summary row
+  gives the current version with the flow that wrote it, the records it holds, how it is refreshed, and whether
+  changes are automatic or how many wait for approval; a banner with Review changes appears whenever any do. A
+  searchable type picker in the tab bar scopes the Records and Versions tabs; the Changes tab lists what refreshes
+  changed, with Approve and Reject in each waiting row, and the Definition tab lists the cache flows (repository, file,
+  endpoint, schedules, types, with View YAML and Refresh per row) and the merged types (each flow's kind and query, every
+  kept path with the flows declaring it, `onChange`). The tab, partition (`?scope=`) and type are in the URL, and
+  `?flow=` opens the partition a cache flow fills. `GET /cache/tags` takes `scope` to list one partition's changes. A
+  cache flow's pipeline page has a Cache versions tab for its partition, and the mapping builder has a Partition cache
+  picker defaulting to the partition the repository's delivery flow delivers to.
+- The GUI shows how a mapping reads the cache. A cached record's sheet lists each source (`cache.<Type>.id`,
+  `cache.<Type>.<name>`) next to the value it reads for that record, with a `source` and `findBy` entry to copy that
+  selects it; the Definition tab has a guide with the same forms, and a kept path's hover names its source.
 - A file too large to send through the control plane is written straight to storage:
   `POST /api/v1/delivery/dropoffs/reserve` writes the drop-off row, then hands out one write-only URL per file, and
   `POST /dropoffs/{id}/complete` closes it once they are written. Completion is decided by what storage holds, not by

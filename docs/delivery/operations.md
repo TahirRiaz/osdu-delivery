@@ -16,7 +16,7 @@ Everything the platform already reads ([../environment-variables.md](../environm
 | Flow secrets | nodes, the CLI | Whatever the flows reference: `${env:PETRODB_URL}`, `${keyvault:vault/name}`, and so on. A node holds the references its pool's flows need. |
 | `SQLFLOW_DELIVERY_ALLOW_LOOPBACK` | nodes, the CLI | `true` lets a flow target `localhost` (local OSDU stubs, tests). Off by default: the URL guard refuses loopback and private targets. |
 | `ControlPlane:MaxRequestBodyMegabytes` | control plane | The API's request body ceiling, set on purpose rather than left at Kestrel's default. Default 64. |
-| Repository layout | flow repositories | `mappings/` next to the flows (or named under `render.mappings`), and the cache flows (`flowType: cache`) that define the caches the mappings read, committed and synced. The templates the mappings pin and every version of every cache live in the catalog, never in the repository; nothing writes to the repository. |
+| Repository layout | flow repositories | `mappings/` next to the flows (or named under `render.mappings`), and the cache flows (`flowType: cache`) that fill the partition caches the mappings read, committed and synced. The templates the mappings pin and every version of every cache live in the catalog, never in the repository; nothing writes to the repository. |
 
 ## First deployment
 
@@ -39,9 +39,9 @@ Everything the platform already reads ([../environment-variables.md](../environm
    release of them for the shared schemas it refers to), and once the repository is synced (step 4) the GUI's
    Templates page browses OSDU and saves a template through the flow's connection on a node.
 4. Register the repository as a source in the GUI (Repos) and sync it. The delivery flow appears as a pipeline of kind
-   `delivery`, and its mappings appear under Mappings, each with the template it pins. The cache flow its mapping
-   reads (the one `render.cache` names) appears as a pipeline of kind `cache`, and its cache on the OSDU cache page,
-   with no version yet.
+   `delivery`, and its mappings appear under Mappings, each with the template it pins. The cache flow
+   that fills the partition the delivery flow delivers to (the `data-partition-id` both declare, `opendes` in the
+   sample) appears as a pipeline of kind `cache`, and the partition's cache on the OSDU cache page, with no version yet.
 5. Capture the cache: run the cache flow with the refresh operation (Refresh now on the OSDU cache page, the Trigger
    run dialog on its pipeline, or `sqlflow run caches/osdu-reference-cache.yaml --db <ref>` on a workstation), then
    check the delivery flow against its template and the cache version it now reads:
@@ -50,10 +50,11 @@ Everything the platform already reads ([../environment-variables.md](../environm
    sqlflow check flows/recall-welllog.yaml --set logSource=STAT_COMP --db <ref>
    ```
 
-   The refresh searches the endpoint the cache flow declares, with the cache flow's own credentials, and writes the
-   cache's first version into the catalog, current from then on. Without access to OSDU,
-   `sqlflow cache import caches/osdu-reference-cache.yaml --from-dir <dir> --db <ref>` writes type files as a version
-   instead. The cache flow's `schedule` keeps the cache refreshed ahead of the deliveries.
+   The refresh searches the endpoint the cache flow declares, with the cache flow's own credentials, and merges what it
+   found into the cache of its partition, writing that cache's first version into the catalog; the newest version is
+   always the current one. Without access to OSDU,
+   `sqlflow cache import caches/osdu-reference-cache.yaml --from-dir <dir> --db <ref>` merges type files into the
+   partition's cache instead. `sqlflow cache list opendes --db <ref>` lists the versions. The cache flow's `schedule` keeps the cache refreshed ahead of the deliveries.
 6. Have the preparing side write a drop and plan it before anything touches OSDU: trigger a run with
    operation `plan` and the flow parameters (the GUI's Trigger run dialog, or
    `sqlflow run flows/recall-welllog.yaml --operation plan --set logSource=STAT_COMP`).
@@ -87,8 +88,8 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
 | `GET /mappings`, `/mappings/{id}` | read | The mapping documents the repositories hold. |
 | `GET /templates` | read | The saved template versions, by kind and newest first, each with where it came from, who saved it and how many synced mappings pin it ([mapping-templates.md](mapping-templates.md)). |
-| `GET /templates/detail`, `GET /templates/schema` | read | One saved version (`kind`, `version`): laid out variable by variable (type, shape, requiredness, who writes it, relationships, unit context and OSDU's description; with `cache`, the types of that cache each variable can be read from), or the bundled schema itself. |
-| `POST /templates/preview` | read | A bundled schema (`kind`, `schema`, optional `cache` and `release`) laid out the same way without saving it, with the saved version when it is already saved. |
+| `GET /templates/detail`, `GET /templates/schema` | read | One saved version (`kind`, `version`): laid out variable by variable (type, shape, requiredness, who writes it, relationships, unit context and OSDU's description; with `scope`, the types of that partition's cache each variable can be read from), or the bundled schema itself. |
+| `POST /templates/preview` | read | A bundled schema (`kind`, `schema`, optional `scope` and `release`) laid out the same way without saving it, with the saved version when it is already saved. |
 | `GET /templates/osdu/releases` | read | The releases of the OSDU data definitions (the Open Group's public schema repository), newest first: each tag, the commit it names, its schema folder on the web, and whether it is in the control plane's local copy (`local`); `syncedUtc` is when the list was last read from the repository. 502 when the repository cannot be read and no list is on disk. |
 | `POST /templates/osdu/sync` | operate | Reads the release list again from the repository and downloads `release` (the newest when omitted) into the local copy when it is not on disk: the list, when it was read, and the releases downloaded. |
 | `GET /templates/osdu/schemas` | read | Every record kind a release publishes (`release`, the newest when omitted): kind, entity type, version, status, and its file with a link to it. 404 for a release the repository does not have. |
@@ -96,20 +97,20 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /templates/osdu/schema` | read | One kind's schema from a release (`kind`, `release`), bundled with every file it refers to, read at the release's commit: the template version it saves as, and the `origin` a save records. Nothing is saved; 404 for a kind the release does not publish. |
 | `POST /templates` | author | Saves a bundled schema (`kind`, `schema`, `origin`) as a template version: `outcome` is `created`, or `unchanged` for a version already saved. |
 | `DELETE /templates` | author | Deletes a version (`kind`, `version`); 409 while a synced mapping pins it. |
-| `GET /mapping-builder/repos` | read | The repositories a mapping can be written for: the source a proposal is opened against, and the delivery flows with their endpoint, what they render with and the cache they name. |
-| `GET /mapping-builder/caches` | read | Every cache a synced cache flow declares, with the repository that declares it, its current version and its cached types: what the builder's Cache picker offers. |
-| `POST /mapping-builder/draft` | read | A new mapping (`cache`, `kind`, `version`, `name`, `mappingVersion`, `system`) for a saved template: the four access and legal entries to fill, and a cache entry for every variable outside a repeater that points to an entity type the named cache holds. |
-| `POST /mapping-builder/compose` | read | A draft written as YAML and checked: what is still missing, whether it loads, and the preflight against its template and the current version of `cache`, with the `parameters` given. |
+| `GET /mapping-builder/repos` | read | The repositories a mapping can be written for: the source a proposal is opened against, and the delivery flows with their endpoint, what they render with and the partition whose cache they read (`cacheScope`). |
+| `GET /mapping-builder/caches` | read | Every partition whose cache a synced cache flow fills: the partition (`scope`), the cache flows filling it, its current version and its cached types: what the builder's Cache picker offers. |
+| `POST /mapping-builder/draft` | read | A new mapping (`scope`, `kind`, `version`, `name`, `mappingVersion`, `system`) for a saved template: the four access and legal entries to fill, and a cache entry for every variable outside a repeater that points to an entity type the cache of that partition holds. |
+| `POST /mapping-builder/compose` | read | A draft written as YAML and checked: what is still missing, whether it loads, and the preflight against its template and the current version of the cache of `scope`, with the `parameters` given. |
 | `POST /mapping-builder/parse` | read | A mapping document (`yaml`) as a draft the builder edits. |
 | `POST /mapping-builder/shape` | read | The shape of the records a mapping document (`yaml`, optional `path` and `parameters`) renders, drawn against its saved template without a row or a cache: the record with a placeholder naming the type and the source wherever a value comes from a row or the cache, the parameters the mapping declares with the value used, notes on what the placeholders cannot say, and the issue that stopped it when the document does not load or its template is not saved ([mapping-templates.md](mapping-templates.md)). |
-| `GET /caches` | read | Every cache the synced cache flows declare, narrowed to one repository by `repoId`: its name and repository, the cache flow's `relativePath` and `pipelineId`, the `endpoint` it is captured from as declared, `makeCurrent`, each declared type (kind, query, kept paths, `onChange`, and how many records the current version holds of it), the schedules that refresh it, the current version with who captured it and in which run, and how many versions it holds. |
-| `GET /cache/items` | read | The cached records of one `cache` at one `version` (the current one when none is named), paged, filtered by `type` and searched with `search` over every value they hold. |
-| `GET /cache/versions` | read | The versions of one `cache`, newest first, each with whether it is current, when it was captured, by whom and in which run, where its content came from, and its types and record counts. |
-| `GET /cache/history` | read | The versions of one `cache`, newest first, each with the version captured before it and how many records it changed, added and removed; `type` narrows the counts to one cached type. |
-| `GET /cache/diff` | read | What changed in one `cache` between two versions: `from` (required) and `to` (the current version when omitted), counts per type, and a page of the records that changed, were added or were removed, with the captured values on each side. Narrowed by `type`, `search`, and `change` (the items only). 404 for a version the cache does not hold. |
-| `GET /cache/tags` | read | The cache changes delivered records were built from, paged, by `status` (pending, approved, rolling, rejected, applied), each naming the cache whose refresh found it, with what it reaches and how far the rollout has carried it. |
+| `GET /caches` | read | One entry per partition whose cache the synced cache flows fill, narrowed by `repoId` to the partitions that repository's cache flows fill: the partition (`scope`); the `flows` filling it, each with its name, repository, `relativePath`, `pipelineId`, the `endpoint` it searches as declared, the schedules that refresh it and the types it declares; the `types` the cache holds as those flows together declare them, each with its entity type, its `sources` (each flow's kind, query and `onChange`), the `fields` it keeps (the path, the name it is cached as, and the flows declaring it), the `onChange` in effect (`approve` when any flow asks for it) and how many records the current version holds of it; the `current` version with the cache flow that wrote it, who asked and in which run; and how many `versions` the cache holds. |
+| `GET /cache/items` | read | The cached records of one partition's cache (`scope`) at one `version` (the current one when none is named), paged, filtered by `type` and searched with `search` over every value they hold. |
+| `GET /cache/versions` | read | The versions of one partition's cache (`scope`), newest first, each with whether it is current, the cache flow that wrote it, when it was captured, by whom and in which run, where its content came from, and its types and record counts. |
+| `GET /cache/history` | read | The versions of one partition's cache (`scope`), newest first, each with the version captured before it and how many records it changed, added and removed; `type` narrows the counts to one cached type. |
+| `GET /cache/diff` | read | What changed in one partition's cache (`scope`) between two versions: `from` (required) and `to` (the current version when omitted), counts per type, and a page of the records that changed, were added or were removed, with the captured values on each side. Narrowed by `type`, `search`, and `change` (the items only). 404 for a version the cache does not hold. |
+| `GET /cache/tags` | read | The cache changes delivered records were built from, paged, by `status` (pending, approved, rolling, rejected, applied), each naming the partition whose cache the refresh found it in, with what it reaches and how far the rollout has carried it; `scope` narrows the list to one partition. |
 | `POST /cache/tags/decide` | operate | Approves or rejects changes (`tagIds`, `approve`). Approving hands the change to the batched rollout; rejecting leaves OSDU as it is. |
-| `GET /records/{key}/cache` | read | What one record read out of the cache when it was rendered: the cached item, the path and the value. |
+| `GET /records/{key}/cache` | read | What one record read out of the cache when it was rendered: the partition, the cached item, the path and the value. |
 | `POST /flows/{pipelineId}/release` | operate | Release the flow's blocked records (all, or `keys`). |
 | `POST /flows/{pipelineId}/probe` | operate | Queue a target probe on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope` all, metadata or payload; `run` true queues a deliver run of the record's last submission, scoped to the record, that marks it with that scope and sends it); queue a verify run scoped to it. |
@@ -180,8 +181,9 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   and for a flow that streams payload files each record also says where its files already are.
 - **A retrieval flow's page** (Pipelines): the Retrievals tab, every run with its window, location, counts and
   outcome; a row opens the platform run.
-- **A cache flow's page** (Pipelines): the Cache versions tab, every version the cache flow captured into the catalog,
-  with a link to the OSDU cache page for what the cache holds and the changes waiting for approval.
+- **A cache flow's page** (Pipelines): the Cache versions tab names the partition the flow fills and how many other
+  cache flows fill it too, and lists every version of that partition's cache with the flow that wrote each, with a link
+  to the OSDU cache page for what the cache holds and the changes waiting for approval.
 - **Audit trail** (Operate): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (Workspace): the mapping documents the repositories hold, each mapping with the template it pins and a
   link to the Mapping builder.
@@ -190,36 +192,44 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   relationships, unit context and OSDU's description), and save it; or import a bundled schema file. The saved
   templates are listed with where each version came from and how many mappings pin it, and a version no mapping pins
   can be deleted.
-- **Mapping builder**: pick the repository, a saved template and the cache the mapping reads (the Cache picker
-  defaults to the cache the repository's delivery flow names), and the page lists every template variable, with a
+- **Mapping builder**: pick the repository, a saved template and the partition whose cache the mapping is checked
+  against (the Partition cache picker lists every partition a synced cache flow fills, with those flows, and defaults
+  to the partition the repository's delivery flow delivers to), and the page lists every template variable, with a
   cache entry prefilled for each variable outside a repeater that points to an entity type that cache holds. Each
   entry takes its value from the dataset, a repeater, the cache or a static value, with its modifiers, condition and
   required flag, and the YAML and its checks against the template and the cache's current version follow every edit. The mapping is copied, or proposed to the repository as a pull request through the proposal endpoint
   (`POST /api/v1/repos/sources/{id}/proposals`). An existing synced mapping opens with its entries filled in.
-- **OSDU cache** (Workspace): the reference and master data every delivered document is built from. The header names
-  the cache and the cache flow file that defines it, with View YAML (the cache flow's pipeline page) and Refresh now
-  (the trigger dialog on the cache flow, with the refresh operation); a cache picker joins them when the synced cache
-  flows declare more than one cache. A summary row follows: the current version with when and by whom it was captured,
-  how many records it holds in how many types, whether a schedule refreshes it, and either that changes are automatic
-  or how many wait for approval. Whenever a change waits, a banner says so with Review changes. A searchable type
-  picker at the end of the tab bar, on the Records and Versions tabs, lists the declared types with their family,
-  record count and whether their changes need approval; picking one scopes those tabs, and Clear filter lifts the
-  scope. The tab, the cache and
-  the type are in the URL, so a link opens the same view. The definition is read-only because it lives in the cache
-  flow's file in git; the decision on a change is the one thing made here.
+- **OSDU cache** (Workspace): the reference and master data every delivered document is built from, one cache per OSDU
+  partition. The header names the partition and the cache flow file that fills it (or how many flows fill it, with
+  every file on hover), with View YAML (the cache flow's pipeline page) and Refresh now (the trigger dialog on the
+  cache flow, with the refresh operation); when several flows fill the partition both are menus naming the flows,
+  since a refresh runs one flow's capture. A partition picker joins them when the synced cache flows fill more than
+  one partition. A summary row follows: the current version with the flow that wrote it, when and for whom, how many
+  records it holds in how many types, whether a schedule refreshes it, and either that changes are automatic or how
+  many wait for approval. Whenever a change waits, a banner says so with Review changes. A searchable type picker at
+  the end of the tab bar, on the Records and Versions tabs, lists the types with their family, record count and whether
+  their changes need approval; picking one scopes those tabs, and Clear filter lifts the scope. The tab, the partition
+  (`?scope=`) and the type are in the URL, so a link opens the same view; a link naming a cache flow (`?flow=`, as a
+  cache run's page uses) opens the partition that flow fills. The definition is read-only because it lives in the cache
+  flow files in git; the decision on a change is the one thing made here.
 - **Records.** The cached records at the version being read, with the search over every value they hold (id, code,
   name, alias) and the version picker in the tab's own toolbar. With a type in scope the table has one column per
   captured name, so a unit's code, name and id read down the page; over every type each row names its type, shows the
   part of the id that tells the records apart (the whole id on hover) and folds the values into one column. A row
-  opens the record: its captured values by name, the JSON as captured, and the version it is the record as of.
+  opens the record: its captured values by name, how a mapping reads it (each source, `cache.<Type>.id` and
+  `cache.<Type>.<name>`, next to the value it reads for this record, and a `source` plus `findBy` entry to copy that
+  selects the record by one of its values), the JSON as captured, and the version it is the record as of.
 - **Reading the cache as it stood.** The version picker opens on the current version, the one deliveries render
   against unless a flow pins another; picking an earlier one says so above the table, because nothing shown then is
-  what a render would read today. Every version the cache flow's runs captured stays readable.
-- **Definition.** What the cache flow file declares, as the last sync found it: the file, the endpoint the types are
-  captured from, the schedules, whether a new version becomes current, and each type with the kind it is searched as
-  and its query, the paths it keeps, and what a changed value does (next run, or needs approval).
-- **Versions.** Every version, newest first, each with what captured it (the run and who asked, or an import from
-  files) and what it changed compared with the version captured before it (so many changed, added, removed, or no
+  what a render would read today. Every version the partition's cache flows wrote stays readable.
+- **Definition.** What the partition's cache flow files declare, as the last sync found them. A guide says how a
+  mapping reads the cache (`source: cache.<Type>.id` or `cache.<Type>.<name>`, and `findBy` lines), with an entry to
+  copy, and that a mapping never names the cache. The cache flows follow, each with its repository, file, the endpoint
+  it searches, its schedules and the types it declares, with View YAML and Refresh in its row; then each type as the
+  flows together declare it: the kind and query each flow searches it with, every path kept (the source that reads it
+  and the flows declaring it on hover), and what a changed value does (next run, or needs approval when any flow asks).
+- **Versions.** Every version, newest first, each with the cache flow that wrote it and what captured it (the run and
+  who asked, or an import from files) and what it changed compared with the version captured before it (so many changed, added, removed, or no
   changes), with the counts for the type in scope when one is picked and the versions that left it untouched folded
   away. Picking a version raises its changes in the workbench bottom panel, so the list stays in view: changed
   records with the captured values that moved, before and after, records the version added, and records it no longer
@@ -244,10 +254,10 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 | Verb | Purpose |
 | --- | --- |
 | `sqlflow validate <flow.yaml>` | The platform's document validation (the CI gate for a folder). |
-| `sqlflow check <flow.yaml> [--drop <location>] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the mapping against its pinned template and the version of the cache the flow names, both loaded from the catalog, and the drop's manifest when present. |
-| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve\|refresh] [--force] [--set name=value]... [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>] [--db <ref>]` | A run on the workstation. A delivery flow's runs need the catalog connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which writes the cache's versions into the catalog and so needs it. |
-| `sqlflow cache list <cache.yaml\|name> [--db <ref>] [--json]` | The versions of a cache, newest first: when each was captured, by whom and in which run, and what it holds. |
-| `sqlflow cache import <cache.yaml> --from-dir <dir> [--no-current] [--db <ref>] [--json]` | Write type files (`{Name}.json`) as a version of the cache, for work without OSDU. The files must match the types, entity types and captured names the cache flow declares. A cache is captured from OSDU with `sqlflow run <cache.yaml>`. |
+| `sqlflow check <flow.yaml> [--drop <location>] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the mapping against its pinned template and the version of the cache of the partition the flow delivers to, both loaded from the catalog, and the drop's manifest when present. |
+| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve\|refresh] [--force] [--set name=value]... [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>] [--db <ref>]` | A run on the workstation. A delivery flow's runs need the catalog connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which merges into the cache of its partition in the catalog and so needs it. |
+| `sqlflow cache list <partition\|cache.yaml> [--db <ref>] [--json]` | The versions of a partition's cache (a cache flow's file lists the partition it fills), newest first: the cache flow that wrote each, when it was captured, by whom and in which run, and what it holds. |
+| `sqlflow cache import <cache.yaml> --from-dir <dir> [--db <ref>] [--json]` | Merge type files (`{Name}.json`) into the cache of the flow's partition as that flow's capture, for work without OSDU. The files must match the types, entity types and captured names the cache flow declares. A cache is captured from OSDU with `sqlflow run <cache.yaml>`. |
 | `sqlflow template capture --kind <kind> [--release <tag>]` | Save a kind's schema from the OSDU data definitions as a template version (the newest release by default). |
 | `sqlflow template import <schema.json> --kind <kind> [--release <tag>]`, `sqlflow template import --from-dir <dir> --kind <kind>` | Save a template from a schema file, or from a local checkout of the OSDU data definitions. A bundled file is saved as it is; a file as the data definitions publish it, referring to `../abstract/...` schemas, has those read from `--release` (the newest by default), and the template's origin names the release. |
 | `sqlflow template list \| show --kind <kind> [--version <v>] \| delete --kind <kind> --version <v>` | The saved templates, one laid out variable by variable, and deleting a version no synced mapping pins. Every `template` verb needs the catalog connection (`--db <ref>`). |
@@ -270,9 +280,13 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 | A submission stays `running` with batches `queued` | The submission's batches; the run page's fan-out family | A drain member failed or a node went away. The parent settles what it can; re-run the submission (or trigger `drain` with the submission) to drain the rest. |
 | Records pending with `workflow run ... failed` | The record's attempts: the `workflow` step names the run | The ingestion DAG failed; its own log says why. The next try triggers a new run automatically; fix the data or the manifest section first when the DAG rejected the content. |
 | A retrieval run `failed` | The Retrievals tab: the row's error; the run's trace | The watermark did not move, so the next run covers the same window. Fix the cause (credentials, the query, the lake location) and run again; a run's directory is never reused. |
-| A delivery run fails: cache '&lt;name&gt;' has no current version | The run's error names the cache | Run the cache flow of that name with the refresh operation (Refresh now on the OSDU cache page), or write a version with `sqlflow cache import`, and run again. |
-| A delivery run fails: the mapping reads the cache, so `render.cache` must name the cache it reads | The run's error names the flow and the mapping | Name the cache flow under `render.cache` in the delivery flow. A pinned `render.cacheVersion` the catalog does not hold fails the same way: pin a version `sqlflow cache list` shows, or remove the pin to read the current version. |
-| A cache refresh wrote no version | The run's trace: the cache is reported unchanged at its current version | The capture found exactly what the current version holds, so nothing moved and nothing renders again. That is the expected outcome of a refresh with nothing new. |
+| A delivery run fails: the mapping reads the cache of partition '&lt;partition&gt;', which holds no version yet | The run's error names the mapping and the partition | Run a cache flow whose `source.headers.data-partition-id` is that partition with the refresh operation, or merge type files into it with `sqlflow cache import`, and run again. |
+| A flow fails to load: `render.cache is not a setting any more` | The error names the flow file | Remove `render.cache`: a flow reads the cache of the partition in its `target.headers.data-partition-id`. |
+| A delivery run fails: `render.cacheVersion` pins a version of the cache of partition '&lt;partition&gt;' the catalog does not hold | The run's error names the version and the partition | Pin a version `sqlflow cache list <partition>` shows, or remove the pin to read the current version. |
+| A cache flow fails to load: `makeCurrent is not a setting any more` | The error names the cache flow file | Remove `makeCurrent`: every version a refresh writes becomes the current version of its partition's cache. A delivery flow that has to stay on an earlier version pins it with `render.cacheVersion`. |
+| The sync warns that a type is left out of the cache of partition '&lt;partition&gt;' | The repository's sync warnings name both cache flows and what they disagree on | Two cache flows of the partition declare the type with different entity types, or cache one name from different paths. Make the declarations agree, or give one type another name; until then a refresh of the flow left out fails before capturing, saying the same. |
+| A cache refresh fails: another refresh of the partition wrote a version at the same time | The run's error names the cache flow and the partition | Nothing of the capture was kept. Run the refresh again. |
+| A cache refresh wrote no version | The run's trace: the partition's cache is reported unchanged at its current version | The merge changed no cached content (the flow's membership is still recorded), so nothing moved and nothing renders again. That is the expected outcome of a refresh with nothing new. |
 | A failure has to be followed into OSDU's own logs | The record's History tab: the attempt's result names its `correlationId`, and a refused request's error quotes `(correlation-id ...)` | Give the OSDU operators that id: every request of the try carried it. |
 
 ## Size ceilings

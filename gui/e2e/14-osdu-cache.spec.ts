@@ -7,12 +7,15 @@ import { expect, test } from "./helpers";
 
 const CACHE = "osdu-reference-cache";
 
+/** The partition the sample cache flow fills, and so the cache the page shows. */
+const PARTITION = "opendes";
+
 test.describe.serial("osdu cache", () => {
   test("the page opens on the cache: where it is defined, what it holds, and its types", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
     await expect(adminPage.getByTestId("page-delivery-cache")).toBeVisible();
 
-    await expect(adminPage.getByTestId("delivery-cache-name")).toHaveText(CACHE, { timeout: 30_000 });
+    await expect(adminPage.getByTestId("delivery-cache-name")).toHaveText(PARTITION, { timeout: 30_000 });
     await expect(adminPage.getByTestId("delivery-cache-defined-in")).toHaveText(`caches/${CACHE}.yaml`);
 
     // The summary: the version deliveries read, how much it holds, how it is refreshed, and that changes need no one.
@@ -48,6 +51,12 @@ test.describe.serial("osdu cache", () => {
     const rows = definition.getByTestId("delivery-cache-definition-types").getByTestId("table-row");
     await expect(rows).toHaveCount(4);
     await expect(rows.filter({ hasText: "master-data--Wellbore" })).toContainText("NameAlias.AliasName");
+    await expect(definition.getByTestId("delivery-cache-definition-flows").getByTestId("table-row")).toHaveCount(1);
+
+    // The guide says how a mapping reads the cache, with an entry to start from, and never names the cache.
+    const guide = definition.getByTestId("delivery-cache-mapping-guide");
+    await expect(guide).toContainText(PARTITION);
+    await expect(guide.getByTestId("delivery-cache-mapping-guide-entry")).toContainText(/source: cache\.\w+\.id/);
 
     // Refresh now opens the trigger dialog on the cache flow with the refresh operation, and no delivery-only fields.
     // The suite never submits it: a refresh searches the OSDU target.
@@ -68,7 +77,7 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("pipeline-tab-versions").click();
     await expect(adminPage.getByTestId("delivery-cache-history-versions").getByTestId("table-row").first()).toContainText(/\d{8}T\d{6}Z/, { timeout: 30_000 });
     await adminPage.getByTestId("pipeline-cache-link").click();
-    await expect(adminPage.getByTestId("delivery-cache-name")).toHaveText(CACHE, { timeout: 30_000 });
+    await expect(adminPage.getByTestId("delivery-cache-name")).toHaveText(PARTITION, { timeout: 30_000 });
   });
 
   test("picking a type scopes the records, and a row opens what it caches", async ({ adminPage }) => {
@@ -90,6 +99,15 @@ test.describe.serial("osdu cache", () => {
     await expect(detail).toContainText("Captured values");
     await expect(adminPage.getByTestId("delivery-cache-item-copy-id")).toBeVisible();
     await expect(adminPage.getByTestId("delivery-cache-item-json")).toBeVisible();
+
+    // How a mapping reads the record, with the value each reference reads for it: the id as a relationship, and each
+    // captured name, plus an entry that finds the record by one of its values.
+    const mapping = adminPage.getByTestId("delivery-cache-item-mapping");
+    const references = mapping.getByTestId("delivery-cache-item-reference");
+    await expect(references.filter({ hasText: "cache.Wellbore.id" })).toContainText("master-data--Wellbore:OSDU-DEV-1-A:");
+    await expect(references.filter({ hasText: "cache.Wellbore.Alias" })).toBeVisible();
+    await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("source: cache.Wellbore.id");
+    await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("findBy: cache.Wellbore.");
     await detail.getByRole("button", { name: "Close" }).click();
 
     // Clearing the picker lifts the scope.

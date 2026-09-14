@@ -254,14 +254,15 @@ function TagDetail({ tag, onDecided }: { tag: DeliveryUpdateTag; onDecided: () =
 }
 
 /**
- * The changes one cache's refreshes found in values delivered records were built from, and what became of each. By
+ * The changes refreshes found in one partition cache, in values delivered records were built from, and what became of each. By
  * default a change goes out on the next run on its own and shows here as a rollout; a type whose cache flow asks for
  * approval holds its changes here until someone decides, with Approve and Reject in the row, in bulk from a selection,
  * and in the panel a row opens. The list opens on the changes waiting for a decision when there can be any, and on
  * every change otherwise.
  */
-export function DeliveryCacheApprovals({ cache, approvalTypes, pendingTotal }: {
-  cache: string;
+export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal }: {
+  /** The partition whose cache the changes were found in. */
+  scope: string;
   /** The types of the cache whose changes wait for approval; empty when every change goes out on its own. */
   approvalTypes: string[];
   /** How many of the cache's changes wait for a decision; undefined while it loads. */
@@ -379,7 +380,7 @@ export function DeliveryCacheApprovals({ cache, approvalTypes, pendingTotal }: {
               icon={<ShieldCheck />}
               title="Nothing needs approval"
               description={approvalTypes.length === 0
-                ? "No type of this cache asks for approval, so a changed value reaches the delivered records on the next run without waiting here. To look at a type's changes first, set onChange: approve on it in the cache flow file."
+                ? "No type of this cache asks for approval, so a changed value reaches the delivered records on the next run without waiting here. To look at a type's changes first, set onChange: approve on it in a cache flow file of the partition."
                 : "A change waits here only when a record already delivered to OSDU was built from a value that moved in a type that asks for approval."}
               data-testid="delivery-cache-approvals-empty"
             />
@@ -387,8 +388,8 @@ export function DeliveryCacheApprovals({ cache, approvalTypes, pendingTotal }: {
         )
         : (
           <PagedTable
-            queryKey={["delivery", "cache", "tags", cache, status]}
-            fetchPage={(page, pageSize) => deliveryApi.updateTags({ page, pageSize, cache, status: status === ALL ? undefined : status })}
+            queryKey={["delivery", "cache", "tags", scope, status]}
+            fetchPage={(page, pageSize) => deliveryApi.updateTags({ page, pageSize, scope, status: status === ALL ? undefined : status })}
             columns={columns}
             rowKey={(row) => String(row.tagId)}
             onRowClick={(row) => {

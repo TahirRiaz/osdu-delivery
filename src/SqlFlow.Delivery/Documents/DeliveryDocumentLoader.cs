@@ -249,7 +249,6 @@ internal static partial class FlowMapper
             Render = new FlowRender
             {
                 Mapping = mapping,
-                Cache = string.IsNullOrWhiteSpace(render.Cache) ? null : render.Cache!.Trim(),
                 CacheVersion = MapCacheVersion(render, source),
                 Parameters = render.Parameters ?? new Dictionary<string, string>(StringComparer.Ordinal),
                 MappingsDirectory = string.IsNullOrWhiteSpace(render.Mappings) ? null : render.Mappings!.Trim(),
@@ -277,17 +276,20 @@ internal static partial class FlowMapper
         return flow;
     }
 
-    /// <summary>The cache version a flow pins, <c>current</c> when it pins none; pinning a version of no named cache means nothing.</summary>
+    /// <summary>
+    /// The cache version a flow pins, <c>current</c> when it pins none. A flow reads the cache of the partition it delivers to,
+    /// so there is no cache to name: a document still naming one under <c>render.cache</c> is refused, rather than read against
+    /// a cache other than the one its author meant.
+    /// </summary>
     private static string MapCacheVersion(FlowRenderYaml render, string source)
     {
-        if (string.IsNullOrWhiteSpace(render.CacheVersion))
+        if (!string.IsNullOrWhiteSpace(render.Cache))
         {
-            return FlowRender.CurrentCacheVersion;
+            throw new FlowValidationException(
+                $"{source}: render.cache is not a setting any more: a flow reads the cache of the partition it delivers to (target.headers.data-partition-id), which every cache flow of that partition fills. Remove render.cache.");
         }
 
-        return string.IsNullOrWhiteSpace(render.Cache)
-            ? throw new FlowValidationException($"{source}: render.cacheVersion pins a version, but render.cache names no cache to take it from.")
-            : render.CacheVersion!.Trim();
+        return string.IsNullOrWhiteSpace(render.CacheVersion) ? FlowRender.CurrentCacheVersion : render.CacheVersion!.Trim();
     }
 
     private static void Validate(FlowDefinition flow, string source)

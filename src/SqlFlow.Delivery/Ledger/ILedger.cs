@@ -417,10 +417,10 @@ public sealed record PendingStaging(int Staged, IReadOnlyList<DeliveryKey> Refus
 public sealed record SourceWatermark(Guid FlowId, string Scope, string Table, long Version, DateTime RecordedUtc, string? ContextHash = null);
 
 /// <summary>One stored dependency of a cache set: which cache and cached path it holds, and what it held.</summary>
-public sealed record CacheUse(string CacheName, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
+public sealed record CacheUse(string Scope, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
 
 /// <summary>A cache set that holds one cached value, for the impact query.</summary>
-public sealed record CacheSetUse(long SetId, string CacheName, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
+public sealed record CacheSetUse(long SetId, string Scope, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
 
 /// <summary>What one rollout pass did, and what is left of the tag.</summary>
 public sealed record UpdateRolloutBatch(long TagId, long Marked, long Processed, long Affected, bool Completed);
@@ -432,8 +432,8 @@ public sealed record UpdateTag
 
     public string Kind { get; init; } = "cache";
 
-    /// <summary>The cache whose refresh found the change.</summary>
-    public required string CacheName { get; init; }
+    /// <summary>The partition whose cache the change was found in.</summary>
+    public required string Scope { get; init; }
 
     public required string TypeName { get; init; }
 
@@ -998,11 +998,11 @@ public interface ILedger
     IAsyncEnumerable<KnownState> StreamKnownStateAsync(Guid flowId, int pageSize = 10_000, CancellationToken ct = default);
 
     /// <summary>
-    /// The id of the cache set holding exactly these values of <paramref name="cacheName"/>, creating it the first time it
+    /// The id of the cache set holding exactly these values of <paramref name="scope"/>, creating it the first time it
     /// is seen. A render hands over what it consumed and gets back one number to put on the record, so no matter how many
     /// records a run stages, the dependency trail costs one row per distinct combination rather than one per record.
     /// </summary>
-    Task<long> EnsureCacheSetAsync(string cacheName, IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default);
+    Task<long> EnsureCacheSetAsync(string scope, IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default);
 
     /// <summary>The values behind one set, for a record's history page.</summary>
     Task<IReadOnlyList<CacheUse>> ListCacheSetAsync(long setId, CancellationToken ct = default);
@@ -1011,7 +1011,7 @@ public interface ILedger
     /// The sets that hold a cached value of the given items of one cache, with the value each of them holds. This is the
     /// impact query: it runs over the sets, never over the records, so it stays the same size as the cache.
     /// </summary>
-    Task<IReadOnlyList<CacheSetUse>> FindCacheSetsAsync(string cacheName, string typeName, IReadOnlyList<string> itemIds, CancellationToken ct = default);
+    Task<IReadOnlyList<CacheSetUse>> FindCacheSetsAsync(string scope, string typeName, IReadOnlyList<string> itemIds, CancellationToken ct = default);
 
     /// <summary>How many delivered records were built from these sets.</summary>
     Task<long> CountRecordsInSetsAsync(IReadOnlyList<long> setIds, CancellationToken ct = default);
@@ -1027,9 +1027,9 @@ public interface ILedger
     Task<IReadOnlyList<long>> GatedCacheSetsAsync(CancellationToken ct = default);
 
     /// <summary>The tags in a status, newest first; with a cache name, only the changes that cache's refreshes found.</summary>
-    Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, string? cacheName = null, CancellationToken ct = default);
+    Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, string? scope = null, CancellationToken ct = default);
 
-    Task<int> CountTagsAsync(string? status, string? cacheName = null, CancellationToken ct = default);
+    Task<int> CountTagsAsync(string? status, string? scope = null, CancellationToken ct = default);
 
     /// <summary>
     /// Decides tags: approving lets the rollout carry the change out, rejecting leaves the delivered documents

@@ -99,6 +99,8 @@ public sealed class CatalogDbContext : DbContext
 
     public DbSet<DeliveryCacheItem> DeliveryCacheItems => Set<DeliveryCacheItem>();
 
+    public DbSet<DeliveryCacheMember> DeliveryCacheMembers => Set<DeliveryCacheMember>();
+
     /// <summary>The templates: immutable OSDU schema versions owned by OSDU Delivery, pinned by mappings.</summary>
     public DbSet<DeliveryTemplate> DeliveryTemplates => Set<DeliveryTemplate>();
 

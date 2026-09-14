@@ -86,8 +86,11 @@ cd gui && npm run dev
 ## Trying the sample
 
 ```bash
-# write the sample cache records as a version of the cache the sample flow reads (caches live in the catalog)
+# merge the sample cache records into the cache of partition opendes, which the sample flow delivers to and reads (caches live in the catalog)
 dotnet run --project src/SqlFlow.Cli -- cache import samples/recall-welllog/caches/osdu-reference-cache.yaml --from-dir samples/recall-welllog/references
+
+# the versions of that partition's cache, each naming the cache flow that wrote it
+dotnet run --project src/SqlFlow.Cli -- cache list opendes
 
 # the preflight gate over the sample estate: the mapping against its saved template and the cache, the drop
 dotnet run --project src/SqlFlow.Cli -- check samples/recall-welllog/flows/recall-welllog.yaml --set logSource=demo

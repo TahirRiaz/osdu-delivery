@@ -1,12 +1,13 @@
 # Cache flow: osdu-reference-cache
 #
-# What the cache holds (docs/delivery/design.md section 6.2). This file is the one place that says which OSDU reference
-# and master data the WellLog and Wellbore mappings resolve against, and which paths of each record are kept: add a type
-# or a path here, and the next refresh captures it. A run of this flow (the refresh operation; the schedule below runs
-# one nightly) searches OSDU for every declared type and, when anything changed, writes a new version of the cache into
-# the catalog, recording the run that captured it. The versions are listed on the GUI's OSDU cache page and by
-# 'sqlflow cache list'; nothing is written back to this repository. Delivery flows read the cache by its name, under
-# render.cache.
+# What this flow caches (docs/delivery/design.md section 6.2): the OSDU reference and master data the WellLog and
+# Wellbore mappings resolve against, and which paths of each record are kept. Add a type or a path here, and the next
+# refresh captures it. A run of this flow (the refresh operation; the schedule below runs one nightly) searches OSDU for
+# every declared type and merges what it finds into the cache of its partition (data-partition-id below) in the catalog,
+# which writes a new version when anything changed and records the flow and the run that wrote it. A partition has one
+# cache: every cache flow searching it adds to the same records, stored once, and every delivery flow delivering to it
+# reads them. The versions are listed on the GUI's OSDU cache page and by 'sqlflow cache list opendes'; nothing is
+# written back to this repository.
 #
 # For work without an OSDU platform, the type files under ../references hold a small version of the same cache:
 #   sqlflow cache import caches/osdu-reference-cache.yaml --from-dir references --db <conn-ref>

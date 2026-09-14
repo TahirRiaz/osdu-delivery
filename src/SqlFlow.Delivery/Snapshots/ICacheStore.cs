@@ -9,9 +9,12 @@ public sealed record CacheCapture(Guid? RunId, string CapturedBy, string Origin)
 /// <summary>One type a cache version holds, and how many records of it.</summary>
 public sealed record CacheVersionType(string Name, string EntityType, long Items);
 
-/// <summary>A version of a cache as its row describes it, without its records.</summary>
+/// <summary>
+/// A version of a partition's cache as its row describes it, without its records: <c>Scope</c> is the partition whose cache
+/// the version belongs to, and <c>FlowName</c> the cache flow whose capture or import wrote it.
+/// </summary>
 public sealed record CacheVersionInfo(
-    string CacheName,
+    string Scope,
     string Version,
     int Sequence,
     DateTime CapturedUtc,
@@ -20,27 +23,41 @@ public sealed record CacheVersionInfo(
     Guid? RunId,
     string CapturedBy,
     string Origin,
+    string FlowName,
     long Items,
     IReadOnlyList<CacheVersionType> Types);
 
+/// <summary>What merging a capture into a partition's cache did.</summary>
+/// <param name="Snapshot">The version written, or the current version when the merge changed no cached content.</param>
+/// <param name="Previous">The version that was current before the merge; null for the partition's first version.</param>
+/// <param name="Written">False when the merge changed no cached content, so no version was written.</param>
+public sealed record CacheWrite(ReferenceSnapshot Snapshot, ReferenceSnapshot? Previous, bool Written);
+
 /// <summary>
-/// Where the versions of every cache live (design.md section 6.2): the catalog. A cache is named by the cache flow that
-/// captures it. Reads are what a render needs; writes are a refresh's. A version is never rewritten.
+/// Where every cache lives (design.md section 6.2): the catalog, one cache per OSDU data partition. Every cache flow that
+/// searches a partition merges its captures into that partition's cache, and every delivery flow that delivers to the
+/// partition renders against it. Versions form one line per partition, the newest always current, and a version is never
+/// rewritten.
 /// </summary>
 public interface ICacheStore
 {
-    /// <summary>The version delivery flows render against unless they pin another, or null when the cache holds none.</summary>
-    Task<string?> CurrentVersionAsync(string cache, CancellationToken ct = default);
+    /// <summary>The newest version of the partition's cache, or null when it holds none.</summary>
+    Task<string?> CurrentVersionAsync(string scope, CancellationToken ct = default);
 
-    /// <summary>One version of a cache with every record it holds, or null when the cache holds no such version.</summary>
-    Task<ReferenceSnapshot?> LoadAsync(string cache, string version, CancellationToken ct = default);
+    /// <summary>One version of the partition's cache with every record it holds, or null when there is no such version.</summary>
+    Task<ReferenceSnapshot?> LoadAsync(string scope, string version, CancellationToken ct = default);
 
-    /// <summary>Every version of a cache, newest first.</summary>
-    Task<IReadOnlyList<CacheVersionInfo>> ListVersionsAsync(string cache, CancellationToken ct = default);
+    /// <summary>Every version of the partition's cache, newest first.</summary>
+    Task<IReadOnlyList<CacheVersionInfo>> ListVersionsAsync(string scope, CancellationToken ct = default);
+
+    /// <summary>What the synced cache flows declare the partition's cache holds; empty when no flow for it is synced.</summary>
+    Task<CacheDeclaration> DeclarationAsync(string scope, CancellationToken ct = default);
 
     /// <summary>
-    /// Writes <paramref name="snapshot"/> as the next version of the cache and, with <paramref name="makeCurrent"/>, makes it
-    /// the current one. Fails without writing anything when the version exists or another write of the same cache wins.
+    /// Merges one cache flow's capture into the partition's cache (<see cref="CacheMerge"/>) and writes the result as the
+    /// next version, which becomes current, unless the cached content did not change. Either way the flow's membership of
+    /// the captured types becomes what it captured. Fails without writing anything when another write of the partition wins.
     /// </summary>
-    Task<CacheVersionInfo> SaveAsync(string cache, ReferenceSnapshot snapshot, CacheCapture capture, bool makeCurrent, CancellationToken ct = default);
+    Task<CacheWrite> MergeAsync(
+        string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheCapture capture, DateTimeOffset capturedUtc, CancellationToken ct = default);
 }

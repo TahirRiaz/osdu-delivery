@@ -213,7 +213,7 @@ function RunDetailContent({ runId }: { runId: string }) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => navigate(`/delivery/cache?cache=${encodeURIComponent(run.flowName)}`)}
+                onClick={() => navigate(`/delivery/cache?flow=${encodeURIComponent(run.flowName)}`)}
                 data-testid="run-cache"
               >
                 Open the cache

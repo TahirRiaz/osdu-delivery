@@ -3,11 +3,12 @@ using SqlFlow.Delivery.Snapshots;
 namespace SqlFlow.Delivery.Model;
 
 /// <summary>
-/// A cache flow (<c>flowType: cache</c>, design.md section 6.2): the reference and master data the mappings resolve
-/// against, declared in the repository and captured into the catalog. The document is the one place what is cached is
-/// defined: the OSDU platform to search, the types to cache and, for each type, the paths of a record to keep. A refresh
-/// run captures every declared type in full and writes a new version of the cache when what it found differs from the
-/// current version. Delivery flows read the cache by its name, under <c>render.cache</c>.
+/// A cache flow (<c>flowType: cache</c>, design.md section 6.2): reference and master data the mappings resolve against,
+/// declared in the repository and captured into the cache of the flow's partition in the catalog. The document is the one
+/// place what the flow caches is defined: the OSDU platform and partition to search, the types to cache and, for each type,
+/// the paths of a record to keep. A refresh run captures every declared type in full and merges it into the partition's
+/// cache, which writes a new version when the cached content moved. The partition has one cache, filled by every cache flow
+/// that searches it and read by every delivery flow that delivers to it.
 /// </summary>
 public sealed record CacheDefinition
 {
@@ -16,7 +17,7 @@ public sealed record CacheDefinition
     /// <summary>Path of the file the flow was loaded from, for error messages. Null for inline documents.</summary>
     public string? SourcePath { get; init; }
 
-    /// <summary>The cache's name: its pipeline identity, and what a delivery flow names under <c>render.cache</c>.</summary>
+    /// <summary>The flow's name: its pipeline identity, and the name its versions and its hold on cached records are recorded under.</summary>
     public required string Name { get; init; }
 
     public string? Description { get; init; }
@@ -33,14 +34,14 @@ public sealed record CacheDefinition
     /// <summary>The OSDU platform the types are searched on.</summary>
     public required CacheSource Source { get; init; }
 
-    /// <summary>The types the cache holds; a cache declares at least one.</summary>
+    /// <summary>The partition whose cache the flow fills: the <c>data-partition-id</c> its searches carry.</summary>
+    public string Scope => CacheScope.Of(Source.Headers, SourcePath ?? Name);
+
+    /// <summary>The types the flow captures into its partition's cache; a cache flow declares at least one.</summary>
     public required IReadOnlyList<ReferenceTypeSpec> Types { get; init; }
 
     /// <summary>The default <c>onChange</c> for the types that do not state one.</summary>
     public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Auto;
-
-    /// <summary>Whether a refresh makes the version it writes the current one, which delivery flows render against by default.</summary>
-    public bool MakeCurrent { get; init; } = true;
 
     public FlowReliability Reliability { get; init; } = new();
 

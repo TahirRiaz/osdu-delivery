@@ -17,7 +17,7 @@ public class MappingBuilderTests
     private static MappingDefinition Sample(string reference) => new MappingCatalog(Samples.Mappings, new DeliveryDocumentLoader()).Load(reference);
 
     private static async Task<ReferenceSnapshot> SampleCacheAsync()
-        => (await Samples.SampleCache.LoadAsync(Samples.SampleCacheName, (await Samples.SampleCache.CurrentVersionAsync(Samples.SampleCacheName))!))!;
+        => (await Samples.SampleCache.LoadAsync(Samples.SampleCacheScope, (await Samples.SampleCache.CurrentVersionAsync(Samples.SampleCacheScope))!))!;
 
     [Theory]
     [InlineData("WellLog@1.4.0")]
@@ -42,7 +42,7 @@ public class MappingBuilderTests
         var context = new RenderContext
         {
             MappingReference = reread.Reference,
-            CacheName = Samples.SampleCacheName,
+            CacheScope = Samples.SampleCacheScope,
             CacheVersion = references.Version,
             SchemaSnapshotVersion = schema.Version,
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "opendes" },

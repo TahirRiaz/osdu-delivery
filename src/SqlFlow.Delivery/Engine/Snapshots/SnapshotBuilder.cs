@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -11,47 +10,54 @@ using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Engine.Snapshots;
 
-/// <summary>What writing a capture into a cache did.</summary>
-/// <param name="Snapshot">The version written, or the current version when the capture found exactly what it holds.</param>
-/// <param name="Written">False when the capture matched the current version, so no version was written.</param>
-public sealed record CacheWrite(ReferenceSnapshot Snapshot, bool Written);
-
 /// <summary>
-/// The cache capture's engine (design.md section 6.2): captures the types of a cache from OSDU, or reads them from type
-/// files for offline work, and writes a version of the cache into the store when the content differs from the current
-/// version. A version holds exactly the types captured, so a type taken out of the cache flow leaves the cache with the
-/// next version rather than lingering in every version after it.
+/// The cache capture's engine (design.md section 6.2): captures a cache flow's types from OSDU, or reads them from type
+/// files for offline work, and merges them into the cache of the flow's partition, which writes a version when the cached
+/// content moved. A capture holds every record the flow's queries match with every path the partition keeps for its types,
+/// so what one project captures is complete for every pipeline that reads the partition.
 /// </summary>
 public sealed partial class SnapshotBuilder
 {
     private readonly ICacheStore _store;
-    private readonly string _cache;
+    private readonly string _scope;
+    private readonly string _flow;
     private readonly TimeProvider _time;
     private readonly ILogger<SnapshotBuilder> _logger;
 
-    public SnapshotBuilder(ICacheStore store, string cache, TimeProvider time, ILogger<SnapshotBuilder> logger)
+    /// <param name="store">Where the partition's cache lives.</param>
+    /// <param name="scope">The partition whose cache the capture merges into.</param>
+    /// <param name="flowName">The cache flow the capture is made for, which the version and the membership record.</param>
+    /// <param name="time">The clock the capture instant is read from.</param>
+    /// <param name="logger">Where the capture reports what it found.</param>
+    public SnapshotBuilder(ICacheStore store, string scope, string flowName, TimeProvider time, ILogger<SnapshotBuilder> logger)
     {
         ArgumentNullException.ThrowIfNull(store);
-        ArgumentException.ThrowIfNullOrWhiteSpace(cache);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
         _store = store;
-        _cache = cache;
+        _scope = scope;
+        _flow = flowName;
         _time = time;
         _logger = logger;
     }
 
-    /// <summary>Mints a version label from a capture instant: sortable, unique per cache per second.</summary>
-    public static string MintVersion(DateTimeOffset capturedUtc) => capturedUtc.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+    /// <summary>Mints a version label from a capture instant: sortable, one per second.</summary>
+    public static string MintVersion(DateTimeOffset capturedUtc) => CacheVersionLabel.Mint(capturedUtc);
 
     /// <summary>
     /// Reads every type file in <paramref name="directory"/> (<c>{Name}.json</c>: the entity type and its items, each an
-    /// <c>id</c> and the cached values) and writes them as a version of the cache. The files have to hold exactly the types
-    /// the cache flow declares, each under its declared entity type and with no value the type does not capture, because the
-    /// cache flow is the definition of what the cache holds and an import is no way around it.
+    /// <c>id</c> and the cached values) and merges them into the partition's cache as the flow's capture. The files have to
+    /// hold exactly the types the cache flow declares, each under its declared entity type and with no value the partition's
+    /// cache does not keep for the type, because the cache flow is the definition of what it contributes and an import is no
+    /// way around it. An import is checked against the partition's declaration exactly as a refresh is: a flow that disagrees
+    /// with another flow of the partition is refused, and because a record the import holds replaces the cached record whole,
+    /// the files of a type have to carry every value another flow of the partition keeps for it, or the import would drop
+    /// those values from every record it holds.
     /// </summary>
     public async Task<CacheWrite> ImportDirectoryAsync(
-        string directory, IReadOnlyList<ReferenceTypeSpec> declared, CacheCapture capture, bool makeCurrent, CancellationToken ct = default)
+        string directory, IReadOnlyList<ReferenceTypeSpec> declared, CacheCapture capture, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
         ArgumentNullException.ThrowIfNull(declared);
@@ -60,6 +66,9 @@ public sealed partial class SnapshotBuilder
         {
             throw new DeliveryException($"The directory '{directory}' to import cached types from does not exist.");
         }
+
+        var partition = await _store.DeclarationAsync(_scope, ct).ConfigureAwait(false);
+        partition.ThrowOnConflicts(_flow, declared);
 
         var types = new List<ReferenceType>();
         foreach (var file in Directory.EnumerateFiles(directory, "*.json").OrderBy(f => f, StringComparer.Ordinal))
@@ -83,46 +92,70 @@ public sealed partial class SnapshotBuilder
             throw new DeliveryException($"The directory '{directory}' holds no cached type files ({{Name}}.json), so there is nothing to import.");
         }
 
-        CheckDeclared(types, declared, directory);
-        return await WriteAsync(types, capture, makeCurrent, ct).ConfigureAwait(false);
+        CheckDeclared(types, declared, partition, directory);
+        return await WriteAsync(types, capture, ct).ConfigureAwait(false);
     }
 
-    private void CheckDeclared(IReadOnlyList<ReferenceType> types, IReadOnlyList<ReferenceTypeSpec> declared, string directory)
+    private void CheckDeclared(IReadOnlyList<ReferenceType> types, IReadOnlyList<ReferenceTypeSpec> declared, CacheDeclaration partition, string directory)
     {
         var problems = new List<string>();
         foreach (var spec in declared.Where(spec => !types.Any(t => t.Name.Equals(spec.Name, StringComparison.OrdinalIgnoreCase))))
         {
-            problems.Add($"{spec.Name}.json is missing, and cache '{_cache}' declares {spec.Name}");
+            problems.Add($"{spec.Name}.json is missing, and cache flow '{_flow}' declares {spec.Name}");
         }
 
         foreach (var type in types)
         {
             if (declared.FirstOrDefault(spec => spec.Name.Equals(type.Name, StringComparison.OrdinalIgnoreCase)) is not { } spec)
             {
-                problems.Add($"{type.Name}.json holds a type cache '{_cache}' does not declare");
+                problems.Add($"{type.Name}.json holds a type cache flow '{_flow}' does not declare");
                 continue;
             }
 
             if (!type.EntityType.Equals(spec.EntityType, StringComparison.Ordinal))
             {
-                problems.Add($"{type.Name}.json holds entity type {type.EntityType}, and cache '{_cache}' declares {spec.EntityType}");
+                problems.Add($"{type.Name}.json holds entity type {type.EntityType}, and cache flow '{_flow}' declares {spec.EntityType}");
             }
 
-            var captured = spec.Fields.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var name in type.FieldNames.Where(name => !captured.Contains(name)))
+            // The widened type is what a refresh of the flow would fetch: its own paths, then every path the partition keeps.
+            var kept = partition.Widen(spec).Fields;
+            var keptNames = kept.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var name in type.FieldNames.Where(name => !keptNames.Contains(name)))
             {
-                problems.Add($"{type.Name}.json holds values under '{name}', which cache '{_cache}' does not capture for {spec.Name}");
+                problems.Add($"{type.Name}.json holds values under '{name}', which neither cache flow '{_flow}' nor any other cache flow of partition '{_scope}' captures for {spec.Name}");
+            }
+
+            if (type.Items.Count == 0)
+            {
+                // A type holding no record replaces no cached record, so it drops no value.
+                continue;
+            }
+
+            var own = spec.Fields.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var carried = type.FieldNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var missing = kept.Where(f => !own.Contains(f.Name) && !carried.Contains(f.Name)).ToList();
+            if (missing.Count > 0)
+            {
+                var named = missing.Select(field =>
+                {
+                    var flows = partition.Of(spec.Name)
+                        .Where(d => d.Fields.Any(f => f.Name.Equals(field.Name, StringComparison.OrdinalIgnoreCase)))
+                        .Select(d => $"'{d.FlowName}'");
+                    return $"'{field.Name}' (from {field.Path}, kept by cache flow {string.Join(", ", flows)})";
+                });
+                problems.Add(
+                    $"{type.Name}.json holds no values under {string.Join(", ", named)}, which the cache of partition '{_scope}' keeps for {spec.Name}; a record the import holds replaces the cached record whole, so importing it would drop those values. Add them to the file");
             }
         }
 
         if (problems.Count > 0)
         {
-            throw new DeliveryException($"The files under '{directory}' are not what cache '{_cache}' declares, so nothing was imported: {string.Join("; ", problems)}.");
+            throw new DeliveryException($"The files under '{directory}' are not what cache flow '{_flow}' declares, so nothing was imported: {string.Join("; ", problems)}.");
         }
     }
 
-    /// <summary>Captures every type of <paramref name="spec"/> through the OSDU search service and writes them as a version of the cache.</summary>
-    public async Task<CacheWrite> CaptureAsync(OsduConnection osdu, ReferenceCaptureSpec spec, CacheCapture capture, bool makeCurrent, CancellationToken ct = default)
+    /// <summary>Captures every type of <paramref name="spec"/> through the OSDU search service and merges them into the partition's cache.</summary>
+    public async Task<CacheWrite> CaptureAsync(OsduConnection osdu, ReferenceCaptureSpec spec, CacheCapture capture, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(osdu);
         ArgumentNullException.ThrowIfNull(spec);
@@ -133,35 +166,32 @@ public sealed partial class SnapshotBuilder
             types.Add(await CaptureTypeAsync(osdu, typeSpec, ct).ConfigureAwait(false));
         }
 
-        return await WriteAsync(types, capture, makeCurrent, ct).ConfigureAwait(false);
+        return await WriteAsync(types, capture, ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Writes the types as the next version, unless they are exactly what the current version holds. A version label is a
-    /// timestamp and it enters the render context, so writing one for a capture that found nothing new would change the
-    /// metadata hash of every record built from the cache and deliver them all again for no reason. Comparing content makes
-    /// refreshing a cache as often as anyone likes free.
+    /// Merges the types into the partition's cache, which writes the next version unless the merge changes no cached content.
+    /// A version label is a timestamp and it enters the render context, so writing one for a capture that found nothing new
+    /// would change the metadata hash of every record built from the cache and deliver them all again for no reason.
+    /// Comparing content makes refreshing a cache as often as anyone likes free.
     /// </summary>
-    private async Task<CacheWrite> WriteAsync(IReadOnlyList<ReferenceType> types, CacheCapture capture, bool makeCurrent, CancellationToken ct)
+    private async Task<CacheWrite> WriteAsync(IReadOnlyList<ReferenceType> types, CacheCapture capture, CancellationToken ct)
     {
-        var captured = _time.GetUtcNow();
-        var snapshot = new ReferenceSnapshot(MintVersion(captured), captured, types).Normalized();
-        var currentVersion = await _store.CurrentVersionAsync(_cache, ct).ConfigureAwait(false);
-        if (currentVersion is not null
-            && await _store.LoadAsync(_cache, currentVersion, ct).ConfigureAwait(false) is { } current
-            && string.Equals(current.ContentHash(), snapshot.ContentHash(), StringComparison.Ordinal))
+        var write = await _store.MergeAsync(_scope, _flow, types, capture, _time.GetUtcNow(), ct).ConfigureAwait(false);
+        if (write.Written)
         {
             _logger.LogInformation(
-                "Cache {Cache}: the capture found exactly what the current version {Version} holds, so no version was written and nothing built from the cache renders again.",
-                _cache, current.Version);
-            return new CacheWrite(current, Written: false);
+                "Cache of partition {Scope}: version {Version} written from cache flow {Flow}, holding {Types} type(s) and {Items} record(s).",
+                _scope, write.Snapshot.Version, _flow, write.Snapshot.Types.Count, write.Snapshot.Types.Sum(t => t.Items.Count));
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Cache of partition {Scope}: cache flow {Flow} found exactly what version {Version} holds, so no version was written and nothing built from the cache renders again.",
+                _scope, _flow, write.Snapshot.Version);
         }
 
-        var saved = await _store.SaveAsync(_cache, snapshot, capture, makeCurrent, ct).ConfigureAwait(false);
-        _logger.LogInformation(
-            "Cache {Cache}: version {Version} written with {Types} type(s) and {Items} record(s){Current}.",
-            _cache, saved.Version, saved.Types.Count, saved.Items, saved.Current ? ", now current" : ", not made current");
-        return new CacheWrite(snapshot, Written: true);
+        return write;
     }
 }
 

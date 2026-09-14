@@ -39,14 +39,14 @@ A delivery flow lives in a git repository the control plane syncs, next to what 
 
 ```text
 repo/
-  flows/recall-welllog.yaml          flowType: delivery; render.cache names the cache it reads
+  flows/recall-welllog.yaml          flowType: delivery; reads the cache of the partition it delivers to
   mappings/WellLog@1.4.0.yaml        documentType: mapping, pinned by name and version
-  caches/osdu-reference-cache.yaml   flowType: cache: the OSDU types the cache holds and the paths it keeps
+  caches/osdu-reference-cache.yaml   flowType: cache: the OSDU types it caches for its partition and the paths it keeps
 ```
 
 The flow finds `mappings/` by walking up from its own file, or names it under `render.mappings`. A cache flow can sit
 anywhere in the tree; the sample keeps it under `caches/`. The sync projects every flow as a pipeline, and the
 mappings and the types each cache flow declares as read models the GUI lists. Neither templates nor cache contents are
 in the repository: the template a mapping pins is saved in the catalog, captured from OSDU or imported from a bundled
-schema file ([mapping-templates.md](mapping-templates.md)), and every version of a cache is written into the catalog
-by the runs of its cache flow ([documents.md](documents.md#cache-flow)). OSDU Delivery only reads the repository.
+schema file ([mapping-templates.md](mapping-templates.md)), and every version of a partition's cache is written into the
+catalog by the runs of the cache flows that fill it ([documents.md](documents.md#cache-flow)). OSDU Delivery only reads the repository.

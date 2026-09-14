@@ -77,16 +77,20 @@ public class SqlServerLedgerTests
 
         try
         {
-            await store.SaveAsync(cache, new ReferenceSnapshot("v1", DateTimeOffset.UtcNow, [units]), new CacheCapture(null, "tests", "seeded"), makeCurrent: true);
+            var write = await store.MergeAsync(cache, "tests-cache", [units], new CacheCapture(null, "tests", "seeded"), DateTimeOffset.UtcNow);
 
             await using var db = CatalogDatabase.Create(cs);
             var found = await db.DeliveryCacheItems
-                .Where(i => i.CacheName == cache && i.RecordId == Foot)
+                .Where(i => i.Scope == cache && i.RecordId == Foot)
                 .Select(i => i.RecordId)
                 .ToListAsync();
             Assert.Equal([Foot], found);
 
-            var loaded = await new CatalogCacheStore(() => CatalogDatabase.Create(cs)).LoadAsync(cache, "v1");
+            // The flow's hold on each record is keyed by the id the same way, so both units are held.
+            Assert.Equal(2, await db.DeliveryCacheMembers.CountAsync(m => m.Scope == cache && m.FlowName == "tests-cache"));
+            Assert.Equal([Foot], await db.DeliveryCacheMembers.Where(m => m.Scope == cache && m.RecordId == Foot).Select(m => m.RecordId).ToListAsync());
+
+            var loaded = await new CatalogCacheStore(() => CatalogDatabase.Create(cs)).LoadAsync(cache, write.Snapshot.Version);
             Assert.Equal(2, loaded!.Type("UnitOfMeasure")!.Items.Count);
         }
         finally
@@ -108,32 +112,39 @@ public class SqlServerLedgerTests
         var cache = "ranges-" + Guid.NewGuid().ToString("N");
         var store = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
         var capture = new CacheCapture(Guid.NewGuid(), "tests", "seeded");
-        static ReferenceSnapshot Units(string version, string metreName) => new(version, DateTimeOffset.UtcNow,
+        static IReadOnlyList<ReferenceType> Units(string metreName) =>
         [
             new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
             [
                 ReferenceItem.FromText("test:reference-data--UnitOfMeasure:m", new Dictionary<string, string> { ["Code"] = "m", ["Name"] = metreName }),
                 ReferenceItem.FromText("test:reference-data--UnitOfMeasure:ft", new Dictionary<string, string> { ["Code"] = "ft", ["Name"] = "foot" }),
             ]),
-        ]);
+        ];
 
         try
         {
-            await store.SaveAsync(cache, Units("v1", "metre"), capture, makeCurrent: true);
-            var second = await store.SaveAsync(cache, Units("v2", "Metre"), capture, makeCurrent: true);
-            Assert.Equal("v1", second.PreviousVersion);
-            Assert.Equal(capture.RunId, second.RunId);
+            // Both captures land in one second: the second version's label carries its sequence.
+            var captured = DateTimeOffset.UtcNow;
+            var first = await store.MergeAsync(cache, "tests-cache", Units("metre"), capture, captured);
+            var second = await store.MergeAsync(cache, "tests-cache", Units("Metre"), capture, captured);
+            Assert.Equal(first.Snapshot.Version, second.Previous!.Version);
+            Assert.Equal(first.Snapshot.Version + "-2", second.Snapshot.Version);
 
             var reader = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
-            Assert.Equal("v2", await reader.CurrentVersionAsync(cache));
-            Assert.Equal("metre", (await reader.LoadAsync(cache, "v1"))!.Type("UnitOfMeasure")!.Match("Code", "m")!.Fields["Name"].Text);
-            Assert.Equal("Metre", (await reader.LoadAsync(cache, "v2"))!.Type("UnitOfMeasure")!.Match("Code", "m")!.Fields["Name"].Text);
+            var versions = await reader.ListVersionsAsync(cache);
+            Assert.Equal([second.Snapshot.Version, first.Snapshot.Version], versions.Select(v => v.Version));
+            Assert.Equal(first.Snapshot.Version, versions[0].PreviousVersion);
+            Assert.Equal(capture.RunId, versions[0].RunId);
+            Assert.Equal("tests-cache", versions[0].FlowName);
+            Assert.Equal(second.Snapshot.Version, await reader.CurrentVersionAsync(cache));
+            Assert.Equal("metre", (await reader.LoadAsync(cache, first.Snapshot.Version))!.Type("UnitOfMeasure")!.Match("Code", "m")!.Fields["Name"].Text);
+            Assert.Equal("Metre", (await reader.LoadAsync(cache, second.Snapshot.Version))!.Type("UnitOfMeasure")!.Match("Code", "m")!.Fields["Name"].Text);
 
             // A change of case is a change: only the metre moved, and the foot's one row covers both versions.
             await using var db = CatalogDatabase.Create(cs);
-            var diff = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(cache, "v1"));
+            var diff = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(cache, first.Snapshot.Version));
             Assert.Equal((1L, 0L, 0L), (diff!.Changed, diff.Added, diff.Removed));
-            Assert.Equal(3, await db.DeliveryCacheItems.CountAsync(i => i.CacheName == cache));
+            Assert.Equal(3, await db.DeliveryCacheItems.CountAsync(i => i.Scope == cache));
         }
         finally
         {
@@ -141,11 +152,12 @@ public class SqlServerLedgerTests
         }
     }
 
-    private static async Task CleanupCacheAsync(string cs, string cache)
+    private static async Task CleanupCacheAsync(string cs, string scope)
     {
         await using var db = CatalogDatabase.Create(cs);
-        await db.DeliveryCacheItems.Where(i => i.CacheName == cache).ExecuteDeleteAsync();
-        await db.DeliveryCacheVersions.Where(v => v.CacheName == cache).ExecuteDeleteAsync();
+        await db.DeliveryCacheMembers.Where(m => m.Scope == scope).ExecuteDeleteAsync();
+        await db.DeliveryCacheItems.Where(i => i.Scope == scope).ExecuteDeleteAsync();
+        await db.DeliveryCacheVersions.Where(v => v.Scope == scope).ExecuteDeleteAsync();
     }
 
     private RecordState Work(string name, Guid submission, string reference, string metadataHash, DateTime modified) => new()

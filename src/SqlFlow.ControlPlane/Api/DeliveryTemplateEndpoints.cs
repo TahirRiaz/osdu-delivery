@@ -28,7 +28,7 @@ public sealed record DeliveryTemplateVariableDto(
 
 /// <summary>
 /// A template laid out variable by variable. <c>Saved</c> is null for a schema being looked at before it is saved;
-/// <c>CacheTypes</c> on a variable names the types of the cache it can be read from, when a cache was named.
+/// <c>CacheTypes</c> on a variable names the types of the partition's cache it can be read from, when a partition was named.
 /// </summary>
 public sealed record DeliveryTemplateDetailDto(
     string Kind, string Version, string? Title, string? Description, DeliveryTemplateDto? Saved, IReadOnlyList<DeliveryTemplateVariableDto> Variables);
@@ -93,7 +93,7 @@ public sealed record DeliveryOsduComparisonDto(
 /// A schema that refers to the shared schemas of the OSDU data definitions, as a file a release publishes does, is bundled
 /// with them from <c>Release</c> (the newest release when it is null).
 /// </remarks>
-public sealed record DeliveryTemplatePreviewRequest(string Kind, JsonElement Schema, string? Cache, string? Release);
+public sealed record DeliveryTemplatePreviewRequest(string Kind, JsonElement Schema, string? Scope, string? Release);
 
 /// <summary>A schema to save as a template version, and where it came from.</summary>
 /// <remarks>Its references to the OSDU data definitions are read from <c>Release</c>, as a preview reads them, and the saved origin names the release.</remarks>
@@ -102,8 +102,12 @@ public sealed record DeliveryTemplateSaveRequest(string Kind, JsonElement Schema
 /// <summary>What saving did: <c>created</c> for a new version, <c>unchanged</c> for one already saved.</summary>
 public sealed record DeliveryTemplateSavedDto(DeliveryTemplateDto Template, string Outcome);
 
-/// <summary>A delivery flow of a repository, as the builder and the Templates page offer it: its connection, what it renders with, and the cache it names.</summary>
-public sealed record DeliveryBuilderFlowDto(Guid PipelineId, string Name, string Mapping, IReadOnlyDictionary<string, string> Parameters, string Endpoint, string? Cache);
+/// <summary>
+/// A delivery flow of a repository, as the builder and the Templates page offer it: its connection, what it renders with, and
+/// the partition whose cache it reads (the partition it delivers to; null when its target declares none a cache can be kept under).
+/// </summary>
+public sealed record DeliveryBuilderFlowDto(
+    Guid PipelineId, string Name, string Mapping, IReadOnlyDictionary<string, string> Parameters, string Endpoint, string? CacheScope);
 
 /// <summary>A type a cache holds: the name a mapping reads it by, its entity type, and the names its values are cached under.</summary>
 public sealed record DeliveryCachedTypeDto(string Name, string EntityType, IReadOnlyList<string> Fields);
@@ -111,14 +115,14 @@ public sealed record DeliveryCachedTypeDto(string Name, string EntityType, IRead
 /// <summary>A repository as the mapping builder offers it: the source a proposal is opened against, and its delivery flows.</summary>
 public sealed record DeliveryBuilderRepoDto(Guid RepoId, string Name, Guid? SourceId, string? SourceBranch, IReadOnlyList<DeliveryBuilderFlowDto> Flows);
 
-/// <summary>A cache as the mapping builder offers it: its name, the repository whose cache flow declares it, its current version and its types.</summary>
-public sealed record DeliveryBuilderCacheDto(string Name, Guid RepoId, string RepoName, string? CurrentVersion, IReadOnlyList<DeliveryCachedTypeDto> Types);
+/// <summary>A partition's cache as the mapping builder offers it: the partition, the cache flows filling it, its current version and its types.</summary>
+public sealed record DeliveryBuilderCacheDto(string Scope, IReadOnlyList<string> Flows, string? CurrentVersion, IReadOnlyList<DeliveryCachedTypeDto> Types);
 
-/// <summary>Starts a mapping for a saved template version, prefilled from <c>Cache</c> when one is named.</summary>
-public sealed record DeliveryMappingDraftRequest(string? Cache, string Kind, string Version, string Name, string MappingVersion, string System);
+/// <summary>Starts a mapping for a saved template version, prefilled from the cache of partition <c>Scope</c> when one is named.</summary>
+public sealed record DeliveryMappingDraftRequest(string? Scope, string Kind, string Version, string Name, string MappingVersion, string System);
 
-/// <summary>A draft to write as YAML and check against <c>Cache</c>; <c>Parameters</c> are the values the check renders the fixtures and static ids with.</summary>
-public sealed record DeliveryMappingComposeRequest(string? Cache, MappingDraft Draft, IReadOnlyDictionary<string, string>? Parameters);
+/// <summary>A draft to write as YAML and check against the cache of partition <c>Scope</c>; <c>Parameters</c> are the values the check renders the fixtures and static ids with.</summary>
+public sealed record DeliveryMappingComposeRequest(string? Scope, MappingDraft Draft, IReadOnlyDictionary<string, string>? Parameters);
 
 /// <summary>The draft as YAML, what the checks found, and whether the mapping loads and passes the preflight.</summary>
 public sealed record DeliveryMappingComposeResult(string Yaml, IReadOnlyList<MappingDraftIssue> Issues, bool Valid);
@@ -198,7 +202,7 @@ public static class DeliveryTemplateEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryTemplateDetailDto>, ProblemHttpResult>> GetTemplateAsync(
-        string? kind, string? version, string? cache, ITemplateStore templates, CatalogDbContext db, CancellationToken ct)
+        string? kind, string? version, string? scope, ITemplateStore templates, CatalogDbContext db, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(kind) || string.IsNullOrWhiteSpace(version))
         {
@@ -214,7 +218,7 @@ public static class DeliveryTemplateEndpoints
 
         var info = (await templates.ListAsync(ct).ConfigureAwait(false)).FirstOrDefault(t => t.Reference == reference);
         var pins = await PinsAsync(db, ct).ConfigureAwait(false);
-        var types = string.IsNullOrWhiteSpace(cache) ? [] : await CatalogCacheReader.TypesAsync(db, cache.Trim(), ct).ConfigureAwait(false);
+        var types = string.IsNullOrWhiteSpace(scope) ? [] : await CatalogCacheReader.TypesAsync(db, scope.Trim(), ct).ConfigureAwait(false);
         return TypedResults.Ok(Detail(OsduTemplate.From(schema), info is null ? null : ToDto(info, pins), types));
     }
 
@@ -250,7 +254,7 @@ public static class DeliveryTemplateEndpoints
         var schema = imported.Schema;
         var info = (await templates.ListAsync(ct).ConfigureAwait(false)).FirstOrDefault(t => t.Kind == schema.Kind && t.Version == schema.Version);
         var pins = await PinsAsync(db, ct).ConfigureAwait(false);
-        var types = string.IsNullOrWhiteSpace(request.Cache) ? [] : await CatalogCacheReader.TypesAsync(db, request.Cache.Trim(), ct).ConfigureAwait(false);
+        var types = string.IsNullOrWhiteSpace(request.Scope) ? [] : await CatalogCacheReader.TypesAsync(db, request.Scope.Trim(), ct).ConfigureAwait(false);
         return TypedResults.Ok(Detail(OsduTemplate.From(schema), info is null ? null : ToDto(info, pins), types));
     }
 
@@ -484,7 +488,8 @@ public static class DeliveryTemplateEndpoints
                 try
                 {
                     var flow = documents.ParseFlow(pipeline.Yaml, pipeline.RelativePath);
-                    flows.Add(new DeliveryBuilderFlowDto(pipeline.Id, pipeline.Name, flow.Render.Mapping, flow.Render.Parameters, flow.Target.Endpoint, flow.Render.Cache));
+                    flows.Add(new DeliveryBuilderFlowDto(
+                        pipeline.Id, pipeline.Name, flow.Render.Mapping, flow.Render.Parameters, flow.Target.Endpoint, CacheScopeOf(flow)));
                 }
                 catch (FlowValidationException)
                 {
@@ -499,26 +504,39 @@ public static class DeliveryTemplateEndpoints
         return TypedResults.Ok<IReadOnlyList<DeliveryBuilderRepoDto>>(result);
     }
 
-    /// <summary>Every cache a synced cache flow declares, with its current version and its types, for the builder's cache picker.</summary>
+    /// <summary>The partition whose cache a delivery flow reads: the partition it delivers to, or null when its target names none a cache is kept under.</summary>
+    private static string? CacheScopeOf(FlowDefinition flow)
+    {
+        try
+        {
+            return CacheScope.Of(flow.Target.Headers, flow.SourcePath ?? flow.Name);
+        }
+        catch (FlowValidationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Every partition's cache, with the flows filling it, its current version and its types, for the builder's cache picker.</summary>
     private static async Task<Ok<IReadOnlyList<DeliveryBuilderCacheDto>>> ListBuilderCachesAsync(CatalogDbContext db, CancellationToken ct)
     {
         var declared = await db.DeliveryCacheDefinitions.AsNoTracking()
-            .Select(c => new { c.CacheName, c.RepoId })
+            .Select(c => new { c.Scope, c.FlowName })
             .Distinct()
             .ToListAsync(ct).ConfigureAwait(false);
-        var repoIds = declared.Select(c => c.RepoId).Distinct().ToList();
-        var repoNames = await db.Repos.AsNoTracking().Where(r => repoIds.Contains(r.Id)).ToDictionaryAsync(r => r.Id, r => r.Name, ct).ConfigureAwait(false);
-        var names = declared.Select(c => c.CacheName).Distinct().ToList();
+        var scopes = declared.Select(c => c.Scope).Distinct().ToList();
         var current = await db.DeliveryCacheVersions.AsNoTracking()
-            .Where(v => names.Contains(v.CacheName) && v.Current)
-            .ToDictionaryAsync(v => v.CacheName, v => v.Version, StringComparer.Ordinal, ct).ConfigureAwait(false);
+            .Where(v => scopes.Contains(v.Scope) && v.Current)
+            .ToDictionaryAsync(v => v.Scope, v => v.Version, StringComparer.Ordinal, ct).ConfigureAwait(false);
 
-        var result = new List<DeliveryBuilderCacheDto>(declared.Count);
-        foreach (var cache in declared.OrderBy(c => c.CacheName, StringComparer.Ordinal))
+        var result = new List<DeliveryBuilderCacheDto>(scopes.Count);
+        foreach (var scope in scopes.Order(StringComparer.Ordinal))
         {
-            var types = await CatalogCacheReader.TypesAsync(db, cache.CacheName, ct).ConfigureAwait(false);
+            var types = await CatalogCacheReader.TypesAsync(db, scope, ct).ConfigureAwait(false);
             result.Add(new DeliveryBuilderCacheDto(
-                cache.CacheName, cache.RepoId, repoNames.GetValueOrDefault(cache.RepoId, string.Empty), current.GetValueOrDefault(cache.CacheName),
+                scope,
+                declared.Where(c => c.Scope == scope).Select(c => c.FlowName).Distinct().Order(StringComparer.Ordinal).ToList(),
+                current.GetValueOrDefault(scope),
                 types.Select(t => new DeliveryCachedTypeDto(t.Name, t.EntityType, t.Fields)).ToList()));
         }
 
@@ -540,7 +558,7 @@ public static class DeliveryTemplateEndpoints
             return Problem($"There is no saved template {reference}.", StatusCodes.Status404NotFound, "Not found");
         }
 
-        var types = string.IsNullOrWhiteSpace(request.Cache) ? [] : await CatalogCacheReader.TypesAsync(db, request.Cache.Trim(), ct).ConfigureAwait(false);
+        var types = string.IsNullOrWhiteSpace(request.Scope) ? [] : await CatalogCacheReader.TypesAsync(db, request.Scope.Trim(), ct).ConfigureAwait(false);
         return TypedResults.Ok(MappingBuilder.Draft(OsduTemplate.From(schema), types, request.Name, request.MappingVersion, request.System));
     }
 
@@ -578,19 +596,20 @@ public static class DeliveryTemplateEndpoints
             return TypedResults.Ok(new DeliveryMappingComposeResult(yaml, issues, false));
         }
 
-        // The check reads the named cache at its current version, as a delivery flow naming the cache would render today.
-        var cacheName = string.IsNullOrWhiteSpace(request.Cache) ? null : request.Cache.Trim();
+        // The check reads the partition's cache at its current version, as a delivery flow delivering there would render today.
+        var scope = string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope.Trim();
         var references = ReferenceSnapshot.Empty;
-        if (cacheName is not null)
+        if (scope is not null)
         {
-            if (await caches.CurrentVersionAsync(cacheName, ct).ConfigureAwait(false) is { } version)
+            if (await caches.CurrentVersionAsync(scope, ct).ConfigureAwait(false) is { } version)
             {
-                references = await caches.LoadAsync(cacheName, version, ct).ConfigureAwait(false) ?? ReferenceSnapshot.Empty;
+                references = await caches.LoadAsync(scope, version, ct).ConfigureAwait(false) ?? ReferenceSnapshot.Empty;
             }
             else
             {
                 issues.Add(new MappingDraftIssue(
-                    MappingDraftIssue.WarningSeverity, $"Cache '{cacheName}' has no current version yet, so the cache entries are checked against no cached records. Run its cache flow to capture one."));
+                    MappingDraftIssue.WarningSeverity,
+                    $"The cache of partition '{scope}' has no version yet, so the cache entries are checked against no cached records. Run a cache flow of the partition to capture one."));
             }
         }
 
@@ -614,7 +633,7 @@ public static class DeliveryTemplateEndpoints
         var context = new RenderContext
         {
             MappingReference = mapping.Reference,
-            CacheName = ReferenceEquals(references, ReferenceSnapshot.Empty) ? null : cacheName,
+            CacheScope = ReferenceEquals(references, ReferenceSnapshot.Empty) ? null : scope,
             CacheVersion = references.Version,
             SchemaSnapshotVersion = schema.Version,
             Parameters = parameters,

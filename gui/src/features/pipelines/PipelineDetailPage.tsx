@@ -27,7 +27,7 @@ import { useTabTitle } from "../../layout/workbench/TabsContext";
 import { formatDurationSeconds } from "../../lib/time";
 import { projectOf } from "../repos/project";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
-import { DeliveryCacheHistory } from "../delivery/DeliveryCacheHistory";
+import { DeliveryCacheFlowVersions } from "../delivery/DeliveryCacheFlowVersions";
 import { DeliveryFlowPanel } from "../delivery/DeliveryFlowPanel";
 import { RetrievalFlowPanel } from "../delivery/RetrievalFlowPanel";
 
@@ -262,19 +262,8 @@ export default function PipelineDetailPage() {
           </TabsContent>
         )}
         {isCache && (
-          <TabsContent value="versions" className="flex flex-col gap-2">
-            <p className="text-[12.5px] text-muted-foreground">
-              Every version this cache flow captured into the catalog. What it holds, and the changes waiting for approval, are on the{" "}
-              <RouterLink
-                to={`/delivery/cache?cache=${encodeURIComponent(detail.name)}`}
-                className="text-primary hover:underline"
-                data-testid="pipeline-cache-link"
-              >
-                OSDU cache page
-              </RouterLink>
-              .
-            </p>
-            <DeliveryCacheHistory cache={detail.name} type={null} />
+          <TabsContent value="versions">
+            <DeliveryCacheFlowVersions flowName={detail.name} />
           </TabsContent>
         )}
         <TabsContent value="yaml">

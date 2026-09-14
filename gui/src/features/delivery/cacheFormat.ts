@@ -1,4 +1,4 @@
-import type { DeliveryCache, DeliveryCacheField, DeliveryCacheSchedule } from "../../api/delivery";
+import type { DeliveryCache, DeliveryCacheField, DeliveryCacheSchedule, DeliveryCacheTypeSource } from "../../api/delivery";
 
 /** A cached value on one line: a scalar as itself, a set as its values, an object as its JSON. */
 export function cachedText(value: unknown): string {
@@ -21,6 +21,30 @@ export function cachedCell(value: unknown): string | null {
 /** Every captured value of a cached record on one line, name by name. */
 export function cachedFieldsText(fields: Record<string, unknown> | null): string {
   return Object.entries(fields ?? {}).map(([name, value]) => `${name}: ${cachedText(value)}`).join("  ·  ") || "-";
+}
+
+/**
+ * How a mapping reads a cached value: cache.<type>.<name>, where the name is what the cache flow caches a path under, or
+ * id for the record's OSDU id. The partition is never named: a delivery flow reads the cache of the partition it delivers to.
+ */
+export function cacheReference(typeName: string, name: string): string {
+  return `cache.${typeName}.${name}`;
+}
+
+/** The name a mapping reads a cached record's OSDU id under. */
+export const CACHE_ID_FIELD = "id";
+
+/**
+ * A mapping entry that fills a variable with a cached record's OSDU id, found by one of its captured values matching a
+ * dataset column: what a mapping author starts from for a type. The column is a placeholder the author renames.
+ */
+export function cacheEntryExample(typeName: string, lookupField: string | null): string {
+  const lines = [`source: ${cacheReference(typeName, CACHE_ID_FIELD)}`];
+  if (lookupField !== null) {
+    lines.push(`findBy: ${cacheReference(typeName, lookupField)} = dataset.<column>`);
+  }
+
+  return lines.join("\n");
 }
 
 /**
@@ -56,30 +80,29 @@ export function compareFamilies(a: string, b: string): number {
   return rankA !== rankB ? rankA - rankB : a.localeCompare(b);
 }
 
-/** One type of the cache in scope, as the Definition tab and the type picker show it. */
+/** One type of the partition's cache, as the Definition tab and the type picker show it. */
 export interface CachedTypeSummary {
   name: string;
   entityType: string;
   family: string;
-  kind: string;
-  query: string | null;
+  /** Every cache flow's declaration of the type: the kind it searches and its query. */
+  sources: DeliveryCacheTypeSource[];
   /** The records the current version holds of the type. */
   items: number;
-  /** The captured paths by the name they are cached under, in declaration order. */
+  /** Every path the cache keeps for the type, by the name it is cached under, with the flows that declare it. */
   fields: DeliveryCacheField[];
   /** approve or auto: what a changed value does to the records built from it. */
   onChange: string;
 }
 
-/** The types a cache declares, sorted the way the type picker lists them: by family, then by name. */
+/** The types a partition's cache holds, sorted the way the type picker lists them: by family, then by name. */
 export function summarizeTypes(cache: DeliveryCache | null): CachedTypeSummary[] {
   return (cache?.types ?? [])
     .map((type) => ({
       name: type.name,
       entityType: type.entityType,
       family: entityFamily(type.entityType),
-      kind: type.kind,
-      query: type.query,
+      sources: type.sources,
       items: type.items,
       fields: type.fields,
       onChange: type.onChange,

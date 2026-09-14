@@ -3,8 +3,9 @@
 # The operational document (docs/delivery/design.md section 9.2). One flow with a parameter replaces six
 # near-identical job blocks that differed only by a log source string. Nothing here changes what a document is:
 # only render.* enters the content hash, and the mapping it names is pinned. The mapping the flow renders with lives next
-# to it in this repository (../mappings); the template it fills and the cache it reads (defined by
-# ../caches/osdu-reference-cache.yaml) live in the catalog. The platform schedules the runs.
+# to it in this repository (../mappings); the template it fills lives in the catalog, and so does the cache it reads: the
+# cache of the partition it delivers to (target.headers.data-partition-id), filled by every cache flow of that partition,
+# such as ../caches/osdu-reference-cache.yaml. The platform schedules the runs.
 flowType: delivery
 name: recall-welllog
 batch: recall
@@ -29,8 +30,6 @@ source:
 
 render:
   mapping: WellLog@1.4.0
-  # The cache the mapping's cache. sources read, at its current version.
-  cache: osdu-reference-cache
   parameters:
     dataPartition: opendes
 

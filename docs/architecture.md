@@ -57,9 +57,9 @@ scan, the catalog sync, the run queue, and the GUI work from those headers alone
 The delivery domain (`src/SqlFlow.Delivery`, documented in [delivery/README.md](delivery/README.md)) holds the
 production flow kinds: `delivery`; `retrieval` for the reverse direction (OSDU's search index paged into
 files on the lake, incremental by watermark, one ledger row per run); and `cache`, which defines the reference and
-master data the mappings resolve against and captures it from OSDU into versioned caches in the catalog. A delivery flow names a drop (a storage location the preparing side writes: a manifest,
+master data the mappings resolve against and captures it from OSDU into one versioned cache per OSDU data partition in the catalog. A delivery flow names a drop (a storage location the preparing side writes: a manifest,
 parquet record scopes, payload chunks), a pinned mapping (how rows become OSDU records of one kind, which
-columns identify a record, which values resolve against reference data), the cache the mapping reads (`render.cache`),
+columns identify a record, which values resolve against reference data), the cache the mapping reads (the cache of the partition it delivers to, at its current version or the one `render.cacheVersion` pins),
 and an OSDU target (endpoint, auth and header references, the delivery protocol). The mapping it renders with lives in
 the flow's repository and is synced into the catalog as a read model; the template the mapping pins (the OSDU schema of
 its kind) and every version of the cache are held in the catalog itself. Running the flow means:

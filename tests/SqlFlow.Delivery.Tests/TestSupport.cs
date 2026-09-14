@@ -74,42 +74,88 @@ public sealed class SqliteCatalog : IDisposable
 
     public CatalogCacheStore Caches() => new(CreateDbContext);
 
+    /// <summary>
+    /// Declares what <paramref name="flowName"/> caches for <paramref name="scope"/> exactly as the repository sync leaves it:
+    /// one <c>delivery.CacheDefinition</c> row per type, replacing every row the flow had. No types declares nothing for the flow.
+    /// </summary>
+    public async Task DeclareCacheAsync(string scope, string flowName, params ReferenceTypeSpec[] types)
+    {
+        await using var db = CreateDbContext();
+        await db.DeliveryCacheDefinitions.Where(d => d.FlowName == flowName).ExecuteDeleteAsync();
+        var repoId = Guid.NewGuid();
+        var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        foreach (var type in types)
+        {
+            db.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
+            {
+                Id = Guid.NewGuid(),
+                RepoId = repoId,
+                FlowName = flowName,
+                Scope = scope,
+                Endpoint = "https://osdu.example.test",
+                RelativePath = "caches/" + flowName + ".yaml",
+                Name = type.Name,
+                EntityType = type.EntityType,
+                Kind = type.Kind,
+                Query = type.Query,
+                FieldsJson = new JsonArray(type.Fields.Select(f => (JsonNode)new JsonObject { ["path"] = f.Path, ["as"] = f.Name }).ToArray()).ToJsonString(),
+                OnChange = type.OnChange == CacheChangeMode.Approve ? "approve" : "auto",
+                FirstSeenUtc = now,
+                LastSeenUtc = now,
+            });
+        }
+
+        await db.SaveChangesAsync();
+    }
+
     public void Dispose() => _connection.Dispose();
 }
 
 /// <summary>
-/// One version of one cache held in memory, as a render reads it. The engine suites share the sample cache through it, so
-/// no suite reads a database another suite is writing on the same SQLite connection; the catalog store itself is covered
-/// by its own suite.
+/// One version of one partition's cache held in memory, as a render reads it. The engine suites share the sample cache
+/// through it, so no suite reads a database another suite is writing on the same SQLite connection; the catalog store
+/// itself is covered by its own suite.
 /// </summary>
 public sealed class FixedCacheStore : ICacheStore
 {
-    private readonly string _cache;
+    private readonly string _scope;
+    private readonly string _flowName;
     private readonly ReferenceSnapshot _snapshot;
+    private readonly CacheDeclaration _declaration;
 
-    public FixedCacheStore(string cache, ReferenceSnapshot snapshot)
+    /// <param name="scope">The partition whose cache the store holds.</param>
+    /// <param name="flowName">The cache flow that wrote the one version.</param>
+    /// <param name="snapshot">The one version.</param>
+    /// <param name="declaration">What the partition's cache flows declare; none when null.</param>
+    public FixedCacheStore(string scope, string flowName, ReferenceSnapshot snapshot, CacheDeclaration? declaration = null)
     {
-        _cache = cache;
+        _scope = scope;
+        _flowName = flowName;
         _snapshot = snapshot;
+        _declaration = declaration ?? CacheDeclaration.None(scope);
     }
 
-    public Task<string?> CurrentVersionAsync(string cache, CancellationToken ct = default)
-        => Task.FromResult(cache == _cache ? _snapshot.Version : null);
+    public Task<string?> CurrentVersionAsync(string scope, CancellationToken ct = default)
+        => Task.FromResult(scope == _scope ? _snapshot.Version : null);
 
-    public Task<ReferenceSnapshot?> LoadAsync(string cache, string version, CancellationToken ct = default)
-        => Task.FromResult(cache == _cache && version == _snapshot.Version ? _snapshot : null);
+    public Task<ReferenceSnapshot?> LoadAsync(string scope, string version, CancellationToken ct = default)
+        => Task.FromResult(scope == _scope && version == _snapshot.Version ? _snapshot : null);
 
-    public Task<IReadOnlyList<CacheVersionInfo>> ListVersionsAsync(string cache, CancellationToken ct = default)
-        => Task.FromResult<IReadOnlyList<CacheVersionInfo>>(cache == _cache
+    public Task<IReadOnlyList<CacheVersionInfo>> ListVersionsAsync(string scope, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<CacheVersionInfo>>(scope == _scope
             ?
             [
                 new CacheVersionInfo(
-                    _cache, _snapshot.Version, 1, _snapshot.CapturedUtc.UtcDateTime, true, null, null, "tests", "sample files",
+                    _scope, _snapshot.Version, 1, _snapshot.CapturedUtc.UtcDateTime, true, null, null, "tests", "sample files", _flowName,
                     _snapshot.Types.Sum(t => (long)t.Items.Count), _snapshot.Types.Select(t => new CacheVersionType(t.Name, t.EntityType, t.Items.Count)).ToList()),
             ]
             : []);
 
-    public Task<CacheVersionInfo> SaveAsync(string cache, ReferenceSnapshot snapshot, CacheCapture capture, bool makeCurrent, CancellationToken ct = default)
+    public Task<CacheDeclaration> DeclarationAsync(string scope, CancellationToken ct = default)
+        => Task.FromResult(scope == _scope ? _declaration : CacheDeclaration.None(scope));
+
+    public Task<CacheWrite> MergeAsync(
+        string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheCapture capture, DateTimeOffset capturedUtc, CancellationToken ct = default)
         => throw new InvalidOperationException("The fixed sample cache is read-only; write versions through a catalog cache store.");
 }
 
@@ -312,8 +358,11 @@ public static class Samples
     /// <summary>The sample cache records, one file per cached type.</summary>
     public static string References => Path.Combine(Root, "references");
 
-    /// <summary>The name of the sample cache, which the sample delivery flow names under render.cache.</summary>
-    public const string SampleCacheName = "osdu-reference-cache";
+    /// <summary>The partition the sample flows search and deliver to, whose cache the sample delivery flow reads.</summary>
+    public const string SampleCacheScope = "opendes";
+
+    /// <summary>The name of the sample cache flow, which fills the cache of <see cref="SampleCacheScope"/>.</summary>
+    public const string SampleCacheFlowName = "osdu-reference-cache";
 
     /// <summary>When the sample cache records were captured: the version label the sample cache is imported under.</summary>
     public static readonly DateTimeOffset SampleCacheCaptured = new(2026, 9, 8, 21, 27, 27, TimeSpan.Zero);
@@ -326,8 +375,17 @@ public static class Samples
         var store = catalog.Templates();
         ImportSampleTemplatesAsync(store).GetAwaiter().GetResult();
         var version = ImportSampleCacheAsync(catalog.Caches()).GetAwaiter().GetResult();
-        return (catalog, store, new FixedCacheStore(SampleCacheName, version));
+        return (catalog, store, new FixedCacheStore(SampleCacheScope, SampleCacheFlowName, version, SampleCacheDeclaration()));
     });
+
+    /// <summary>What the sample cache flow declares for its partition, as the catalog holds it after a sync.</summary>
+    public static CacheDeclaration SampleCacheDeclaration()
+    {
+        var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
+        return new CacheDeclaration(
+            flow.Scope,
+            flow.Types.Select(t => new CacheTypeDeclaration(flow.Name, t.Name, t.EntityType, t.Kind, t.Query, t.Fields, t.OnChange)));
+    }
 
     /// <summary>A template store holding the sample templates, shared by the engine tests.</summary>
     public static ITemplateStore SampleTemplates => SampleCatalog.Value.Store;
@@ -336,16 +394,17 @@ public static class Samples
     public static ICacheStore SampleCache => SampleCatalog.Value.Cache;
 
     /// <summary>
-    /// Imports the sample cache records into <paramref name="store"/> as a version of the sample cache, checked against what
-    /// the sample cache flow declares, exactly as 'sqlflow cache import' writes them; returns the version as loaded back.
+    /// Imports the sample cache records into <paramref name="store"/> as a version of the sample partition's cache, checked
+    /// against what the sample cache flow declares, exactly as 'sqlflow cache import' writes them; returns the version as
+    /// loaded back.
     /// </summary>
     public static async Task<ReferenceSnapshot> ImportSampleCacheAsync(ICacheStore store)
     {
         ArgumentNullException.ThrowIfNull(store);
         var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
-        var builder = new SnapshotBuilder(store, flow.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());
-        var write = await builder.ImportDirectoryAsync(References, flow.Types, new CacheCapture(null, "tests", "sample files"), makeCurrent: true);
-        return (await store.LoadAsync(flow.Name, write.Snapshot.Version))!;
+        var builder = new SnapshotBuilder(store, flow.Scope, flow.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());
+        var write = await builder.ImportDirectoryAsync(References, flow.Types, new CacheCapture(null, "tests", "sample files"));
+        return (await store.LoadAsync(flow.Scope, write.Snapshot.Version))!;
     }
 
     /// <summary>Saves the sample templates into <paramref name="store"/> and loads each once, returning what was saved.</summary>
@@ -409,7 +468,8 @@ public static class Samples
             {
                 Endpoint = "http://localhost:9/petrodb",
                 Auth = new TargetAuth { Type = TargetAuthType.None },
-                Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                // The partition stays: it is what names the cache the render reads.
+                Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [CacheScope.PartitionHeader] = SampleCacheScope },
             },
             // SQLite in-memory shares one connection, so the test worker runs one record at a time and one renderer.
             Reliability = flow.Reliability with { Concurrency = 1, RenderParallelism = 1, Retry = flow.Reliability.Retry with { Attempts = 3, RecordBaseDelayMinutes = 1 } },
@@ -493,7 +553,7 @@ public static class TestSchema
     public static RenderContext Context(string mapping = "Thing@1.0.0") => new()
     {
         MappingReference = mapping,
-        CacheName = "test-cache",
+        CacheScope = "dev",
         CacheVersion = "refs-1",
         SchemaSnapshotVersion = Build().Version,
         Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "dev" },

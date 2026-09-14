@@ -8,11 +8,12 @@ using SqlFlow.Delivery.Snapshots;
 namespace SqlFlow.Delivery.Engine.Snapshots;
 
 /// <summary>
-/// Refreshes a cache (design.md section 6.2). The cache flow says which reference and master-data types the mappings
-/// resolve against and which paths of them to keep; a refresh captures every declared type in full and writes a new
-/// version of the cache into the catalog when the content moved. It then compares the new version with the one it
-/// replaces and tags each changed value that delivered records were built from, so what a refresh does to the delivered
-/// estate is decided change by change.
+/// Refreshes what one cache flow contributes to its partition's cache (design.md section 6.2). The flow says which reference
+/// and master-data types it captures and with which queries; a refresh sweeps every declared type in full, fetching every
+/// path any synced flow keeps for the type in the partition, and merges the result into the partition's cache, which writes
+/// a new version when the cached content moved. It then compares the new version with the one it replaced and tags each
+/// changed value that delivered records were built from, so what a refresh does to the delivered estate is decided change by
+/// change, under the partition's approval setting for the type.
 /// </summary>
 public sealed class CacheRefresher
 {
@@ -30,7 +31,7 @@ public sealed class CacheRefresher
         _logger = logger;
     }
 
-    /// <summary>Captures the cache flow's types, writes the new version when the content moved, and tags what its changes reach.</summary>
+    /// <summary>Captures the cache flow's types, merges them into the partition's cache, and tags what the changes reach.</summary>
     public async Task<CacheRefreshOutcome> RefreshAsync(
         CacheDefinition flow, IReadOnlyDictionary<string, string> values, Guid runId, string actor, CancellationToken ct)
     {
@@ -38,18 +39,17 @@ public sealed class CacheRefresher
         ArgumentNullException.ThrowIfNull(values);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         var store = _context.Cache ?? throw new DeliveryException(
-            $"Cache flow '{flow.Name}' writes its versions into the catalog, which this host was started without. Run it through the control plane or a node, or start the CLI with the catalog connection (--db, or the catalog variable).");
-        var spec = CaptureSpec(flow, values);
-
-        // The version being replaced, read before the capture writes the new one: it is what the delivered estate was
-        // built from, and the only thing the new version can be compared against.
-        var previousVersion = await store.CurrentVersionAsync(flow.Name, ct).ConfigureAwait(false);
-        var previous = previousVersion is null ? null : await store.LoadAsync(flow.Name, previousVersion, ct).ConfigureAwait(false);
+            $"Cache flow '{flow.Name}' writes into the cache of its partition in the catalog, which this host was started without. Run it through the control plane or a node, or start the CLI with the catalog connection (--db, or the catalog variable).");
+        var scope = flow.Scope;
+        var declaration = await store.DeclarationAsync(scope, ct).ConfigureAwait(false);
+        declaration.ThrowOnConflicts(flow.Name, flow.Types);
+        var spec = CaptureSpec(flow, values, declaration);
 
         using var osdu = await ConnectAsync(flow, ct).ConfigureAwait(false);
-        var builder = new SnapshotBuilder(store, flow.Name, _context.Time, _context.Loggers.CreateLogger<SnapshotBuilder>());
-        var write = await builder.CaptureAsync(osdu, spec, new CacheCapture(runId, actor, flow.Source.Endpoint), flow.MakeCurrent, ct).ConfigureAwait(false);
+        var builder = new SnapshotBuilder(store, scope, flow.Name, _context.Time, _context.Loggers.CreateLogger<SnapshotBuilder>());
+        var write = await builder.CaptureAsync(osdu, spec, new CacheCapture(runId, actor, flow.Source.Endpoint), ct).ConfigureAwait(false);
         var snapshot = write.Snapshot;
+        var previousVersion = write.Previous?.Version;
 
         var types = new List<CachedTypeOutcome>(spec.Types.Count);
         foreach (var typeSpec in spec.Types)
@@ -59,22 +59,22 @@ public sealed class CacheRefresher
                 continue;
             }
 
+            var mode = declaration.ModeOf(typeSpec.Name, typeSpec.OnChange);
             var impact = !write.Written || _context.Ledger is null
                 ? new CacheImpactResult(type.Name, 0, 0, 0, 0)
                 : await new CacheImpactAnalyzer(_context.Ledger, _context.Time, _logger)
-                    .AnalyzeAsync(flow.Name, previous?.Type(type.Name), type, typeSpec.OnChange, previousVersion, snapshot.Version, ct)
+                    .AnalyzeAsync(scope, write.Previous?.Type(type.Name), type, mode, previousVersion, snapshot.Version, ct)
                     .ConfigureAwait(false);
             types.Add(new CachedTypeOutcome(
-                type.Name, type.EntityType, typeSpec.Kind, type.Items.Count, typeSpec.Fields.Select(f => f.Name).ToList(), ModeText(typeSpec.OnChange),
+                type.Name, type.EntityType, typeSpec.Kind, type.Items.Count, typeSpec.Fields.Select(f => f.Name).ToList(), ModeText(mode),
                 impact.ChangedItems, impact.Changes, impact.AffectedRecords));
         }
 
-        var current = write.Written ? flow.MakeCurrent : string.Equals(snapshot.Version, previousVersion, StringComparison.Ordinal);
         var outcome = new CacheRefreshOutcome(
-            RunParameters.RefreshOperation, flow.Name, snapshot.Version, previousVersion, write.Written, current, snapshot.CapturedUtc.UtcDateTime, types);
+            RunParameters.RefreshOperation, scope, flow.Name, snapshot.Version, previousVersion, write.Written, snapshot.CapturedUtc.UtcDateTime, types);
         _logger.LogInformation(
-            "Cache {Cache} refreshed: {Outcome}, {Types} type(s), {Items} record(s). {Changed} cached record(s) moved, reaching {Records} delivered record(s) through {Changes} change(s).",
-            flow.Name, write.Written ? $"version {snapshot.Version} written{(current ? " and made current" : string.Empty)}" : $"unchanged at version {snapshot.Version}",
+            "Cache of partition {Scope} refreshed by {Flow}: {Outcome}, {Types} type(s), {Items} record(s). {Changed} cached record(s) moved, reaching {Records} delivered record(s) through {Changes} change(s).",
+            scope, flow.Name, write.Written ? $"version {snapshot.Version} written and made current" : $"unchanged at version {snapshot.Version}",
             types.Count, outcome.Items, types.Sum(t => t.ChangedItems), outcome.AffectedRecords, types.Sum(t => t.Changes));
         return outcome;
     }
@@ -84,8 +84,10 @@ public sealed class CacheRefresher
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(values);
-        var spec = CaptureSpec(flow, values);
-        var currentVersion = _context.Cache is { } store ? await store.CurrentVersionAsync(flow.Name, ct).ConfigureAwait(false) : null;
+        var scope = flow.Scope;
+        var declaration = _context.Cache is { } store ? await store.DeclarationAsync(scope, ct).ConfigureAwait(false) : CacheDeclaration.None(scope);
+        var spec = CaptureSpec(flow, values, declaration);
+        var currentVersion = _context.Cache is { } cache ? await cache.CurrentVersionAsync(scope, ct).ConfigureAwait(false) : null;
 
         using var osdu = await ConnectAsync(flow, ct).ConfigureAwait(false);
         var types = new List<CachePlanType>(spec.Types.Count);
@@ -100,12 +102,15 @@ public sealed class CacheRefresher
             types.Add(new CachePlanType(type.Name, type.Kind, type.Query, type.Fields.Select(f => f.Name).ToList(), total));
         }
 
-        return new CachePlanOutcome(RunParameters.PlanOperation, flow.Name, currentVersion, types, types.Sum(t => t.Records));
+        return new CachePlanOutcome(RunParameters.PlanOperation, scope, flow.Name, currentVersion, types, types.Sum(t => t.Records));
     }
 
-    /// <summary>The declared types with the run's parameter values substituted into each query, as a refresh captures them.</summary>
-    private static ReferenceCaptureSpec CaptureSpec(CacheDefinition flow, IReadOnlyDictionary<string, string> values)
-        => new() { Types = flow.Types.Select(type => type with { Query = FlowParameters.Substitute(type.Query, values) }).ToList() };
+    /// <summary>
+    /// The declared types as a refresh captures them: widened to every path the partition keeps for each, with the run's
+    /// parameter values substituted into each query.
+    /// </summary>
+    private static ReferenceCaptureSpec CaptureSpec(CacheDefinition flow, IReadOnlyDictionary<string, string> values, CacheDeclaration declaration)
+        => new() { Types = flow.Types.Select(type => declaration.Widen(type) with { Query = FlowParameters.Substitute(type.Query, values) }).ToList() };
 
     private Task<OsduConnection> ConnectAsync(CacheDefinition flow, CancellationToken ct)
         => OsduConnection.CreateAsync(
@@ -115,11 +120,12 @@ public sealed class CacheRefresher
 }
 
 /// <summary>
-/// The <c>result</c> of a refresh run: the version the cache holds after it, the version it replaced, whether a version was
-/// written at all, and per type what was captured and what its changes reach in the delivered estate.
+/// The <c>result</c> of a refresh run: the partition whose cache it merged into, the flow, the version the cache holds after
+/// it and the one it replaced, whether a version was written at all, and per type what was captured and what its changes
+/// reach in the delivered estate.
 /// </summary>
 public sealed record CacheRefreshOutcome(
-    string Operation, string Cache, string Version, string? PreviousVersion, bool Written, bool Current, DateTime CapturedUtc,
+    string Operation, string Scope, string Flow, string Version, string? PreviousVersion, bool Written, DateTime CapturedUtc,
     IReadOnlyList<CachedTypeOutcome> Types)
 {
     public long Items => Types.Sum(t => (long)t.Items);
@@ -136,5 +142,5 @@ public sealed record CachedTypeOutcome(
 /// <summary>One declared type as a plan counts it.</summary>
 public sealed record CachePlanType(string Name, string Kind, string Query, IReadOnlyList<string> Fields, long Records);
 
-/// <summary>The <c>result</c> of a plan run on a cache flow: what each type's search matches, and the version the cache holds now.</summary>
-public sealed record CachePlanOutcome(string Operation, string Cache, string? CurrentVersion, IReadOnlyList<CachePlanType> Types, long Records);
+/// <summary>The <c>result</c> of a plan run on a cache flow: what each type's search matches, and the version the partition's cache holds now.</summary>
+public sealed record CachePlanOutcome(string Operation, string Scope, string Flow, string? CurrentVersion, IReadOnlyList<CachePlanType> Types, long Records);

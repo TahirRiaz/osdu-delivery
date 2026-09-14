@@ -17,10 +17,10 @@ namespace SqlFlow.Cli;
 
 /// <summary>
 /// The delivery kind's own verbs: <c>check</c> (everything checkable for one flow: the mapping against its pinned template,
-/// the version of the cache it reads, and the drop's manifest when the drop is present), <c>cache</c> (list the versions
-/// of a cache, or import one from type files for offline work), and <c>template</c> (capture, import, list, show and
-/// delete the templates in the catalog, docs/delivery/mapping-templates.md). A cache is captured from OSDU by running its
-/// cache flow (<c>sqlflow run &lt;cache.yaml&gt;</c>), the same run the platform schedules.
+/// the version of the partition cache it reads, and the drop's manifest when the drop is present), <c>cache</c> (list the
+/// versions of a partition's cache, or import a cache flow's type files into it for offline work), and <c>template</c>
+/// (capture, import, list, show and delete the templates in the catalog, docs/delivery/mapping-templates.md). A cache is
+/// captured from OSDU by running a cache flow (<c>sqlflow run &lt;cache.yaml&gt;</c>), the same run the platform schedules.
 /// </summary>
 internal static class DeliveryVerbs
 {
@@ -28,7 +28,7 @@ internal static class DeliveryVerbs
         "Usage: sqlflow template (capture --kind <kind> [--release <tag>] | import <schema.json> --kind <kind> [--release <tag>] | import --from-dir <dir> --kind <kind> | list | show --kind <kind> [--version <version>] | delete --kind <kind> --version <version>) [--db <conn-ref>] [--json]";
 
     private const string CacheUsage =
-        "Usage: sqlflow cache (list <cache.yaml | cache name> | import <cache.yaml> --from-dir <dir> [--no-current]) [--db <conn-ref>] [--json]";
+        "Usage: sqlflow cache (list <partition | cache.yaml> | import <cache.yaml> --from-dir <dir>) [--db <conn-ref>] [--json]";
 
     public static async Task<int> CheckAsync(IServiceProvider provider, string flowPath, string[] args, bool json, CancellationToken ct)
     {
@@ -46,10 +46,10 @@ internal static class DeliveryVerbs
             ["renderContext"] = JsonNode.Parse(runtime.Mapping.Context.Canonical()),
             ["drop"] = runtime.DropLocation,
             ["mappings"] = runtime.Layout.MappingsDirectory,
-            ["cache"] = runtime.Mapping.Context.CacheName is { } cacheName
+            ["cache"] = runtime.Mapping.Context.CacheScope is { } cacheScope
                 ? new JsonObject
                 {
-                    ["name"] = cacheName,
+                    ["partition"] = cacheScope,
                     ["version"] = runtime.Mapping.References.Version,
                     ["types"] = runtime.Mapping.References.Types.Count,
                 }
@@ -87,8 +87,8 @@ internal static class DeliveryVerbs
         Console.WriteLine($"OK  {runtime.Flow.Name} ({runtime.Flow.Id:D})");
         Console.WriteLine($"    mapping     {runtime.Mapping.Mapping.Reference}");
         Console.WriteLine($"    template    {runtime.Mapping.Mapping.Template} (saved {runtime.Mapping.Schema.CapturedUtc:u})");
-        Console.WriteLine(runtime.Mapping.Context.CacheName is { } name
-            ? $"    cache       {name} version {runtime.Mapping.References.Version} ({runtime.Mapping.References.Types.Count} type(s))"
+        Console.WriteLine(runtime.Mapping.Context.CacheScope is { } scope
+            ? $"    cache       partition {scope} version {runtime.Mapping.References.Version} ({runtime.Mapping.References.Types.Count} type(s))"
             : "    cache       none (the mapping reads nothing from a cache)");
         Console.WriteLine($"    context     {runtime.Mapping.Context.Hash()[..16]}");
         Console.WriteLine($"    mappings    {runtime.Layout.MappingsDirectory}");
@@ -115,8 +115,8 @@ internal static class DeliveryVerbs
         {
             case "list":
             {
-                var name = File.Exists(target) ? engine.Documents.LoadCache(target).Name : target;
-                var versions = await store.ListVersionsAsync(name, ct).ConfigureAwait(false);
+                var scope = File.Exists(target) ? engine.Documents.LoadCache(target).Scope : CacheScope.Normalize(target, "sqlflow cache list");
+                var versions = await store.ListVersionsAsync(scope, ct).ConfigureAwait(false);
                 if (json)
                 {
                     Console.WriteLine(CanonicalJson.Pretty(new JsonArray(versions.Select(v => (JsonNode)Describe(v)).ToArray())));
@@ -125,14 +125,14 @@ internal static class DeliveryVerbs
 
                 if (versions.Count == 0)
                 {
-                    Console.WriteLine($"cache {name} holds no version yet; run its cache flow with the refresh operation to capture one");
+                    Console.WriteLine($"the cache of partition {scope} holds no version yet; run a cache flow of the partition with the refresh operation to capture one");
                 }
 
                 foreach (var v in versions)
                 {
                     var run = v.RunId is { } runId ? $" in run {runId:D}" : string.Empty;
                     Console.WriteLine(
-                        $"{v.Version}  {(v.Current ? "current" : "       ")}  {v.Items} record(s) in {v.Types.Count} type(s), captured {v.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} by {v.CapturedBy}{run}");
+                        $"{v.Version}  {(v.Current ? "current" : "       ")}  {v.Items} record(s) in {v.Types.Count} type(s), written by cache flow {v.FlowName} at {v.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} for {v.CapturedBy}{run}");
                 }
 
                 return 0;
@@ -142,28 +142,27 @@ internal static class DeliveryVerbs
             {
                 var cache = engine.Documents.LoadCache(target);
                 var directory = Path.GetFullPath(Program.GetOption(args, "--from-dir") ?? throw new FlowValidationException(CacheUsage));
-                var builder = new SnapshotBuilder(store, cache.Name, engine.Time, engine.Loggers.CreateLogger<SnapshotBuilder>());
+                var builder = new SnapshotBuilder(store, cache.Scope, cache.Name, engine.Time, engine.Loggers.CreateLogger<SnapshotBuilder>());
                 var write = await builder.ImportDirectoryAsync(
-                    directory, cache.Types, new CacheCapture(null, "cli:" + Environment.UserName, $"files under {directory}"),
-                    cache.MakeCurrent && !args.Contains("--no-current"), ct).ConfigureAwait(false);
-                var current = string.Equals(await store.CurrentVersionAsync(cache.Name, ct).ConfigureAwait(false), write.Snapshot.Version, StringComparison.Ordinal);
+                    directory, cache.Types, new CacheCapture(null, "cli:" + Environment.UserName, $"files under {directory}"), ct).ConfigureAwait(false);
+                var records = write.Snapshot.Types.Sum(t => t.Items.Count);
                 if (json)
                 {
                     Console.WriteLine(CanonicalJson.Pretty(new JsonObject
                     {
-                        ["cache"] = cache.Name,
+                        ["partition"] = cache.Scope,
+                        ["flow"] = cache.Name,
                         ["version"] = write.Snapshot.Version,
                         ["written"] = write.Written,
-                        ["current"] = current,
                         ["types"] = write.Snapshot.Types.Count,
-                        ["records"] = write.Snapshot.Types.Sum(t => t.Items.Count),
+                        ["records"] = records,
                     }));
                     return 0;
                 }
 
                 Console.WriteLine(write.Written
-                    ? $"cache {cache.Name}: version {write.Snapshot.Version} written with {write.Snapshot.Types.Count} type(s) and {write.Snapshot.Types.Sum(t => t.Items.Count)} record(s){(current ? ", now current" : ", not made current")}"
-                    : $"cache {cache.Name}: the files hold exactly what version {write.Snapshot.Version} holds, so nothing was written");
+                    ? $"cache of partition {cache.Scope}: version {write.Snapshot.Version} written from cache flow {cache.Name}, holding {write.Snapshot.Types.Count} type(s) and {records} record(s), now current"
+                    : $"cache of partition {cache.Scope}: the files add nothing version {write.Snapshot.Version} does not already hold, so nothing was written");
                 return 0;
             }
 
@@ -174,7 +173,8 @@ internal static class DeliveryVerbs
 
     private static JsonObject Describe(CacheVersionInfo v) => new()
     {
-        ["cache"] = v.CacheName,
+        ["partition"] = v.Scope,
+        ["flow"] = v.FlowName,
         ["version"] = v.Version,
         ["sequence"] = v.Sequence,
         ["current"] = v.Current,

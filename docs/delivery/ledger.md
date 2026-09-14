@@ -128,38 +128,54 @@ shows both, plus its verify outcomes; a run's page links to what it did to each 
 
 Read models the repository sync writes: every mapping document (its reference, kind, the template version it pins
 in `TemplateVersion`, a parsed summary, the YAML, and whether it parses) and every type a cache flow declares (the
-`CacheName`, the cache flow's `RelativePath`, the type's `Name`, `EntityType`, `Kind` and `Query`, the kept paths as
-`FieldsJson`, `OnChange`, and the flow's `MakeCurrent`). They back the GUI's Mappings and OSDU cache pages, and the
-templates listing counts each template version's pins from `delivery.Mapping`; nothing writes them but the sync.
+cache flow's `FlowName` and `RelativePath`, the partition it fills as `Scope`, the `Endpoint` it searches as declared,
+the type's `Name`, `EntityType`, `Kind` and `Query`, the kept paths as `FieldsJson`, and `OnChange`). A type is one
+row per repository, cache flow and name (unique on `RepoId`, `FlowName`, `Name`), indexed on `Scope` and `Name`
+because a refresh reads every declaration of its partition to know the paths the cache keeps for a type. A declaration
+that disagrees with another flow's declaration of the same type for the partition is left out with a warning. They
+back the GUI's Mappings and OSDU cache pages, and the templates listing counts each template version's pins from
+`delivery.Mapping`; nothing writes them but the sync.
 
-### `delivery.CacheVersion` and `delivery.CacheItem`: the versions of every cache
+### `delivery.CacheVersion`, `delivery.CacheItem` and `delivery.CacheMember`: one cache per partition
 
 What a cache holds lives here and nowhere else ([design.md](design.md) section 6.2): nothing about it is written to a
-repository. A cache is named by the cache flow that defines it. A version is written by the refresh run that captured
-it, or by `sqlflow cache import`, and never changes afterwards. Every version is kept, because a delivered record's
+repository. There is one cache per OSDU data partition, keyed by the partition (`Scope`, the `data-partition-id` the
+cache flows declare), and every cache flow of the partition writes into it. A version is written by a refresh run whose
+merge changed the cached content, or by `sqlflow cache import`, and never changes afterwards; the newest version of a
+partition is its current one. Every version is kept, because a delivered record's
 render context names the version it was rendered against.
 
 | Column | Purpose |
 | --- | --- |
-| `Id` | Primary key, derived from the cache name and the version label. |
-| `CacheName`, `Version`, `Sequence` | The cache, the label minted from the capture instant (`20260908T212727Z`), and the version's place in the cache's history, 1 for the first. |
+| `Id` | Primary key, derived from the partition and the version label. |
+| `Scope`, `Version`, `Sequence` | The partition, the label minted from the capture instant (`20260908T212727Z`, with the sequence appended when two captures of the partition share a second, as in `20260908T212727Z-7`), and the version's place in the partition's history, 1 for the first. `(Scope, Version)` and `(Scope, Sequence)` are both unique; the sequence is what a concurrent write of the same partition collides on, so it fails rather than interleaving. |
+| `FlowName` | The cache flow whose capture, or import, wrote the version. |
 | `CapturedUtc`, `CapturedBy`, `RunId`, `Origin` | When it was captured; who asked (the run's trigger, or `cli:<user>` for an import); the platform run that captured it, null for an import; the endpoint reference searched or the directory imported. |
 | `ContentHash` | The hash of the whole content, checked on every load: a version whose records were altered after it was written is refused, and nothing renders against it. |
-| `PreviousVersion`, `Current` | The version that was current when this one was captured, and whether this is the version deliveries render against unless a flow pins another. |
+| `PreviousVersion`, `Current` | The version that was current when this one was written, which the capture was merged onto, and whether this is the newest version, the one deliveries render against unless a flow pins another. |
 | `TypesJson`, `Items` | The types the version holds, each with its entity type and record count, and the records across them. |
 
-`delivery.CacheItem` keeps the cached records by version range rather than by copy. A row is one record's OSDU id and
-captured values (`FieldsJson`, with every scalar also in `Terms` for search) as a run of consecutive versions held
-them: from the version at `FromSequence` up to, and not including, the one at `ToSequence`, which is null while the
-newest version still holds the record unchanged. A refresh writes rows only for the records that changed, arrived or
+`delivery.CacheItem` keeps the cached records by version range rather than by copy. A row is one record of one partition's cache
+(`Scope`, `TypeName`, `RecordId`) with its captured values (`FieldsJson`, with every scalar also in `Terms` for search)
+as a run of consecutive versions held them: from the version at `FromSequence` up to, and not including, the one at
+`ToSequence`, which is null while the newest version still holds the record unchanged. A record is stored once per
+partition however many cache flows capture it, and a merge writes rows only for the records that changed, arrived or
 left, so keeping every version costs rows in proportion to what moved.
+
+`delivery.CacheMember` is current state, not history: one row per partition, type, record and cache flow (`Scope`,
+`TypeName`, `RecordId`, `FlowName`, which together are the key) saying that the flow's last capture of the type held
+the record. It is what lets several cache flows share one partition's cache. A merge replaces the capturing flow's rows
+for the types it captured, and a record the capturing flow no longer finds leaves the cache only when no other flow's
+row still holds it. The rows of a type the merge removes go with it, and the repository sync deletes a flow's rows for
+a type the flow stops declaring. What each version held is in `delivery.CacheItem`.
 
 ### `delivery.CacheSet`, `delivery.CacheSetEntry` and `delivery.UpdateTag`: what a cache change reaches
 
 A `delivery.CacheSet` is one distinct combination of cached values a render consumed, shared by every record that read
-the same values through the record's `CacheSetId`. Each `delivery.CacheSetEntry` is one value in it: the cache it was
-read from (`CacheName`), the type, the cached record, the path, and the value as it was read. A `delivery.UpdateTag`
-is one change a refresh found in values delivered records were built from: the cache, the type, the cached record, the
+the same values through the record's `CacheSetId`. Each `delivery.CacheSetEntry` is one value in it: the partition
+whose cache it was read from (`Scope`, the partition the delivery flow delivers to), the type, the cached record, the
+path, and the value as it was read. A `delivery.UpdateTag` is one change a refresh found in values delivered records
+were built from: the partition (`Scope`), the type, the cached record, the
 path, the value before and after, the versions it moved between, `Mode` (`approve` or `auto`), `Status` (`pending`,
 `approved`, `rejected`, `rolling`, `applied`), how many delivered records it reaches and how far the rollout has got
 ([design.md](design.md) section 6.2).

@@ -52,7 +52,7 @@ const countTone: Record<DeliveryCacheChange, string> = {
 };
 
 function keyOf(entry: DeliveryCacheHistoryEntry): string {
-  return `${entry.version.cache}:${entry.version.version}`;
+  return `${entry.version.scope}:${entry.version.version}`;
 }
 
 function totalOf(entry: DeliveryCacheHistoryEntry): number {
@@ -202,7 +202,7 @@ function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; typ
   }
 
   const count = (filter: ChangeFilter) => (filter === ALL ? totalOf(entry) : entry[filter]).toLocaleString();
-  const scope = { cache: version.cache, from: before, to: version.version, type: type ?? undefined };
+  const scope = { scope: version.scope, from: before, to: version.version, type: type ?? undefined };
 
   return (
     <div className="flex flex-col gap-2 p-3" data-testid="delivery-cache-history-detail">
@@ -296,13 +296,13 @@ function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; typ
  * view. With a type in scope the counts are that type's alone, and the versions that left it untouched can be folded
  * away. It covers the whole cache, where Approvals covers only the changes that reach records already delivered.
  */
-export function DeliveryCacheHistory({ cache, type }: { cache: string; type: string | null }) {
+export function DeliveryCacheHistory({ scope, type }: { scope: string; type: string | null }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [onlyChanged, setOnlyChanged] = useState(true);
   const { ownedId, show } = useOwnedPanel(PANEL);
   const history = useQuery({
-    queryKey: ["delivery", "cache", "history", cache, type],
-    queryFn: () => deliveryApi.cacheHistory(cache, type ?? undefined),
+    queryKey: ["delivery", "cache", "history", scope, type],
+    queryFn: () => deliveryApi.cacheHistory(scope, type ?? undefined),
   });
 
   const entries = history.data ?? [];
@@ -371,7 +371,7 @@ export function DeliveryCacheHistory({ cache, type }: { cache: string; type: str
     { id: "captured", header: "Captured", render: (entry) => <RelativeTime value={entry.version.capturedUtc} /> },
     {
       id: "capturedBy",
-      header: "Captured by",
+      header: "Written by",
       fill: true,
       floor: 160,
       render: (entry) => (
@@ -388,7 +388,7 @@ export function DeliveryCacheHistory({ cache, type }: { cache: string; type: str
               </RouterLink>
             )
             : <TruncatedText text={entry.version.origin} maxWidth={1200} className="text-[12px]" />}
-          <span className="text-[11px] text-muted-foreground">{entry.version.capturedBy}</span>
+          <span className="text-[11px] text-muted-foreground">{entry.version.flow} · {entry.version.capturedBy}</span>
         </span>
       ),
     },

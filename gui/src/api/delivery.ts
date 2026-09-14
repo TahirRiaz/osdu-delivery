@@ -232,26 +232,38 @@ export interface DeliveryMappingDetail {
   yaml: string;
 }
 
-/** One path a cache captures, and the name it is cached under. */
+/** One path a partition's cache keeps for a type, the name it is cached under, and the cache flows that declare it. */
 export interface DeliveryCacheField {
   path: string;
   as: string;
+  flows: string[];
 }
 
-/** One type a cache flow declares: what is cached, which paths are kept, what a change does, and what the current version holds of it. */
+/** One cache flow's declaration of a type: the kind it searches, its query, and what a change does in its declaration. */
+export interface DeliveryCacheTypeSource {
+  flow: string;
+  kind: string;
+  query: string | null;
+  /** approve or auto, as this flow declares it. */
+  onChange: string;
+}
+
+/**
+ * One type of a partition's cache, as its cache flows together declare it: each flow's kind and query, every path any of
+ * them keeps, what a change does, and what the current version holds of it.
+ */
 export interface DeliveryCacheType {
   name: string;
   entityType: string;
-  kind: string;
-  query: string | null;
+  sources: DeliveryCacheTypeSource[];
   fields: DeliveryCacheField[];
-  /** approve (a change waits for a decision) or auto (a change goes out on the next run). */
+  /** approve (a change waits for a decision, when any declaring flow asks for that) or auto (a change goes out on the next run). */
   onChange: string;
   /** How many records the current version holds of the type. */
   items: number;
 }
 
-/** A schedule that refreshes a cache: its cadence, or that it fires behind other schedules. */
+/** A schedule that refreshes a cache flow: its cadence, or that it fires behind other schedules. */
 export interface DeliveryCacheSchedule {
   id: string;
   name: string;
@@ -261,20 +273,30 @@ export interface DeliveryCacheSchedule {
 }
 
 /**
- * A cache as its cache flow declares it and its runs keep it: the repository and file that define it (the file is where what
- * is cached is changed), the flow's pipeline, the OSDU endpoint reference it is captured from, the schedules that refresh
- * it, its types, its current version with the run that captured it, and how many versions it has.
+ * A cache flow filling a partition's cache: the repository and file that define it (the file is where what it caches is
+ * changed), its pipeline, the OSDU endpoint reference it searches, the schedules that refresh it, and the types it declares.
  */
-export interface DeliveryCache {
+export interface DeliveryCacheFlow {
   name: string;
   repoId: string;
   repoName: string;
   relativePath: string;
   pipelineId: string | null;
-  endpoint: string | null;
-  makeCurrent: boolean;
-  types: DeliveryCacheType[];
+  endpoint: string;
   schedules: DeliveryCacheSchedule[];
+  types: string[];
+}
+
+/**
+ * The cache of one OSDU partition: every cache flow that fills it, the types it holds as those flows together declare them,
+ * its current version with the flow and run that wrote it, and how many versions it has. Every delivery flow delivering to
+ * the partition reads it.
+ */
+export interface DeliveryCache {
+  /** The partition: the data-partition-id every flow that fills or reads the cache carries. */
+  scope: string;
+  flows: DeliveryCacheFlow[];
+  types: DeliveryCacheType[];
   current: DeliveryCacheVersion | null;
   versions: number;
 }
@@ -282,7 +304,8 @@ export interface DeliveryCache {
 /** One cached record: its OSDU id and the values captured at the declared paths, in whatever shape they came. */
 export interface DeliveryCachedItem {
   itemId: number;
-  cache: string;
+  /** The partition whose cache holds the record. */
+  scope: string;
   /** The version of the cache this row is the record as of. */
   version: string;
   typeName: string;
@@ -299,17 +322,19 @@ export interface DeliveryCacheVersionType {
 }
 
 /**
- * One version of a cache: when it was captured, whether it is the version deliveries render against, the version that was
- * current when it was captured, the run that captured it and who asked (no run for an import from files), where the
- * content came from, and what it holds.
+ * One version of a partition's cache: when it was written, whether it is the version deliveries render against, the version
+ * that was current before it, the cache flow and the run that wrote it and who asked (no run for an import from files),
+ * where the content came from, and what it holds.
  */
 export interface DeliveryCacheVersion {
-  cache: string;
+  scope: string;
   version: string;
   sequence: number;
   capturedUtc: string;
   current: boolean;
   previousVersion: string | null;
+  /** The cache flow whose capture or import wrote the version. */
+  flow: string;
   runId: string | null;
   capturedBy: string;
   origin: string;
@@ -322,7 +347,7 @@ export type DeliveryCacheChange = "changed" | "added" | "removed";
 
 /** A comparison of two versions of one cache: `from` is required, `to` defaults to the current version, `change` narrows the items only. */
 export type DeliveryCacheDiffQuery = {
-  cache: string;
+  scope: string;
   from: string;
   to?: string;
   type?: string;
@@ -359,7 +384,7 @@ export interface DeliveryCacheDiffType {
  * they describe every kind of change while the items show the one picked.
  */
 export interface DeliveryCacheDiff {
-  cache: string;
+  scope: string;
   fromVersion: string;
   toVersion: string;
   changed: number;
@@ -383,8 +408,8 @@ export interface DeliveryCacheHistoryEntry {
 export interface DeliveryUpdateTag {
   tagId: number;
   kind: string;
-  /** The cache whose refresh found the change. */
-  cache: string;
+  /** The partition whose cache the change was found in. */
+  scope: string;
   typeName: string;
   itemId: string;
   path: string;
@@ -413,8 +438,8 @@ export interface DeliveryUpdateTag {
 
 /** One cached value a record was built from. */
 export interface DeliveryCacheUse {
-  /** The cache the value was read from. */
-  cache: string;
+  /** The partition whose cache the value was read from. */
+  scope: string;
   typeName: string;
   itemId: string;
   path: string;
@@ -1013,14 +1038,15 @@ export interface DeliveryCachedType {
   fields: string[];
 }
 
-/** A delivery flow of a repository: its OSDU connection, the mapping and parameters it renders with, and the cache it names. */
+/** A delivery flow of a repository: its OSDU connection, the mapping and parameters it renders with, and the partition whose cache it reads. */
 export interface DeliveryBuilderFlow {
   pipelineId: string;
   name: string;
   mapping: string;
   parameters: Record<string, string>;
   endpoint: string;
-  cache: string | null;
+  /** The partition the flow delivers to, whose cache it reads; null when its target names none a cache is kept under. */
+  cacheScope: string | null;
 }
 
 /** A repository as the mapping builder offers it: the git source a proposal opens against, and its delivery flows. */
@@ -1032,11 +1058,10 @@ export interface DeliveryBuilderRepo {
   flows: DeliveryBuilderFlow[];
 }
 
-/** A cache as the mapping builder offers it: its name, the repository whose cache flow declares it, its current version and its types. */
+/** A partition's cache as the mapping builder offers it: the partition, the cache flows filling it, its current version and its types. */
 export interface DeliveryBuilderCache {
-  name: string;
-  repoId: string;
-  repoName: string;
+  scope: string;
+  flows: string[];
   currentVersion: string | null;
   types: DeliveryCachedType[];
 }
@@ -1143,8 +1168,8 @@ export interface MappingDraftIssue {
 
 /** Starts a mapping for a repository and a saved template version. */
 export interface DeliveryMappingDraftRequest {
-  /** The cache the draft's cache entries are prefilled from; null prefills none. */
-  cache: string | null;
+  /** The partition whose cache the draft's cache entries are prefilled from; null prefills none. */
+  scope: string | null;
   kind: string;
   version: string;
   name: string;
@@ -1215,9 +1240,9 @@ export const deliveryApi = {
   mapping: (mappingId: string) => get<DeliveryMappingDetail>(`/api/v1/delivery/mappings/${mappingId}`),
   /** The saved template versions, with how many synced mappings pin each. */
   templates: () => get<DeliveryTemplate[]>("/api/v1/delivery/templates"),
-  /** A saved template laid out variable by variable; with `cache`, each variable names the types of that cache it can be read from. */
-  templateDetail: (kind: string, version: string, cache?: string) =>
-    get<DeliveryTemplateDetail>("/api/v1/delivery/templates/detail", { kind, version, cache }),
+  /** A saved template laid out variable by variable; with `scope`, each variable names the types of that partition's cache it can be read from. */
+  templateDetail: (kind: string, version: string, scope?: string) =>
+    get<DeliveryTemplateDetail>("/api/v1/delivery/templates/detail", { kind, version, scope }),
   /** The saved template's bundled schema as JSON text, exactly as it was saved. */
   templateSchema: (kind: string, version: string) =>
     getText(`/api/v1/delivery/templates/schema?${new URLSearchParams({ kind, version }).toString()}`),
@@ -1225,8 +1250,8 @@ export const deliveryApi = {
    * Lays out a schema as a template without saving it; a 400 says why the JSON is not a record schema. A schema that refers
    * to the shared schemas of the OSDU data definitions has them read from `release` (the newest when omitted).
    */
-  previewTemplate: (kind: string, schema: Record<string, unknown>, cache?: string | null, release?: string | null) =>
-    post<DeliveryTemplateDetail>("/api/v1/delivery/templates/preview", { kind, schema, cache: cache ?? null, release: release ?? null }),
+  previewTemplate: (kind: string, schema: Record<string, unknown>, scope?: string | null, release?: string | null) =>
+    post<DeliveryTemplateDetail>("/api/v1/delivery/templates/preview", { kind, schema, scope: scope ?? null, release: release ?? null }),
   /** The releases of the OSDU data definitions (the Open Group's public schema repository), newest first; a 502 when it cannot be read. */
   osduReleases: () => get<DeliveryOsduReleases>("/api/v1/delivery/templates/osdu/releases"),
   /** Reads the release list again from the repository and downloads `release` (the newest when omitted) when it is not local; needs the operate scope. */
@@ -1257,37 +1282,37 @@ export const deliveryApi = {
     del<void>(`/api/v1/delivery/templates?${new URLSearchParams({ kind, version }).toString()}`),
   /** The repositories the mapping builder offers, with their git source and delivery flows. */
   builderRepos: () => get<DeliveryBuilderRepo[]>("/api/v1/delivery/mapping-builder/repos"),
-  /** The caches the mapping builder offers, with their current version and their types. */
+  /** The partition caches the mapping builder offers, with the flows filling each, their current version and their types. */
   builderCaches: () => get<DeliveryBuilderCache[]>("/api/v1/delivery/mapping-builder/caches"),
-  /** A new draft for a saved template version, prefilled from the named cache; a 404 when the template is not saved. */
+  /** A new draft for a saved template version, prefilled from the named partition's cache; a 404 when the template is not saved. */
   draftMapping: (request: DeliveryMappingDraftRequest) =>
     post<MappingDraft>("/api/v1/delivery/mapping-builder/draft", request),
-  /** Writes a draft as YAML and checks it against its template and the named cache's current version, rendering with `parameters`. */
-  composeMapping: (cache: string | null, draft: MappingDraft, parameters: Record<string, string> | null) =>
-    post<DeliveryMappingComposeResult>("/api/v1/delivery/mapping-builder/compose", { cache, draft, parameters }),
+  /** Writes a draft as YAML and checks it against its template and the named partition cache's current version, rendering with `parameters`. */
+  composeMapping: (scope: string | null, draft: MappingDraft, parameters: Record<string, string> | null) =>
+    post<DeliveryMappingComposeResult>("/api/v1/delivery/mapping-builder/compose", { scope, draft, parameters }),
   /** Reads a mapping document back into a draft for the builder. */
   parseMapping: (yaml: string, path: string | null) =>
     post<DeliveryMappingParseResult>("/api/v1/delivery/mapping-builder/parse", { yaml, path }),
   /** The shape of the records a mapping document renders, drawn with `parameters`; nothing is read or stored. */
   mappingShape: (yaml: string, path: string | null, parameters: Record<string, string>) =>
     post<DeliveryMappingShapeResult>("/api/v1/delivery/mapping-builder/shape", { yaml, path, parameters }),
-  /** Every cache the synced cache flows declare: the file that defines it, what refreshes it, its types and its current version. */
+  /** Every partition's cache: the cache flows filling it, what refreshes them, its types and its current version. */
   caches: (repoId?: string) =>
     get<DeliveryCache[]>("/api/v1/delivery/caches", { repoId }),
-  /** The versions of one cache, newest first, each with the run that captured it: what the version picker offers. */
-  cacheVersions: (cache: string) =>
-    get<DeliveryCacheVersion[]>("/api/v1/delivery/cache/versions", { cache }),
-  /** The records of one cache at one version (the current one when none is named). */
-  cachedItems: (query: PageQuery & { cache: string; type?: string; search?: string; version?: string }) =>
+  /** The versions of one partition's cache, newest first, each with the flow and run that wrote it: what the version picker offers. */
+  cacheVersions: (scope: string) =>
+    get<DeliveryCacheVersion[]>("/api/v1/delivery/cache/versions", { scope }),
+  /** The records of one partition's cache at one version (the current one when none is named). */
+  cachedItems: (query: PageQuery & { scope: string; type?: string; search?: string; version?: string }) =>
     get<PagedResult<DeliveryCachedItem>>("/api/v1/delivery/cache/items", query as unknown as QueryParams),
-  /** What changed in one cache between two versions (`to` defaults to the current one), a page of records at a time. */
+  /** What changed in one partition's cache between two versions (`to` defaults to the current one), a page of records at a time. */
   cacheDiff: (query: DeliveryCacheDiffQuery) =>
     get<DeliveryCacheDiff>("/api/v1/delivery/cache/diff", query),
-  /** Every version of one cache, newest first, with what it changed against the one before it; `type` narrows the counts to one type. */
-  cacheHistory: (cache: string, type?: string) =>
-    get<DeliveryCacheHistoryEntry[]>("/api/v1/delivery/cache/history", { cache, type }),
-  /** The cache changes delivered records were built from, by status: pending, approved, rolling, rejected, applied. */
-  updateTags: (query: PageQuery & { status?: string; cache?: string }) =>
+  /** Every version of one partition's cache, newest first, with what it changed against the one before it; `type` narrows the counts to one type. */
+  cacheHistory: (scope: string, type?: string) =>
+    get<DeliveryCacheHistoryEntry[]>("/api/v1/delivery/cache/history", { scope, type }),
+  /** The cache changes delivered records were built from, by status (pending, approved, rolling, rejected, applied) and partition. */
+  updateTags: (query: PageQuery & { status?: string; scope?: string }) =>
     get<PagedResult<DeliveryUpdateTag>>("/api/v1/delivery/cache/tags", query as QueryParams),
   /** Approves or rejects tags; approving lets the next run carry the new document to OSDU. */
   decideTags: (tagIds: number[], approve: boolean) =>

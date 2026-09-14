@@ -295,7 +295,7 @@ public class ReferenceCacheTests
             "onChange: approve\n");
 
         Assert.Equal("osdu-reference-cache", cache.Name);
-        Assert.True(cache.MakeCurrent);
+        Assert.Equal("opendes", cache.Scope);
         Assert.Equal("https://osdu.example.com", cache.Source.Endpoint);
         var wellbore = cache.Types[0];
         Assert.Equal("Wellbore", wellbore.Name);
@@ -366,22 +366,63 @@ public class ReferenceCacheTests
     }
 
     [Fact]
-    public void A_delivery_flow_pins_a_version_only_of_a_cache_it_names()
+    public void A_cache_flow_names_its_partition_and_no_longer_takes_makeCurrent()
     {
-        var sample = File.ReadAllText(Samples.Flow);
-        var loader = new DeliveryDocumentLoader();
-        Assert.Equal(Samples.SampleCacheName, loader.ParseFlow(sample, "flow.yaml").Render.Cache);
+        var referenced = new DeliveryDocumentLoader().ParseCache(
+            """
+            flowType: cache
+            name: env-cache
+            source:
+              endpoint: https://osdu.example.com
+              headers: { data-partition-id: " ${env:OSDU_PARTITION} " }
+            types:
+              - kind: osdu:wks:master-data--Wellbore:1.0.0
+                fields: [data.FacilityName]
+            """,
+            "caches/env-cache.yaml");
+        Assert.Equal("${env:OSDU_PARTITION}", referenced.Scope);
 
-        var pinned = loader.ParseFlow(sample.Replace("cache: osdu-reference-cache", "cache: osdu-reference-cache\n  cacheVersion: 20260908T212727Z", StringComparison.Ordinal), "flow.yaml");
-        Assert.Equal("20260908T212727Z", pinned.Render.CacheVersion);
+        var makeCurrent = Assert.Throws<FlowValidationException>(() => CacheFlow(
+            """
+              - kind: osdu:wks:master-data--Wellbore:1.0.0
+                fields: [data.FacilityName]
+            """,
+            "makeCurrent: true\n"));
+        Assert.Contains("makeCurrent is not a setting any more", makeCurrent.Message, StringComparison.Ordinal);
 
-        var ex = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
-            sample.Replace("cache: osdu-reference-cache", "cacheVersion: 20260908T212727Z", StringComparison.Ordinal), "flow.yaml"));
-        Assert.Contains("render.cache names no cache", ex.Message, StringComparison.Ordinal);
+        var slashed = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseCache(
+            """
+            flowType: cache
+            name: bad-partition
+            source:
+              endpoint: https://osdu.example.com
+              headers: { data-partition-id: open/des }
+            types:
+              - kind: osdu:wks:master-data--Wellbore:1.0.0
+                fields: [data.FacilityName]
+            """,
+            "caches/bad-partition.yaml"));
+        Assert.Contains("data-partition-id 'open/des' is neither a partition id", slashed.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task A_mapping_that_reads_the_cache_renders_only_against_a_cache_the_flow_names_and_the_catalog_holds()
+    public void A_delivery_flow_names_no_cache_and_pins_a_version_of_its_partition_s_cache()
+    {
+        var sample = File.ReadAllText(Samples.Flow);
+        var loader = new DeliveryDocumentLoader();
+        Assert.Equal(FlowRender.CurrentCacheVersion, loader.ParseFlow(sample, "flow.yaml").Render.CacheVersion);
+
+        var pinned = loader.ParseFlow(sample.Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.4.0\n  cacheVersion: 20260908T212727Z", StringComparison.Ordinal), "flow.yaml");
+        Assert.Equal("20260908T212727Z", pinned.Render.CacheVersion);
+
+        // A flow still naming a cache is refused: the cache it reads is its partition's, whatever it names.
+        var named = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
+            sample.Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.4.0\n  cache: osdu-reference-cache", StringComparison.Ordinal), "flow.yaml"));
+        Assert.Contains("render.cache is not a setting any more", named.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_mapping_that_reads_the_cache_renders_against_the_cache_of_the_partition_the_flow_delivers_to()
     {
         var engine = Samples.Engine(ledger: null);
         var values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" };
@@ -389,18 +430,31 @@ public class ReferenceCacheTests
 
         using (var runtime = await FlowRuntime.CreateAsync(engine, flow, values, dropOverride: null))
         {
-            Assert.Equal(Samples.SampleCacheName, runtime.Mapping.Context.CacheName);
+            Assert.Equal(Samples.SampleCacheScope, runtime.Mapping.Context.CacheScope);
+            Assert.Equal("20260908T212727Z", runtime.Mapping.Context.CacheVersion);
+            Assert.Contains("\"cache\":\"opendes\"", runtime.Mapping.Context.Canonical(), StringComparison.Ordinal);
+        }
+
+        // render.cacheVersion pins a version of the partition's cache.
+        using (var runtime = await FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { CacheVersion = "20260908T212727Z" } }, values, dropOverride: null))
+        {
+            Assert.Equal(Samples.SampleCacheScope, runtime.Mapping.Context.CacheScope);
             Assert.Equal("20260908T212727Z", runtime.Mapping.Context.CacheVersion);
         }
 
-        var unnamed = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { Cache = null } }, values, dropOverride: null));
-        Assert.Contains("render.cache must name the cache it reads", unnamed.Message, StringComparison.Ordinal);
+        var elsewhere = flow with
+        {
+            Target = flow.Target with { Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [CacheScope.PartitionHeader] = "no-such-partition" } },
+        };
+        var empty = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, elsewhere, values, dropOverride: null));
+        Assert.Contains("reads the cache of partition 'no-such-partition', which holds no version yet", empty.Message, StringComparison.Ordinal);
 
-        var unknown = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { Cache = "no-such-cache" } }, values, dropOverride: null));
-        Assert.Contains("cache 'no-such-cache' has no current version", unknown.Message, StringComparison.Ordinal);
+        var unpartitioned = flow with { Target = flow.Target with { Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) } };
+        var none = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, unpartitioned, values, dropOverride: null));
+        Assert.Contains("declare no 'data-partition-id'", none.Message, StringComparison.Ordinal);
 
         var missingVersion = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { CacheVersion = "19990101T000000Z" } }, values, dropOverride: null));
-        Assert.Contains("which the catalog does not hold", missingVersion.Message, StringComparison.Ordinal);
+        Assert.Contains("pins version 19990101T000000Z of the cache of partition 'opendes', which the catalog does not hold", missingVersion.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -417,9 +471,9 @@ public class ReferenceCacheTests
         var curveUnit = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].CurveUnit");
         Assert.Equal("m3/m3", curveUnit.Modifiers.Single(m => m.Kind == ModifierKind.Replace).Replacements["V/V"]);
 
-        var version = await Samples.SampleCache.CurrentVersionAsync(Samples.SampleCacheName);
+        var version = await Samples.SampleCache.CurrentVersionAsync(Samples.SampleCacheScope);
         Assert.NotNull(version);
-        var references = await Samples.SampleCache.LoadAsync(Samples.SampleCacheName, version);
+        var references = await Samples.SampleCache.LoadAsync(Samples.SampleCacheScope, version);
         Assert.NotNull(references);
         var schema = await Samples.SampleTemplates.LoadAsync(mapping.Template);
         Assert.NotNull(schema);
@@ -427,7 +481,7 @@ public class ReferenceCacheTests
         var context = new RenderContext
         {
             MappingReference = mapping.Reference,
-            CacheName = Samples.SampleCacheName,
+            CacheScope = Samples.SampleCacheScope,
             CacheVersion = references.Version,
             SchemaSnapshotVersion = schema.Version,
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "opendes" },
@@ -446,6 +500,102 @@ public class ReferenceCacheTests
         Assert.False(porosity.IsHeld, string.Join("; ", porosity.Holds));
         var nphi = porosity.Document["data"]!["Curves"]!.AsArray().Single(c => c!["CurveID"]!.GetValue<string>() == "NPHI");
         Assert.Equal("opendes:reference-data--UnitOfMeasure:m3%2Fm3:", nphi!["CurveUnit"]!.GetValue<string>());
+    }
+}
+
+/// <summary>
+/// What several cache flows of one partition declare, taken together: the partition a flow's headers name, the paths the
+/// cache keeps for a type, what a change to it does, and the declarations that cannot be merged.
+/// </summary>
+public class CacheDeclarationTests
+{
+    private static readonly ReferenceFieldSpec Facility = new("data.FacilityName");
+
+    private static readonly ReferenceFieldSpec Alias = new("data.NameAlias.AliasName", "Alias");
+
+    private static CacheTypeDeclaration Wellbore(string flow, CacheChangeMode onChange, params ReferenceFieldSpec[] fields)
+        => new(flow, "Wellbore", "master-data--Wellbore", "osdu:wks:master-data--Wellbore:*", "*", fields, onChange);
+
+    private static ReferenceTypeSpec WellboreSpec(string entityType = "master-data--Wellbore", params ReferenceFieldSpec[] fields) => new()
+    {
+        Name = "Wellbore",
+        EntityType = entityType,
+        Kind = "osdu:wks:" + entityType + ":*",
+        Fields = fields,
+    };
+
+    private static CacheDeclaration Partition() => new("opendes",
+    [
+        Wellbore("project-b", CacheChangeMode.Approve, Facility, Alias),
+        Wellbore("project-a", CacheChangeMode.Auto, Facility),
+        new CacheTypeDeclaration("project-a", "UnitOfMeasure", "reference-data--UnitOfMeasure", "osdu:wks:reference-data--UnitOfMeasure:*", "*", [new("data.Code")], CacheChangeMode.Auto),
+    ]);
+
+    [Fact]
+    public void The_scope_of_a_flow_is_the_partition_its_headers_carry()
+    {
+        Assert.Equal("opendes", CacheScope.Of(new Dictionary<string, string>(StringComparer.Ordinal) { ["Data-Partition-Id"] = " opendes " }, "flow.yaml"));
+        Assert.Equal("${keyvault:partition}", CacheScope.Of(new Dictionary<string, string>(StringComparer.Ordinal) { ["data-partition-id"] = "${keyvault:partition}" }, "flow.yaml"));
+
+        var none = Assert.Throws<FlowValidationException>(() => CacheScope.Of(new Dictionary<string, string>(StringComparer.Ordinal), "flow.yaml"));
+        Assert.Contains("the headers declare no 'data-partition-id'", none.Message, StringComparison.Ordinal);
+        var spaced = Assert.Throws<FlowValidationException>(() => CacheScope.Normalize("open des", "flow.yaml"));
+        Assert.Contains("is neither a partition id", spaced.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_type_s_changes_wait_for_approval_when_any_flow_declaring_it_asks_for_that()
+    {
+        var declaration = Partition();
+        Assert.Equal(CacheChangeMode.Approve, declaration.ModeOf("Wellbore", CacheChangeMode.Auto));
+        Assert.Equal(CacheChangeMode.Approve, declaration.ModeOf("wellbore", CacheChangeMode.Auto));
+        Assert.Equal(CacheChangeMode.Auto, declaration.ModeOf("UnitOfMeasure", CacheChangeMode.Approve));
+
+        // A type no flow declares keeps the mode the capturing flow gives it.
+        Assert.Equal(CacheChangeMode.Approve, declaration.ModeOf("VerticalMeasurementType", CacheChangeMode.Approve));
+        Assert.Equal(CacheChangeMode.Auto, CacheDeclaration.None("opendes").ModeOf("Wellbore", CacheChangeMode.Auto));
+    }
+
+    [Fact]
+    public void The_cache_keeps_every_path_any_flow_declares_and_a_capture_is_widened_to_them()
+    {
+        var declaration = Partition();
+        Assert.Equal(["project-a", "project-b"], declaration.Of("Wellbore").Select(d => d.FlowName));
+        Assert.Equal(["FacilityName", "Alias"], declaration.FieldsOf("Wellbore").Select(f => f.Name));
+        Assert.Equal(["UnitOfMeasure", "Wellbore"], declaration.TypeNames.Order(StringComparer.Ordinal));
+        Assert.Empty(declaration.FieldsOf("VerticalMeasurementType"));
+
+        // A flow's own paths come first; what the other flows keep follows.
+        var widened = declaration.Widen(WellboreSpec(fields: [new ReferenceFieldSpec("data.WellID", "Well"), Facility]));
+        Assert.Equal(["Well", "FacilityName", "Alias"], widened.Fields.Select(f => f.Name));
+        Assert.Equal(["data.WellID", "data.FacilityName", "data.NameAlias.AliasName"], widened.Fields.Select(f => f.Path));
+
+        // Widening keeps everything else the flow declares about the type, and a partition declaring nothing adds nothing.
+        Assert.Equal(("master-data--Wellbore", "osdu:wks:master-data--Wellbore:*"), (widened.EntityType, widened.Kind));
+        Assert.Equal(["FacilityName"], CacheDeclaration.None("opendes").Widen(WellboreSpec(fields: Facility)).Fields.Select(f => f.Name));
+    }
+
+    [Fact]
+    public void Declarations_that_would_hold_two_meanings_under_one_name_conflict()
+    {
+        var declaration = Partition();
+
+        // Agreeing with the others, and adding a path of its own, is no conflict; nor is a flow's own earlier declaration.
+        Assert.Empty(declaration.Conflicts("project-c", WellboreSpec(fields: [Facility, new ReferenceFieldSpec("data.WellID", "Well")])));
+        Assert.Empty(new CacheDeclaration("opendes", [Wellbore("project-b", CacheChangeMode.Auto, Facility)]).Conflicts("project-b", WellboreSpec("master-data--Well", Facility)));
+        Assert.Empty(declaration.Conflicts("project-c", new ReferenceTypeSpec { Name = "VerticalMeasurementType", EntityType = "reference-data--VerticalMeasurementType", Kind = "osdu:wks:reference-data--VerticalMeasurementType:*", Fields = [new ReferenceFieldSpec("data.Code")] }));
+
+        var entityType = declaration.Conflicts("project-c", WellboreSpec("master-data--Well", Facility));
+        Assert.Contains("cache flow 'project-a' declares Wellbore as master-data--Wellbore, and 'project-c' declares it as master-data--Well", entityType);
+        Assert.Contains("cache flow 'project-b' declares Wellbore as master-data--Wellbore, and 'project-c' declares it as master-data--Well", entityType);
+
+        var path = declaration.Conflicts("project-c", WellboreSpec(fields: new ReferenceFieldSpec("data.Name", "FacilityName")));
+        Assert.Equal(
+            [
+                "Wellbore.FacilityName is cached from data.FacilityName by cache flow 'project-a' and from data.Name by 'project-c'",
+                "Wellbore.FacilityName is cached from data.FacilityName by cache flow 'project-b' and from data.Name by 'project-c'",
+            ],
+            path);
     }
 }
 

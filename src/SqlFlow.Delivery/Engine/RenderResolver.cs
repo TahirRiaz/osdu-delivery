@@ -18,9 +18,9 @@ public sealed record ResolvedMapping(
 
 /// <summary>
 /// Resolves a flow's <c>render</c> block into a <see cref="ResolvedMapping"/>: the pinned mapping from the repository, the
-/// template version the mapping pins from the catalog, the version of the cache the flow names (its current version, or
-/// the one the flow pins) from the catalog, and the mapping parameters the flow supplies. The preflight runs before
-/// anything is returned.
+/// template version the mapping pins from the catalog, the version of the cache of the partition the flow delivers to (its
+/// current version, or the one the flow pins) from the catalog, and the mapping parameters the flow supplies. The preflight
+/// runs before anything is returned.
 /// </summary>
 public sealed class RenderResolver
 {
@@ -52,7 +52,7 @@ public sealed class RenderResolver
             ?? throw new FlowValidationException(
                 $"{where}: mapping {mapping.Reference} pins template {mapping.Template}, which is not saved in the catalog. Save it on the Templates page, or with 'sqlflow template import'.");
 
-        var references = await CacheAsync(flow, mapping, where, ct).ConfigureAwait(false);
+        var (references, scope) = await CacheAsync(flow, mapping, where, ct).ConfigureAwait(false);
 
         var parameters = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (name, declared) in mapping.Parameters)
@@ -71,7 +71,7 @@ public sealed class RenderResolver
         var context = new RenderContext
         {
             MappingReference = mapping.Reference,
-            CacheName = ReferenceEquals(references, ReferenceSnapshot.Empty) ? null : flow.Render.Cache,
+            CacheScope = scope,
             CacheVersion = references.Version,
             SchemaSnapshotVersion = schema.Version,
             Parameters = parameters,
@@ -84,38 +84,35 @@ public sealed class RenderResolver
     }
 
     /// <summary>
-    /// The version of the cache a render reads. A mapping that reads nothing from a cache renders against no cache at all,
-    /// whatever the flow names, so refreshing a cache never moves the render context of records that never read it.
+    /// The version of the cache a render reads, and the partition it belongs to: the partition the flow delivers to
+    /// (<c>target.headers.data-partition-id</c>). A mapping that reads nothing from the cache renders against no cache at all,
+    /// so refreshing a cache never moves the render context of records that never read it.
     /// </summary>
-    private async Task<ReferenceSnapshot> CacheAsync(FlowDefinition flow, MappingDefinition mapping, string where, CancellationToken ct)
+    private async Task<(ReferenceSnapshot References, string? Scope)> CacheAsync(FlowDefinition flow, MappingDefinition mapping, string where, CancellationToken ct)
     {
         var readsCache = mapping.Entries.Any(e => e.Source?.Kind == MappingSourceKind.Cache);
         if (!readsCache)
         {
-            return ReferenceSnapshot.Empty;
+            return (ReferenceSnapshot.Empty, null);
         }
 
-        if (flow.Render.Cache is not { } cache)
-        {
-            throw new FlowValidationException(
-                $"{where}: mapping {mapping.Reference} reads the cache, so render.cache must name the cache it reads: the name of a cache flow (a document with flowType: cache).");
-        }
-
+        var scope = CacheScope.Of(flow.Target.Headers, $"{where}: target");
         if (_cache is null)
         {
             throw new FlowValidationException(
-                $"{where}: render.cache names cache '{cache}', and caches live in the catalog, which this host was started without. Start it with the catalog connection (--db, or the catalog variable).");
+                $"{where}: mapping {mapping.Reference} reads the cache of partition '{scope}', and caches live in the catalog, which this host was started without. Start it with the catalog connection (--db, or the catalog variable).");
         }
 
         var version = flow.Render.CacheVersion;
         if (version.Equals(FlowRender.CurrentCacheVersion, StringComparison.OrdinalIgnoreCase))
         {
-            version = await _cache.CurrentVersionAsync(cache, ct).ConfigureAwait(false)
+            version = await _cache.CurrentVersionAsync(scope, ct).ConfigureAwait(false)
                 ?? throw new FlowValidationException(
-                    $"{where}: cache '{cache}' has no current version. Run the cache flow '{cache}' with the refresh operation to capture one.");
+                    $"{where}: mapping {mapping.Reference} reads the cache of partition '{scope}', which holds no version yet. Run a cache flow whose source.headers.data-partition-id is '{scope}' with the refresh operation to capture one.");
         }
 
-        return await _cache.LoadAsync(cache, version, ct).ConfigureAwait(false)
-            ?? throw new FlowValidationException($"{where}: render.cacheVersion pins version {version} of cache '{cache}', which the catalog does not hold.");
+        var references = await _cache.LoadAsync(scope, version, ct).ConfigureAwait(false)
+            ?? throw new FlowValidationException($"{where}: render.cacheVersion pins version {version} of the cache of partition '{scope}', which the catalog does not hold.");
+        return (references, scope);
     }
 }

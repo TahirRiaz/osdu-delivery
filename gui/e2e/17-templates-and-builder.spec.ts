@@ -338,8 +338,8 @@ test.describe.serial("templates and the mapping builder", () => {
 
     await adminPage.getByTestId("mapping-builder-repo").click();
     await adminPage.getByRole("option").filter({ hasText: "e2e-repo" }).first().click();
-    // The repository's delivery flow names the sample cache, so the builder reads it without being told.
-    await expect(adminPage.getByTestId("mapping-builder-cache")).toContainText("osdu-reference-cache", { timeout: 15_000 });
+    // The repository's delivery flow delivers to partition opendes, so the builder reads that partition's cache without being told.
+    await expect(adminPage.getByTestId("mapping-builder-cache")).toContainText("opendes", { timeout: 15_000 });
     await expect(adminPage.getByTestId("mapping-builder-cache-note")).toContainText(/holds \d+ types? at version /, { timeout: 15_000 });
 
     await adminPage.getByTestId("mapping-builder-template").click();

@@ -274,8 +274,8 @@ public sealed class SubmissionIntake
                         var cacheSet = entry.Render!.CacheUsages.Count == 0
                             ? (long?)null
                             : await _ledger.EnsureCacheSetAsync(
-                                header.Mapping.Context.CacheName
-                                    ?? throw new DeliveryException($"Mapping {header.Mapping.Mapping.Reference} read cached values under a render context that names no cache; the render resolver names the cache whenever a mapping reads one."),
+                                header.Mapping.Context.CacheScope
+                                    ?? throw new DeliveryException($"Mapping {header.Mapping.Mapping.Reference} read cached values under a render context that names no cache partition; the render resolver names the partition whenever a mapping reads the cache."),
                                 entry.Render.CacheUsages,
                                 ct).ConfigureAwait(false);
                         pending.Add(PendingState(flow, submission, header.Mapping, entry, reference, nextBatch) with { CacheSetId = cacheSet });
