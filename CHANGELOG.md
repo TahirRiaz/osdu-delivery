@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The OSDU cache page names the cache and the file that defines it, with View YAML and Refresh now (the trigger dialog
   with the refresh operation) beside it. A summary row gives the current version with who captured it, the records it
   holds, how it is refreshed, and whether changes are automatic or how many wait for approval; a banner with Review
-  changes appears whenever any do. The declared types sit in a list on the left and scope the Records and Versions tabs;
+  changes appears whenever any do. A searchable type picker in the tab bar scopes the Records and Versions tabs;
   the Changes tab lists what refreshes changed, with Approve and Reject in each waiting row, and the Definition tab reads
   back the endpoint, the schedules and each type's kind, query, kept paths and `onChange`. The tab, cache and type are
   in the URL. `GET /cache/tags` takes `cache` to list one cache's changes. A cache flow's pipeline page has a Cache versions tab, and the mapping

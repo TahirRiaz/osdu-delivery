@@ -1,8 +1,8 @@
 import { expect, test } from "./helpers";
 
 // The OSDU cache page: the header names the cache and the file that defines it, a summary row says which version is
-// read and what it holds, the declared types sit in a list on the left, and the records, versions, changes and
-// definition are tabs on the right. Runs after the seed (03), so the fixture repo is synced, its cache flow declares
+// read and what it holds, and the records, versions, changes and definition are tabs, with a searchable type picker in
+// the tab bar. Runs after the seed (03), so the fixture repo is synced, its cache flow declares
 // four types (none asking for approval), and the sample references were imported through the CLI as the first version.
 
 const CACHE = "osdu-reference-cache";
@@ -23,12 +23,16 @@ test.describe.serial("osdu cache", () => {
     await expect(adminPage.getByTestId("delivery-cache-approval-value")).toHaveText("automatic", { timeout: 30_000 });
     await expect(adminPage.getByTestId("delivery-cache-pending-banner")).toHaveCount(0);
 
-    // The types, once each, in the list beside the tabs.
-    const types = adminPage.getByTestId("delivery-cache-types");
-    await expect(types.getByTestId("delivery-cache-type-all")).toHaveAttribute("aria-pressed", "true");
+    // The types, in the searchable picker in the tab bar, each with its family and how many records it holds.
+    const picker = adminPage.getByTestId("delivery-cache-type");
+    await expect(picker).toHaveText(/All types/);
+    await picker.click();
+    const options = adminPage.getByRole("listbox");
     for (const name of ["UnitOfMeasure", "LogCurveBusinessValue", "VerticalMeasurementType", "Wellbore"]) {
-      await expect(types.getByTestId(`delivery-cache-type-${name}`)).toBeVisible();
+      await expect(options.getByRole("option").filter({ hasText: name }).first()).toBeVisible();
     }
+    await expect(options.getByText(/master data · \d+ records?/).first()).toBeVisible();
+    await adminPage.keyboard.press("Escape");
 
     // The records of every type, out of the current version.
     const items = adminPage.getByTestId("delivery-cache-items-table");
@@ -69,9 +73,10 @@ test.describe.serial("osdu cache", () => {
 
   test("picking a type scopes the records, and a row opens what it caches", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
-    const wellbore = adminPage.getByTestId("delivery-cache-type-Wellbore");
-    await wellbore.click();
-    await expect(wellbore).toHaveAttribute("aria-pressed", "true");
+    const picker = adminPage.getByTestId("delivery-cache-type");
+    await picker.click();
+    await adminPage.getByRole("option").filter({ hasText: "Wellbore" }).first().click();
+    await expect(picker).toHaveText(/Wellbore/);
     await expect(adminPage.getByTestId("delivery-cache-tab-records")).toHaveText("Wellbore records");
 
     // A type in scope gives the table a column per captured name.
@@ -87,8 +92,10 @@ test.describe.serial("osdu cache", () => {
     await expect(adminPage.getByTestId("delivery-cache-item-json")).toBeVisible();
     await detail.getByRole("button", { name: "Close" }).click();
 
-    // All types lifts the scope.
-    await adminPage.getByTestId("delivery-cache-type-all").click();
+    // Clearing the picker lifts the scope.
+    await picker.click();
+    await adminPage.getByRole("option").filter({ hasText: "Clear filter" }).click();
+    await expect(picker).toHaveText(/All types/);
     await expect(adminPage.getByTestId("delivery-cache-tab-records")).toHaveText("Records");
     await expect(items.getByTestId("table-row").filter({ hasText: "LogCurveBusinessValue" }).first()).toBeVisible({ timeout: 30_000 });
   });

@@ -201,9 +201,10 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   (the trigger dialog on the cache flow, with the refresh operation); a cache picker joins them when the synced cache
   flows declare more than one cache. A summary row follows: the current version with when and by whom it was captured,
   how many records it holds in how many types, whether a schedule refreshes it, and either that changes are automatic
-  or how many wait for approval. Whenever a change waits, a banner says so with Review changes. The declared types sit
-  in a list on the left, grouped by family, each with its record count and a shield when its changes wait for
-  approval; picking one scopes the Records and Versions tabs, and All types lifts the scope. The tab, the cache and
+  or how many wait for approval. Whenever a change waits, a banner says so with Review changes. A searchable type
+  picker at the end of the tab bar, on the Records and Versions tabs, lists the declared types with their family,
+  record count and whether their changes need approval; picking one scopes those tabs, and Clear filter lifts the
+  scope. The tab, the cache and
   the type are in the URL, so a link opens the same view. The definition is read-only because it lives in the cache
   flow's file in git; the decision on a change is the one thing made here.
 - **Records.** The cached records at the version being read, with the search over every value they hold (id, code,

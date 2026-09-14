@@ -47,7 +47,7 @@ export function entityFamily(entityType: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-/** Families in the order the type list shows them: what mappings look up first, then the master data they point at. */
+/** Families in the order the type picker lists them: what mappings look up first, then the master data they point at. */
 const familyRank: Record<string, number> = { "Reference data": 0, "Master data": 1 };
 
 export function compareFamilies(a: string, b: string): number {
@@ -56,7 +56,7 @@ export function compareFamilies(a: string, b: string): number {
   return rankA !== rankB ? rankA - rankB : a.localeCompare(b);
 }
 
-/** One type of the cache in scope, as the definition card and the type picker show it. */
+/** One type of the cache in scope, as the Definition tab and the type picker show it. */
 export interface CachedTypeSummary {
   name: string;
   entityType: string;
@@ -71,7 +71,7 @@ export interface CachedTypeSummary {
   onChange: string;
 }
 
-/** The types a cache declares, sorted the way the type list shows them: by family, then by name. */
+/** The types a cache declares, sorted the way the type picker lists them: by family, then by name. */
 export function summarizeTypes(cache: DeliveryCache | null): CachedTypeSummary[] {
   return (cache?.types ?? [])
     .map((type) => ({

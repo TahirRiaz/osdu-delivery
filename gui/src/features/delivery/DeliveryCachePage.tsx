@@ -13,6 +13,7 @@ import { isApiError } from "../../api/client";
 import { deliveryApi, type DeliveryCache } from "../../api/delivery";
 import { CorrelationError } from "../../components/CorrelationError";
 import { EmptyState } from "../../components/EmptyState";
+import { FilterCombobox, type FilterOption } from "../../components/FilterCombobox";
 import { Page } from "../../components/Page";
 import { PageHeader } from "../../components/PageHeader";
 import { RelativeTime } from "../../components/RelativeTime";
@@ -23,7 +24,6 @@ import { DeliveryCacheApprovals } from "./DeliveryCacheApprovals";
 import { DeliveryCacheDefinition } from "./DeliveryCacheDefinition";
 import { DeliveryCacheHistory } from "./DeliveryCacheHistory";
 import { DeliveryCacheRecords } from "./DeliveryCacheRecords";
-import { DeliveryCacheTypeList } from "./DeliveryCacheTypeList";
 
 type Tab = "records" | "versions" | "changes" | "definition";
 
@@ -36,9 +36,9 @@ function isTab(value: string | null): value is Tab {
 /**
  * The OSDU cache: the reference and master data every delivered document is built from. The header names the cache and
  * the cache flow file that defines it, with View YAML and Refresh now beside it; a summary row says which version
- * deliveries read, how much it holds, how it is refreshed and whether anything waits for a decision. Below, the declared
- * types sit in a list on the left and scope the working tabs on the right: the records, the versions, the changes a
- * refresh found, and the definition. The tab, the cache and the type live in the URL, so a link lands on the same view.
+ * deliveries read, how much it holds, how it is refreshed and whether anything waits for a decision. Below are the working
+ * tabs: the records, the versions, the changes a refresh found, and the definition, with a searchable type picker in the
+ * tab bar for the tabs a type narrows. The tab, the cache and the type live in the URL, so a link lands on the same view.
  */
 export default function DeliveryCachePage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -167,7 +167,7 @@ export default function DeliveryCachePage() {
   );
 }
 
-/** One cache's summary, its type list and its working tabs. Keyed by the cache, so another cache starts from a clean view. */
+/** One cache's summary and its working tabs. Keyed by the cache, so another cache starts from a clean view. */
 function CacheWorkbench({ cache, tab, type, onTab, onType }: {
   cache: DeliveryCache;
   tab: Tab;
@@ -190,6 +190,12 @@ function CacheWorkbench({ cache, tab, type, onTab, onType }: {
   const scoped = type === null ? null : types.find((candidate) => candidate.name === type) ?? null;
   const approvalTypes = cache.types.filter((candidate) => candidate.onChange === "approve").map((candidate) => candidate.name);
   const records = types.reduce((sum, candidate) => sum + candidate.items, 0);
+  const typeOptions: FilterOption[] = types.map((candidate) => ({
+    value: candidate.name,
+    label: candidate.name,
+    hint: `${candidate.family.toLowerCase()} · ${candidate.items.toLocaleString()} record${candidate.items === 1 ? "" : "s"}`
+      + (candidate.onChange === "approve" ? " · changes need approval" : ""),
+  }));
   const current = cache.current;
 
   const changesCell: SummaryCell = approvalTypes.length === 0 && pendingTotal === 0
@@ -258,61 +264,61 @@ function CacheWorkbench({ cache, tab, type, onTab, onType }: {
         </Alert>
       )}
 
-      <div className="grid items-start gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <DeliveryCacheTypeList
-          types={types}
-          selected={scoped?.name ?? null}
-          onSelect={(name) => {
-            onType(name);
-            // The changes and the definition cover the whole cache, so picking a type goes to what the pick scopes.
-            if (tab === "changes" || tab === "definition") {
-              onTab("records");
-            }
-          }}
-        />
-
-        <Tabs value={tab} onValueChange={(value) => onTab(value as Tab)} className="min-w-0 gap-3">
-          <div className="border-b border-border">
-            <TabsList variant="line" data-testid="delivery-cache-tabs">
-              <TabsTrigger value="records" data-testid="delivery-cache-tab-records">
-                {scoped === null ? "Records" : `${scoped.name} records`}
-              </TabsTrigger>
-              <TabsTrigger value="versions" data-testid="delivery-cache-tab-versions">
-                Versions
-                <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{cache.versions}</span>
-              </TabsTrigger>
-              <TabsTrigger value="changes" data-testid="delivery-cache-tab-changes">
-                Changes
-                {pendingTotal > 0 && (
-                  <span className="rounded-full bg-warning/15 px-1.5 font-mono text-[11px] tabular-nums text-warning">{pendingTotal}</span>
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="definition" data-testid="delivery-cache-tab-definition">Definition</TabsTrigger>
-            </TabsList>
-          </div>
-
-          <TabsContent value="records">
-            <DeliveryCacheRecords
-              cache={cache.name}
-              type={scoped?.name ?? null}
-              fields={scoped?.fields.map((field) => field.as) ?? []}
-              versions={versions.data ?? []}
+      <Tabs value={tab} onValueChange={(value) => onTab(value as Tab)} className="min-w-0 gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border">
+          <TabsList variant="line" data-testid="delivery-cache-tabs">
+            <TabsTrigger value="records" data-testid="delivery-cache-tab-records">
+              {scoped === null ? "Records" : `${scoped.name} records`}
+            </TabsTrigger>
+            <TabsTrigger value="versions" data-testid="delivery-cache-tab-versions">
+              Versions
+              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{cache.versions}</span>
+            </TabsTrigger>
+            <TabsTrigger value="changes" data-testid="delivery-cache-tab-changes">
+              Changes
+              {pendingTotal > 0 && (
+                <span className="rounded-full bg-warning/15 px-1.5 font-mono text-[11px] tabular-nums text-warning">{pendingTotal}</span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="definition" data-testid="delivery-cache-tab-definition">Definition</TabsTrigger>
+          </TabsList>
+          {/* The type narrows the records and the versions; the changes and the definition always cover the whole cache. */}
+          {(tab === "records" || tab === "versions") && (
+            <FilterCombobox
+              options={typeOptions}
+              value={scoped?.name ?? ""}
+              onChange={(value) => onType(value === "" ? null : value)}
+              placeholder="All types"
+              searchPlaceholder="Type, family or captured name"
+              emptyText="No cached type matches."
+              ariaLabel="Cached type"
+              testId="delivery-cache-type"
+              className="mb-1 w-60"
             />
-          </TabsContent>
+          )}
+        </div>
 
-          <TabsContent value="versions">
-            <DeliveryCacheHistory cache={cache.name} type={scoped?.name ?? null} />
-          </TabsContent>
+        <TabsContent value="records">
+          <DeliveryCacheRecords
+            cache={cache.name}
+            type={scoped?.name ?? null}
+            fields={scoped?.fields.map((field) => field.as) ?? []}
+            versions={versions.data ?? []}
+          />
+        </TabsContent>
 
-          <TabsContent value="changes">
-            <DeliveryCacheApprovals cache={cache.name} approvalTypes={approvalTypes} pendingTotal={pending.data?.total} />
-          </TabsContent>
+        <TabsContent value="versions">
+          <DeliveryCacheHistory cache={cache.name} type={scoped?.name ?? null} />
+        </TabsContent>
 
-          <TabsContent value="definition">
-            <DeliveryCacheDefinition cache={cache} />
-          </TabsContent>
-        </Tabs>
-      </div>
+        <TabsContent value="changes">
+          <DeliveryCacheApprovals cache={cache.name} approvalTypes={approvalTypes} pendingTotal={pending.data?.total} />
+        </TabsContent>
+
+        <TabsContent value="definition">
+          <DeliveryCacheDefinition cache={cache} />
+        </TabsContent>
+      </Tabs>
     </>
   );
 }
