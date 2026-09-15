@@ -1,0 +1,41 @@
+# One build context for all three OSDU Delivery images: the repository root.
+#
+# The .NET images publish hosts under osdu/hosts, which reference both osdu/src and sqlflow/src (and central package
+# management lives in osdu/Directory.Packages.props and sqlflow/Directory.Packages.props), and the GUI image compiles
+# osdu/gui together with the vendored sqlflow/gui sources it imports. No image can be built from a narrower context.
+#
+# Never copy build output, git history or IDE state into a build: the publish and the npm build rebuild from source.
+**/bin/
+**/obj/
+**/.vs/
+.git/
+.github/
+**/*.user
+artifacts/
+TestResults/
+**/.sqlflow/
+**/node_modules/
+**/*.md
+
+# Generated GUI output and test artifacts. The e2e SOURCES stay in the context on purpose: osdu/gui/tsconfig.node.json
+# compiles them as part of `tsc -b`, so excluding them would fail the GUI image's build.
+**/gui/dist/
+**/gui/.tsbuild/
+**/gui/playwright-report/
+**/gui/test-results/
+**/gui/tsconfig.tsbuildinfo
+**/gui/e2e/.fixtures/
+
+# Documentation: read by people, never by a build.
+docs/
+osdu/docs/
+sqlflow/docs/
+
+# Trees no image reads. Every root-context build tars the whole repository before the daemon applies these rules,
+# so excluding them is what keeps a build submitting in seconds rather than minutes.
+sqlflow/next-app/
+sqlflow/_probe_sql/
+sqlflow/data/
+sqlflow/media/
+sqlflow/logo/
+sqlflow/schemas/
