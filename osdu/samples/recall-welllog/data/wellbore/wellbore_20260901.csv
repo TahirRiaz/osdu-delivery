@@ -1,0 +1,3 @@
+facility_name,facility_description,facility_id,update_date
+OSDU-DEV-1-A,Sample wellbore A,srn:master-data/Wellbore:A,2026-09-01 06:30:00
+OSDU-DEV-1-B,Sample wellbore B,srn:master-data/Wellbore:B,2026-09-01 06:30:00

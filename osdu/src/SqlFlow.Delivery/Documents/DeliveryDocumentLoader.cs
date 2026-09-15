@@ -359,6 +359,11 @@ internal static partial class FlowMapper
         {
             PreFlow = Require(dataset.PreFlow, at + ".preFlow", source),
             Landing = Require(dataset.Landing, at + ".landing", source),
+            Format = Optional(dataset.Format) is { } format
+                ? (LandingFormats.All.Contains(format, StringComparer.Ordinal)
+                    ? format
+                    : throw new FlowValidationException($"{source}: {at}.format '{format}' is not a landing format; it is one of {string.Join(", ", LandingFormats.All)}."))
+                : LandingFormats.Csv,
         };
     }
 

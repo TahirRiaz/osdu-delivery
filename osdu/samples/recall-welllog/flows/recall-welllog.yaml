@@ -1,11 +1,13 @@
 # Flow: recall-welllog
 #
-# The operational document (docs/delivery/design.md section 9.2). One flow with a parameter replaces six
-# near-identical job blocks that differed only by a log source string. Nothing here changes what a document is:
-# only render.* enters the content hash, and the mapping it names is pinned. The mapping the flow renders with lives next
-# to it in this repository (../mappings); the template it fills lives in the catalog, and so does the cache it reads: the
-# cache of the partition it delivers to (target.headers.data-partition-id), filled by every cache flow of that partition,
-# such as ../caches/osdu-reference-cache.yaml. The platform schedules the runs.
+# The operational document (docs/delivery/design.md section 9.2, docs/stage4-design.md section 1). One flow with a
+# parameter replaces six near-identical job blocks that differed only by a log source string. The records come from the
+# ingestion tables SQLFlow's own pre and ing flows load (recall-welllog-pre, recall-welllog-ing and the curve pair beside
+# them): this flow reads what changed there, renders it and delivers it. Nothing here changes what a document is: only
+# render.* enters the content hash, and the mapping it names is pinned. The mapping the flow renders with lives next to it
+# in this repository (../mappings); the template it fills lives in the module's database, and so does the cache it reads:
+# the cache of the partition it delivers to (target.headers.data-partition-id), filled by every cache flow of that
+# partition, such as ../caches/osdu-reference-cache.yaml. The platform schedules the runs.
 flowType: delivery
 name: recall-welllog
 batch: recall
@@ -16,17 +18,48 @@ parameters:
     description: The Recall log source (STAT_COMP, STAT_CPI, STAT_CORE, STAT_ILT, STAT_PLT, STAT_PRESS).
 
 source:
-  # A local path for the sample; in production an external location such as
-  # abfss://lake@account.dfs.core.windows.net/osdu-prepare/{logSource}
-  location: samples/recall-welllog/out/{logSource}
-  manifest: manifest.json
+  # Resolved on the node that runs the flow; never a connection string in the document.
+  connection: ${env:OSDU_SAMPLE_DB}
+  record:
+    object: OsduSample.ing.WellLog
+    key: [source_project, log_id]
+    # One flow instance per log source: the predicate the run's parameter fills.
+    scope:
+      log_name: logSource
+  datasets:
+    curves:
+      object: OsduSample.ing.WellLogCurve
+      join:
+        source_project: source_project
+        log_id: log_id
+      orderBy: [curve_ordinal]
   payloads:
-    curves: curves/{deliveryKey}/chunk_*.parquet
+    # The curve values themselves stay where the preparing side wrote them: the record's row says which folder.
+    curves:
+      root: ../data/curves
+      locationColumn: curve_folder
+      pattern: "chunk_*.parquet"
+      hashColumn: payload_hash
+      chunkCountColumn: chunk_count
   # When the source row last changed. A row modified after the version the ledger holds goes through render and
   # the hash check again; the same moment is skipped without rendering; an older one is never sent.
   lastModified: update_date
-  # Where a known-state run publishes the compact view the preparing side reads before its next drop.
-  knownState: samples/recall-welllog/out/{logSource}/known-state
+  incremental:
+    overlapSeconds: 900
+  # Where the intake writes the rendered documents a drain reads back.
+  work: ../.work/{logSource}
+  # Records sent through the API land here as files for the pre flows, so an API submission and a file drop become the
+  # same rows in the same tables.
+  submissions:
+    record:
+      preFlow: recall-welllog-pre
+      landing: ../data/welllog
+    datasets:
+      curves:
+        preFlow: recall-welllog-curves-pre
+        landing: ../data/curves-meta
+    fileRoots:
+      - ../data/curves
 
 render:
   mapping: WellLog@1.4.0

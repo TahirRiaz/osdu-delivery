@@ -1,0 +1,25 @@
+# Ingestion: the typed alias view into the keyed child table the OSDU flow joins to each wellbore.
+flowType: ing
+name: recall-wellbore-aliases-ing
+batch: recall
+
+connections:
+  sample: ${env:OSDU_SAMPLE_DB}
+
+source:
+  server: sample
+  object: OsduSample.pre.v_WellboreAlias
+
+target:
+  server: sample
+  object: OsduSample.ing.WellboreAlias
+
+load:
+  keyColumns: [facility_name, alias_name]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]

@@ -1,0 +1,25 @@
+# Ingestion: the typed wellbore view into the keyed ingestion table the OSDU flow reads.
+flowType: ing
+name: recall-wellbore-ing
+batch: recall
+
+connections:
+  sample: ${env:OSDU_SAMPLE_DB}
+
+source:
+  server: sample
+  object: OsduSample.pre.v_Wellbore
+
+target:
+  server: sample
+  object: OsduSample.ing.Wellbore
+
+load:
+  keyColumns: [facility_name]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]

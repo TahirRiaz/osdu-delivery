@@ -192,6 +192,8 @@ internal sealed class FlowSubmissionDatasetYaml
     public string? PreFlow { get; set; }
 
     public string? Landing { get; set; }
+
+    public string? Format { get; set; }
 }
 
 internal sealed class FlowRenderYaml

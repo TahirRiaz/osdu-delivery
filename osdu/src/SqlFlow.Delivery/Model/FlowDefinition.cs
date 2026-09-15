@@ -273,7 +273,7 @@ public sealed record FlowSubmissions
     public IReadOnlyList<string> FileRoots { get; init; } = [];
 }
 
-/// <summary>The pre flow a submitted dataset lands for, and the folder it lands in.</summary>
+/// <summary>The pre flow a submitted dataset lands for, the folder it lands in, and the form the file takes.</summary>
 public sealed record FlowSubmissionDataset
 {
     /// <summary>The pre-ingestion flow that reads the landed file.</summary>
@@ -281,6 +281,36 @@ public sealed record FlowSubmissionDataset
 
     /// <summary>The folder the file is written to: relative to the flow file when relative, with {parameter} tokens.</summary>
     public required string Landing { get; init; }
+
+    /// <summary>The form the landed file takes, which is the form its pre flow reads: one of <see cref="LandingFormats"/>.</summary>
+    public string Format { get; init; } = LandingFormats.Csv;
+}
+
+/// <summary>The forms an API submission's landing file can take, which are the forms a pre-ingestion flow reads.</summary>
+public static class LandingFormats
+{
+    /// <summary>A header row and one row per record, the form SQLFlow's file flows read by default.</summary>
+    public const string Csv = "csv";
+
+    /// <summary>One JSON object per line.</summary>
+    public const string Ndjson = "ndjson";
+
+    /// <summary>One JSON array of objects.</summary>
+    public const string Json = "json";
+
+    /// <summary>A single-row-group parquet file, typed from the columns the mapping reads.</summary>
+    public const string Parquet = "parquet";
+
+    public static IReadOnlyList<string> All { get; } = [Csv, Ndjson, Json, Parquet];
+
+    /// <summary>The file extension a landed file of this form carries.</summary>
+    public static string Extension(string format)
+    {
+        ArgumentNullException.ThrowIfNull(format);
+        return All.Contains(format, StringComparer.Ordinal)
+            ? "." + format
+            : throw new DeliveryException($"'{format}' is not a landing format; it is one of {string.Join(", ", All)}.");
+    }
 }
 
 public sealed record FlowRender
