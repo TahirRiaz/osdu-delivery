@@ -39,11 +39,11 @@ public sealed class SnapshotVersioningTests : IDisposable
         Fields = [new ReferenceFieldSpec("data.FacilityName")],
     };
 
-    private readonly SqliteCatalog _catalog = new();
+    private readonly SqliteOsdu _catalog = new();
 
     public void Dispose() => _catalog.Dispose();
 
-    private (SnapshotBuilder Builder, CatalogCacheStore Store, TestClock Clock) NewBuilder()
+    private (SnapshotBuilder Builder, OsduCacheStore Store, TestClock Clock) NewBuilder()
     {
         var clock = new TestClock();
         var store = _catalog.Caches();

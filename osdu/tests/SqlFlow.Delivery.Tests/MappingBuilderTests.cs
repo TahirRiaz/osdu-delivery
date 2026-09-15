@@ -47,7 +47,7 @@ public class MappingBuilderTests
             SchemaSnapshotVersion = schema.Version,
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "opendes" },
         };
-        var issues = Preflight.Check(reread, schema, references, context, dropColumns: null);
+        var issues = Preflight.Check(reread, schema, references, context, sourceColumns: null);
         Assert.True(issues.All(i => i.Severity != IssueSeverity.Error), string.Join(Environment.NewLine, issues));
     }
 

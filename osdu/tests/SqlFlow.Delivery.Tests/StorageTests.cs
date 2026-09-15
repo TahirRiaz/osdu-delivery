@@ -1,13 +1,14 @@
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Core;
 using SqlFlow.Core.Model;
-using SqlFlow.Core.Storage;
 using SqlFlow.Delivery.Catalog;
-using SqlFlow.Delivery.Drops;
-using SqlFlow.Delivery.SampleDrop;
+using SqlFlow.Delivery.Planning;
+using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Storage;
 using SqlFlow.Delivery.Tests;
+using SqlFlow.Sources;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -59,9 +60,9 @@ public class ParquetRowLabelTests
             })
             .ToList();
         using var buffer = new MemoryStream();
-        await ParquetScopeReader.WriteAsync(buffer, columns, data, pandas is null ? null : new Dictionary<string, string> { [ParquetScopeReader.PandasMetadataKey] = pandas });
+        await ParquetFiles.WriteAsync(buffer, columns, data, pandas is null ? null : new Dictionary<string, string> { [ParquetFiles.PandasMetadataKey] = pandas });
         buffer.Position = 0;
-        return await ParquetScopeReader.ReadShapeAsync(buffer);
+        return await ParquetFiles.ReadShapeAsync(buffer);
     }
 
     [Fact]
@@ -71,6 +72,7 @@ public class ParquetRowLabelTests
 
         Assert.Equal(new ParquetRowIndex(0, 3, ParquetRowIndexSource.Implicit), shape.RowIndex);
         Assert.Equal(["MD", "GR"], shape.ColumnNames);
+        Assert.Equal(4, shape.Rows);
     }
 
     [Fact]
@@ -106,7 +108,7 @@ public class ParquetRowLabelTests
 public class ParquetAndLocalStoreTests
 {
     [Fact]
-    public async Task Parquet_round_trips_scalar_types_and_prunes_columns()
+    public async Task A_written_file_reads_back_with_its_columns_and_rows()
     {
         var dir = Samples.NewTempDirectory();
         var file = Path.Combine(dir, "rows.parquet");
@@ -118,75 +120,57 @@ public class ParquetAndLocalStoreTests
         };
         await using (var stream = File.Create(file))
         {
-            await ParquetScopeReader.WriteAsync(stream, columns, rows);
+            await ParquetFiles.WriteAsync(stream, columns, rows);
         }
 
         await using var read = File.OpenRead(file);
-        Assert.Equal(["s", "d", "l", "b"], await ParquetScopeReader.ReadColumnsAsync(read));
-        read.Position = 0;
-        var back = new List<Rendering.SourceRow>();
-        await foreach (var row in ParquetScopeReader.ReadRowsAsync(read, new HashSet<string> { "s", "d", "l" }))
-        {
-            back.Add(row);
-        }
-
-        Assert.Equal(2, back.Count);
-        Assert.Equal("a", back[0].GetString("s"));
-        Assert.Equal(1.5, back[0].Get("d"));
-        Assert.Equal(7L, back[0].Get("l"));
-        Assert.False(back[0].Has("b"));
-        Assert.Null(back[1].Get("s"));
-        Assert.Equal("-1", back[1].GetString("l"));
+        var shape = await ParquetFiles.ReadShapeAsync(read);
+        Assert.Equal(["s", "d", "l", "b"], shape.ColumnNames);
+        Assert.Equal(2, shape.Rows);
+        Assert.Equal(8, shape.Values);
     }
 
     [Fact]
     public void Numbers_are_read_as_the_values_they_were_written_as()
     {
-        Assert.Equal(12.3, ParquetScopeReader.Normalize(12.3f));
-        Assert.Equal("12.3", Rendering.SourceRow.Stringify(ParquetScopeReader.Normalize(12.3f)));
-        Assert.Null(ParquetScopeReader.Normalize(float.NaN));
-        Assert.Null(ParquetScopeReader.Normalize(double.NaN));
-        Assert.Equal(double.PositiveInfinity, ParquetScopeReader.Normalize(double.PositiveInfinity));
-        Assert.Equal(1234567890.123456789m, ParquetScopeReader.Normalize(1234567890.123456789m));
-        Assert.Equal((decimal)ulong.MaxValue, ParquetScopeReader.Normalize(ulong.MaxValue));
+        Assert.Equal(12.3, ParquetFiles.Normalize(12.3f));
+        Assert.Equal("12.3", Rendering.SourceRow.Stringify(ParquetFiles.Normalize(12.3f)));
+        Assert.Null(ParquetFiles.Normalize(float.NaN));
+        Assert.Null(ParquetFiles.Normalize(double.NaN));
+        Assert.Equal(double.PositiveInfinity, ParquetFiles.Normalize(double.PositiveInfinity));
+        Assert.Equal(1234567890.123456789m, ParquetFiles.Normalize(1234567890.123456789m));
+        Assert.Equal((decimal)ulong.MaxValue, ParquetFiles.Normalize(ulong.MaxValue));
 
         // A decimal's text drops trailing zeros and never a digit, so a whole or short decimal keys exactly as its double did.
         Assert.Equal("12.5", Rendering.SourceRow.Stringify(12.500m));
         Assert.Equal("0", Rendering.SourceRow.Stringify(-0.00m));
         Assert.Equal("0.0000001", Rendering.SourceRow.Stringify(0.0000001m));
-
-        Assert.True(DropReader.CompareValues(2.5m, 3.0) < 0);
-        Assert.True(DropReader.CompareValues(10L, 9.5m) > 0);
-        Assert.Equal(0, DropReader.CompareValues(3L, 3.0m));
     }
 
     [Fact]
     public async Task A_parquet_decimal_and_float_are_read_exactly_and_a_NaN_as_missing()
     {
+        // The values the source normalizer produces are what the renderer sees, whatever the file stored them as.
+        Assert.Equal(1234567890.123456789m, SourceValues.Normalize(1234567890.123456789m));
+        Assert.Equal(12.3, SourceValues.Normalize(12.3f));
+        Assert.Null(SourceValues.Normalize(double.NaN));
+
         var dir = Samples.NewTempDirectory();
         var file = Path.Combine(dir, "numbers.parquet");
         var columns = new (string, Type)[] { ("m", typeof(decimal)), ("f", typeof(float)), ("d", typeof(double)) };
         var rows = new List<IReadOnlyDictionary<string, object?>>
         {
-            new Dictionary<string, object?> { ["m"] = 1234567890.123456789m, ["f"] = 12.3f, ["d"] = double.NaN },
+            new Dictionary<string, object?> { ["m"] = 1234567890.123456789m, ["f"] = 12.3f, ["d"] = 1.0 },
         };
         await using (var stream = File.Create(file))
         {
-            await ParquetScopeReader.WriteAsync(stream, columns, rows);
+            await ParquetFiles.WriteAsync(stream, columns, rows);
         }
 
         await using var read = File.OpenRead(file);
-        var back = new List<Rendering.SourceRow>();
-        await foreach (var row in ParquetScopeReader.ReadRowsAsync(read, null))
-        {
-            back.Add(row);
-        }
-
-        var only = Assert.Single(back);
-        Assert.Equal(1234567890.123456789m, only.Get("m"));
-        Assert.Equal("1234567890.123456789", only.GetString("m"));
-        Assert.Equal(12.3, only.Get("f"));
-        Assert.Null(only.Get("d"));
+        var shape = await ParquetFiles.ReadShapeAsync(read);
+        Assert.Equal(1, shape.Rows);
+        Assert.Equal(["m", "f", "d"], shape.ColumnNames);
     }
 
     [Fact]
@@ -212,75 +196,108 @@ public class ParquetAndLocalStoreTests
     }
 }
 
-public class DropReaderTests
+/// <summary>
+/// A record's payload files, as the plan measures them and the protocol streams them: listed from the folder the record's
+/// row names, in file-name order, each opened as a fresh stream.
+/// </summary>
+public class PayloadFileTests
 {
     [Fact]
-    public async Task Reads_records_with_child_scopes_and_payload_chunks()
+    public async Task The_files_of_a_record_are_listed_in_name_order_and_opened_one_by_one()
     {
-        var dir = Samples.NewTempDirectory();
-        var records = SampleDropBuilder.DefaultRecords("STAT_COMP");
-        await SampleDropBuilder.WriteAsync(dir, "STAT_COMP", records, Guid.NewGuid(), 1);
+        var root = Samples.NewTempDirectory();
+        var log = SampleWellLogs.Logs()[0];
+        var folder = Path.Combine(root, log.SourceProject, log.LogId);
+        await SampleWellLogs.WriteChunkAsync(folder, log);
+        File.WriteAllText(Path.Combine(folder, "notes.txt"), "not a payload file");
 
-        var reader = new DropReader(Samples.Stores());
-        var drop = await reader.OpenAsync(dir, "manifest.json");
-        Assert.Equal(3, drop.Manifest.RecordCount);
-        Assert.Equal("curves", drop.Manifest.Scopes.Keys.Single(k => k != "record"));
+        var payloads = Samples.Payloads();
+        var files = await payloads.ListAsync(folder, "chunk_*.parquet");
+        var only = Assert.Single(files);
+        Assert.Equal(0, only.Index);
+        Assert.EndsWith(SampleWellLogs.ChunkFileName, only.Path, StringComparison.Ordinal);
+        Assert.True(only.Size > 0);
 
-        var read = new List<Rendering.SourceRecord>();
-        await foreach (var record in reader.ReadRecordsAsync(drop))
+        await using var stream = await payloads.OpenAsync(only);
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer);
+        Assert.Equal(only.Size, buffer.Length);
+
+        // A folder with nothing matching lists as empty rather than failing: the plan turns that into its own reason.
+        Assert.Empty(await payloads.ListAsync(folder, "nothing_*.parquet"));
+    }
+
+    [Fact]
+    public async Task A_payload_source_lists_once_and_re_opens_each_file_for_every_read()
+    {
+        var root = Samples.NewTempDirectory();
+        var log = SampleWellLogs.Logs()[0];
+        var folder = Path.Combine(root, log.SourceProject, log.LogId);
+        await SampleWellLogs.WriteChunkAsync(folder, log);
+
+        var source = new StoragePayloadSource(Samples.Payloads(), new PayloadLocation(folder, "chunk_*.parquet"));
+        var first = await source.ListChunksAsync();
+        var again = await source.ListChunksAsync();
+        Assert.Same(first, again);
+
+        var file = Assert.Single(first);
+        await using (var one = await source.OpenAsync(file))
         {
-            read.Add(record);
+            Assert.True(one.Length > 0);
         }
 
-        Assert.Equal(3, read.Count);
-        var first = read.Single(r => r.Row.GetString("log_id") == "L-1001");
-        Assert.Equal(records[0].Key.Value, first.DeclaredDeliveryKey);
-        Assert.Equal([SampleDropBuilder.IndexCurveId, "GR", "RHOB"], first.ScopeRows("curves").Select(c => c.GetString("curve_id")));
-        Assert.Equal(1000d, first.Row.Get("index_min"));
-
-        var chunks = await reader.ListPayloadChunksAsync(drop, "curves", records[0].Key.Value);
-        Assert.Single(chunks);
-        Assert.EndsWith("chunk_00000.parquet", chunks[0].Path, StringComparison.Ordinal);
-        Assert.Equal(File.GetLastWriteTimeUtc(chunks[0].Path), chunks[0].Modified?.UtcDateTime);
-        await using var stream = await reader.OpenChunkAsync(chunks[0]);
-        Assert.True(stream.Length > 0);
-
-        var none = await reader.ListPayloadChunksAsync(drop, "curves", Guid.NewGuid());
-        Assert.Empty(none);
+        await using var two = await source.OpenAsync(file);
+        Assert.True(two.Length > 0);
     }
 
     [Fact]
-    public async Task Missing_manifest_is_a_validation_error()
+    public void A_stored_payload_location_round_trips_through_its_text()
     {
-        var reader = new DropReader(Samples.Stores());
-        await Assert.ThrowsAsync<FlowValidationException>(() => reader.OpenAsync(Samples.NewTempDirectory(), "manifest.json"));
+        var location = new PayloadLocation(@"D:\lake\curves\NO_15_9\L-1001", "chunk_*.parquet");
+        var parsed = PayloadLocation.Parse(location.ToString());
+        Assert.Equal(location.Folder, parsed.Folder);
+        Assert.Equal(location.Pattern, parsed.Pattern);
+
+        var blob = new PayloadLocation("abfss://lake@acct.dfs.core.windows.net/curves/L-1001", "*.parquet");
+        var back = PayloadLocation.Parse(blob.ToString());
+        Assert.Equal(blob.Folder, back.Folder);
+        Assert.Equal(blob.Pattern, back.Pattern);
+
+        Assert.Throws<DeliveryException>(() => PayloadLocation.Parse("chunk_00000.parquet"));
     }
 
     [Fact]
-    public void Payload_hash_is_over_the_logical_grid()
+    public void The_payload_signature_is_over_the_files_names_sizes_and_times()
     {
-        var columns = new[] { "MD", "GR" };
-        var rows = new List<IReadOnlyDictionary<string, object?>>
-        {
-            new Dictionary<string, object?> { ["MD"] = 1000.0, ["GR"] = 45.2 },
-            new Dictionary<string, object?> { ["MD"] = 1000.5, ["GR"] = null },
-        };
-        var a = SampleDropBuilder.HashGrid(columns, rows);
-        var same = SampleDropBuilder.HashGrid(columns, rows.Select(r => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>(r)).ToList());
-        Assert.Equal(a, same);
-        rows[1] = new Dictionary<string, object?> { ["MD"] = 1000.5, ["GR"] = 0.0 };
-        Assert.NotEqual(a, SampleDropBuilder.HashGrid(columns, rows));
+        var modified = new DateTimeOffset(2026, 9, 1, 6, 0, 0, TimeSpan.Zero);
+        IReadOnlyList<PayloadFile> files =
+        [
+            new PayloadFile(0, "/lake/a/chunk_00000.parquet", 120, modified),
+            new PayloadFile(1, "/lake/a/chunk_00001.parquet", 90, modified.AddMinutes(5)),
+        ];
+
+        var signature = PayloadFiles.Of(files);
+        Assert.Equal(2, signature.Count);
+        Assert.Equal(modified.AddMinutes(5).UtcDateTime, signature.ModifiedUtc);
+
+        // The same files read from another folder are the same payload: the names, sizes and times are the identity.
+        var elsewhere = PayloadFiles.Of(files.Select(f => f with { Path = "/other" + f.Path }).ToList());
+        Assert.Equal(signature.Signature, elsewhere.Signature);
+
+        // A rewritten file moves the signature.
+        var rewritten = PayloadFiles.Of([files[0] with { Size = 121 }, files[1]]);
+        Assert.NotEqual(signature.Signature, rewritten.Signature);
     }
 }
 
 /// <summary>
-/// The cache store over the catalog, one cache per partition: a merge writes a version only when the cached content moved,
-/// every version written becomes current, a version stores only the records that moved against the newest one, every earlier
-/// version still reads exactly as it was written, and a version whose records were altered afterwards is refused. Several
-/// cache flows of one partition fill the same cache: a record is stored once however many of them capture it, and it leaves
-/// only when none of them still finds it.
+/// The cache store over the module's database, one cache per partition: a merge writes a version only when the cached
+/// content moved, every version written becomes current, a version stores only the records that moved against the newest
+/// one, every earlier version still reads exactly as it was written, and a version whose records were altered afterwards
+/// is refused. Several cache flows of one partition fill the same cache: a record is stored once however many of them
+/// capture it, and it leaves only when none of them still finds it.
 /// </summary>
-public sealed class CatalogCacheStoreTests : IDisposable
+public sealed class OsduCacheStoreTests : IDisposable
 {
     private const string Scope = "opendes";
 
@@ -308,7 +325,7 @@ public sealed class CatalogCacheStoreTests : IDisposable
         Fields = [new ReferenceFieldSpec("data.Code"), new ReferenceFieldSpec("data.Name")],
     };
 
-    private readonly SqliteCatalog _catalog = new();
+    private readonly SqliteOsdu _catalog = new();
 
     public void Dispose() => _catalog.Dispose();
 
@@ -334,7 +351,7 @@ public sealed class CatalogCacheStoreTests : IDisposable
             .ToList();
     }
 
-    private async Task<List<string>> CurrentIdsAsync(CatalogCacheStore store, string type, string scope = Scope)
+    private async Task<List<string>> CurrentIdsAsync(OsduCacheStore store, string type, string scope = Scope)
     {
         var current = await _catalog.Caches().LoadAsync(scope, (await store.CurrentVersionAsync(scope))!);
         return current!.Type(type)!.Items.Select(i => i.Id).ToList();
@@ -365,7 +382,7 @@ public sealed class CatalogCacheStoreTests : IDisposable
         Assert.Equal(["UnitOfMeasure", "Wellbore"], saved.Types.Select(t => t.Name));
         Assert.Equal(write.Snapshot.Version, await store.CurrentVersionAsync(Scope));
 
-        // Read through a store that has never seen it, so the records come from the catalog and not from memory.
+        // Read through a store that has never seen it, so the records come from the database and not from memory.
         var back = await _catalog.Caches().LoadAsync(Scope, write.Snapshot.Version);
         Assert.NotNull(back);
         Assert.Equal(references.Normalized().ContentHash(), back.ContentHash());

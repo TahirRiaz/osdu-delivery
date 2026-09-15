@@ -1,9 +1,10 @@
 using System.Text;
 using System.Text.Json;
 using SqlFlow.Core;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Documents;
-using SqlFlow.Delivery.Drops;
+using SqlFlow.Delivery.Submissions;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Validation;
 using Xunit;
@@ -309,7 +310,7 @@ public class InlineSubmissionStateTests
     public void Only_the_operations_a_submission_can_ask_for_are_accepted()
     {
         var flow = Fixture();
-        Assert.Equal([RunParameters.DeliverOperation, RunParameters.PlanOperation], InlineSubmissionState.Operations);
+        Assert.Equal([DeliveryOperations.Deliver, DeliveryOperations.Plan], InlineSubmissionState.Operations);
         foreach (var operation in new[] { "verify", "drain", "intake", "known-state", "" })
         {
             Assert.ThrowsAny<ArgumentException>(() => InlineSubmissionState.Accept(

@@ -39,9 +39,9 @@ internal sealed class WellboreEstate : IDisposable
     public static FlowDefinition Load(string flowFile) => new DeliveryDocumentLoader().LoadFlow(flowFile);
 
     /// <summary>
-    /// The flow YAML of a wellbore flow: the mapping it renders with, whether it offers manual submission, and whatever
-    /// a test needs to add to its source, change or target blocks (a work location, payload files and their protocol
-    /// options, how payload changes are decided).
+    /// The flow YAML of a wellbore flow: the mapping it renders with, whether records may be sent through the API, and
+    /// whatever a test needs to add to its source, change or target blocks (payload files and their protocol options,
+    /// how payload changes are decided).
     /// </summary>
     public string Flow(
         string name, string mapping, string? sourceExtra = null, string protocol = "osduRecord", string? targetExtra = null, bool manualSubmission = true,
@@ -53,9 +53,14 @@ internal sealed class WellboreEstate : IDisposable
             required: true
             description: The site the wellbores belong to.
         source:
-          location: {{Root.Replace('\\', '/')}}/drops/{site}
+          connection: ${env:OSDU_SAMPLE_DB}
+          record:
+            object: OsduSample.ing.Wellbore
+            key: [wellbore_id]
+            scope: { site: site }
           lastModified: update_date
-        {{(manualSubmission ? "  manualSubmission: true" : string.Empty)}}
+          work: {{Root.Replace('\\', '/')}}/work/{site}
+        {{(manualSubmission ? $"  submissions:\n    record:\n      preFlow: {name}-pre\n      landing: {Root.Replace('\\', '/')}/landing/{{site}}" : string.Empty)}}
         {{sourceExtra ?? string.Empty}}
         render:
           mapping: {{mapping}}
@@ -84,16 +89,18 @@ internal sealed class WellboreEstate : IDisposable
     public string Lake => Path.Combine(Root, "lake").Replace('\\', '/');
 
     /// <summary>
-    /// A wellbore flow that streams payload files and offers manual submission: a record says where its files already
-    /// sit, and the node opens that location when it delivers. The files' modified times are the payload's watermark
-    /// unless <paramref name="hashDetect"/>, where each record has to carry the payload's content hash instead.
+    /// A wellbore flow that streams payload files and takes records sent through the API: a record's row says where its
+    /// files already sit, and the node opens that folder when it delivers. The files' modified times are the payload's
+    /// watermark unless <paramref name="hashDetect"/>, where each record carries the payload's content hash instead.
     /// </summary>
     public string PayloadFlow(string name = PayloadFlowName, string? roots = null, bool hashDetect = false, bool manualSubmission = true, string? mapping = null) => Flow(
         name,
         mapping ?? MappingReference,
-        // Roots belong to a flow that offers manual submission; a flow that offers none declares none.
-        sourceExtra: "  payloads:\n    files: files/{deliveryKey}/*.csv"
-            + (manualSubmission ? "\n  manualSubmissionFileRoots:\n    - " + (roots ?? Lake) : string.Empty),
+        // The record's own column says which folder its files sit in; the roots bound where that may point, and they
+        // belong to a flow that takes submissions, so a flow that takes none declares none.
+        sourceExtra: "  payloads:\n    files:\n      root: " + (roots ?? Lake) + "\n      locationColumn: file_folder\n      pattern: \"*.csv\""
+            + (hashDetect ? "\n      hashColumn: payload_hash" : string.Empty)
+            + (manualSubmission ? "\n  submissions:\n    record:\n      preFlow: " + name + "-pre\n      landing: " + Root.Replace('\\', '/') + "/landing/{site}\n    fileRoots:\n      - " + (roots ?? Lake) : string.Empty),
         protocol: "osduFile",
         targetExtra: "  protocolOptions:\n    payload: files\n    payloadContentType: text/csv",
         manualSubmission: manualSubmission,

@@ -33,7 +33,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
             fields: [data.Code, data.Name]
         """;
 
-    private readonly SqliteCatalog _catalog = new();
+    private readonly SqliteOsdu _catalog = new();
     private readonly string _root = Path.Combine(Path.GetTempPath(), "sqlflow-cache-sync-" + Guid.NewGuid().ToString("N"));
 
     public void Dispose()
@@ -59,7 +59,9 @@ public sealed class CacheCatalogSyncTests : IDisposable
         var warnings = new List<string>();
         var sync = new DeliveryCatalogSync(new DeliveryDocumentLoader());
         await using var db = _catalog.CreateDbContext();
-        var result = await sync.SyncAsync(db, repoId, root ?? _root, new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc), warnings, CancellationToken.None);
+        // The one write the extension makes, on the context it is given: the control plane hands it the module's
+        // database enlisted in the catalog's own sync transaction, and a test hands it the module's database directly.
+        var result = await sync.ReconcileAsync(db, repoId, root ?? _root, new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc), warnings, CancellationToken.None);
         return (warnings, result);
     }
 
@@ -136,10 +138,10 @@ public sealed class CacheCatalogSyncTests : IDisposable
         Assert.Equal("caches/b.yaml", aliased.RelativePath);
 
         // What a refresh of the partition reads: one Wellbore type, filled from every path its flows declare.
-        var declaration = await CatalogCacheStore.DeclarationAsync(db, "opendes");
+        var declaration = await OsduCacheStore.DeclarationAsync(db, "opendes");
         Assert.Equal(["project-a-cache", "project-b-cache"], declaration.Of("Wellbore").Select(d => d.FlowName));
         Assert.Equal(["FacilityName", "Alias"], declaration.FieldsOf("Wellbore").Select(f => f.Name));
-        Assert.Equal(["data.Name"], (await CatalogCacheStore.DeclarationAsync(db, "other")).FieldsOf("Wellbore").Select(f => f.Path));
+        Assert.Equal(["data.Name"], (await OsduCacheStore.DeclarationAsync(db, "other")).FieldsOf("Wellbore").Select(f => f.Path));
     }
 
     [Fact]

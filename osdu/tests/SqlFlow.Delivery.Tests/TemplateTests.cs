@@ -1,3 +1,4 @@
+using SqlFlow.Delivery.Data;
 using System.Net;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
@@ -127,9 +128,9 @@ public class OsduTemplateTests
 }
 
 /// <summary>The template store over the catalog: immutable versions, pinned by mappings.</summary>
-public sealed class CatalogTemplateStoreTests : IDisposable
+public sealed class OsduTemplateStoreTests : IDisposable
 {
-    private readonly SqliteCatalog _db = new();
+    private readonly SqliteOsdu _db = new();
 
     public void Dispose() => _db.Dispose();
 
@@ -264,7 +265,7 @@ public sealed class CatalogTemplateStoreTests : IDisposable
     {
         await using var db = _db.CreateDbContext();
         await new DeliveryCatalogSync(new DeliveryDocumentLoader())
-            .SyncAsync(db, repoId, root, DateTime.UtcNow, new List<string>(), CancellationToken.None);
+            .ReconcileAsync(db, repoId, root, DateTime.UtcNow, new List<string>(), CancellationToken.None);
     }
 
     [Fact]

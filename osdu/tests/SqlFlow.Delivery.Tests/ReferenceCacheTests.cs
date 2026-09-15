@@ -1,7 +1,7 @@
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
-using SqlFlow.Delivery.Drops;
+using SqlFlow.Delivery.Submissions;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Json;
@@ -428,7 +428,7 @@ public class ReferenceCacheTests
         var values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" };
         var flow = Samples.LocalFlow(Samples.NewTempDirectory());
 
-        using (var runtime = await FlowRuntime.CreateAsync(engine, flow, values, dropOverride: null))
+        using (var runtime = await FlowRuntime.CreateAsync(engine, flow, values))
         {
             Assert.Equal(Samples.SampleCacheScope, runtime.Mapping.Context.CacheScope);
             Assert.Equal("20260908T212727Z", runtime.Mapping.Context.CacheVersion);
@@ -436,7 +436,7 @@ public class ReferenceCacheTests
         }
 
         // render.cacheVersion pins a version of the partition's cache.
-        using (var runtime = await FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { CacheVersion = "20260908T212727Z" } }, values, dropOverride: null))
+        using (var runtime = await FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { CacheVersion = "20260908T212727Z" } }, values))
         {
             Assert.Equal(Samples.SampleCacheScope, runtime.Mapping.Context.CacheScope);
             Assert.Equal("20260908T212727Z", runtime.Mapping.Context.CacheVersion);
@@ -446,14 +446,14 @@ public class ReferenceCacheTests
         {
             Target = flow.Target with { Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [CacheScope.PartitionHeader] = "no-such-partition" } },
         };
-        var empty = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, elsewhere, values, dropOverride: null));
+        var empty = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, elsewhere, values));
         Assert.Contains("reads the cache of partition 'no-such-partition', which holds no version yet", empty.Message, StringComparison.Ordinal);
 
         var unpartitioned = flow with { Target = flow.Target with { Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) } };
-        var none = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, unpartitioned, values, dropOverride: null));
+        var none = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, unpartitioned, values));
         Assert.Contains("declare no 'data-partition-id'", none.Message, StringComparison.Ordinal);
 
-        var missingVersion = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { CacheVersion = "19990101T000000Z" } }, values, dropOverride: null));
+        var missingVersion = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { CacheVersion = "19990101T000000Z" } }, values));
         Assert.Contains("pins version 19990101T000000Z of the cache of partition 'opendes', which the catalog does not hold", missingVersion.Message, StringComparison.Ordinal);
     }
 
@@ -691,14 +691,14 @@ public class CachedLookupTests
     [Fact]
     public void Preflight_rejects_a_field_the_cache_cannot_answer()
     {
-        var issues = Preflight.Check(TestSchema.Mapping(Read("osdu.data.Symbol", "NotCached")), TestSchema.Build(), References(), TestSchema.Context(), dropColumns: null);
+        var issues = Preflight.Check(TestSchema.Mapping(Read("osdu.data.Symbol", "NotCached")), TestSchema.Build(), References(), TestSchema.Context(), sourceColumns: null);
         Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("reads 'NotCached' out of UnitOfMeasure", StringComparison.Ordinal));
     }
 
     [Fact]
     public void Preflight_rejects_matching_by_fields_the_cache_does_not_hold()
     {
-        var issues = Preflight.Check(TestSchema.Mapping(Read("osdu.data.Unit", "id", findBy: "NotCached")), TestSchema.Build(), References(), TestSchema.Context(), dropColumns: null);
+        var issues = Preflight.Check(TestSchema.Mapping(Read("osdu.data.Unit", "id", findBy: "NotCached")), TestSchema.Build(), References(), TestSchema.Context(), sourceColumns: null);
         Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("caches none of those", StringComparison.Ordinal));
     }
 }

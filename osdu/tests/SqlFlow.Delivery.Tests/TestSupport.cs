@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
@@ -7,10 +6,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlFlow.Catalog;
-using SqlFlow.Core.Storage;
+using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
-using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Snapshots;
@@ -18,10 +17,11 @@ using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
-using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Storage;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Sources;
 
 namespace SqlFlow.Delivery.Tests;
 
@@ -50,36 +50,39 @@ public sealed class TestClock : TimeProvider
     }
 }
 
-/// <summary>An in-memory SQLite catalog with the schema created from the model, shared across contexts on one open
-/// connection: the ledger under test is the real <see cref="CatalogLedger"/> over the real catalog model.</summary>
-public sealed class SqliteCatalog : IDisposable
+/// <summary>
+/// An in-memory SQLite copy of the module's own database (schema <c>osdu</c>), created from the model and shared across
+/// contexts on one open connection: the ledger under test is the real <see cref="OsduLedger"/> over the real model.
+/// </summary>
+public sealed class SqliteOsdu : IDisposable
 {
     private readonly SqliteConnection _connection;
-    private readonly DbContextOptions<CatalogDbContext> _options;
+    private readonly DbContextOptions<OsduDbContext> _options;
 
-    public SqliteCatalog()
+    public SqliteOsdu()
     {
         _connection = new SqliteConnection("DataSource=:memory:");
         _connection.Open();
-        _options = new DbContextOptionsBuilder<CatalogDbContext>().UseSqlite(_connection).Options;
-        using var db = new CatalogDbContext(_options);
+        _options = new DbContextOptionsBuilder<OsduDbContext>().UseSqlite(_connection).Options;
+        using var db = new OsduDbContext(_options);
         db.Database.EnsureCreated();
     }
 
-    public CatalogDbContext CreateDbContext() => new(_options);
+    public OsduDbContext CreateDbContext() => new(_options);
 
-    public CatalogLedger Ledger(TimeProvider? time = null) => new(CreateDbContext, time);
+    public OsduLedger Ledger(TimeProvider? time = null) => new(CreateDbContext, time);
 
-    public CatalogTemplateStore Templates(TimeProvider? time = null) => new(CreateDbContext, time);
+    public OsduTemplateStore Templates(TimeProvider? time = null) => new(CreateDbContext, time);
 
-    public CatalogCacheStore Caches() => new(CreateDbContext);
+    public OsduCacheStore Caches() => new(CreateDbContext);
 
     /// <summary>
     /// Declares what <paramref name="flowName"/> caches for <paramref name="scope"/> exactly as the repository sync leaves it:
-    /// one <c>delivery.CacheDefinition</c> row per type, replacing every row the flow had. No types declares nothing for the flow.
+    /// one <c>osdu.CacheDefinition</c> row per type, replacing every row the flow had. No types declares nothing for the flow.
     /// </summary>
     public async Task DeclareCacheAsync(string scope, string flowName, params ReferenceTypeSpec[] types)
     {
+        ArgumentNullException.ThrowIfNull(types);
         await using var db = CreateDbContext();
         await db.DeliveryCacheDefinitions.Where(d => d.FlowName == flowName).ExecuteDeleteAsync();
         var repoId = Guid.NewGuid();
@@ -112,9 +115,32 @@ public sealed class SqliteCatalog : IDisposable
 }
 
 /// <summary>
+/// An in-memory SQLite copy of the platform's catalog, for the one seam the module shares with it: the catalog sync
+/// extension, which joins the catalog's own transaction.
+/// </summary>
+public sealed class SqliteCatalog : IDisposable
+{
+    private readonly SqliteConnection _connection;
+    private readonly DbContextOptions<CatalogDbContext> _options;
+
+    public SqliteCatalog()
+    {
+        _connection = new SqliteConnection("DataSource=:memory:");
+        _connection.Open();
+        _options = new DbContextOptionsBuilder<CatalogDbContext>().UseSqlite(_connection).Options;
+        using var db = new CatalogDbContext(_options);
+        db.Database.EnsureCreated();
+    }
+
+    public CatalogDbContext CreateDbContext() => new(_options);
+
+    public void Dispose() => _connection.Dispose();
+}
+
+/// <summary>
 /// One version of one partition's cache held in memory, as a render reads it. The engine suites share the sample cache
-/// through it, so no suite reads a database another suite is writing on the same SQLite connection; the catalog store
-/// itself is covered by its own suite.
+/// through it, so no suite reads a database another suite is writing on the same SQLite connection; the store itself is
+/// covered by its own suite.
 /// </summary>
 public sealed class FixedCacheStore : ICacheStore
 {
@@ -156,7 +182,7 @@ public sealed class FixedCacheStore : ICacheStore
 
     public Task<CacheWrite> MergeAsync(
         string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheCapture capture, DateTimeOffset capturedUtc, CancellationToken ct = default)
-        => throw new InvalidOperationException("The fixed sample cache is read-only; write versions through a catalog cache store.");
+        => throw new InvalidOperationException("The fixed sample cache is read-only; write versions through the module's cache store.");
 }
 
 /// <summary>Records every delivery and replays configured outcomes.</summary>
@@ -182,6 +208,7 @@ public sealed class FakeProtocol : IDeliveryProtocol
 
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(work);
         Deliveries.Add(work);
         Correlations.Add(OsduCorrelation.Current);
         if (Before is { } before)
@@ -197,9 +224,9 @@ public sealed class FakeProtocol : IDeliveryProtocol
         var chunks = 0;
         if (work.DeliverPayload && work.Payload is not null)
         {
-            foreach (var chunk in await work.Payload.ListChunksAsync(ct))
+            foreach (var file in await work.Payload.ListChunksAsync(ct))
             {
-                await using var stream = await work.Payload.OpenAsync(chunk, ct);
+                await using var stream = await work.Payload.OpenAsync(file, ct);
                 using var sink = new MemoryStream();
                 await stream.CopyToAsync(sink, ct);
                 chunks++;
@@ -313,6 +340,7 @@ public sealed class FakeHttpHandler : HttpMessageHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
         string? body = null;
         if (request.Content is not null)
         {
@@ -343,6 +371,9 @@ public static class Samples
 
     public const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
 
+    /// <summary>The connection reference the suites give a flow whose source is the in-memory ingestion tables.</summary>
+    public const string MemoryConnection = "mem://ingestion";
+
     public static string Root => Path.Combine(AppContext.BaseDirectory, "samples");
 
     public static string Mappings => Path.Combine(Root, "mappings");
@@ -352,11 +383,17 @@ public static class Samples
 
     public static string Flow => Path.Combine(Root, "flows", "recall-welllog.yaml");
 
+    /// <summary>The wellbore master-data flow of the sample estate.</summary>
+    public static string WellboreFlowFile => Path.Combine(Root, "flows", "recall-wellbore.yaml");
+
     /// <summary>The sample cache flow: what the sample cache holds.</summary>
     public static string CacheFlow => Path.Combine(Root, "caches", "osdu-reference-cache.yaml");
 
     /// <summary>The sample cache records, one file per cached type.</summary>
     public static string References => Path.Combine(Root, "references");
+
+    /// <summary>The sample data the pre-ingestion flows read and the payload files the delivery streams.</summary>
+    public static string Data => Path.Combine(Root, "data");
 
     /// <summary>The partition the sample flows search and deliver to, whose cache the sample delivery flow reads.</summary>
     public const string SampleCacheScope = "opendes";
@@ -367,18 +404,18 @@ public static class Samples
     /// <summary>When the sample cache records were captured: the version label the sample cache is imported under.</summary>
     public static readonly DateTimeOffset SampleCacheCaptured = new(2026, 9, 8, 21, 27, 27, TimeSpan.Zero);
 
-    // One catalog holding the sample templates and the sample cache for the whole run: templates and cache versions are
+    // One database holding the sample templates and the sample cache for the whole run: templates and cache versions are
     // immutable, and after the warm-up a render never reaches the database behind them.
-    private static readonly Lazy<(SqliteCatalog Catalog, CatalogTemplateStore Store, ICacheStore Cache)> SampleCatalog = new(() =>
+    private static readonly Lazy<(SqliteOsdu Database, OsduTemplateStore Store, ICacheStore Cache)> SampleDatabase = new(() =>
     {
-        var catalog = new SqliteCatalog();
-        var store = catalog.Templates();
+        var database = new SqliteOsdu();
+        var store = database.Templates();
         ImportSampleTemplatesAsync(store).GetAwaiter().GetResult();
-        var version = ImportSampleCacheAsync(catalog.Caches()).GetAwaiter().GetResult();
-        return (catalog, store, new FixedCacheStore(SampleCacheScope, SampleCacheFlowName, version, SampleCacheDeclaration()));
+        var version = ImportSampleCacheAsync(database.Caches()).GetAwaiter().GetResult();
+        return (database, store, new FixedCacheStore(SampleCacheScope, SampleCacheFlowName, version, SampleCacheDeclaration()));
     });
 
-    /// <summary>What the sample cache flow declares for its partition, as the catalog holds it after a sync.</summary>
+    /// <summary>What the sample cache flow declares for its partition, as the module's database holds it after a sync.</summary>
     public static CacheDeclaration SampleCacheDeclaration()
     {
         var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
@@ -388,10 +425,10 @@ public static class Samples
     }
 
     /// <summary>A template store holding the sample templates, shared by the engine tests.</summary>
-    public static ITemplateStore SampleTemplates => SampleCatalog.Value.Store;
+    public static ITemplateStore SampleTemplates => SampleDatabase.Value.Store;
 
     /// <summary>The sample cache at its one version, shared by the engine tests.</summary>
-    public static ICacheStore SampleCache => SampleCatalog.Value.Cache;
+    public static ICacheStore SampleCache => SampleDatabase.Value.Cache;
 
     /// <summary>
     /// Imports the sample cache records into <paramref name="store"/> as a version of the sample partition's cache, checked
@@ -425,6 +462,7 @@ public static class Samples
     /// <summary>The sample schema of a kind, read from its bundled file.</summary>
     public static SchemaSnapshot SampleTemplate(string kind)
     {
+        ArgumentNullException.ThrowIfNull(kind);
         var file = Path.Combine(TemplateFiles, kind.Replace(':', '_') + ".json");
         return TemplateSources.FromBundledJson(File.ReadAllText(file), kind, new DateTimeOffset(2026, 9, 7, 22, 37, 2, TimeSpan.Zero), file);
     }
@@ -439,13 +477,28 @@ public static class Samples
     /// <summary>The platform file stores plus the delivery writers, exactly as the hosts register them.</summary>
     public static FileStoreRegistry Stores() => new([new LocalFileStore()], [new LocalFileWriter()], [new LocalFileReader()]);
 
-    public static EngineContext Engine(ILedger? ledger, TimeProvider? time = null, IProtocolFactory? protocols = null, ITemplateStore? templates = null, ICacheStore? cache = null)
+    /// <summary>The payload files over the local stores, as a node lists and opens them.</summary>
+    public static IPayloadFiles Payloads() => new StoragePayloadFiles(Stores());
+
+    /// <summary>
+    /// The engine as a host composes it, over the in-memory ingestion tables: everything a run needs except a target,
+    /// which the suites supply as a fake protocol.
+    /// </summary>
+    public static EngineContext Engine(
+        ILedger? ledger,
+        TimeProvider? time = null,
+        IProtocolFactory? protocols = null,
+        ITemplateStore? templates = null,
+        ICacheStore? cache = null,
+        IIngestionSourceFactory? sources = null,
+        IPayloadFiles? payloads = null)
     {
         var stores = Stores();
         var loader = new DeliveryDocumentLoader();
         return new EngineContext(
             loader,
-            new DropReader(stores),
+            sources ?? new MemoryIngestionTables(time),
+            payloads ?? new StoragePayloadFiles(stores),
             stores,
             new SecretResolver([new EnvSecretProvider()]),
             ledger,
@@ -457,13 +510,53 @@ public static class Samples
             Cache: cache ?? SampleCache);
     }
 
-    /// <summary>The sample flow with the network target replaced by a local placeholder (tests never call OSDU).</summary>
-    public static FlowDefinition LocalFlow(string dropLocation)
+    /// <summary>
+    /// The sample well log flow with the network target replaced by a local placeholder (tests never call OSDU), its
+    /// source pointed at the in-memory ingestion tables, and its work and payload locations under
+    /// <paramref name="root"/>, a directory the test owns.
+    /// </summary>
+    public static FlowDefinition LocalFlow(string root)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
         var flow = new DeliveryDocumentLoader().LoadFlow(Flow);
+        return Localize(flow, root);
+    }
+
+    /// <summary>The sample wellbore flow, localized the same way; it streams no payload.</summary>
+    public static FlowDefinition LocalWellboreFlow(string root)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        var flow = new DeliveryDocumentLoader().LoadFlow(WellboreFlowFile);
+        return Localize(flow, root);
+    }
+
+    private static FlowDefinition Localize(FlowDefinition flow, string root)
+    {
+        var payloads = flow.Source.Payloads.ToDictionary(
+            p => p.Key,
+            p => p.Value with { Root = Path.Combine(root, "curves") },
+            StringComparer.Ordinal);
+        var submissions = flow.Source.Submissions is { } declared
+            ? declared with
+            {
+                Record = declared.Record with { Landing = Path.Combine(root, "landing", "record") },
+                Datasets = declared.Datasets.ToDictionary(
+                    d => d.Key,
+                    d => d.Value with { Landing = Path.Combine(root, "landing", d.Key) },
+                    StringComparer.Ordinal),
+                FileRoots = [Path.Combine(root, "curves")],
+            }
+            : null;
+
         return flow with
         {
-            Source = flow.Source with { Location = dropLocation },
+            Source = flow.Source with
+            {
+                Connection = MemoryConnection,
+                Work = Path.Combine(root, "work"),
+                Payloads = payloads,
+                Submissions = submissions,
+            },
             Target = flow.Target with
             {
                 Endpoint = "http://localhost:9/petrodb",

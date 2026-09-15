@@ -1,0 +1,566 @@
+using SqlFlow.Core;
+using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Engine.Intake;
+using SqlFlow.Delivery.Engine.Planning;
+using SqlFlow.Delivery.Engine.Snapshots;
+using SqlFlow.Delivery.Engine.Verify;
+using SqlFlow.Delivery.Engine.Worker;
+using SqlFlow.Delivery.Http;
+using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Planning;
+using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Source;
+using Microsoft.Extensions.Logging.Abstractions;
+using Xunit;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>
+/// End to end over the sample mapping, the real WellLog 1.4.0 schema snapshot, the sample estate in the in-memory
+/// ingestion tables, a SQLite copy of the module's database and a fake protocol.
+/// </summary>
+public class EndToEndTests : IDisposable
+{
+    private readonly SqliteOsdu _db = new();
+    private readonly TestClock _clock = new();
+    private readonly string _root = Samples.NewTempDirectory();
+
+    private DateTime Now => _clock.GetUtcNow().UtcDateTime;
+
+    private async Task<MemoryIngestionTables> EstateAsync() => await SampleEstate.BuildAsync(_root, Now.AddMinutes(-5), time: _clock);
+
+    private async Task<(FlowRuntime Runtime, FakeProtocol Protocol, OsduLedger Ledger)> RuntimeAsync(
+        MemoryIngestionTables tables, Func<FlowDefinition, FlowDefinition>? adjust = null, FakeProtocol? protocol = null)
+    {
+        var ledger = _db.Ledger(_clock);
+        protocol ??= new FakeProtocol();
+        var engine = Samples.Engine(ledger, _clock, sources: tables) with { Protocols = new FakeProtocolFactory(protocol) };
+        var flow = adjust is null ? Samples.LocalFlow(_root) : adjust(Samples.LocalFlow(_root));
+        var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        return (runtime, protocol, ledger);
+    }
+
+    /// <summary>One run's work: plan into batches, drain them, and close the submission, as a deliver run does.</summary>
+    private async Task<(WorkerSummary Work, Guid SubmissionId)> RunAsync(FlowRuntime runtime, FakeProtocol protocol, OsduLedger ledger, bool force = false)
+    {
+        var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.Request, force);
+        if (intake.NothingToDo)
+        {
+            return (WorkerSummary.Empty, intake.Submission.SubmissionId);
+        }
+
+        var worker = new DeliveryWorker(
+            ledger, runtime.Context.Payloads, runtime.Context.Stores, protocol, runtime.Flow, _clock,
+            CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker") { MaxWait = null };
+        var summary = await worker.DrainAsync(intake.Submission.SubmissionId);
+        await runtime.Intake.CompleteAsync(intake.Submission.SubmissionId, runtime.Flow.Id);
+        return (summary, intake.Submission.SubmissionId);
+    }
+
+    [Fact]
+    public async Task Plan_without_a_ledger_creates_everything()
+    {
+        var tables = await EstateAsync();
+        var engine = Samples.Engine(ledger: null, _clock, sources: tables);
+        using var runtime = await FlowRuntime.CreateAsync(engine, Samples.LocalFlow(_root), SampleEstate.Values);
+        runtime.Selection = SourceSelection.Full();
+
+        var plan = await runtime.PlanAsync();
+
+        Assert.Equal(3, plan.Entries.Count);
+        Assert.All(plan.Entries, e => Assert.Equal(PlannedAction.Create, e.Action));
+        Assert.All(plan.Entries, e => Assert.Equal(1, e.ChunkCount));
+        Assert.All(plan.Entries, e => Assert.StartsWith("opendes:work-product-component--WellLog:", e.TargetId!, StringComparison.Ordinal));
+        // Every entry carries the row it was read from, which is what the ledger records as the record's origin.
+        Assert.All(plan.Entries, e => Assert.Equal(SampleEstate.FileName, e.Origin.FileName));
+        Assert.All(plan.Entries, e => Assert.NotNull(e.SourceKeyJson));
+        var doc = plan.Entries[0].Render!.Document;
+        Assert.Equal("opendes:reference-data--UnitOfMeasure:m:", doc["data"]!["VerticalMeasurement"]!["VerticalMeasurementUnitOfMeasureID"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task A_run_delivers_then_the_next_one_skips_a_scope_whose_rows_did_not_change()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            var (summary, submissionId) = await RunAsync(runtime, protocol, ledger);
+            Assert.Equal(3, summary.Delivered);
+            Assert.Equal(3, protocol.Deliveries.Count);
+            Assert.All(protocol.Deliveries, w => Assert.True(w.DeliverMetadata && w.DeliverPayload));
+
+            var submission = await ledger.GetSubmissionAsync(submissionId);
+            Assert.Equal(SubmissionStatus.Completed, submission!.Status);
+            Assert.Equal(3, submission.Delivered);
+            Assert.Equal(3, submission.Planned);
+            Assert.Equal(runtime.Flow.Source.Record.Object, submission.SourceObject);
+            Assert.Equal(runtime.Flow.Source.Connection, submission.SourceConnection);
+
+            var state = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal(RecordStatus.Delivered, state!.Status);
+            Assert.NotNull(state.TargetVersion);
+            Assert.NotNull(state.MetadataHash);
+            Assert.NotNull(state.PayloadHash);
+            Assert.Equal(SampleWellLogs.UpdatedUtc, state.SourceModifiedUtc);
+            Assert.Equal(SampleEstate.FileName, state.SourceFileName);
+            Assert.Equal(1, state.SourceRowNumber);
+
+            // The whole-scope plan moved the scope's watermark to the window it covered.
+            var watermark = await ledger.GetWatermarkAsync(runtime.Flow.Id, Planner.ScopeKey(runtime.Parameters));
+            Assert.NotNull(watermark);
+            Assert.Equal(submissionId, watermark!.SubmissionId);
+        }
+
+        // Nothing changed in the tables since: the next run reads its window, finds no row in it and skips the scope.
+        var (next, nextProtocol, nextLedger) = await RuntimeAsync(tables);
+        using (next)
+        {
+            next.Selection = SourceSelection.Incremental(
+                (await nextLedger.GetWatermarkAsync(next.Flow.Id, Planner.ScopeKey(next.Parameters)))!.UpdatedThroughUtc);
+            var plan = await next.PlanAsync();
+            Assert.True(plan.SkippedWholeRun);
+            Assert.Empty(plan.Entries);
+            var (summary, _) = await RunAsync(next, nextProtocol, nextLedger);
+            Assert.Equal(0, summary.Processed);
+            Assert.Empty(nextProtocol.Deliveries);
+        }
+    }
+
+    [Fact]
+    public async Task A_row_that_changed_is_rendered_again_and_only_what_moved_is_sent()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+
+            // A column the mapping does not read: the fingerprint moves, the rendered document does not, so nothing is sent.
+            _clock.Advance(TimeSpan.FromMinutes(10));
+            SampleEstate.Change(tables.Records[0], "log_run", "1A", Now, SampleWellLogs.UpdatedUtc.AddHours(1));
+            var plan = await runtime.PlanAsync(force: true);
+            var entry = plan.Entries.Single(e => e.SourceKey.EndsWith("L-1001", StringComparison.Ordinal));
+            Assert.Equal(PlannedAction.Skip, entry.Action);
+            Assert.Equal(SkipTier.ContentHash, entry.SkipTier);
+
+            // A column the mapping does read: the metadata is sent, and the payload is left alone.
+            _clock.Advance(TimeSpan.FromMinutes(10));
+            SampleEstate.Change(tables.Records[0], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc.AddHours(2));
+            var metadata = await runtime.PlanAsync(force: true);
+            var changed = metadata.Entries.Single(e => e.SourceKey.EndsWith("L-1001", StringComparison.Ordinal));
+            Assert.Equal(PlannedAction.UpdateMetadata, changed.Action);
+            Assert.True(changed.DeliverMetadata);
+            Assert.False(changed.DeliverPayload);
+
+            var (summary, _) = await RunAsync(runtime, protocol, ledger, force: true);
+            Assert.Equal(1, summary.Delivered);
+            var work = Assert.Single(protocol.Deliveries);
+            Assert.True(work.DeliverMetadata);
+            Assert.False(work.DeliverPayload);
+            Assert.NotNull(work.ExistingVersion);
+        }
+    }
+
+    [Fact]
+    public async Task Rewritten_curve_files_send_the_payload_and_nothing_else()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+
+            // The curve values move: the payload hash on the row moves with them, the document does not.
+            var log = SampleWellLogs.Logs()[0];
+            var moved = log with { Curves = [log.Curves[0], log.Curves[1] with { First = 60.5 }, .. log.Curves.Skip(2)] };
+            _clock.Advance(TimeSpan.FromMinutes(10));
+            await SampleEstate.RewritePayloadAsync(_root, tables.Records[0], moved, Now);
+
+            var plan = await runtime.PlanAsync(force: true);
+            var entry = plan.Entries.Single(e => e.SourceKey.EndsWith("L-1001", StringComparison.Ordinal));
+            Assert.Equal(PlannedAction.UpdatePayload, entry.Action);
+
+            var (summary, _) = await RunAsync(runtime, protocol, ledger, force: true);
+            Assert.Equal(1, summary.Delivered);
+            var work = Assert.Single(protocol.Deliveries);
+            Assert.False(work.DeliverMetadata);
+            Assert.True(work.DeliverPayload);
+        }
+    }
+
+    [Fact]
+    public async Task Unresolvable_reference_holds_the_record_and_release_requeues_it()
+    {
+        var tables = await EstateAsync();
+        tables.Records[2].Row["wellbore_uwi"] = "NO 99/9-Z-1";
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            var (summary, submissionId) = await RunAsync(runtime, protocol, ledger);
+            Assert.Equal(2, summary.Delivered);
+            var submission = await ledger.GetSubmissionAsync(submissionId);
+            Assert.Equal(1, submission!.Held);
+            var held = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(2));
+            Assert.Equal(RecordStatus.Held, held!.Status);
+            Assert.Contains("no Wellbore matches", held.LastError, StringComparison.Ordinal);
+            Assert.Equal("NO 99/9-Z-1 / STAT_COMP / run 1 (L-2001)", held.Label);
+            // The held record is traced to the row it was held at.
+            Assert.Equal(SampleEstate.FileName, held.PendingSourceFileName);
+
+            // The same rows again: the held record is blocked, not re-attempted (design.md section 7.4).
+            var plan = await runtime.PlanAsync(force: true);
+            var blocked = plan.Entries.Single(e => e.Action == PlannedAction.Blocked);
+            Assert.Equal(SampleEstate.Key(2), blocked.Key);
+            Assert.Contains("held since", blocked.Reason, StringComparison.Ordinal);
+
+            // Released: the next plan renders it again (and holds it again, because the source is still wrong).
+            Assert.Equal(1, await ledger.ReleaseAsync(runtime.Flow.Id, null, Now));
+            var replanned = await runtime.PlanAsync(force: true);
+            Assert.Equal(PlannedAction.Hold, replanned.Entries.Single(e => e.Key == SampleEstate.Key(2)).Action);
+        }
+    }
+
+    [Fact]
+    public async Task A_deleted_row_is_never_delivered_and_says_why()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+
+            _clock.Advance(TimeSpan.FromMinutes(10));
+            tables.Records[0].DeletedUtc = Now;
+            tables.Records[0].UpdatedUtc = Now;
+
+            var plan = await runtime.PlanAsync(force: true);
+            var deleted = plan.Entries.Single(e => e.Key == SampleEstate.Key(0));
+            Assert.Equal(PlannedAction.Hold, deleted.Action);
+            Assert.Contains("marked the record row deleted", deleted.Reason, StringComparison.Ordinal);
+            Assert.Contains("Remove the record from OSDU deliberately", deleted.Reason, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task A_record_scoped_run_reads_only_the_rows_it_names_by_key()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+
+            // A redelivery of one record's payload, planned as a key-scoped read of exactly that row.
+            await runtime.RedeliverAsync([SampleEstate.Key(1)], RedeliverScope.Payload);
+            var record = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(1));
+            Assert.NotNull(record!.PlanRequestedUtc);
+
+            runtime.Selection = SourceSelection.ForKeys([KeyTuple.FromJson(record.SourceKeyJson!)]);
+            var (summary, submissionId) = await RunAsync(runtime, protocol, ledger, force: true);
+
+            Assert.Equal(1, summary.Delivered);
+            var sent = Assert.Single(protocol.Deliveries);
+            Assert.Equal(SampleEstate.Key(1), sent.Key);
+            Assert.False(sent.DeliverMetadata);
+            Assert.True(sent.DeliverPayload);
+
+            var submission = await ledger.GetSubmissionAsync(submissionId);
+            Assert.Equal(SubmissionKinds.Keys, submission!.Kind);
+            // A key-scoped plan says nothing about the rows it never read, so it never moves the scope's watermark.
+            Assert.Null(submission.WindowFromUtc);
+            Assert.Null((await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(1)))!.PlanRequestedUtc);
+        }
+    }
+
+    [Fact]
+    public async Task A_key_the_tables_do_not_hold_is_reported_rather_than_silently_dropped()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            runtime.Selection = SourceSelection.ForKeys([KeyTuple.Of("NO_15_9", "L-9999")]);
+            var plan = await runtime.PlanAsync(force: true);
+
+            // Nothing to plan, and the key that matched no row is named rather than quietly left out of the result.
+            Assert.Empty(plan.Entries);
+            var missing = Assert.Single(plan.Header.Source.MissingKeys);
+            Assert.Contains("L-9999", missing.Json, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Transient_failures_back_off_and_succeed_later_while_terminal_statuses_hold()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            var failures = 0;
+            protocol.FailWith = work =>
+            {
+                if (work.Key == SampleEstate.Key(0) && failures++ == 0)
+                {
+                    return new OsduStatusException(503, "HTTP 503 Service Unavailable");
+                }
+
+                return work.Key == SampleEstate.Key(1) ? new OsduStatusException(409, "HTTP 409 Conflict: acl") : null;
+            };
+
+            var (summary, submissionId) = await RunAsync(runtime, protocol, ledger);
+            Assert.Equal(1, summary.Delivered);
+            Assert.Equal(1, summary.Retried);
+            Assert.Equal(1, summary.Held);
+
+            var retrying = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal(RecordStatus.Pending, retrying!.Status);
+            Assert.NotNull(retrying.NextAttemptUtc);
+            var held = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(1));
+            Assert.Equal(RecordStatus.Held, held!.Status);
+            Assert.Equal(SubmissionStatus.Running, (await ledger.GetSubmissionAsync(submissionId))!.Status);
+
+            _clock.Advance(TimeSpan.FromMinutes(2));
+            var worker = new DeliveryWorker(
+                ledger, runtime.Context.Payloads, runtime.Context.Stores, protocol, runtime.Flow, _clock,
+                CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker") { MaxWait = null };
+            var later = await worker.DrainAsync(submissionId);
+            Assert.Equal(1, later.Delivered);
+            var attempts = await ledger.ListAttemptsAsync(SampleEstate.Key(0), 10);
+            Assert.Equal(2, attempts.Count);
+            Assert.Equal(AttemptOutcome.Delivered, attempts[0].Outcome);
+            Assert.Equal(AttemptOutcome.Failed, attempts[1].Outcome);
+            await runtime.Intake.CompleteAsync(submissionId, runtime.Flow.Id);
+            Assert.Equal(SubmissionStatus.Completed, (await ledger.GetSubmissionAsync(submissionId))!.Status);
+        }
+    }
+
+    [Fact]
+    public async Task A_record_the_service_asked_to_wait_on_is_not_attempted_again_sooner()
+    {
+        // The transport does not sit through a long Retry-After; it hands the wait up with the failure, and the
+        // worker must not schedule the record's next attempt earlier than the service asked.
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            protocol.FailWith = work => work.Key == SampleEstate.Key(0)
+                ? new OsduStatusException(429, "HTTP 429 Too Many Requests", TimeSpan.FromHours(2))
+                : null;
+
+            var (summary, _) = await RunAsync(runtime, protocol, ledger);
+            Assert.Equal(1, summary.Retried);
+
+            var waiting = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal(RecordStatus.Pending, waiting!.Status);
+            Assert.NotNull(waiting.NextAttemptUtc);
+            Assert.True(waiting.NextAttemptUtc!.Value >= Now + TimeSpan.FromHours(2));
+        }
+    }
+
+    [Fact]
+    public async Task Stopping_the_worker_releases_in_flight_records_without_charging_an_attempt()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
+            Assert.Equal(3, intake.Submission.Planned);
+
+            // The first delivery blocks until the worker is stopped; the stop arrives while it is in flight.
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var stop = new CancellationTokenSource();
+            protocol.Before = async (_, ct) =>
+            {
+                entered.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            };
+
+            var worker = new DeliveryWorker(
+                ledger, runtime.Context.Payloads, runtime.Context.Stores, protocol, runtime.Flow, _clock,
+                CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "stopping-worker") { MaxWait = null };
+            var drain = worker.DrainAsync(intake.Submission.SubmissionId, stop.Token);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await stop.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => drain);
+
+            var interrupted = protocol.Deliveries.Single();
+            var state = await ledger.GetRecordAsync(runtime.Flow.Id, interrupted.Key);
+            Assert.Equal(RecordStatus.Pending, state!.Status);
+            Assert.Null(state.LeaseOwner);
+            Assert.Equal(0, state.AttemptCount);
+            Assert.Empty(await ledger.ListAttemptsAsync(interrupted.Key, 10));
+
+            // A fresh worker picks everything up at once; nothing waited for a lease to expire.
+            protocol.Before = null;
+            var resumed = new DeliveryWorker(
+                ledger, runtime.Context.Payloads, runtime.Context.Stores, protocol, runtime.Flow, _clock,
+                CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "next-worker") { MaxWait = null };
+            var summary = await resumed.DrainAsync(intake.Submission.SubmissionId);
+            Assert.Equal(3, summary.Delivered);
+            Assert.Single(await ledger.ListAttemptsAsync(interrupted.Key, 10));
+        }
+    }
+
+    [Fact]
+    public async Task Verify_detects_drift_and_reconcile_queues_redelivery()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await RunAsync(runtime, protocol, ledger);
+            protocol.VerifyWith = id => id.EndsWith(SampleEstate.Key(0).Value.ToString("N"), StringComparison.Ordinal)
+                ? new VerifyResult(VerifyOutcome.Drifted, 999, "someone edited it")
+                : new VerifyResult(VerifyOutcome.Match, null, null);
+            var verifier = new Verifier(ledger, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<Verifier>());
+            var summary = await verifier.RunAsync(100, null, reconcile: true);
+            Assert.Equal(3, summary.Checked);
+            Assert.Equal(1, summary.Drifted);
+            Assert.Equal(2, summary.Matched);
+
+            // Reconcile queued the drifted record for redelivery: the next plan of the scope sends it whole again.
+            var plan = await runtime.PlanAsync(force: true);
+            var drifted = plan.Entries.Single(e => e.Key == SampleEstate.Key(0));
+            Assert.Equal(PlannedAction.UpdateBoth, drifted.Action);
+            Assert.Equal(2, plan.Skips);
+        }
+    }
+
+    [Fact]
+    public async Task A_stale_row_is_never_sent_and_the_skip_is_recorded_against_the_record()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+
+            // The row is re-landed with an older business version than the one delivered: a replay, never sent.
+            _clock.Advance(TimeSpan.FromMinutes(10));
+            SampleEstate.Change(tables.Records[0], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc.AddHours(-1));
+
+            var plan = await runtime.PlanAsync(force: true);
+            var entry = plan.Entries.Single(e => e.Key == SampleEstate.Key(0));
+            Assert.Equal(PlannedAction.Skip, entry.Action);
+            Assert.Equal(SkipTier.Stale, entry.SkipTier);
+            Assert.Contains("older than the version last modified", entry.Reason, StringComparison.Ordinal);
+
+            var (summary, submissionId) = await RunAsync(runtime, protocol, ledger, force: true);
+            Assert.Equal(0, summary.Processed);
+            Assert.Empty(protocol.Deliveries);
+            var submission = await ledger.GetSubmissionAsync(submissionId);
+            Assert.Equal(1, submission!.SkippedStale);
+            var stale = (await ledger.ListAttemptsAsync(SampleEstate.Key(0), 10)).Single(a => a.Phase == AttemptPhases.Stale);
+            Assert.Equal(AttemptOutcome.Skipped, stale.Outcome);
+            Assert.Equal(submissionId, stale.SubmissionId);
+        }
+    }
+
+    [Fact]
+    public async Task Each_attempt_names_the_correlation_id_its_requests_carried()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await RunAsync(runtime, protocol, ledger);
+
+            var sent = protocol.Correlations[protocol.Deliveries.FindIndex(w => w.Key == SampleEstate.Key(0))];
+            Assert.True(Guid.TryParse(sent, out _));
+            var attempt = Assert.Single(await ledger.ListAttemptsAsync(SampleEstate.Key(0), 10));
+            using var result = System.Text.Json.JsonDocument.Parse(attempt.ResultJson!);
+            Assert.Equal(sent, result.RootElement.GetProperty("correlationId").GetString());
+            Assert.Null(attempt.Error);
+            Assert.Null(OsduCorrelation.Current);
+        }
+    }
+
+    [Fact]
+    public async Task A_flow_whose_mapping_keys_records_differently_than_its_source_is_refused()
+    {
+        var tables = await EstateAsync();
+        var (runtime, _, _) = await RuntimeAsync(
+            tables,
+            flow => flow with { Source = flow.Source with { Record = flow.Source.Record with { Key = ["log_id"] } } });
+        using (runtime)
+        {
+            var ex = await Assert.ThrowsAsync<FlowValidationException>(() => runtime.PlanAsync());
+            Assert.Contains("source.record.key is [log_id]", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("the same columns in the same order", ex.Message, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>The captured gamma ray unit, with the code a mapping matches it by.</summary>
+    private static ReferenceType GammaRayUnit(string code) => new(
+        "UnitOfMeasure", "reference-data--UnitOfMeasure",
+        [
+            new ReferenceItem("opendes:reference-data--UnitOfMeasure:gAPI", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Code"] = ReferenceValue.Of(code),
+                ["ID"] = ReferenceValue.Of(code),
+                ["Name"] = ReferenceValue.Of("API gamma ray unit"),
+            }),
+        ]);
+
+    [Fact]
+    public async Task Records_a_cache_change_holds_back_are_counted_as_awaiting_approval_not_as_unchanged()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+
+            // The unit the two gamma ray logs matched by moves, and the change waits for a decision, so their sets are
+            // gated. The third log does not read it.
+            var impact = await new CacheImpactAnalyzer(ledger, _clock, NullLogger.Instance)
+                .AnalyzeAsync(Samples.SampleCacheScope, GammaRayUnit("gAPI"), GammaRayUnit("gAPI-2"), CacheChangeMode.Approve, "20260908T212727Z", "20260909T000000Z");
+            Assert.NotEqual(0, impact.Changes);
+            Assert.NotEmpty(await ledger.GatedCacheSetsAsync());
+
+            _clock.Advance(TimeSpan.FromMinutes(10));
+            foreach (var record in tables.Records)
+            {
+                record.UpdatedUtc = Now;
+            }
+
+            var plan = await runtime.PlanAsync(force: true);
+            Assert.Equal(2, plan.AwaitingApproval);
+            Assert.All(plan.Entries.Where(e => e.SkipTier == SkipTier.Approval), e => Assert.Equal(PlannedAction.Skip, e.Action));
+
+            // The held-back records are not unchanged: their document moved with the cache, and an approval is what
+            // decides whether it is sent. Only the third log is unchanged.
+            Assert.Equal(1, plan.Skips);
+
+            var (summary, submissionId) = await RunAsync(runtime, protocol, ledger, force: true);
+            Assert.Equal(0, summary.Processed);
+            var submission = await ledger.GetSubmissionAsync(submissionId);
+            Assert.Equal(2, submission!.AwaitingApproval);
+            Assert.Equal(1, submission.SkippedUnchanged);
+            Assert.Equal(0, submission.Delivered);
+        }
+    }
+
+    public void Dispose()
+    {
+        _db.Dispose();
+        try
+        {
+            Directory.Delete(_root, recursive: true);
+        }
+        catch (IOException)
+        {
+            // A temporary directory a reader still holds open is left for the operating system to reclaim.
+        }
+
+        GC.SuppressFinalize(this);
+    }
+}

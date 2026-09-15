@@ -1,7 +1,7 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using SqlFlow.Catalog;
 using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Snapshots;
@@ -10,9 +10,11 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The ledger's SQL Server bulk path against a real catalog: staging and completion as set-based statements, which an
-/// in-memory SQLite catalog never takes. Runs when <c>SQLFLOW_TEST_DB</c> points at a reachable, disposable catalog
-/// database and skips otherwise. Every run works under a flow and keys of its own, so runs never see each other's rows.
+/// The ledger's SQL Server bulk path against the module's own database: staging and completion as set-based statements,
+/// which an in-memory SQLite database never takes, and the statistics view the provider builds. Runs when
+/// <c>SQLFLOW_TEST_DB</c> points at a reachable, disposable database and skips otherwise; it writes only in the
+/// <c>osdu</c> schema its own migration creates, and every run works under a flow and keys of its own, so runs never
+/// see each other's rows.
 /// </summary>
 public class SqlServerLedgerTests
 {
@@ -38,37 +40,50 @@ public class SqlServerLedgerTests
         }
     });
 
+    /// <summary>The module's schema, brought up to date once per test run; the database itself is never created here.</summary>
+    private static readonly Lazy<Task> Migrated = new(async () =>
+    {
+        await using var db = Database();
+        await db.Database.MigrateAsync();
+    });
+
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
     private readonly string _run = Guid.NewGuid().ToString("N");
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
-    private static async Task<CatalogLedger> LedgerAsync(TimeProvider clock)
-    {
-        Skip.IfNot(
+    /// <summary>A context over the module's database named by <c>SQLFLOW_TEST_DB</c>.</summary>
+    private static OsduDbContext Database() => new(OsduDbContext.SqlServerOptions(ConnectionString.Value!));
+
+    private static void RequireDatabase()
+        => Skip.IfNot(
             Reachable.Value,
-            "The SQL Server ledger tests need a reachable, disposable catalog database. Set SQLFLOW_TEST_DB, for example via the git-ignored .sqlflow/env file.");
-        var cs = ConnectionString.Value!;
-        await CatalogDatabase.ProvisionAsync(cs);
-        return new CatalogLedger(() => CatalogDatabase.Create(cs), clock);
+            "The SQL Server ledger tests need a reachable, disposable database. Set SQLFLOW_TEST_DB, for example through the git-ignored .sqlflow/env file.");
+
+    private static async Task<OsduLedger> LedgerAsync(TimeProvider clock)
+    {
+        RequireDatabase();
+        await Migrated.Value;
+        return new OsduLedger(Database, clock);
+    }
+
+    private static async Task<OsduCacheStore> CachesAsync()
+    {
+        RequireDatabase();
+        await Migrated.Value;
+        return new OsduCacheStore(Database);
     }
 
     [SkippableFact]
     public async Task Cached_records_whose_osdu_ids_differ_only_by_case_are_two_rows()
     {
         // A live partition holds ...UnitOfMeasure:ft (the foot) and ...UnitOfMeasure:fT (the femtotesla). Under the
-        // server's case-folding default the catalog took them for one key and the repository sync failed.
-        Skip.IfNot(
-            Reachable.Value,
-            "The SQL Server ledger tests need a reachable, disposable catalog database. Set SQLFLOW_TEST_DB, for example via the git-ignored .sqlflow/env file.");
-        var cs = ConnectionString.Value!;
-        await CatalogDatabase.ProvisionAsync(cs);
-
+        // server's case-folding default the database took them for one key and the repository sync failed.
+        var store = await CachesAsync();
         var cache = "case-" + Guid.NewGuid().ToString("N");
         const string Foot = "test:reference-data--UnitOfMeasure:ft";
         const string Femtotesla = "test:reference-data--UnitOfMeasure:fT";
-        var store = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
         var units = new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
         [
             ReferenceItem.FromText(Foot, new Dictionary<string, string> { ["Code"] = "ft", ["Name"] = "foot" }),
@@ -79,7 +94,7 @@ public class SqlServerLedgerTests
         {
             var write = await store.MergeAsync(cache, "tests-cache", [units], new CacheCapture(null, "tests", "seeded"), DateTimeOffset.UtcNow);
 
-            await using var db = CatalogDatabase.Create(cs);
+            await using var db = Database();
             var found = await db.DeliveryCacheItems
                 .Where(i => i.Scope == cache && i.RecordId == Foot)
                 .Select(i => i.RecordId)
@@ -90,12 +105,12 @@ public class SqlServerLedgerTests
             Assert.Equal(2, await db.DeliveryCacheMembers.CountAsync(m => m.Scope == cache && m.FlowName == "tests-cache"));
             Assert.Equal([Foot], await db.DeliveryCacheMembers.Where(m => m.Scope == cache && m.RecordId == Foot).Select(m => m.RecordId).ToListAsync());
 
-            var loaded = await new CatalogCacheStore(() => CatalogDatabase.Create(cs)).LoadAsync(cache, write.Snapshot.Version);
+            var loaded = await new OsduCacheStore(Database).LoadAsync(cache, write.Snapshot.Version);
             Assert.Equal(2, loaded!.Type("UnitOfMeasure")!.Items.Count);
         }
         finally
         {
-            await CleanupCacheAsync(cs, cache);
+            await CleanupCacheAsync(cache);
         }
     }
 
@@ -103,14 +118,8 @@ public class SqlServerLedgerTests
     public async Task A_cache_version_writes_and_reads_its_ranges_on_sql_server()
     {
         // The store's transaction, its range updates and the binary comparison of stored values, on the real server.
-        Skip.IfNot(
-            Reachable.Value,
-            "The SQL Server ledger tests need a reachable, disposable catalog database. Set SQLFLOW_TEST_DB, for example via the git-ignored .sqlflow/env file.");
-        var cs = ConnectionString.Value!;
-        await CatalogDatabase.ProvisionAsync(cs);
-
+        var store = await CachesAsync();
         var cache = "ranges-" + Guid.NewGuid().ToString("N");
-        var store = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
         var capture = new CacheCapture(Guid.NewGuid(), "tests", "seeded");
         static IReadOnlyList<ReferenceType> Units(string metreName) =>
         [
@@ -130,7 +139,7 @@ public class SqlServerLedgerTests
             Assert.Equal(first.Snapshot.Version, second.Previous!.Version);
             Assert.Equal(first.Snapshot.Version + "-2", second.Snapshot.Version);
 
-            var reader = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
+            var reader = new OsduCacheStore(Database);
             var versions = await reader.ListVersionsAsync(cache);
             Assert.Equal([second.Snapshot.Version, first.Snapshot.Version], versions.Select(v => v.Version));
             Assert.Equal(first.Snapshot.Version, versions[0].PreviousVersion);
@@ -141,20 +150,20 @@ public class SqlServerLedgerTests
             Assert.Equal("Metre", (await reader.LoadAsync(cache, second.Snapshot.Version))!.Type("UnitOfMeasure")!.Match("Code", "m")!.Fields["Name"].Text);
 
             // A change of case is a change: only the metre moved, and the foot's one row covers both versions.
-            await using var db = CatalogDatabase.Create(cs);
+            await using var db = Database();
             var diff = await CacheVersions.CompareAsync(db, new CacheComparisonQuery(cache, first.Snapshot.Version));
             Assert.Equal((1L, 0L, 0L), (diff!.Changed, diff.Added, diff.Removed));
             Assert.Equal(3, await db.DeliveryCacheItems.CountAsync(i => i.Scope == cache));
         }
         finally
         {
-            await CleanupCacheAsync(cs, cache);
+            await CleanupCacheAsync(cache);
         }
     }
 
-    private static async Task CleanupCacheAsync(string cs, string scope)
+    private static async Task CleanupCacheAsync(string scope)
     {
-        await using var db = CatalogDatabase.Create(cs);
+        await using var db = Database();
         await db.DeliveryCacheMembers.Where(m => m.Scope == scope).ExecuteDeleteAsync();
         await db.DeliveryCacheItems.Where(i => i.Scope == scope).ExecuteDeleteAsync();
         await db.DeliveryCacheVersions.Where(v => v.Scope == scope).ExecuteDeleteAsync();
@@ -165,6 +174,7 @@ public class SqlServerLedgerTests
         DeliveryKey = DeliveryKey.Derive("sqlserver-ledger-test", [_run, name]),
         FlowId = _flow,
         SourceKey = _run + "/" + name,
+        SourceKeyJson = $"[\"{_run}\",\"{name}\"]",
         MappingName = "Thing",
         TargetId = "dev:x:" + _run + name,
         LastSubmissionId = submission,
@@ -172,10 +182,13 @@ public class SqlServerLedgerTests
         WorkBatch = 0,
         PendingRenderContext = "{}",
         PendingSourceModifiedUtc = modified,
+        PendingSourceFileName = "welllog_20260901.csv",
+        PendingSourceRowNumber = 1,
+        PendingSourceUpdatedUtc = modified,
         PendingMetadataHash = metadataHash,
         PendingPayloadHash = "ph",
         PendingPayloadModifiedUtc = modified,
-        PendingPayloadLocation = "loc",
+        PendingPayloadLocation = @"lake\curves\a|chunk_*.parquet",
         PendingMetadata = true,
         PendingPayload = true,
     };
@@ -197,6 +210,9 @@ public class SqlServerLedgerTests
             CompletedUtc = at,
             Outcome = nothingSent ? AttemptOutcome.Skipped : AttemptOutcome.Delivered,
             Phase = nothingSent ? AttemptPhases.Unchanged : "metadata+payload",
+            SourceFileName = claimed.PendingSourceFileName,
+            SourceRowNumber = claimed.PendingSourceRowNumber,
+            SourceUpdatedUtc = claimed.PendingSourceUpdatedUtc,
         },
     };
 
@@ -240,9 +256,9 @@ public class SqlServerLedgerTests
         Assert.Equal(now.AddHours(-1), stats.LastDeliveredUtc);
 
         // What the statistics read is the view, and it holds the flow's five records.
-        await using var db = CatalogDatabase.Create(ConnectionString.Value!);
+        await using var db = Database();
         var viewed = await db.DeliveryRecordCounts
-            .FromSqlRaw("SELECT [FlowId], [Status], [LastVerifyOutcome], [DeliveredHour], [Records] FROM [delivery].[RecordCount] WITH (NOEXPAND)")
+            .FromSqlRaw("SELECT [FlowId], [Status], [LastVerifyOutcome], [DeliveredHour], [Records] FROM [osdu].[RecordCount] WITH (NOEXPAND)")
             .Where(c => c.FlowId == _flow)
             .ToListAsync();
         Assert.Equal(5, viewed.Sum(c => c.Records));
@@ -271,6 +287,9 @@ public class SqlServerLedgerTests
         Assert.Equal(new BoundedCount(5, Exact: false), await ledger.CountLookupAsync(_run + "/well-", 5));
         Assert.Equal(new BoundedCount(12, Exact: true), await ledger.CountLookupAsync(_run + "/well-", 13));
         Assert.Equal(3, (await ledger.LookupAsync(_run + "/well-", 3)).Count);
+
+        // A record is found by the file its row came from, which is how an operator gets from a landed file to its records.
+        Assert.Equal(12, (await ledger.ListAsync(_flow, new RecordQuery { Search = "welllog_2026", Max = 20 })).Count);
     }
 
     [SkippableFact]
@@ -315,6 +334,9 @@ public class SqlServerLedgerTests
         Assert.Equal(Now, settledA.LastDeliveredUtc);
         Assert.Equal("mh-a2", settledA.PendingMetadataHash);
         Assert.Equal("0:0:12", settledA.PendingDocumentRef);
+        // The delivered version's origin is the row the document was built from, and the attempt names it too.
+        Assert.Equal("welllog_20260901.csv", settledA.SourceFileName);
+        Assert.Equal("welllog_20260901.csv", (await ledger.ListAttemptsAsync(a.DeliveryKey, 5))[0].SourceFileName);
         var settledB = await ledger.GetRecordAsync(_flow, b.DeliveryKey);
         Assert.Equal(RecordStatus.Delivered, settledB!.Status);
         Assert.Equal("mh-b1", settledB.MetadataHash);
@@ -342,5 +364,28 @@ public class SqlServerLedgerTests
         Assert.Equal(2, await ledger.CountAttemptsAsync(s1, AttemptOutcome.Delivered));
         Assert.Equal(1, await ledger.CountAttemptsAsync(s2, AttemptOutcome.Delivered));
         Assert.Equal(1, await ledger.CountAttemptsAsync(s2, AttemptOutcome.Skipped, AttemptPhases.Unchanged));
+    }
+
+    [SkippableFact]
+    public async Task The_scope_watermark_and_the_records_waiting_to_be_planned_round_trip_on_sql_server()
+    {
+        var ledger = await LedgerAsync(_clock);
+        var scope = "logSource=" + _run;
+        var submission = Guid.NewGuid();
+        await ledger.UpsertPendingAsync([Work("w1", submission, "0:0:10", "mh", Now.AddDays(-1))]);
+        var key = DeliveryKey.Derive("sqlserver-ledger-test", [_run, "w1"]);
+
+        await ledger.SetWatermarkAsync(new SourceWatermark(_flow, scope, Now, submission, Now, "ctx-1"));
+        await ledger.SetWatermarkAsync(new SourceWatermark(_flow, scope, Now.AddMinutes(-30), Guid.NewGuid(), Now, "ctx-0"));
+        var mark = await ledger.GetWatermarkAsync(_flow, scope);
+        Assert.Equal(Now, mark!.UpdatedThroughUtc);
+        Assert.Equal("ctx-1", mark.ContextHash);
+
+        Assert.Equal(1, await ledger.ForceRedeliverAsync(_flow, [key], RedeliverScope.All, Now));
+        var requested = Assert.Single(await ledger.ListPlanRequestedAsync(_flow, null, 10));
+        Assert.Equal(key, requested.DeliveryKey);
+        Assert.Equal($"[\"{_run}\",\"w1\"]", requested.SourceKeyJson);
+        await ledger.ClearPlanRequestedAsync(_flow, [key]);
+        Assert.Empty(await ledger.ListPlanRequestedAsync(_flow, null, 10));
     }
 }

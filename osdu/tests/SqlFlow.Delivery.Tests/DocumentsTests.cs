@@ -16,9 +16,24 @@ public class YamlDocumentLoaderTests
         parameters:
           logSource: { required: true }
         source:
-          location: drops/{logSource}
-          payloads: { curves: "curves/{deliveryKey}/chunk_*.parquet" }
-          fingerprint: update_date
+          connection: ${env:OSDU_SAMPLE_DB}
+          record:
+            object: OsduSample.ing.WellLog
+            key: [source_project, log_id]
+            scope: { log_name: logSource }
+          datasets:
+            curves:
+              object: OsduSample.ing.WellLogCurve
+              join: { source_project: source_project, log_id: log_id }
+              orderBy: [curve_ordinal]
+          payloads:
+            curves:
+              root: curves/{logSource}
+              locationColumn: curve_folder
+              pattern: "chunk_*.parquet"
+              hashColumn: payload_hash
+          lastModified: update_date
+          work: work/{logSource}
         render:
           mapping: WellLog@1.4.0
           parameters: { dataPartition: dev }
@@ -32,50 +47,60 @@ public class YamlDocumentLoaderTests
           retry: { attempts: 5, backoff: fixed }
         """;
 
+    /// <summary>Where a submission's rows land for the pre flows that read them, and where its files may sit.</summary>
+    private const string Submissions = """
+          submissions:
+            record:
+              preFlow: demo-pre
+              landing: landing/record
+            datasets:
+              curves:
+                preFlow: demo-curves-pre
+                landing: landing/curves
+            fileRoots:
+              - abfss://lake@acct.dfs.core.windows.net/recall
+              - archive/curves
+        """;
+
+    private static string WithSubmissions(string replacing) =>
+        Flow.ReplaceLineEndings("\n").Replace("  lastModified: update_date", replacing + "\n  lastModified: update_date", StringComparison.Ordinal);
+
     [Fact]
-    public void Manual_submission_is_opt_in_and_bounded_by_where_its_files_may_sit()
+    public void Records_sent_through_the_api_land_for_the_pre_flows_and_their_files_are_bounded()
     {
         var loader = new DeliveryDocumentLoader();
 
-        // Opt-in: a flow that says nothing takes no records sent in a submission request.
-        Assert.False(loader.ParseFlow(Flow, "inline.yaml").Source.ManualSubmission);
+        // Opt-in: a flow that says nothing takes no records sent through the API, because they would have nowhere to land.
+        Assert.Null(loader.ParseFlow(Flow, "inline.yaml").Source.Submissions);
 
-        // A flow whose protocol streams payload files offers it too: a submission points at the files where they
-        // already are, it never carries them, so the protocol is no reason to refuse the document.
-        var streaming = Flow.Replace("  fingerprint: update_date", "  fingerprint: update_date\n  manualSubmission: true", StringComparison.Ordinal);
-        var parsed = loader.ParseFlow(streaming, "inline.yaml");
-        Assert.True(parsed.Source.ManualSubmission);
-        Assert.Empty(parsed.Source.ManualSubmissionFileRoots);
+        var submissions = loader.ParseFlow(WithSubmissions(Submissions), "inline.yaml").Source.Submissions!;
+        Assert.Equal("demo-pre", submissions.Record.PreFlow);
+        Assert.Equal("landing/record", submissions.Record.Landing);
+        Assert.Equal(LandingFormats.Csv, submissions.Record.Format);
+        Assert.Equal("demo-curves-pre", submissions.Datasets["curves"].PreFlow);
+        Assert.Equal(["abfss://lake@acct.dfs.core.windows.net/recall", "archive/curves"], submissions.FileRoots);
 
-        // The roots it declares are kept in the order declared: they are where such a record may point.
-        var rooted = loader.ParseFlow(
-            streaming.Replace(
-                "  manualSubmission: true",
-                "  manualSubmission: true\n  manualSubmissionFileRoots:\n    - abfss://lake@acct.dfs.core.windows.net/recall\n    - drops/archive",
-                StringComparison.Ordinal),
-            "inline.yaml");
-        Assert.Equal(["abfss://lake@acct.dfs.core.windows.net/recall", "drops/archive"], rooted.Source.ManualSubmissionFileRoots);
+        // A landing may take another form, but only one a pre flow reads.
+        var ndjson = loader.ParseFlow(WithSubmissions(Submissions.Replace("landing: landing/record", "landing: landing/record\n      format: ndjson", StringComparison.Ordinal)), "inline.yaml");
+        Assert.Equal(LandingFormats.Ndjson, ndjson.Source.Submissions!.Record.Format);
+        var badFormat = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
+            WithSubmissions(Submissions.Replace("landing: landing/record", "landing: landing/record\n      format: avro", StringComparison.Ordinal)), "inline.yaml"));
+        Assert.Contains("is not a landing format", badFormat.Message, StringComparison.Ordinal);
 
-        // Roots mean nothing on a flow that takes no submissions, and a root is a prefix, never a pattern or a climb.
-        foreach (var (yaml, names) in new[]
-        {
-            (Flow.Replace("  fingerprint: update_date", "  fingerprint: update_date\n  manualSubmissionFileRoots:\n    - drops/archive", StringComparison.Ordinal), "source.manualSubmission accepts"),
-            (streaming.Replace("  manualSubmission: true", "  manualSubmission: true\n  manualSubmissionFileRoots:\n    - drops/*", StringComparison.Ordinal), "no wildcard"),
-            (streaming.Replace("  manualSubmission: true", "  manualSubmission: true\n  manualSubmissionFileRoots:\n    - drops/../etc", StringComparison.Ordinal), "no wildcard"),
-        })
-        {
-            var refused = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(yaml, "inline.yaml"));
-            Assert.Contains("source.manualSubmissionFileRoots", refused.Message, StringComparison.Ordinal);
-            Assert.Contains(names, refused.Message, StringComparison.Ordinal);
-        }
+        // A dataset the flow does not read cannot be landed: there would be no table for its rows to reach.
+        var unknownDataset = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
+            WithSubmissions(Submissions.Replace("curves:\n        preFlow: demo-curves-pre", "tops:\n        preFlow: demo-tops-pre", StringComparison.Ordinal)), "inline.yaml"));
+        Assert.Contains("source.datasets does not declare", unknownDataset.Message, StringComparison.Ordinal);
 
-        // A metadata-only flow declares it and keeps it. The raw literal takes the line endings the file was checked out
-        // with, so they are made "\n" before a line is cut.
-        var metadata = streaming.ReplaceLineEndings("\n")
-            .Replace("  payloads: { curves: \"curves/{deliveryKey}/chunk_*.parquet\" }\n", string.Empty, StringComparison.Ordinal)
-            .Replace("  protocolOptions: { payload: curves, recordMethod: POST }\n", string.Empty, StringComparison.Ordinal)
-            .Replace("osduWellLog", "osduRecord", StringComparison.Ordinal);
-        Assert.True(loader.ParseFlow(metadata, "inline.yaml").Source.ManualSubmission);
+        // A root is a prefix, never a pattern: it is resolved against the flow file exactly as the payload roots and the
+        // landing folders are, so a repository-relative root is written the same way they are.
+        var relative = loader.ParseFlow(WithSubmissions(Submissions.Replace("- archive/curves", "- ../shared/curves", StringComparison.Ordinal)), "inline.yaml");
+        Assert.Equal("../shared/curves", relative.Source.Submissions!.FileRoots[1]);
+
+        var refused = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
+            WithSubmissions(Submissions.Replace("- archive/curves", "- archive/*", StringComparison.Ordinal)), "inline.yaml"));
+        Assert.Contains("source.submissions.fileRoots", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("no wildcard", refused.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -128,7 +153,18 @@ public class YamlDocumentLoaderTests
         Assert.Equal("1.4.0", flow.Render.MappingVersion);
         Assert.Equal(TargetAuthType.OAuth2ClientCredentials, flow.Target.Auth.Type);
         Assert.Equal(["Datasets", "DDMSDatasets", "ExtensionProperties"], flow.Target.ProtocolOptions.PreserveDataKeys);
-        Assert.Equal("samples/recall-welllog/out/{logSource}/known-state", flow.Source.KnownState);
+
+        // The sample delivers what its own pre and ing flows load into the ingestion tables.
+        Assert.Equal("OsduSample.ing.WellLog", flow.Source.Record.Object);
+        Assert.Equal(["source_project", "log_id"], flow.Source.Record.Key);
+        Assert.Equal("logSource", flow.Source.Record.Scope["log_name"]);
+        Assert.Equal("OsduSample.ing.WellLogCurve", flow.Source.Datasets["curves"].Object);
+        Assert.Equal("source_project", flow.Source.Datasets["curves"].Join["source_project"]);
+        Assert.Equal(["curve_ordinal"], flow.Source.Datasets["curves"].OrderBy);
+        Assert.Equal("curve_folder", flow.Source.Payloads["curves"].LocationColumn);
+        Assert.Equal("chunk_count", flow.Source.Payloads["curves"].ChunkCountColumn);
+        Assert.Equal("recall-welllog-pre", flow.Source.Submissions!.Record.PreFlow);
+        Assert.Equal("recall-welllog-curves-pre", flow.Source.Submissions.Datasets["curves"].PreFlow);
 
         var mapping = new MappingCatalog(Samples.Mappings, loader).Load("WellLog@1.4.0");
         Assert.Equal(new TemplateReference("osdu:wks:work-product-component--WellLog:1.4.0", "26a3c3441882db4f"), mapping.Template);
@@ -146,7 +182,10 @@ public class YamlDocumentLoaderTests
         Assert.Equal(2, flow.Reliability.Concurrency);
         Assert.Equal(BackoffKind.Fixed, flow.Reliability.Retry.Backoff);
         Assert.Equal(5, flow.Reliability.Retry.Attempts);
-        Assert.Equal("manifest.json", flow.Source.Manifest);
+        Assert.Equal(FlowSystemColumns.DefaultUpdated, flow.Source.SystemColumns.Updated);
+        Assert.Equal(FlowSystemColumns.DefaultFileName, flow.Source.SystemColumns.FileName);
+        Assert.Equal(FlowIncremental.DefaultOverlapSeconds, flow.Source.Incremental.OverlapSeconds);
+        Assert.Equal(SourceIsolation.Snapshot, flow.Source.Incremental.Isolation);
         Assert.Equal("POST", flow.Target.ProtocolOptions.RecordMethod);
         Assert.Equal(ChangeDetection.RenderedHash, flow.Change.Detect);
     }
@@ -172,32 +211,39 @@ public class YamlDocumentLoaderTests
     }
 
     [Fact]
-    public void Undeclared_location_tokens_and_payload_templates_are_rejected()
+    public void Undeclared_location_tokens_and_a_payload_the_protocol_does_not_stream_are_rejected()
     {
         var loader = new DeliveryDocumentLoader();
-        Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("drops/{logSource}", "drops/{other}", StringComparison.Ordinal), "f"));
-        Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("curves/{deliveryKey}/chunk_*.parquet", "curves/chunk_*.parquet", StringComparison.Ordinal), "f"));
+        Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("work: work/{logSource}", "work: work/{other}", StringComparison.Ordinal), "f"));
+        Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("root: curves/{logSource}", "root: curves/{other}", StringComparison.Ordinal), "f"));
         Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("payload: curves", "payload: grids", StringComparison.Ordinal), "f"));
-        Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("fingerprint: update_date", "fingerprint: update_date\n  knownState: known/{other}", StringComparison.Ordinal), "f"));
+
+        // A pattern matches file names inside the record's own payload folder, so it carries no path of its own.
+        var path = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("pattern: \"chunk_*.parquet\"", "pattern: \"{deliveryKey}/chunk_*.parquet\"", StringComparison.Ordinal), "f"));
+        Assert.Contains("pattern", path.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void A_last_modified_column_is_an_ordered_alternative_to_the_fingerprint()
+    public void A_last_modified_column_orders_the_versions_of_a_record()
     {
         var loader = new DeliveryDocumentLoader();
-        var flow = loader.ParseFlow(Flow.Replace("fingerprint: update_date", "lastModified: update_date", StringComparison.Ordinal), "f");
-        Assert.Equal("update_date", flow.Source.LastModified);
-        Assert.Null(flow.Source.Fingerprint);
-        Assert.Equal("update_date", flow.Source.ChangeColumn);
+        Assert.Equal("update_date", loader.ParseFlow(Flow, "f").Source.LastModified);
         Assert.Equal("update_date", loader.LoadFlow(Samples.Flow).Source.LastModified);
 
-        var both = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("fingerprint: update_date", "fingerprint: update_date\n  lastModified: update_date", StringComparison.Ordinal), "f"));
-        Assert.Contains("declare one of them", both.Message, StringComparison.Ordinal);
+        // A flow may decide changes by what it renders alone, and then no business version orders its rows.
+        var unordered = Flow.ReplaceLineEndings("\n").Replace("  lastModified: update_date\n", string.Empty, StringComparison.Ordinal);
+        Assert.Null(loader.ParseFlow(unordered, "f").Source.LastModified);
 
         Assert.Equal(ChangeDetection.LastModified, loader.ParseFlow(Flow + "\nchange: { payloadDetect: lastModified }", "f").Change.PayloadDetect);
         var detect = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow + "\nchange: { detect: lastModified }", "f"));
         Assert.Contains("source.lastModified", detect.Message, StringComparison.Ordinal);
-        var noPayload = Assert.Throws<FlowValidationException>(() => loader.ParseFlow((Flow + "\nchange: { payloadDetect: lastModified }").Replace("osduWellLog", "osduRecord", StringComparison.Ordinal), "f"));
+
+        // A metadata-only flow streams no files, so there is no payload watermark to take.
+        var noPayload = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
+            (Flow.ReplaceLineEndings("\n") + "\nchange: { payloadDetect: lastModified }")
+                .Replace("osduWellLog", "osduRecord", StringComparison.Ordinal)
+                .Replace("  protocolOptions: { payload: curves, recordMethod: POST }\n", string.Empty, StringComparison.Ordinal),
+            "f"));
         Assert.Contains("no payload files", noPayload.Message, StringComparison.Ordinal);
     }
 
@@ -291,10 +337,19 @@ public class YamlDocumentLoaderTests
         var flow = new DeliveryDocumentLoader().ParseFlow(Flow, "f");
         Assert.Throws<FlowValidationException>(() => FlowParameters.Resolve(flow, null));
         var values = FlowParameters.Resolve(flow, new Dictionary<string, string> { ["logSource"] = "STAT_COMP" });
-        Assert.Equal("drops/STAT_COMP", FlowParameters.DropLocation(flow, values));
-        Assert.Null(FlowParameters.KnownStateLocation(flow, values));
-        var withKnownState = new DeliveryDocumentLoader().ParseFlow(Flow.Replace("fingerprint: update_date", "fingerprint: update_date\n  knownState: known/{logSource}", StringComparison.Ordinal), "f");
-        Assert.Equal("known/STAT_COMP", FlowParameters.KnownStateLocation(withKnownState, values));
+
+        // A declared location resolves against the flow file, with its tokens filled in.
+        var work = FlowParameters.WorkLocation(flow, values);
+        Assert.True(Path.IsPathRooted(work));
+        Assert.EndsWith(Path.Combine("work", "STAT_COMP"), work, StringComparison.Ordinal);
+
+        // The scope predicate: the column the run filters on, carrying the value of the parameter bound to it.
+        Assert.Equal("STAT_COMP", FlowParameters.ScopeValues(flow, values)["log_name"]);
+
+        // A parameter value that would climb out of a declared location is refused, because those locations bound
+        // what a run may read and write.
+        var climbing = FlowParameters.Resolve(flow, new Dictionary<string, string> { ["logSource"] = "../etc" });
+        Assert.Contains("must not contain", Assert.Throws<FlowValidationException>(() => FlowParameters.WorkLocation(flow, climbing)).Message, StringComparison.Ordinal);
         Assert.Throws<FlowValidationException>(() => FlowParameters.Resolve(flow, new Dictionary<string, string> { ["logSource"] = "x", ["nope"] = "y" }));
     }
 }

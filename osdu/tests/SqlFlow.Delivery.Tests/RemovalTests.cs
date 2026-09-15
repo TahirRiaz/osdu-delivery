@@ -248,11 +248,11 @@ public class RemovalProtocolTests
 /// <summary>What each scope does to the ledger, which is not the same question as what it does to OSDU.</summary>
 public class RemovalLedgerTests : IDisposable
 {
-    private readonly SqliteCatalog _db = new();
+    private readonly SqliteOsdu _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("test-flow");
 
-    private CatalogLedger Ledger => _db.Ledger(_clock);
+    private OsduLedger Ledger => _db.Ledger(_clock);
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
@@ -425,11 +425,11 @@ public class RemovalLedgerTests : IDisposable
 /// <summary>The runtime's removal: the ledger settled per record, and a selection that is a filter resolved here.</summary>
 public class RemovalRuntimeTests : IDisposable
 {
-    private readonly SqliteCatalog _db = new();
+    private readonly SqliteOsdu _db = new();
     private readonly TestClock _clock = new();
     private readonly string _root = Samples.NewTempDirectory();
 
-    private static readonly Guid Submission = new("44444444-4444-4444-4444-444444444444");
+    private Guid _submission;
 
     [Fact]
     public async Task Removing_a_selection_settles_every_record_and_reports_what_each_one_did()
@@ -504,27 +504,27 @@ public class RemovalRuntimeTests : IDisposable
     }
 
     /// <summary>The sample estate delivered through the fake protocol, with the runtime wired to that same fake.</summary>
-    private async Task<(FlowRuntime Runtime, FakeProtocol Protocol, CatalogLedger Ledger)> DeliveredEstateAsync(bool deliver = true)
+    private async Task<(FlowRuntime Runtime, FakeProtocol Protocol, OsduLedger Ledger)> DeliveredEstateAsync(bool deliver = true)
     {
-        var drop = Path.Combine(_root, "drop");
-        await SampleDrop.SampleDropBuilder.WriteAsync(drop, "STAT_COMP", SampleDrop.SampleDropBuilder.DefaultRecords("STAT_COMP"), Submission, 1);
+        var tables = await SampleEstate.BuildAsync(_root, _clock.GetUtcNow().UtcDateTime.AddMinutes(-5), time: _clock);
         var ledger = _db.Ledger(_clock);
         var protocol = new FakeProtocol();
-        var engine = Samples.Engine(ledger, _clock, new FixedProtocolFactory(protocol));
-        var flow = Samples.LocalFlow(drop);
-        var runtime = await FlowRuntime.CreateAsync(engine, flow, new Dictionary<string, string> { ["logSource"] = "STAT_COMP" }, drop);
-        var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.DropLocation, force: false);
+        var engine = Samples.Engine(ledger, _clock, new FixedProtocolFactory(protocol), sources: tables);
+        var flow = Samples.LocalFlow(_root);
+        var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
         Assert.False(intake.NothingToDo);
+        _submission = intake.Submission.SubmissionId;
         if (deliver)
         {
             var worker = new Engine.Worker.DeliveryWorker(
-                ledger, runtime.Context.Drops, runtime.Context.Stores, protocol, runtime.Flow, _clock,
+                ledger, runtime.Context.Payloads, runtime.Context.Stores, protocol, runtime.Flow, _clock,
                 CompositeDeliveryListener.Empty, Samples.Logger<Engine.Worker.DeliveryWorker>(), "test-worker") { MaxWait = null };
-            await worker.DrainAsync(Submission);
+            await worker.DrainAsync(_submission);
             protocol.Deletes.Clear();
         }
 
-        await runtime.Intake.CompleteAsync(Submission, runtime.Flow.Id);
+        await runtime.Intake.CompleteAsync(_submission, runtime.Flow.Id);
         return (runtime, protocol, ledger);
     }
 

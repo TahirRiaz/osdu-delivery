@@ -169,7 +169,7 @@ public class OsduErrorTests
         using var runtime = new HttpRuntime(
             new FlowReliability { Retry = new FlowRetry { Attempts = 1 } }, new SecretResolver([new EnvSecretProvider()]), new TestClock(), handler, allowLoopback: true);
 
-        var ex = await Assert.ThrowsAsync<SqlFlow.Core.HttpStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Put, "http://localhost/records")));
+        var ex = await Assert.ThrowsAsync<SqlFlow.Delivery.OsduStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Put, "http://localhost/records")));
 
         Assert.Equal(400, ex.StatusCode);
         Assert.EndsWith("Invalid legal tags: opendes-missing (Bad Request)", ex.Message, StringComparison.Ordinal);
@@ -436,9 +436,18 @@ public class WellboreDdmsRootTests
         parameters:
           logSource: { required: true }
         source:
-          location: drops/{logSource}
-          payloads: { curves: "curves/{deliveryKey}/chunk_*.parquet" }
-          fingerprint: update_date
+          connection: ${env:OSDU_SAMPLE_DB}
+          record:
+            object: OsduSample.ing.WellLog
+            key: [log_id]
+            scope: { log_name: logSource }
+          payloads:
+            curves:
+              root: curves/{logSource}
+              locationColumn: curve_folder
+              pattern: "chunk_*.parquet"
+              hashColumn: payload_hash
+          work: work/{logSource}
         render:
           mapping: WellLog@1.4.0
           parameters: { dataPartition: dev }
@@ -551,8 +560,12 @@ public class LegalTagCheckTests
         parameters:
           logSource: { required: true }
         source:
-          location: drops/{logSource}
-          fingerprint: update_date
+          connection: ${env:OSDU_SAMPLE_DB}
+          record:
+            object: OsduSample.ing.WellLog
+            key: [log_id]
+            scope: { log_name: logSource }
+          work: work/{logSource}
         render:
           mapping: WellLog@1.4.0
           parameters: { dataPartition: dev }
@@ -588,8 +601,12 @@ public class SkipDuplicatesOptionTests
         parameters:
           logSource: { required: true }
         source:
-          location: drops/{logSource}
-          fingerprint: update_date
+          connection: ${env:OSDU_SAMPLE_DB}
+          record:
+            object: OsduSample.ing.WellLog
+            key: [log_id]
+            scope: { log_name: logSource }
+          work: work/{logSource}
         render:
           mapping: WellLog@1.4.0
           parameters: { dataPartition: dev }
@@ -749,7 +766,7 @@ public class CorrelationIdTests
         var (client, runtime) = Client(handler);
         using (runtime)
         {
-            var ex = await Assert.ThrowsAsync<HttpStatusException>(
+            var ex = await Assert.ThrowsAsync<OsduStatusException>(
                 () => client.SendJsonAsync(HttpMethod.Get, client.Url("/records/{id}", "r1"), null, null, CancellationToken.None));
 
             Assert.Contains("(correlation-id osdu-assigned-7)", ex.Message, StringComparison.Ordinal);

@@ -43,7 +43,7 @@ public sealed class RetrievalTests : IDisposable
         reliability: { concurrency: 1, retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 1 } }
         """;
 
-    private readonly SqliteCatalog _db = new();
+    private readonly SqliteOsdu _db = new();
     private readonly TestClock _clock = new();
 
     private static (OsduHttpClient Client, HttpRuntime Runtime) Client(FakeHttpHandler handler, RetrievalDefinition flow, TestClock clock)
@@ -97,26 +97,17 @@ public sealed class RetrievalTests : IDisposable
         Assert.Empty(flow.CredentialReferences());
 
         var kind = new RetrievalFlowKind(loader);
-        var document = kind.Parse(Yaml, "f", new FlowDocumentEnvelope(null, default, default));
+        var document = kind.Parse(Yaml, "f");
         Assert.Equal("retrieval", document.Kind);
         Assert.Equal("http://localhost/osdu", document.SourceReference);
         Assert.Equal("{root}/out/{region}", document.TargetReference);
         Assert.False(document.RequiresRepoTree);
 
-        // The platform's own loader reads the envelope (schedule, mode, lifecycle) before the kind sees the body, so
-        // a retrieval flow schedules itself exactly as a delivery flow does, retrieve included.
-        var platform = new YamlDocumentLoader([kind]);
-        var scheduled = platform.Parse(Yaml + """
-
-            schedule:
-              cron: "0 3 * * *"
-              timezone: "Europe/Oslo"
-              operation: retrieve
-            """, "f");
-        Assert.IsType<RetrievalFlowDocument>(scheduled);
-        Assert.Equal("0 3 * * *", scheduled.Schedule!.Cron);
-        Assert.Equal("Europe/Oslo", scheduled.Schedule.Timezone);
-        Assert.Equal(RunParameters.RetrieveOperation, scheduled.Schedule.Operation);
+        // The operations a retrieval run may be asked for, and which of them writes: the platform reads them from the
+        // kind, so a schedule and a trigger offer exactly these.
+        Assert.Equal([DeliveryOperations.Retrieve, DeliveryOperations.Plan], kind.Operations.Select(o => o.Name));
+        Assert.True(kind.Operations[0].WritesTarget);
+        Assert.False(kind.Operations[1].WritesTarget);
 
         Assert.Contains("pageSize", Assert.Throws<FlowValidationException>(() => loader.ParseRetrieval(Yaml.Replace("pageSize: 2", "pageSize: 5000", StringComparison.Ordinal), "f")).Message, StringComparison.Ordinal);
         Assert.Contains("authority:source", Assert.Throws<FlowValidationException>(() => loader.ParseRetrieval(Yaml.Replace(Well, "not a kind", StringComparison.Ordinal), "f")).Message, StringComparison.Ordinal);
@@ -126,11 +117,17 @@ public sealed class RetrievalTests : IDisposable
         Assert.Contains("flowType: delivery", Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Yaml, "f")).Message, StringComparison.Ordinal);
         Assert.Contains("rollRecordz", Assert.Throws<FlowValidationException>(() => loader.ParseRetrieval(Yaml.Replace("rollRecords: 2", "rollRecordz: 2", StringComparison.Ordinal), "f")).Message, StringComparison.Ordinal);
 
-        new RunParameters { Operation = RunParameters.RetrieveOperation, Force = true }.Validate();
-        Assert.Throws<SqlFlowException>(() => new RunParameters { Operation = RunParameters.RetrieveOperation, SubmissionId = Guid.NewGuid() }.Validate());
-        Assert.Equal(RunParameters.RetrieveOperation, RetrievalExecutor.Operation(RunParameters.None));
-        Assert.Equal(RunParameters.PlanOperation, RetrievalExecutor.Operation(new RunParameters { Operation = RunParameters.PlanOperation }));
-        Assert.Throws<SqlFlowException>(() => RetrievalExecutor.Operation(new RunParameters { Operation = RunParameters.VerifyOperation }));
+        // A retrieval payload carries only force, which restarts an incremental flow at its declared start: there is no
+        // submission, record or slice for it to name.
+        var forced = new RunParameters { Operation = DeliveryOperations.Retrieve, Payload = """{"force":true}""" };
+        kind.ValidateParameters(forced);
+        Assert.True(RetrievalFlowKind.Forced(forced));
+        Assert.False(RetrievalFlowKind.Forced(RunParameters.None));
+        var scoped = new RunParameters { Operation = DeliveryOperations.Retrieve, Payload = $$"""{"submissionId":"{{Guid.NewGuid():D}}"}""" };
+        Assert.Contains("carries only force", Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(scoped)).Message, StringComparison.Ordinal);
+        Assert.Equal(DeliveryOperations.Retrieve, RetrievalExecutor.Operation(RunParameters.None));
+        Assert.Equal(DeliveryOperations.Plan, RetrievalExecutor.Operation(new RunParameters { Operation = DeliveryOperations.Plan }));
+        Assert.Throws<SqlFlowException>(() => RetrievalExecutor.Operation(new RunParameters { Operation = DeliveryOperations.Verify }));
     }
 
     [Fact]
@@ -299,7 +296,7 @@ public sealed class RetrievalTests : IDisposable
             var ledger = _db.Ledger(_clock);
             var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["root"] = root };
             var runner = new RetrievalRunner(flow, FlowParameters.Resolve(flow.Parameters, "f", values), client, Samples.Stores(), ledger, _clock, Samples.Logger<RetrievalRunner>());
-            var ex = await Assert.ThrowsAsync<HttpStatusException>(() => runner.RunAsync(Guid.NewGuid(), "tester", force: false, CancellationToken.None));
+            var ex = await Assert.ThrowsAsync<OsduStatusException>(() => runner.RunAsync(Guid.NewGuid(), "tester", force: false, CancellationToken.None));
             Assert.Equal(403, ex.StatusCode);
             var row = Assert.Single(await ledger.ListRetrievalsAsync(flow.Id, 10));
             Assert.Equal(RetrievalStatus.Failed, row.Status);

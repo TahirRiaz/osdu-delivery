@@ -8,11 +8,11 @@ namespace SqlFlow.Delivery.Tests;
 
 public class SqlLedgerTests : IDisposable
 {
-    private readonly SqliteCatalog _db = new();
+    private readonly SqliteOsdu _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("test-flow");
 
-    private CatalogLedger Ledger => _db.Ledger(_clock);
+    private OsduLedger Ledger => _db.Ledger(_clock);
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
@@ -41,7 +41,8 @@ public class SqlLedgerTests : IDisposable
         FlowName = "test-flow",
         MappingReference = "Thing@1.0.0",
         RenderContext = "{}",
-        DropLocation = "drop",
+        SourceConnection = "${env:OSDU_SAMPLE_DB}",
+        SourceObject = "OsduSample.ing.WellLog",
         RecordCount = 1,
     };
 
@@ -155,7 +156,7 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal(2, (await Ledger.ListAsync(_flow, heldWells)).Count);
 
         // A contains term has no index: it runs only over what the rest of the filter leaves, counted first.
-        var bounded = new CatalogLedger(_db.CreateDbContext, _clock) { ContainsScanLimit = 5 };
+        var bounded = new OsduLedger(_db.CreateDbContext, _clock) { ContainsScanLimit = 5 };
         var contains = new RecordQuery { Search = "LL-1", Mode = SearchMode.Contains };
         var refused = await Assert.ThrowsAsync<RecordQueryTooBroadException>(() => bounded.ListAsync(_flow, contains));
         Assert.Contains("prefix search", refused.Message, StringComparison.Ordinal);
@@ -441,7 +442,7 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
-    public async Task Verify_reconcile_watermarks_known_state_and_prune()
+    public async Task Verify_reconcile_the_scope_watermark_the_records_waiting_to_be_planned_and_prune()
     {
         var s = Guid.NewGuid();
         await Ledger.UpsertPendingAsync([Pending("a", s)]);
@@ -465,14 +466,23 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal(RecordStatus.Delivered, state.Status);
         Assert.Empty(await Ledger.ListForVerifyAsync(_flow, Now - TimeSpan.FromHours(1), 10));
 
-        await Ledger.SetWatermarksAsync([new SourceWatermark(_flow, "logSource=X", "t1", 5, Now)]);
-        await Ledger.SetWatermarksAsync([new SourceWatermark(_flow, "logSource=X", "t1", 6, Now)]);
-        var marks = await Ledger.GetWatermarksAsync(_flow, "logSource=X");
-        Assert.Equal(6, marks.Single().Version);
+        // One watermark per scope, and it never moves back: a late run that read an earlier window leaves it where it is.
+        var through = Now;
+        await Ledger.SetWatermarkAsync(new SourceWatermark(_flow, "logSource=X", through, s, Now, "ctx-1"));
+        await Ledger.SetWatermarkAsync(new SourceWatermark(_flow, "logSource=X", through.AddMinutes(-10), Guid.NewGuid(), Now, "ctx-0"));
+        var mark = await Ledger.GetWatermarkAsync(_flow, "logSource=X");
+        Assert.Equal(through, mark!.UpdatedThroughUtc);
+        Assert.Equal("ctx-1", mark.ContextHash);
+        await Ledger.SetWatermarkAsync(new SourceWatermark(_flow, "logSource=X", through.AddMinutes(10), s, Now, "ctx-2"));
+        Assert.Equal(through.AddMinutes(10), (await Ledger.GetWatermarkAsync(_flow, "logSource=X"))!.UpdatedThroughUtc);
+        Assert.Null(await Ledger.GetWatermarkAsync(_flow, "logSource=Y"));
 
-        var known = await Ledger.KnownStateAsync(_flow);
-        Assert.Single(known);
-        Assert.Equal(7, known[0].TargetVersion);
+        // A redelivery asks for the record to be planned again, and the run that plans it takes the request away.
+        Assert.Equal(1, await Ledger.ForceRedeliverAsync(_flow, [key], RedeliverScope.All, Now));
+        var requested = Assert.Single(await Ledger.ListPlanRequestedAsync(_flow, null, 10));
+        Assert.Equal(key, requested.DeliveryKey);
+        await Ledger.ClearPlanRequestedAsync(_flow, [key]);
+        Assert.Empty(await Ledger.ListPlanRequestedAsync(_flow, null, 10));
 
         for (var i = 0; i < 3; i++)
         {

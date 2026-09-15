@@ -657,10 +657,10 @@ public class FileProtocolTests
 
     private sealed class MemoryPayload(int chunks) : IPayloadSource
     {
-        public Task<IReadOnlyList<Drops.PayloadChunk>> ListChunksAsync(CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<Drops.PayloadChunk>>(Enumerable.Range(0, chunks).Select(i => new Drops.PayloadChunk(i, $"mem://files/curve_{i}.parquet", 7)).ToList());
+        public Task<IReadOnlyList<PayloadFile>> ListChunksAsync(CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<PayloadFile>>(Enumerable.Range(0, chunks).Select(i => new PayloadFile(i, $"mem://files/curve_{i}.parquet", 7)).ToList());
 
-        public Task<Stream> OpenAsync(Drops.PayloadChunk chunk, CancellationToken ct = default)
+        public Task<Stream> OpenAsync(PayloadFile chunk, CancellationToken ct = default)
             => Task.FromResult<Stream>(new MemoryStream(System.Text.Encoding.UTF8.GetBytes("chunk-" + chunk.Index)));
     }
 }

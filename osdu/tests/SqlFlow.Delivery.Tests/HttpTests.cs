@@ -154,7 +154,7 @@ public class HttpExecutorTests
     {
         var handler = new FakeHttpHandler().On(HttpMethod.Put, "/records", HttpStatusCode.BadRequest, "{\"error\":\"bad acl\"}");
         using var runtime = Runtime(handler);
-        var ex = await Assert.ThrowsAsync<HttpStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Put, "http://localhost/records")));
+        var ex = await Assert.ThrowsAsync<OsduStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Put, "http://localhost/records")));
         Assert.Equal(400, ex.StatusCode);
         Assert.Contains("bad acl", ex.Message, StringComparison.Ordinal);
         Assert.Single(handler.Calls);
@@ -165,7 +165,7 @@ public class HttpExecutorTests
     {
         var handler = new FakeHttpHandler().On(HttpMethod.Get, "/x", HttpStatusCode.ServiceUnavailable, "down");
         using var runtime = Runtime(handler, attempts: 2);
-        await Assert.ThrowsAsync<HttpStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "http://localhost/x")));
+        await Assert.ThrowsAsync<OsduStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "http://localhost/x")));
         Assert.Equal(2, handler.Calls.Count);
     }
 
@@ -178,7 +178,7 @@ public class HttpExecutorTests
         // Ported from the client's EligibleReads_RetryOnlyConfiguredNumber.
         var handler = new FakeHttpHandler().On(new HttpMethod(method), "/records", (HttpStatusCode)status, null);
         using var runtime = Runtime(handler);
-        var ex = await Assert.ThrowsAsync<HttpStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(new HttpMethod(method), "http://localhost/records")));
+        var ex = await Assert.ThrowsAsync<OsduStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(new HttpMethod(method), "http://localhost/records")));
         Assert.Equal(status, ex.StatusCode);
         Assert.Equal(3, handler.Calls.Count);
     }
@@ -195,7 +195,7 @@ public class HttpExecutorTests
         // these may mean the service acted, so resending would act twice.
         var handler = new FakeHttpHandler().On(new HttpMethod(method), path, HttpStatusCode.ServiceUnavailable, null);
         using var runtime = Runtime(handler);
-        await Assert.ThrowsAsync<HttpStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(new HttpMethod(method), "http://localhost" + path)));
+        await Assert.ThrowsAsync<OsduStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(new HttpMethod(method), "http://localhost" + path)));
         Assert.Single(handler.Calls);
     }
 
@@ -254,7 +254,7 @@ public class HttpExecutorTests
             return response;
         });
         using var runtime = Runtime(handler);
-        var ex = await Assert.ThrowsAsync<HttpStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "http://localhost/records")));
+        var ex = await Assert.ThrowsAsync<OsduStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, "http://localhost/records")));
         Assert.Equal(TimeSpan.FromMinutes(20), ex.RetryAfter);
         Assert.Single(handler.Calls);
     }

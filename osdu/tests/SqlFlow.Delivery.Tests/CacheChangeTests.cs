@@ -20,14 +20,14 @@ public sealed class CacheChangeTests : IDisposable
     /// <summary>The partition whose cache the records under test were built from.</summary>
     private const string Scope = "dev";
 
-    private readonly SqliteCatalog _db = new();
+    private readonly SqliteOsdu _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("test-flow");
-    private readonly CatalogLedger _ledger;
+    private readonly OsduLedger _ledger;
 
     public CacheChangeTests() => _ledger = _db.Ledger(_clock);
 
-    private CatalogLedger Ledger => _ledger;
+    private OsduLedger Ledger => _ledger;
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
@@ -64,7 +64,6 @@ public sealed class CacheChangeTests : IDisposable
             FlowName = "test-flow",
             MappingReference = "Thing@1.0.0",
             RenderContext = "{}",
-            DropLocation = "drop",
             RecordCount = count,
             Status = SubmissionStatus.Planned,
             ReceivedUtc = Now,

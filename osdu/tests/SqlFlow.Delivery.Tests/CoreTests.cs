@@ -2,12 +2,13 @@ using SqlFlow.Delivery.Documents;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
-using SqlFlow.Delivery.Drops;
+using SqlFlow.Delivery.Submissions;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
+using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Tests;
@@ -711,14 +712,6 @@ public class MappingRendererTests
     }
 
     [Fact]
-    public void Disagreeing_declared_key_is_held()
-    {
-        var record = Record() with { DeclaredDeliveryKey = Guid.NewGuid() };
-        var result = Renderer().Render(record);
-        Assert.Contains(result.Holds, h => h.Contains("two halves disagree", StringComparison.Ordinal));
-    }
-
-    [Fact]
     public void A_renderer_refuses_a_template_version_the_mapping_does_not_pin()
     {
         var other = SchemaSnapshot.Parse(TestSchema.Kind, TestSchema.Build().Root.ToJsonString().Replace("\"Symbol\"", "\"Mark\"", StringComparison.Ordinal), DateTimeOffset.UnixEpoch);
@@ -758,7 +751,7 @@ public class PreflightTests
                 source: cache.Country.id
                 findBy: cache.Country.Code = dataset.unit
             """, Columns("name"));
-        HasError(issues, "reads dataset.depth, which the dataset's row in the drop does not declare");
+        HasError(issues, "reads dataset.depth, which the record table does not hold");
         HasError(issues, "fills a variable that template test:wks:work-product-component--Thing:1.0.0");
         HasError(issues, "reads cache.Country, which cache version 'refs-1' does not hold");
         Assert.Throws<FlowValidationException>(() => Preflight.ThrowIfFailed(issues, "test"));
@@ -1065,7 +1058,7 @@ public class SourceVersionTests
     {
         var early = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
         var late = early.AddHours(3);
-        Drops.PayloadChunk[] chunks =
+        PayloadFile[] chunks =
         [
             new(0, "lake/drop1/curves/k/chunk_00000.parquet", 10, early),
             new(1, "lake/drop1/curves/k/chunk_00001.parquet", 20, late),
@@ -1081,41 +1074,6 @@ public class SourceVersionTests
         Assert.NotEqual(files.Signature, PayloadFiles.Of([chunks[0], chunks[1] with { Size = 21 }]).Signature);
         Assert.NotEqual(files.Signature, PayloadFiles.Of([chunks[0]]).Signature);
         Assert.Null(PayloadFiles.Of([]).ModifiedUtc);
-    }
-}
-
-public class DropManifestTests
-{
-    private const string Valid = """
-        {
-          "manifestVersion": 1,
-          "submissionId": "7d5a2d4c-3f0e-4b6b-9c1a-0d2e8f7a6b51",
-          "flow": "recall-welllog",
-          "mapping": "WellLog@1.4.0",
-          "recordCount": 1,
-          "scopes": { "record": { "files": ["metadata/a.parquet"], "columns": [ { "name": "deliveryKey" } ] } },
-          "payloads": { "curves": { "pathTemplate": "curves/{deliveryKey}/chunk_*.parquet", "hashColumn": "payloadHash" } }
-        }
-        """;
-
-    [Fact]
-    public void Parses_and_round_trips()
-    {
-        var manifest = DropManifest.Parse(Valid, "m");
-        Assert.Equal("recall-welllog", manifest.Flow);
-        Assert.Equal(new Guid("7d5a2d4c-3f0e-4b6b-9c1a-0d2e8f7a6b51"), manifest.SubmissionId);
-        var again = DropManifest.Parse(manifest.ToJson(), "m");
-        Assert.Equal(manifest.Payloads["curves"].PathTemplate, again.Payloads["curves"].PathTemplate);
-        Assert.Contains("deliveryKey", manifest.DeclaredColumns()["record"]);
-    }
-
-    [Fact]
-    public void Unknown_keys_and_missing_root_scope_are_errors()
-    {
-        Assert.Throws<FlowValidationException>(() => DropManifest.Parse(Valid.Replace("\"recordCount\"", "\"recordcount\"", StringComparison.Ordinal), "m"));
-        Assert.Throws<FlowValidationException>(() => DropManifest.Parse(Valid.Replace("\"record\":", "\"records\":", StringComparison.Ordinal), "m"));
-        Assert.Throws<FlowValidationException>(() => DropManifest.Parse(Valid.Replace("WellLog@1.4.0", "WellLog", StringComparison.Ordinal), "m"));
-        Assert.Throws<FlowValidationException>(() => DropManifest.Parse(Valid.Replace("curves/{deliveryKey}/chunk_*.parquet", "curves/chunk_*.parquet", StringComparison.Ordinal), "m"));
     }
 }
 

@@ -1,6 +1,6 @@
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
-using SqlFlow.Delivery.Drops;
+using SqlFlow.Delivery.Submissions;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Validation;
 using Xunit;
@@ -86,34 +86,28 @@ public class SubmissionReferenceTests
     }
 
     [Fact]
-    public void A_manifest_carries_a_reference_through_a_round_trip_and_refuses_one_that_is_not_a_name()
+    public void A_reference_travels_onto_the_submission_the_flow_registers_for_the_records()
     {
-        var manifest = Manifest("NO 15/9-19 SR___GR.las");
-        var read = DropManifest.Parse(manifest.ToJson(), "manifest.json");
-        Assert.Equal("NO 15/9-19 SR___GR.las", read.Reference);
+        // The name the caller gave the work is what an operator searches by afterwards, so it has to read the same on
+        // the accepted request and on the submission the OSDU flow registers when it plans those records.
+        var flow = new DeliveryDocumentLoader().LoadFlow(Samples.Flow);
+        var accepted = InlineSubmissionState.Accept(
+            Guid.NewGuid(), flow, "deliver", false, new Dictionary<string, string> { ["logSource"] = "STAT_COMP" },
+            InlineRecords.Parse("""[{"record":{"x":1}}]"""), DateTime.UtcNow, "api:source", "  NO 15/9-19 SR___GR.las  ");
 
-        // Absent is the ordinary case, and it stays absent rather than becoming an empty string.
-        Assert.Null(DropManifest.Parse(Manifest(null).ToJson(), "manifest.json").Reference);
-
-        var ex = Assert.Throws<FlowValidationException>(() => Manifest(new string('x', 500)).Validate("manifest.json"));
-        Assert.Contains("reference is at most", ex.Message, StringComparison.Ordinal);
-        Assert.StartsWith("manifest.json: ", ex.Message, StringComparison.Ordinal);
-    }
-
-    private static DropManifest Manifest(string? reference) => new()
-    {
-        SubmissionId = Guid.NewGuid(),
-        Flow = "recall-welllog",
-        Mapping = "RecallWellLog@1.0.0",
-        Reference = reference,
-        RecordCount = 1,
-        Scopes = new Dictionary<string, ManifestScope>(StringComparer.Ordinal)
+        var submission = new SubmissionState
         {
-            [DropManifest.RootScope] = new()
-            {
-                Files = ["record/part-00000.parquet"],
-                Columns = [new ManifestColumn { Name = "log_id", Type = "string" }],
-            },
-        },
-    };
+            SubmissionId = accepted.SubmissionId,
+            FlowId = accepted.FlowId,
+            FlowName = accepted.FlowName,
+            MappingReference = accepted.MappingReference,
+            RenderContext = "{}",
+            Kind = SubmissionKinds.Inline,
+            Reference = accepted.Reference,
+            ReceivedUtc = accepted.ReceivedUtc,
+        };
+
+        Assert.Equal("NO 15/9-19 SR___GR.las", submission.Reference);
+        Assert.Null(SubmissionReference.Refusal(submission.Reference));
+    }
 }
