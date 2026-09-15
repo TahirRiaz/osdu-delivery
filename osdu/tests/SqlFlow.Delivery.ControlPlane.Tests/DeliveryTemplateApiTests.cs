@@ -1,0 +1,722 @@
+using System.Formats.Tar;
+using System.IO.Compression;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using SqlFlow.Catalog;
+using SqlFlow.ControlPlane.Api;
+using SqlFlow.Core.Identity;
+using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Templates;
+using Xunit;
+
+namespace SqlFlow.ControlPlane.Tests;
+
+/// <summary>
+/// Templates and the mapping builder through the API (docs/delivery/mapping-templates.md): saving a template version, which
+/// takes a signed-in caller, reading it as variables and as its schema, the delete a pinned version refuses, and the builder's
+/// repository listing, draft, parse and check against a repository's cache as the catalog carries it, and browsing the OSDU
+/// data definitions, served here by a stand-in for the repository's API. Gated on a reachable catalog database.
+/// </summary>
+[Trait("Category", "Integration")]
+public sealed class DeliveryTemplateApiTests
+{
+    private const string WellLogKind = "osdu:wks:work-product-component--WellLog:1.4.0";
+    private const string WellLogVersion = "26a3c3441882db4f";
+    private const string WellLogFile = "osdu_wks_work-product-component--WellLog_1.4.0.json";
+    private const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
+    private const string WellboreVersion = "58d6bdbd9d066a06";
+    private const string WellboreFile = "osdu_wks_master-data--Wellbore_1.3.0.json";
+    private const string ReferenceVersion = "20260908T212727Z";
+
+    private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
+
+    private static string SampleRoot => Path.Combine(AppContext.BaseDirectory, "samples");
+
+    [SkippableFact]
+    public async Task A_template_is_saved_once_by_a_signed_in_caller_and_read_as_variables_and_as_its_schema()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        await using var factory = Factory(cs);
+        using var client = factory.CreateClient();
+        var reader = await TokenAsync(client, "read");
+        var author = await TokenAsync(client, "read", "author");
+
+        // Saving is an author action, which every signed-in user may take and no anonymous caller may.
+        using (var anonymous = await client.PostAsJsonAsync(new Uri("/api/v1/delivery/templates", UriKind.Relative), SaveBody(WellboreKind, WellboreFile), Web))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+        }
+
+        var first = await ReadAsync<DeliveryTemplateSavedDto>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/templates", SaveBody(WellboreKind, WellboreFile)));
+        Assert.Equal(WellboreVersion, first.Template.Version);
+        Assert.Contains(first.Outcome, new[] { "created", "unchanged" });
+        var again = await ReadAsync<DeliveryTemplateSavedDto>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/templates", SaveBody(WellboreKind, WellboreFile)));
+        Assert.Equal("unchanged", again.Outcome);
+
+        var listed = await ReadAsync<List<DeliveryTemplateDto>>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates"));
+        Assert.Contains(listed, t => t.Kind == WellboreKind && t.Version == WellboreVersion);
+
+        var detail = await ReadAsync<DeliveryTemplateDetailDto>(await SendAsync(client, reader, HttpMethod.Get, DetailUrl(WellboreKind, WellboreVersion)));
+        Assert.NotNull(detail.Saved);
+        Assert.Contains(detail.Variables, v => v.Path == "osdu.data.FacilityName" && v.Role == "Mapping");
+        Assert.Contains(detail.Variables, v => v.Path == "osdu.id" && v.Role == "Engine");
+        Assert.Contains(detail.Variables, v => v.Path == "osdu.data.NameAliases" && v.Shape == "GroupList");
+
+        using (var schema = await SendAsync(client, reader, HttpMethod.Get, $"/api/v1/delivery/templates/schema?kind={Uri.EscapeDataString(WellboreKind)}&version={WellboreVersion}"))
+        {
+            Assert.Equal(HttpStatusCode.OK, schema.StatusCode);
+            Assert.Equal("application/json", schema.Content.Headers.ContentType?.MediaType);
+            Assert.NotNull(JsonNode.Parse(await schema.Content.ReadAsStringAsync())?["properties"]?["data"]);
+        }
+
+        using var notRecord = await SendAsync(client, reader, HttpMethod.Post, "/api/v1/delivery/templates/preview", new { kind = WellboreKind, schema = new { type = "object" } });
+        Assert.Equal(HttpStatusCode.BadRequest, notRecord.StatusCode);
+        Assert.Contains("declares no 'data' property", await notRecord.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task A_template_version_a_synced_mapping_pins_is_refused_deletion_until_nothing_pins_it()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        await using var factory = Factory(cs);
+        using var client = factory.CreateClient();
+        var author = await TokenAsync(client, "read", "author");
+
+        // A kind of its own, so deleting it cannot pull a template from under any other test.
+        var kind = $"test:wks:master-data--ApiThing{Guid.NewGuid():N}:1.0.0";
+        var schema = JsonDocument.Parse("""{"type":"object","properties":{"kind":{"type":"string"},"data":{"type":"object","properties":{"Name":{"type":"string"}}}}}""").RootElement.Clone();
+        var saved = await ReadAsync<DeliveryTemplateSavedDto>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/templates", new { kind, schema, origin = "test" }));
+        Assert.Equal("created", saved.Outcome);
+        var version = saved.Template.Version;
+
+        var mappingId = Guid.NewGuid();
+        await using (var db = CatalogDatabase.Create(cs))
+        {
+            db.DeliveryMappings.Add(new DeliveryMapping
+            {
+                Id = mappingId,
+                RepoId = Guid.NewGuid(),
+                Reference = "ApiThing@1.0.0",
+                Name = "ApiThing",
+                Version = "1.0.0",
+                Kind = kind,
+                TemplateVersion = version,
+                RelativePath = "mappings/ApiThing@1.0.0.yaml",
+                ContentHash = new string('0', 64),
+                Yaml = "documentType: mapping",
+                SummaryJson = "{}",
+                Status = "valid",
+                FirstSeenUtc = DateTime.UtcNow,
+                LastSeenUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var deleteUrl = $"/api/v1/delivery/templates?kind={Uri.EscapeDataString(kind)}&version={version}";
+        try
+        {
+            using (var pinned = await SendAsync(client, author, HttpMethod.Delete, deleteUrl))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, pinned.StatusCode);
+                Assert.Contains("pinned by mapping(s) ApiThing@1.0.0", await pinned.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            await using var db = CatalogDatabase.Create(cs);
+            await db.DeliveryMappings.Where(m => m.Id == mappingId).ExecuteDeleteAsync();
+        }
+
+        using (var deleted = await SendAsync(client, author, HttpMethod.Delete, deleteUrl))
+        {
+            Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+        }
+
+        using var gone = await SendAsync(client, author, HttpMethod.Get, DetailUrl(kind, version));
+        Assert.Equal(HttpStatusCode.NotFound, gone.StatusCode);
+    }
+
+    [SkippableFact]
+    public async Task The_builder_drafts_from_a_cache_and_checks_what_it_writes()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        await using var factory = Factory(cs);
+        using var client = factory.CreateClient();
+        var author = await TokenAsync(client, "read", "operate", "author");
+        foreach (var (kind, file) in new[] { (WellLogKind, WellLogFile), (WellboreKind, WellboreFile) })
+        {
+            using var response = await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/templates", SaveBody(kind, file));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var repoName = "cp_tpl_" + suffix;
+        var repoId = FlowIdentity.FromName(repoName);
+        var flowName = "welllog-tpl-" + suffix;
+        var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
+        var sourceId = Guid.NewGuid();
+        var scope = "cp-tpl-" + suffix;
+        var cacheFlowName = "cp-cache-" + suffix;
+        await SeedRepositoryAsync(cs, repoName, repoId, sourceId, flowName, pipelineId, scope, cacheFlowName);
+        try
+        {
+            var repos = await ReadAsync<List<DeliveryBuilderRepoDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/mapping-builder/repos"));
+            var repo = Assert.Single(repos, r => r.RepoId == repoId);
+            Assert.Equal(sourceId, repo.SourceId);
+            var flow = Assert.Single(repo.Flows);
+            Assert.Equal("WellLog@1.4.0", flow.Mapping);
+            // The flow reads the cache of the partition it delivers to.
+            Assert.Equal(scope, flow.CacheScope);
+            Assert.Equal("opendes", flow.Parameters["dataPartition"]);
+
+            var caches = await ReadAsync<List<DeliveryBuilderCacheDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/mapping-builder/caches"));
+            var cache = Assert.Single(caches, c => c.Scope == scope);
+            Assert.Equal([cacheFlowName], cache.Flows);
+            Assert.Equal(ReferenceVersion, cache.CurrentVersion);
+            Assert.Equal(["FacilityName"], Assert.Single(cache.Types, c => c.Name == "Wellbore").Fields);
+
+            // The cache page reads the same cache: the flow and file that fill it, its types with what the current version holds
+            // of each, and the version with the flow that wrote it and who captured it.
+            var listed = await ReadAsync<List<DeliveryCacheDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/caches?repoId=" + repoId));
+            var described = Assert.Single(listed);
+            Assert.Equal(scope, described.Scope);
+            var filler = Assert.Single(described.Flows);
+            Assert.Equal(cacheFlowName, filler.Name);
+            Assert.Equal("caches/" + cacheFlowName + ".yaml", filler.RelativePath);
+            Assert.Equal(ReferenceVersion, described.Current!.Version);
+            Assert.Equal("tests", described.Current.CapturedBy);
+            Assert.Equal(cacheFlowName, described.Current.Flow);
+            Assert.Equal(1, described.Versions);
+            Assert.Equal(2, Assert.Single(described.Types, t => t.Name == "Wellbore").Items);
+            var wellbores = await ReadAsync<PagedResult<DeliveryCachedItemDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/items?scope={scope}&type=Wellbore"));
+            Assert.Equal(2, wellbores.Total);
+            Assert.All(wellbores.Items, item => Assert.Equal(ReferenceVersion, item.Version));
+            var history = await ReadAsync<List<DeliveryCacheHistoryEntryDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/history?scope={scope}"));
+            var only = Assert.Single(history);
+            Assert.Null(only.Before);
+            using (var unnamed = await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/cache/items"))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, unnamed.StatusCode);
+            }
+
+            var detail = await ReadAsync<DeliveryTemplateDetailDto>(await SendAsync(client, author, HttpMethod.Get, DetailUrl(WellLogKind, WellLogVersion) + "&scope=" + scope));
+            Assert.Equal(["UnitOfMeasure"], Assert.Single(detail.Variables, v => v.Path == "osdu.data.Curves[].CurveUnit").CacheTypes);
+
+            var draft = await ReadAsync<MappingDraft>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/draft", new
+            {
+                scope,kind = WellLogKind, version = WellLogVersion, name = "WellLog", mappingVersion = "9.0.0", system = "recall",
+            }));
+            var prefilled = Assert.Single(draft.Entries, e => e.Target == "osdu.data.WellboreID");
+            Assert.True(prefilled.Prefilled);
+            Assert.Equal(MappingDraftInput.Cache, prefilled.Input);
+            Assert.Equal("FacilityName", Assert.Single(prefilled.FindBy).Field);
+
+            // The sample mapping, opened in the builder and written back, passes the check against the seeded cache.
+            var sample = await File.ReadAllTextAsync(Path.Combine(SampleRoot, "mappings", "WellLog@1.4.0.yaml"));
+            var parsed = await ReadAsync<DeliveryMappingParseResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/parse", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml" }));
+            Assert.Empty(parsed.Issues);
+            Assert.NotNull(parsed.Draft);
+            var parameters = new Dictionary<string, string> { ["dataPartition"] = "opendes" };
+            var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = parsed.Draft, parameters }));
+            Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
+            Assert.Contains("target: osdu.data.WellboreID", checkedSample.Yaml, StringComparison.Ordinal);
+
+            // The same document drawn as the shape of the records it renders: the identity and the envelope as a render
+            // writes them, and a placeholder wherever a value comes from a row or the cache.
+            var shape = await ReadAsync<DeliveryMappingShapeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/shape", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml", parameters }));
+            Assert.Empty(shape.Issues);
+            Assert.NotNull(shape.Record);
+            Assert.Equal("opendes:work-product-component--WellLog:<delivery key from recall, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
+            Assert.Equal("<string from dataset.curves.curve_id>", shape.Record["data"]!["Curves"]![0]!["CurveID"]!.GetValue<string>());
+            Assert.Equal("opendes", Assert.Single(shape.Parameters).Value);
+
+            // A wellbore reference read from the unit cache is written, and refused by the check against the template.
+            var wrong = parsed.Draft with
+            {
+                Entries = parsed.Draft.Entries.Select(e => e.Target == "osdu.data.WellboreID"
+                    ? e with { CacheType = "UnitOfMeasure", FindBy = [new MappingDraftFind("Code", "wellbore_uwi", null)] }
+                    : e).ToList(),
+            };
+            var refused = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = wrong, parameters }));
+            Assert.False(refused.Valid);
+            Assert.Contains(refused.Issues, i => i.Severity == "error" && i.Message.Contains("writes the id of a cached UnitOfMeasure", StringComparison.Ordinal));
+
+            // Without a partition named there is no cache to check the cache entries against, and the check says so.
+            var noCache = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope = (string?)null, draft = parsed.Draft, parameters }));
+            Assert.False(noCache.Valid);
+            Assert.Contains(noCache.Issues, i => i.Message.Contains("reads cache.Wellbore, which cache version 'none' does not hold", StringComparison.Ordinal));
+        }
+        finally
+        {
+            await CleanupAsync(cs, repoId, flowName, scope);
+        }
+    }
+
+    [SkippableFact]
+    public async Task The_cache_page_lists_one_cache_per_partition_with_every_cache_flow_that_fills_it()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        await using var factory = Factory(cs);
+        using var client = factory.CreateClient();
+        var reader = await TokenAsync(client, "read");
+
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var shared = "cp-shared-" + suffix;
+        var single = "cp-single-" + suffix;
+        var (projectA, projectB, projectC) = ("cp-a-" + suffix, "cp-b-" + suffix, "cp-c-" + suffix);
+        var repoName = "cp_caches_" + suffix;
+        var repoId = FlowIdentity.FromName(repoName);
+        var root = Path.Combine(Path.GetTempPath(), "sqlflow_cp_caches_" + suffix);
+        Directory.CreateDirectory(Path.Combine(root, "caches"));
+        await File.WriteAllTextAsync(Path.Combine(root, "caches", "a.yaml"), CacheFlowYaml(projectA, shared, """
+              - kind: osdu:wks:master-data--Wellbore:1.0.0
+                fields: [data.FacilityName]
+            """));
+        await File.WriteAllTextAsync(Path.Combine(root, "caches", "b.yaml"), CacheFlowYaml(projectB, shared, """
+              - kind: osdu:wks:master-data--Wellbore:1.0.0
+                onChange: approve
+                fields:
+                  - data.FacilityName
+                  - path: data.NameAlias.AliasName
+                    as: Alias
+              - kind: osdu:wks:reference-data--UnitOfMeasure:1.0.0
+                fields: [data.Code]
+            """));
+        await File.WriteAllTextAsync(Path.Combine(root, "caches", "c.yaml"), CacheFlowYaml(projectC, single, """
+              - kind: osdu:wks:reference-data--UnitOfMeasure:1.0.0
+                fields: [data.Code]
+            """));
+
+        try
+        {
+            var warnings = new List<string>();
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var now = DateTime.UtcNow;
+                db.Repos.Add(new CatalogRepo { Id = repoId, Name = repoName, RemoteUrl = "https://example/" + repoName + ".git", RootPath = root, FirstSeenUtc = now, LastSyncUtc = now });
+                await db.SaveChangesAsync();
+                var synced = await new DeliveryCatalogSync(new DeliveryDocumentLoader()).SyncAsync(db, repoId, root, now, warnings, CancellationToken.None);
+                Assert.Equal((4, 0), (synced.Added, synced.Invalid));
+            }
+
+            Assert.Empty(warnings);
+
+            var listed = await ReadAsync<List<DeliveryCacheDto>>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/caches?repoId=" + repoId));
+            Assert.Equal(2, listed.Count);
+
+            // Two flows fill the shared partition's one cache: each with its file and the types it declares, and the types as
+            // they declare them together.
+            var partition = Assert.Single(listed, c => c.Scope == shared);
+            Assert.Equal([projectA, projectB], partition.Flows.Select(f => f.Name));
+            Assert.All(partition.Flows, f => Assert.Equal((repoId, repoName, "https://osdu.example.test"), (f.RepoId, f.RepoName, f.Endpoint)));
+            Assert.Equal(["caches/a.yaml", "caches/b.yaml"], partition.Flows.Select(f => f.RelativePath));
+            Assert.Equal(["UnitOfMeasure", "Wellbore"], partition.Flows[1].Types);
+            Assert.Null(partition.Current);
+            Assert.Equal(0, partition.Versions);
+            var wellbore = Assert.Single(partition.Types, t => t.Name == "Wellbore");
+            Assert.Equal([projectA, projectB], wellbore.Sources.Select(s => s.Flow));
+            Assert.Equal("approve", wellbore.OnChange);
+            Assert.Equal(["FacilityName", "Alias"], wellbore.Fields.Select(f => f.As));
+            Assert.Equal([projectA, projectB], wellbore.Fields[0].Flows);
+            Assert.Equal([projectB], wellbore.Fields[1].Flows);
+            Assert.Equal([projectB], Assert.Single(partition.Types, t => t.Name == "UnitOfMeasure").Sources.Select(s => s.Flow));
+
+            var alone = Assert.Single(listed, c => c.Scope == single);
+            Assert.Equal([projectC], alone.Flows.Select(f => f.Name));
+            Assert.Equal(["UnitOfMeasure"], alone.Types.Select(t => t.Name));
+
+            // A capture by either flow lands in the partition's one cache, which the page shows with the flow that wrote it.
+            var store = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
+            var captured = new ReferenceType(
+                "Wellbore", "master-data--Wellbore",
+                [ReferenceItem.FromText(shared + ":master-data--Wellbore:1", new Dictionary<string, string> { ["FacilityName"] = "NO 1/1-A", ["Alias"] = "WELL A" })]);
+            Assert.True((await store.MergeAsync(shared, projectB, [captured], new CacheCapture(null, "tests", "seeded"), DateTimeOffset.UtcNow)).Written);
+            var refreshed = Assert.Single(
+                await ReadAsync<List<DeliveryCacheDto>>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/caches?repoId=" + repoId)),
+                c => c.Scope == shared);
+            Assert.Equal(projectB, refreshed.Current!.Flow);
+            Assert.Equal(1, refreshed.Versions);
+            Assert.Equal(1, Assert.Single(refreshed.Types, t => t.Name == "Wellbore").Items);
+            Assert.Null(Assert.Single(
+                await ReadAsync<List<DeliveryCacheDto>>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/caches?repoId=" + repoId)),
+                c => c.Scope == single).Current);
+
+            // The mapping builder offers the same partition cache, filled by both flows.
+            var builder = await ReadAsync<List<DeliveryBuilderCacheDto>>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/mapping-builder/caches"));
+            Assert.Equal([projectA, projectB], Assert.Single(builder, c => c.Scope == shared).Flows);
+            Assert.Equal([projectC], Assert.Single(builder, c => c.Scope == single).Flows);
+        }
+        finally
+        {
+            await CleanupCachesAsync(cs, shared, single);
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
+                await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>A cache flow of one partition searching the test endpoint, with its types (YAML list items indented by two spaces).</summary>
+    private static string CacheFlowYaml(string name, string partition, string types) => $"""
+        flowType: cache
+        name: {name}
+        source:
+          endpoint: https://osdu.example.test
+          headers:
+            data-partition-id: {partition}
+        types:
+        {types}
+        """;
+
+    [SkippableFact]
+    public async Task A_reader_browses_the_OSDU_data_definitions_and_gets_a_kind_bundled_with_where_it_came_from()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.ProvisionAsync(cs);
+        using var handler = new DataDefinitionsHandler();
+        using var http = new HttpClient(handler, disposeHandler: false);
+        using var cache = new TemporaryDirectory();
+        var definitions = new OsduDataDefinitions(
+            () => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, cache.Path, Timeout.InfiniteTimeSpan, TimeSpan.FromMinutes(1), TimeProvider.System);
+        await using var factory = Factory(cs).WithServices(services => services.AddSingleton(definitions));
+        using var client = factory.CreateClient();
+        var reader = await TokenAsync(client, "read");
+
+        using (var anonymous = await client.GetAsync(new Uri("/api/v1/delivery/templates/osdu/releases", UriKind.Relative)))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+        }
+
+        var listed = await ReadAsync<DeliveryOsduReleasesDto>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/releases"));
+        Assert.NotNull(listed.SyncedUtc);
+        var release = Assert.Single(listed.Releases);
+        Assert.Equal("v0.30.0", release.Name);
+        Assert.Equal(DataDefinitionsHandler.Commit, release.Commit);
+
+        // Listing the releases downloads nothing: a release comes into the local copy when it is first read.
+        Assert.False(release.Local);
+        Assert.Equal("https://community.opengroup.org/osdu/data/data-definitions/-/tree/v0.30.0/Generated", release.WebUrl.AbsoluteUri);
+
+        // The index lists the record kinds only: the abstract schema it also names is a building block.
+        var index = await ReadAsync<DeliveryOsduSchemaIndexDto>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/schemas"));
+        Assert.Equal(2, index.Schemas.Count);
+        var wellbore = Assert.Single(index.Schemas, s => s.Kind == WellboreKind);
+        Assert.Equal(WellboreKind, wellbore.Kind);
+        Assert.Equal("https://community.opengroup.org/osdu/data/data-definitions/-/blob/v0.30.0/Generated/master-data/Wellbore.1.3.0.json", wellbore.WebUrl.AbsoluteUri);
+
+        var file = await ReadAsync<DeliveryOsduSchemaFileDto>(await SendAsync(
+            client, reader, HttpMethod.Get, $"/api/v1/delivery/templates/osdu/schema?release=v0.30.0&kind={Uri.EscapeDataString(WellboreKind)}"));
+        Assert.Equal("OSDU data definitions v0.30.0 (99f8fc88d8ad) Generated/master-data/Wellbore.1.3.0.json", file.Origin);
+        Assert.NotNull(file.Schema["definitions"]?["AbstractAccessControlList.1.0.0"]);
+
+        // What comes back is what the preview lays out, and what saving would store.
+        var detail = await ReadAsync<DeliveryTemplateDetailDto>(await SendAsync(client, reader, HttpMethod.Post, "/api/v1/delivery/templates/preview", new { kind = file.Kind, schema = file.Schema }));
+        Assert.Equal(file.Version, detail.Version);
+        Assert.Contains(detail.Variables, v => v.Path == "osdu.data.FacilityName");
+        Assert.Contains(detail.Variables, v => v.Path == "osdu.acl.owners");
+
+        using (var unknownRelease = await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/schemas?release=v9.9.9"))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, unknownRelease.StatusCode);
+        }
+
+        using (var missingKind = await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/schema?kind=" + Uri.EscapeDataString("osdu:wks:master-data--Missing:1.0.0")))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, missingKind.StatusCode);
+            Assert.Contains("Generated/master-data/Missing.1.0.0.json", await missingKind.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+
+        using (var notKind = await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/templates/osdu/schema?kind=Wellbore"))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, notKind.StatusCode);
+        }
+
+        // Two versions of the kind compare variable by variable, and as their files are published.
+        const string OlderKind = "osdu:wks:master-data--Wellbore:1.0.0";
+        var comparison = await ReadAsync<DeliveryOsduComparisonDto>(await SendAsync(
+            client, reader, HttpMethod.Get,
+            $"/api/v1/delivery/templates/osdu/compare?fromRelease=v0.30.0&fromKind={Uri.EscapeDataString(OlderKind)}&toRelease=v0.30.0&toKind={Uri.EscapeDataString(WellboreKind)}"));
+        Assert.False(comparison.SameFile);
+        Assert.False(comparison.OnlyIdentifiersDiffer);
+        Assert.False(comparison.SameTemplate);
+        Assert.Equal(("DEVELOPMENT", "PUBLISHED"), (comparison.From.Status, comparison.To.Status));
+        Assert.Contains("\"Name\"", comparison.From.FileText, StringComparison.Ordinal);
+        Assert.Equal("https://community.opengroup.org/osdu/data/data-definitions/-/blob/v0.30.0/Generated/master-data/Wellbore.1.0.0.json", comparison.From.WebUrl.AbsoluteUri);
+        var removed = Assert.Single(comparison.Changes, c => c.Path == "osdu.data.Name");
+        Assert.Equal(("Removed", "Breaking"), (removed.Change, removed.Impact));
+        var added = Assert.Single(comparison.Changes, c => c.Path == "osdu.data.FacilityName");
+        Assert.Equal(("Added", "Additive"), (added.Change, added.Impact));
+        Assert.Equal((1, 1, 0), (comparison.Breaking, comparison.Additive, comparison.Wording));
+
+        // Both versions refer to the same access control list schema, which is the same in both, so no shared schema differs.
+        Assert.Equal(1, comparison.SameReferencedFiles);
+        Assert.Empty(comparison.ReferencedFiles);
+
+        var same = await ReadAsync<DeliveryOsduComparisonDto>(await SendAsync(
+            client, reader, HttpMethod.Get, $"/api/v1/delivery/templates/osdu/compare?fromKind={Uri.EscapeDataString(WellboreKind)}&toKind={Uri.EscapeDataString(WellboreKind)}"));
+        Assert.True(same.SameFile && same.SameTemplate);
+        Assert.Empty(same.Changes);
+
+        using (var otherKind = await SendAsync(
+            client, reader, HttpMethod.Get, $"/api/v1/delivery/templates/osdu/compare?fromKind={Uri.EscapeDataString("osdu:wks:master-data--Well:1.0.0")}&toKind={Uri.EscapeDataString(WellboreKind)}"))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, otherKind.StatusCode);
+            Assert.Contains("different kinds", await otherKind.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+
+        // A sync reads the release list again and downloads the newest release when it is not on disk. It sits in the operate
+        // group, which takes a signed-in caller: an anonymous one is refused.
+        using (var anonymousSync = await client.PostAsJsonAsync(new Uri("/api/v1/delivery/templates/osdu/sync", UriKind.Relative), new { release = (string?)null }, Web))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymousSync.StatusCode);
+        }
+
+        var operate = await TokenAsync(client, "read", "operate");
+        var sync = await ReadAsync<DeliveryOsduSyncDto>(await SendAsync(client, operate, HttpMethod.Post, "/api/v1/delivery/templates/osdu/sync", new { release = (string?)null }));
+        var synced = Assert.Single(sync.Releases);
+        Assert.True(synced.Local);
+        Assert.Empty(sync.Downloaded);
+        Assert.Equal(1, handler.Archives);
+    }
+
+    /// <summary>
+    /// A repository as the sync would leave it: a tracked source, one delivery flow that renders with the sample WellLog
+    /// mapping and delivers to <paramref name="scope"/>, the cache definitions a cache flow of that partition declares, and
+    /// the sample cache records as the current version of the partition's cache, merged the way a refresh merges a capture.
+    /// </summary>
+    private static async Task SeedRepositoryAsync(string cs, string repoName, Guid repoId, Guid sourceId, string flowName, Guid pipelineId, string scope, string cacheFlowName)
+    {
+        var now = DateTime.UtcNow;
+        await using var db = CatalogDatabase.Create(cs);
+        db.Repos.Add(new CatalogRepo { Id = repoId, Name = repoName, RemoteUrl = "https://example/" + repoName + ".git", RootPath = Path.GetTempPath(), FirstSeenUtc = now, LastSyncUtc = now });
+        db.RepoSources.Add(new CatalogRepoSource { Id = sourceId, Name = repoName, RemoteUrl = "https://example/" + repoName + ".git", Branch = "main" });
+        db.Pipelines.Add(new CatalogPipeline
+        {
+            Id = pipelineId,
+            RepoId = repoId,
+            Name = flowName,
+            Kind = "delivery",
+            RelativePath = "flows/" + flowName + ".yaml",
+            ContentHash = new string('0', 64),
+            Yaml = $"""
+                flowType: delivery
+                name: {flowName}
+                source:
+                  location: C:/drops/{flowName}
+                render:
+                  mapping: WellLog@1.4.0
+                  parameters:
+                    dataPartition: opendes
+                target:
+                  endpoint: https://osdu.example.test
+                  headers:
+                    data-partition-id: {scope}
+                  protocol: osduRecord
+                """,
+            DefinitionJson = $$"""{"name":"{{flowName}}","flowKind":"delivery"}""",
+            Active = true,
+            Wave = 0,
+            FirstSeenUtc = now,
+            LastSeenUtc = now,
+        });
+
+        var fields = new Dictionary<string, string>
+        {
+            ["UnitOfMeasure"] = """[{"path":"data.Code","as":"Code"},{"path":"data.Name","as":"Name"},{"path":"data.ID","as":"ID"}]""",
+            ["LogCurveBusinessValue"] = """[{"path":"data.Code","as":"Code"},{"path":"data.Name","as":"Name"}]""",
+            ["VerticalMeasurementType"] = """[{"path":"data.Code","as":"Code"},{"path":"data.Name","as":"Name"}]""",
+            ["Wellbore"] = """[{"path":"data.FacilityName","as":"FacilityName"}]""",
+        };
+
+        var types = new List<ReferenceType>();
+        foreach (var (type, declared) in fields)
+        {
+            var file = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(SampleRoot, "references", type + ".json")))!.AsObject();
+            var entityType = file["entityType"]!.GetValue<string>();
+            db.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
+            {
+                Id = Guid.NewGuid(),
+                RepoId = repoId,
+                FlowName = cacheFlowName,
+                Scope = scope,
+                Endpoint = "https://osdu.example.test",
+                RelativePath = "caches/" + cacheFlowName + ".yaml",
+                Name = type,
+                EntityType = entityType,
+                Kind = "osdu:wks:" + entityType + ":*",
+                FieldsJson = declared,
+                FirstSeenUtc = now,
+                LastSeenUtc = now,
+            });
+            types.Add(ReferenceType.FromJson(type, file));
+        }
+
+        await db.SaveChangesAsync();
+
+        // Captured at the instant the reference version names, so the version the merge writes carries that label.
+        var store = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
+        var write = await store.MergeAsync(scope, cacheFlowName, types, new CacheCapture(null, "tests", "sample files"), new DateTimeOffset(2026, 9, 8, 21, 27, 27, TimeSpan.Zero));
+        Assert.Equal(ReferenceVersion, write.Snapshot.Version);
+    }
+
+    /// <summary>Removes every version, record and flow membership of the partitions' caches.</summary>
+    private static async Task CleanupCachesAsync(string cs, params string[] scopes)
+    {
+        await using var db = CatalogDatabase.Create(cs);
+        await db.DeliveryCacheMembers.Where(m => scopes.Contains(m.Scope)).ExecuteDeleteAsync();
+        await db.DeliveryCacheItems.Where(i => scopes.Contains(i.Scope)).ExecuteDeleteAsync();
+        await db.DeliveryCacheVersions.Where(v => scopes.Contains(v.Scope)).ExecuteDeleteAsync();
+    }
+
+    private static async Task CleanupAsync(string cs, Guid repoId, string flowName, string scope)
+    {
+        await CleanupCachesAsync(cs, scope);
+        await using var db = CatalogDatabase.Create(cs);
+        await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
+        await db.ComputeTasks.Where(t => t.SourceRef == flowName).ExecuteDeleteAsync();
+        await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+        var repoName = await db.Repos.Where(r => r.Id == repoId).Select(r => r.Name).FirstOrDefaultAsync();
+        await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+        if (repoName is not null)
+        {
+            await db.RepoSources.Where(s => s.Name == repoName).ExecuteDeleteAsync();
+        }
+    }
+
+    private static object SaveBody(string kind, string file)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(SampleRoot, "templates", file)));
+        return new { kind, schema = document.RootElement.Clone(), origin = "file " + file };
+    }
+
+    private static string DetailUrl(string kind, string version) => $"/api/v1/delivery/templates/detail?kind={Uri.EscapeDataString(kind)}&version={version}";
+
+    private static ControlPlaneAppFactory Factory(string cs)
+        => new ControlPlaneAppFactory().WithCatalog(cs).WithSetting("ControlPlane:Worker:Enabled", "false");
+
+    private static async Task<string> TokenAsync(HttpClient client, params string[] scopes)
+    {
+        using var response = await client.PostAsJsonAsync(new Uri("/api/v1/auth/token", UriKind.Relative), new TokenRequest(ControlPlaneAppFactory.BootstrapSecret, null, scopes));
+        response.EnsureSuccessStatusCode();
+        var token = await response.Content.ReadFromJsonAsync<TokenResponse>();
+        Assert.NotNull(token);
+        return token.AccessToken;
+    }
+
+    private static async Task<HttpResponseMessage> SendAsync(HttpClient client, string token, HttpMethod method, string url, object? body = null)
+    {
+        using var request = new HttpRequestMessage(method, new Uri(url, UriKind.Relative));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        if (body is not null)
+        {
+            request.Content = JsonContent.Create(body, options: Web);
+        }
+
+        return await client.SendAsync(request);
+    }
+
+    private static async Task<T> ReadAsync<T>(HttpResponseMessage response)
+    {
+        using (response)
+        {
+            var text = await response.Content.ReadAsStringAsync();
+            Assert.True(response.IsSuccessStatusCode, $"{(int)response.StatusCode} {response.StatusCode}: {text}");
+            var value = JsonSerializer.Deserialize<T>(text, Web);
+            Assert.NotNull(value);
+            return value;
+        }
+    }
+
+    /// <summary>
+    /// The OSDU data definitions' GitLab API, reduced to one release: its tag, and its Generated folder (a Wellbore schema
+    /// in two versions and the abstract schema they refer to) as the tar.gz archive GitLab serves.
+    /// </summary>
+    private sealed class DataDefinitionsHandler : HttpMessageHandler
+    {
+        public const string Commit = "99f8fc88d8ad838b5738ac5ad92ac643538b5766";
+
+        private static readonly Dictionary<string, string> Files = new(StringComparer.Ordinal)
+        {
+            ["SchemaStatus.json"] = """{ "osdu:wks:master-data--Wellbore:1.0.0": "DEVELOPMENT", "osdu:wks:master-data--Wellbore:1.3.0": "PUBLISHED", "osdu:wks:AbstractAccessControlList:1.0.0": "PUBLISHED" }""",
+            ["master-data/Wellbore.1.0.0.json"] = """
+                { "x-osdu-schema-source": "osdu:wks:master-data--Wellbore:1.0.0", "type": "object",
+                  "properties": { "acl": { "$ref": "../abstract/AbstractAccessControlList.1.0.0.json" }, "data": { "type": "object", "properties": { "Name": { "type": "string" } } } } }
+                """,
+            ["master-data/Wellbore.1.3.0.json"] = """
+                { "x-osdu-schema-source": "osdu:wks:master-data--Wellbore:1.3.0", "type": "object",
+                  "properties": { "acl": { "$ref": "../abstract/AbstractAccessControlList.1.0.0.json" }, "data": { "type": "object", "properties": { "FacilityName": { "type": "string" } } } } }
+                """,
+            ["abstract/AbstractAccessControlList.1.0.0.json"] = """{ "type": "object", "properties": { "owners": { "type": "array", "items": { "type": "string" } } } }""",
+        };
+
+        private int _archives;
+
+        /// <summary>How many times the release's archive was downloaded.</summary>
+        public int Archives => _archives;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/repository/tags", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent($$"""[ { "name": "v0.30.0", "commit": { "id": "{{Commit}}", "committed_date": "2026-07-17T14:55:57.000+08:00" } } ]""", Encoding.UTF8, "application/json"),
+                });
+            }
+
+            if (path.EndsWith("/repository/archive.tar.gz", StringComparison.Ordinal) && request.RequestUri.Query.Contains("sha=" + Commit, StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _archives);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Archive()) });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+
+        private static byte[] Archive()
+        {
+            using var buffer = new MemoryStream();
+            using (var gzip = new GZipStream(buffer, CompressionLevel.Fastest, leaveOpen: true))
+            using (var tar = new TarWriter(gzip, TarEntryFormat.Pax, leaveOpen: true))
+            {
+                var top = $"data-definitions-v0.30.0-{Commit}-Generated/";
+                foreach (var (file, json) in Files)
+                {
+                    tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, top + "Generated/" + file) { DataStream = new MemoryStream(Encoding.UTF8.GetBytes(json)) });
+                }
+            }
+
+            return buffer.ToArray();
+        }
+    }
+
+    /// <summary>A folder under the temp folder for one test, removed afterwards.</summary>
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "sqlflow_dd_" + Guid.NewGuid().ToString("N"));
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path))
+            {
+                Directory.Delete(Path, recursive: true);
+            }
+        }
+    }
+}

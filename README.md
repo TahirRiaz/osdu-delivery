@@ -19,6 +19,7 @@ SQLFlow's lineage orders the three like any other flows.
 | Path | What it is |
 | --- | --- |
 | `sqlflow/` | SQLFlow, vendored as a squashed git subtree and never edited here |
+| `osdu/` | Everything OSDU Delivery adds: the module's code, GUI pages, tests, docs and sample estate (see `osdu/README.md`) |
 | `tools/check-vendored-sqlflow.sh` | Fails when `sqlflow/` differs from the SQLFlow commit it was vendored from |
 | `docs/plan.md` | The rebuild plan: the stages, what each one changes, and the tests that close it |
 | `CLAUDE.md` | The project's working rules |
@@ -34,5 +35,6 @@ tools/check-vendored-sqlflow.sh
 
 ## Status
 
-The repository holds the vendored SQLFlow and the rebuild plan. The OSDU module arrives stage by stage, as `docs/plan.md`
-describes.
+The repository holds the vendored SQLFlow, the rebuild plan, and the OSDU code copied from the previous implementation into
+`osdu/`. That code does not build yet: the stages in `docs/plan.md` wire it onto SQLFlow and move its data input to ingestion
+tables.

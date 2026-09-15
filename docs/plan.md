@@ -20,16 +20,21 @@ tests that close it. A stage is finished only when those tests pass; nothing mov
 
 ```text
 osdu-delivery/
-  sqlflow/                         SQLFlow, vendored, never edited here
-  src/
-    SqlFlow.Delivery/              the OSDU module: flow kind, executor, ledger, protocols, rendering, mappings, templates, cache
-    SqlFlow.Delivery.Data/         OsduDbContext, the osdu schema model, its migrations and schema version
-    hosts/                         control plane, node and CLI builds that compose SQLFlow with the module and its branding
-  gui/modules/osdu/                the OSDU pages, panels and API client, registered through SQLFlow's GUI module contract
-  samples/                         a sample estate: pre, ing and OSDU flows, mappings, cache flow, source files
-  tests/                           the module's suites (unit and SQL Server)
-  docs/                            product and design documentation
+  sqlflow/                                SQLFlow, vendored, never edited here
+  osdu/                                   everything OSDU Delivery adds
+    src/SqlFlow.Delivery/                 the OSDU module: flow kind, executor, ledger, protocols, rendering, mappings, templates, cache
+    src/SqlFlow.Delivery.Data/            OsduDbContext, the osdu schema model, its migrations and schema version
+    src/SqlFlow.Delivery.ControlPlane/    delivery and template endpoints, cache rollout and data definitions services
+    src/SqlFlow.Delivery.Cli/             the check, cache and template verbs
+    hosts/                                control plane, node and CLI builds that compose SQLFlow with the module and its branding
+    gui/                                  the OSDU pages, panels, API client and e2e specs, registered through SQLFlow's GUI module contract
+    samples/                              a sample estate: pre, ing and OSDU flows, mappings, cache flow, source files
+    tests/                                the module's suites (unit and SQL Server)
+    docs/                                 product and design documentation
 ```
+
+The code in `osdu/` was copied from the previous implementation at commit `7377609`; `osdu/README.md` lists where each part
+came from and what was left behind.
 
 ## Stage 0: repository foundation (done)
 
@@ -63,7 +68,7 @@ with a test-only module, and the result is pulled into `sqlflow/` with `tools/ch
 
 ## Stage 2: the OSDU backend module
 
-- Move the delivery domain from the fork into `src/SqlFlow.Delivery`, registered through stage 1's extension points: the flow
+- Wire the delivery domain copied into `osdu/src/SqlFlow.Delivery` onto SQLFlow through stage 1's extension points: the flow
   kind and executor, the ledger, the protocols (record, well log, file, manifest), rendering, the preflight gate, templates
   and the mapping builder, the OSDU cache and its refresh, the worker, verifier, retrieval, removal and fan-out.
 - Create `src/SqlFlow.Delivery.Data` with `OsduDbContext`:
@@ -87,7 +92,7 @@ a disposable database provisioned by migrations, and the schema-scope check pass
 
 ## Stage 3: the OSDU GUI module
 
-- Move the OSDU pages into `gui/modules/osdu`: delivery overview, flow tabs, record and submission pages, audit trail,
+- Register the OSDU pages copied into `osdu/gui`: delivery overview, flow tabs, record and submission pages, audit trail,
   mappings, templates, mapping builder, OSDU cache.
 - Register routes, navigation and the per-kind panels through stage 1's GUI module contract; shared components the pages need
   and SQLFlow lacks go into SQLFlow, not into the module.

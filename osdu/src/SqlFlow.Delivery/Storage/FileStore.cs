@@ -1,0 +1,553 @@
+using Azure;
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
+using SqlFlow.Azure;
+using SqlFlow.Core;
+using SqlFlow.Core.Abstractions;
+using SqlFlow.Core.Model;
+using SqlFlow.Core.Storage;
+
+namespace SqlFlow.Delivery.Storage;
+
+/// <summary>
+/// Writes a file (create or overwrite), opens a location for streamed writing, and answers whether a location
+/// exists, for the locations one file store family handles. The platform's <see cref="IFileStore"/> is read-only
+/// by design (the engine only ever reads sources); snapshots, the known-state publication and the intake's work
+/// batches are what the delivery domain writes, so the write side lives here, next to the reads it pairs with.
+/// </summary>
+public interface IFileWriter
+{
+    bool CanHandle(string location);
+
+    Task WriteAsync(string location, Stream content, CancellationToken ct = default);
+
+    /// <summary>
+    /// Opens a location for streamed writing: bytes go to storage as they are written, so a work batch of any size
+    /// never sits in memory. The content becomes visible (and complete) when the stream is disposed.
+    /// </summary>
+    Task<Stream> OpenWriteAsync(string location, CancellationToken ct = default);
+
+    Task<bool> ExistsAsync(string location, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes a location and everything under it (a file, or a folder and its contents). A location that is not
+    /// there is not an error: the caller asked for it to be gone, and it is. Used to take back a drop-off upload,
+    /// which is the only thing the delivery side deletes from storage.
+    /// </summary>
+    Task DeleteAsync(string location, CancellationToken ct = default);
+}
+
+/// <summary>
+/// The two reads a streaming engine needs beyond the platform's forward-only <see cref="IFileStore.OpenReadAsync"/>:
+/// a seekable stream (parquet reads its footer first and then row groups on demand, so a seekable blob stream
+/// avoids buffering the whole file) and a byte range (one document out of a work batch, without the rest).
+/// </summary>
+public interface IFileReader
+{
+    bool CanHandle(string location);
+
+    Task<Stream> OpenSeekableAsync(FileRef file, CancellationToken ct = default);
+
+    Task<Stream> OpenRangeAsync(string path, long offset, long length, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Picks the store (and the writer and reader) for a location: the platform's local and Azure blob stores for
+/// listings and forward reads, the matching writers and readers for the few writes and the seekable and range
+/// reads. One registry per host, shared by the drop reader, the snapshot store, the work batches and the
+/// known-state publisher.
+/// </summary>
+public sealed class FileStoreRegistry
+{
+    private readonly IReadOnlyList<IFileStore> _stores;
+    private readonly IReadOnlyList<IFileWriter> _writers;
+    private readonly IReadOnlyList<IFileReader> _readers;
+    private readonly IReadOnlyList<ISignedUploadIssuer> _signers;
+
+    public FileStoreRegistry(
+        IEnumerable<IFileStore> stores, IEnumerable<IFileWriter> writers, IEnumerable<IFileReader>? readers = null,
+        IEnumerable<ISignedUploadIssuer>? signers = null)
+    {
+        ArgumentNullException.ThrowIfNull(stores);
+        ArgumentNullException.ThrowIfNull(writers);
+        _stores = stores.ToList();
+        _writers = writers.ToList();
+        _readers = (readers ?? []).ToList();
+        _signers = (signers ?? []).ToList();
+    }
+
+    /// <summary>
+    /// The store for a location. A location that does not exist lists as empty rather than failing: the callers
+    /// (the drop reader, the snapshot store) turn "nothing there" into their own precise message (a missing manifest,
+    /// an uncaptured snapshot), exactly as a blob prefix with no blobs already does.
+    /// </summary>
+    /// <summary>Joins a name onto a location, whichever store the location belongs to (a URI gets '/', a local path the platform separator).</summary>
+    public static string Join(string root, string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return root.Contains("://", StringComparison.Ordinal) ? root.TrimEnd('/') + "/" + name : Path.Combine(root, name);
+    }
+
+    public IFileStore For(string location)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(location);
+        var store = _stores.FirstOrDefault(s => s.CanHandle(location))
+            ?? throw new DeliveryException($"No file store handles location '{location}'. Use a local path, or an abfss:// or https://<account>.blob.core.windows.net URI.");
+        return new AbsentAsEmptyStore(store);
+    }
+
+    public Task WriteAsync(string location, Stream content, CancellationToken ct = default)
+        => Writer(location).WriteAsync(location, content, ct);
+
+    public Task<Stream> OpenWriteAsync(string location, CancellationToken ct = default)
+        => Writer(location).OpenWriteAsync(location, ct);
+
+    public Task<bool> ExistsAsync(string location, CancellationToken ct = default)
+        => Writer(location).ExistsAsync(location, ct);
+
+    public Task DeleteAsync(string location, CancellationToken ct = default)
+        => Writer(location).DeleteAsync(location, ct);
+
+    /// <summary>
+    /// Whether a caller can be handed a URL to write this location itself. False for a location whose storage family
+    /// issues none (a local path in development, say), which the caller answers by taking the bytes itself instead.
+    /// </summary>
+    public bool CanSignUpload(string location)
+        => !string.IsNullOrWhiteSpace(location) && _signers.Any(s => s.CanHandle(location));
+
+    /// <summary>A write-only URL for one file. Call <see cref="CanSignUpload"/> first: a location nothing can sign is an error here.</summary>
+    public Task<SignedUpload> CreateUploadAsync(string location, TimeSpan lifetime, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(location);
+        var signer = _signers.FirstOrDefault(s => s.CanHandle(location))
+            ?? throw new DeliveryException(
+                $"No signed upload can be issued for '{location}'. Signed uploads are issued for Azure Storage locations; "
+                + "somewhere else, the files are uploaded through the control plane.");
+        return signer.CreateUploadAsync(location, lifetime, ct);
+    }
+
+    /// <summary>
+    /// A seekable stream over a file: the reader's own when one is registered for the location, otherwise the
+    /// store's forward stream spilled to a temporary file (disk, never memory).
+    /// </summary>
+    public async Task<Stream> OpenSeekableAsync(FileRef file, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        if (_readers.FirstOrDefault(r => r.CanHandle(file.Path)) is { } reader)
+        {
+            return await reader.OpenSeekableAsync(file, ct).ConfigureAwait(false);
+        }
+
+        var forward = await For(file.Path).OpenReadAsync(file, ct).ConfigureAwait(false);
+        return await ParquetScopeReader.EnsureSeekableAsync(forward, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>A byte range of a file (one document out of a work batch). Falls back to a forward read and a skip.</summary>
+    public async Task<Stream> OpenRangeAsync(string path, long offset, long length, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(length);
+        if (_readers.FirstOrDefault(r => r.CanHandle(path)) is { } reader)
+        {
+            return await reader.OpenRangeAsync(path, offset, length, ct).ConfigureAwait(false);
+        }
+
+        var forward = await For(path).OpenReadAsync(new FileRef { Path = path, Name = Path.GetFileName(path) }, ct).ConfigureAwait(false);
+        try
+        {
+            await SkipAsync(forward, offset, ct).ConfigureAwait(false);
+            return new BoundedReadStream(forward, length);
+        }
+        catch
+        {
+            await forward.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async Task SkipAsync(Stream stream, long count, CancellationToken ct)
+    {
+        if (stream.CanSeek)
+        {
+            stream.Position = count;
+            return;
+        }
+
+        var buffer = new byte[1 << 16];
+        while (count > 0)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, count)), ct).ConfigureAwait(false);
+            if (read == 0)
+            {
+                throw new DeliveryException("The stream ended before the requested range.");
+            }
+
+            count -= read;
+        }
+    }
+
+    private IFileWriter Writer(string location)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(location);
+        return _writers.FirstOrDefault(w => w.CanHandle(location))
+            ?? throw new DeliveryException($"No file writer handles location '{location}'. Snapshots, work batches and known-state publications go to a local path or an Azure Storage URI.");
+    }
+}
+
+/// <summary>A store whose listing of a local path that is not there is empty (the platform store reports it as an error).</summary>
+internal sealed class AbsentAsEmptyStore : IFileStore
+{
+    private readonly IFileStore _inner;
+
+    public AbsentAsEmptyStore(IFileStore inner)
+    {
+        _inner = inner;
+    }
+
+    public bool CanHandle(string location) => _inner.CanHandle(location);
+
+    public Task<IReadOnlyList<FileRef>> ListAsync(string location, FileDiscovery discovery, CancellationToken ct = default)
+        => IsAbsentLocalPath(location)
+            ? Task.FromResult<IReadOnlyList<FileRef>>([])
+            : _inner.ListAsync(location, discovery, ct);
+
+    public Task<Stream> OpenReadAsync(FileRef file, CancellationToken ct = default) => _inner.OpenReadAsync(file, ct);
+
+    private static bool IsAbsentLocalPath(string location)
+        => !location.Contains("://", StringComparison.Ordinal) && !File.Exists(location) && !Directory.Exists(location);
+}
+
+/// <summary>Reads at most <c>length</c> bytes of an inner stream, then reports end of stream; disposes the inner stream.</summary>
+internal sealed class BoundedReadStream : Stream
+{
+    private readonly Stream _inner;
+    private long _remaining;
+
+    public BoundedReadStream(Stream inner, long length)
+    {
+        _inner = inner;
+        _remaining = length;
+    }
+
+    public override bool CanRead => true;
+
+    public override bool CanSeek => false;
+
+    public override bool CanWrite => false;
+
+    public override long Length => throw new NotSupportedException();
+
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+    public override void Flush()
+    {
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        if (_remaining <= 0)
+        {
+            return 0;
+        }
+
+        var read = _inner.Read(buffer, offset, (int)Math.Min(count, _remaining));
+        _remaining -= read;
+        return read;
+    }
+
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        if (_remaining <= 0)
+        {
+            return 0;
+        }
+
+        var read = await _inner.ReadAsync(buffer[..(int)Math.Min(buffer.Length, _remaining)], cancellationToken).ConfigureAwait(false);
+        _remaining -= read;
+        return read;
+    }
+
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+    public override void SetLength(long value) => throw new NotSupportedException();
+
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _inner.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+}
+
+/// <summary>Writes to the local and UNC file system, atomically (write to a sibling temp file, then move into place).</summary>
+public sealed class LocalFileWriter : IFileWriter
+{
+    private readonly LocalFileStore _store = new();
+
+    public bool CanHandle(string location) => _store.CanHandle(location);
+
+    public async Task WriteAsync(string location, Stream content, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        await using var target = await OpenWriteAsync(location, ct).ConfigureAwait(false);
+        await content.CopyToAsync(target, ct).ConfigureAwait(false);
+    }
+
+    public Task<Stream> OpenWriteAsync(string location, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(location);
+        var directory = Path.GetDirectoryName(location);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var temp = location + ".tmp";
+        var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, FileOptions.Asynchronous);
+        return Task.FromResult<Stream>(new MoveOnDisposeStream(stream, temp, location));
+    }
+
+    public Task<bool> ExistsAsync(string location, CancellationToken ct = default)
+        => Task.FromResult(File.Exists(location) || Directory.Exists(location));
+
+    public Task DeleteAsync(string location, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(location);
+        if (Directory.Exists(location))
+        {
+            Directory.Delete(location, recursive: true);
+        }
+        else if (File.Exists(location))
+        {
+            File.Delete(location);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>The temp file becomes the target when the stream closes, so a reader never sees a half-written file.</summary>
+    private sealed class MoveOnDisposeStream : Stream
+    {
+        private readonly FileStream _inner;
+        private readonly string _temp;
+        private readonly string _target;
+        private bool _done;
+
+        public MoveOnDisposeStream(FileStream inner, string temp, string target)
+        {
+            _inner = inner;
+            _temp = temp;
+            _target = target;
+        }
+
+        public override bool CanRead => false;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => true;
+
+        public override long Length => _inner.Length;
+
+        public override long Position { get => _inner.Position; set => throw new NotSupportedException(); }
+
+        public override void Flush() => _inner.Flush();
+
+        public override Task FlushAsync(CancellationToken cancellationToken) => _inner.FlushAsync(cancellationToken);
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+            => _inner.WriteAsync(buffer, cancellationToken);
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && !_done)
+            {
+                _done = true;
+                _inner.Dispose();
+                File.Move(_temp, _target, overwrite: true);
+            }
+
+            base.Dispose(disposing);
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            if (!_done)
+            {
+                _done = true;
+                await _inner.DisposeAsync().ConfigureAwait(false);
+                File.Move(_temp, _target, overwrite: true);
+            }
+
+            await base.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+}
+
+/// <summary>Seekable and range reads over the local file system.</summary>
+public sealed class LocalFileReader : IFileReader
+{
+    private readonly LocalFileStore _store = new();
+
+    public bool CanHandle(string location) => _store.CanHandle(location);
+
+    public Task<Stream> OpenSeekableAsync(FileRef file, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        return Task.FromResult<Stream>(new FileStream(file.Path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.Asynchronous));
+    }
+
+    public Task<Stream> OpenRangeAsync(string path, long offset, long length, CancellationToken ct = default)
+    {
+        var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.Asynchronous);
+        stream.Position = offset;
+        return Task.FromResult<Stream>(new BoundedReadStream(stream, length));
+    }
+}
+
+/// <summary>
+/// Writes blobs under the same credential the platform's <see cref="AzureBlobFileStore"/> reads with, so a
+/// snapshot store, a work location or a known-state location on the lake needs no second identity.
+/// </summary>
+public sealed class AzureBlobFileWriter : IFileWriter
+{
+    private readonly IAzureCredentialFactory _credentials;
+
+    public AzureBlobFileWriter(IAzureCredentialFactory credentials)
+    {
+        ArgumentNullException.ThrowIfNull(credentials);
+        _credentials = credentials;
+    }
+
+    public bool CanHandle(string location) => AzureBlobLocation.IsAzureStorageUri(location);
+
+    public async Task WriteAsync(string location, Stream content, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        var blob = Blob(_credentials, location);
+        try
+        {
+            await blob.UploadAsync(content, overwrite: true, ct).ConfigureAwait(false);
+        }
+        catch (RequestFailedException ex)
+        {
+            throw new DeliveryException($"Could not write '{location}' (status {ex.Status}): {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>A block blob written in 4 MB blocks as bytes arrive; committed when the stream is disposed.</summary>
+    public async Task<Stream> OpenWriteAsync(string location, CancellationToken ct = default)
+    {
+        var blob = Blob(_credentials, location);
+        try
+        {
+            return await blob.OpenWriteAsync(overwrite: true, new BlobOpenWriteOptions { BufferSize = 4 * 1024 * 1024 }, ct).ConfigureAwait(false);
+        }
+        catch (RequestFailedException ex)
+        {
+            throw new DeliveryException($"Could not open '{location}' for writing (status {ex.Status}): {ex.Message}", ex);
+        }
+    }
+
+    public async Task<bool> ExistsAsync(string location, CancellationToken ct = default)
+    {
+        try
+        {
+            return await Blob(_credentials, location).ExistsAsync(ct).ConfigureAwait(false);
+        }
+        catch (RequestFailedException ex)
+        {
+            throw new DeliveryException($"Could not check '{location}' (status {ex.Status}): {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Removes the blob at the location and every blob under it as a prefix, so a drop-off folder goes in one call.
+    /// A blob that is not there is not an error.
+    /// </summary>
+    public async Task DeleteAsync(string location, CancellationToken ct = default)
+    {
+        var parsed = AzureBlobLocation.Parse(location);
+        var container = new BlobServiceClient(parsed.BlobServiceEndpoint, _credentials.Create()).GetBlobContainerClient(parsed.Container);
+        try
+        {
+            await container.GetBlobClient(parsed.BlobPath).DeleteIfExistsAsync(DeleteSnapshotsOption.IncludeSnapshots, cancellationToken: ct).ConfigureAwait(false);
+            await foreach (var blob in container.GetBlobsAsync(BlobTraits.None, BlobStates.None, parsed.BlobPath.TrimEnd('/') + "/", ct).ConfigureAwait(false))
+            {
+                await container.GetBlobClient(blob.Name).DeleteIfExistsAsync(DeleteSnapshotsOption.IncludeSnapshots, cancellationToken: ct).ConfigureAwait(false);
+            }
+        }
+        catch (RequestFailedException ex)
+        {
+            throw new DeliveryException($"Could not delete '{location}' (status {ex.Status}): {ex.Message}", ex);
+        }
+    }
+
+    internal static BlobClient Blob(IAzureCredentialFactory credentials, string location)
+    {
+        var parsed = AzureBlobLocation.Parse(location);
+        var service = new BlobServiceClient(parsed.BlobServiceEndpoint, credentials.Create());
+        return service.GetBlobContainerClient(parsed.Container).GetBlobClient(parsed.BlobPath);
+    }
+}
+
+/// <summary>
+/// Seekable and range reads over Azure Storage: a seekable blob stream fetches ranges on demand (parquet footers
+/// and row groups without the rest of the file), and a range read fetches one slice of a work batch.
+/// </summary>
+public sealed class AzureBlobFileReader : IFileReader
+{
+    private readonly IAzureCredentialFactory _credentials;
+
+    public AzureBlobFileReader(IAzureCredentialFactory credentials)
+    {
+        ArgumentNullException.ThrowIfNull(credentials);
+        _credentials = credentials;
+    }
+
+    public bool CanHandle(string location) => AzureBlobLocation.IsAzureStorageUri(location);
+
+    public async Task<Stream> OpenSeekableAsync(FileRef file, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        try
+        {
+            return await AzureBlobFileWriter.Blob(_credentials, file.Path)
+                .OpenReadAsync(new BlobOpenReadOptions(allowModifications: false) { BufferSize = 4 * 1024 * 1024 }, ct)
+                .ConfigureAwait(false);
+        }
+        catch (RequestFailedException ex)
+        {
+            throw new DeliveryException($"Could not open '{file.Path}' (status {ex.Status}): {ex.Message}", ex);
+        }
+    }
+
+    public async Task<Stream> OpenRangeAsync(string path, long offset, long length, CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await AzureBlobFileWriter.Blob(_credentials, path)
+                .DownloadStreamingAsync(new BlobDownloadOptions { Range = new HttpRange(offset, length) }, ct)
+                .ConfigureAwait(false);
+            return response.Value.Content;
+        }
+        catch (RequestFailedException ex)
+        {
+            throw new DeliveryException($"Could not read '{path}' at {offset} (status {ex.Status}): {ex.Message}", ex);
+        }
+    }
+}

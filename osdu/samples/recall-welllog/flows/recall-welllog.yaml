@@ -1,0 +1,78 @@
+# Flow: recall-welllog
+#
+# The operational document (docs/delivery/design.md section 9.2). One flow with a parameter replaces six
+# near-identical job blocks that differed only by a log source string. Nothing here changes what a document is:
+# only render.* enters the content hash, and the mapping it names is pinned. The mapping the flow renders with lives next
+# to it in this repository (../mappings); the template it fills lives in the catalog, and so does the cache it reads: the
+# cache of the partition it delivers to (target.headers.data-partition-id), filled by every cache flow of that partition,
+# such as ../caches/osdu-reference-cache.yaml. The platform schedules the runs.
+flowType: delivery
+name: recall-welllog
+batch: recall
+
+parameters:
+  logSource:
+    required: true
+    description: The Recall log source (STAT_COMP, STAT_CPI, STAT_CORE, STAT_ILT, STAT_PLT, STAT_PRESS).
+
+source:
+  # A local path for the sample; in production an external location such as
+  # abfss://lake@account.dfs.core.windows.net/osdu-prepare/{logSource}
+  location: samples/recall-welllog/out/{logSource}
+  manifest: manifest.json
+  payloads:
+    curves: curves/{deliveryKey}/chunk_*.parquet
+  # When the source row last changed. A row modified after the version the ledger holds goes through render and
+  # the hash check again; the same moment is skipped without rendering; an older one is never sent.
+  lastModified: update_date
+  # Where a known-state run publishes the compact view the preparing side reads before its next drop.
+  knownState: samples/recall-welllog/out/{logSource}/known-state
+
+render:
+  mapping: WellLog@1.4.0
+  parameters:
+    dataPartition: opendes
+
+change:
+  detect: renderedHash
+  payloadDetect: contentHash
+  onUnchanged: skip
+
+target:
+  endpoint: ${env:PETRODB_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  headers:
+    Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
+    data-partition-id: opendes
+  protocol: osduWellLog
+  protocolOptions:
+    payload: curves
+    sessionThresholdChunks: 1
+    preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]
+
+reliability:
+  concurrency: 8
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  skipStatusCodes: [409]
+  timeoutSeconds: 100
+  leaseSeconds: 300
+  batchSize: 50
+
+# The platform envelope: the control plane fires the deliver runs on this cadence. A verify (drift) run is a
+# schedule of its own in the GUI, or a run with --operation verify.
+schedule:
+  cron: "0 * * * *"
+  # The flow declares logSource as required, so the schedule has to say which one it fires for. Without values
+  # every fire would fail validation before it read anything. A second log source is a second schedule.
+  values:
+    logSource: STAT_COMP
+
+verify:
+  reconcile: false

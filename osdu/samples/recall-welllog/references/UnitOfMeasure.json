@@ -1,0 +1,11 @@
+{
+  "entityType": "reference-data--UnitOfMeasure",
+  "items": [
+    { "id": "opendes:reference-data--UnitOfMeasure:m", "Code": "m", "Name": "metre", "ID": "m" },
+    { "id": "opendes:reference-data--UnitOfMeasure:ft", "Code": "ft", "Name": "foot", "ID": "ft" },
+    { "id": "opendes:reference-data--UnitOfMeasure:gAPI", "Code": "gAPI", "Name": "API gamma ray unit", "ID": "gAPI" },
+    { "id": "opendes:reference-data--UnitOfMeasure:g%2Fcm3", "Code": "g/cm3", "Name": "gram per cubic centimetre", "ID": "g/cm3" },
+    { "id": "opendes:reference-data--UnitOfMeasure:%25", "Code": "%", "Name": "percent", "ID": "%" },
+    { "id": "opendes:reference-data--UnitOfMeasure:m3%2Fm3", "Code": "m3/m3", "Name": "cubic metre per cubic metre", "ID": "m3/m3" }
+  ]
+}

@@ -1,0 +1,380 @@
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using SqlFlow.Catalog;
+using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Snapshots;
+using Xunit;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>
+/// What a cache flow declares reaching the catalog through the repository sync, so the GUI can show what a cache holds and
+/// which file defines it. The sync only reads the repository: a cache's versions are written by its runs, never by the
+/// sync, and snapshot files left in a repository are nothing to it.
+/// </summary>
+public sealed class CacheCatalogSyncTests : IDisposable
+{
+    private const string CacheFlow = """
+        flowType: cache
+        name: osdu-reference-cache
+        source:
+          endpoint: https://osdu.example.com
+          headers: { data-partition-id: opendes }
+        onChange: approve
+        types:
+          - kind: osdu:wks:master-data--Wellbore:1.0.0
+            onChange: auto
+            fields:
+              - data.FacilityName
+              - path: data.NameAlias.AliasName
+                as: Alias
+          - kind: osdu:wks:reference-data--UnitOfMeasure:1.0.0
+            fields: [data.Code, data.Name]
+        """;
+
+    private readonly SqliteCatalog _catalog = new();
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "sqlflow-cache-sync-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        _catalog.Dispose();
+        if (Directory.Exists(_root))
+        {
+            Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    private void Write(string relative, string content, string? root = null)
+    {
+        var path = Path.Combine(root ?? _root, relative.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, content);
+    }
+
+    private async Task<IReadOnlyList<string>> SyncAsync(Guid repoId, string? root = null) => (await SyncWithResultAsync(repoId, root)).Warnings;
+
+    private async Task<(IReadOnlyList<string> Warnings, CatalogSyncExtensionResult Result)> SyncWithResultAsync(Guid repoId, string? root = null)
+    {
+        var warnings = new List<string>();
+        var sync = new DeliveryCatalogSync(new DeliveryDocumentLoader());
+        await using var db = _catalog.CreateDbContext();
+        var result = await sync.SyncAsync(db, repoId, root ?? _root, new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc), warnings, CancellationToken.None);
+        return (warnings, result);
+    }
+
+    /// <summary>A cache flow document: its name, partition and endpoint, and its types (YAML list items indented by two spaces).</summary>
+    private static string Flow(string name, string types, string partition = "opendes", string endpoint = "https://osdu.example.com") => $"""
+        flowType: cache
+        name: {name}
+        source:
+          endpoint: {endpoint}
+          headers: {"{"} data-partition-id: {partition} {"}"}
+        types:
+        {types}
+        """;
+
+    private const string FacilityWellbore = """
+          - kind: osdu:wks:master-data--Wellbore:1.0.0
+            fields: [data.FacilityName]
+        """;
+
+    private const string AliasedWellboreAndUnits = """
+          - kind: osdu:wks:master-data--Wellbore:1.0.0
+            fields:
+              - data.FacilityName
+              - path: data.NameAlias.AliasName
+                as: Alias
+          - kind: osdu:wks:reference-data--UnitOfMeasure:1.0.0
+            fields: [data.Code, data.Name]
+        """;
+
+    [Fact]
+    public async Task Cache_flows_of_one_partition_declare_into_one_cache_and_a_declaration_that_disagrees_is_left_out()
+    {
+        Write("caches/a.yaml", Flow("project-a-cache", FacilityWellbore));
+        Write("caches/b.yaml", Flow("project-b-cache", AliasedWellboreAndUnits));
+        Write("caches/c.yaml", Flow("project-c-cache", """
+              - kind: osdu:wks:master-data--Wellbore:1.0.0
+                fields:
+                  - path: data.Name
+                    as: FacilityName
+              - kind: osdu:wks:reference-data--VerticalMeasurementType:1.0.0
+                fields: [data.Code]
+            """));
+        Write("caches/d.yaml", Flow("other-partition-cache", """
+              - kind: osdu:wks:master-data--Wellbore:1.0.0
+                fields:
+                  - path: data.Name
+                    as: FacilityName
+            """, partition: "other"));
+        var repoId = Guid.NewGuid();
+
+        var (warnings, result) = await SyncWithResultAsync(repoId);
+
+        var warning = Assert.Single(warnings);
+        Assert.StartsWith("caches/c.yaml: Wellbore is left out of the cache of partition 'opendes', because ", warning, StringComparison.Ordinal);
+        Assert.Contains("Wellbore.FacilityName is cached from data.FacilityName by cache flow 'project-a-cache' and from data.Name by 'project-c-cache'", warning, StringComparison.Ordinal);
+        Assert.Equal(1, result.Invalid);
+
+        await using var db = _catalog.CreateDbContext();
+        var rows = (await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ToListAsync())
+            .OrderBy(c => c.Scope, StringComparer.Ordinal).ThenBy(c => c.FlowName, StringComparer.Ordinal).ThenBy(c => c.Name, StringComparer.Ordinal)
+            .Select(c => $"{c.Scope}/{c.FlowName}/{c.Name}")
+            .ToList();
+        Assert.Equal(
+            [
+                "opendes/project-a-cache/Wellbore",
+                "opendes/project-b-cache/UnitOfMeasure",
+                "opendes/project-b-cache/Wellbore",
+                "opendes/project-c-cache/VerticalMeasurementType",
+                "other/other-partition-cache/Wellbore",
+            ],
+            rows);
+        var aliased = await db.DeliveryCacheDefinitions.SingleAsync(c => c.RepoId == repoId && c.FlowName == "project-b-cache" && c.Name == "Wellbore");
+        Assert.Equal("https://osdu.example.com", aliased.Endpoint);
+        Assert.Equal("caches/b.yaml", aliased.RelativePath);
+
+        // What a refresh of the partition reads: one Wellbore type, filled from every path its flows declare.
+        var declaration = await CatalogCacheStore.DeclarationAsync(db, "opendes");
+        Assert.Equal(["project-a-cache", "project-b-cache"], declaration.Of("Wellbore").Select(d => d.FlowName));
+        Assert.Equal(["FacilityName", "Alias"], declaration.FieldsOf("Wellbore").Select(f => f.Name));
+        Assert.Equal(["data.Name"], (await CatalogCacheStore.DeclarationAsync(db, "other")).FieldsOf("Wellbore").Select(f => f.Path));
+    }
+
+    [Fact]
+    public async Task A_declaration_that_disagrees_with_another_repository_s_flow_of_the_partition_is_left_out()
+    {
+        Write("caches/osdu-reference-cache.yaml", CacheFlow);
+        Assert.Empty(await SyncAsync(Guid.NewGuid()));
+
+        var other = Path.Combine(_root, "other");
+        Write("well-cache.yaml", Flow("well-cache", """
+              - kind: osdu:wks:master-data--Well:1.0.0
+                name: Wellbore
+                fields: [data.FacilityName]
+              - kind: osdu:wks:master-data--Well:1.0.0
+                fields: [data.FacilityName]
+            """), other);
+        var repoId = Guid.NewGuid();
+        var (warnings, result) = await SyncWithResultAsync(repoId, other);
+
+        var warning = Assert.Single(warnings);
+        Assert.Contains(
+            "well-cache.yaml: Wellbore is left out of the cache of partition 'opendes', because cache flow 'osdu-reference-cache' declares Wellbore as master-data--Wellbore, and 'well-cache' declares it as master-data--Well",
+            warning,
+            StringComparison.Ordinal);
+        Assert.Equal(1, result.Invalid);
+        await using var db = _catalog.CreateDbContext();
+        Assert.Equal(["Well"], await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).Select(c => c.Name).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Cache_flows_of_one_partition_searching_different_endpoints_are_warned_about()
+    {
+        Write("caches/a.yaml", Flow("project-a-cache", FacilityWellbore));
+        Write("caches/b.yaml", Flow("project-b-cache", AliasedWellboreAndUnits, endpoint: "https://other.example.com"));
+        Write("caches/c.yaml", Flow("elsewhere-cache", FacilityWellbore, partition: "other", endpoint: "https://third.example.com"));
+        var repoId = Guid.NewGuid();
+
+        var (warnings, result) = await SyncWithResultAsync(repoId);
+
+        var warning = Assert.Single(warnings);
+        Assert.StartsWith("The cache flows of partition 'opendes' search different endpoints (https://osdu.example.com, https://other.example.com)", warning, StringComparison.Ordinal);
+        Assert.Equal(0, result.Invalid);
+        await using var db = _catalog.CreateDbContext();
+        Assert.Equal(4, await db.DeliveryCacheDefinitions.CountAsync(c => c.RepoId == repoId));
+    }
+
+    [Fact]
+    public async Task A_flow_that_stops_declaring_a_type_lets_go_of_the_records_it_held()
+    {
+        Write("caches/a.yaml", Flow("project-a-cache", AliasedWellboreAndUnits));
+        Write("caches/b.yaml", Flow("project-b-cache", """
+              - kind: osdu:wks:reference-data--UnitOfMeasure:1.0.0
+                fields: [data.Code, data.Name]
+            """));
+        var repoId = Guid.NewGuid();
+        Assert.Empty(await SyncAsync(repoId));
+
+        static ReferenceType Units(params string[] codes) => new(
+            "UnitOfMeasure", "reference-data--UnitOfMeasure",
+            codes.Select(code => ReferenceItem.FromText("opendes:reference-data--UnitOfMeasure:" + code, new Dictionary<string, string> { ["Code"] = code, ["Name"] = code })));
+        var wellbore = new ReferenceType(
+            "Wellbore", "master-data--Wellbore",
+            [ReferenceItem.FromText("opendes:master-data--Wellbore:1", new Dictionary<string, string> { ["FacilityName"] = "NO 1" })]);
+        var store = _catalog.Caches();
+        var capture = new CacheCapture(null, "tests", "seeded");
+        var at = new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero);
+        await store.MergeAsync("opendes", "project-a-cache", [Units("m"), wellbore], capture, at);
+        await store.MergeAsync("opendes", "project-b-cache", [Units("ft")], capture, at.AddHours(1));
+
+        Write("caches/a.yaml", Flow("project-a-cache", FacilityWellbore));
+        Assert.Empty(await SyncAsync(repoId));
+
+        await using (var db = _catalog.CreateDbContext())
+        {
+            Assert.False(await db.DeliveryCacheMembers.AnyAsync(m => m.FlowName == "project-a-cache" && m.TypeName == "UnitOfMeasure"));
+            Assert.Equal(1, await db.DeliveryCacheMembers.CountAsync(m => m.FlowName == "project-a-cache" && m.TypeName == "Wellbore"));
+            Assert.Equal(1, await db.DeliveryCacheMembers.CountAsync(m => m.FlowName == "project-b-cache" && m.TypeName == "UnitOfMeasure"));
+        }
+
+        // With A's hold gone, the metre leaves the partition's cache the next time B captures units without it.
+        var next = await store.MergeAsync("opendes", "project-b-cache", [Units("ft")], capture, at.AddHours(2));
+        Assert.True(next.Written);
+        Assert.Equal(["opendes:reference-data--UnitOfMeasure:ft"], next.Snapshot.Type("UnitOfMeasure")!.Items.Select(i => i.Id));
+    }
+
+    [Fact]
+    public async Task What_a_cache_flow_declares_reaches_the_catalog()
+    {
+        Write("caches/osdu-reference-cache.yaml", CacheFlow);
+        var repoId = Guid.NewGuid();
+        Assert.Empty(await SyncAsync(repoId));
+
+        await using var db = _catalog.CreateDbContext();
+        var definitions = await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).OrderBy(c => c.Name).ToListAsync();
+        Assert.Equal(["UnitOfMeasure", "Wellbore"], definitions.Select(d => d.Name));
+
+        var wellbore = definitions[1];
+        Assert.Equal("osdu-reference-cache", wellbore.FlowName);
+        Assert.Equal("opendes", wellbore.Scope);
+        Assert.Equal("https://osdu.example.com", wellbore.Endpoint);
+        Assert.Equal("caches/osdu-reference-cache.yaml", wellbore.RelativePath);
+        Assert.Equal("master-data--Wellbore", wellbore.EntityType);
+        Assert.Equal("osdu:wks:master-data--Wellbore:1.0.0", wellbore.Kind);
+        Assert.Equal("auto", wellbore.OnChange);
+        Assert.Equal("approve", definitions[0].OnChange);
+        using var fields = JsonDocument.Parse(wellbore.FieldsJson);
+        Assert.Equal(["FacilityName", "Alias"], fields.RootElement.EnumerateArray().Select(f => f.GetProperty("as").GetString()));
+        Assert.Equal(
+            ["data.FacilityName", "data.NameAlias.AliasName"],
+            fields.RootElement.EnumerateArray().Select(f => f.GetProperty("path").GetString()));
+
+        // The sync writes no version: a cache is filled by the runs of its cache flow.
+        Assert.Empty(await db.DeliveryCacheVersions.ToListAsync());
+        Assert.Empty(await db.DeliveryCacheItems.ToListAsync());
+    }
+
+    [Fact]
+    public async Task A_second_sync_leaves_one_row_per_declared_type_and_reads_a_changed_declaration_again()
+    {
+        Write("caches/osdu-reference-cache.yaml", CacheFlow);
+        var repoId = Guid.NewGuid();
+        await SyncAsync(repoId);
+        await SyncAsync(repoId);
+
+        await using (var db = _catalog.CreateDbContext())
+        {
+            Assert.Equal(2, await db.DeliveryCacheDefinitions.CountAsync(c => c.RepoId == repoId));
+        }
+
+        Write("caches/osdu-reference-cache.yaml", CacheFlow.Replace("fields: [data.Code, data.Name]", "fields: [data.Code]", StringComparison.Ordinal));
+        await SyncAsync(repoId);
+
+        await using (var db = _catalog.CreateDbContext())
+        {
+            var units = await db.DeliveryCacheDefinitions.SingleAsync(c => c.RepoId == repoId && c.Name == "UnitOfMeasure");
+            using var fields = JsonDocument.Parse(units.FieldsJson);
+            Assert.Equal(["Code"], fields.RootElement.EnumerateArray().Select(f => f.GetProperty("as").GetString()));
+        }
+    }
+
+    [Fact]
+    public async Task Snapshot_files_left_in_a_repository_are_nothing_to_the_sync()
+    {
+        Write("caches/osdu-reference-cache.yaml", CacheFlow);
+        Write("snapshots/references/current", "20260101T000000Z");
+        Write("snapshots/references/20260101T000000Z/manifest.json", """
+            { "version": "20260101T000000Z", "capturedUtc": "2026-01-01T00:00:00Z", "types": ["Wellbore"] }
+            """);
+        Write("snapshots/references/20260101T000000Z/Wellbore.json", """
+            { "entityType": "master-data--Wellbore", "items": [ { "id": "opendes:master-data--Wellbore:1", "FacilityName": "NO 1/1-A" } ] }
+            """);
+
+        Assert.Empty(await SyncAsync(Guid.NewGuid()));
+
+        await using var db = _catalog.CreateDbContext();
+        Assert.Empty(await db.DeliveryCacheVersions.ToListAsync());
+        Assert.Empty(await db.DeliveryCacheItems.ToListAsync());
+    }
+
+    [Fact]
+    public async Task A_cache_that_leaves_the_repository_leaves_the_catalog()
+    {
+        Write("caches/osdu-reference-cache.yaml", CacheFlow);
+        var repoId = Guid.NewGuid();
+        await SyncAsync(repoId);
+
+        File.Delete(Path.Combine(_root, "caches", "osdu-reference-cache.yaml"));
+        await SyncAsync(repoId);
+
+        await using var db = _catalog.CreateDbContext();
+        Assert.Empty(await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task A_retrieval_flow_is_not_a_cache()
+    {
+        Write("flows/osdu-metadata-sync.yaml", """
+            flowType: retrieval
+            name: osdu-metadata-sync
+            source:
+              endpoint: https://osdu.example.com
+              headers: { data-partition-id: opendes }
+              kinds: [osdu:wks:master-data--Wellbore:1.0.0]
+            target:
+              location: lake/metadata
+            """);
+
+        var repoId = Guid.NewGuid();
+        Assert.Empty(await SyncAsync(repoId));
+        await using var db = _catalog.CreateDbContext();
+        Assert.Empty(await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task An_invalid_cache_declaration_is_reported_and_skipped()
+    {
+        Write("caches/broken.yaml", """
+            flowType: cache
+            name: broken-cache
+            source:
+              endpoint: https://osdu.example.com
+              headers: { data-partition-id: opendes }
+            types:
+              - fields: [data.FacilityName]
+            """);
+
+        var repoId = Guid.NewGuid();
+        var warnings = await SyncAsync(repoId);
+        Assert.Contains(warnings, w => w.Contains("kind is required", StringComparison.Ordinal));
+        await using var db = _catalog.CreateDbContext();
+        Assert.Empty(await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task A_cache_declared_by_two_files_keeps_one_and_says_so()
+    {
+        Write("caches/a.yaml", CacheFlow);
+        Write("caches/b.yaml", CacheFlow);
+
+        var repoId = Guid.NewGuid();
+        var warnings = await SyncAsync(repoId);
+        Assert.Contains(warnings, w => w.Contains("cache flow 'osdu-reference-cache' is already declared by caches/a.yaml", StringComparison.Ordinal));
+        await using var db = _catalog.CreateDbContext();
+        Assert.Equal(2, await db.DeliveryCacheDefinitions.CountAsync(c => c.RepoId == repoId));
+    }
+
+    [Fact]
+    public async Task A_cache_another_repository_declares_under_the_same_name_is_reported()
+    {
+        Write("caches/osdu-reference-cache.yaml", CacheFlow);
+        Assert.Empty(await SyncAsync(Guid.NewGuid()));
+
+        var other = Path.Combine(_root, "other");
+        Write("osdu-reference-cache.yaml", CacheFlow, other);
+        var warnings = await SyncAsync(Guid.NewGuid(), other);
+        Assert.Contains(warnings, w => w.Contains("also declared by another repository", StringComparison.Ordinal));
+    }
+}

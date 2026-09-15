@@ -1,0 +1,1270 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace SqlFlow.Catalog;
+
+// The delivery ledger (docs/delivery/ledger.md): submissions, records and append-only attempts, the audit trail of
+// interventions, the tier-0 source watermarks, and the read model of the mapping and snapshot documents the sync
+// found in the repositories. Statuses are stored as short strings so the tables read without a decoder ring;
+// column names are camelCase to match the document model. Everything the GUI lists is index-backed.
+
+/// <summary>One drop handed over by the preparing side. Its id is the idempotency key.</summary>
+public sealed class DeliverySubmission
+{
+    public Guid SubmissionId { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public string FlowName { get; set; } = string.Empty;
+
+    public string MappingReference { get; set; } = string.Empty;
+
+    public string RenderContext { get; set; } = string.Empty;
+
+    public string DropLocation { get; set; } = string.Empty;
+
+    public string ParametersJson { get; set; } = "{}";
+
+    /// <summary>
+    /// What the sending system calls this submission in its own records (a filename, a ticket, a job id): the handle an
+    /// operator searches by when they know the source's name for the work and not this ledger's id. Carried from the
+    /// drop manifest, so a prepared drop and a submission of records are found the same way. Null when none was given.
+    /// </summary>
+    public string? Reference { get; set; }
+
+    public long RecordCount { get; set; }
+
+    /// <summary>The work location the intake wrote its batches under.</summary>
+    public string? WorkLocation { get; set; }
+
+    /// <summary>How many work batches the intake wrote.</summary>
+    public int BatchCount { get; set; }
+
+    /// <summary>How many root-scope partitions the drop declared.</summary>
+    public int Partitions { get; set; }
+
+    public string Status { get; set; } = "received";
+
+    public DateTime ReceivedUtc { get; set; }
+
+    public DateTime? StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+
+    public long Planned { get; set; }
+
+    public long SkippedUnchanged { get; set; }
+
+    /// <summary>Records a cache change waiting for approval held back; rendered and ready, not sent until it is decided.</summary>
+    public long AwaitingApproval { get; set; }
+
+    /// <summary>Records the drop carried in a version older than the one delivered or queued; skipped, never sent.</summary>
+    public long SkippedStale { get; set; }
+
+    /// <summary>Records whose queued document was, when its turn came, what OSDU already held; nothing was sent.</summary>
+    public long UnchangedAtPush { get; set; }
+
+    public long Blocked { get; set; }
+
+    public long Delivered { get; set; }
+
+    public long Held { get; set; }
+
+    public long Failed { get; set; }
+
+    public string? Error { get; set; }
+
+    /// <summary>drop: a drop, loaded into the flow's replica when it declares one; replan: the replica's records rendered again.</summary>
+    public string Kind { get; set; } = "drop";
+
+    /// <summary>The drop's manifest as JSON, kept so the submission is planned from the replica without opening the drop.</summary>
+    public string? ManifestJson { get; set; }
+
+    /// <summary>The flow-wide order of replica loads: a larger sequence carried its records later. 0 until a load began.</summary>
+    public long SourceSequence { get; set; }
+
+    /// <summary>When the drop's records were completely loaded into the flow's replica; null until then.</summary>
+    public DateTime? LoadedUtc { get; set; }
+
+    /// <summary>Records read from the drop, keyed or not.</summary>
+    public long SourceRecords { get; set; }
+
+    /// <summary>Distinct records the submission carried into the replica, one per delivery key.</summary>
+    public long LoadedRows { get; set; }
+
+    /// <summary>The ordinals the drop's records were numbered in: the range a fan-out splits into slices.</summary>
+    public long LoadedOrdinals { get; set; }
+
+    /// <summary>Records the drop carried more than once under one delivery key; the later one stands.</summary>
+    public long Duplicates { get; set; }
+
+    /// <summary>Records without a derivable delivery key: not loaded, not delivered.</summary>
+    public long Untracked { get; set; }
+
+    /// <summary>Records the load added to the replica.</summary>
+    public long ReplicaInserted { get; set; }
+
+    /// <summary>Records whose values the load changed in the replica.</summary>
+    public long ReplicaUpdated { get; set; }
+
+    /// <summary>The schema changes the load applied to the replica and the drift it found, as JSON.</summary>
+    public string? ReplicaSchemaJson { get; set; }
+
+    /// <summary>When the retention prune removed the submission's record list from the replica.</summary>
+    public DateTime? SourcePrunedUtc { get; set; }
+}
+
+/// <summary>
+/// The records a source sent in a submission request rather than in a drop (design.md section 3.4), kept as the control
+/// plane accepted them: the run that takes the submission writes them out as a drop from here, a re-run writes them again,
+/// and the ledger says exactly what was sent, for which flow, mapping and parameter values, by whom and when.
+/// </summary>
+public sealed class DeliveryInlineSubmission
+{
+    /// <summary>The idempotency key, and the id of the <see cref="DeliverySubmission"/> the intake registers for it.</summary>
+    public Guid SubmissionId { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public string FlowName { get; set; } = string.Empty;
+
+    /// <summary>The mapping the flow pinned when the records were accepted.</summary>
+    public string MappingReference { get; set; } = string.Empty;
+
+    /// <summary>deliver or plan.</summary>
+    public string Operation { get; set; } = string.Empty;
+
+    public bool Force { get; set; }
+
+    /// <summary>The flow parameter values, resolved against the flow's declarations.</summary>
+    public string ParametersJson { get; set; } = "{}";
+
+    /// <summary>
+    /// What the sending system calls this submission in its own records: carried onto the drop the run writes, and from
+    /// there onto the <see cref="DeliverySubmission"/> the intake registers, so one search finds both. Null when none
+    /// was given. Part of the accepted request, so a repeat under the same id has to carry the same one.
+    /// </summary>
+    public string? Reference { get; set; }
+
+    /// <summary>The records in canonical form.</summary>
+    public string RecordsJson { get; set; } = "[]";
+
+    public string ContentHash { get; set; } = string.Empty;
+
+    /// <summary>The hash a repeat of the request matches: flow, mapping, operation, force, parameter values and records.</summary>
+    public string RequestHash { get; set; } = string.Empty;
+
+    public int RecordCount { get; set; }
+
+    public long ChildRowCount { get; set; }
+
+    public int ContentBytes { get; set; }
+
+    public DateTime ReceivedUtc { get; set; }
+
+    /// <summary>Who sent the records: the caller's actor label.</summary>
+    public string ReceivedBy { get; set; } = string.Empty;
+
+    /// <summary>Where the last run that took the submission wrote its drop; null until one has.</summary>
+    public string? DropLocation { get; set; }
+
+    public DateTime? WrittenUtc { get; set; }
+}
+
+/// <summary>
+/// One drop-off: files uploaded through the API into the deployment's drop-off area, for a submission to point at
+/// afterwards. The files themselves live in storage, which the node reads when it delivers; this row is what makes them
+/// traceable, saying who uploaded what, when, how large each was and what its content hash is. Files are kept after a
+/// delivery on purpose, because re-processing a submission (a redelivery, a verify) reads them again.
+/// </summary>
+public sealed class DeliveryDropOff
+{
+    public Guid DropOffId { get; set; }
+
+    /// <summary>The folder the files were written to: what a submission points at.</summary>
+    public string Location { get; set; } = string.Empty;
+
+    /// <summary>uploading, complete, failed or deleted.</summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>
+    /// How the bytes got here: <c>stream</c> (through the control plane, which hashed them as they passed) or
+    /// <c>signed</c> (straight to storage under a signed URL, which the control plane never saw). The distinction is
+    /// what makes a file's hash readable as computed or as asserted by the uploader, so nothing implies a check that
+    /// did not happen.
+    /// </summary>
+    public string UploadMode { get; set; } = string.Empty;
+
+    public int FileCount { get; set; }
+
+    public long TotalBytes { get; set; }
+
+    /// <summary>Each file as [{ name, bytes, sha256, hashSource }], in the order uploaded.</summary>
+    public string FilesJson { get; set; } = "[]";
+
+    /// <summary>
+    /// When the signed URLs handed out for this drop-off stop working; null for a streamed upload. A reservation still
+    /// <c>uploading</c> past it was abandoned, which is what tells an operator it can be taken back.
+    /// </summary>
+    public DateTime? ReservedUntilUtc { get; set; }
+
+    /// <summary>What the uploader called this drop-off, for finding it again.</summary>
+    public string? Label { get; set; }
+
+    public DateTime UploadedUtc { get; set; }
+
+    /// <summary>Who uploaded: the caller's actor label.</summary>
+    public string UploadedBy { get; set; } = string.Empty;
+
+    /// <summary>When every file had landed; null while uploading, and for an upload that failed.</summary>
+    public DateTime? CompletedUtc { get; set; }
+
+    public DateTime? DeletedUtc { get; set; }
+
+    /// <summary>Why the upload failed, redacted; null otherwise.</summary>
+    public string? Error { get; set; }
+}
+
+/// <summary>The current state of one deliverable, keyed by its deterministic delivery key.</summary>
+public sealed class DeliveryRecord
+{
+    public Guid DeliveryKey { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public string SourceKey { get; set; } = string.Empty;
+
+    public string? Label { get; set; }
+
+    public string MappingName { get; set; } = string.Empty;
+
+    public string? RenderContext { get; set; }
+
+    public string? SourceFingerprint { get; set; }
+
+    /// <summary>When the source row OSDU's document was built from last changed (the flow's source.lastModified).</summary>
+    public DateTime? SourceModifiedUtc { get; set; }
+
+    public string? MetadataHash { get; set; }
+
+    public string? PayloadHash { get; set; }
+
+    /// <summary>The newest modified time among the chunk files OSDU's payload was delivered from.</summary>
+    public DateTime? PayloadModifiedUtc { get; set; }
+
+    public string? TargetId { get; set; }
+
+    public long? TargetVersion { get; set; }
+
+    public string Status { get; set; } = "pending";
+
+    public DateTime? LastDeliveredUtc { get; set; }
+
+    public DateTime? LastVerifiedUtc { get; set; }
+
+    public string? LastVerifyOutcome { get; set; }
+
+    public string? LeaseOwner { get; set; }
+
+    public DateTime? LeaseExpiresUtc { get; set; }
+
+    public Guid? LastSubmissionId { get; set; }
+
+    public int AttemptCount { get; set; }
+
+    public DateTime? NextAttemptUtc { get; set; }
+
+    public string? LastError { get; set; }
+
+    /// <summary>Where the pending document sits in the submission's work batches (batch:offset:length).</summary>
+    public string? PendingDocumentRef { get; set; }
+
+    /// <summary>The work batch the pending document was written in.</summary>
+    public int? WorkBatch { get; set; }
+
+    /// <summary>The identifiers the target returned for what it holds now (a JSON object merged step by step).</summary>
+    public string? TargetStateJson { get; set; }
+
+    /// <summary>The completed steps of the pending delivery and what they returned (a JSON object keyed by step).</summary>
+    public string? PendingStepJson { get; set; }
+
+    /// <summary>
+    /// The cache values this record was built from, as the id of the set it shares with every other record that
+    /// read the same values (<see cref="DeliveryCacheSet"/>). One column rather than a row per dependency: at
+    /// estate scale the records number in the hundreds of millions and the distinct sets in the thousands.
+    /// </summary>
+    public long? CacheSetId { get; set; }
+
+    public string? PendingRenderContext { get; set; }
+
+    public string? PendingSourceFingerprint { get; set; }
+
+    public DateTime? PendingSourceModifiedUtc { get; set; }
+
+    public string? PendingMetadataHash { get; set; }
+
+    public string? PendingPayloadHash { get; set; }
+
+    public DateTime? PendingPayloadModifiedUtc { get; set; }
+
+    public string? PendingPayloadLocation { get; set; }
+
+    public bool PendingMetadata { get; set; }
+
+    public bool PendingPayload { get; set; }
+
+    public bool Blocked { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+
+    public DateTime UpdatedUtc { get; set; }
+}
+
+/// <summary>One delivery try, append-only: the record's history.</summary>
+public sealed class DeliveryAttempt
+{
+    public long AttemptId { get; set; }
+
+    public Guid DeliveryKey { get; set; }
+
+    public Guid? SubmissionId { get; set; }
+
+    /// <summary>The platform run the attempt happened in, when it did (operator actions carry none).</summary>
+    public Guid? RunId { get; set; }
+
+    public string Worker { get; set; } = string.Empty;
+
+    public DateTime StartedUtc { get; set; }
+
+    public DateTime CompletedUtc { get; set; }
+
+    public string Outcome { get; set; } = string.Empty;
+
+    public string Phase { get; set; } = string.Empty;
+
+    public string? MetadataHash { get; set; }
+
+    public string? PayloadHash { get; set; }
+
+    public long? TargetVersion { get; set; }
+
+    public string? Error { get; set; }
+
+    /// <summary>The steps of the try and what the target answered, as JSON.</summary>
+    public string? ResultJson { get; set; }
+
+    /// <summary>The work batch the try belonged to, when it ran from one.</summary>
+    public int? WorkBatch { get; set; }
+}
+
+/// <summary>
+/// One row of the <c>delivery.RecordCount</c> indexed view: how many of a flow's records share a status, a last verify
+/// outcome and the hour they were last delivered in. SQL Server maintains the view in the transaction of every record
+/// write, so a flow's statistics read a few rows however many records the flow holds. Read-only, and SQL Server only.
+/// </summary>
+public sealed class DeliveryRecordCount
+{
+    public Guid FlowId { get; set; }
+
+    public string Status { get; set; } = string.Empty;
+
+    public string? LastVerifyOutcome { get; set; }
+
+    /// <summary>The hour <see cref="DeliveryRecord.LastDeliveredUtc"/> falls in, truncated; null for a record never delivered.</summary>
+    public DateTime? DeliveredHour { get; set; }
+
+    public long Records { get; set; }
+}
+
+/// <summary>An indexed view the catalog carries beside its tables: where it lives and the batches that create it, in order.</summary>
+public sealed record CatalogIndexedView(string Schema, string Name, IReadOnlyList<string> Batches);
+
+/// <summary>One work batch of a submission: a file of rendered documents, claimed and drained as one unit.</summary>
+public sealed class DeliveryWorkBatch
+{
+    public Guid SubmissionId { get; set; }
+
+    public int Index { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public string Location { get; set; } = string.Empty;
+
+    public int RecordCount { get; set; }
+
+    /// <summary>queued, running, done, failed.</summary>
+    public string Status { get; set; } = "queued";
+
+    public string? LeaseOwner { get; set; }
+
+    public DateTime? LeaseExpiresUtc { get; set; }
+
+    public Guid? RunId { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+
+    public DateTime? StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+
+    public long Delivered { get; set; }
+
+    public long Held { get; set; }
+
+    public long Failed { get; set; }
+
+    public long Retrying { get; set; }
+
+    public string? Error { get; set; }
+}
+
+/// <summary>Tier-0 watermark: the source table version of one flow scope (the parameter set).</summary>
+public sealed class DeliverySourceWatermark
+{
+    public Guid FlowId { get; set; }
+
+    public string Scope { get; set; } = string.Empty;
+
+    public string TableName { get; set; } = string.Empty;
+
+    public long Version { get; set; }
+
+    /// <summary>
+    /// The render context the last run of this scope used. The whole-run gate compares it, so a cache, mapping or
+    /// schema version that moved re-renders the scope even when no source table advanced.
+    /// </summary>
+    public string? ContextHash { get; set; }
+
+    public DateTime RecordedUtc { get; set; }
+}
+
+/// <summary>The audit trail of runs and interventions: who did what, when, with which inputs, and the outcome.</summary>
+public sealed class DeliveryActivity
+{
+    public long ActivityId { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public string FlowName { get; set; } = string.Empty;
+
+    public string Kind { get; set; } = string.Empty;
+
+    public string Actor { get; set; } = string.Empty;
+
+    public DateTime StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+
+    public string Outcome { get; set; } = "running";
+
+    public string? ParametersJson { get; set; }
+
+    public Guid? SubmissionId { get; set; }
+
+    public Guid? DeliveryKey { get; set; }
+
+    /// <summary>The platform run the activity ran as, when it was a run (deliver, verify, known-state).</summary>
+    public Guid? RunId { get; set; }
+
+    public string? Summary { get; set; }
+
+    public string? Log { get; set; }
+}
+
+/// <summary>A mapping document as the sync found it in a repository: the read model behind the mappings page.</summary>
+public sealed class DeliveryMapping
+{
+    /// <summary>Stable id: derived from the repo id and the mapping reference.</summary>
+    public Guid Id { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>Name@version.</summary>
+    public string Reference { get; set; } = string.Empty;
+
+    public string Name { get; set; } = string.Empty;
+
+    public string Version { get; set; } = string.Empty;
+
+    /// <summary>The OSDU kind of the template the mapping fills.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The template version the mapping pins, also for a document that fails to load; empty when it names none.</summary>
+    public string TemplateVersion { get; set; } = string.Empty;
+
+    public string RelativePath { get; set; } = string.Empty;
+
+    public string ContentHash { get; set; } = string.Empty;
+
+    /// <summary>The document text, secret-redacted, as it was when synced.</summary>
+    public string Yaml { get; set; } = string.Empty;
+
+    /// <summary>A parsed summary (template, dataset system, key and label, child datasets, entry and fixture counts, envelope), for listings.</summary>
+    public string SummaryJson { get; set; } = "{}";
+
+    /// <summary>valid or invalid.</summary>
+    public string Status { get; set; } = "valid";
+
+    public string? Message { get; set; }
+
+    public DateTime FirstSeenUtc { get; set; }
+
+    public DateTime LastSeenUtc { get; set; }
+}
+
+/// <summary>
+/// A template: the OSDU schema of one kind, captured from OSDU or imported from a file, which every mapping for that
+/// kind is checked and rendered against (docs/delivery/mapping-templates.md). Templates are owned by OSDU Delivery. A
+/// version is identified by the kind and the hash of its schema, and never changes; a mapping pins the version it fills.
+/// </summary>
+public sealed class DeliveryTemplate
+{
+    /// <summary>Stable id: derived from the kind and the version.</summary>
+    public Guid Id { get; set; }
+
+    /// <summary>The OSDU kind the schema describes (osdu:wks:work-product-component--WellLog:1.4.0).</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The content version: the hash prefix of the canonical bundled schema.</summary>
+    public string Version { get; set; } = string.Empty;
+
+    /// <summary>The bundled JSON Schema, every reference resolved into its definitions.</summary>
+    public string SchemaJson { get; set; } = string.Empty;
+
+    /// <summary>Where the schema came from: the flow and endpoint reference it was captured through, or the imported file.</summary>
+    public string Origin { get; set; } = string.Empty;
+
+    /// <summary>Who captured or imported it.</summary>
+    public string CapturedBy { get; set; } = string.Empty;
+
+    public DateTime CapturedUtc { get; set; }
+}
+
+/// <summary>
+/// A cached OSDU type as one cache flow (<c>flowType: cache</c>) declares it: which records it captures into its partition's
+/// cache and which paths of each it keeps. The cache flow's YAML in the repository is the only place what is cached is
+/// defined; the sync copies the declaration here, so a refresh knows every path the partition keeps for a type and the GUI
+/// can show which files fill a cache. Several flows may declare the same type for one partition: the cache holds their union.
+/// </summary>
+public sealed class DeliveryCacheDefinition
+{
+    /// <summary>Stable id: derived from the repo id, the cache flow name and the cached type name.</summary>
+    public Guid Id { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The cache flow that declares the type.</summary>
+    public string FlowName { get; set; } = string.Empty;
+
+    /// <summary>The partition whose cache the flow fills: its <c>source.headers.data-partition-id</c>.</summary>
+    public string Scope { get; set; } = string.Empty;
+
+    /// <summary>The OSDU endpoint the flow searches, as declared (a reference, never a resolved value).</summary>
+    public string Endpoint { get; set; } = string.Empty;
+
+    /// <summary>The cache flow's file, relative to the repository root.</summary>
+    public string RelativePath { get; set; } = string.Empty;
+
+    /// <summary>The short name mappings use (UnitOfMeasure).</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>The OSDU entity type (reference-data--UnitOfMeasure).</summary>
+    public string EntityType { get; set; } = string.Empty;
+
+    /// <summary>The search kind the capture sweeps.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The search query narrowing the capture.</summary>
+    public string? Query { get; set; }
+
+    /// <summary>The captured paths as JSON: <c>[{ "path": "data.Code", "as": "Code" }]</c>.</summary>
+    public string FieldsJson { get; set; } = "[]";
+
+    /// <summary>approve or auto: what a changed cached value of this type does to the records already built from it.</summary>
+    public string OnChange { get; set; } = "auto";
+
+    public DateTime FirstSeenUtc { get; set; }
+
+    public DateTime LastSeenUtc { get; set; }
+}
+
+/// <summary>
+/// One version of a partition's cache: the whole cache as one merge left it, written by the cache flow whose capture moved
+/// it. A version is never rewritten. A capture that changes what the cache holds writes the next version, which becomes
+/// current, and one that changes nothing writes none, because a new version moves the render context of every record built
+/// against the cache. Every version stays readable for as long as the catalog exists: a delivered record's render context
+/// names the version it was rendered against, and the ledger has to be able to show what that version held.
+/// </summary>
+public sealed class DeliveryCacheVersion
+{
+    /// <summary>Stable id: derived from the partition and the version label.</summary>
+    public Guid Id { get; set; }
+
+    /// <summary>The partition whose cache the version belongs to.</summary>
+    public string Scope { get; set; } = string.Empty;
+
+    /// <summary>The cache flow whose capture, or import, wrote the version.</summary>
+    public string FlowName { get; set; } = string.Empty;
+
+    /// <summary>The label, minted from the capture instant (20260910T165153Z), with the sequence appended when two captures share a second.</summary>
+    public string Version { get; set; } = string.Empty;
+
+    /// <summary>The version's place in the partition's history, 1 for the first; the ranges of <see cref="DeliveryCacheItem"/> count in it.</summary>
+    public int Sequence { get; set; }
+
+    public DateTime CapturedUtc { get; set; }
+
+    /// <summary>Hash of the whole content, checked on every load so a version altered after it was written is refused.</summary>
+    public string ContentHash { get; set; } = string.Empty;
+
+    /// <summary>The version that was current when this one was written, which the capture was merged onto; null for the first.</summary>
+    public string? PreviousVersion { get; set; }
+
+    /// <summary>Whether this is the newest version, the one deliveries render against unless a flow pins another.</summary>
+    public bool Current { get; set; }
+
+    /// <summary>The platform run that captured the version; null for one imported from files.</summary>
+    public Guid? RunId { get; set; }
+
+    /// <summary>Who asked for it: the run's trigger (manual:&lt;user&gt;, schedule:&lt;name&gt;), or cli:&lt;user&gt; for an import.</summary>
+    public string CapturedBy { get; set; } = string.Empty;
+
+    /// <summary>Where the content came from: the OSDU endpoint reference a capture searched, or the directory an import read.</summary>
+    public string Origin { get; set; } = string.Empty;
+
+    /// <summary>The types the version holds, by name, each with its entity type and record count: <c>[{ "name", "entityType", "items" }]</c>.</summary>
+    public string TypesJson { get; set; } = "[]";
+
+    /// <summary>How many cached records the version holds across its types.</summary>
+    public long Items { get; set; }
+}
+
+/// <summary>
+/// One cached record as a run of consecutive versions of its partition's cache held it: the OSDU id and the values captured
+/// at the declared paths, valid from the version at <see cref="FromSequence"/> up to, and not including, the one at
+/// <see cref="ToSequence"/>, which is null while the newest version still holds it unchanged. A record is stored once per
+/// partition however many cache flows capture it, and a merge writes rows only for the records that changed, arrived or
+/// left, so keeping every version costs rows in proportion to what moved rather than to the size of the cache times the
+/// number of captures.
+/// </summary>
+public sealed class DeliveryCacheItem
+{
+    public long ItemId { get; set; }
+
+    /// <summary>The partition whose cache holds the record.</summary>
+    public string Scope { get; set; } = string.Empty;
+
+    /// <summary>The cached type's short name (UnitOfMeasure).</summary>
+    public string TypeName { get; set; } = string.Empty;
+
+    public string EntityType { get; set; } = string.Empty;
+
+    /// <summary>The OSDU record id, without a version.</summary>
+    public string RecordId { get; set; } = string.Empty;
+
+    /// <summary>The captured values as JSON, in whatever shape the paths yielded, names in ordinal order.</summary>
+    public string FieldsJson { get; set; } = "{}";
+
+    /// <summary>Every scalar the item holds, newline separated: what a search over cached values matches on.</summary>
+    public string Terms { get; set; } = string.Empty;
+
+    /// <summary>The sequence of the first version that holds the record with these values.</summary>
+    public int FromSequence { get; set; }
+
+    /// <summary>The sequence of the first version that no longer holds it so; null while the newest version still does.</summary>
+    public int? ToSequence { get; set; }
+}
+
+/// <summary>
+/// That a cache flow's last capture of a type held a record. It is what lets several flows share one partition's cache: a
+/// record a flow no longer finds leaves the cache only when no other flow's capture still holds it. Current state, not
+/// history; what each version held is in <see cref="DeliveryCacheItem"/>.
+/// </summary>
+public sealed class DeliveryCacheMember
+{
+    /// <summary>The partition whose cache holds the record.</summary>
+    public string Scope { get; set; } = string.Empty;
+
+    /// <summary>The cached type's short name (UnitOfMeasure).</summary>
+    public string TypeName { get; set; } = string.Empty;
+
+    /// <summary>The OSDU record id, without a version.</summary>
+    public string RecordId { get; set; } = string.Empty;
+
+    /// <summary>The cache flow whose last capture of the type held the record.</summary>
+    public string FlowName { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// One distinct combination of cached values that records were built from: the set of (type, cached record, path,
+/// value) a render consumed. Records share sets heavily (every log that resolved metres and the same wellbore
+/// shares one), so the estate's dependency trail is a few thousand sets rather than a row per record per value.
+/// A record points at its set; a cache change finds the sets that hold the changed value and, through them, the
+/// records to update.
+/// </summary>
+public sealed class DeliveryCacheSet
+{
+    public long SetId { get; set; }
+
+    /// <summary>Content hash of the set's entries: the identity a render computes without a round trip.</summary>
+    public string SetHash { get; set; } = string.Empty;
+
+    public int EntryCount { get; set; }
+
+    /// <summary>
+    /// Set while a change to one of these values is tagged and unapproved. The planner reads the gated sets once
+    /// per run and skips their records, so holding records back never means writing to them.
+    /// </summary>
+    public bool Gated { get; set; }
+
+    public DateTime FirstSeenUtc { get; set; }
+
+    public DateTime LastSeenUtc { get; set; }
+}
+
+/// <summary>One cached value inside a set: what was read, and what it read at the time.</summary>
+public sealed class DeliveryCacheSetEntry
+{
+    public long SetId { get; set; }
+
+    /// <summary>The partition whose cache the value was read from: the partition the delivery flow delivers to.</summary>
+    public string Scope { get; set; } = string.Empty;
+
+    /// <summary>The cached type's short name (UnitOfMeasure).</summary>
+    public string TypeName { get; set; } = string.Empty;
+
+    /// <summary>The cached record's OSDU id.</summary>
+    public string ItemId { get; set; } = string.Empty;
+
+    /// <summary>What the mapping read: <c>id</c>, <c>Name</c>, <c>NameAlias.AliasName</c>.</summary>
+    public string Path { get; set; } = string.Empty;
+
+    /// <summary>match (the value the source resolved by) or value (a value written into the document).</summary>
+    public string Kind { get; set; } = "value";
+
+    public string ValueHash { get; set; } = string.Empty;
+
+    /// <summary>The value as it was consumed, truncated for display.</summary>
+    public string ValueText { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// One change to the cache that delivered records were built from, and what happens about it. A tag is written per
+/// change, not per record: a corrected unit name is one decision covering every record that read it, with the count
+/// of what it affects. Under <c>approve</c> the affected sets are gated until someone decides; under <c>auto</c> it
+/// is approved as written. Either way the update is rolled out in batches from <see cref="Cursor"/>, so a change
+/// touching millions of records drains at a controlled rate instead of flooding the estate.
+/// </summary>
+public sealed class DeliveryUpdateTag
+{
+    public long TagId { get; set; }
+
+    /// <summary>What caused the tag; <c>cache</c> today.</summary>
+    public string Kind { get; set; } = "cache";
+
+    /// <summary>The partition whose cache the change was found in.</summary>
+    public string Scope { get; set; } = string.Empty;
+
+    public string TypeName { get; set; } = string.Empty;
+
+    public string ItemId { get; set; } = string.Empty;
+
+    public string Path { get; set; } = string.Empty;
+
+    /// <summary>changed (the value moved), removed (the cached record is gone) or unmatched (what it matched by is gone).</summary>
+    public string Change { get; set; } = "changed";
+
+    public string? OldValue { get; set; }
+
+    public string? NewValue { get; set; }
+
+    public string? FromVersion { get; set; }
+
+    public string ToVersion { get; set; } = string.Empty;
+
+    /// <summary>auto or approve, as the cache declared for this type when the tag was written.</summary>
+    public string Mode { get; set; } = "approve";
+
+    /// <summary>pending, approved, rejected, rolling or applied.</summary>
+    public string Status { get; set; } = "pending";
+
+    /// <summary>The cache sets holding the changed value, comma separated; the records are found through them.</summary>
+    public string SetIds { get; set; } = string.Empty;
+
+    /// <summary>How many delivered records were built from the old value when the change was found.</summary>
+    public long AffectedRecords { get; set; }
+
+    /// <summary>How many of them the rollout has marked for redelivery so far.</summary>
+    public long Processed { get; set; }
+
+    /// <summary>Where the rollout got to, in delivery-key order, so a pass resumes rather than restarts.</summary>
+    public Guid? Cursor { get; set; }
+
+    public DateTime DetectedUtc { get; set; }
+
+    public DateTime? DecidedUtc { get; set; }
+
+    public string? DecidedBy { get; set; }
+
+    public DateTime? StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+}
+
+/// <summary>The EF model of the delivery ledger, in the <c>delivery</c> schema of the catalog database.</summary>
+/// <summary>One retrieval run: the window it covered, where its files went, and its outcome.</summary>
+public sealed class DeliveryRetrieval
+{
+    public long RetrievalId { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public string FlowName { get; set; } = string.Empty;
+
+    public Guid? RunId { get; set; }
+
+    public string Actor { get; set; } = string.Empty;
+
+    /// <summary>The kinds the run covered, comma separated.</summary>
+    public string Kinds { get; set; } = string.Empty;
+
+    /// <summary>The query as it ran, window included.</summary>
+    public string? Query { get; set; }
+
+    public string? WindowField { get; set; }
+
+    public DateTime? WindowFrom { get; set; }
+
+    public DateTime? WindowTo { get; set; }
+
+    public string Location { get; set; } = string.Empty;
+
+    public string? ManifestLocation { get; set; }
+
+    public string Status { get; set; } = "running";
+
+    public long Records { get; set; }
+
+    public int Files { get; set; }
+
+    /// <summary>Uncompressed bytes written.</summary>
+    public long Bytes { get; set; }
+
+    public DateTime StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+
+    public string? Error { get; set; }
+}
+
+public static class DeliveryModel
+{
+    public const string SchemaName = "delivery";
+
+    /// <summary>The indexed view that counts a flow's records (<see cref="DeliveryRecordCount"/>).</summary>
+    public const string RecordCountView = "RecordCount";
+
+    // The hour a record was last delivered in. DATEADD/DATEDIFF against a fixed origin is deterministic and precise,
+    // which an indexed view's grouping requires; the origin is converted with an explicit style for the same reason.
+    private const string DeliveredHourSql =
+        "DATEADD(hour, DATEDIFF(hour, CONVERT(datetime2(0), '20000101', 112), [LastDeliveredUtc]), CONVERT(datetime2(0), '20000101', 112))";
+
+    /// <summary>
+    /// The indexed views the EF model cannot declare, created on SQL Server right after the tables and verified with
+    /// them. SQL Server maintains an indexed view with the table it reads, in the same transaction, so what one answers is
+    /// derived from the ledger and never counted separately.
+    /// </summary>
+    public static IReadOnlyList<CatalogIndexedView> IndexedViews { get; } =
+    [
+        new(SchemaName, RecordCountView,
+        [
+            "CREATE VIEW [" + SchemaName + "].[" + RecordCountView + "] WITH SCHEMABINDING AS " +
+            "SELECT [FlowId], [Status], [LastVerifyOutcome], " + DeliveredHourSql + " AS [DeliveredHour], COUNT_BIG(*) AS [Records] " +
+            "FROM [" + SchemaName + "].[Record] " +
+            "GROUP BY [FlowId], [Status], [LastVerifyOutcome], " + DeliveredHourSql,
+            "CREATE UNIQUE CLUSTERED INDEX [IX_" + RecordCountView + "] ON [" + SchemaName + "].[" + RecordCountView + "] " +
+            "([FlowId], [Status], [LastVerifyOutcome], [DeliveredHour])",
+        ]),
+    ];
+
+    /// <summary>
+    /// The collation of the columns that key on an OSDU record id. OSDU ids are case-sensitive:
+    /// <c>...UnitOfMeasure:ft</c> (the foot) and <c>...UnitOfMeasure:fT</c> (the femtotesla) are two records, and SQL
+    /// Server's default collation folds case, which would make them one key. SQLite compares ordinally already.
+    /// </summary>
+    public const string OsduIdCollation = "Latin1_General_100_BIN2";
+
+    /// <summary>
+    /// The longest caller-supplied reference a submission carries. Long enough for a file path or a ticket URL, short
+    /// enough to index and to read in a listing, and the same ceiling the API and the drop manifest enforce so a
+    /// reference that was accepted never fails to store.
+    /// </summary>
+    public const int MaxReferenceLength = 200;
+
+    /// <param name="modelBuilder">The catalog model being built.</param>
+    /// <param name="sqlServer">Whether the model is for SQL Server, the provider whose default collation folds case.</param>
+    public static void Configure(ModelBuilder modelBuilder, bool sqlServer)
+    {
+        ArgumentNullException.ThrowIfNull(modelBuilder);
+
+        modelBuilder.Entity<DeliverySubmission>(e =>
+        {
+            e.ToTable("Submission", SchemaName);
+            e.HasKey(s => s.SubmissionId);
+            e.Property(s => s.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(s => s.MappingReference).HasMaxLength(200).IsRequired();
+            e.Property(s => s.RenderContext).IsRequired();
+            e.Property(s => s.DropLocation).HasMaxLength(2000).IsRequired();
+            e.Property(s => s.WorkLocation).HasMaxLength(2000);
+            e.Property(s => s.ParametersJson).IsRequired();
+            e.Property(s => s.Reference).HasMaxLength(MaxReferenceLength);
+            e.Property(s => s.Status).HasMaxLength(16).IsRequired();
+            e.Property(s => s.Error).HasMaxLength(4000);
+            e.Property(s => s.Kind).HasMaxLength(16).IsRequired();
+            e.HasIndex(s => new { s.FlowId, s.ReceivedUtc });
+            e.HasIndex(s => new { s.FlowId, s.Status });
+            // A source looking its own submission up knows its reference and not this ledger's id, so that lookup is
+            // indexed rather than a scan of every submission the flow ever took.
+            e.HasIndex(s => new { s.FlowId, s.Reference });
+            // A load takes the next sequence of its flow; the index answers the maximum and refuses a duplicate.
+            e.HasIndex(s => new { s.FlowId, s.SourceSequence }).IsUnique().HasFilter("[SourceSequence] > 0");
+        });
+
+        modelBuilder.Entity<DeliveryInlineSubmission>(e =>
+        {
+            e.ToTable("InlineSubmission", SchemaName);
+            e.HasKey(s => s.SubmissionId);
+            e.Property(s => s.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(s => s.MappingReference).HasMaxLength(200).IsRequired();
+            e.Property(s => s.Operation).HasMaxLength(16).IsRequired();
+            e.Property(s => s.ParametersJson).IsRequired();
+            e.Property(s => s.RecordsJson).IsRequired();
+            e.Property(s => s.ContentHash).HasMaxLength(64).IsRequired();
+            e.Property(s => s.RequestHash).HasMaxLength(64).IsRequired();
+            e.Property(s => s.ReceivedBy).HasMaxLength(200).IsRequired();
+            e.Property(s => s.DropLocation).HasMaxLength(2000);
+            e.Property(s => s.Reference).HasMaxLength(MaxReferenceLength);
+            e.HasIndex(s => new { s.FlowId, s.ReceivedUtc });
+        });
+
+        modelBuilder.Entity<DeliveryDropOff>(e =>
+        {
+            e.ToTable("DropOff", SchemaName);
+            e.HasKey(d => d.DropOffId);
+            e.Property(d => d.Location).HasMaxLength(2000).IsRequired();
+            e.Property(d => d.Status).HasMaxLength(16).IsRequired();
+            e.Property(d => d.UploadMode).HasMaxLength(16).IsRequired();
+            e.Property(d => d.FilesJson).IsRequired();
+            e.Property(d => d.Label).HasMaxLength(200);
+            e.Property(d => d.UploadedBy).HasMaxLength(200).IsRequired();
+            e.Property(d => d.Error).HasMaxLength(4000);
+            e.HasIndex(d => d.UploadedUtc);
+            e.HasIndex(d => new { d.Status, d.CompletedUtc });
+            // Finding the reservations whose signed URLs have expired while still uploading, which is the one sweep
+            // this table answers and otherwise a scan of every drop-off ever taken.
+            e.HasIndex(d => new { d.Status, d.ReservedUntilUtc });
+        });
+
+        modelBuilder.Entity<DeliveryRecord>(e =>
+        {
+            e.ToTable("Record", SchemaName);
+            e.HasKey(r => r.DeliveryKey);
+            e.Property(r => r.SourceKey).HasMaxLength(400).IsRequired();
+            e.Property(r => r.Label).HasMaxLength(400);
+            e.Property(r => r.MappingName).HasMaxLength(200).IsRequired();
+            e.Property(r => r.SourceFingerprint).HasMaxLength(200);
+            e.Property(r => r.MetadataHash).HasMaxLength(64);
+            e.Property(r => r.PayloadHash).HasMaxLength(64);
+            e.Property(r => r.TargetId).HasMaxLength(500);
+            e.Property(r => r.Status).HasMaxLength(16).IsRequired();
+            e.Property(r => r.LastVerifyOutcome).HasMaxLength(16);
+            e.Property(r => r.LeaseOwner).HasMaxLength(200);
+            e.Property(r => r.LastError).HasMaxLength(2000);
+            e.Property(r => r.PendingSourceFingerprint).HasMaxLength(200);
+            e.Property(r => r.PendingMetadataHash).HasMaxLength(64);
+            e.Property(r => r.PendingPayloadHash).HasMaxLength(64);
+            e.Property(r => r.PendingPayloadLocation).HasMaxLength(2000);
+            e.Property(r => r.PendingDocumentRef).HasMaxLength(64);
+
+            // Worker and intake paths.
+            e.HasIndex(r => new { r.FlowId, r.Status, r.NextAttemptUtc });
+            // The rollout walks one set's records in key order; the filtered index keeps untagged records out of it.
+            e.HasIndex(r => new { r.CacheSetId, r.DeliveryKey }).HasFilter("[CacheSetId] IS NOT NULL");
+            e.HasIndex(r => new { r.LastSubmissionId, r.WorkBatch });
+            e.HasIndex(r => r.LeaseOwner);
+            // A submission's records, most recent first, read in index order however many the submission holds.
+            e.HasIndex(r => new { r.FlowId, r.LastSubmissionId, r.UpdatedUtc });
+            e.HasIndex(r => new { r.Status, r.LeaseExpiresUtc });
+            e.HasIndex(r => new { r.FlowId, r.LastVerifiedUtc });
+
+            // GUI: prefix search and recency listings, all answered from an index.
+            e.HasIndex(r => new { r.FlowId, r.Label });
+            e.HasIndex(r => new { r.FlowId, r.SourceKey });
+            e.HasIndex(r => new { r.FlowId, r.TargetId });
+            e.HasIndex(r => new { r.FlowId, r.UpdatedUtc });
+            e.HasIndex(r => new { r.FlowId, r.Status, r.UpdatedUtc });
+            e.HasIndex(r => new { r.FlowId, r.LastDeliveredUtc });
+            e.HasIndex(r => new { r.FlowId, r.LastVerifyOutcome });
+
+            // The global lookup (the search box): a delivery key is the primary key; an OSDU id, a source key or a label
+            // prefix answers from these across every flow.
+            e.HasIndex(r => r.TargetId);
+            e.HasIndex(r => r.SourceKey);
+            e.HasIndex(r => r.Label);
+
+            // Key-ordered walks of one flow: the known-state stream and a removal's key list page through it by key.
+            e.HasIndex(r => new { r.FlowId, r.DeliveryKey });
+        });
+
+        modelBuilder.Entity<DeliveryAttempt>(e =>
+        {
+            e.ToTable("Attempt", SchemaName);
+            e.HasKey(a => a.AttemptId);
+            e.Property(a => a.AttemptId).ValueGeneratedOnAdd();
+            e.Property(a => a.Worker).HasMaxLength(200).IsRequired();
+            e.Property(a => a.Outcome).HasMaxLength(16).IsRequired();
+            e.Property(a => a.Phase).HasMaxLength(32).IsRequired();
+            e.Property(a => a.MetadataHash).HasMaxLength(64);
+            e.Property(a => a.PayloadHash).HasMaxLength(64);
+            e.Property(a => a.Error).HasMaxLength(2000);
+            e.HasIndex(a => new { a.DeliveryKey, a.StartedUtc });
+            e.HasIndex(a => a.StartedUtc);
+            e.HasIndex(a => a.SubmissionId);
+            // A run's records: the listing's run filter seeks the run and joins on the key without reading the attempt.
+            e.HasIndex(a => new { a.RunId, a.DeliveryKey });
+        });
+
+        modelBuilder.Entity<DeliveryRecordCount>(e =>
+        {
+            // Created by CatalogDatabase from IndexedViews, not by EnsureCreated: EF cannot declare an indexed view.
+            e.HasNoKey();
+            e.ToView(RecordCountView, SchemaName);
+            e.Property(c => c.Status).HasMaxLength(16);
+            e.Property(c => c.LastVerifyOutcome).HasMaxLength(16);
+        });
+
+        modelBuilder.Entity<DeliveryWorkBatch>(e =>
+        {
+            e.ToTable("WorkBatch", SchemaName);
+            e.HasKey(b => new { b.SubmissionId, b.Index });
+            e.Property(b => b.Location).HasMaxLength(2000).IsRequired();
+            e.Property(b => b.Status).HasMaxLength(16).IsRequired();
+            e.Property(b => b.LeaseOwner).HasMaxLength(200);
+            e.Property(b => b.Error).HasMaxLength(2000);
+            // The claim: the oldest queued batch of a flow (or a submission), and the lease sweep.
+            e.HasIndex(b => new { b.FlowId, b.Status, b.CreatedUtc });
+            e.HasIndex(b => new { b.SubmissionId, b.Status });
+            e.HasIndex(b => new { b.Status, b.LeaseExpiresUtc });
+        });
+
+        modelBuilder.Entity<DeliverySourceWatermark>(e =>
+        {
+            e.ToTable("SourceWatermark", SchemaName);
+            e.HasKey(w => new { w.FlowId, w.Scope, w.TableName });
+            e.Property(w => w.Scope).HasMaxLength(400);
+            e.Property(w => w.ContextHash).HasMaxLength(64);
+            e.Property(w => w.TableName).HasMaxLength(400);
+        });
+
+        modelBuilder.Entity<DeliveryActivity>(e =>
+        {
+            e.ToTable("Activity", SchemaName);
+            e.HasKey(a => a.ActivityId);
+            e.Property(a => a.ActivityId).ValueGeneratedOnAdd();
+            e.Property(a => a.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(a => a.Kind).HasMaxLength(32).IsRequired();
+            e.Property(a => a.Actor).HasMaxLength(200).IsRequired();
+            e.Property(a => a.Outcome).HasMaxLength(16).IsRequired();
+            e.Property(a => a.Summary).HasMaxLength(2000);
+            e.HasIndex(a => new { a.FlowId, a.StartedUtc });
+            e.HasIndex(a => new { a.DeliveryKey, a.StartedUtc });
+            e.HasIndex(a => a.SubmissionId);
+            e.HasIndex(a => a.RunId);
+            e.HasIndex(a => new { a.Kind, a.StartedUtc });
+            e.HasIndex(a => new { a.Actor, a.StartedUtc });
+            e.HasIndex(a => a.StartedUtc);
+        });
+
+        modelBuilder.Entity<DeliveryRetrieval>(e =>
+        {
+            e.ToTable("Retrieval", SchemaName);
+            e.HasKey(r => r.RetrievalId);
+            e.Property(r => r.RetrievalId).ValueGeneratedOnAdd();
+            e.Property(r => r.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(r => r.Actor).HasMaxLength(200).IsRequired();
+            e.Property(r => r.Kinds).HasMaxLength(4000).IsRequired();
+            e.Property(r => r.WindowField).HasMaxLength(200);
+            e.Property(r => r.Location).HasMaxLength(2000).IsRequired();
+            e.Property(r => r.ManifestLocation).HasMaxLength(2000);
+            e.Property(r => r.Status).HasMaxLength(16).IsRequired();
+            e.Property(r => r.Error).HasMaxLength(4000);
+            // The flow's listing, the watermark chain (the last done run), and the run's row.
+            e.HasIndex(r => new { r.FlowId, r.StartedUtc });
+            e.HasIndex(r => new { r.FlowId, r.Status, r.StartedUtc });
+            e.HasIndex(r => r.RunId);
+        });
+
+        modelBuilder.Entity<DeliveryMapping>(e =>
+        {
+            e.ToTable("Mapping", SchemaName);
+            e.HasKey(m => m.Id);
+            e.Property(m => m.Reference).HasMaxLength(200).IsRequired();
+            e.Property(m => m.Name).HasMaxLength(150).IsRequired();
+            e.Property(m => m.Version).HasMaxLength(50).IsRequired();
+            e.Property(m => m.Kind).HasMaxLength(200).IsRequired();
+            e.Property(m => m.TemplateVersion).HasMaxLength(64).IsRequired();
+            e.Property(m => m.RelativePath).HasMaxLength(1000).IsRequired();
+            e.Property(m => m.ContentHash).HasMaxLength(64).IsRequired();
+            e.Property(m => m.Yaml).IsRequired();
+            e.Property(m => m.SummaryJson).IsRequired();
+            e.Property(m => m.Status).HasMaxLength(16).IsRequired();
+            e.Property(m => m.Message).HasMaxLength(4000);
+            e.HasIndex(m => new { m.RepoId, m.Reference }).IsUnique();
+            e.HasIndex(m => new { m.RepoId, m.Kind });
+            // A template delete asks which mappings pin the version.
+            e.HasIndex(m => new { m.Kind, m.TemplateVersion });
+        });
+
+        modelBuilder.Entity<DeliveryTemplate>(e =>
+        {
+            e.ToTable("Template", SchemaName);
+            e.HasKey(t => t.Id);
+            e.Property(t => t.Kind).HasMaxLength(200).IsRequired();
+            e.Property(t => t.Version).HasMaxLength(64).IsRequired();
+            e.Property(t => t.SchemaJson).IsRequired();
+            e.Property(t => t.Origin).HasMaxLength(1000).IsRequired();
+            e.Property(t => t.CapturedBy).HasMaxLength(200).IsRequired();
+            e.HasIndex(t => new { t.Kind, t.Version }).IsUnique();
+        });
+
+        modelBuilder.Entity<DeliveryCacheVersion>(e =>
+        {
+            e.ToTable("CacheVersion", SchemaName);
+            e.HasKey(v => v.Id);
+            e.Property(v => v.Scope).HasMaxLength(200).IsRequired();
+            e.Property(v => v.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(v => v.Version).HasMaxLength(64).IsRequired();
+            e.Property(v => v.ContentHash).HasMaxLength(64).IsRequired();
+            e.Property(v => v.PreviousVersion).HasMaxLength(64);
+            e.Property(v => v.CapturedBy).HasMaxLength(200).IsRequired();
+            e.Property(v => v.Origin).HasMaxLength(1000).IsRequired();
+            e.Property(v => v.TypesJson).IsRequired();
+            e.HasIndex(v => new { v.Scope, v.Version }).IsUnique();
+            // The sequence is what a concurrent second write of the same partition collides on, so two captures can never
+            // both claim the next version.
+            e.HasIndex(v => new { v.Scope, v.Sequence }).IsUnique();
+            e.HasIndex(v => v.RunId);
+        });
+
+        modelBuilder.Entity<DeliveryCacheItem>(e =>
+        {
+            e.ToTable("CacheItem", SchemaName);
+            e.HasKey(i => i.ItemId);
+            e.Property(i => i.Scope).HasMaxLength(200).IsRequired();
+            e.Property(i => i.TypeName).HasMaxLength(200).IsRequired();
+            e.Property(i => i.EntityType).HasMaxLength(200).IsRequired();
+            OsduId(e.Property(i => i.RecordId), sqlServer).HasMaxLength(512).IsRequired();
+            e.Property(i => i.FieldsJson).IsRequired();
+            e.Property(i => i.Terms).IsRequired();
+            // A record holds one range per distinct content: the type listing is its prefix, so this index answers both a
+            // version's listing of a type and one record's history.
+            e.HasIndex(i => new { i.Scope, i.TypeName, i.RecordId, i.FromSequence }).IsUnique();
+            // The rows the newest version holds (ToSequence null), which a merge compares its result against.
+            e.HasIndex(i => new { i.Scope, i.ToSequence });
+        });
+
+        modelBuilder.Entity<DeliveryCacheMember>(e =>
+        {
+            e.ToTable("CacheMember", SchemaName);
+            e.Property(m => m.Scope).HasMaxLength(200).IsRequired();
+            e.Property(m => m.TypeName).HasMaxLength(200).IsRequired();
+            OsduId(e.Property(m => m.RecordId), sqlServer).HasMaxLength(512).IsRequired();
+            e.Property(m => m.FlowName).HasMaxLength(200).IsRequired();
+            // A merge reads who holds each record of the captured types, and replaces one flow's rows of a type.
+            e.HasKey(m => new { m.Scope, m.TypeName, m.RecordId, m.FlowName });
+            e.HasIndex(m => new { m.Scope, m.FlowName, m.TypeName });
+        });
+
+        modelBuilder.Entity<DeliveryCacheSet>(e =>
+        {
+            e.ToTable("CacheSet", SchemaName);
+            e.HasKey(c => c.SetId);
+            e.Property(c => c.SetHash).HasMaxLength(64).IsRequired();
+            e.HasIndex(c => c.SetHash).IsUnique();
+            // The planner reads this every run: a filtered index keeps it to the handful of gated sets.
+            e.HasIndex(c => c.Gated).HasFilter("[Gated] = 1");
+        });
+
+        modelBuilder.Entity<DeliveryCacheSetEntry>(e =>
+        {
+            e.ToTable("CacheSetEntry", SchemaName);
+            e.Property(c => c.Scope).HasMaxLength(200).IsRequired();
+            e.Property(c => c.TypeName).HasMaxLength(200).IsRequired();
+            OsduId(e.Property(c => c.ItemId), sqlServer).HasMaxLength(512).IsRequired();
+            e.Property(c => c.Path).HasMaxLength(400).IsRequired();
+            e.Property(c => c.Kind).HasMaxLength(16).IsRequired();
+            e.Property(c => c.ValueHash).HasMaxLength(64).IsRequired();
+            e.Property(c => c.ValueText).HasMaxLength(400).IsRequired();
+            e.HasKey(c => new { c.SetId, c.Scope, c.TypeName, c.ItemId, c.Path, c.Kind });
+            // The impact query: which sets hold this cached value of this partition's cache.
+            e.HasIndex(c => new { c.Scope, c.TypeName, c.ItemId });
+        });
+
+        modelBuilder.Entity<DeliveryUpdateTag>(e =>
+        {
+            e.ToTable("UpdateTag", SchemaName);
+            e.HasKey(t => t.TagId);
+            e.Property(t => t.Kind).HasMaxLength(16).IsRequired();
+            e.Property(t => t.Scope).HasMaxLength(200).IsRequired();
+            e.Property(t => t.TypeName).HasMaxLength(200).IsRequired();
+            OsduId(e.Property(t => t.ItemId), sqlServer).HasMaxLength(512).IsRequired();
+            e.Property(t => t.Path).HasMaxLength(400).IsRequired();
+            e.Property(t => t.Change).HasMaxLength(16).IsRequired();
+            e.Property(t => t.OldValue).HasMaxLength(400);
+            e.Property(t => t.NewValue).HasMaxLength(400);
+            e.Property(t => t.FromVersion).HasMaxLength(64);
+            e.Property(t => t.ToVersion).HasMaxLength(64).IsRequired();
+            e.Property(t => t.Mode).HasMaxLength(16).IsRequired();
+            e.Property(t => t.Status).HasMaxLength(16).IsRequired();
+            e.Property(t => t.DecidedBy).HasMaxLength(200);
+            e.Property(t => t.SetIds).IsRequired();
+            e.HasIndex(t => t.Status);
+            e.HasIndex(t => new { t.Scope, t.TypeName, t.ItemId, t.Path, t.Status });
+        });
+
+        modelBuilder.Entity<DeliveryCacheDefinition>(e =>
+        {
+            e.ToTable("CacheDefinition", SchemaName);
+            e.HasKey(c => c.Id);
+            e.Property(c => c.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(c => c.Scope).HasMaxLength(200).IsRequired();
+            e.Property(c => c.Endpoint).HasMaxLength(1000).IsRequired();
+            e.Property(c => c.RelativePath).HasMaxLength(1000).IsRequired();
+            e.Property(c => c.Name).HasMaxLength(200).IsRequired();
+            e.Property(c => c.EntityType).HasMaxLength(200).IsRequired();
+            e.Property(c => c.Kind).HasMaxLength(400).IsRequired();
+            e.Property(c => c.Query).HasMaxLength(4000);
+            e.Property(c => c.FieldsJson).IsRequired();
+            e.Property(c => c.OnChange).HasMaxLength(16).IsRequired();
+            e.HasIndex(c => new { c.RepoId, c.FlowName, c.Name }).IsUnique();
+            // A refresh reads every declaration of its partition; the GUI lists a partition's types and the flows filling them.
+            e.HasIndex(c => new { c.Scope, c.Name });
+            e.HasIndex(c => c.FlowName);
+        });
+    }
+
+    /// <summary>
+    /// A column keyed on an OSDU record id: compared exactly by the database (<see cref="OsduIdCollation"/> on SQL Server,
+    /// ordinally on SQLite) and exactly by the change tracker. Without the ordinal comparer, a context tracking the foot and
+    /// the femtotesla side by side (two memberships of one cache flow, say) takes them for one key and refuses the second.
+    /// </summary>
+    private static PropertyBuilder<string> OsduId(PropertyBuilder<string> property, bool sqlServer)
+    {
+        property.Metadata.SetValueComparer(new ValueComparer<string>(
+            (left, right) => string.Equals(left, right, StringComparison.Ordinal),
+            value => StringComparer.Ordinal.GetHashCode(value),
+            value => value));
+        return sqlServer ? property.UseCollation(OsduIdCollation) : property;
+    }
+}

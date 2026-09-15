@@ -1,0 +1,607 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json.Nodes;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using SqlFlow.Catalog;
+using SqlFlow.Core.Storage;
+using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Drops;
+using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Engine.Protocols;
+using SqlFlow.Delivery.Engine.Snapshots;
+using SqlFlow.Delivery.Http;
+using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
+using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Storage;
+using SqlFlow.Delivery.Templates;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>A controllable clock for lease, backoff and cache tests.</summary>
+public sealed class TestClock : TimeProvider
+{
+    private DateTimeOffset _now;
+    private long _timestamp;
+
+    public TestClock(DateTimeOffset? start = null)
+    {
+        _now = start ?? new DateTimeOffset(2026, 9, 7, 12, 0, 0, TimeSpan.Zero);
+        _timestamp = 0;
+    }
+
+    public override DateTimeOffset GetUtcNow() => _now;
+
+    public override long GetTimestamp() => _timestamp;
+
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public void Advance(TimeSpan by)
+    {
+        _now += by;
+        _timestamp += by.Ticks;
+    }
+}
+
+/// <summary>An in-memory SQLite catalog with the schema created from the model, shared across contexts on one open
+/// connection: the ledger under test is the real <see cref="CatalogLedger"/> over the real catalog model.</summary>
+public sealed class SqliteCatalog : IDisposable
+{
+    private readonly SqliteConnection _connection;
+    private readonly DbContextOptions<CatalogDbContext> _options;
+
+    public SqliteCatalog()
+    {
+        _connection = new SqliteConnection("DataSource=:memory:");
+        _connection.Open();
+        _options = new DbContextOptionsBuilder<CatalogDbContext>().UseSqlite(_connection).Options;
+        using var db = new CatalogDbContext(_options);
+        db.Database.EnsureCreated();
+    }
+
+    public CatalogDbContext CreateDbContext() => new(_options);
+
+    public CatalogLedger Ledger(TimeProvider? time = null) => new(CreateDbContext, time);
+
+    public CatalogTemplateStore Templates(TimeProvider? time = null) => new(CreateDbContext, time);
+
+    public CatalogCacheStore Caches() => new(CreateDbContext);
+
+    /// <summary>
+    /// Declares what <paramref name="flowName"/> caches for <paramref name="scope"/> exactly as the repository sync leaves it:
+    /// one <c>delivery.CacheDefinition</c> row per type, replacing every row the flow had. No types declares nothing for the flow.
+    /// </summary>
+    public async Task DeclareCacheAsync(string scope, string flowName, params ReferenceTypeSpec[] types)
+    {
+        await using var db = CreateDbContext();
+        await db.DeliveryCacheDefinitions.Where(d => d.FlowName == flowName).ExecuteDeleteAsync();
+        var repoId = Guid.NewGuid();
+        var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        foreach (var type in types)
+        {
+            db.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
+            {
+                Id = Guid.NewGuid(),
+                RepoId = repoId,
+                FlowName = flowName,
+                Scope = scope,
+                Endpoint = "https://osdu.example.test",
+                RelativePath = "caches/" + flowName + ".yaml",
+                Name = type.Name,
+                EntityType = type.EntityType,
+                Kind = type.Kind,
+                Query = type.Query,
+                FieldsJson = new JsonArray(type.Fields.Select(f => (JsonNode)new JsonObject { ["path"] = f.Path, ["as"] = f.Name }).ToArray()).ToJsonString(),
+                OnChange = type.OnChange == CacheChangeMode.Approve ? "approve" : "auto",
+                FirstSeenUtc = now,
+                LastSeenUtc = now,
+            });
+        }
+
+        await db.SaveChangesAsync();
+    }
+
+    public void Dispose() => _connection.Dispose();
+}
+
+/// <summary>
+/// One version of one partition's cache held in memory, as a render reads it. The engine suites share the sample cache
+/// through it, so no suite reads a database another suite is writing on the same SQLite connection; the catalog store
+/// itself is covered by its own suite.
+/// </summary>
+public sealed class FixedCacheStore : ICacheStore
+{
+    private readonly string _scope;
+    private readonly string _flowName;
+    private readonly ReferenceSnapshot _snapshot;
+    private readonly CacheDeclaration _declaration;
+
+    /// <param name="scope">The partition whose cache the store holds.</param>
+    /// <param name="flowName">The cache flow that wrote the one version.</param>
+    /// <param name="snapshot">The one version.</param>
+    /// <param name="declaration">What the partition's cache flows declare; none when null.</param>
+    public FixedCacheStore(string scope, string flowName, ReferenceSnapshot snapshot, CacheDeclaration? declaration = null)
+    {
+        _scope = scope;
+        _flowName = flowName;
+        _snapshot = snapshot;
+        _declaration = declaration ?? CacheDeclaration.None(scope);
+    }
+
+    public Task<string?> CurrentVersionAsync(string scope, CancellationToken ct = default)
+        => Task.FromResult(scope == _scope ? _snapshot.Version : null);
+
+    public Task<ReferenceSnapshot?> LoadAsync(string scope, string version, CancellationToken ct = default)
+        => Task.FromResult(scope == _scope && version == _snapshot.Version ? _snapshot : null);
+
+    public Task<IReadOnlyList<CacheVersionInfo>> ListVersionsAsync(string scope, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<CacheVersionInfo>>(scope == _scope
+            ?
+            [
+                new CacheVersionInfo(
+                    _scope, _snapshot.Version, 1, _snapshot.CapturedUtc.UtcDateTime, true, null, null, "tests", "sample files", _flowName,
+                    _snapshot.Types.Sum(t => (long)t.Items.Count), _snapshot.Types.Select(t => new CacheVersionType(t.Name, t.EntityType, t.Items.Count)).ToList()),
+            ]
+            : []);
+
+    public Task<CacheDeclaration> DeclarationAsync(string scope, CancellationToken ct = default)
+        => Task.FromResult(scope == _scope ? _declaration : CacheDeclaration.None(scope));
+
+    public Task<CacheWrite> MergeAsync(
+        string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheCapture capture, DateTimeOffset capturedUtc, CancellationToken ct = default)
+        => throw new InvalidOperationException("The fixed sample cache is read-only; write versions through a catalog cache store.");
+}
+
+/// <summary>Records every delivery and replays configured outcomes.</summary>
+public sealed class FakeProtocol : IDeliveryProtocol
+{
+    private long _version = 1000;
+
+    public List<DeliveryWork> Deliveries { get; } = [];
+
+    /// <summary>The correlation id in effect when each delivery was made, in the order of <see cref="Deliveries"/>.</summary>
+    public List<string?> Correlations { get; } = [];
+
+    public List<(string TargetId, long? Expected)> Verifies { get; } = [];
+
+    public Func<DeliveryWork, Exception?>? FailWith { get; set; }
+
+    public Func<string, VerifyResult>? VerifyWith { get; set; }
+
+    /// <summary>Runs before each delivery; lets a test hold a delivery open (for example until it is cancelled).</summary>
+    public Func<DeliveryWork, CancellationToken, Task>? Before { get; set; }
+
+    public DeliveryProtocol Kind => DeliveryProtocol.OsduWellLog;
+
+    public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
+    {
+        Deliveries.Add(work);
+        Correlations.Add(OsduCorrelation.Current);
+        if (Before is { } before)
+        {
+            await before(work, ct);
+        }
+
+        if (FailWith?.Invoke(work) is { } failure)
+        {
+            throw failure;
+        }
+
+        var chunks = 0;
+        if (work.DeliverPayload && work.Payload is not null)
+        {
+            foreach (var chunk in await work.Payload.ListChunksAsync(ct))
+            {
+                await using var stream = await work.Payload.OpenAsync(chunk, ct);
+                using var sink = new MemoryStream();
+                await stream.CopyToAsync(sink, ct);
+                chunks++;
+            }
+        }
+
+        var version = work.DeliverMetadata ? Interlocked.Increment(ref _version) : work.ExistingVersion;
+        var returned = new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = work.TargetId };
+        if (version is { } v)
+        {
+            returned["version"] = v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        if (work.DeliverPayload)
+        {
+            returned["chunks"] = chunks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        var now = DateTime.UtcNow;
+        return new DeliveryOutcome
+        {
+            MetadataDelivered = work.DeliverMetadata,
+            PayloadDelivered = work.DeliverPayload,
+            TargetVersion = version,
+            ChunksSent = chunks,
+            Returned = returned,
+            Steps = [new DeliveryStep("fake", now, now, 200, returned)],
+        };
+    }
+
+    public Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default)
+    {
+        Verifies.Add((targetId, expectedVersion));
+        return Task.FromResult(VerifyWith?.Invoke(targetId) ?? new VerifyResult(VerifyOutcome.Match, expectedVersion, null));
+    }
+
+    public List<(string TargetId, RemovalScope Scope)> Deletes { get; } = [];
+
+    /// <summary>Target ids the fake target no longer holds, so a removal of them reports them already gone.</summary>
+    public HashSet<string> Gone { get; } = new(StringComparer.Ordinal);
+
+    public Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
+    {
+        Deletes.Add((targetId, scope));
+        return Task.FromResult(Gone.Contains(targetId)
+            ? new DeleteOutcome(false, true, "record not found in OSDU")
+            : new DeleteOutcome(true, false, scope.ToString().ToLowerInvariant()));
+    }
+
+    /// <summary>The records the fake target holds, by target id, for read-backs.</summary>
+    public Dictionary<string, JsonObject> Held { get; } = new(StringComparer.Ordinal);
+
+    public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
+        => Task.FromResult(Held.TryGetValue(targetId, out var record) ? (JsonObject?)record.DeepClone().AsObject() : null);
+
+    public bool Reachable { get; set; } = true;
+
+    public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
+        => Task.FromResult(new ProbeOutcome(Reachable, Reachable ? 200 : 503, Reachable ? "the service answered" : "service unavailable", "/about"));
+}
+
+/// <summary>Hands the engine a ready-made protocol instead of building one over HTTP.</summary>
+public sealed class FakeProtocolFactory : IProtocolFactory
+{
+    private readonly IDeliveryProtocol _protocol;
+
+    public FakeProtocolFactory(IDeliveryProtocol protocol)
+    {
+        _protocol = protocol;
+    }
+
+    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default) => Task.FromResult(_protocol);
+}
+
+/// <summary>A scripted HTTP handler: matches requests by method and path, records bodies, returns canned responses.</summary>
+public sealed class FakeHttpHandler : HttpMessageHandler
+{
+    public sealed record Request(HttpMethod Method, Uri Uri, string? Body, string? ContentType, IReadOnlyDictionary<string, string> Headers);
+
+    private readonly List<(Func<HttpRequestMessage, bool> Match, Func<int, HttpResponseMessage> Respond)> _rules = [];
+    private readonly Dictionary<string, int> _hits = new(StringComparer.Ordinal);
+
+    public List<Request> Calls { get; } = [];
+
+    public FakeHttpHandler On(HttpMethod method, string pathSuffix, Func<int, HttpResponseMessage> respond)
+    {
+        _rules.Add((r => r.Method == method && r.RequestUri!.AbsolutePath.EndsWith(pathSuffix, StringComparison.Ordinal), respond));
+        return this;
+    }
+
+    public FakeHttpHandler On(HttpMethod method, string pathSuffix, HttpStatusCode status, string? json = null)
+        => On(method, pathSuffix, _ => Json(status, json));
+
+    /// <summary>A rule over the whole request, for URLs the test cannot know in advance (a run id the protocol chose).</summary>
+    public FakeHttpHandler OnMatch(Func<HttpRequestMessage, bool> match, Func<int, HttpResponseMessage> respond)
+    {
+        _rules.Add((match, respond));
+        return this;
+    }
+
+    public static HttpResponseMessage Json(HttpStatusCode status, string? json)
+    {
+        var response = new HttpResponseMessage(status);
+        if (json is not null)
+        {
+            response.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        }
+
+        return response;
+    }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        string? body = null;
+        if (request.Content is not null)
+        {
+            body = await request.Content.ReadAsStringAsync(cancellationToken);
+        }
+
+        var headers = request.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value), StringComparer.OrdinalIgnoreCase);
+        Calls.Add(new Request(request.Method, request.RequestUri!, body, request.Content?.Headers.ContentType?.MediaType, headers));
+        foreach (var (match, respond) in _rules)
+        {
+            if (match(request))
+            {
+                var key = request.Method + " " + request.RequestUri!.AbsolutePath;
+                var hit = _hits.GetValueOrDefault(key);
+                _hits[key] = hit + 1;
+                return respond(hit);
+            }
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("no rule for " + request.RequestUri) };
+    }
+}
+
+/// <summary>Paths to the sample documents linked into the test output, and a ready-made engine context over them.</summary>
+public static class Samples
+{
+    public const string WellLogKind = "osdu:wks:work-product-component--WellLog:1.4.0";
+
+    public const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
+
+    public static string Root => Path.Combine(AppContext.BaseDirectory, "samples");
+
+    public static string Mappings => Path.Combine(Root, "mappings");
+
+    /// <summary>The bundled OSDU schemas the sample mappings pin, as a template import reads them.</summary>
+    public static string TemplateFiles => Path.Combine(Root, "templates");
+
+    public static string Flow => Path.Combine(Root, "flows", "recall-welllog.yaml");
+
+    /// <summary>The sample cache flow: what the sample cache holds.</summary>
+    public static string CacheFlow => Path.Combine(Root, "caches", "osdu-reference-cache.yaml");
+
+    /// <summary>The sample cache records, one file per cached type.</summary>
+    public static string References => Path.Combine(Root, "references");
+
+    /// <summary>The partition the sample flows search and deliver to, whose cache the sample delivery flow reads.</summary>
+    public const string SampleCacheScope = "opendes";
+
+    /// <summary>The name of the sample cache flow, which fills the cache of <see cref="SampleCacheScope"/>.</summary>
+    public const string SampleCacheFlowName = "osdu-reference-cache";
+
+    /// <summary>When the sample cache records were captured: the version label the sample cache is imported under.</summary>
+    public static readonly DateTimeOffset SampleCacheCaptured = new(2026, 9, 8, 21, 27, 27, TimeSpan.Zero);
+
+    // One catalog holding the sample templates and the sample cache for the whole run: templates and cache versions are
+    // immutable, and after the warm-up a render never reaches the database behind them.
+    private static readonly Lazy<(SqliteCatalog Catalog, CatalogTemplateStore Store, ICacheStore Cache)> SampleCatalog = new(() =>
+    {
+        var catalog = new SqliteCatalog();
+        var store = catalog.Templates();
+        ImportSampleTemplatesAsync(store).GetAwaiter().GetResult();
+        var version = ImportSampleCacheAsync(catalog.Caches()).GetAwaiter().GetResult();
+        return (catalog, store, new FixedCacheStore(SampleCacheScope, SampleCacheFlowName, version, SampleCacheDeclaration()));
+    });
+
+    /// <summary>What the sample cache flow declares for its partition, as the catalog holds it after a sync.</summary>
+    public static CacheDeclaration SampleCacheDeclaration()
+    {
+        var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
+        return new CacheDeclaration(
+            flow.Scope,
+            flow.Types.Select(t => new CacheTypeDeclaration(flow.Name, t.Name, t.EntityType, t.Kind, t.Query, t.Fields, t.OnChange)));
+    }
+
+    /// <summary>A template store holding the sample templates, shared by the engine tests.</summary>
+    public static ITemplateStore SampleTemplates => SampleCatalog.Value.Store;
+
+    /// <summary>The sample cache at its one version, shared by the engine tests.</summary>
+    public static ICacheStore SampleCache => SampleCatalog.Value.Cache;
+
+    /// <summary>
+    /// Imports the sample cache records into <paramref name="store"/> as a version of the sample partition's cache, checked
+    /// against what the sample cache flow declares, exactly as 'sqlflow cache import' writes them; returns the version as
+    /// loaded back.
+    /// </summary>
+    public static async Task<ReferenceSnapshot> ImportSampleCacheAsync(ICacheStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
+        var builder = new SnapshotBuilder(store, flow.Scope, flow.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());
+        var write = await builder.ImportDirectoryAsync(References, flow.Types, new CacheCapture(null, "tests", "sample files"));
+        return (await store.LoadAsync(flow.Scope, write.Snapshot.Version))!;
+    }
+
+    /// <summary>Saves the sample templates into <paramref name="store"/> and loads each once, returning what was saved.</summary>
+    public static async Task<IReadOnlyList<TemplateSaved>> ImportSampleTemplatesAsync(ITemplateStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        var saved = new List<TemplateSaved>();
+        foreach (var kind in new[] { WellLogKind, WellboreKind })
+        {
+            var schema = SampleTemplate(kind);
+            saved.Add(await store.SaveAsync(schema, "sample file", "tests"));
+            await store.LoadAsync(new TemplateReference(schema.Kind, schema.Version));
+        }
+
+        return saved;
+    }
+
+    /// <summary>The sample schema of a kind, read from its bundled file.</summary>
+    public static SchemaSnapshot SampleTemplate(string kind)
+    {
+        var file = Path.Combine(TemplateFiles, kind.Replace(':', '_') + ".json");
+        return TemplateSources.FromBundledJson(File.ReadAllText(file), kind, new DateTimeOffset(2026, 9, 7, 22, 37, 2, TimeSpan.Zero), file);
+    }
+
+    public static string NewTempDirectory()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "osdu-delivery-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    /// <summary>The platform file stores plus the delivery writers, exactly as the hosts register them.</summary>
+    public static FileStoreRegistry Stores() => new([new LocalFileStore()], [new LocalFileWriter()], [new LocalFileReader()]);
+
+    public static EngineContext Engine(ILedger? ledger, TimeProvider? time = null, IProtocolFactory? protocols = null, ITemplateStore? templates = null, ICacheStore? cache = null)
+    {
+        var stores = Stores();
+        var loader = new DeliveryDocumentLoader();
+        return new EngineContext(
+            loader,
+            new DropReader(stores),
+            stores,
+            new SecretResolver([new EnvSecretProvider()]),
+            ledger,
+            time ?? TimeProvider.System,
+            NullLoggerFactory.Instance,
+            protocols ?? new DefaultProtocolFactory(new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance),
+            CompositeDeliveryListener.Empty,
+            Templates: templates ?? SampleTemplates,
+            Cache: cache ?? SampleCache);
+    }
+
+    /// <summary>The sample flow with the network target replaced by a local placeholder (tests never call OSDU).</summary>
+    public static FlowDefinition LocalFlow(string dropLocation)
+    {
+        var flow = new DeliveryDocumentLoader().LoadFlow(Flow);
+        return flow with
+        {
+            Source = flow.Source with { Location = dropLocation },
+            Target = flow.Target with
+            {
+                Endpoint = "http://localhost:9/petrodb",
+                Auth = new TargetAuth { Type = TargetAuthType.None },
+                // The partition stays: it is what names the cache the render reads.
+                Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [CacheScope.PartitionHeader] = SampleCacheScope },
+            },
+            // SQLite in-memory shares one connection, so the test worker runs one record at a time and one renderer.
+            Reliability = flow.Reliability with { Concurrency = 1, RenderParallelism = 1, Retry = flow.Reliability.Retry with { Attempts = 3, RecordBaseDelayMinutes = 1 } },
+        };
+    }
+
+    public static ILogger<T> Logger<T>() => NullLogger<T>.Instance;
+}
+
+/// <summary>A compact OSDU-shaped schema for unit tests: allOf, a definitions ref, an array of objects, tags.</summary>
+public static class TestSchema
+{
+    public const string Kind = "test:wks:work-product-component--Thing:1.0.0";
+
+    /// <summary>The entries every test mapping starts from: the envelope, the key's own property and the one property the schema requires.</summary>
+    public const string BaseEntries = """
+          - { target: osdu.acl.owners, static: [owners@x] }
+          - { target: osdu.acl.viewers, static: [viewers@x] }
+          - { target: osdu.legal.legaltags, static: [tag] }
+          - { target: osdu.legal.otherRelevantDataCountries, static: [NO] }
+          - { target: osdu.data.Name, source: dataset.name }
+          - { target: osdu.data.Depth, source: dataset.depth }
+        """;
+
+    public static SchemaSnapshot Build() => SchemaSnapshot.Parse(Kind, """
+        {
+          "$id": "https://example.org/Thing.1.0.0.json",
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "kind": { "type": "string" },
+            "acl": { "$ref": "#/definitions/AbstractAccessControlList.1.0.0" },
+            "legal": { "type": "object", "properties": { "legaltags": { "type": "array", "items": { "type": "string" } }, "otherRelevantDataCountries": { "type": "array", "items": { "type": "string" } } }, "required": ["legaltags", "otherRelevantDataCountries"] },
+            "tags": { "type": "object", "additionalProperties": { "type": "string" } },
+            "data": {
+              "allOf": [
+                { "$ref": "#/definitions/AbstractCommon.1.0.0" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "WellboreID": { "type": "string", "pattern": "^[\\w\\-\\.]+:master-data\\-\\-Wellbore:[\\w\\-\\.\\:\\%]+:[0-9]*$", "x-osdu-relationship": [ { "GroupType": "master-data", "EntityType": "Wellbore" } ] },
+                    "Depth": { "type": "number" },
+                    "Count": { "type": "integer" },
+                    "IsRegular": { "type": "boolean" },
+                    "Unit": { "type": "string", "x-osdu-relationship": [ { "GroupType": "reference-data", "EntityType": "UnitOfMeasure" } ] },
+                    "When": { "type": "string", "format": "date-time" },
+                    "Day": { "type": "string", "format": "date" },
+                    "Clock": { "type": "string", "format": "time" },
+                    "Weight": { "type": "number" },
+                    "Small": { "type": "integer", "format": "int32" },
+                    "Big": { "type": "integer", "format": "int64" },
+                    "Days": { "type": "array", "items": { "type": "string", "format": "date" } },
+                    "Curves": { "type": "array", "items": { "type": "object", "properties": { "CurveID": { "type": "string" }, "TopDepth": { "type": "number" } } } },
+                    "Nested": { "type": "object", "properties": { "Inner": { "type": "string" } } },
+                    "Aliases": { "type": "array", "items": { "type": "string" } },
+                    "Symbol": { "type": "string" }
+                  },
+                  "required": ["Depth"]
+                }
+              ]
+            }
+          },
+          "required": ["kind", "acl", "legal"],
+          "definitions": {
+            "AbstractAccessControlList.1.0.0": { "type": "object", "properties": { "owners": { "type": "array", "items": { "type": "string" } }, "viewers": { "type": "array", "items": { "type": "string" } } }, "required": ["owners", "viewers"] },
+            "AbstractCommon.1.0.0": { "type": "object", "properties": { "Name": { "type": "string" }, "Description": { "type": "string" } } }
+          }
+        }
+        """, new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+
+    /// <summary>The template version of <see cref="Build"/>, which every test mapping pins.</summary>
+    public static TemplateReference Template => new(Kind, Build().Version);
+
+    public static ReferenceSnapshot References() => new("refs-1", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+    [
+        new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
+        [
+            ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:m", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Code"] = "m", ["Name"] = "metre" }),
+            ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:ft", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Code"] = "ft", ["Name"] = "foot" }),
+        ]),
+        new ReferenceType("Wellbore", "master-data--Wellbore",
+        [
+            ReferenceItem.FromText("dev:master-data--Wellbore:abc", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["FacilityName"] = "NO 1/1-A" }),
+        ]),
+    ]);
+
+    public static RenderContext Context(string mapping = "Thing@1.0.0") => new()
+    {
+        MappingReference = mapping,
+        CacheScope = "dev",
+        CacheVersion = "refs-1",
+        SchemaSnapshotVersion = Build().Version,
+        Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "dev" },
+    };
+
+    /// <summary>
+    /// A mapping document over the test template: the header, <paramref name="baseEntries"/>, then <paramref name="entries"/>
+    /// (YAML list items indented by two spaces), then <paramref name="fixtures"/> (a whole top-level block).
+    /// </summary>
+    public static string MappingDocument(string entries = "", string fixtures = "", string baseEntries = BaseEntries) =>
+        $"""
+        documentType: mapping
+        name: Thing
+        version: 1.0.0
+        template:
+          kind: {Kind}
+          version: {Build().Version}
+        dataset:
+          system: test
+          key: [dataset.name]
+        parameters:
+          dataPartition: {"{"} required: true {"}"}
+        mappings:
+
+        """ + baseEntries + "\n" + entries + "\n" + fixtures + "\n";
+
+    /// <summary>A valid mapping over the test template, with <paramref name="entries"/> appended to the base entries.</summary>
+    public static MappingDefinition Mapping(string entries = "", string fixtures = "", string baseEntries = BaseEntries)
+        => new DeliveryDocumentLoader().ParseMapping(MappingDocument(entries, fixtures, baseEntries), "thing.yaml");
+
+    /// <summary>A mapping document with a cache entry and a repeater, for the loader tests.</summary>
+    public static string MappingYaml => MappingDocument("""
+          - target: osdu.data.Unit
+            source: cache.UnitOfMeasure.id
+            findBy: cache.UnitOfMeasure.Code = dataset.unit
+          - target: osdu.data.Curves
+            source: dataset.curves
+          - target: osdu.data.Curves[].CurveID
+            source: dataset.curves.curve_id
+          - target: osdu.data.Curves[].TopDepth
+            source: dataset.curves.top
+        """);
+
+    public static JsonObject Doc(string json) => (JsonObject)JsonNode.Parse(json)!;
+}

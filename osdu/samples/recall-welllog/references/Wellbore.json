@@ -1,0 +1,7 @@
+{
+  "entityType": "master-data--Wellbore",
+  "items": [
+    { "id": "opendes:master-data--Wellbore:OSDU-DEV-1-A", "FacilityName": "OSDU-DEV-1-A" },
+    { "id": "opendes:master-data--Wellbore:OSDU-DEV-1-B", "FacilityName": "OSDU-DEV-1-B" }
+  ]
+}
