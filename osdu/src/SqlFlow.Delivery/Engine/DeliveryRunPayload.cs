@@ -1,0 +1,394 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using SqlFlow.Core;
+using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Source;
+
+namespace SqlFlow.Delivery.Engine;
+
+/// <summary>The operations a run of the delivery, cache and retrieval kinds performs, by the names runs carry.</summary>
+public static class DeliveryOperations
+{
+    /// <summary>Plan the source and deliver what changed: the delivery kind's default.</summary>
+    public const string Deliver = "deliver";
+
+    /// <summary>Plan and report, change nothing.</summary>
+    public const string Plan = "plan";
+
+    /// <summary>Plan into work batches without delivering: a fan-out member's share, or a planning run alone.</summary>
+    public const string Intake = "intake";
+
+    /// <summary>Deliver the work batches already planned.</summary>
+    public const string Drain = "drain";
+
+    /// <summary>Compare what OSDU holds with what the ledger recorded.</summary>
+    public const string Verify = "verify";
+
+    /// <summary>Read every row of the scope again and deliver what renders differently now.</summary>
+    public const string Replan = "replan";
+
+    /// <summary>Capture a cache flow's types into its partition's cache: the cache kind's default.</summary>
+    public const string Refresh = "refresh";
+
+    /// <summary>Retrieve records of OSDU kinds into files: the retrieval kind's default.</summary>
+    public const string Retrieve = "retrieve";
+
+    /// <summary>The operation a run of a delivery flow performs: the one it names, or <see cref="Deliver"/>.</summary>
+    public static string Of(RunParameters parameters)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        return parameters.Operation ?? Deliver;
+    }
+
+    /// <summary>
+    /// Refuses the per-run overrides SQLFlow's own flow kinds take (a full load, a backfill window, a file pattern, a source
+    /// filter, an assertions-only or reprocess run): a flow of a registered kind reads its source its own way, and quietly
+    /// ignoring one of them would run something other than what the caller asked for.
+    /// </summary>
+    public static void RefuseBuiltInOverrides(RunParameters parameters, string flowType, string instead)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        var named = new List<string>();
+        if (parameters.FullLoad)
+        {
+            named.Add("fullLoad");
+        }
+
+        if (parameters.BackfillFrom is not null || parameters.BackfillTo is not null)
+        {
+            named.Add("a backfill window");
+        }
+
+        if (parameters.FilePattern is not null)
+        {
+            named.Add("filePattern");
+        }
+
+        if (parameters.SourceFilter is not null)
+        {
+            named.Add("sourceFilter");
+        }
+
+        if (parameters.AssertionsOnly)
+        {
+            named.Add("assertionsOnly");
+        }
+
+        if (parameters.ReprocessFromSourceMin)
+        {
+            named.Add("reprocessFromSourceMin");
+        }
+
+        if (named.Count > 0)
+        {
+            throw new SqlFlowException($"{string.Join(", ", named)} do(es) not apply to '{flowType}' flows; {instead}");
+        }
+    }
+}
+
+/// <summary>What a record-scoped deliver run sends again, by the names a run's payload carries.</summary>
+public static class RedeliverScopes
+{
+    public const string All = "all";
+
+    public const string Metadata = "metadata";
+
+    public const string Payload = "payload";
+
+    public static IReadOnlyList<string> Names { get; } = [All, Metadata, Payload];
+}
+
+/// <summary>
+/// The kind-owned arguments of a delivery run (<see cref="RunParameters.Payload"/>): whether it forces a re-plan, the
+/// submission it works on, the records it is scoped to and what of them it redelivers, the key slices a fan-out member
+/// plans, and whether a submission's landing files were landed again. Parsed strictly: an unknown property, a wrong type
+/// or a value out of range is refused with a message naming it, at every trust boundary the platform validates a run at.
+/// </summary>
+public sealed record DeliveryRunPayload
+{
+    /// <summary>The most records one run can be scoped to.</summary>
+    public const int MaxRecordKeys = 1000;
+
+    public const string ForceProperty = "force";
+
+    public const string SubmissionIdProperty = "submissionId";
+
+    public const string RecordKeysProperty = "recordKeys";
+
+    public const string RedeliverProperty = "redeliver";
+
+    public const string SlicesProperty = "slices";
+
+    public const string RelandProperty = "reland";
+
+    private static readonly string[] Properties = [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty, RelandProperty];
+
+    public static DeliveryRunPayload None { get; } = new();
+
+    /// <summary>Lift the whole-run gates: tier 0 and an already completed submission. Each record's own hashes still decide.</summary>
+    public bool Force { get; init; }
+
+    /// <summary>The submission the run works on: a re-run, a fan-out member's share, or an API submission's plan.</summary>
+    public Guid? SubmissionId { get; init; }
+
+    /// <summary>The delivery keys the run is scoped to.</summary>
+    public IReadOnlyList<Guid> RecordKeys { get; init; } = [];
+
+    /// <summary>What of the scoped records is sent again: all, metadata or payload; null means all.</summary>
+    public string? Redeliver { get; init; }
+
+    /// <summary>The key slices of <see cref="SubmissionId"/> an intake member plans.</summary>
+    public IReadOnlyList<int> Slices { get; init; } = [];
+
+    /// <summary>The submission's landing files were landed again before this run, so its rows are read as they now stand.</summary>
+    public bool Reland { get; init; }
+
+    /// <summary>True when the payload carries nothing.</summary>
+    public bool IsEmpty
+        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && !Reland;
+
+    /// <summary>The payload of a run's parameters; none when it carries none.</summary>
+    public static DeliveryRunPayload Parse(RunParameters parameters)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        return Parse(parameters.Payload);
+    }
+
+    /// <summary>Parses a payload's JSON text strictly; null or blank is no payload.</summary>
+    public static DeliveryRunPayload Parse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return None;
+        }
+
+        JsonObject root;
+        try
+        {
+            root = JsonNode.Parse(json) as JsonObject ?? throw new SqlFlowException("payload must be a JSON object.");
+        }
+        catch (JsonException ex)
+        {
+            throw new SqlFlowException($"payload is not valid JSON: {ex.Message}", ex);
+        }
+
+        foreach (var (name, _) in root)
+        {
+            if (!Properties.Contains(name, StringComparer.Ordinal))
+            {
+                throw new SqlFlowException($"payload property '{name}' is not one of {string.Join(", ", Properties)}.");
+            }
+        }
+
+        return new DeliveryRunPayload
+        {
+            Force = Boolean(root, ForceProperty),
+            SubmissionId = root[SubmissionIdProperty] is null ? null : Id(root[SubmissionIdProperty], SubmissionIdProperty),
+            RecordKeys = Keys(root[RecordKeysProperty]),
+            Redeliver = root[RedeliverProperty] is null ? null : Text(root[RedeliverProperty], RedeliverProperty),
+            Slices = SliceList(root[SlicesProperty]),
+            Reland = Boolean(root, RelandProperty),
+        };
+    }
+
+    /// <summary>
+    /// Checks the payload against the operation it travels with, throwing <see cref="SqlFlowException"/> naming the property:
+    /// what each operation takes, and the ranges every property keeps to.
+    /// </summary>
+    public void Validate(string operation)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+        if (RecordKeys.Count > MaxRecordKeys)
+        {
+            throw new SqlFlowException($"payload recordKeys holds {RecordKeys.Count} keys; one run is scoped to at most {MaxRecordKeys} records.");
+        }
+
+        if (RecordKeys.Any(k => k == Guid.Empty))
+        {
+            throw new SqlFlowException("payload recordKeys holds an empty UUID; a delivery key is a non-empty UUID.");
+        }
+
+        if (RecordKeys.Distinct().Count() != RecordKeys.Count)
+        {
+            throw new SqlFlowException("payload recordKeys names a record more than once.");
+        }
+
+        if (SubmissionId == Guid.Empty)
+        {
+            throw new SqlFlowException("payload submissionId is an empty UUID.");
+        }
+
+        if (Redeliver is { } scope && !RedeliverScopes.Names.Contains(scope, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new SqlFlowException($"payload redeliver '{scope}' is not one of {string.Join(", ", RedeliverScopes.Names)}.");
+        }
+
+        if (Slices.Any(s => s < 0 || s >= KeySlices.MaxSlices))
+        {
+            throw new SqlFlowException($"payload slices holds an index outside 0 to {KeySlices.MaxSlices - 1}.");
+        }
+
+        if (Slices.Distinct().Count() != Slices.Count)
+        {
+            throw new SqlFlowException("payload slices names a slice more than once.");
+        }
+
+        if (SubmissionId is not null && RecordKeys.Count > 0)
+        {
+            throw new SqlFlowException("payload names both a submissionId and recordKeys; a run works on a submission or is scoped to records, not both.");
+        }
+
+        switch (operation)
+        {
+            case DeliveryOperations.Deliver:
+                Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
+                Refuse(Redeliver is not null && RecordKeys.Count == 0, RedeliverProperty, operation, "it says what of the records named by recordKeys is sent again");
+                Refuse(Reland && SubmissionId is null, RelandProperty, operation, "it describes the submission the run re-runs, which submissionId names");
+                break;
+            case DeliveryOperations.Plan:
+                Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
+                Refuse(Redeliver is not null, RedeliverProperty, operation, "a plan sends nothing");
+                Refuse(Reland && SubmissionId is null, RelandProperty, operation, "it describes the submission the run re-plans, which submissionId names");
+                break;
+            case DeliveryOperations.Intake:
+                Refuse(Redeliver is not null, RedeliverProperty, operation, "an intake sends nothing");
+                Refuse(Reland, RelandProperty, operation, "an intake plans what its coordinating run registered");
+                Refuse(Slices.Count > 0 && SubmissionId is null, SlicesProperty, operation, "slices are cut from the submission their coordinating run registered, which submissionId names");
+                break;
+            case DeliveryOperations.Drain:
+                Refuse(Force, ForceProperty, operation, "a drain plans nothing to force");
+                Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "a drain delivers the batches a submission planned");
+                Refuse(Redeliver is not null, RedeliverProperty, operation, "a drain delivers what was planned");
+                Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
+                Refuse(Reland, RelandProperty, operation, "a drain reads no source rows");
+                break;
+            case DeliveryOperations.Verify:
+                Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a verify reads the ledger's delivered records, not a submission");
+                Refuse(Redeliver is not null, RedeliverProperty, operation, "a verify sends nothing");
+                Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
+                Refuse(Reland, RelandProperty, operation, "a verify reads no source rows");
+                break;
+            case DeliveryOperations.Replan:
+                Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a replan reads every row of the scope under a submission of its own");
+                Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "a replan reads every row of the scope; scope a deliver run to records instead");
+                Refuse(Redeliver is not null, RedeliverProperty, operation, "a replan decides by each record's hashes");
+                Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
+                Refuse(Reland, RelandProperty, operation, "a replan reads the tables as they stand");
+                break;
+            default:
+                throw new SqlFlowException($"'{operation}' is not an operation of a delivery flow.");
+        }
+    }
+
+    /// <summary>The compact JSON text a run carries, or null when the payload carries nothing.</summary>
+    public string? ToJson()
+    {
+        if (IsEmpty)
+        {
+            return null;
+        }
+
+        var root = new JsonObject();
+        if (Force)
+        {
+            root[ForceProperty] = true;
+        }
+
+        if (SubmissionId is { } submission)
+        {
+            root[SubmissionIdProperty] = submission.ToString("D");
+        }
+
+        if (RecordKeys.Count > 0)
+        {
+            root[RecordKeysProperty] = new JsonArray(RecordKeys.Select(k => (JsonNode?)JsonValue.Create(k.ToString("D"))).ToArray());
+        }
+
+        if (Redeliver is { } redeliver)
+        {
+            root[RedeliverProperty] = redeliver;
+        }
+
+        if (Slices.Count > 0)
+        {
+            root[SlicesProperty] = new JsonArray(Slices.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray());
+        }
+
+        if (Reland)
+        {
+            root[RelandProperty] = true;
+        }
+
+        return root.ToJsonString();
+    }
+
+    private static void Refuse(bool refused, string property, string operation, string why)
+    {
+        if (refused)
+        {
+            throw new SqlFlowException($"payload {property} does not apply to the {operation} operation: {why}.");
+        }
+    }
+
+    private static bool Boolean(JsonObject root, string property)
+    {
+        var node = root[property];
+        if (node is null)
+        {
+            return false;
+        }
+
+        return node is JsonValue value && value.TryGetValue<bool>(out var flag)
+            ? flag
+            : throw new SqlFlowException($"payload {property} must be true or false.");
+    }
+
+    private static string Text(JsonNode? node, string property)
+        => node is JsonValue value && value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text)
+            ? text.Trim()
+            : throw new SqlFlowException($"payload {property} must be a non-empty string.");
+
+    private static Guid Id(JsonNode? node, string property)
+        => Guid.TryParse(Text(node, property), out var id)
+            ? id
+            : throw new SqlFlowException($"payload {property} must be a UUID.");
+
+    private static IReadOnlyList<Guid> Keys(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return [];
+        }
+
+        if (node is not JsonArray array)
+        {
+            throw new SqlFlowException($"payload {RecordKeysProperty} must be an array of delivery key UUIDs.");
+        }
+
+        if (array.Count > MaxRecordKeys)
+        {
+            throw new SqlFlowException($"payload {RecordKeysProperty} holds {array.Count} keys; one run is scoped to at most {MaxRecordKeys} records.");
+        }
+
+        return array.Select(item => Id(item, RecordKeysProperty)).ToList();
+    }
+
+    private static IReadOnlyList<int> SliceList(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return [];
+        }
+
+        if (node is not JsonArray array || array.Count > KeySlices.MaxSlices)
+        {
+            throw new SqlFlowException($"payload {SlicesProperty} must be an array of at most {KeySlices.MaxSlices} slice indexes.");
+        }
+
+        return array
+            .Select(item => item is JsonValue value && value.TryGetValue<int>(out var slice)
+                ? slice
+                : throw new SqlFlowException($"payload {SlicesProperty} must hold whole numbers."))
+            .ToList();
+    }
+}

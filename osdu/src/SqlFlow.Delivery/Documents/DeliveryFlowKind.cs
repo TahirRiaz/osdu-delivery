@@ -1,15 +1,17 @@
+using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Yaml;
 
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// A delivery flow as the platform sees it: the parsed <see cref="FlowDefinition"/> behind the headers every
-/// catalog consumer reads (name, batch, the drop as the source reference, the OSDU endpoint as the target
-/// reference, the credential references the hygiene check inspects). A delivery flow always needs its
-/// repository tree: the mappings and snapshots live next to it, never inside the flow file.
+/// A delivery flow as the platform sees it: the parsed <see cref="FlowDefinition"/> behind the headers every catalog
+/// consumer reads (name, batch, the record table as the source reference, the source connection reference, the OSDU
+/// endpoint as the target reference, the credential references the hygiene check inspects), and the ingestion tables it
+/// reads as declared lineage. A delivery flow always needs its repository tree: its mappings live next to it.
 /// </summary>
-public sealed record DeliveryFlowDocument : FlowDocument
+public sealed record DeliveryFlowDocument : RegisteredFlowDocument
 {
     public required FlowDefinition Flow { get; init; }
 
@@ -19,13 +21,17 @@ public sealed record DeliveryFlowDocument : FlowDocument
 
     public override string? Batch => Flow.Batch;
 
-    public override string? SourceReference => Flow.Source.Location;
+    public override string? SourceConnectionReference => Flow.Source.Connection;
+
+    public override string? SourceReference => Flow.Source.Record.Object;
 
     public override string? TargetReference => Flow.Target.Endpoint;
 
     public override IEnumerable<KeyValuePair<string, string>> CredentialReferences => Flow.CredentialReferences();
 
     public override bool RequiresRepoTree => true;
+
+    public override IReadOnlyList<DeclaredDataObject> DeclaredObjects => DeliveryLineage.DeclaredObjects(Flow);
 }
 
 /// <summary>The <c>flowType: delivery</c> document kind, registered in every host next to its executor; it also owns
@@ -40,9 +46,22 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
         _loader = loader;
     }
 
+    /// <summary>The operations of a delivery run, the default first.</summary>
+    public static IReadOnlyList<FlowKindOperation> DeliveryOperationList { get; } =
+    [
+        new(DeliveryOperations.Deliver, "Deliver", "Plan the rows the ingestion tables changed and deliver what renders differently to OSDU.", WritesTarget: true),
+        new(DeliveryOperations.Plan, "Plan", "Plan the rows the ingestion tables changed and report what a delivery would send, changing nothing.", WritesTarget: false),
+        new(DeliveryOperations.Intake, "Intake", "Plan the rows into work batches without delivering them: a fan-out member's share of a plan.", WritesTarget: false),
+        new(DeliveryOperations.Drain, "Drain", "Deliver the work batches a submission already planned.", WritesTarget: true),
+        new(DeliveryOperations.Verify, "Verify", "Compare what OSDU holds with what the ledger recorded, and optionally queue redelivery of drift.", WritesTarget: false),
+        new(DeliveryOperations.Replan, "Replan", "Read every row of the scope again and deliver what renders differently now.", WritesTarget: true),
+    ];
+
     public string FlowType => FlowDefinition.FlowTypeName;
 
-    public string Description => "deliver prepared records from a drop into OSDU (record and well log protocols)";
+    public string Description => "deliver records from ingestion tables into OSDU";
+
+    public IReadOnlyList<FlowKindOperation> Operations => DeliveryOperationList;
 
     /// <summary>The mapping documents a delivery flow pins (<c>documentType: mapping</c>).</summary>
     public string DocumentType => MappingDefinition.DocumentTypeName;
@@ -54,16 +73,18 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
         return $"{mapping.Reference} -> {mapping.Kind}";
     }
 
-    public FlowDocument Parse(string yaml, string source, FlowDocumentEnvelope envelope)
+    public RegisteredFlowDocument Parse(string yaml, string source)
     {
         ArgumentNullException.ThrowIfNull(yaml);
-        ArgumentNullException.ThrowIfNull(envelope);
-        return new DeliveryFlowDocument
-        {
-            Flow = _loader.ParseFlow(yaml, source),
-            Schedule = envelope.Schedule,
-            Mode = envelope.Mode,
-            Lifecycle = envelope.Lifecycle,
-        };
+        return new DeliveryFlowDocument { Flow = _loader.ParseFlow(yaml, source) };
+    }
+
+    public void ValidateParameters(RunParameters parameters)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        DeliveryOperations.RefuseBuiltInOverrides(
+            parameters, FlowDefinition.FlowTypeName,
+            "the replan operation reads every row of the scope again, and recordKeys in the payload scope a run to chosen records.");
+        DeliveryRunPayload.Parse(parameters).Validate(DeliveryOperations.Of(parameters));
     }
 }

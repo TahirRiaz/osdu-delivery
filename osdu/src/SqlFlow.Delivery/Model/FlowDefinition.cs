@@ -3,8 +3,8 @@ using SqlFlow.Core;
 namespace SqlFlow.Delivery.Model;
 
 /// <summary>
-/// The operational half of the document model (design.md section 9.2): where the drop is, which pinned mapping
-/// renders it, where it goes and how reliably. Only <see cref="Render"/> affects what a document is; everything
+/// The operational half of the document model (design.md section 9.2): which ingestion tables the records come from, which pinned mapping
+/// renders them, where they go and how reliably. Only <see cref="Render"/> affects what a document is; everything
 /// else changes only how it gets there and stays out of the content hash (section 9.3).
 /// </summary>
 public sealed record FlowDefinition
@@ -45,14 +45,9 @@ public sealed record FlowDefinition
     /// </summary>
     public IEnumerable<KeyValuePair<string, string>> CredentialReferences()
     {
-        if (Source.Sql is { } sql && IsReference(sql.Connection))
+        if (IsReference(Source.Connection))
         {
-            yield return new("source.sql.connection", sql.Connection);
-        }
-
-        if (Source.Replica is { } replica && IsReference(replica.Connection))
-        {
-            yield return new("source.replica.connection", replica.Connection);
+            yield return new("source.connection", Source.Connection);
         }
 
         if (Target.Auth.SecretRef is { } secret)
@@ -96,271 +91,190 @@ public sealed record FlowParameter
     public string? Description { get; init; }
 }
 
-/// <summary>Where the drop lives and how its parts are laid out. Paths are relative to <see cref="Location"/>.</summary>
+/// <summary>
+/// Where the flow's records come from (docs/stage4-design.md section 1.1): the keyed ingestion tables SQLFlow's
+/// pre-ingestion and ingestion flows load. The record table holds one row per record; each child dataset a mapping
+/// repeats is a table of its own joined to it on the record key; payload files are named by a column of the record row
+/// and read from where they sit. SQLFlow's system columns give each row its change time and its origin file and row.
+/// </summary>
 public sealed record FlowSource
 {
-    /// <summary>The drop root: an abfss:// or https:// Azure Storage URI, or a local path. Supports {parameter} tokens.</summary>
-    public required string Location { get; init; }
+    /// <summary>
+    /// The connection reference (<c>${env:NAME}</c>, <c>${keyvault:NAME}</c>) of the database holding the ingestion tables,
+    /// resolved on the node that runs the flow; never a resolved connection string.
+    /// </summary>
+    public required string Connection { get; init; }
 
-    /// <summary>The manifest file name inside the drop. Default manifest.json.</summary>
-    public string Manifest { get; init; } = "manifest.json";
+    /// <summary>The record table: its three-part name, its key and the scope predicate its parameters bind.</summary>
+    public required FlowSourceTable Record { get; init; }
 
-    /// <summary>Glob for the root-scope record files, relative to the drop. Overrides the manifest when set.</summary>
-    public string? Records { get; init; }
+    /// <summary>The child datasets a mapping repeats, by the name it reads them under (<c>dataset.name.column</c>).</summary>
+    public IReadOnlyDictionary<string, FlowSourceDataset> Datasets { get; init; } = new Dictionary<string, FlowSourceDataset>(StringComparer.Ordinal);
 
-    /// <summary>Child scopes (one row set per record, keyed by the delivery key). Overrides the manifest when set.</summary>
-    public IReadOnlyDictionary<string, FlowScope> Scopes { get; init; } = new Dictionary<string, FlowScope>(StringComparer.Ordinal);
-
-    /// <summary>Payload sets: name to a path template with {deliveryKey} and a chunk glob (curves/{deliveryKey}/chunk_*.parquet).</summary>
-    public IReadOnlyDictionary<string, string> Payloads { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
-
-    /// <summary>The root-scope column carrying the source fingerprint for the tier-1 gate (design.md section 6.6).</summary>
-    public string? Fingerprint { get; init; }
+    /// <summary>Payload sets: where each record's files are, named by a column of its row.</summary>
+    public IReadOnlyDictionary<string, FlowPayload> Payloads { get; init; } = new Dictionary<string, FlowPayload>(StringComparer.Ordinal);
 
     /// <summary>
-    /// The root-scope column saying when the source row last changed (a timestamp, or RFC 3339 / ISO 8601 text; text
-    /// without an offset is read as UTC). An alternative to <see cref="Fingerprint"/> that is ordered as well as
-    /// compared: a row modified after the version the ledger holds is planned through the whole pipeline, a row
-    /// carrying the same moment is skipped without rendering, and a row older than what was delivered or queued is
-    /// skipped as stale, so a replayed or late drop never takes OSDU back to an earlier version.
+    /// The record row's business version column (a timestamp, or RFC 3339 / ISO 8601 text; text without an offset is read
+    /// as UTC). Ordered as well as compared: a row carrying a version older than the one delivered or queued is skipped as
+    /// stale, so a late row never takes OSDU back to an earlier version. Null when the source declares none.
     /// </summary>
     public string? LastModified { get; init; }
 
-    /// <summary>The column the per-record source gate reads: the last-modified column when declared, else the fingerprint.</summary>
-    public string? ChangeColumn => LastModified ?? Fingerprint;
+    /// <summary>The names of SQLFlow's system columns on the ingestion tables.</summary>
+    public FlowSystemColumns SystemColumns { get; init; } = new();
 
-    /// <summary>Where a known-state publication is written when the run names no location: a directory or storage prefix
-    /// the preparing side reads before its next drop. Supports {parameter} tokens. Null leaves it to the run.</summary>
-    public string? KnownState { get; init; }
-
-    /// <summary>
-    /// Where the intake writes its work batches (the rendered documents the drains read back, design.md section
-    /// 16.2): a directory or storage prefix the nodes can write. Supports {parameter} tokens. Null writes under
-    /// <c>{location}/.work</c>, which then needs write access on the drop container.
-    /// </summary>
-    public string? Work { get; init; }
+    /// <summary>How an incremental read windows, pages and isolates its reads.</summary>
+    public FlowIncremental Incremental { get; init; } = new();
 
     /// <summary>
-    /// Whether the flow takes records sent in a submission request rather than prepared as a drop (design.md section
-    /// 3.4): an operator through the GUI, or a source system through the API. It is opt-in, because a flow fed by a
-    /// prepared drop should not also accept hand-written records unless the estate says so, and it cannot be turned on
-    /// for a flow whose protocol streams payload files, which only a drop can carry.
+    /// Where the intake writes its work batches (the rendered documents the drains read back): a directory or storage
+    /// prefix the nodes can write, relative to the flow file when it is a relative path. Supports {parameter} tokens.
     /// </summary>
-    public bool ManualSubmission { get; init; }
+    public required string Work { get; init; }
 
-    /// <summary>
-    /// Where a submission may point at payload files: prefixes (a container, a folder) the node opens with its own
-    /// identity. A submission names locations rather than uploading bytes, so without a bound a caller could have any
-    /// file the node can read shipped to OSDU. Empty means the flow's own drop location is the only root allowed.
-    /// </summary>
-    public IReadOnlyList<string> ManualSubmissionFileRoots { get; init; } = [];
-
-    /// <summary>
-    /// Where the records come from when they are read from a SQL Server or Azure SQL database rather than prepared as a
-    /// drop (docs/delivery/sql-source.md): each deliver, plan or intake run first extracts them into a drop under the
-    /// flow's work location, and then delivers that drop like any other. Null for a flow fed by drops.
-    /// </summary>
-    public FlowSqlSource? Sql { get; init; }
-
-    /// <summary>
-    /// The flow's replica (docs/delivery/replica.md): a SQL Server or Azure SQL database the intake loads every drop's
-    /// metadata rows into, as SQLFlow lands, types and evolves a source, before anything is planned. Submissions, fan-outs and
-    /// replans are then planned from the replica rather than from the drops; payload files are never loaded and stream
-    /// from where they are. Null plans each drop directly.
-    /// </summary>
-    public FlowReplica? Replica { get; init; }
-
-    /// <summary>The resolved work root for a drop location: the declared one, or the drop's own <c>.work</c> folder.</summary>
-    public static string WorkRoot(string? declaredWork, string dropLocation)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(dropLocation);
-        if (!string.IsNullOrWhiteSpace(declaredWork))
-        {
-            return declaredWork.TrimEnd('/', '\\');
-        }
-
-        var root = dropLocation.TrimEnd('/', '\\');
-        return root.Contains("://", StringComparison.Ordinal) ? root + "/.work" : Path.Combine(root, ".work");
-    }
+    /// <summary>Where records submitted through the API land for the pre flows that read them; null when the flow takes none.</summary>
+    public FlowSubmissions? Submissions { get; init; }
 }
 
-/// <summary>
-/// A flow's SQL source (docs/delivery/sql-source.md): the connection, the query whose rows are the records, one query per
-/// child dataset the mapping repeats, and the watermark that makes each extraction incremental. Every query of one
-/// extraction runs in one transaction, binds the flow's parameters as <c>@name</c> and the watermark as
-/// <c>@watermark</c>, and its rows are written as the drop's Parquet scope files.
-/// </summary>
-public sealed record FlowSqlSource
+/// <summary>The record table of a flow's source.</summary>
+public sealed record FlowSourceTable
 {
-    /// <summary>The name the watermark is bound under in every query: <c>@watermark</c>.</summary>
-    public const string WatermarkParameter = "watermark";
+    /// <summary>The table's three-part name, <c>[database].[schema].[table]</c>.</summary>
+    public required string Object { get; init; }
 
-    public const int DefaultRowsPerFile = 1_000_000;
+    /// <summary>The key columns, in order: the ingestion flow's <c>load.keyColumns</c>, and the mapping's <c>dataset.key</c>.</summary>
+    public required IReadOnlyList<string> Key { get; init; }
+
+    /// <summary>The scope predicate: a column of the record table bound to a flow parameter (<c>[column] = @parameter</c>).</summary>
+    public IReadOnlyDictionary<string, string> Scope { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+}
+
+/// <summary>A child dataset of a flow's source: a table of rows each belonging to one record.</summary>
+public sealed record FlowSourceDataset
+{
+    public const int DefaultMaxRowsPerRecord = 100_000;
+
+    public const int MaxRowsPerRecordCeiling = 1_000_000;
+
+    /// <summary>The table's three-part name.</summary>
+    public required string Object { get; init; }
+
+    /// <summary>How a child row joins its record: child column to record column, covering every key column of the record.</summary>
+    public required IReadOnlyDictionary<string, string> Join { get; init; }
+
+    /// <summary>The columns child rows are ordered by within a record.</summary>
+    public IReadOnlyList<string> OrderBy { get; init; } = [];
+
+    /// <summary>The most child rows one record may carry; a record above it is held rather than rendered.</summary>
+    public int MaxRowsPerRecord { get; init; } = DefaultMaxRowsPerRecord;
+}
+
+/// <summary>One payload set: where a record's files sit and what says whether they changed.</summary>
+public sealed record FlowPayload
+{
+    public const string DefaultPattern = "*";
 
     /// <summary>
-    /// The connection: a <c>${keyvault:vault/secret}</c> or <c>${env:NAME}</c> reference to a SQL Server connection string,
-    /// or a connection string that holds no literal secret (Azure AD authentication, or its password behind a reference).
+    /// The folder or storage prefix the payload files must sit under: relative to the flow file when it is a relative
+    /// path, with {parameter} tokens. A record's location that falls outside it (or outside <see cref="FlowSubmissions.FileRoots"/>) holds the record.
     /// </summary>
-    public required string Connection { get; init; }
+    public required string Root { get; init; }
 
-    /// <summary>The query whose rows are the records: the columns the mapping reads as <c>dataset.column</c>.</summary>
-    public required string Record { get; init; }
+    /// <summary>The record column holding the record's payload folder: relative to <see cref="Root"/>, or absolute under a root.</summary>
+    public string? LocationColumn { get; init; }
 
-    /// <summary>
-    /// One query per child dataset the mapping repeats, by the dataset's name. Each returns the child rows of the records
-    /// the record query returns, carrying the mapping's dataset key columns (or the parent's <c>deliveryKey</c>) to be
-    /// joined to them.
-    /// </summary>
-    public IReadOnlyDictionary<string, string> Scopes { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    /// <summary>The glob the payload files match under the folder.</summary>
+    public string Pattern { get; init; } = DefaultPattern;
 
-    /// <summary>What makes an extraction incremental; null extracts every row on every run.</summary>
-    public FlowSqlWatermark? Watermark { get; init; }
+    /// <summary>The record column holding the payload's content hash.</summary>
+    public string? HashColumn { get; init; }
 
-    /// <summary>How the queries of one extraction see the database. Snapshot unless declared.</summary>
-    public SqlIsolation Isolation { get; init; } = SqlIsolation.Snapshot;
+    /// <summary>The record column holding how many files the payload has, which spares a listing when planning.</summary>
+    public string? ChunkCountColumn { get; init; }
+}
 
-    /// <summary>Seconds a query may run; 0, the default, waits as long as the run does (the run's cancellation bounds it).</summary>
+/// <summary>The names of SQLFlow's system columns an ingestion table carries.</summary>
+public sealed record FlowSystemColumns
+{
+    public const string DefaultUpdated = "UpdatedDate_DW";
+
+    public const string DefaultFileName = "FileName_DW";
+
+    public const string DefaultRowNumber = "RowNumber_DW";
+
+    public const string DefaultDeleted = "DeletedDate_DW";
+
+    /// <summary>When the ingestion flow last changed the row: what an incremental read windows on.</summary>
+    public string Updated { get; init; } = DefaultUpdated;
+
+    /// <summary>The file the row was landed from; null when the flow opts out (<c>fileName: ~</c>).</summary>
+    public string? FileName { get; init; } = DefaultFileName;
+
+    /// <summary>The row's position in that file; null when the flow opts out.</summary>
+    public string? RowNumber { get; init; } = DefaultRowNumber;
+
+    /// <summary>The soft-delete stamp; used when the table carries it, unless the flow opts out.</summary>
+    public string? Deleted { get; init; } = DefaultDeleted;
+
+    /// <summary>Whether the flow named <see cref="Deleted"/> itself, so a table without it is refused rather than read without one.</summary>
+    public bool DeletedDeclared { get; init; }
+}
+
+/// <summary>How the source is read incrementally.</summary>
+public sealed record FlowIncremental
+{
+    public const int DefaultOverlapSeconds = 900;
+
+    public const int MaxOverlapSeconds = 86_400;
+
+    public const int DefaultPageSize = 1000;
+
+    public const int MaxPageSize = 100_000;
+
+    /// <summary>How far below the last watermark the next read looks again, for rows whose statement committed late.</summary>
+    public int OverlapSeconds { get; init; } = DefaultOverlapSeconds;
+
+    /// <summary>Record keys per page.</summary>
+    public int PageSize { get; init; } = DefaultPageSize;
+
+    public SourceIsolation Isolation { get; init; } = SourceIsolation.Snapshot;
+
+    /// <summary>Seconds a read may run; 0 waits as long as the run does (the run's cancellation bounds it).</summary>
     public int CommandTimeoutSeconds { get; init; }
-
-    /// <summary>Rows written to one Parquet file of a scope before the next file starts.</summary>
-    public int RowsPerFile { get; init; } = DefaultRowsPerFile;
-
-    /// <summary>For a flow whose protocol streams payload files: the record query's column holding where each record's files are.</summary>
-    public string? PayloadLocationColumn { get; init; }
-
-    /// <summary>For a flow deciding payload changes by content hash: the record query's column holding the payload's hash.</summary>
-    public string? PayloadHashColumn { get; init; }
 }
 
-/// <summary>
-/// A flow's replica (docs/delivery/replica.md): where it is, and how the text a drop lands is typed and evolved, under the
-/// option names of SQLFlow's <c>transform</c> block. Every scope of the drop becomes a landing table, a typed view and a replica
-/// table keyed by the delivery key in <see cref="Schema"/>; a column the source adds is added, a type that grows is widened,
-/// and nothing is ever dropped or narrowed.
-/// </summary>
-public sealed record FlowReplica
+/// <summary>How consistently the result sets of one page see the database.</summary>
+public enum SourceIsolation
 {
-    public const int MaxSchemaLength = 100;
-
-    /// <summary>A <c>${keyvault:vault/secret}</c> or <c>${env:NAME}</c> reference to the replica database's connection string, or one holding no literal secret.</summary>
-    public required string Connection { get; init; }
-
-    /// <summary>The schema the flow's tables live in: letters, digits and '_'. Defaults to the flow's name made so.</summary>
-    public required string Schema { get; init; }
-
-    /// <summary>Infer the type of every text column the manifest declares no type for (SQLFlow's <c>inferTypes</c>). Off by default.</summary>
-    public bool InferTypes { get; init; }
-
-    /// <summary>What a value that does not convert does: fail the load (the default), become NULL, or keep its column as text.</summary>
-    public Replica.Schema.ConvertErrorMode OnConvertError { get; init; } = Replica.Schema.ConvertErrorMode.Fail;
-
-    /// <summary>The fraction of non-null values that must convert for an inferred type; 1.0 means all.</summary>
-    public double Threshold { get; init; } = 1.0;
-
-    /// <summary>Rows profiled when inferring; 0 profiles every row a load lands.</summary>
-    public int Sample { get; init; }
-
-    /// <summary>Keep numbers written with significant leading zeros as text.</summary>
-    public bool PreserveLeadingZeros { get; init; } = true;
-
-    /// <summary>A BCP-47 culture dates and numbers are read in; null uses the replica server's locale.</summary>
-    public string? Culture { get; init; }
-
-    /// <summary>Allow a schema change that rewrites a table (int to bigint, say); refused by default.</summary>
-    public bool AllowTableRewrite { get; init; }
-
-    /// <summary>Apply each load in key windows that commit on their own, keeping every statement under lock escalation.</summary>
-    public bool BatchUpsert { get; init; }
-
-    public const int DefaultRetentionDays = 90;
-
-    /// <summary>
-    /// Days a submission's record list is kept once a newer submission carried the same records: after that, a run of the old
-    /// submission reads its drop again. The latest submission of every record is always kept. 0 keeps every list.
-    /// </summary>
-    public int RetentionDays { get; init; } = DefaultRetentionDays;
-
-    /// <summary>The column transforms of each scope's typed view, by scope name (<c>record</c> for the root).</summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<Replica.Schema.ColumnTransform>> Columns { get; init; }
-        = new Dictionary<string, IReadOnlyList<Replica.Schema.ColumnTransform>>(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>The inference policy of one scope.</summary>
-    public Replica.Schema.TypeInferencePolicy PolicyFor(string scope) => new()
-    {
-        Enabled = InferTypes,
-        OnConvertError = OnConvertError,
-        Threshold = Threshold,
-        SampleSize = Sample,
-        PreserveLeadingZeros = PreserveLeadingZeros,
-        Culture = Culture,
-        Columns = Columns.TryGetValue(scope, out var columns) ? columns : [],
-    };
-
-    /// <summary>The schema a flow's tables live in when it names none: its name, with every other character than a letter, a digit or '_' made '_'.</summary>
-    public static string DefaultSchema(string flowName)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
-        var chars = flowName.Trim().Select(c => char.IsAsciiLetterOrDigit(c) || c == '_' ? c : '_').ToArray();
-        var name = new string(chars);
-        if (char.IsAsciiDigit(name[0]))
-        {
-            name = "_" + name;
-        }
-
-        return name.Length <= MaxSchemaLength ? name : name[..MaxSchemaLength];
-    }
-}
-
-/// <summary>The column an incremental SQL extraction takes its watermark from, and how far back each extraction looks again.</summary>
-public sealed record FlowSqlWatermark
-{
-    /// <summary>A column of the record query's result.</summary>
-    public required string Column { get; init; }
-
-    public required SqlWatermarkType Type { get; init; }
-
-    /// <summary>Datetime watermarks: minutes before the last watermark an extraction reads again, for rows committed late.</summary>
-    public int OverlapMinutes { get; init; }
-
-    /// <summary>Number and rowversion watermarks: how far below the last watermark an extraction reads again.</summary>
-    public long Lookback { get; init; }
-}
-
-/// <summary>The SQL type of a watermark column.</summary>
-public enum SqlWatermarkType
-{
-    /// <summary>datetime, datetime2, smalldatetime or date.</summary>
-    DateTime,
-
-    /// <summary>datetimeoffset.</summary>
-    DateTimeOffset,
-
-    /// <summary>A whole number: bigint, int, smallint, or a decimal without a fraction.</summary>
-    Number,
-
-    /// <summary>rowversion (timestamp), compared as binary(8).</summary>
-    RowVersion,
-}
-
-/// <summary>How consistently the queries of one SQL extraction see the database.</summary>
-public enum SqlIsolation
-{
-    /// <summary>Every query reads the same snapshot, so a record and its child rows always agree. The database must allow snapshot isolation.</summary>
+    /// <summary>Every result set of a page reads one snapshot, so a record and its child rows always agree.</summary>
     Snapshot,
 
-    /// <summary>Each query reads what is committed when it runs.</summary>
+    /// <summary>Each result set reads what is committed when it runs.</summary>
     ReadCommitted,
-
-    /// <summary>Every query reads under serializable isolation, holding range locks until the extraction ends.</summary>
-    Serializable,
 }
 
-public sealed record FlowScope
+/// <summary>Where records submitted through the API land, per dataset, for the pre flows that read them.</summary>
+public sealed record FlowSubmissions
 {
-    public required string Records { get; init; }
+    /// <summary>Where the record rows land.</summary>
+    public required FlowSubmissionDataset Record { get; init; }
 
-    /// <summary>The column holding the parent record's delivery key. Default deliveryKey.</summary>
-    public string Key { get; init; } = "deliveryKey";
+    /// <summary>Where each child dataset's rows land, by dataset name.</summary>
+    public IReadOnlyDictionary<string, FlowSubmissionDataset> Datasets { get; init; } = new Dictionary<string, FlowSubmissionDataset>(StringComparer.Ordinal);
+
+    /// <summary>Prefixes, beside every payload root, a submitted record may point its payload files inside.</summary>
+    public IReadOnlyList<string> FileRoots { get; init; } = [];
+}
+
+/// <summary>The pre flow a submitted dataset lands for, and the folder it lands in.</summary>
+public sealed record FlowSubmissionDataset
+{
+    /// <summary>The pre-ingestion flow that reads the landed file.</summary>
+    public required string PreFlow { get; init; }
+
+    /// <summary>The folder the file is written to: relative to the flow file when relative, with {parameter} tokens.</summary>
+    public required string Landing { get; init; }
 }
 
 public sealed record FlowRender
@@ -409,10 +323,10 @@ public enum ChangeDetection
     Always,
 
     /// <summary>
-    /// Payloads only: the payload's chunk files are its watermark. A payload is reconsidered when a chunk file was
-    /// modified after the ones OSDU's payload was delivered from, or the set of chunk files changed; the drop's hash
-    /// column, when it declares one, is still the final check, so a rewrite with the same content is not uploaded
-    /// again. Chunk files older than what was delivered are stale and never sent.
+    /// Payloads only: the payload files under the record's location column are its watermark. A payload is reconsidered
+    /// when a file was modified after the ones OSDU's payload was delivered from, or the set of files changed; the
+    /// payload's hash column, when it declares one, is still the final check, so a rewrite with the same content is not
+    /// uploaded again. Files older than what was delivered are stale and never sent.
     /// </summary>
     LastModified,
 }
@@ -431,7 +345,10 @@ public sealed record FlowChange
 
     public UnchangedAction OnUnchanged { get; init; } = UnchangedAction.Skip;
 
-    /// <summary>Enable the tier-0 whole-run gate on the manifest's source table versions.</summary>
+    /// <summary>
+    /// Enable the tier-0 window gate: an incremental run whose change window holds no changed row of the record table or
+    /// its datasets, and no record the ledger asked to plan again, completes without reading a record.
+    /// </summary>
     public bool UseSourceVersions { get; init; } = true;
 }
 
@@ -740,10 +657,10 @@ public sealed record FlowReliability
     /// </summary>
     public int FanOut { get; init; }
 
-    /// <summary>Fan out only when the drop or the submission holds at least this many records. Default 1000.</summary>
+    /// <summary>Fan out only when the source holds at least this many candidate records, or a submission this many planned ones. Default 1000.</summary>
     public int FanOutMinRecords { get; init; } = 1000;
 
-    /// <summary>Drop partitions rendered concurrently on one node. 0 means half the processors, at least one.</summary>
+    /// <summary>Render batches rendered concurrently on one node. 0 means half the processors, at least one.</summary>
     public int RenderParallelism { get; init; }
 
     /// <summary>The largest fan-out a flow may declare.</summary>

@@ -1,3 +1,6 @@
+using SqlFlow.Core;
+using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Yaml;
 
@@ -6,9 +9,9 @@ namespace SqlFlow.Delivery.Documents;
 /// <summary>
 /// A cache flow as the platform sees it: the OSDU endpoint is the source reference, the catalog the target, and the
 /// source's secret references are what the hygiene check inspects. It needs no repository tree: everything a refresh
-/// needs is in the document.
+/// needs is in the document. It reads and writes no database object SQLFlow's lineage knows.
 /// </summary>
-public sealed record CacheFlowDocument : FlowDocument
+public sealed record CacheFlowDocument : RegisteredFlowDocument
 {
     /// <summary>What the pipeline row shows as a cache flow's target: the versions a refresh writes live in the catalog.</summary>
     public const string CatalogTarget = "catalog";
@@ -45,16 +48,25 @@ public sealed class CacheFlowKind : IFlowDocumentKind
 
     public string Description => "capture the reference and master data of OSDU kinds into a versioned cache in the catalog, which delivery flows render against";
 
-    public FlowDocument Parse(string yaml, string source, FlowDocumentEnvelope envelope)
+    public IReadOnlyList<FlowKindOperation> Operations { get; } =
+    [
+        new(DeliveryOperations.Refresh, "Refresh", "Capture every declared type from OSDU and merge it into the partition's cache, writing a version when the content moved.", WritesTarget: true),
+        new(DeliveryOperations.Plan, "Plan", "Count what each declared type's search matches, writing nothing.", WritesTarget: false),
+    ];
+
+    public RegisteredFlowDocument Parse(string yaml, string source)
     {
         ArgumentNullException.ThrowIfNull(yaml);
-        ArgumentNullException.ThrowIfNull(envelope);
-        return new CacheFlowDocument
+        return new CacheFlowDocument { Flow = _loader.ParseCache(yaml, source) };
+    }
+
+    public void ValidateParameters(RunParameters parameters)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        DeliveryOperations.RefuseBuiltInOverrides(parameters, CacheDefinition.FlowTypeName, "a refresh sweeps every declared type in full.");
+        if (parameters.Payload is not null)
         {
-            Flow = _loader.ParseCache(yaml, source),
-            Schedule = envelope.Schedule,
-            Mode = envelope.Mode,
-            Lifecycle = envelope.Lifecycle,
-        };
+            throw new SqlFlowException("A cache flow takes no payload; a run carries only the flow's parameter values.");
+        }
     }
 }

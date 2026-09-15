@@ -102,7 +102,7 @@ public static class FlowParameters
             }
             else if (parameter.Required)
             {
-                throw new FlowValidationException($"{where}: parameter '{name}' is required. Supply it with --set {name}=value or through the manifest.");
+                throw new FlowValidationException($"{where}: parameter '{name}' is required. Supply it with --set {name}=value or the run's values.");
             }
         }
 
@@ -129,24 +129,69 @@ public static class FlowParameters
             values.TryGetValue(m.Groups["name"].Value, out var v) ? v : m.Value);
     }
 
-    /// <summary>The drop location with parameter tokens substituted.</summary>
-    public static string DropLocation(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    /// <summary>The work root the intake writes batches under: <c>source.work</c> with its tokens substituted, resolved against the flow file.</summary>
+    public static string WorkLocation(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        return Substitute(flow.Source.Location, values);
+        return ResolvePath(flow, flow.Source.Work, values, "source.work");
     }
 
-    /// <summary>The work root the intake writes batches under: the declared <c>source.work</c> (tokens substituted) or the drop's <c>.work</c> folder.</summary>
-    public static string WorkLocation(FlowDefinition flow, IReadOnlyDictionary<string, string> values, string dropLocation)
+    /// <summary>
+    /// The scope predicate's values: each column <c>source.record.scope</c> names, with the value of the parameter it binds.
+    /// Throws when a bound parameter has no value, which a resolved parameter set never lacks.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> ScopeValues(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        return FlowSource.WorkRoot(flow.Source.Work is null ? null : Substitute(flow.Source.Work, values), dropLocation);
+        ArgumentNullException.ThrowIfNull(values);
+        var scope = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (column, parameter) in flow.Source.Record.Scope)
+        {
+            scope[column] = values.TryGetValue(parameter, out var value)
+                ? value
+                : throw new FlowValidationException(
+                    $"{flow.SourcePath ?? flow.Name}: source.record.scope binds column '{column}' to parameter '{parameter}', which has no value for this run.");
+        }
+
+        return scope;
     }
 
-    /// <summary>The flow's declared known-state location with parameter tokens substituted, or null when it declares none.</summary>
-    public static string? KnownStateLocation(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    /// <summary>
+    /// A location a flow declares (a work root, a payload root, a landing folder), its tokens substituted and resolved: a
+    /// storage URI as written, a rooted path as it is, a relative path against the flow file's folder. A parameter value that
+    /// would climb out of the declared location (a separator or '..') is refused, because these locations bound what a run
+    /// may read and write.
+    /// </summary>
+    public static string ResolvePath(FlowDefinition flow, string declared, IReadOnlyDictionary<string, string> values, string what)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        return flow.Source.KnownState is null ? null : Substitute(flow.Source.KnownState, values);
+        ArgumentException.ThrowIfNullOrWhiteSpace(declared);
+        ArgumentNullException.ThrowIfNull(values);
+        var where = flow.SourcePath ?? flow.Name;
+        foreach (var token in FlowMapper.Tokens(declared))
+        {
+            if (values.TryGetValue(token, out var value)
+                && (value.Contains('/', StringComparison.Ordinal) || value.Contains('\\', StringComparison.Ordinal) || value.Contains("..", StringComparison.Ordinal)))
+            {
+                throw new FlowValidationException(
+                    $"{where}: parameter '{token}' is substituted into {what}, a location, so its value must not contain '/', '\\' or '..'.");
+            }
+        }
+
+        var text = Substitute(declared, values).Trim();
+        if (text.Contains("://", StringComparison.Ordinal))
+        {
+            return text.TrimEnd('/');
+        }
+
+        if (Path.IsPathRooted(text))
+        {
+            return Path.GetFullPath(text);
+        }
+
+        var baseDirectory = flow.SourcePath is { } path
+            ? Path.GetDirectoryName(Path.GetFullPath(path)) ?? System.IO.Directory.GetCurrentDirectory()
+            : System.IO.Directory.GetCurrentDirectory();
+        return Path.GetFullPath(Path.Combine(baseDirectory, text));
     }
 }

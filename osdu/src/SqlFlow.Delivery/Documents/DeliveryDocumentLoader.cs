@@ -2,6 +2,7 @@ using System.Globalization;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Templates;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
@@ -193,6 +194,9 @@ internal static partial class FlowMapper
     /// <summary>The tenant header every OSDU service requires on every request.</summary>
     public const string PartitionHeader = "data-partition-id";
 
+    /// <summary>The longest column name SQL Server accepts.</summary>
+    private const int MaxColumnLength = 128;
+
     /// <summary>
     /// True for a kind the storage service accepts on a record (openapi storage v2, Record.kind:
     /// <c>^[\w\-\.]+:[\w\-\.]+:[\w\-\.]+:[0-9]+.[0-9]+.[0-9]+$</c>). A kind that only looks like four colon-separated
@@ -202,6 +206,9 @@ internal static partial class FlowMapper
 
     [System.Text.RegularExpressions.GeneratedRegex(@"^[\w\-\.]+:[\w\-\.]+:[\w\-\.]+:[0-9]+\.[0-9]+\.[0-9]+$")]
     private static partial System.Text.RegularExpressions.Regex RecordKindPattern();
+
+    [System.Text.RegularExpressions.GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$")]
+    private static partial System.Text.RegularExpressions.Regex DatasetName();
 
     public static FlowDefinition Map(FlowYaml y, string source)
     {
@@ -227,32 +234,7 @@ internal static partial class FlowMapper
                 kv => kv.Key,
                 kv => new FlowParameter { Required = kv.Value?.Required ?? false, Default = kv.Value?.Default, Description = kv.Value?.Description },
                 StringComparer.Ordinal),
-            Source = new FlowSource
-            {
-                // A flow reading from SQL has no drop of its own until a run extracts one under its work location, so its
-                // location is its work location unless it says otherwise.
-                Location = src.Sql is not null && string.IsNullOrWhiteSpace(src.Location)
-                    ? Require(src.Work, "source.work", source)
-                    : Require(src.Location, "source.location", source),
-                Manifest = src.Manifest ?? "manifest.json",
-                Records = src.Records,
-                Scopes = (src.Scopes ?? []).ToDictionary(
-                    kv => kv.Key,
-                    kv => new FlowScope { Records = Require(kv.Value?.Records, $"source.scopes.{kv.Key}.records", source), Key = kv.Value?.Key ?? "deliveryKey" },
-                    StringComparer.Ordinal),
-                Payloads = src.Payloads ?? new Dictionary<string, string>(StringComparer.Ordinal),
-                Fingerprint = string.IsNullOrWhiteSpace(src.Fingerprint) ? null : src.Fingerprint!.Trim(),
-                LastModified = string.IsNullOrWhiteSpace(src.LastModified) ? null : src.LastModified!.Trim(),
-                KnownState = string.IsNullOrWhiteSpace(src.KnownState) ? null : src.KnownState!.Trim(),
-                Work = string.IsNullOrWhiteSpace(src.Work) ? null : src.Work!.Trim(),
-                ManualSubmission = src.ManualSubmission ?? false,
-                ManualSubmissionFileRoots = (src.ManualSubmissionFileRoots ?? [])
-                    .Where(r => !string.IsNullOrWhiteSpace(r))
-                    .Select(r => r.Trim())
-                    .ToList(),
-                Sql = src.Sql is null ? null : MapSql(src.Sql, source),
-                Replica = src.Replica is null ? null : MapReplica(src.Replica, name, source),
-            },
+            Source = MapSource(src, source),
             Render = new FlowRender
             {
                 Mapping = mapping,
@@ -299,301 +281,331 @@ internal static partial class FlowMapper
         return string.IsNullOrWhiteSpace(render.CacheVersion) ? FlowRender.CurrentCacheVersion : render.CacheVersion!.Trim();
     }
 
-    private static FlowSqlSource MapSql(FlowSqlYaml sql, string source)
+    private static FlowSource MapSource(FlowSourceYaml src, string source)
     {
-        FlowSqlWatermark? watermark = null;
-        if (sql.Watermark is { } declared)
+        var record = src.Record ?? throw Missing("source.record", source);
+        var datasets = new Dictionary<string, FlowSourceDataset>(StringComparer.Ordinal);
+        foreach (var (name, dataset) in src.Datasets ?? [])
         {
-            watermark = new FlowSqlWatermark
+            var at = $"source.datasets.{name}";
+            var declared = dataset ?? throw Missing(at + ".object", source);
+            datasets[name.Trim()] = new FlowSourceDataset
             {
-                Column = Require(declared.Column, "source.sql.watermark.column", source),
-                Type = ParseEnum<SqlWatermarkType>(Require(declared.Type, "source.sql.watermark.type", source), "source.sql.watermark.type", source),
-                OverlapMinutes = declared.OverlapMinutes ?? 0,
-                Lookback = declared.Lookback ?? 0,
+                Object = Require(declared.Object, at + ".object", source),
+                Join = Trimmed(declared.Join),
+                OrderBy = (declared.OrderBy ?? []).Select(c => c?.Trim() ?? string.Empty).ToList(),
+                MaxRowsPerRecord = declared.MaxRowsPerRecord ?? FlowSourceDataset.DefaultMaxRowsPerRecord,
             };
         }
 
-        return new FlowSqlSource
+        var payloads = new Dictionary<string, FlowPayload>(StringComparer.Ordinal);
+        foreach (var (name, payload) in src.Payloads ?? [])
         {
-            Connection = Require(sql.Connection, "source.sql.connection", source),
-            Record = Require(sql.Record, "source.sql.record", source),
-            Scopes = (sql.Scopes ?? []).ToDictionary(
-                kv => kv.Key.Trim(),
-                kv => Require(kv.Value, $"source.sql.scopes.{kv.Key}", source),
-                StringComparer.Ordinal),
-            Watermark = watermark,
-            Isolation = ParseEnum(sql.Isolation, SqlIsolation.Snapshot, "source.sql.isolation", source),
-            CommandTimeoutSeconds = sql.CommandTimeoutSeconds ?? 0,
-            RowsPerFile = sql.RowsPerFile ?? FlowSqlSource.DefaultRowsPerFile,
-            PayloadLocationColumn = string.IsNullOrWhiteSpace(sql.PayloadLocationColumn) ? null : sql.PayloadLocationColumn.Trim(),
-            PayloadHashColumn = string.IsNullOrWhiteSpace(sql.PayloadHashColumn) ? null : sql.PayloadHashColumn.Trim(),
+            var at = $"source.payloads.{name}";
+            var declared = payload ?? throw Missing(at + ".root", source);
+            payloads[name.Trim()] = new FlowPayload
+            {
+                Root = Require(declared.Root, at + ".root", source),
+                LocationColumn = Optional(declared.LocationColumn),
+                Pattern = Optional(declared.Pattern) ?? FlowPayload.DefaultPattern,
+                HashColumn = Optional(declared.HashColumn),
+                ChunkCountColumn = Optional(declared.ChunkCountColumn),
+            };
+        }
+
+        FlowSubmissions? submissions = null;
+        if (src.Submissions is { } declaredSubmissions)
+        {
+            submissions = new FlowSubmissions
+            {
+                Record = MapSubmissionDataset(declaredSubmissions.Record, "source.submissions.record", source),
+                Datasets = (declaredSubmissions.Datasets ?? []).ToDictionary(
+                    kv => kv.Key.Trim(),
+                    kv => MapSubmissionDataset(kv.Value, $"source.submissions.datasets.{kv.Key}", source),
+                    StringComparer.Ordinal),
+                FileRoots = (declaredSubmissions.FileRoots ?? []).Where(r => !string.IsNullOrWhiteSpace(r)).Select(r => r.Trim()).ToList(),
+            };
+        }
+
+        return new FlowSource
+        {
+            Connection = Require(src.Connection, "source.connection", source),
+            Record = new FlowSourceTable
+            {
+                Object = Require(record.Object, "source.record.object", source),
+                Key = (record.Key ?? []).Select(k => k?.Trim() ?? string.Empty).ToList(),
+                Scope = Trimmed(record.Scope),
+            },
+            Datasets = datasets,
+            Payloads = payloads,
+            LastModified = Optional(src.LastModified),
+            SystemColumns = MapSystemColumns(src.SystemColumns, source),
+            Incremental = new FlowIncremental
+            {
+                OverlapSeconds = src.Incremental?.OverlapSeconds ?? FlowIncremental.DefaultOverlapSeconds,
+                PageSize = src.Incremental?.PageSize ?? FlowIncremental.DefaultPageSize,
+                Isolation = ParseEnum(src.Incremental?.Isolation, SourceIsolation.Snapshot, "source.incremental.isolation", source),
+                CommandTimeoutSeconds = src.Incremental?.CommandTimeoutSeconds ?? 0,
+            },
+            Work = Require(src.Work, "source.work", source),
+            Submissions = submissions,
+        };
+    }
+
+    private static FlowSubmissionDataset MapSubmissionDataset(FlowSubmissionDatasetYaml? declared, string at, string source)
+    {
+        var dataset = declared ?? throw Missing(at, source);
+        return new FlowSubmissionDataset
+        {
+            PreFlow = Require(dataset.PreFlow, at + ".preFlow", source),
+            Landing = Require(dataset.Landing, at + ".landing", source),
+        };
+    }
+
+    /// <summary>System columns: a column the flow names, one it opts out of with <c>~</c>, and the default for one it leaves out.</summary>
+    private static FlowSystemColumns MapSystemColumns(FlowSystemColumnsYaml? declared, string source)
+    {
+        var defaults = new FlowSystemColumns();
+        if (declared is null)
+        {
+            return defaults;
+        }
+
+        if (declared.HasUpdated && string.IsNullOrWhiteSpace(declared.Updated))
+        {
+            throw new FlowValidationException(
+                $"{source}: source.systemColumns.updated cannot be opted out of: it is the column an incremental read windows on and a record's fingerprint is built from.");
+        }
+
+        return new FlowSystemColumns
+        {
+            Updated = declared.HasUpdated ? declared.Updated!.Trim() : defaults.Updated,
+            FileName = declared.HasFileName ? Optional(declared.FileName) : defaults.FileName,
+            RowNumber = declared.HasRowNumber ? Optional(declared.RowNumber) : defaults.RowNumber,
+            Deleted = declared.HasDeleted ? Optional(declared.Deleted) : defaults.Deleted,
+            DeletedDeclared = declared.HasDeleted && !string.IsNullOrWhiteSpace(declared.Deleted),
         };
     }
 
     /// <summary>
-    /// What a SQL source must be for a run to extract from it: a connection that holds no literal secret, child queries
-    /// named for datasets, a watermark carried as the flow's source version, parameters that bind as <c>@name</c>, and
-    /// payload columns exactly when the protocol streams payload files.
+    /// What a flow's source must be for a run to read it (docs/stage4-design.md section 1.1). Every rule names the key it is
+    /// about; the bindings to the tables' actual columns are checked when a run opens the source.
     /// </summary>
-    private static void ValidateSql(FlowDefinition flow, FlowSqlSource sql, string source)
+    private static void ValidateSource(FlowDefinition flow, string source)
     {
-        Engine.SqlSource.SqlSourceConnection.CheckDeclared(sql.Connection, source);
+        var src = flow.Source;
+        IngestionConnection.CheckDeclared(src.Connection, source);
+        CheckObject(src.Record.Object, "source.record.object", source);
 
-        foreach (var name in sql.Scopes.Keys)
+        if (src.Record.Key.Count == 0)
         {
-            if (!SqlIdentifier().IsMatch(name) || name.Equals(Drops.DropManifest.RootScope, StringComparison.OrdinalIgnoreCase))
+            throw new FlowValidationException($"{source}: source.record.key must name the record table's key columns (the ingestion flow's load.keyColumns).");
+        }
+
+        var key = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var column in src.Record.Key)
+        {
+            CheckColumn(column, "source.record.key", source);
+            if (!key.Add(column))
+            {
+                throw new FlowValidationException($"{source}: source.record.key names column '{column}' more than once.");
+            }
+        }
+
+        foreach (var (column, parameter) in src.Record.Scope)
+        {
+            CheckColumn(column, "source.record.scope", source);
+            if (!flow.Parameters.ContainsKey(parameter))
+            {
+                throw new FlowValidationException($"{source}: source.record.scope binds column '{column}' to parameter '{parameter}', which is not declared under parameters.");
+            }
+        }
+
+        foreach (var (name, dataset) in src.Datasets)
+        {
+            var at = $"source.datasets.{name}";
+            if (!DatasetName().IsMatch(name) || name.Length > MaxColumnLength || name.Equals(SourceDatasets.Record, StringComparison.OrdinalIgnoreCase))
             {
                 throw new FlowValidationException(
-                    $"{source}: source.sql.scopes '{name}' must name a child dataset the mapping repeats (letters, digits and '_'), and not '{Drops.DropManifest.RootScope}', which is source.sql.record.");
+                    $"{source}: source.datasets names a dataset '{name}'; a child dataset is letters, digits and '_', and '{SourceDatasets.Record}' names the record table itself.");
             }
-        }
 
-        if (sql.CommandTimeoutSeconds < 0)
-        {
-            throw new FlowValidationException($"{source}: source.sql.commandTimeoutSeconds must not be negative (0 lets a query run as long as the run does).");
-        }
+            CheckObject(dataset.Object, at + ".object", source);
+            if (dataset.Join.Count == 0)
+            {
+                throw new FlowValidationException($"{source}: {at}.join must join the child table's columns to the record table's key columns.");
+            }
 
-        if (sql.RowsPerFile < 1)
-        {
-            throw new FlowValidationException($"{source}: source.sql.rowsPerFile must be at least 1.");
-        }
+            foreach (var (child, recordColumn) in dataset.Join)
+            {
+                CheckColumn(child, at + ".join", source);
+                if (!key.Contains(recordColumn))
+                {
+                    throw new FlowValidationException(
+                        $"{source}: {at}.join joins child column '{child}' to record column '{recordColumn}', which is not a key column of source.record.key.");
+                }
+            }
 
-        if (sql.Watermark is { } watermark)
-        {
-            if (!flow.Change.UseSourceVersions)
+            foreach (var column in src.Record.Key)
+            {
+                if (!dataset.Join.Values.Contains(column, StringComparer.OrdinalIgnoreCase))
+                {
+                    throw new FlowValidationException(
+                        $"{source}: {at}.join does not cover key column '{column}' of the record table; every key column must be joined, or a child row could belong to several records.");
+                }
+            }
+
+            foreach (var column in dataset.OrderBy)
+            {
+                CheckColumn(column, at + ".orderBy", source);
+            }
+
+            if (dataset.MaxRowsPerRecord is < 1 or > FlowSourceDataset.MaxRowsPerRecordCeiling)
             {
                 throw new FlowValidationException(
-                    $"{source}: source.sql.watermark is carried from one run to the next as the flow's source version, which change.useSourceVersions: false turns off.");
-            }
-
-            var dated = watermark.Type is SqlWatermarkType.DateTime or SqlWatermarkType.DateTimeOffset;
-            if (watermark.OverlapMinutes < 0 || watermark.Lookback < 0)
-            {
-                throw new FlowValidationException($"{source}: source.sql.watermark.overlapMinutes and lookback must not be negative.");
-            }
-
-            if (!dated && watermark.OverlapMinutes > 0)
-            {
-                throw new FlowValidationException(
-                    $"{source}: source.sql.watermark.overlapMinutes applies to a datetime or datetimeoffset watermark; a {watermark.Type} watermark looks back with lookback.");
-            }
-
-            if (dated && watermark.Lookback > 0)
-            {
-                throw new FlowValidationException(
-                    $"{source}: source.sql.watermark.lookback applies to a number or rowversion watermark; a {watermark.Type} watermark looks back with overlapMinutes.");
+                    string.Create(CultureInfo.InvariantCulture, $"{source}: {at}.maxRowsPerRecord must be between 1 and {FlowSourceDataset.MaxRowsPerRecordCeiling}."));
             }
         }
 
-        foreach (var name in flow.Parameters.Keys)
+        foreach (var (name, payload) in src.Payloads)
         {
-            if (name.Equals(FlowSqlSource.WatermarkParameter, StringComparison.OrdinalIgnoreCase))
+            var at = $"source.payloads.{name}";
+            CheckTokens(flow, payload.Root, at + ".root", source);
+            foreach (var column in new[] { payload.LocationColumn, payload.HashColumn, payload.ChunkCountColumn }.OfType<string>())
             {
-                throw new FlowValidationException($"{source}: a flow reading from SQL binds its watermark as @{FlowSqlSource.WatermarkParameter}, so no parameter may be named '{name}'.");
+                CheckColumn(column, at, source);
             }
 
-            if (!SqlIdentifier().IsMatch(name))
+            if (payload.Pattern.Contains('/', StringComparison.Ordinal) || payload.Pattern.Contains('\\', StringComparison.Ordinal) || payload.Pattern.Contains("..", StringComparison.Ordinal))
             {
-                throw new FlowValidationException($"{source}: a flow reading from SQL binds every parameter as @name, so parameter '{name}' must be letters, digits and '_', not starting with a digit.");
+                throw new FlowValidationException($"{source}: {at}.pattern '{payload.Pattern}' is a file name glob under the record's payload folder, without a path.");
             }
         }
 
-        var streamsPayload = DeliveryProtocols.CarriesPayload(flow.Target.Protocol)
-            && (flow.Target.ProtocolOptions.Payload is not null || flow.Source.Payloads.Count == 1);
-        if (streamsPayload && sql.PayloadLocationColumn is null)
+        if (DeliveryProtocols.CarriesPayload(flow.Target.Protocol))
+        {
+            var selected = flow.Target.ProtocolOptions.Payload;
+            if (selected is not null && !src.Payloads.ContainsKey(selected))
+            {
+                throw new FlowValidationException($"{source}: target.protocolOptions.payload '{selected}' is not declared under source.payloads.");
+            }
+
+            if (selected is null && src.Payloads.Count > 1)
+            {
+                throw new FlowValidationException(
+                    $"{source}: source.payloads declares {src.Payloads.Count} payloads; target.protocolOptions.payload must name the one the {flow.Target.Protocol} protocol streams.");
+            }
+
+            var payloadName = selected ?? src.Payloads.Keys.FirstOrDefault();
+            if (payloadName is not null)
+            {
+                var payload = src.Payloads[payloadName];
+                if (payload.LocationColumn is null)
+                {
+                    throw new FlowValidationException(
+                        $"{source}: the {flow.Target.Protocol} protocol streams payload '{payloadName}', so source.payloads.{payloadName}.locationColumn must name the record column holding each record's payload folder.");
+                }
+
+                if (payload.HashColumn is null && flow.Change.PayloadDetect != ChangeDetection.LastModified)
+                {
+                    throw new FlowValidationException(
+                        $"{source}: the flow decides payload changes by content hash, so source.payloads.{payloadName}.hashColumn must name the record column holding it; or take the files' modified times instead with change.payloadDetect: lastModified.");
+                }
+            }
+        }
+
+        if (src.LastModified is { } lastModified)
+        {
+            CheckColumn(lastModified, "source.lastModified", source);
+        }
+
+        foreach (var column in new[] { src.SystemColumns.Updated, src.SystemColumns.FileName, src.SystemColumns.RowNumber, src.SystemColumns.Deleted }.OfType<string>())
+        {
+            CheckColumn(column, "source.systemColumns", source);
+        }
+
+        if (src.Incremental.OverlapSeconds is < 0 or > FlowIncremental.MaxOverlapSeconds)
         {
             throw new FlowValidationException(
-                $"{source}: the {flow.Target.Protocol} protocol streams payload files, so source.sql.payloadLocationColumn must name the record query's column holding where each record's files are.");
+                string.Create(CultureInfo.InvariantCulture, $"{source}: source.incremental.overlapSeconds must be between 0 and {FlowIncremental.MaxOverlapSeconds}."));
         }
 
-        if (!streamsPayload && (sql.PayloadLocationColumn ?? sql.PayloadHashColumn) is not null)
+        if (src.Incremental.PageSize is < 1 or > FlowIncremental.MaxPageSize)
         {
             throw new FlowValidationException(
-                $"{source}: source.sql.payloadLocationColumn and payloadHashColumn describe payload files, which the {flow.Target.Protocol} protocol of this flow does not stream.");
+                string.Create(CultureInfo.InvariantCulture, $"{source}: source.incremental.pageSize must be between 1 and {FlowIncremental.MaxPageSize}."));
         }
 
-        if (streamsPayload && sql.PayloadHashColumn is null && flow.Change.PayloadDetect != ChangeDetection.LastModified)
+        if (src.Incremental.CommandTimeoutSeconds < 0)
         {
-            throw new FlowValidationException(
-                $"{source}: the flow decides payload changes by content hash, so source.sql.payloadHashColumn must name the record query's column holding it; or take the files' modified times instead with change.payloadDetect: lastModified.");
+            throw new FlowValidationException($"{source}: source.incremental.commandTimeoutSeconds must not be negative (0 lets a read run as long as the run does).");
+        }
+
+        CheckTokens(flow, src.Work, "source.work", source);
+
+        if (src.Submissions is { } submissions)
+        {
+            CheckTokens(flow, submissions.Record.Landing, "source.submissions.record.landing", source);
+            foreach (var (name, dataset) in submissions.Datasets)
+            {
+                if (!src.Datasets.ContainsKey(name))
+                {
+                    throw new FlowValidationException($"{source}: source.submissions.datasets names '{name}', which source.datasets does not declare.");
+                }
+
+                CheckTokens(flow, dataset.Landing, $"source.submissions.datasets.{name}.landing", source);
+            }
+
+            foreach (var root in submissions.FileRoots)
+            {
+                if (root.Contains('*', StringComparison.Ordinal) || root.Contains('?', StringComparison.Ordinal) || root.Contains("..", StringComparison.Ordinal))
+                {
+                    throw new FlowValidationException(
+                        $"{source}: source.submissions.fileRoots entry '{root}' must be a plain prefix (a container or folder), with no wildcard and no '..'.");
+                }
+
+                CheckTokens(flow, root, "source.submissions.fileRoots", source);
+            }
         }
     }
 
-    [System.Text.RegularExpressions.GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$")]
-    private static partial System.Text.RegularExpressions.Regex SqlIdentifier();
-
-    private static FlowReplica MapReplica(FlowReplicaYaml replica, string flowName, string source)
+    private static void CheckObject(string declared, string key, string source)
     {
-        var columns = new Dictionary<string, IReadOnlyList<Replica.Schema.ColumnTransform>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (scope, entries) in replica.Columns ?? [])
+        if (!SourceObjectName.TryParse(declared, out _, out var problem))
         {
-            var transforms = new List<Replica.Schema.ColumnTransform>();
-            var index = 0;
-            foreach (var entry in entries ?? [])
-            {
-                var path = string.Create(CultureInfo.InvariantCulture, $"source.replica.columns.{scope}[{index++}]");
-                transforms.Add(new Replica.Schema.ColumnTransform
-                {
-                    Name = Require(entry?.Name, $"{path}.name", source).Trim(),
-                    Expression = string.IsNullOrWhiteSpace(entry!.Expr) ? null : entry.Expr.Trim(),
-                    Type = string.IsNullOrWhiteSpace(entry.Type) ? null : entry.Type.Trim(),
-                    Alias = string.IsNullOrWhiteSpace(entry.As) ? null : entry.As.Trim(),
-                    SortOrder = entry.Order,
-                    Virtual = entry.Virtual ?? false,
-                    ExcludeFromView = entry.ExcludeFromView ?? false,
-                });
-            }
-
-            if (!columns.TryAdd(scope.Trim(), transforms))
-            {
-                throw new FlowValidationException($"{source}: source.replica.columns names scope '{scope}' twice (scope names are compared without case).");
-            }
+            throw new FlowValidationException($"{source}: {key} '{declared}' must be a three-part name [database].[schema].[table]: {problem}.");
         }
-
-        return new FlowReplica
-        {
-            Connection = Require(replica.Connection, "source.replica.connection", source),
-            Schema = string.IsNullOrWhiteSpace(replica.Schema) ? FlowReplica.DefaultSchema(flowName) : replica.Schema.Trim(),
-            InferTypes = replica.InferTypes ?? false,
-            OnConvertError = ParseEnum(replica.OnConvertError, Replica.Schema.ConvertErrorMode.Fail, "source.replica.onConvertError", source),
-            Threshold = replica.Threshold ?? 1.0,
-            Sample = replica.Sample ?? 0,
-            PreserveLeadingZeros = replica.PreserveLeadingZeros ?? true,
-            Culture = string.IsNullOrWhiteSpace(replica.Culture) ? null : replica.Culture.Trim(),
-            AllowTableRewrite = replica.AllowTableRewrite ?? false,
-            BatchUpsert = replica.BatchUpsert ?? false,
-            RetentionDays = replica.RetentionDays ?? FlowReplica.DefaultRetentionDays,
-            Columns = columns,
-        };
     }
 
-    /// <summary>
-    /// What a replica must be for a load to write it: a connection holding no literal secret, a schema the flow can own, an
-    /// inference policy in range, and column transforms that each do something the replica can hold.
-    /// </summary>
-    private static void ValidateReplica(FlowReplica replica, string source)
+    private static void CheckColumn(string column, string key, string source)
     {
-        Engine.SqlSource.SqlSourceConnection.CheckDeclared(replica.Connection, source, "source.replica.connection");
-
-        if (!SqlIdentifier().IsMatch(replica.Schema) || replica.Schema.Length > FlowReplica.MaxSchemaLength
-            || replica.Schema.Equals("sys", StringComparison.OrdinalIgnoreCase) || replica.Schema.Equals("INFORMATION_SCHEMA", StringComparison.OrdinalIgnoreCase)
-            || replica.Schema.Equals("guest", StringComparison.OrdinalIgnoreCase) || replica.Schema.StartsWith("db_", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(column) || column.Length > MaxColumnLength || column.Any(char.IsControl)
+            || column.Contains('[', StringComparison.Ordinal) || column.Contains(']', StringComparison.Ordinal) || column.Trim().Length != column.Length)
         {
             throw new FlowValidationException(
-                string.Create(CultureInfo.InvariantCulture, $"{source}: source.replica.schema '{replica.Schema}' must be 1 to {FlowReplica.MaxSchemaLength} letters, digits and '_' (not starting with a digit), and not a system schema (sys, INFORMATION_SCHEMA, guest, db_*)."));
+                string.Create(CultureInfo.InvariantCulture, $"{source}: {key} names a column '{column}'; a column name is 1 to {MaxColumnLength} characters, without brackets, control characters or surrounding space."));
         }
+    }
 
-        if (replica.Threshold is <= 0 or > 1 || double.IsNaN(replica.Threshold))
+    private static void CheckTokens(FlowDefinition flow, string text, string key, string source)
+    {
+        foreach (var token in Tokens(text))
         {
-            throw new FlowValidationException($"{source}: source.replica.threshold must be above 0 and at most 1 (the fraction of values that must convert).");
-        }
-
-        if (replica.Sample < 0)
-        {
-            throw new FlowValidationException($"{source}: source.replica.sample must not be negative (0 profiles every row).");
-        }
-
-        if (replica.RetentionDays < 0)
-        {
-            throw new FlowValidationException($"{source}: source.replica.retentionDays must not be negative (0 keeps every submission's record list).");
-        }
-
-        if (replica.Culture is { } culture)
-        {
-            try
+            if (!flow.Parameters.ContainsKey(token))
             {
-                _ = CultureInfo.GetCultureInfo(culture);
-            }
-            catch (CultureNotFoundException)
-            {
-                throw new FlowValidationException($"{source}: source.replica.culture '{culture}' is not a culture name (nb-NO, en-US).");
-            }
-        }
-
-        foreach (var (scope, transforms) in replica.Columns)
-        {
-            if (!SqlIdentifier().IsMatch(scope))
-            {
-                throw new FlowValidationException($"{source}: source.replica.columns scope '{scope}' must be a scope of the drop: letters, digits and '_'.");
-            }
-
-            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var transform in transforms)
-            {
-                var where = $"{source}: source.replica.columns.{scope} '{transform.Name}'";
-                if (!names.Add(transform.Name))
-                {
-                    throw new FlowValidationException($"{where} is declared twice (column names are compared without case).");
-                }
-
-                foreach (var name in new[] { transform.Name, transform.Alias }.OfType<string>())
-                {
-                    if (name.Length > 128 || name.StartsWith(Replica.ReplicaNames.SystemPrefix, StringComparison.Ordinal))
-                    {
-                        throw new FlowValidationException($"{where}: '{name}' must be at most 128 characters and not start with '{Replica.ReplicaNames.SystemPrefix}', which the replica's own columns use.");
-                    }
-                }
-
-                if (transform.Virtual && (transform.Expression is null || Replica.Schema.ColumnTransformExpression.ReferencesColumnToken(transform.Expression)))
-                {
-                    throw new FlowValidationException($"{where} is virtual, so it needs an expr, and one without @ColName: there is no landed column to stand for.");
-                }
-
-                if (transform.Expression is not null && transform.Type is null)
-                {
-                    throw new FlowValidationException($"{where} has an expr but no type; the type is the replica column the expression fills (decimal(18, 4), nvarchar(max)).");
-                }
-
-                if (transform.Expression is null && transform.Type is null && transform.Alias is null && !transform.ExcludeFromView)
-                {
-                    throw new FlowValidationException($"{where} does nothing: give it a type, an expr, an 'as' or excludeFromView.");
-                }
-
-                if (transform.Type is { } type)
-                {
-                    Replica.Schema.SqlDataType parsed;
-                    try
-                    {
-                        parsed = Replica.Schema.SqlDataType.Parse(type);
-                    }
-                    catch (DeliveryException ex)
-                    {
-                        throw new FlowValidationException($"{where}: {ex.Message}", ex);
-                    }
-
-                    if (parsed.Family == Replica.Schema.SqlTypeFamily.Other)
-                    {
-                        throw new FlowValidationException($"{where}: type '{type}' is not a type the replica holds (text, whole and decimal numbers, float, money, dates and times, bit, binary, uniqueidentifier).");
-                    }
-                }
+                throw new FlowValidationException($"{source}: {key} uses '{{{token}}}', which is not declared under parameters.");
             }
         }
     }
 
     private static void Validate(FlowDefinition flow, string source)
     {
-        if (flow.Source.Sql is { } sql)
-        {
-            ValidateSql(flow, sql, source);
-        }
-
-        if (flow.Source.Replica is { } replica)
-        {
-            ValidateReplica(replica, source);
-        }
-
-        // One per-record source gate: an opaque fingerprint compared for equality, or a last-modified moment that
-        // is ordered as well. Declaring both would leave the gate with two answers to the same question.
-        if (flow.Source.Fingerprint is not null && flow.Source.LastModified is not null)
-        {
-            throw new FlowValidationException(
-                $"{source}: source.fingerprint and source.lastModified both name the column that says the source row changed; declare one of them.");
-        }
+        ValidateSource(flow, source);
 
         if (flow.Change.Detect == ChangeDetection.LastModified)
         {
             throw new FlowValidationException(
-                $"{source}: change.detect cannot be lastModified. A document is always decided by the hash of what it renders to; the source row's last-modified column is source.lastModified.");
+                $"{source}: change.detect cannot be lastModified. A document is always decided by the hash of what it renders to; the source row's business version column is source.lastModified.");
         }
 
         if (flow.Change.PayloadDetect == ChangeDetection.LastModified && !DeliveryProtocols.CarriesPayload(flow.Target.Protocol))
@@ -645,24 +657,6 @@ internal static partial class FlowMapper
         if (string.IsNullOrWhiteSpace(flow.Target.Headers[PartitionHeader]))
         {
             throw new FlowValidationException($"{source}: target.headers.{PartitionHeader} must not be empty.");
-        }
-
-        // A submission carries its records, and points at its payload files where they already are (design.md section
-        // 3.4): the node opens them with its own identity when the run delivers. Roots bound what it may be pointed at,
-        // so they are only meaningful on a flow that takes submissions at all.
-        if (flow.Source.ManualSubmissionFileRoots.Count > 0 && !flow.Source.ManualSubmission)
-        {
-            throw new FlowValidationException(
-                $"{source}: source.manualSubmissionFileRoots bounds where a submission may point at payload files, which only a flow declaring source.manualSubmission accepts.");
-        }
-
-        foreach (var root in flow.Source.ManualSubmissionFileRoots)
-        {
-            if (root.Contains('*', StringComparison.Ordinal) || root.Contains("..", StringComparison.Ordinal))
-            {
-                throw new FlowValidationException(
-                    $"{source}: source.manualSubmissionFileRoots entry '{root}' must be a plain prefix (a container or folder), with no wildcard and no '..'.");
-            }
         }
 
         if (flow.Target.ProtocolOptions.BatchSize is < 1 or > ProtocolOptions.MaxBatchSize)
@@ -741,44 +735,6 @@ internal static partial class FlowMapper
         if (string.IsNullOrWhiteSpace(flow.Target.ProtocolOptions.WorkflowAppKey))
         {
             throw new FlowValidationException($"{source}: target.protocolOptions.workflowAppKey must not be empty.");
-        }
-
-        foreach (var token in Tokens(flow.Source.Work ?? string.Empty))
-        {
-            if (!flow.Parameters.ContainsKey(token))
-            {
-                throw new FlowValidationException($"{source}: source.work uses '{{{token}}}', which is not declared under parameters.");
-            }
-        }
-
-        if (DeliveryProtocols.CarriesPayload(flow.Target.Protocol) && flow.Target.ProtocolOptions.Payload is { } payload
-            && !flow.Source.Payloads.ContainsKey(payload))
-        {
-            throw new FlowValidationException($"{source}: target.protocolOptions.payload '{payload}' is not declared under source.payloads.");
-        }
-
-        foreach (var (name, template) in flow.Source.Payloads)
-        {
-            if (!template.Contains("{deliveryKey}", StringComparison.Ordinal))
-            {
-                throw new FlowValidationException($"{source}: source.payloads.{name} must contain '{{deliveryKey}}'.");
-            }
-        }
-
-        foreach (var token in Tokens(flow.Source.Location))
-        {
-            if (!flow.Parameters.ContainsKey(token))
-            {
-                throw new FlowValidationException($"{source}: source.location uses '{{{token}}}', which is not declared under parameters.");
-            }
-        }
-
-        foreach (var token in Tokens(flow.Source.KnownState ?? string.Empty))
-        {
-            if (!flow.Parameters.ContainsKey(token))
-            {
-                throw new FlowValidationException($"{source}: source.knownState uses '{{{token}}}', which is not declared under parameters.");
-            }
         }
 
         if (flow.Target.Auth.Type == TargetAuthType.OAuth2ClientCredentials && flow.Target.Auth.Token is null)
@@ -938,4 +894,9 @@ internal static partial class FlowMapper
     internal static T ParseEnum<T>(string? value, T fallback, string key, string source)
         where T : struct, Enum
         => string.IsNullOrWhiteSpace(value) ? fallback : ParseEnum<T>(value!, key, source);
+
+    private static string? Optional(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static IReadOnlyDictionary<string, string> Trimmed(Dictionary<string, string>? declared)
+        => (declared ?? []).ToDictionary(kv => kv.Key.Trim(), kv => kv.Value?.Trim() ?? string.Empty, StringComparer.Ordinal);
 }

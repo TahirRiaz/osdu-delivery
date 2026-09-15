@@ -1,3 +1,6 @@
+using SqlFlow.Core;
+using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Yaml;
 
@@ -8,7 +11,7 @@ namespace SqlFlow.Delivery.Documents;
 /// target reference, and the source's secret references are what the hygiene check inspects. It needs no
 /// repository tree: nothing is rendered.
 /// </summary>
-public sealed record RetrievalFlowDocument : FlowDocument
+public sealed record RetrievalFlowDocument : RegisteredFlowDocument
 {
     public required RetrievalDefinition Flow { get; init; }
 
@@ -42,16 +45,34 @@ public sealed class RetrievalFlowKind : IFlowDocumentKind
 
     public string Description => "retrieve records of OSDU kinds from the search index into JSON Lines files on the lake, with a manifest and a ledger row per run";
 
-    public FlowDocument Parse(string yaml, string source, FlowDocumentEnvelope envelope)
+    public IReadOnlyList<FlowKindOperation> Operations { get; } =
+    [
+        new(DeliveryOperations.Retrieve, "Retrieve", "Retrieve the records the query matches into files on the lake, from where the last run stopped.", WritesTarget: true),
+        new(DeliveryOperations.Plan, "Plan", "Count what the query matches and say where a retrieve would write, writing nothing.", WritesTarget: false),
+    ];
+
+    public RegisteredFlowDocument Parse(string yaml, string source)
     {
         ArgumentNullException.ThrowIfNull(yaml);
-        ArgumentNullException.ThrowIfNull(envelope);
-        return new RetrievalFlowDocument
+        return new RetrievalFlowDocument { Flow = _loader.ParseRetrieval(yaml, source) };
+    }
+
+    public void ValidateParameters(RunParameters parameters)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        DeliveryOperations.RefuseBuiltInOverrides(
+            parameters, RetrievalDefinition.FlowTypeName, "force in the payload restarts an incremental retrieval at its declared start.");
+        var payload = DeliveryRunPayload.Parse(parameters);
+        if (payload.SubmissionId is not null || payload.RecordKeys.Count > 0 || payload.Redeliver is not null || payload.Slices.Count > 0 || payload.Reland)
         {
-            Flow = _loader.ParseRetrieval(yaml, source),
-            Schedule = envelope.Schedule,
-            Mode = envelope.Mode,
-            Lifecycle = envelope.Lifecycle,
-        };
+            throw new SqlFlowException("A retrieval flow's payload carries only force; a retrieval has no submission, records, slices or landing to name.");
+        }
+    }
+
+    /// <summary>Whether a retrieval run restarts an incremental flow at its declared start.</summary>
+    public static bool Forced(RunParameters parameters)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        return DeliveryRunPayload.Parse(parameters).Force;
     }
 }

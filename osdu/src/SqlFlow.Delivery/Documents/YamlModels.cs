@@ -54,114 +54,144 @@ internal sealed class FlowParameterYaml
 
 internal sealed class FlowSourceYaml
 {
-    public string? Location { get; set; }
+    public string? Connection { get; set; }
 
-    public string? Manifest { get; set; }
+    public FlowSourceTableYaml? Record { get; set; }
 
-    public string? Records { get; set; }
+    public Dictionary<string, FlowSourceDatasetYaml>? Datasets { get; set; }
 
-    public Dictionary<string, FlowScopeYaml>? Scopes { get; set; }
-
-    public Dictionary<string, string>? Payloads { get; set; }
-
-    public string? Fingerprint { get; set; }
+    public Dictionary<string, FlowPayloadYaml>? Payloads { get; set; }
 
     public string? LastModified { get; set; }
 
-    public string? KnownState { get; set; }
+    public FlowSystemColumnsYaml? SystemColumns { get; set; }
+
+    public FlowIncrementalYaml? Incremental { get; set; }
 
     public string? Work { get; set; }
 
-    public bool? ManualSubmission { get; set; }
-
-    public List<string>? ManualSubmissionFileRoots { get; set; }
-
-    public FlowSqlYaml? Sql { get; set; }
-
-    public FlowReplicaYaml? Replica { get; set; }
+    public FlowSubmissionsYaml? Submissions { get; set; }
 }
 
-internal sealed class FlowReplicaYaml
+internal sealed class FlowSourceTableYaml
 {
-    public string? Connection { get; set; }
+    public string? Object { get; set; }
 
-    public string? Schema { get; set; }
+    public List<string>? Key { get; set; }
 
-    public bool? InferTypes { get; set; }
-
-    public string? OnConvertError { get; set; }
-
-    public double? Threshold { get; set; }
-
-    public int? Sample { get; set; }
-
-    public bool? PreserveLeadingZeros { get; set; }
-
-    public string? Culture { get; set; }
-
-    public bool? AllowTableRewrite { get; set; }
-
-    public bool? BatchUpsert { get; set; }
-
-    public int? RetentionDays { get; set; }
-
-    public Dictionary<string, List<FlowReplicaColumnYaml>>? Columns { get; set; }
+    public Dictionary<string, string>? Scope { get; set; }
 }
 
-internal sealed class FlowReplicaColumnYaml
+internal sealed class FlowSourceDatasetYaml
 {
-    public string? Name { get; set; }
+    public string? Object { get; set; }
 
-    public string? Expr { get; set; }
+    public Dictionary<string, string>? Join { get; set; }
 
-    public string? Type { get; set; }
+    public List<string>? OrderBy { get; set; }
 
-    public string? As { get; set; }
-
-    public int? Order { get; set; }
-
-    public bool? Virtual { get; set; }
-
-    public bool? ExcludeFromView { get; set; }
+    public int? MaxRowsPerRecord { get; set; }
 }
 
-internal sealed class FlowSqlYaml
+internal sealed class FlowPayloadYaml
 {
-    public string? Connection { get; set; }
+    public string? Root { get; set; }
 
-    public string? Record { get; set; }
+    public string? LocationColumn { get; set; }
 
-    public Dictionary<string, string>? Scopes { get; set; }
+    public string? Pattern { get; set; }
 
-    public FlowSqlWatermarkYaml? Watermark { get; set; }
+    public string? HashColumn { get; set; }
+
+    public string? ChunkCountColumn { get; set; }
+}
+
+/// <summary>A system column a flow names, opts out of with <c>~</c>, or leaves at its default by not naming it.</summary>
+internal sealed class FlowSystemColumnsYaml
+{
+    private string? _updated;
+    private string? _fileName;
+    private string? _rowNumber;
+    private string? _deleted;
+
+    public string? Updated
+    {
+        get => _updated;
+        set
+        {
+            _updated = value;
+            HasUpdated = true;
+        }
+    }
+
+    public string? FileName
+    {
+        get => _fileName;
+        set
+        {
+            _fileName = value;
+            HasFileName = true;
+        }
+    }
+
+    public string? RowNumber
+    {
+        get => _rowNumber;
+        set
+        {
+            _rowNumber = value;
+            HasRowNumber = true;
+        }
+    }
+
+    public string? Deleted
+    {
+        get => _deleted;
+        set
+        {
+            _deleted = value;
+            HasDeleted = true;
+        }
+    }
+
+    [YamlDotNet.Serialization.YamlIgnore]
+    public bool HasUpdated { get; private set; }
+
+    [YamlDotNet.Serialization.YamlIgnore]
+    public bool HasFileName { get; private set; }
+
+    [YamlDotNet.Serialization.YamlIgnore]
+    public bool HasRowNumber { get; private set; }
+
+    [YamlDotNet.Serialization.YamlIgnore]
+    public bool HasDeleted { get; private set; }
+}
+
+internal sealed class FlowIncrementalYaml
+{
+    public int? OverlapSeconds { get; set; }
+
+    public int? PageSize { get; set; }
 
     public string? Isolation { get; set; }
 
     public int? CommandTimeoutSeconds { get; set; }
-
-    public int? RowsPerFile { get; set; }
-
-    public string? PayloadLocationColumn { get; set; }
-
-    public string? PayloadHashColumn { get; set; }
 }
 
-internal sealed class FlowSqlWatermarkYaml
+internal sealed class FlowSubmissionsYaml
 {
-    public string? Column { get; set; }
+    public FlowSubmissionDatasetYaml? Record { get; set; }
 
-    public string? Type { get; set; }
+    public Dictionary<string, FlowSubmissionDatasetYaml>? Datasets { get; set; }
 
-    public int? OverlapMinutes { get; set; }
-
-    public long? Lookback { get; set; }
+    public List<string>? FileRoots { get; set; }
 }
 
-internal sealed class FlowScopeYaml
+internal sealed class FlowSubmissionDatasetYaml
 {
-    public string? Records { get; set; }
+    public string? PreFlow { get; set; }
 
-    public string? Key { get; set; }
+    public string? Landing { get; set; }
 }
 
 internal sealed class FlowRenderYaml
