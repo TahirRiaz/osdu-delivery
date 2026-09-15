@@ -150,8 +150,9 @@ export interface DeliveryRecordDetail {
 }
 
 /**
- * A delivery record the combined search found (the `records` category of GET /api/v1/search/all): an exact delivery key,
- * or a prefix of its OSDU id, source key or label, across every flow.
+ * A delivery record the combined search found: the `data` of each hit in the `records` category the module's search
+ * contributor adds to GET /api/v1/search/all. It matches an exact delivery key, or a prefix of the record's OSDU id,
+ * source key or label, across every flow.
  */
 export interface DeliveryRecordHit {
   deliveryKey: string;

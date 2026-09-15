@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
-import type { SearchCategory } from "@/api/types";
+import type { SearchCategory, SearchHit } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
 import { Mono } from "@/components/Mono";
 import { RelativeTime } from "@/components/RelativeTime";
@@ -14,6 +14,16 @@ function isRecordHit(value: unknown): value is DeliveryRecordHit {
 
   const hit = value as Partial<Record<keyof DeliveryRecordHit, unknown>>;
   return typeof hit.deliveryKey === "string" && typeof hit.sourceKey === "string" && typeof hit.status === "string";
+}
+
+/** The delivery record a contributed search hit carries in its `data`; null for a hit that carries none. */
+function recordOf(item: unknown): DeliveryRecordHit | null {
+  if (item === null || typeof item !== "object") {
+    return null;
+  }
+
+  const data = (item as Partial<SearchHit>).data;
+  return isRecordHit(data) ? data : null;
 }
 
 const recordColumns: Column<DeliveryRecordHit>[] = [
@@ -42,7 +52,7 @@ const recordColumns: Column<DeliveryRecordHit>[] = [
  */
 export function RecordSearchHits({ category }: { category: SearchCategory<unknown> }) {
   const navigate = useNavigate();
-  const records = category.items.filter(isRecordHit);
+  const records = category.items.map(recordOf).filter((record): record is DeliveryRecordHit => record !== null);
   if (records.length === 0) {
     return null;
   }
