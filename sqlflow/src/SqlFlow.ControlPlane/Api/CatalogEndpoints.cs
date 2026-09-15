@@ -84,7 +84,9 @@ public static class CatalogEndpoints
     /// root path the control-plane host cannot see (a local-path sync only works where the flows live on disk).
     /// </summary>
     private static async Task<Results<Ok<RepoSyncResultDto>, ProblemHttpResult>> SyncRepoAsync(
-        Guid id, CatalogDbContext db, ISecretResolver secrets, SqlFlow.Yaml.YamlDocumentLoader documents, TimeProvider clock, CancellationToken ct)
+        Guid id, CatalogDbContext db, ISecretResolver secrets, SqlFlow.Yaml.YamlDocumentLoader documents,
+        [Microsoft.AspNetCore.Mvc.FromServices] IEnumerable<ICatalogSyncExtension> syncExtensions, TimeProvider clock,
+        CancellationToken ct)
     {
         var repo = await db.Repos.AsNoTracking().Where(r => r.Id == id)
             .Select(r => new { r.Name, r.RemoteUrl, r.RootPath })
@@ -124,7 +126,7 @@ public static class CatalogEndpoints
             // catalog + sys.sql_modules reads) enabled so the object-level lineage populates. A derived-tier failure
             // (an unreachable database, a timeout) is downgraded to a warning inside SyncAsync and never faults the
             // request; the flow registry and flow-level lineage still land.
-            var result = await new CatalogSync(documents).SyncAsync(
+            var result = await new CatalogSync(documents, syncExtensions).SyncAsync(
                 db, repo.RootPath, repo.Name, repo.RemoteUrl, clock.GetUtcNow().UtcDateTime,
                 includeDerived: true, secrets: secrets, ct: ct).ConfigureAwait(false);
 
