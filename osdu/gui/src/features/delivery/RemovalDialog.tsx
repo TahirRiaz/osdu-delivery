@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import {
   deliveryApi,
   type DeliveryRecordFilter,
@@ -25,7 +25,7 @@ import {
   type DeliveryTarget,
   type RemovalScope,
 } from "../../api/delivery";
-import { CorrelationError } from "../../components/CorrelationError";
+import { CorrelationError } from "@/components/CorrelationError";
 
 /**
  * Which records the removal acts on: the exact ones an operator ticked, or the listing they were looking at with

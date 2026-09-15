@@ -3,10 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { DatabaseZap } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import { deliveryApi } from "../../api/delivery";
-import { CorrelationError } from "../../components/CorrelationError";
-import { EmptyState } from "../../components/EmptyState";
+import { CorrelationError } from "@/components/CorrelationError";
+import { EmptyState } from "@/components/EmptyState";
 import { DeliveryCacheHistory } from "./DeliveryCacheHistory";
 
 /**

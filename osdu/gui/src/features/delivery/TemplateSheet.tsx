@@ -2,10 +2,11 @@ import type { ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { isApiError } from "../../api/client";
-import type { ComputeTask, DeliveryTemplateDetail } from "../../api/delivery";
-import { CorrelationError } from "../../components/CorrelationError";
-import { RunStatusBadge } from "../../components/StatusBadge";
+import { isApiError } from "@/api/client";
+import type { ComputeTask } from "@/api/types";
+import type { DeliveryTemplateDetail } from "../../api/delivery";
+import { CorrelationError } from "@/components/CorrelationError";
+import { RunStatusBadge } from "@/components/StatusBadge";
 import { TemplateHeader } from "./TemplateHeader";
 import { TemplateView } from "./TemplateView";
 

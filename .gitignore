@@ -10,13 +10,15 @@ artifacts/
 *.suo
 .vs/
 
-## GUI module
-gui/**/node_modules/
-gui/**/dist/
-gui/**/.env.local
-gui/**/playwright-report/
-gui/**/test-results/
-gui/**/tsconfig.tsbuildinfo
+## GUIs (sqlflow/gui and osdu/gui)
+**/gui/node_modules/
+**/gui/dist/
+**/gui/.tsbuild/
+**/gui/.env.local
+**/gui/playwright-report/
+**/gui/test-results/
+**/gui/tsconfig.tsbuildinfo
+**/gui/e2e/.fixtures/
 .playwright-mcp/
 
 ## Rider / VS Code

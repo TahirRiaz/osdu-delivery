@@ -16,15 +16,15 @@ import {
   deliveryApi, type DeliveryMappingComposeResult, type DeliveryTemplateVariable, type MappingDraft, type MappingDraftEntry,
   type MappingDraftIssue,
 } from "../../api/delivery";
-import { useAuth } from "../../auth/useAuth";
-import { CodeView } from "../../components/CodeView";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { CopyButton } from "../../components/CopyButton";
-import { EmptyState } from "../../components/EmptyState";
-import { Page } from "../../components/Page";
-import { PageHeader } from "../../components/PageHeader";
-import { RichTooltip } from "../../components/RichTooltip";
-import { OutcomePill } from "../../components/StatusBadge";
+import { useAuth } from "@/auth/AuthContext";
+import { CodeView } from "@/components/CodeView";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { CopyButton } from "@/components/CopyButton";
+import { EmptyState } from "@/components/EmptyState";
+import { Page } from "@/components/Page";
+import { PageHeader } from "@/components/PageHeader";
+import { RichTooltip } from "@/components/RichTooltip";
+import { OutcomePill } from "@/components/StatusBadge";
 import { MappingBuilderVariables } from "./MappingBuilderVariables";
 import { MappingEntryEditor, type EntryEditorTarget } from "./MappingEntryEditor";
 import { MappingProposeSheet } from "./MappingProposeSheet";
@@ -701,7 +701,7 @@ export default function MappingBuilderPage() {
                   <span className="font-mono">mappings/{reference}.yaml</span>
                 </div>
                 {result !== undefined
-                  ? <CodeView value={result.yaml} language="yaml" height={560} data-testid="mapping-builder-yaml" />
+                  ? <CodeView value={result.yaml} language="yaml" lsp={false} height={560} data-testid="mapping-builder-yaml" />
                   : compose.isError
                     ? <EmptyState title="The YAML is written once the check answers." data-testid="mapping-builder-yaml-unavailable" />
                     : <Skeleton className="h-[560px] w-full rounded-lg" />}

@@ -9,30 +9,29 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import {
   deliveryApi,
   type DeliveryActivity,
   type DeliveryAttempt,
   type DeliveryAttemptResult,
-  type DeliveryReplicaRecord,
 } from "../../api/delivery";
 import { AttemptDetail } from "./AttemptDetail";
-import { CodeView } from "../../components/CodeView";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { CorrelationError } from "../../components/CorrelationError";
-import { DataTable, type Column } from "../../components/DataTable";
-import { DetailHeaderCard } from "../../components/DetailHeaderCard";
-import { DetailPair } from "../../components/DetailPair";
-import { IdChip } from "../../components/IdChip";
-import { Page } from "../../components/Page";
-import { RelativeTime } from "../../components/RelativeTime";
-import { TruncatedText } from "../../components/TruncatedText";
-import { useTabTitle } from "../../layout/workbench/useWorkbenchTabs";
+import { CodeView } from "@/components/CodeView";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { CorrelationError } from "@/components/CorrelationError";
+import { DataTable, type Column } from "@/components/DataTable";
+import { DetailHeaderCard } from "@/components/DetailHeaderCard";
+import { DetailPair } from "@/components/DetailPair";
+import { IdChip } from "@/components/IdChip";
+import { Page } from "@/components/Page";
+import { RelativeTime } from "@/components/RelativeTime";
+import { TruncatedText } from "@/components/TruncatedText";
+import { useTabTitle } from "@/layout/workbench/TabsContext";
 import { BlockedBadge, RecordStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
 import { prettyJson } from "./prettyJson";
 import { RemovalDialog } from "./RemovalDialog";
-import { isTerminalTask, useComputeTask } from "./useComputeTask";
+import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
 
 /** The steps of one try, compactly: name, status, duration, and whether an earlier try had completed it. */
 function AttemptSteps({ result }: { result: DeliveryAttemptResult | null }) {
@@ -121,80 +120,6 @@ function SubmissionLink({ submissionId }: { submissionId: string }) {
 
 function Hash({ value }: { value: string | null }) {
   return value ? <span className="font-mono text-[12px]" title={value}>{value.slice(0, 12)}</span> : <span className="text-muted-foreground">-</span>;
-}
-
-type ReplicaValue = DeliveryReplicaRecord["values"][number];
-type ReplicaCarrier = DeliveryReplicaRecord["carriers"][number];
-
-const replicaValueColumns: Column<ReplicaValue>[] = [
-  { id: "column", header: "Column", render: (row) => <span className="font-mono text-[12px]">{row.column}</span> },
-  { id: "type", header: "Type", render: (row) => <span className="font-mono text-[12px] text-muted-foreground">{row.sqlType}</span> },
-  {
-    id: "value",
-    header: "Value",
-    render: (row) => (row.value === null ? <span className="text-muted-foreground">null</span> : <TruncatedText text={row.value} mono maxWidth={520} />),
-  },
-];
-
-const replicaCarrierColumns: Column<ReplicaCarrier>[] = [
-  { id: "loaded", header: "Loaded", render: (row) => <RelativeTime value={row.loadedUtc} absolute /> },
-  { id: "submission", header: "Submission", render: (row) => <SubmissionLink submissionId={row.submissionId} /> },
-  { id: "origin", header: "From the drop of", render: (row) => <SubmissionLink submissionId={row.originSubmissionId} /> },
-  { id: "file", header: "File", render: (row) => <TruncatedText text={row.file} mono maxWidth={320} /> },
-  { id: "row", header: "Row", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.row ?? "-"}</span> },
-];
-
-/** The record as its flow's replica holds it now: its values with their types, its child rows, and the submissions that carried it. */
-function RecordReplica({ deliveryKey }: { deliveryKey: string }) {
-  const replica = useQuery({
-    queryKey: ["delivery", "record", deliveryKey, "replica"],
-    queryFn: () => deliveryApi.recordReplica(deliveryKey),
-    retry: false,
-  });
-
-  if (replica.isPending) {
-    return <Skeleton className="h-40 w-full rounded-lg" />;
-  }
-
-  if (replica.isError) {
-    return isApiError(replica.error)
-      ? <p className="text-[13px] text-muted-foreground" data-testid="record-replica-missing">{replica.error.detail ?? replica.error.title}</p>
-      : <p className="text-[13px] text-destructive">{String(replica.error)}</p>;
-  }
-
-  const view = replica.data;
-  return (
-    <div className="flex flex-col gap-3" data-testid="record-replica">
-      <DataTable columns={replicaValueColumns} rows={view.values} rowKey={(row) => row.column} emptyMessage="The replica holds no values for this record." data-testid="record-replica-values" />
-      {view.scopes.map((scope) => (
-        <div key={scope.scope} className="flex flex-col gap-1" data-testid={`record-replica-scope-${scope.scope}`}>
-          <h3 className="text-[13px] font-medium">
-            {scope.rows.length === scope.total ? `${scope.scope}: ${scope.total} row(s)` : `${scope.scope}: the first ${scope.rows.length} of ${scope.total} rows`}
-          </h3>
-          <DataTable
-            columns={scope.columns.map((name, index): Column<{ index: number; values: (string | null)[] }> => ({
-              id: name,
-              header: name,
-              render: (row) => (row.values[index] === null ? <span className="text-muted-foreground">null</span> : <TruncatedText text={row.values[index]} mono maxWidth={240} />),
-            }))}
-            rows={scope.rows.map((values, index) => ({ index, values }))}
-            rowKey={(row) => row.index}
-            emptyMessage="No rows."
-          />
-        </div>
-      ))}
-      <div className="flex flex-col gap-1">
-        <h3 className="text-[13px] font-medium">Submissions that carried it</h3>
-        <DataTable
-          columns={replicaCarrierColumns}
-          rows={view.carriers}
-          rowKey={(row) => `${row.submissionId}-${row.sequence}`}
-          emptyMessage="No submission list holds the record any more."
-          data-testid="record-replica-carriers"
-        />
-      </div>
-    </div>
-  );
 }
 
 /** Everything the ledger knows about one record: its custody state, every delivery try, every intervention, the
@@ -297,6 +222,7 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
   const busy = verify.isPending || redeliver.isPending || release.isPending || readBack.isPending;
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
   const taskState = task.data;
+  const taskJson = isTerminalTask(taskState) ? taskResultJson(taskState) : null;
 
   return (
     <Page data-testid="page-delivery-record">
@@ -386,8 +312,8 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
             {taskState?.claimedByNode && <span className="font-mono text-[11px] text-muted-foreground">{taskState.claimedByNode}</span>}
           </div>
           {taskState?.error && <p className="text-[13px] text-destructive">{taskState.error}</p>}
-          {isTerminalTask(taskState) && taskState?.resultJson && (
-            <CodeView value={prettyJson(taskState.resultJson)} language="json" height={360} data-testid="record-task-json" />
+          {taskJson !== null && (
+            <CodeView value={taskJson} language="json" height={360} data-testid="record-task-json" />
           )}
         </Card>
       )}
@@ -397,7 +323,6 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
           <TabsTrigger value="history" data-testid="record-tab-history">History</TabsTrigger>
           <TabsTrigger value="activity" data-testid="record-tab-activity">Interventions</TabsTrigger>
           <TabsTrigger value="document" data-testid="record-tab-document">Target state</TabsTrigger>
-          <TabsTrigger value="replica" data-testid="record-tab-replica">Replica</TabsTrigger>
           <TabsTrigger value="context" data-testid="record-tab-context">Render context</TabsTrigger>
         </TabsList>
         <TabsContent value="history">
@@ -428,9 +353,6 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
                 : <p className="text-[13px] text-muted-foreground">Nothing yet: the record has not been delivered.</p>}
             </div>
           </div>
-        </TabsContent>
-        <TabsContent value="replica">
-          <RecordReplica deliveryKey={deliveryKey} />
         </TabsContent>
         <TabsContent value="context">
           {record.renderContext

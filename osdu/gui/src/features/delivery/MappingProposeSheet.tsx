@@ -9,8 +9,8 @@ import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import type { DeliveryBuilderRepo } from "../../api/delivery";
-import { repoSourceApi } from "../../api/endpoints";
-import { LinkRef } from "../../components/LinkRef";
+import { repoSourceApi } from "@/api/endpoints";
+import { LinkRef } from "@/components/LinkRef";
 import { problemText } from "./problemText";
 import { ProblemView } from "./TemplateSheet";
 

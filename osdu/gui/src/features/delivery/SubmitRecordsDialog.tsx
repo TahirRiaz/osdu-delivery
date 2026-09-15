@@ -14,12 +14,12 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import {
   deliveryApi, type DeliveryInlineRecord, type DeliverySourceColumnUse, type DeliverySourceContract,
 } from "../../api/delivery";
-import { CodeView } from "../../components/CodeView";
-import { CorrelationError } from "../../components/CorrelationError";
+import { CodeView } from "@/components/CodeView";
+import { CorrelationError } from "@/components/CorrelationError";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -103,7 +103,7 @@ function recordsTemplate(contract: DeliverySourceContract): string {
 }
 
 /**
- * The filled-in form as one record; an empty field is left out, which the drop writes as null. The payload is pointed
+ * The filled-in form as one record; an empty field is left out, which the flow reads as null. The payload is pointed
  * at, never uploaded: what goes with the record is where its files already sit, and the hash when the flow needs one.
  */
 function formRecord(fields: Record<string, string>, payload: PayloadInput): DeliveryInlineRecord {
@@ -173,13 +173,6 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
   const contract = useQuery({
     queryKey: ["delivery", "source-contract", pipelineId],
     queryFn: () => deliveryApi.sourceContract(pipelineId),
-    enabled: open,
-  });
-
-  // What has been dropped off already, so a record can point at an upload instead of a hand-typed path.
-  const dropOffs = useQuery({
-    queryKey: ["delivery", "dropoffs", "complete"],
-    queryFn: () => deliveryApi.dropOffs({ status: "complete", limit: 25 }),
     enabled: open,
   });
 
@@ -258,7 +251,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
     }
 
     if (error === null && records.length > c.maxRecords) {
-      error = `One submission carries at most ${c.maxRecords} records; deliver a larger set as a drop.`;
+      error = `One submission carries at most ${c.maxRecords} records; send a larger set as several submissions.`;
     }
 
     if (error === null && reference.trim().length > MaxReferenceLength) {
@@ -298,7 +291,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
           <SheetTitle>Submit records</SheetTitle>
           <SheetDescription>
             Send {flowName} source records the way a source system does through the API. The flow&apos;s mapping renders them
-            into OSDU documents, and the run delivers them like any drop: change detection, the ledger and the record
+            into OSDU documents, and the run delivers them like any other submission: change detection, the ledger and the record
             history all apply.
           </SheetDescription>
         </SheetHeader>
@@ -446,7 +439,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                     ))}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    An empty field is sent as absent, and the drop writes it as null. A record whose last-modified moment is not
+                    An empty field is sent as absent, which the flow reads as null. A record whose last-modified moment is not
                     later than the version already delivered is skipped, so a change needs a later one.
                   </p>
                   {c.payloadName !== null && (
@@ -458,25 +451,6 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                           when the run delivers, and again on every retry.
                         </p>
                       </div>
-                      {(dropOffs.data ?? []).length > 0 && (
-                        <div className="flex flex-col gap-1">
-                          <Label htmlFor={`${idPrefix}-payload-dropoff`}>Use a drop-off</Label>
-                          <select
-                            id={`${idPrefix}-payload-dropoff`}
-                            className="h-8 rounded-md border border-input bg-transparent px-2 text-[13px]"
-                            value=""
-                            onChange={(event) => { if (event.target.value !== "") { setPayloadLocation(event.target.value); } }}
-                            data-testid="submit-records-payload-dropoff"
-                          >
-                            <option value="">Pick an upload to fill the location</option>
-                            {(dropOffs.data ?? []).map((d) => (
-                              <option key={d.dropOffId} value={d.location}>
-                                {d.label ?? d.dropOffId.slice(0, 8)} ({d.fileCount} file{d.fileCount === 1 ? "" : "s"})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
                       <div className="flex flex-col gap-1">
                         <Label htmlFor={`${idPrefix}-payload-location`} className="font-mono text-[12px]">location (required)</Label>
                         <Input

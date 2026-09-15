@@ -24,15 +24,14 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import type { DeliveryTemplateRole, DeliveryTemplateVariable } from "../../api/delivery";
-import { CopyButton } from "../../components/CopyButton";
-import { DetailPair } from "../../components/DetailPair";
-import { FilterBar } from "../../components/FilterBar";
-import { IconAction } from "../../components/IconAction";
-import { SearchInput } from "../../components/SearchInput";
-import { StatePill } from "../../components/StatusBadge";
-import { TreeNode } from "../../components/Tree";
-import { TreeContext, type TreeState } from "../../components/treeState";
-import { usePersistentLayout } from "../../layout/workbench/usePersistentLayout";
+import { CopyButton } from "@/components/CopyButton";
+import { DetailPair } from "@/components/DetailPair";
+import { FilterBar } from "@/components/FilterBar";
+import { IconAction } from "@/components/IconAction";
+import { SearchInput } from "@/components/SearchInput";
+import { StatePill } from "@/components/StatusBadge";
+import { TreeContext, TreeNode, type TreeState } from "@/components/Tree";
+import { usePersistentLayout } from "@/layout/workbench/usePersistentLayout";
 import { holderPath, roleLabel, shapeText, splitPath } from "./templateFormat";
 
 /** One variable in the tree, with the variables it holds that survive the filter. */

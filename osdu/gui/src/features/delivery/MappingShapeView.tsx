@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { deliveryApi } from "../../api/delivery";
-import { CodeView } from "../../components/CodeView";
+import { CodeView } from "@/components/CodeView";
 import { ProblemView } from "./TemplateSheet";
 
 /** How long a parameter value has to stay unchanged before the shape is drawn again. */

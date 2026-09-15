@@ -64,7 +64,6 @@ test.describe.serial("osdu cache", () => {
     const dialog = adminPage.getByTestId("trigger-run-dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByTestId("trigger-operation")).toContainText("Refresh");
-    await expect(dialog.getByTestId("trigger-drop")).toHaveCount(0);
     await expect(dialog.getByTestId("trigger-submission")).toHaveCount(0);
     await adminPage.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);

@@ -1,32 +1,40 @@
 import { useQuery } from "@tanstack/react-query";
-import { computeApi, type ComputeTask } from "../../api/delivery";
+import { datasourceApi } from "@/api/endpoints";
+import type { ComputeTask } from "@/api/types";
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled", "skipped"]);
 
-/** Polls one ad-hoc compute task (a probe, a read-back, a delete) until a node has finished it. */
+/** How long one poll waits on the control plane for the task to finish before it answers with the task as it stands. */
+const WAIT_MS = 10_000;
+
+/**
+ * Polls one compute task a node runs for the delivery pages (a target probe, a read-back, a removal) until it has
+ * finished, through SQLFlow's compute task endpoint. Each request long-polls, so the result arrives in one round trip
+ * once a node has produced it.
+ */
 export function useComputeTask(taskId: string | null) {
   return useQuery<ComputeTask>({
     queryKey: ["compute-tasks", taskId],
-    queryFn: () => computeApi.task(taskId!),
+    queryFn: ({ signal }) => {
+      if (taskId === null) {
+        throw new Error("There is no compute task to poll.");
+      }
+
+      return datasourceApi.task(taskId, WAIT_MS, signal);
+    },
     enabled: taskId !== null,
     refetchInterval: (query) => {
       const task = query.state.data;
-      return task && TERMINAL.has(task.status) ? false : 1500;
+      return task !== undefined && TERMINAL.has(task.status) ? false : 250;
     },
   });
 }
 
-/** The task's JSON result parsed, or null while it is not there (or unreadable). */
-export function taskResult<T>(task: ComputeTask | undefined): T | null {
-  if (!task || task.resultJson === null) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(task.resultJson) as T;
-  } catch {
-    return null;
-  }
+/** The task's result as indented JSON, once a node produced one; null before that, and for a task that reported none. */
+export function taskResultJson(task: ComputeTask | undefined): string | null {
+  return task === undefined || task.result === null || task.result === undefined
+    ? null
+    : JSON.stringify(task.result, null, 2);
 }
 
 export function isTerminalTask(task: ComputeTask | undefined): boolean {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileJson, Radar, Send, Trash2, Unlock } from "lucide-react";
+import { FileJson, Radar, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,27 +10,25 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import {
   DELIVERY_RECORD_STATUSES, deliveryApi,
   type DeliveryRecord, type DeliveryRecordFilter, type DeliveryRecordStatus, type DeliverySubmission,
 } from "../../api/delivery";
-import { CodeView } from "../../components/CodeView";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { CorrelationError } from "../../components/CorrelationError";
-import { DataTable, type Column } from "../../components/DataTable";
-import { FilterBar } from "../../components/FilterBar";
-import { KpiCard } from "../../components/KpiCard";
-import { PagedTable } from "../../components/PagedTable";
-import { RelativeTime } from "../../components/RelativeTime";
-import { SearchInput } from "../../components/SearchInput";
-import { TruncatedText } from "../../components/TruncatedText";
+import { CodeView } from "@/components/CodeView";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { CorrelationError } from "@/components/CorrelationError";
+import { DataTable, type Column } from "@/components/DataTable";
+import { FilterBar } from "@/components/FilterBar";
+import { KpiCard } from "@/components/KpiCard";
+import { PagedTable } from "@/components/PagedTable";
+import { RelativeTime } from "@/components/RelativeTime";
+import { SearchInput } from "@/components/SearchInput";
+import { TruncatedText } from "@/components/TruncatedText";
 import { BlockedBadge, RecordStatusBadge, SubmissionStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
-import { prettyJson } from "./prettyJson";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
-import { SubmitDropDialog } from "./SubmitDropDialog";
 import { SubmitRecordsDialog } from "./SubmitRecordsDialog";
-import { isTerminalTask, useComputeTask } from "./useComputeTask";
+import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
 
 const ALL = "all";
 
@@ -76,7 +74,6 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const [status, setStatus] = useState<string>(ALL);
   const [drifted, setDrifted] = useState(false);
   const [contains, setContains] = useState(false);
-  const [submitOpen, setSubmitOpen] = useState(false);
   const [recordsOpen, setRecordsOpen] = useState(false);
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [probeTaskId, setProbeTaskId] = useState<string | null>(null);
@@ -167,17 +164,15 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const s = stats.data;
   const blocked = s ? s.held + s.failed + s.deleted : 0;
   const probeResult = probe.data;
+  const probeJson = isTerminalTask(probeResult) ? taskResultJson(probeResult) : null;
+  const removalJson = isTerminalTask(removal.data) ? taskResultJson(removal.data) : null;
 
   return (
     <div className="flex flex-col gap-4" data-testid={`delivery-panel-${section}`}>
       {section === "overview" && (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={() => setSubmitOpen(true)} data-testid="delivery-submit-drop">
-              <Send />
-              Submit drop
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setRecordsOpen(true)} data-testid="delivery-submit-records">
+            <Button size="sm" onClick={() => setRecordsOpen(true)} data-testid="delivery-submit-records">
               <FileJson />
               Submit records
             </Button>
@@ -212,8 +207,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                 {probeResult?.claimedByNode && <span className="font-mono text-[11px] text-muted-foreground">{probeResult.claimedByNode}</span>}
               </div>
               {probeResult?.error && <p className="text-[13px] text-destructive">{probeResult.error}</p>}
-              {isTerminalTask(probeResult) && probeResult?.resultJson && (
-                <CodeView value={prettyJson(probeResult.resultJson)} language="json" height={180} data-testid="delivery-probe-json" />
+              {probeJson !== null && (
+                <CodeView value={probeJson} language="json" height={180} data-testid="delivery-probe-json" />
               )}
             </Card>
           )}
@@ -317,8 +312,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                 {removal.data?.claimedByNode && <span className="font-mono text-[11px] text-muted-foreground">{removal.data.claimedByNode}</span>}
               </div>
               {removal.data?.error && <p className="text-[13px] text-destructive">{removal.data.error}</p>}
-              {isTerminalTask(removal.data) && removal.data?.resultJson && (
-                <CodeView value={prettyJson(removal.data.resultJson)} language="json" height={260} data-testid="delivery-removal-json" />
+              {removalJson !== null && (
+                <CodeView value={removalJson} language="json" height={260} data-testid="delivery-removal-json" />
               )}
             </Card>
           )}
@@ -343,12 +338,11 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
           rows={submissions.data}
           rowKey={(row) => row.submissionId}
           onRowClick={(row) => navigate(`/delivery/submissions/${row.submissionId}`)}
-          emptyMessage="No submissions yet. A submission is one drop handed over for delivery."
+          emptyMessage="No submissions yet. A submission is one set of records handed over for delivery."
           data-testid="delivery-submissions-table"
         />
       )}
 
-      <SubmitDropDialog open={submitOpen} onClose={() => setSubmitOpen(false)} pipelineId={pipelineId} flowName={flowName} />
       <SubmitRecordsDialog open={recordsOpen} onClose={() => setRecordsOpen(false)} pipelineId={pipelineId} flowName={flowName} />
       <ConfirmDialog
         open={releaseOpen}
@@ -396,7 +390,6 @@ const submissionColumns: Column<DeliverySubmission>[] = [
   { id: "stale", header: "Stale", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.skippedStale}</span> },
   { id: "held", header: "Held", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.held}</span> },
   { id: "failed", header: "Failed", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.failed}</span> },
-  { id: "drop", header: "Drop", render: (row) => <TruncatedText text={row.dropLocation} mono maxWidth={280} /> },
   { id: "error", header: "Error", render: (row) => <TruncatedText text={row.error} maxWidth={280} /> },
 ];
 

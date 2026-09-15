@@ -1,14 +1,14 @@
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import { deliveryApi, type DeliveryRetrieval } from "../../api/delivery";
-import { CorrelationError } from "../../components/CorrelationError";
-import { DataTable, type Column } from "../../components/DataTable";
-import { KpiCard } from "../../components/KpiCard";
-import { RelativeTime } from "../../components/RelativeTime";
-import { TruncatedText } from "../../components/TruncatedText";
-import { formatBytes } from "../../lib/time";
+import { CorrelationError } from "@/components/CorrelationError";
+import { DataTable, type Column } from "@/components/DataTable";
+import { KpiCard } from "@/components/KpiCard";
+import { RelativeTime } from "@/components/RelativeTime";
+import { TruncatedText } from "@/components/TruncatedText";
+import { formatBytes } from "@/lib/time";
 
 function RetrievalStatusBadge({ status }: { status: DeliveryRetrieval["status"] }) {
   const variant = status === "done" ? "default" : status === "failed" ? "destructive" : status === "cancelled" ? "secondary" : "outline";

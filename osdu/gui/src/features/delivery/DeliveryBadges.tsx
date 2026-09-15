@@ -3,7 +3,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { DeliveryRecordStatus, DeliverySubmissionStatus, DeliveryVerifyOutcome } from "../../api/delivery";
-import { StatePill } from "../../components/StatusBadge";
+import { StatePill } from "@/components/StatusBadge";
 
 type Tone = "success" | "destructive" | "info" | "warning" | "muted";
 

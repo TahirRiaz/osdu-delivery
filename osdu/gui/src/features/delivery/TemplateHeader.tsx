@@ -4,9 +4,9 @@ import { Button } from "@/components/ui/button";
 import { SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import type { DeliveryTemplateDetail } from "../../api/delivery";
-import { CopyButton } from "../../components/CopyButton";
-import { RelativeTime } from "../../components/RelativeTime";
-import { StatePill } from "../../components/StatusBadge";
+import { CopyButton } from "@/components/CopyButton";
+import { RelativeTime } from "@/components/RelativeTime";
+import { StatePill } from "@/components/StatusBadge";
 import { entityName, originText } from "./templateFormat";
 
 /** One fact about the template: a glyph, the value, and its name for assistive tech. */

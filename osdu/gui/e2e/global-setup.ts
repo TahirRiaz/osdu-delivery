@@ -3,14 +3,14 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { join, resolve } from "node:path";
 
 /**
- * Builds the e2e fixture: a real local git repository holding the sample delivery estate (the recall-welllog
- * flow, its pinned mappings, the cache flow that declares what the mappings read, the captured reference files, and the
- * generated demo drop), which the suite registers as a repo source through the GUI. The control plane then syncs it
- * exactly as it would a customer's remote, so pipelines, runs, schedules, mappings and the delivery pages are all
- * exercised against real documents flowing through the product's own path. The templates those mappings pin, and the
- * cache versions, live in the catalog, not the repository, so the seed spec saves the templates through the API and
- * imports the reference files as the cache's first version through the CLI. Runs use the plan operation, which renders
- * the drop against the templates, the cache and the ledger without touching an OSDU target.
+ * Builds the e2e fixture: a real local git repository holding the sample delivery estate (the recall-welllog flow, its
+ * pinned mappings, the cache flow that declares what the mappings read, and the captured reference files), which the
+ * suite registers as a repo source through the GUI. The control plane then syncs it exactly as it would a customer's
+ * remote, so pipelines, runs, schedules, mappings and the delivery pages are all exercised against real documents flowing
+ * through the product's own path. The templates those mappings pin, and the cache versions, live in the catalog, not the
+ * repository, so the seed spec saves the templates through the API and imports the reference files as the cache's first
+ * version through the CLI host. Runs use the plan operation, which renders records against the templates, the cache and
+ * the ledger without touching an OSDU target.
  */
 export default function globalSetup(): void {
   const here = import.meta.dirname;
@@ -24,13 +24,10 @@ export default function globalSetup(): void {
     cpSync(join(samplesDir, part), join(repoDir, part), { recursive: true });
   }
 
-  // The drop lives inside the fixture, so the flow's source location is rewritten to an absolute path with the
-  // logSource parameter still in it: a run with logSource=demo reads the demo drop wherever the node runs.
-  const dropRoot = join(repoDir, "drops");
-  cpSync(join(samplesDir, "out"), dropRoot, { recursive: true });
-  const flowYaml = withoutSchedule(readFileSync(join(samplesDir, "flows", "recall-welllog.yaml"), "utf8"), "recall-welllog")
-    .replace("location: samples/recall-welllog/out/{logSource}", `location: ${dropRoot.replace(/\\/g, "/")}/{logSource}`);
-  writeFileSync(join(repoDir, "flows", "recall-welllog.yaml"), flowYaml);
+  writeFileSync(
+    join(repoDir, "flows", "recall-welllog.yaml"),
+    withoutSchedule(readFileSync(join(samplesDir, "flows", "recall-welllog.yaml"), "utf8"), "recall-welllog"),
+  );
 
   // The cache flow comes along without its schedule. The suite never refreshes it (that would need an OSDU target): the
   // repository sync projects what it declares, and the seed spec imports the sample references as its first version.
@@ -47,8 +44,10 @@ export default function globalSetup(): void {
   );
 
   // A flow that takes records in the request: wellbore master data through the storage service, which streams no payload
-  // files. Manual submission is wellbore data, so this is what the Submit records spec previews a record against. It
-  // needs no drop of its own, since a run writes the records it is sent as a drop under the flow's work location.
+  // files. Manual submission is wellbore data, so this is what the Submit records spec previews a record against. The
+  // records it is sent are written under the fixture for the flow to read, so it needs no source data of its own.
+  const submittedRoot = join(repoDir, "submitted");
+  mkdirSync(submittedRoot, { recursive: true });
   writeFileSync(
     join(repoDir, "flows", "wellbore-records.yaml"),
     [
@@ -59,7 +58,7 @@ export default function globalSetup(): void {
       "    required: true",
       "    description: The site the wellbores belong to.",
       "source:",
-      `  location: ${dropRoot.replace(/\\/g, "/")}/{site}`,
+      `  location: ${submittedRoot.replace(/\\/g, "/")}/{site}`,
       "  lastModified: update_date",
       "  manualSubmission: true",
       "render:",
@@ -79,6 +78,8 @@ export default function globalSetup(): void {
       "",
     ].join("\n"),
   );
+  // git keeps no empty folders; the marker keeps the location the flow declares present in the synced repository.
+  writeFileSync(join(submittedRoot, ".gitkeep"), "");
 
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: repoDir, stdio: "pipe" }).toString("utf8").trim();

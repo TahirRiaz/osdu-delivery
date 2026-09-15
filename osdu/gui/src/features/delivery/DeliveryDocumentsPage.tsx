@@ -8,18 +8,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import { deliveryApi, type DeliveryMapping } from "../../api/delivery";
-import { repoApi } from "../../api/endpoints";
-import { CodeView } from "../../components/CodeView";
-import { CorrelationError } from "../../components/CorrelationError";
-import { DataTable, type Column } from "../../components/DataTable";
-import { FilterBar } from "../../components/FilterBar";
-import { GlyphRef } from "../../components/GlyphRef";
-import { Page } from "../../components/Page";
-import { PageHeader } from "../../components/PageHeader";
-import { RelativeTime } from "../../components/RelativeTime";
-import { TruncatedText } from "../../components/TruncatedText";
+import { repoApi } from "@/api/endpoints";
+import { CodeView } from "@/components/CodeView";
+import { CorrelationError } from "@/components/CorrelationError";
+import { DataTable, type Column } from "@/components/DataTable";
+import { FilterBar } from "@/components/FilterBar";
+import { GlyphRef } from "@/components/GlyphRef";
+import { Page } from "@/components/Page";
+import { PageHeader } from "@/components/PageHeader";
+import { RelativeTime } from "@/components/RelativeTime";
+import { TruncatedText } from "@/components/TruncatedText";
 import { KindText } from "./KindText";
 import { MappingShapeView } from "./MappingShapeView";
 
@@ -186,7 +186,7 @@ export default function DeliveryDocumentsPage() {
                     <TabsTrigger value="shape" data-testid="delivery-mapping-tab-shape">Record shape</TabsTrigger>
                   </TabsList>
                   <TabsContent value="yaml" className="flex min-h-0 flex-col">
-                    <CodeView value={detail.yaml} language="yaml" fill data-testid="delivery-mapping-yaml" />
+                    <CodeView value={detail.yaml} language="yaml" lsp={false} fill data-testid="delivery-mapping-yaml" />
                   </TabsContent>
                   <TabsContent value="shape" className="flex min-h-0 flex-col">
                     <MappingShapeView yaml={detail.yaml} path={detail.mapping.relativePath} contentHash={detail.mapping.contentHash} />

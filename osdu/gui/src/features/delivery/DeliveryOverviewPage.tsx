@@ -4,15 +4,15 @@ import { PackageCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import { deliveryApi, type DeliveryFlowStats } from "../../api/delivery";
-import type { PipelineSummary } from "../../api/types";
-import { CorrelationError } from "../../components/CorrelationError";
-import { EmptyState } from "../../components/EmptyState";
-import { Page } from "../../components/Page";
-import { PageHeader } from "../../components/PageHeader";
-import { RelativeTime } from "../../components/RelativeTime";
-import { fetchAllPipelines } from "../pipelines/fetchAllPipelines";
+import type { PipelineSummary } from "@/api/types";
+import { CorrelationError } from "@/components/CorrelationError";
+import { EmptyState } from "@/components/EmptyState";
+import { Page } from "@/components/Page";
+import { PageHeader } from "@/components/PageHeader";
+import { RelativeTime } from "@/components/RelativeTime";
+import { fetchAllPipelines } from "@/features/pipelines/fetchAllPipelines";
 import { SubmissionStatusBadge } from "./DeliveryBadges";
 
 function Count({ label, value, tone }: { label: string; value: number; tone?: "success" | "warning" | "destructive" | "info" }) {

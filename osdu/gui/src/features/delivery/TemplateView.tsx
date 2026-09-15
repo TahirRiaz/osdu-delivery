@@ -2,10 +2,10 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import { deliveryApi, type DeliveryTemplateDetail } from "../../api/delivery";
-import { CodeView } from "../../components/CodeView";
-import { CorrelationError } from "../../components/CorrelationError";
+import { CodeView } from "@/components/CodeView";
+import { CorrelationError } from "@/components/CorrelationError";
 import { TemplateVariableExplorer } from "./TemplateVariableExplorer";
 import { templateKey } from "./templateFormat";
 

@@ -1,5 +1,5 @@
-import { RichTooltip } from "../../components/RichTooltip";
-import { useClipped } from "../../components/useClipped";
+import { RichTooltip } from "@/components/RichTooltip";
+import { useClipped } from "@/components/useClipped";
 import { cn } from "@/lib/utils";
 
 interface HeadClippedTextProps {

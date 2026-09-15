@@ -3,9 +3,9 @@
 // redeliver, verify, read back, delete). Same conventions as endpoints.ts: one function per endpoint, pages compose them
 // with TanStack Query.
 
-import { del, get, getText, post, postForm, type QueryParams } from "./client";
-import type { PagedResult, RunStatus } from "./types";
-import type { PageQuery } from "./endpoints";
+import { del, get, getText, post, type QueryParams } from "@/api/client";
+import type { ComputeTaskAccepted, PagedResult, RunStatus } from "@/api/types";
+import type { PageQuery } from "@/api/endpoints";
 
 export type DeliveryRecordStatus = "pending" | "delivering" | "delivered" | "held" | "failed" | "deleted";
 
@@ -37,14 +37,13 @@ export interface DeliveryFlowStats {
   lastSubmission: DeliverySubmission | null;
 }
 
-/** One drop as the ledger received it and what became of it. */
+/** One submission as the ledger received it and what became of it. */
 export interface DeliverySubmission {
   submissionId: string;
   flowId: string;
   flowName: string;
   mappingReference: string;
   renderContext: string;
-  dropLocation: string;
   parametersJson: string;
   recordCount: number;
   status: DeliverySubmissionStatus;
@@ -55,7 +54,7 @@ export interface DeliverySubmission {
   skippedUnchanged: number;
   /** Records a cache change waiting for approval holds back: rendered and ready, not sent until it is decided. */
   awaitingApproval: number;
-  /** Records the drop carried in a version older than the one delivered or queued: skipped, never sent. */
+  /** Records the submission carried in a version older than the one delivered or queued: skipped, never sent. */
   skippedStale: number;
   /** Records whose queued document OSDU already held when the worker came to send it: nothing was sent. */
   unchangedAtPush: number;
@@ -67,61 +66,10 @@ export interface DeliverySubmission {
   /** Where the intake wrote the work batches (the rendered documents the drains read). */
   workLocation: string | null;
   batchCount: number;
-  /** How many root-scope partitions the drop declared. */
+  /** How many partitions the intake planned the submission in. */
   partitions: number;
   /** What the sending system calls this submission in its own records; null when it named none. */
   reference: string | null;
-  /** drop for a drop; replan for the flow's replica records planned again. */
-  kind: "drop" | "replan";
-  /** When the drop's records were loaded into the flow's replica; null for a flow without one, and until then. */
-  loadedUtc: string | null;
-  /** Records read from the drop, keyed or not. */
-  sourceRecords: number;
-  /** Distinct records the submission carried into the replica. */
-  loadedRows: number;
-  /** Records the drop carried more than once under one delivery key; the later one stands. */
-  duplicates: number;
-  /** Records without a derivable delivery key: not loaded, not delivered. */
-  untracked: number;
-  /** Records the load added to the replica. */
-  replicaInserted: number;
-  /** Records whose values the load changed in the replica. */
-  replicaUpdated: number;
-  /** The schema changes the load applied to the replica, by scope; null when there were none. */
-  replicaSchema: Record<string, DeliveryReplicaScopeReport> | null;
-  /** When the replica's retention removed this submission's record list; a run of it then reads its drop again. */
-  sourcePrunedUtc: string | null;
-}
-
-/** A column a replica load added, widened, or kept at the type the replica already held. */
-export interface DeliveryReplicaColumnChange {
-  column: string;
-  from: string | null;
-  to: string;
-}
-
-/** What one load did to the schema of one scope's replica table. */
-export interface DeliveryReplicaScopeReport {
-  created: boolean;
-  added: DeliveryReplicaColumnChange[];
-  widened: DeliveryReplicaColumnChange[];
-  /** Columns the drop carried in another type family: kept at the replica's type. */
-  pinned: DeliveryReplicaColumnChange[];
-  drift: { kind: string; column: string; detail: string | null }[];
-  /** Values stored as NULL because they did not convert (onConvertError: silentNull). */
-  nulled: { column: string; type: string; values: number }[];
-  /** Columns kept as text because some values did not convert (onConvertError: keepString). */
-  keptAsText: string[];
-  /** Columns the replica holds that this drop did not carry: NULL for the records it carried. Absent from reports written before it existed. */
-  absent?: string[];
-}
-
-/** A record as its flow's replica holds it now. */
-export interface DeliveryReplicaRecord {
-  values: { column: string; sqlType: string; value: string | null }[];
-  scopes: { scope: string; columns: string[]; rows: (string | null)[][]; total: number }[];
-  /** The submissions that carried the record into the replica, newest first. */
-  carriers: { submissionId: string; originSubmissionId: string; sequence: number; file: string | null; row: number | null; loadedUtc: string }[];
 }
 
 /** One work batch of a submission: a file of rendered documents and how far its drain got. */
@@ -199,6 +147,23 @@ export interface DeliveryRecordDetail {
   pipelineId: string | null;
   repoId: string | null;
   flowName: string | null;
+}
+
+/**
+ * A delivery record the combined search found (the `records` category of GET /api/v1/search/all): an exact delivery key,
+ * or a prefix of its OSDU id, source key or label, across every flow.
+ */
+export interface DeliveryRecordHit {
+  deliveryKey: string;
+  flowId: string;
+  flowName: string | null;
+  pipelineId: string | null;
+  sourceKey: string;
+  label: string | null;
+  targetId: string | null;
+  status: string;
+  lastDeliveredUtc: string | null;
+  updatedUtc: string;
 }
 
 /** One step of a delivery try: what it did, how long it took, what the target answered. */
@@ -519,14 +484,13 @@ export interface DeliveryInlineRecord {
 export type DeliverySubmissionOperation = "deliver" | "plan";
 
 /**
- * A submission: the manifest notification for a finished drop (`drop`), or the records themselves (`records`), never
- * both. `operation` is deliver (the default) or plan; `submissionId` is the idempotency key of inline records.
+ * A submission of records to a flow. `operation` is deliver (the default) or plan; `submissionId` is the idempotency key
+ * of the records.
  */
 export interface DeliverySubmissionRequest {
   pipelineId?: string | null;
   repoId?: string | null;
   flow?: string | null;
-  drop?: string | null;
   records?: DeliveryInlineRecord[] | null;
   submissionId?: string | null;
   operation?: DeliverySubmissionOperation;
@@ -536,7 +500,7 @@ export interface DeliverySubmissionRequest {
   /**
    * What the sending system calls this submission in its own records (a filename, a ticket, a job id): stored,
    * searchable, never interpreted. It is part of the request `submissionId` names, so a repeat carrying a different one
-   * is refused. A drop's reference is the one its manifest carries.
+   * is refused.
    */
   reference?: string | null;
 }
@@ -546,7 +510,7 @@ export interface DeliverySubmissionAccepted {
   pipelineId: string;
   flowName: string;
   status: RunStatus;
-  /** The inline submission's id; null for a drop, whose id is its manifest's. */
+  /** The submission's id: the one the request named, or the one the control plane gave it; null when it answered with none. */
   submissionId: string | null;
   /** True when this answered a repeat of a request already accepted: the run is the one that request started. */
   replayed: boolean;
@@ -657,90 +621,6 @@ export interface DeliveryManualFlow {
   templateVersion: string | null;
 }
 
-/** Where a drop-off file's content hash came from, so a claim never reads as a check. */
-export type DeliveryDropOffHashSource = "computed" | "client" | "none";
-
-/** How a drop-off's bytes reached storage. */
-export type DeliveryDropOffUploadMode = "stream" | "signed";
-
-/** One file in a drop-off, as it landed. */
-export interface DeliveryDropOffFile {
-  name: string;
-  bytes: number;
-  sha256: string;
-  /**
-   * `computed` when the control plane hashed the bytes as they streamed past it, `client` when the uploader asserted the
-   * hash about a file written straight to storage, `none` when a signed upload asserted none.
-   */
-  hashSource: DeliveryDropOffHashSource;
-}
-
-/**
- * Files uploaded into the drop-off area, for a submission to point at afterwards. `location` is what goes into a
- * submission's `files`; the node reads the files from there when the run delivers.
- */
-export interface DeliveryDropOff {
-  dropOffId: string;
-  location: string;
-  status: "uploading" | "complete" | "failed" | "deleted";
-  fileCount: number;
-  totalBytes: number;
-  label: string | null;
-  uploadedUtc: string;
-  uploadedBy: string;
-  completedUtc: string | null;
-  deletedUtc: string | null;
-  /** Why an upload failed, redacted; null otherwise. */
-  error: string | null;
-  files: DeliveryDropOffFile[];
-  /** How the bytes got here. While a `signed` drop-off is `uploading`, its files are what was reserved, not what landed. */
-  uploadMode: DeliveryDropOffUploadMode;
-  /** When a reservation's upload URLs stop working; null for a streamed upload. */
-  reservedUntilUtc: string | null;
-}
-
-/** Whether this deployment offers a drop-off area at all, where it is, and what one upload may carry. */
-export interface DeliveryDropOffArea {
-  enabled: boolean;
-  location: string | null;
-  maxFileMegabytes: number;
-  maxFilesPerUpload: number;
-  /** Days a completed drop-off is kept before a sweep removes it; 0 means nothing is removed automatically. */
-  retentionDays: number;
-  /** Whether a caller can be handed URLs to write straight to storage, which is what a file too large to stream needs. */
-  signedUploads: boolean;
-  /** The largest single file a signed upload may carry; 0 when signed uploads are unavailable. */
-  maxSignedFileGigabytes: number;
-  /** How long a reservation's URLs stay valid; 0 when signed uploads are unavailable. */
-  signedUploadExpiryMinutes: number;
-}
-
-/** One file a caller asks to upload itself: its name, and how large it will be. */
-export interface DeliveryDropOffReserveFile {
-  name: string;
-  bytes: number;
-}
-
-/** One file's write-only URL. It carries its own credential, so it is used and not stored. */
-export interface DeliveryDropOffUpload {
-  name: string;
-  location: string;
-  url: string;
-  expiresUtc: string;
-}
-
-/** A reservation: the drop-off it will become, and where to write each file. Nothing has landed yet. */
-export interface DeliveryDropOffReservation {
-  dropOffId: string;
-  location: string;
-  status: "uploading" | "complete" | "failed" | "deleted";
-  label: string | null;
-  uploadedUtc: string;
-  uploadedBy: string;
-  reservedUntilUtc: string;
-  uploads: DeliveryDropOffUpload[];
-}
-
 /** An inline submission's records as the ledger holds them, with who sent them and where a run wrote them. */
 export interface DeliveryInlineSubmission {
   submissionId: string;
@@ -757,7 +637,7 @@ export interface DeliveryInlineSubmission {
   contentHash: string;
   receivedUtc: string;
   receivedBy: string;
-  dropLocation: string | null;
+  /** When a run wrote the records where the flow reads them; null until then. */
   writtenUtc: string | null;
   runIds: string[];
   records: DeliveryInlineRecord[];
@@ -766,27 +646,6 @@ export interface DeliveryInlineSubmission {
 export interface DeliveryRunAccepted {
   runId: string;
   status: RunStatus;
-}
-
-export interface ComputeTaskAccepted {
-  taskId: string;
-  status: RunStatus;
-}
-
-/** One ad-hoc compute task as the queue holds it, with its result once a node produced it. */
-export interface ComputeTask {
-  taskId: string;
-  operation: string;
-  sourceRef: string;
-  status: RunStatus;
-  requestedBy: string | null;
-  enqueuedUtc: string;
-  startUtc: string | null;
-  endUtc: string | null;
-  claimedByNode: string | null;
-  cancelRequestedUtc: string | null;
-  error: string | null;
-  resultJson: string | null;
 }
 
 export interface DeliveryReleaseResult {
@@ -1377,51 +1236,14 @@ export const deliveryApi = {
     post<{ decided: number; approved: boolean }>("/api/v1/delivery/cache/tags/decide", { tagIds, approve }),
   /** What one record read out of the cache when it was rendered. */
   recordCacheUses: (key: string) => get<DeliveryCacheUse[]>(`/api/v1/delivery/records/${key}/cache`),
-  recordReplica: (key: string) => get<DeliveryReplicaRecord>(`/api/v1/delivery/records/${key}/replica`),
-  /** A submission, of a drop or of records: queues the run that takes it (or answers with the run of a repeated request). */
+  /** A submission of records: queues the run that takes them (or answers with the run of a repeated request). */
   submit: (request: DeliverySubmissionRequest) => post<DeliverySubmissionAccepted>("/api/v1/delivery/submissions", request),
   /** What a source sends the flow: parameters, the columns the mapping reads, and whether it takes records inline. */
   sourceContract: (pipelineId: string) => get<DeliverySourceContract>(`/api/v1/delivery/flows/${pipelineId}/source-contract`),
   /** The flows records can be submitted to by hand; with `all`, the other delivery flows too, each with its reason. */
   manualSubmissionFlows: (all = false) =>
     get<DeliveryManualFlow[]>("/api/v1/delivery/manual-submission/flows", all ? { all: true } : {}),
-  /** Whether this deployment offers a drop-off area, where it is, and what one upload may carry. */
-  dropOffArea: () => get<DeliveryDropOffArea>("/api/v1/delivery/dropoff-area"),
-  /** The drop-offs, newest first. */
-  dropOffs: (query?: { status?: string; search?: string; limit?: number }) =>
-    get<DeliveryDropOff[]>("/api/v1/delivery/dropoffs", query as QueryParams | undefined),
-  dropOff: (dropOffId: string) => get<DeliveryDropOff>(`/api/v1/delivery/dropoffs/${dropOffId}`),
-  /** Uploads files into the drop-off area; the location it answers with is what a submission then points at. */
-  uploadDropOff: (files: File[], label?: string) => {
-    const form = new FormData();
-    for (const file of files) {
-      form.append("files", file, file.name);
-    }
-
-    if (label !== undefined && label !== "") {
-      form.append("label", label);
-    }
-
-    return postForm<DeliveryDropOff>("/api/v1/delivery/dropoffs", form);
-  },
-  /**
-   * Reserves a drop-off the caller uploads into itself, for files too large to send through the control plane. The
-   * answer carries one write-only URL per file; write each, then complete the reservation.
-   */
-  reserveDropOff: (files: DeliveryDropOffReserveFile[], label?: string) =>
-    post<DeliveryDropOffReservation>("/api/v1/delivery/dropoffs/reserve", {
-      files,
-      label: label !== undefined && label !== "" ? label : null,
-    }),
-  /**
-   * Closes a reservation once its files are written. What actually landed is read from storage and is what the ledger
-   * records; a hash given here is the uploader's own and is recorded as asserted, not as checked.
-   */
-  completeDropOff: (dropOffId: string, files: { name: string; sha256?: string }[]) =>
-    post<DeliveryDropOff>(`/api/v1/delivery/dropoffs/${dropOffId}/complete`, { files }),
-  /** Removes a drop-off's files; the row stays, saying when they went and who took them. */
-  deleteDropOff: (dropOffId: string) => del<DeliveryDropOff>(`/api/v1/delivery/dropoffs/${dropOffId}`),
-  /** The records an inline submission carried (a 404 for a drop submission). */
+  /** The records a submission carried (a 404 for a submission whose records the ledger does not hold). */
   submissionContent: (submissionId: string) => get<DeliveryInlineSubmission>(`/api/v1/delivery/submissions/${submissionId}/content`),
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */
   releaseFlow: (pipelineId: string, keys?: string[]) =>
@@ -1447,7 +1269,3 @@ export const deliveryApi = {
   prune: (olderThanDays: number) => post<DeliveryPruneResult>("/api/v1/delivery/ledger/prune", { olderThanDays }),
 };
 
-export const computeApi = {
-  task: (taskId: string) => get<ComputeTask>(`/api/v1/compute/tasks/${taskId}`),
-  cancel: (taskId: string) => post<void>(`/api/v1/compute/tasks/${taskId}/cancel`),
-};

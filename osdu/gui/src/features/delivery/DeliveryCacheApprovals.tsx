@@ -8,14 +8,14 @@ import { Card } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { deliveryApi, type DeliveryUpdateTag } from "../../api/delivery";
-import { CopyButton } from "../../components/CopyButton";
-import { DetailPair } from "../../components/DetailPair";
-import { EmptyState } from "../../components/EmptyState";
-import { IconAction } from "../../components/IconAction";
-import { PagedTable, type Column } from "../../components/PagedTable";
-import { RelativeTime } from "../../components/RelativeTime";
-import { TruncatedText } from "../../components/TruncatedText";
-import { useOwnedPanel } from "../../layout/workbench/useOwnedPanel";
+import { CopyButton } from "@/components/CopyButton";
+import { DetailPair } from "@/components/DetailPair";
+import { EmptyState } from "@/components/EmptyState";
+import { IconAction } from "@/components/IconAction";
+import { PagedTable, type Column } from "@/components/PagedTable";
+import { RelativeTime } from "@/components/RelativeTime";
+import { TruncatedText } from "@/components/TruncatedText";
+import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { RecordId } from "./DeliveryCacheRecords";
 
 /** The bottom panel content ids this surface owns. */

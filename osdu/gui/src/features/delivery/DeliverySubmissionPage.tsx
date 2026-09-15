@@ -7,101 +7,28 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import {
   deliveryApi,
   type DeliveryAttempt,
-  type DeliveryReplicaScopeReport,
-  type DeliverySubmission,
   type DeliveryWorkBatch,
 } from "../../api/delivery";
 import { AttemptDetail } from "./AttemptDetail";
-import { CodeView } from "../../components/CodeView";
-import { CorrelationError } from "../../components/CorrelationError";
-import { DataTable, type Column } from "../../components/DataTable";
-import { DetailHeaderCard } from "../../components/DetailHeaderCard";
-import { DetailPair } from "../../components/DetailPair";
-import { IdChip } from "../../components/IdChip";
-import { Page } from "../../components/Page";
-import { RelativeTime } from "../../components/RelativeTime";
-import { TruncatedText } from "../../components/TruncatedText";
-import { useTabTitle } from "../../layout/workbench/useWorkbenchTabs";
+import { CodeView } from "@/components/CodeView";
+import { CorrelationError } from "@/components/CorrelationError";
+import { DataTable, type Column } from "@/components/DataTable";
+import { DetailHeaderCard } from "@/components/DetailHeaderCard";
+import { DetailPair } from "@/components/DetailPair";
+import { IdChip } from "@/components/IdChip";
+import { Page } from "@/components/Page";
+import { RelativeTime } from "@/components/RelativeTime";
+import { TruncatedText } from "@/components/TruncatedText";
+import { useTabTitle } from "@/layout/workbench/TabsContext";
 import { SubmissionStatusBadge } from "./DeliveryBadges";
 import { SubmissionCounts } from "./DeliveryFlowPanel";
 import { prettyJson } from "./prettyJson";
 
-/** One line per schema change a replica load applied to a scope's table, or found and left alone. */
-function describeReplicaChanges(scope: string, report: DeliveryReplicaScopeReport): string[] {
-  const lines: string[] = [];
-  if (report.created) {
-    lines.push(`${scope}: table created`);
-  }
-
-  for (const change of report.added) {
-    lines.push(`${scope}.${change.column}: added as ${change.to}`);
-  }
-
-  for (const change of report.widened) {
-    lines.push(`${scope}.${change.column}: widened from ${change.from ?? "?"} to ${change.to}`);
-  }
-
-  for (const change of report.pinned) {
-    lines.push(`${scope}.${change.column}: kept as ${change.to} (the drop carried ${change.from ?? "?"})`);
-  }
-
-  for (const loss of report.nulled) {
-    lines.push(`${scope}.${loss.column}: ${loss.values} value(s) not ${loss.type}, stored as NULL`);
-  }
-
-  for (const column of report.keptAsText) {
-    lines.push(`${scope}.${column}: kept as text, some values did not convert`);
-  }
-
-  for (const column of report.absent ?? []) {
-    lines.push(`${scope}.${column}: not in this drop, NULL for the records it carried`);
-  }
-
-  for (const drift of report.drift) {
-    lines.push(`${scope}.${drift.column}: ${drift.kind}${drift.detail ? ` (${drift.detail})` : ""}`);
-  }
-
-  return lines;
-}
-
-/** What loading the submission into the flow's replica did, or how many replica records a replan took. */
-function ReplicaLoadCard({ submission: s }: { submission: DeliverySubmission }) {
-  const changes = Object.entries(s.replicaSchema ?? {}).flatMap(([scope, report]) => describeReplicaChanges(scope, report));
-  const replan = s.kind === "replan";
-  return (
-    <Card className="gap-2 rounded-lg p-3" data-testid="submission-replica">
-      <h2 className="text-[13px] font-medium">{replan ? "Replanned from the replica" : "Loaded into the replica"}</h2>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <DetailPair label={replan ? "Taken" : "Loaded"}><RelativeTime value={s.loadedUtc} absolute /></DetailPair>
-        <DetailPair label="Records"><span className="font-mono tabular-nums">{s.loadedRows}</span></DetailPair>
-        {!replan && (
-          <>
-            <DetailPair label="Read from the drop"><span className="font-mono tabular-nums">{s.sourceRecords}</span></DetailPair>
-            <DetailPair label="New in the replica"><span className="font-mono tabular-nums">{s.replicaInserted}</span></DetailPair>
-            <DetailPair label="Changed in the replica"><span className="font-mono tabular-nums">{s.replicaUpdated}</span></DetailPair>
-            <DetailPair label="Duplicates"><span className="font-mono tabular-nums">{s.duplicates}</span></DetailPair>
-            <DetailPair label="Untracked"><span className="font-mono tabular-nums">{s.untracked}</span></DetailPair>
-          </>
-        )}
-        {s.sourcePrunedUtc !== null && <DetailPair label="Record list pruned"><RelativeTime value={s.sourcePrunedUtc} absolute /></DetailPair>}
-      </div>
-      {changes.length > 0 && (
-        <div className="flex flex-col gap-1" data-testid="submission-replica-schema">
-          <h3 className="text-[13px] font-medium">Schema changes</h3>
-          <ul className="flex flex-col gap-0.5">
-            {changes.map((line) => <li key={line} className="font-mono text-[12px]">{line}</li>)}
-          </ul>
-        </div>
-      )}
-    </Card>
-  );
-}
-
-/** Everything the ledger holds about one drop: what it was, how it went, every attempt it produced, and the runs
+/** Everything the ledger holds about one submission: what it was, how it went, every attempt it produced, and the runs
  * that carried it, with a way back to the records it touched. */
 export default function DeliverySubmissionPage() {
   const { submissionId } = useParams<{ submissionId: string }>();
@@ -132,7 +59,8 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
     queryFn: () => deliveryApi.submissionBatches(submissionId, { page: 1, pageSize: 500 }),
     refetchInterval: 10000,
   });
-  // The records a source sent inline. A drop submission answers 404, which leaves the records tab out.
+  // The records the submission carried. A submission whose records the ledger does not hold answers 404, which leaves the
+  // records tab out.
   const content = useQuery({
     queryKey: ["delivery", "submission", submissionId, "content"],
     queryFn: () => deliveryApi.submissionContent(submissionId),
@@ -226,7 +154,6 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
           <>
             <SubmissionStatusBadge status={s.status} />
             <Badge variant="outline" data-testid="submission-mapping">{s.mappingReference}</Badge>
-            {s.kind === "replan" && <Badge variant="secondary" data-testid="submission-replan">replan</Badge>}
             {inline !== undefined && <Badge variant="secondary" data-testid="submission-inline">records sent by {inline.receivedBy}</Badge>}
           </>
         )}
@@ -248,11 +175,6 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
         <DetailPair label="Received"><RelativeTime value={s.receivedUtc} absolute /></DetailPair>
         <DetailPair label="Started"><RelativeTime value={s.startedUtc} absolute /></DetailPair>
         <DetailPair label="Completed"><RelativeTime value={s.completedUtc} absolute /></DetailPair>
-        <DetailPair label="Drop">
-          {s.kind === "replan"
-            ? <span className="text-muted-foreground">none: the records came from the flow&apos;s replica</span>
-            : <TruncatedText text={s.dropLocation} mono maxWidth={320} copy copyTestId="copy-submission-drop" />}
-        </DetailPair>
         <DetailPair label="Flow">
           {detail.pipelineId
             ? <RouterLink to={`/pipelines/${detail.pipelineId}`} className="text-primary hover:underline">{s.flowName}</RouterLink>
@@ -268,8 +190,6 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
         <h2 className="text-[13px] font-medium">Outcome</h2>
         <SubmissionCounts submission={s} />
       </Card>
-
-      {(s.loadedUtc !== null || s.kind === "replan") && <ReplicaLoadCard submission={s} />}
 
       <Tabs defaultValue="attempts">
         <TabsList data-testid="submission-tabs">
@@ -308,9 +228,9 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
                 <DetailPair label="Records">
                   <span className="font-mono tabular-nums">{inline.recordCount} ({inline.childRowCount} child rows)</span>
                 </DetailPair>
-                <DetailPair label="Written as a drop">
-                  {inline.dropLocation !== null
-                    ? <TruncatedText text={inline.dropLocation} mono maxWidth={320} copy copyTestId="copy-submission-inline-drop" />
+                <DetailPair label="Written for the flow">
+                  {inline.writtenUtc !== null
+                    ? <RelativeTime value={inline.writtenUtc} absolute />
                     : <span className="text-muted-foreground">not yet</span>}
                 </DetailPair>
                 <DetailPair label="Content hash">

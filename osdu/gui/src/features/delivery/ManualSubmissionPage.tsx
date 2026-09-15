@@ -6,15 +6,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import { deliveryApi, type DeliveryManualFlow } from "../../api/delivery";
-import { CorrelationError } from "../../components/CorrelationError";
-import { DataTable, type Column } from "../../components/DataTable";
-import { EmptyState } from "../../components/EmptyState";
-import { Page } from "../../components/Page";
-import { PageHeader } from "../../components/PageHeader";
-import { SearchInput } from "../../components/SearchInput";
-import { TruncatedText } from "../../components/TruncatedText";
+import { CorrelationError } from "@/components/CorrelationError";
+import { DataTable, type Column } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { Page } from "@/components/Page";
+import { PageHeader } from "@/components/PageHeader";
+import { SearchInput } from "@/components/SearchInput";
+import { TruncatedText } from "@/components/TruncatedText";
 import { KindText } from "./KindText";
 import { SubmitRecordsDialog } from "./SubmitRecordsDialog";
 
@@ -117,7 +117,7 @@ export default function ManualSubmissionPage() {
     <Page data-testid="page-manual-submission">
       <PageHeader
         title="Manual submission"
-        subtitle="Send records to a flow the way a source system does: the flow's mapping renders them and the run delivers them like any drop."
+        subtitle="Send records to a flow the way a source system does: the flow's mapping renders them and the run delivers them like any other submission."
       />
       {flows.isError && (isApiError(flows.error)
         ? <CorrelationError error={flows.error} />

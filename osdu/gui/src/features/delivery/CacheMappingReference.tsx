@@ -1,8 +1,8 @@
 import { BookOpen } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import type { DeliveryCachedItem } from "../../api/delivery";
-import { CopyButton } from "../../components/CopyButton";
-import { TruncatedText } from "../../components/TruncatedText";
+import { CopyButton } from "@/components/CopyButton";
+import { TruncatedText } from "@/components/TruncatedText";
 import { CACHE_ID_FIELD, cacheEntryExample, cacheReference, cachedCell, type CachedTypeSummary } from "./cacheFormat";
 
 /** What cache.<Type>.id renders: the record's OSDU id with the trailing colon an OSDU relationship carries. */

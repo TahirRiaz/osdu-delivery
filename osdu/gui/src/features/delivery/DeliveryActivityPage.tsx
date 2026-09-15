@@ -6,18 +6,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { deliveryApi, type DeliveryActivity } from "../../api/delivery";
-import { CodeView } from "../../components/CodeView";
-import { FilterBar } from "../../components/FilterBar";
-import { Page } from "../../components/Page";
-import { PageHeader } from "../../components/PageHeader";
-import { PagedTable, type Column } from "../../components/PagedTable";
-import { RelativeTime } from "../../components/RelativeTime";
-import { SearchInput } from "../../components/SearchInput";
-import { TruncatedText } from "../../components/TruncatedText";
+import { CodeView } from "@/components/CodeView";
+import { FilterBar } from "@/components/FilterBar";
+import { Page } from "@/components/Page";
+import { PageHeader } from "@/components/PageHeader";
+import { PagedTable, type Column } from "@/components/PagedTable";
+import { RelativeTime } from "@/components/RelativeTime";
+import { SearchInput } from "@/components/SearchInput";
+import { TruncatedText } from "@/components/TruncatedText";
 import { prettyJson } from "./prettyJson";
 
 const ALL = "all";
-const KINDS = ["deliver", "submit", "work", "verify", "known-state", "release", "redeliver", "delete"];
+const KINDS = ["deliver", "submit", "work", "verify", "release", "redeliver", "delete"];
 const OUTCOMES = ["running", "completed", "failed", "cancelled"];
 
 function OutcomeBadge({ outcome }: { outcome: DeliveryActivity["outcome"] }) {

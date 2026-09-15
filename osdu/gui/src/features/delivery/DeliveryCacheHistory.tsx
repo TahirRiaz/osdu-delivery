@@ -9,19 +9,19 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
-import { isApiError } from "../../api/client";
+import { isApiError } from "@/api/client";
 import {
   deliveryApi, type DeliveryCacheChange, type DeliveryCacheDiffItem, type DeliveryCacheHistoryEntry,
 } from "../../api/delivery";
-import { CodeView } from "../../components/CodeView";
-import { CorrelationError } from "../../components/CorrelationError";
-import { DataTable, type Column } from "../../components/DataTable";
-import { EmptyState } from "../../components/EmptyState";
-import { PagedTable } from "../../components/PagedTable";
-import { RelativeTime } from "../../components/RelativeTime";
-import { SearchInput } from "../../components/SearchInput";
-import { TruncatedText } from "../../components/TruncatedText";
-import { useOwnedPanel } from "../../layout/workbench/useOwnedPanel";
+import { CodeView } from "@/components/CodeView";
+import { CorrelationError } from "@/components/CorrelationError";
+import { DataTable, type Column } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { PagedTable } from "@/components/PagedTable";
+import { RelativeTime } from "@/components/RelativeTime";
+import { SearchInput } from "@/components/SearchInput";
+import { TruncatedText } from "@/components/TruncatedText";
+import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { cachedFieldsText, cachedText } from "./cacheFormat";
 import { RecordId } from "./DeliveryCacheRecords";
 

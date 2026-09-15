@@ -1,5 +1,5 @@
 import type { DeliveryAttempt } from "../../api/delivery";
-import { TruncatedText } from "../../components/TruncatedText";
+import { TruncatedText } from "@/components/TruncatedText";
 
 /**
  * An attempt's error, or the note an attempt that did not fail carries, with the correlation id its OSDU requests

@@ -22,13 +22,13 @@ import {
   type DeliveryTemplateFieldChange,
   type DeliveryTemplateVariableChange,
 } from "../../api/delivery";
-import { CodeDiffView } from "../../components/CodeDiffView";
-import { EmptyState } from "../../components/EmptyState";
-import { FilterBar } from "../../components/FilterBar";
-import { LinkRef } from "../../components/LinkRef";
-import { RichTooltip } from "../../components/RichTooltip";
-import { SearchInput } from "../../components/SearchInput";
-import { StatePill } from "../../components/StatusBadge";
+import { DiffView } from "@/components/DiffView";
+import { EmptyState } from "@/components/EmptyState";
+import { FilterBar } from "@/components/FilterBar";
+import { LinkRef } from "@/components/LinkRef";
+import { RichTooltip } from "@/components/RichTooltip";
+import { SearchInput } from "@/components/SearchInput";
+import { StatePill } from "@/components/StatusBadge";
 import { HeadClippedText } from "./HeadClippedText";
 import { condenseDiff, diffList, diffText, type DiffPart } from "./textDiff";
 import { entityName, kindStem, roleLabel, splitPath } from "./templateFormat";
@@ -714,12 +714,15 @@ export function TemplateCompareSheet({ start, onClose }: TemplateCompareSheetPro
                           <LinkRef url={data.to.webUrl} title="To, in the OSDU data definitions" testId="templates-compare-to-link" copyTestId="templates-compare-to-copy" />
                         </span>
                       </div>
-                      <CodeDiffView
+                      <DiffView
                         key={KIND_FILE}
                         original={data.from.fileText}
                         modified={data.to.fileText}
-                        originalLabel={`${data.from.kind}  (${data.from.release.name}, template ${data.from.templateVersion})`}
-                        modifiedLabel={`${data.to.kind}  (${data.to.release.name}, template ${data.to.templateVersion})`}
+                        sideLabels={{
+                          original: `${data.from.kind}  (${data.from.release.name}, template ${data.from.templateVersion})`,
+                          modified: `${data.to.kind}  (${data.to.release.name}, template ${data.to.templateVersion})`,
+                        }}
+                        foldUnchanged
                         language="json"
                         height={620}
                         data-testid="templates-compare-files"
@@ -737,12 +740,15 @@ export function TemplateCompareSheet({ start, onClose }: TemplateCompareSheetPro
                           <LinkRef url={shownShared.toWebUrl} title="To, in the OSDU data definitions" testId="templates-compare-to-link" copyTestId="templates-compare-to-copy" />
                         </span>
                       </div>
-                      <CodeDiffView
+                      <DiffView
                         key={shownShared.name}
                         original={shownShared.fromText ?? ""}
                         modified={shownShared.toText ?? ""}
-                        originalLabel={`${data.from.release.name}  ${shownShared.fromPath ?? "not referred to"}`}
-                        modifiedLabel={`${data.to.release.name}  ${shownShared.toPath ?? "not referred to"}`}
+                        sideLabels={{
+                          original: `${data.from.release.name}  ${shownShared.fromPath ?? "not referred to"}`,
+                          modified: `${data.to.release.name}  ${shownShared.toPath ?? "not referred to"}`,
+                        }}
+                        foldUnchanged
                         language="json"
                         height={620}
                         data-testid="templates-compare-files"
