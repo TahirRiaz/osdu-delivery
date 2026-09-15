@@ -24,20 +24,23 @@ namespace SqlFlow.ControlPlane.Api;
 /// column it never shows and reports both as null there.
 /// <see cref="Error"/> is why a failed run failed, carried on the summary so a set (a schedule's fire, a batch run)
 /// can show its failures where they happened instead of making an operator open each member to find out. Null for
-/// every run that did not fail.</summary>
+/// every run that did not fail. <see cref="Operation"/> is the operation a flow of a registered kind performed (null
+/// for the kind's default and for built-in kinds), and <see cref="RequestedBy"/> who asked for the run (null for a
+/// schedule fire).</summary>
 public sealed record RunSummaryDto(
     Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Batch, int Wave,
     string Status, bool Success,
     string? TargetPool, string? CommitSha, DateTime WrittenUtc, DateTime? EnqueuedUtc, double? DurationSeconds,
     long? RowsLoaded, long? RowsInserted, long? RowsUpdated, long? RowsDeleted, int FileCount, Guid? GroupId,
-    string? LastAction, DateTime? LastActionUtc, string? Error);
+    string? LastAction, DateTime? LastActionUtc, string? Error, string? Operation = null, string? RequestedBy = null);
 
 /// <summary>One run with its full header for the detail view: the summary plus the lifecycle fields (status, when it
 /// was enqueued, the node that claimed it), the schema version, the start/end window, the host, the error, and the
 /// run's substitution parameters (the built-in backfill's audit trail: full load, window, file pattern), and the
 /// engine-computed incremental scope the run actually applied (mode, filter, resolved watermark and its source).
 /// <see cref="Batch"/> and <see cref="Wave"/> follow the same pipeline-join semantics as
-/// <see cref="RunSummaryDto"/>.</summary>
+/// <see cref="RunSummaryDto"/>. <see cref="Operation"/>, <see cref="Values"/> and <see cref="Payload"/> are the kind
+/// arguments a flow of a registered kind ran with, and <see cref="RequestedBy"/> who asked for the run.</summary>
 public sealed record RunDetailDto(
     Guid RunId, Guid PipelineId, Guid? RepoId, string FlowName, string FlowKind, string Batch, int Wave,
     string Status, bool Success,
@@ -48,7 +51,9 @@ public sealed record RunDetailDto(
     bool ReprocessFromSourceMin, string? SourceFilter,
     string? IncrementalMode, string? IncrementalFilter, string? IncrementalWatermark, string? IncrementalWatermarkSource,
     string? DataSetConvention,
-    int? FailedStatementOrdinal, string? FailedStatementStep, string? FailedStatementSql, Guid? GroupId);
+    int? FailedStatementOrdinal, string? FailedStatementStep, string? FailedStatementSql, Guid? GroupId,
+    string? Operation = null, string? RequestedBy = null, IReadOnlyDictionary<string, string>? Values = null,
+    JsonElement? Payload = null);
 
 /// <summary>One file a run processed (file flows): a drill-down row under a run.</summary>
 public sealed record RunFileDto(
@@ -342,7 +347,7 @@ public static class RunEndpoints
                     .OrderByDescending(e => e.Id).Select(e => (string?)e.Message).FirstOrDefault(),
                 db.RunEvents.Where(e => e.RunId == x.Run.RunId)
                     .OrderByDescending(e => e.Id).Select(e => (DateTime?)e.TimestampUtc).FirstOrDefault(),
-                x.Run.Error))
+                x.Run.Error, x.Run.Operation, x.Run.RequestedBy))
             : source.Select(x => new RunSummaryDto(
                 x.Run.RunId, x.Run.PipelineId, x.Run.RepoId, x.Run.FlowName, x.Run.FlowKind, x.Batch, x.Wave,
                 x.Run.Status, x.Run.Success,
@@ -350,7 +355,7 @@ public static class RunEndpoints
                 x.Run.RowsLoaded, x.Run.RowsInserted, x.Run.RowsUpdated, x.Run.RowsDeleted,
                 db.RunFiles.Count(f => f.RunId == x.Run.RunId), x.Run.GroupId,
                 null, null,
-                x.Run.Error));
+                x.Run.Error, x.Run.Operation, x.Run.RequestedBy));
 
     /// <summary>A group's member summaries in execution order: the shape both the group view's member list and
     /// the group stream serve. This is the one list that shows the last action, so it resolves it.</summary>
@@ -364,12 +369,12 @@ public static class RunEndpoints
     private static async Task<Results<Ok<RunDetailDto>, ProblemHttpResult>> GetRunAsync(
         Guid runId, CatalogDbContext db, CancellationToken ct)
     {
-        var dto = await (
+        var row = await (
                 from run in db.Runs.AsNoTracking()
                 where run.RunId == runId
                 join pipeline in db.Pipelines.AsNoTracking() on run.PipelineId equals pipeline.Id into pipelines
                 from pipeline in pipelines.DefaultIfEmpty()
-                select new RunDetailDto(
+                select new { run.ValuesJson, run.Payload, Detail = new RunDetailDto(
                     run.RunId, run.PipelineId, run.RepoId, run.FlowName, run.FlowKind,
                     pipeline != null && pipeline.Batch != null ? pipeline.Batch : CatalogPipeline.DefaultBatch,
                     pipeline != null ? pipeline.Wave : -1,
@@ -382,12 +387,19 @@ public static class RunEndpoints
                     run.ReprocessFromSourceMin, run.SourceFilter,
                     run.IncrementalMode, run.IncrementalFilter, run.IncrementalWatermark, run.IncrementalWatermarkSource,
                     run.DataSetConvention,
-                    null, null, null, run.GroupId))
+                    null, null, null, run.GroupId, run.Operation, run.RequestedBy) })
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        if (dto is null)
+        if (row is null)
         {
             return NotFound("run", runId);
         }
+
+        // The kind arguments are stored as JSON text; they are served as objects, so a client reads them as it sent them.
+        var dto = row.Detail with
+        {
+            Values = SqlFlow.Core.Runs.RunParameters.ValuesFromJson(row.ValuesJson),
+            Payload = row.Payload is null ? null : JsonDocument.Parse(row.Payload).RootElement.Clone(),
+        };
 
         // On a failed run, surface the exact statement that threw alongside the header, so the detail view can show
         // the offending SQL next to the error banner instead of making the operator hunt for it in the Statements
