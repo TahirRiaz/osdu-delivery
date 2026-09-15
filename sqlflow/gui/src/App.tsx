@@ -5,6 +5,7 @@ import { TopProgressBar } from "./components/TopProgressBar";
 import { RequireAuth, RequireScope } from "./auth/RequireAuth";
 import AppShell from "./layout/AppShell";
 import { lazyRoute } from "./lib/lazyRoute";
+import { moduleRoutes } from "./modules/registry";
 
 // Feature pages are lazy so heavy dependencies (Monaco, React Flow, Recharts) load with their page, not at boot.
 const DashboardPage = lazyRoute("DashboardPage", () => import("./features/dashboard/DashboardPage"));
@@ -106,6 +107,20 @@ export default function App() {
               </RequireScope>
             )}
           />
+          {/* The pages this build's GUI modules add (none in SQLFlow's own build), inside the workbench like every page. */}
+          {moduleRoutes().map(({ path, component: ModulePage, requiredScope }) => (
+            <Route
+              key={path}
+              path={path}
+              element={requiredScope === undefined
+                ? <ModulePage />
+                : (
+                  <RequireScope scope={requiredScope}>
+                    <ModulePage />
+                  </RequireScope>
+                )}
+            />
+          ))}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

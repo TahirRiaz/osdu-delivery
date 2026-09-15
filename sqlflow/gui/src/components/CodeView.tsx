@@ -17,6 +17,11 @@ interface CodeViewProps {
   language: "yaml" | "json" | "sql" | "plaintext";
   height?: number | string;
   /**
+   * Fill mode: the view grows to the free space of a flex column parent (a sheet body, a panel) instead of taking
+   * `height`, and never shrinks below a readable floor. `height` is ignored when set.
+   */
+  fill?: boolean;
+  /**
    * SQLFlow flow-YAML language intelligence (hover docs per attribute, census-driven colouring, and validation
    * squiggles), served by the wasm analysis engine. ON by default for `language: "yaml"` (every YAML shown in the
    * product is a flow document); pass false for a YAML surface that is not a flow document.
@@ -40,7 +45,7 @@ interface CodeViewProps {
  * unformatted single-line blobs) and copy-to-clipboard of whatever is currently shown.
  */
 export function CodeView({
-  value, language, height = 480, lsp = true, readOnly = true, onChange, "data-testid": testId,
+  value, language, height = 480, fill = false, lsp = true, readOnly = true, onChange, "data-testid": testId,
 }: CodeViewProps) {
   const { mode } = useThemeMode();
   const monacoRef = useRef<Monaco | null>(null);
@@ -108,7 +113,7 @@ export function CodeView({
   return (
     <div
       data-testid={testId ?? "code-view"}
-      className="overflow-hidden rounded-lg border border-border"
+      className={cn("overflow-hidden rounded-lg border border-border", fill && "flex min-h-80 flex-1 flex-col")}
     >
       <div className="flex items-center justify-end gap-0.5 border-b border-border bg-muted/50 px-1 py-0.5">
         {isSql && (
@@ -147,13 +152,16 @@ export function CodeView({
       <Editor
         value={displayValue}
         language={language}
-        height={height}
+        height={fill ? "100%" : height}
+        wrapperProps={fill ? { className: "min-h-0 flex-1" } : undefined}
         beforeMount={handleBeforeMount}
         onMount={handleMount}
         onChange={readOnly || !onChange ? undefined : (text) => onChange(text ?? "")}
         theme={sqlflowEditorTheme}
         options={{
           readOnly,
+          // Re-measure when the container resizes: a filled view follows its sheet or panel, a fixed one its width.
+          automaticLayout: true,
           minimap: { enabled: false },
           scrollBeyondLastLine: false,
           wordWrap: "on",
