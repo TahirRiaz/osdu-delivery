@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The vendored-SQLFlow guard walks back to the squashed subtree commit, so it needs
+          # the full history, not the default shallow clone.
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            osdu/gui/package-lock.json
+            sqlflow/gui/package-lock.json
+
+      # Fail fast: sqlflow/ may only gain generic extension points, each in a commit of its own.
+      - name: Vendored SQLFlow guard
+        run: bash tools/check-vendored-sqlflow.sh
+
+      - name: Restore
+        run: dotnet restore OsduDelivery.sln
+
+      - name: Build
+        run: dotnet build OsduDelivery.sln --no-restore -c Release
+
+      # SQLFlow's own suites and the OSDU module's suites, in one run over the solution. The
+      # DB-backed suites read SQLFLOW_TEST_DB and skip when it is unset or unreachable; CI does
+      # not set it, so they skip here on purpose. They are run against a real SQL Server locally.
+      - name: Test
+        run: dotnet test OsduDelivery.sln --no-build -c Release --verbosity normal
+
+      - name: Install OSDU GUI dependencies
+        working-directory: osdu/gui
+        run: npm ci
+
+      # The OSDU GUI compiles the vendored sqlflow/gui sources in place, so this build covers
+      # both trees' TypeScript.
+      - name: Build OSDU GUI
+        working-directory: osdu/gui
+        run: npm run build
+
+      - name: Lint OSDU GUI
+        working-directory: osdu/gui
+        run: npm run lint
+
+      - name: Install SQLFlow GUI dependencies
+        working-directory: sqlflow/gui
+        run: npm ci
+
+      # SQLFlow's GUI is built on its own as well, so an extension point added to sqlflow/gui is
+      # proven to keep SQLFlow's own build working.
+      - name: Build SQLFlow GUI
+        working-directory: sqlflow/gui
+        run: npm run build
