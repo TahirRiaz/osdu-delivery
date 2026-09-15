@@ -94,6 +94,9 @@ public sealed partial class InlineRecords
 
     public const string FilesProperty = "files";
 
+    /// <summary>The column a record may state its delivery key in; reserved everywhere else.</summary>
+    public const string DeliveryKeyColumn = "deliveryKey";
+
     private static readonly IReadOnlyDictionary<string, InlineFile> NoFiles = new Dictionary<string, InlineFile>(StringComparer.OrdinalIgnoreCase);
 
     private InlineRecords(
@@ -322,6 +325,21 @@ public sealed partial class InlineRecords
             }
 
             var value = Scalar(property.Value, columnAt);
+
+            // The delivery key is derived from the mapping's dataset key, never sent as a column. A record may state the
+            // key it expects, which is checked against the derived one; a child row has no key of its own to state.
+            if (name.Equals(DeliveryKeyColumn, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!columns.Dataset.Equals(SourceDatasets.Record, StringComparison.Ordinal))
+                {
+                    throw Invalid(columnAt, $"is reserved in a child row: a child row belongs to the record its parent names, so it carries no delivery key of its own.");
+                }
+
+                if (value is not string text || !Guid.TryParse(text, CultureInfo.InvariantCulture, out _))
+                {
+                    throw Invalid(columnAt, "must be the record's delivery key as a UUID, which is checked against the key the mapping derives; omit it to take the derived key.");
+                }
+            }
             row[columns.Observe(name, value, columnAt)] = value;
         }
 

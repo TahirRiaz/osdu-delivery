@@ -88,11 +88,17 @@ public static class ChangeDetector
             return false;
         }
 
-        // Both parts of the version have to agree: the ingestion fingerprint says the rows are the ones the version held was
-        // built from, and the business version, when the flow declares one, says the source did not move it either.
-        var sameSource = source.Fingerprint is not null
-            && string.Equals(existing.SourceFingerprint, source.Fingerprint, StringComparison.Ordinal)
-            && (source.ModifiedUtc is not { } modified || existing.SourceModifiedUtc == modified);
+        // Every part of the version the source carries has to agree: the ingestion fingerprint says the rows are the ones
+        // the version held was built from, and the business version, when the flow declares one, says the source did not
+        // move it either. A flow that decides changes by source.lastModified alone carries no fingerprint, and then the
+        // moment is the whole version: a record left at no known moment has nothing to compare, so it is rendered.
+        var sameSource = source switch
+        {
+            { Fingerprint: not null } => string.Equals(existing.SourceFingerprint, source.Fingerprint, StringComparison.Ordinal)
+                && (source.ModifiedUtc is not { } moved || existing.SourceModifiedUtc == moved),
+            { ModifiedUtc: { } modified } => existing.SourceModifiedUtc == modified,
+            _ => false,
+        };
 
         return sameSource
             && string.Equals(existing.RenderContext, renderContext, StringComparison.Ordinal)

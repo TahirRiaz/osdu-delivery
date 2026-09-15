@@ -563,10 +563,13 @@ internal static partial class FlowMapper
 
             foreach (var root in submissions.FileRoots)
             {
-                if (root.Contains('*', StringComparison.Ordinal) || root.Contains('?', StringComparison.Ordinal) || root.Contains("..", StringComparison.Ordinal))
+                // A root is a prefix, never a glob. It is resolved against the flow file exactly as source.payloads.root
+                // and the landing folders are, so a repository-relative root is written the same way they are; what a
+                // submitted record may point at is checked against the resolved root when the submission is read.
+                if (root.Contains('*', StringComparison.Ordinal) || root.Contains('?', StringComparison.Ordinal))
                 {
                     throw new FlowValidationException(
-                        $"{source}: source.submissions.fileRoots entry '{root}' must be a plain prefix (a container or folder), with no wildcard and no '..'.");
+                        $"{source}: source.submissions.fileRoots entry '{root}' must be a plain prefix (a container or folder), with no wildcard.");
                 }
 
                 CheckTokens(flow, root, "source.submissions.fileRoots", source);
