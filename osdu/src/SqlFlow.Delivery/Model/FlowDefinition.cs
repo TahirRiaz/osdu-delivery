@@ -141,6 +141,9 @@ public sealed record FlowSource
 public sealed record FlowSourceTable
 {
     /// <summary>The table's three-part name, <c>[database].[schema].[table]</c>.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Naming", "CA1720:Identifier contains type name",
+        Justification = "The flow document's key is 'object'; the model mirrors the document so a message about it names what the author wrote.")]
     public required string Object { get; init; }
 
     /// <summary>The key columns, in order: the ingestion flow's <c>load.keyColumns</c>, and the mapping's <c>dataset.key</c>.</summary>
@@ -158,6 +161,9 @@ public sealed record FlowSourceDataset
     public const int MaxRowsPerRecordCeiling = 1_000_000;
 
     /// <summary>The table's three-part name.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Naming", "CA1720:Identifier contains type name",
+        Justification = "The flow document's key is 'object'; the model mirrors the document so a message about it names what the author wrote.")]
     public required string Object { get; init; }
 
     /// <summary>How a child row joins its record: child column to record column, covering every key column of the record.</summary>
