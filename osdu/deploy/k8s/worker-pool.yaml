@@ -1,0 +1,123 @@
+# Compute: OSDU Delivery node pods scaled on the control plane's replica target by KEDA, not on traffic (nodes
+# expose nothing and never sit behind the ingress). This manifest is the template for ONE pool: copy it per pool,
+# set SQLFLOW_WORKER_POOL and the ScaledObject's ?pool= query parameter. A freshly scaled pod needs no pre-synced
+# state and no catalog connection: it polls the control plane, is handed a run with its definition, fetches the
+# snapshotted YAML (or materializes the pinned commit from git), executes, streams the trace, and reports back
+# over the node protocol.
+#
+# The delivery engine reads and writes the `osdu` ledger per record while it plans and delivers, and a node has no
+# catalog connection, so the module database needs a connection reference of its own on this tier: the
+# osdu-module-connection secret below, mounted under the variable the worker host declares for it
+# (osdu/docs/environment-variables.md).
+#
+# Requires KEDA installed in the cluster (https://keda.sh): the metrics-api scaler reads the pool's replica target
+# from the control plane (GET /api/v1/node/scale-target), authenticated with the same node token the nodes use,
+# so no catalog credential reaches this tier at all.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osdu-delivery-worker-default
+  namespace: osdu-delivery
+  labels:
+    app: osdu-delivery-worker-default
+spec:
+  replicas: 1 # KEDA overrides this between minReplicaCount and maxReplicaCount
+  selector:
+    matchLabels:
+      app: osdu-delivery-worker-default
+  template:
+    metadata:
+      labels:
+        app: osdu-delivery-worker-default
+    spec:
+      # Let an in-flight delivery finish; an interrupted run is requeued anyway. Keep this above the node's drain
+      # window (SQLFLOW_WORKER_DRAIN_SECONDS, default 540), or the kill lands mid-drain.
+      terminationGracePeriodSeconds: 600
+      containers:
+        - name: worker
+          image: osdu-delivery-worker:latest # replace with your registry tag
+          env:
+            # The node polls the control plane's dispatcher for work over the node protocol; the run queue lives
+            # there, never in the catalog. The token is a personal access token minted with the `node` scope.
+            - name: SQLFLOW_URL
+              value: http://osdu-delivery-controlplane
+            - name: SQLFLOW_TOKEN
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: node-token }
+            # Empty = untargeted runs only. For a pooled worker set the pool name here AND in the ScaledObject's
+            # ?pool= parameter below.
+            - name: SQLFLOW_WORKER_POOL
+              value: ""
+            - name: SQLFLOW_GIT_TOKEN
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: git-token }
+            # Every ${env:...} reference the pool's flows use resolves HERE, on the node, never in the control
+            # plane. Mount one entry per reference; these cover the delivery chain and the sample estate.
+            - name: SQLFLOW_CONN_PRE
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: pre-connection }
+            - name: SQLFLOW_CONN_DWH
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: ingestion-connection }
+            - name: PETRODB_URL
+              value: "https://your-osdu-host"
+            - name: OSDU_TOKEN_URL
+              value: "https://login.microsoftonline.com/your-tenant/oauth2/v2.0/token"
+            - name: OSDU_SCOPE
+              value: "api://your-osdu-app/.default"
+            - name: OSDU_CLIENT_ID
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: osdu-client-id }
+            - name: OSDU_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: osdu-client-secret }
+            - name: APIM_KEY
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: apim-key }
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: osdu-delivery-node-auth
+  namespace: osdu-delivery
+spec:
+  secretTargetRef:
+    # The node token: the nodes' credential to the control plane, reused by the scaler for the scale-target
+    # endpoint (node scope). Mint it once the control plane is up and add it to osdu-delivery-secrets.
+    - parameter: token
+      name: osdu-delivery-secrets
+      key: node-token
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: osdu-delivery-worker-default
+  namespace: osdu-delivery
+spec:
+  scaleTargetRef:
+    name: osdu-delivery-worker-default
+  minReplicaCount: 0   # scale to zero when nothing is eligible and no node is busy
+  maxReplicaCount: 10
+  cooldownPeriod: 300  # keep a warm node for five minutes after the work drains
+  pollingInterval: 15
+  triggers:
+    - type: metrics-api
+      metadata:
+        # The control plane answers the pool's replica target itself: the GREATEST of demanded work, the pool's
+        # always-on floor, and an active manual override, so the GUI's fleet controls steer this pool without the
+        # control plane ever calling the orchestrator. Demand is the pool's ELIGIBLE queued runs (a member behind
+        # a lower wave, a group at its cap, or a run of a pipeline already executing asks for no replica, because
+        # no node could take it) divided by what one node of the pool executes at once (the nodes report it on
+        # every poll, so nothing here has to match a constant in the node runtime), plus the nodes currently busy
+        # (a queued-only count reads zero the moment the fleet takes a batch, which would let KEDA scale in
+        # mid-execution and kill pods carrying live deliveries). For a pooled copy of this manifest, set
+        # ?pool=<pool> in the url and SQLFLOW_WORKER_POOL in the Deployment above.
+        url: "http://osdu-delivery-controlplane/api/v1/node/scale-target?pool="
+        valueLocation: "replicas"
+        targetValue: "1"
+        authMode: "bearer"
+      authenticationRef:
+        name: osdu-delivery-node-auth

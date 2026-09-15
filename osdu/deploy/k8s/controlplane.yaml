@@ -1,0 +1,98 @@
+# The control plane tier: the API, the scheduler, the managed sync and the run dispatcher, behind the ingress.
+# It runs ONE replica on purpose. The run queue lives in this process and is owned by exactly one replica at a
+# time (the dispatch lease in the catalog); a second replica would add no dispatch capacity and would refuse every
+# node call that landed on it (503 with a retry hint, which the nodes retry), so it only slows hand-outs. Compute
+# scales separately (worker-pool.yaml), so this replica does API work only (Worker__Enabled=false). A rolling
+# update briefly overlaps two replicas; the old one releases the lease on its graceful stop and the nodes retry
+# through the overlap.
+#
+# Startup applies SQLFlow's catalog migrations and then the OSDU module's, and refuses to serve against a database
+# newer than this build or a catalog older than the module requires, naming the migration.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osdu-delivery-controlplane
+  namespace: osdu-delivery
+  labels:
+    app: osdu-delivery-controlplane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: osdu-delivery-controlplane
+  template:
+    metadata:
+      labels:
+        app: osdu-delivery-controlplane
+    spec:
+      containers:
+        - name: controlplane
+          image: osdu-delivery-control-plane:latest # replace with your registry tag
+          ports:
+            - containerPort: 8080
+          env:
+            # The catalog, which also holds the OSDU module's `osdu` schema: the module database falls back to
+            # the catalog connection, so this tier needs no second connection string.
+            - name: ControlPlane__Catalog__ConnectionReference
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: catalog-connection }
+            - name: ControlPlane__Jwt__SigningKey
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: jwt-signing-key }
+            - name: ControlPlane__Jwt__BootstrapSecret
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: bootstrap-secret }
+            - name: ControlPlane__Bootstrap__AdminUsername
+              value: admin
+            - name: ControlPlane__Bootstrap__AdminPasswordReference
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: admin-password }
+            # API-only replica: compute is the worker deployments' job.
+            - name: ControlPlane__Worker__Enabled
+              value: "false"
+            # Honor X-Forwarded-For/Proto from the ingress ONLY. Set this to your cluster's pod/ingress CIDR;
+            # without it every client shares the ingress IP for rate limiting and login throttling.
+            - name: ControlPlane__Proxy__Enabled
+              value: "true"
+            - name: ControlPlane__Proxy__KnownNetworks__0
+              value: "10.0.0.0/8"
+            # Same-host ingress path-split means the GUI is same-origin: no CORS entries needed. Add
+            # ControlPlane__Cors__AllowedOrigins__0 only if the GUI is served from another host.
+            # Entra SSO: put entra-tenant-id and entra-client-id in the osdu-delivery-secrets secret and the login
+            # page offers "Sign in with Microsoft" alongside local username/password. Both keys are optional here,
+            # so an estate that leaves them out of the secret simply runs local sign-in only (no restart-time
+            # failure). The SPA app registration's redirect URI must be the GUI origin, and must itself be a
+            # multi-tenant registration if more than one tenant is ever allowed. To trust more than one tenant,
+            # add further ControlPlane__AzureAd__AllowedTenantIds__1, __2, ... entries alongside this one.
+            - name: ControlPlane__AzureAd__AllowedTenantIds__0
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: entra-tenant-id, optional: true }
+            - name: ControlPlane__AzureAd__ClientId
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: entra-client-id, optional: true }
+            - name: ControlPlane__AzureAd__DefaultRole
+              value: viewer
+          resources:
+            requests: { cpu: 250m, memory: 384Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: osdu-delivery-controlplane
+  namespace: osdu-delivery
+spec:
+  selector:
+    app: osdu-delivery-controlplane
+  ports:
+    - port: 80
+      targetPort: 8080

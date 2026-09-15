@@ -1,0 +1,122 @@
+# The full OSDU Delivery stack for local and parity deployments: SQL Server (the catalog with the OSDU module's
+# `osdu` schema, plus the pre and ingestion databases the delivery chain uses), the control plane, one scalable
+# node, and the GUI. Copy .env.example to .env and set the secrets first.
+#
+#   docker compose up -d --build mssql controlplane gui
+#   # mint a node-scoped token from the control plane, put it in .env as SQLFLOW_NODE_TOKEN
+#   docker compose up -d --build worker
+#   docker compose up -d --scale worker=3        # more compute, no other change
+#
+# GUI:            http://localhost:8081  (sign in with the bootstrap admin from .env)
+# Control plane:  http://localhost:5000  (OpenAPI at /openapi/v1.json)
+#
+# The node takes work from the control plane's dispatcher over HTTP, authenticated with a personal access token
+# minted with the `node` scope. That token can only be minted once the control plane is running, which is why a
+# first start is two steps.
+#
+# Production ingress layouts route /api/* and the GUI under ONE host instead (see osdu/deploy/k8s), which drops
+# the CORS configuration used here.
+
+name: osdu-delivery
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in .env}
+      MSSQL_PID: Developer
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' -b"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    # Published for host-side tooling only; the stack talks to it on the compose network.
+    ports:
+      - "14333:1433"
+
+  controlplane:
+    build:
+      # The repository root: the host publishes from osdu/hosts and references both osdu/src and sqlflow/src.
+      context: ../../..
+      dockerfile: osdu/deploy/docker/control-plane.Dockerfile
+    depends_on:
+      mssql:
+        condition: service_healthy
+    environment:
+      # The catalog, which also holds the OSDU module's `osdu` schema: startup applies SQLFlow's migrations and
+      # then the module's.
+      ControlPlane__Catalog__ConnectionReference: "Server=mssql;Database=OsduDeliveryCatalog;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      ControlPlane__Jwt__SigningKey: ${SQLFLOW_JWT_SIGNING_KEY:?set SQLFLOW_JWT_SIGNING_KEY in .env}
+      ControlPlane__Jwt__BootstrapSecret: ${SQLFLOW_BOOTSTRAP_SECRET:?set SQLFLOW_BOOTSTRAP_SECRET in .env}
+      ControlPlane__Bootstrap__AdminUsername: ${SQLFLOW_ADMIN_USERNAME:-admin}
+      ControlPlane__Bootstrap__AdminPasswordReference: ${SQLFLOW_ADMIN_PASSWORD:?set SQLFLOW_ADMIN_PASSWORD in .env}
+      # A fresh SQL Server has no catalog; this stack lets bootstrap create it. The default refuses, so a
+      # mistyped connection never provisions against the wrong server.
+      ControlPlane__Bootstrap__AllowCreate: "true"
+      # The GUI is a separate origin in this compose layout.
+      ControlPlane__Cors__AllowedOrigins__0: http://localhost:8081
+      # Compute belongs to the worker service; this replica is API + scheduler + sync only.
+      ControlPlane__Worker__Enabled: "false"
+    ports:
+      - "5000:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ../../..
+      dockerfile: osdu/deploy/docker/worker.Dockerfile
+    depends_on:
+      mssql:
+        condition: service_healthy
+      controlplane:
+        condition: service_healthy
+    environment:
+      # The node polls the control plane's dispatcher for work over the node protocol, authenticated with a
+      # personal access token minted with the `node` scope (an admin: POST /api/v1/me/tokens with scopes
+      # ["node"]). It opens no catalog connection: the run's definition, its YAML, its lineage context and its
+      # trace all travel over that protocol.
+      SQLFLOW_URL: http://controlplane:8080
+      SQLFLOW_TOKEN: ${SQLFLOW_NODE_TOKEN:?mint a node-scoped token from the control plane and set SQLFLOW_NODE_TOKEN in .env}
+      # The delivery engine reads and writes the `osdu` ledger per record while it plans and delivers, and a node
+      # has no catalog connection, so the module database needs a connection reference of its own here. Set it
+      # under the variable the worker host declares for it (osdu/docs/environment-variables.md).
+      # The databases the delivery chain uses: pre-ingestion lands source files in the first, the ingestion flow
+      # loads the keyed tables into the second, and the OSDU flow reads those tables.
+      SQLFLOW_CONN_PRE: "Server=mssql;Database=OsduDeliveryPre;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      SQLFLOW_CONN_DWH: "Server=mssql;Database=OsduDeliveryIng;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      # Every ${env:...} reference the flows declare resolves here, on the node; the sample estate names these
+      # six. The control plane carries none of them. A plan run needs no OSDU target, so they can stay empty.
+      PETRODB_URL: ${PETRODB_URL:-}
+      OSDU_TOKEN_URL: ${OSDU_TOKEN_URL:-}
+      OSDU_SCOPE: ${OSDU_SCOPE:-}
+      OSDU_CLIENT_ID: ${OSDU_CLIENT_ID:-}
+      OSDU_CLIENT_SECRET: ${OSDU_CLIENT_SECRET:-}
+      APIM_KEY: ${APIM_KEY:-}
+      # Serve a pool by listing it here; empty takes untargeted runs only.
+      SQLFLOW_WORKER_POOL: ${SQLFLOW_WORKER_POOL:-}
+      SQLFLOW_GIT_TOKEN: ${SQLFLOW_GIT_TOKEN:-}
+    restart: unless-stopped
+
+  gui:
+    build:
+      # The repository root as well: the OSDU GUI compiles the vendored sqlflow/gui sources in place.
+      context: ../../..
+      dockerfile: osdu/deploy/docker/gui.Dockerfile
+    environment:
+      SQLFLOW_API_BASE_URL: http://localhost:5000
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+
+volumes:
+  mssql-data:
