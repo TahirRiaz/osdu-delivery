@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Execution\SqlFlow.Execution.csproj" />
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Azure\SqlFlow.Azure.csproj" />
+    <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Sources\SqlFlow.Sources.csproj" />
     <ProjectReference Include="..\SqlFlow.Delivery.Data\SqlFlow.Delivery.Data.csproj" />
   </ItemGroup>
 

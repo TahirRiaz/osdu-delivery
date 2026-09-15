@@ -180,11 +180,6 @@ public sealed class MappingRenderer
             holds.Add($"dataset key incomplete ({sourceKey}): every key column must be non-empty");
         }
 
-        if (key is { } k && record.DeclaredDeliveryKey is { } declared && declared != k.Value)
-        {
-            holds.Add($"drop declares deliveryKey {declared:D} but the mapping derives {k.Value:D} from {sourceKey}; the two halves disagree on identity");
-        }
-
         var document = new JsonObject
         {
             ["kind"] = _mapping.Kind,

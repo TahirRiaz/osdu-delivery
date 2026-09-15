@@ -1,15 +1,15 @@
 using System.Globalization;
 using System.Text;
-using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Hashing;
+using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Rendering;
 
 namespace SqlFlow.Delivery.Planning;
 
 /// <summary>
-/// What a drop row says about the version of its source: the opaque fingerprint a flow names with
-/// <c>source.fingerprint</c>, or the moment the row last changed, from <c>source.lastModified</c>. A flow declares at
-/// most one of the two, so at most one is set.
+/// What a source row says about the version of its record: the ingestion fingerprint over the record row's and its child
+/// rows' update times and counts (<see cref="Source.IngestionFingerprint"/>), and the business version the flow names with
+/// <c>source.lastModified</c>, when it declares one.
 /// </summary>
 public readonly record struct SourceVersion(string? Fingerprint, DateTime? ModifiedUtc)
 {
@@ -69,32 +69,32 @@ public static class LastModifiedColumn
 }
 
 /// <summary>
-/// The chunk files of one record's payload as storage lists them: how many, the newest modified time among them
+/// The files of one record's payload as storage lists them: how many, the newest modified time among them
 /// (the payload's watermark), and a signature over every file's name, size and modified time, which changes when any
 /// file is rewritten, added or removed.
 /// </summary>
 public sealed record PayloadFiles(int Count, DateTime? ModifiedUtc, string Signature)
 {
-    public static PayloadFiles Of(IReadOnlyList<PayloadChunk> chunks)
+    public static PayloadFiles Of(IReadOnlyList<PayloadFile> files)
     {
-        ArgumentNullException.ThrowIfNull(chunks);
+        ArgumentNullException.ThrowIfNull(files);
         DateTime? newest = null;
         var text = new StringBuilder();
-        // Names, not paths: the same files read from a drop at another location are the same payload.
-        foreach (var chunk in chunks.OrderBy(c => FileName(c.Path), StringComparer.Ordinal))
+        // Names, not paths: the same files listed from another folder are the same payload.
+        foreach (var file in files.OrderBy(c => FileName(c.Path), StringComparer.Ordinal))
         {
-            var modified = chunk.Modified?.UtcDateTime;
+            var modified = file.Modified?.UtcDateTime;
             if (modified is { } m && (newest is null || m > newest))
             {
                 newest = m;
             }
 
-            text.Append(FileName(chunk.Path)).Append((char)0x1F)
-                .Append(chunk.Size.ToString(CultureInfo.InvariantCulture)).Append((char)0x1F)
+            text.Append(FileName(file.Path)).Append((char)0x1F)
+                .Append(file.Size.ToString(CultureInfo.InvariantCulture)).Append((char)0x1F)
                 .Append(modified?.Ticks.ToString(CultureInfo.InvariantCulture) ?? string.Empty).Append('\n');
         }
 
-        return new PayloadFiles(chunks.Count, newest, ContentHash.Of(text.ToString()));
+        return new PayloadFiles(files.Count, newest, ContentHash.Of(text.ToString()));
     }
 
     private static string FileName(string path)

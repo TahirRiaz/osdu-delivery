@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
-using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
@@ -44,7 +43,7 @@ internal static class FileUploads
     /// Lists the payload chunks and checks each against the declared request body ceiling before anything is sent,
     /// so an oversized or empty file holds the record instead of failing after some uploads (design.md section 14.3).
     /// </summary>
-    public static async Task<IReadOnlyList<PayloadChunk>> ListChunksAsync(DeliveryWork work, long requestBodyCeiling, CancellationToken ct)
+    public static async Task<IReadOnlyList<PayloadFile>> ListChunksAsync(DeliveryWork work, long requestBodyCeiling, CancellationToken ct)
     {
         var payload = work.Payload ?? throw new RecordHeldException("the record needs a payload but none is attached");
         var chunks = await payload.ListChunksAsync(ct).ConfigureAwait(false);
@@ -71,7 +70,7 @@ internal static class FileUploads
     }
 
     /// <summary>Uploads the chunks an earlier try did not, reporting each as a step, and returns where every chunk landed.</summary>
-    public static async Task<List<UploadedFile>> UploadAsync(OsduHttpClient client, ProtocolOptions options, DeliveryWork work, IReadOnlyList<PayloadChunk> chunks, DeliverySteps steps, CancellationToken ct)
+    public static async Task<List<UploadedFile>> UploadAsync(OsduHttpClient client, ProtocolOptions options, DeliveryWork work, IReadOnlyList<PayloadFile> chunks, DeliverySteps steps, CancellationToken ct)
     {
         var payload = work.Payload ?? throw new RecordHeldException("the record needs a payload but none is attached");
         var files = new List<UploadedFile>(chunks.Count);

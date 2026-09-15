@@ -6,14 +6,15 @@ using SqlFlow.Core;
 using SqlFlow.Core.Abstractions;
 using SqlFlow.Core.Model;
 using SqlFlow.Core.Storage;
+using SqlFlow.Sources;
 
 namespace SqlFlow.Delivery.Storage;
 
 /// <summary>
 /// Writes a file (create or overwrite), opens a location for streamed writing, and answers whether a location
 /// exists, for the locations one file store family handles. The platform's <see cref="IFileStore"/> is read-only
-/// by design (the engine only ever reads sources); snapshots, the known-state publication and the intake's work
-/// batches are what the delivery domain writes, so the write side lives here, next to the reads it pairs with.
+/// by design (the engine only ever reads sources); the intake's work batches, retrieval files and an API submission's
+/// landing files are what the delivery domain writes, so the write side lives here, next to the reads it pairs with.
 /// </summary>
 public interface IFileWriter
 {
@@ -31,8 +32,8 @@ public interface IFileWriter
 
     /// <summary>
     /// Removes a location and everything under it (a file, or a folder and its contents). A location that is not
-    /// there is not an error: the caller asked for it to be gone, and it is. Used to take back a drop-off upload,
-    /// which is the only thing the delivery side deletes from storage.
+    /// there is not an error: the caller asked for it to be gone, and it is. Used to take back the temporary copy of a
+    /// landing file whose write failed, which is the only thing the delivery side deletes from storage.
     /// </summary>
     Task DeleteAsync(string location, CancellationToken ct = default);
 }
@@ -54,33 +55,23 @@ public interface IFileReader
 /// <summary>
 /// Picks the store (and the writer and reader) for a location: the platform's local and Azure blob stores for
 /// listings and forward reads, the matching writers and readers for the few writes and the seekable and range
-/// reads. One registry per host, shared by the drop reader, the snapshot store, the work batches and the
-/// known-state publisher.
+/// reads. One registry per host, shared by the payload files, the work batches, the retrievals and the landing files.
 /// </summary>
 public sealed class FileStoreRegistry
 {
     private readonly IReadOnlyList<IFileStore> _stores;
     private readonly IReadOnlyList<IFileWriter> _writers;
     private readonly IReadOnlyList<IFileReader> _readers;
-    private readonly IReadOnlyList<ISignedUploadIssuer> _signers;
 
-    public FileStoreRegistry(
-        IEnumerable<IFileStore> stores, IEnumerable<IFileWriter> writers, IEnumerable<IFileReader>? readers = null,
-        IEnumerable<ISignedUploadIssuer>? signers = null)
+    public FileStoreRegistry(IEnumerable<IFileStore> stores, IEnumerable<IFileWriter> writers, IEnumerable<IFileReader>? readers = null)
     {
         ArgumentNullException.ThrowIfNull(stores);
         ArgumentNullException.ThrowIfNull(writers);
         _stores = stores.ToList();
         _writers = writers.ToList();
         _readers = (readers ?? []).ToList();
-        _signers = (signers ?? []).ToList();
     }
 
-    /// <summary>
-    /// The store for a location. A location that does not exist lists as empty rather than failing: the callers
-    /// (the drop reader, the snapshot store) turn "nothing there" into their own precise message (a missing manifest,
-    /// an uncaptured snapshot), exactly as a blob prefix with no blobs already does.
-    /// </summary>
     /// <summary>Joins a name onto a location, whichever store the location belongs to (a URI gets '/', a local path the platform separator).</summary>
     public static string Join(string root, string name)
     {
@@ -89,6 +80,11 @@ public sealed class FileStoreRegistry
         return root.Contains("://", StringComparison.Ordinal) ? root.TrimEnd('/') + "/" + name : Path.Combine(root, name);
     }
 
+    /// <summary>
+    /// The store for a location. A location that does not exist lists as empty rather than failing: the callers (a
+    /// payload listing, a work batch read) turn "nothing there" into their own precise message, exactly as a blob prefix
+    /// with no blobs already does.
+    /// </summary>
     public IFileStore For(string location)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(location);
@@ -110,24 +106,6 @@ public sealed class FileStoreRegistry
         => Writer(location).DeleteAsync(location, ct);
 
     /// <summary>
-    /// Whether a caller can be handed a URL to write this location itself. False for a location whose storage family
-    /// issues none (a local path in development, say), which the caller answers by taking the bytes itself instead.
-    /// </summary>
-    public bool CanSignUpload(string location)
-        => !string.IsNullOrWhiteSpace(location) && _signers.Any(s => s.CanHandle(location));
-
-    /// <summary>A write-only URL for one file. Call <see cref="CanSignUpload"/> first: a location nothing can sign is an error here.</summary>
-    public Task<SignedUpload> CreateUploadAsync(string location, TimeSpan lifetime, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(location);
-        var signer = _signers.FirstOrDefault(s => s.CanHandle(location))
-            ?? throw new DeliveryException(
-                $"No signed upload can be issued for '{location}'. Signed uploads are issued for Azure Storage locations; "
-                + "somewhere else, the files are uploaded through the control plane.");
-        return signer.CreateUploadAsync(location, lifetime, ct);
-    }
-
-    /// <summary>
     /// A seekable stream over a file: the reader's own when one is registered for the location, otherwise the
     /// store's forward stream spilled to a temporary file (disk, never memory).
     /// </summary>
@@ -140,7 +118,7 @@ public sealed class FileStoreRegistry
         }
 
         var forward = await For(file.Path).OpenReadAsync(file, ct).ConfigureAwait(false);
-        return await ParquetScopeReader.EnsureSeekableAsync(forward, ct).ConfigureAwait(false);
+        return await ParquetFiles.EnsureSeekableAsync(forward, ct).ConfigureAwait(false);
     }
 
     /// <summary>A byte range of a file (one document out of a work batch). Falls back to a forward read and a skip.</summary>

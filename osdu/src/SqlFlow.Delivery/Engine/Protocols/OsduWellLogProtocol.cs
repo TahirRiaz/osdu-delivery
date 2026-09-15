@@ -59,7 +59,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         var version = work.ExistingVersion;
         var metadataDelivered = false;
 
-        IReadOnlyList<Drops.PayloadChunk> chunks = [];
+        IReadOnlyList<PayloadFile> chunks = [];
         IReadOnlyList<ParquetShape>? shapes = null;
         var session = false;
         if (work.DeliverPayload)
@@ -298,7 +298,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     /// ceiling is in force or a session opens. They are returned so the committed log can be checked against them, and
     /// are null when they were not read.
     /// </summary>
-    private async Task<IReadOnlyList<ParquetShape>?> PreflightAsync(IPayloadSource payload, IReadOnlyList<Drops.PayloadChunk> chunks, bool session, CancellationToken ct)
+    private async Task<IReadOnlyList<ParquetShape>?> PreflightAsync(IPayloadSource payload, IReadOnlyList<PayloadFile> chunks, bool session, CancellationToken ct)
     {
         var parquet = _options.PayloadContentType.Contains("parquet", StringComparison.OrdinalIgnoreCase);
         var readsShape = parquet && (session || _options.MaxChunkValues > 0 || _options.MaxChunkColumns > 0);
@@ -405,13 +405,13 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             sessionId, targetId, reason);
 
     /// <summary>Reads one chunk's shape from its footer. A chunk that does not parse holds the record: the service would refuse it too.</summary>
-    private static async Task<ParquetShape> ShapeAsync(IPayloadSource payload, Drops.PayloadChunk chunk, CancellationToken ct)
+    private static async Task<ParquetShape> ShapeAsync(IPayloadSource payload, PayloadFile chunk, CancellationToken ct)
     {
         var opened = await payload.OpenAsync(chunk, ct).ConfigureAwait(false);
         Stream seekable;
         try
         {
-            seekable = await ParquetScopeReader.EnsureSeekableAsync(opened, ct).ConfigureAwait(false);
+            seekable = await ParquetFiles.EnsureSeekableAsync(opened, ct).ConfigureAwait(false);
         }
         catch
         {
@@ -423,7 +423,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         {
             try
             {
-                return await ParquetScopeReader.ReadShapeAsync(seekable, ct).ConfigureAwait(false);
+                return await ParquetFiles.ReadShapeAsync(seekable, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -434,7 +434,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         }
     }
 
-    private async Task<(int Sent, string SessionId)> SendSessionAsync(DeliveryWork work, IPayloadSource payload, IReadOnlyList<Drops.PayloadChunk> chunks, long? version, CancellationToken ct)
+    private async Task<(int Sent, string SessionId)> SendSessionAsync(DeliveryWork work, IPayloadSource payload, IReadOnlyList<PayloadFile> chunks, long? version, CancellationToken ct)
     {
         var createUrl = _client.Url(_options.SessionPath ?? Ddms(DefaultSessionPath), work.TargetId);
         var createBody = new JsonObject
@@ -565,6 +565,6 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     }
 
     /// <summary>The request factory is synchronous; opening a blob stream is cheap and the copy is what streams.</summary>
-    internal static Stream OpenSync(IPayloadSource payload, Drops.PayloadChunk chunk)
+    internal static Stream OpenSync(IPayloadSource payload, PayloadFile chunk)
         => payload.OpenAsync(chunk).GetAwaiter().GetResult();
 }

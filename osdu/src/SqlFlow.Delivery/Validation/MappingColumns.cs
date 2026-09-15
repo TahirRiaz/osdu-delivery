@@ -31,10 +31,10 @@ public sealed record MappingChildDataset(string Name, IReadOnlyList<MappingEntry
 }
 
 /// <summary>
-/// The source columns a mapping reads (docs/delivery/mapping-templates.md): the dataset row's, each child dataset's, and the
-/// dataset key's, each with what the mapping does with it. It is the column half of a flow's source contract (what a source
-/// sends for the flow, and which template variable each column fills), and the column list an inline submission's drop
-/// declares (design.md section 3.4).
+/// The source columns a mapping reads (docs/delivery/mapping-templates.md): the record row's, each child dataset's, and the
+/// dataset key's, each with what the mapping does with it. It is the column half of a flow's source contract (which columns
+/// the flow's ingestion tables have to hold, and which template variable each one fills), and the column list an API
+/// submission's records are checked against (docs/stage4-design.md section 4).
 /// </summary>
 public sealed record MappingSourceColumns(IReadOnlyList<MappingColumn> Record, IReadOnlyList<MappingChildDataset> Datasets, IReadOnlyList<string> Key)
 {

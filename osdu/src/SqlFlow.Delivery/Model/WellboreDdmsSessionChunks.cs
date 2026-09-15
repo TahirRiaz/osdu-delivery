@@ -13,7 +13,7 @@ namespace SqlFlow.Delivery.Model;
 /// instead of adding its own, and the commit still succeeds. Seen live on an M26 service: two chunks of five and four
 /// rows that both numbered their rows from zero committed a log of five rows. So chunks that split a log's rows need
 /// labels that continue from one chunk to the next, and chunks that split its curves carry the same labels for the
-/// same rows. The labels are read from each chunk's footer (<see cref="ParquetScopeReader.ReadShapeAsync"/>).
+/// same rows. The labels are read from each chunk's footer (<see cref="ParquetFiles.ReadShapeAsync"/>).
 /// </remarks>
 public static class WellboreDdmsSessionChunks
 {

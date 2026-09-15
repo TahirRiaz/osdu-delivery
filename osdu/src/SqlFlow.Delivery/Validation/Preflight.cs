@@ -3,8 +3,8 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
-using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Json;
+using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
@@ -14,20 +14,21 @@ namespace SqlFlow.Delivery.Validation;
 
 /// <summary>
 /// The preflight gate (docs/delivery/mapping-templates.md, Checks). Before any render, and with no OSDU call, checks that
-/// the mapping, its pinned template, the cache and the drop agree. If the combination does not validate, nothing renders.
+/// the mapping, its pinned template, the cache and the flow's source tables agree. If the combination does not validate,
+/// nothing renders.
 /// </summary>
 public static partial class Preflight
 {
     /// <summary>
-    /// Runs every check and returns the issues. <paramref name="dropColumns"/> maps a scope name (<c>record</c> or a child
-    /// dataset) to the columns the drop declares; pass null to check without a drop.
+    /// Runs every check and returns the issues. <paramref name="sourceColumns"/> maps a scope name (<c>record</c> or a child
+    /// dataset) to the columns that table holds; pass null to check without a source.
     /// </summary>
     public static IReadOnlyList<ValidationIssue> Check(
         MappingDefinition mapping,
         SchemaSnapshot schema,
         ReferenceSnapshot references,
         RenderContext context,
-        IReadOnlyDictionary<string, IReadOnlySet<string>>? dropColumns)
+        IReadOnlyDictionary<string, IReadOnlySet<string>>? sourceColumns)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(schema);
@@ -76,10 +77,10 @@ public static partial class Preflight
             }
         }
 
-        // 6. Every dataset column and child dataset exists in the drop.
-        if (dropColumns is not null)
+        // 6. Every dataset column and child dataset exists in the flow's source tables.
+        if (sourceColumns is not null)
         {
-            CheckColumns(mapping, dropColumns, issues, where);
+            CheckColumns(mapping, sourceColumns, issues, where);
         }
 
         foreach (var (name, parameter) in mapping.Parameters)
@@ -387,19 +388,19 @@ public static partial class Preflight
         => relationships.Any(r => string.Equals(r, entityType, StringComparison.Ordinal)
             || (!r.Contains("--", StringComparison.Ordinal) && entityType.StartsWith(r + "--", StringComparison.Ordinal)));
 
-    private static void CheckColumns(MappingDefinition mapping, IReadOnlyDictionary<string, IReadOnlySet<string>> dropColumns, List<ValidationIssue> issues, string where)
+    private static void CheckColumns(MappingDefinition mapping, IReadOnlyDictionary<string, IReadOnlySet<string>> sourceColumns, List<ValidationIssue> issues, string where)
     {
         void Require(DatasetColumn column, string reader)
         {
-            var scope = column.Child ?? DropManifest.RootScope;
-            if (!dropColumns.TryGetValue(scope, out var columns))
+            var scope = column.Child ?? SourceDatasets.Record;
+            if (!sourceColumns.TryGetValue(scope, out var columns))
             {
-                issues.Add(ValidationIssue.Error($"{where}: {reader} reads child dataset '{column.Child}', which the drop does not declare."));
+                issues.Add(ValidationIssue.Error($"{where}: {reader} reads child dataset '{column.Child}', which the flow does not declare under source.datasets."));
             }
             else if (!columns.Contains(column.Column))
             {
                 issues.Add(ValidationIssue.Error(
-                    $"{where}: {reader} reads {column}, which {(column.Child is null ? "the dataset's row" : "child dataset '" + column.Child + "'")} in the drop does not declare. Declared: {string.Join(", ", columns.OrderBy(c => c, StringComparer.Ordinal))}."));
+                    $"{where}: {reader} reads {column}, which {(column.Child is null ? "the record table" : "child dataset '" + column.Child + "'")} does not hold. Columns: {string.Join(", ", columns.OrderBy(c => c, StringComparer.Ordinal))}."));
             }
         }
 
@@ -418,9 +419,9 @@ public static partial class Preflight
 
         foreach (var entry in mapping.Entries)
         {
-            if (entry.IsRepeater && !dropColumns.ContainsKey(entry.Source!.Child!))
+            if (entry.IsRepeater && !sourceColumns.ContainsKey(entry.Source!.Child!))
             {
-                issues.Add(ValidationIssue.Error($"{where}: {entry.Where} repeats child dataset '{entry.Source.Child}', which the drop does not declare."));
+                issues.Add(ValidationIssue.Error($"{where}: {entry.Where} repeats child dataset '{entry.Source.Child}', which the flow does not declare under source.datasets."));
             }
 
             foreach (var column in entry.Columns)

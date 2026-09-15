@@ -1,15 +1,17 @@
 using System.Text.Json.Nodes;
-using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Identity;
 
 namespace SqlFlow.Delivery.Protocols;
 
-/// <summary>Opens a record's payload chunks for streaming. Each open returns a fresh stream, so retries re-open the blob.</summary>
+/// <summary>One payload file of a record, in delivery order: its position, where it is, how long it is and when it was last written.</summary>
+public sealed record PayloadFile(int Index, string Path, long Size, DateTimeOffset? Modified = null);
+
+/// <summary>Opens a record's payload files for streaming. Each open returns a fresh stream, so retries re-open the blob.</summary>
 public interface IPayloadSource
 {
-    Task<IReadOnlyList<PayloadChunk>> ListChunksAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<PayloadFile>> ListChunksAsync(CancellationToken ct = default);
 
-    Task<Stream> OpenAsync(PayloadChunk chunk, CancellationToken ct = default);
+    Task<Stream> OpenAsync(PayloadFile file, CancellationToken ct = default);
 }
 
 /// <summary>What one delivery attempt must do for one record.</summary>

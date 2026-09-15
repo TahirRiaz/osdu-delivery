@@ -1,7 +1,5 @@
 using System.Globalization;
-using System.Runtime.CompilerServices;
 using System.Text.Json;
-using SqlFlow.Delivery.Rendering;
 using Parquet;
 using Parquet.Data;
 using Parquet.Schema;
@@ -54,19 +52,19 @@ public enum ParquetRowIndexSource
 }
 
 /// <summary>
-/// Reads the source-shaped metadata rows of one scope file with Parquet.Net, one row group at a time with column
-/// pruning, so peak memory is one row group's selected columns (design.md section 13.1). Only top-level scalar
-/// columns are read; nested columns are ignored because the document model expresses collections as child scopes.
+/// The parquet files the delivery domain touches without parsing their rows: a payload chunk's footer, measured against
+/// the target's bulk ceilings and the other chunks of its session, a forward-only stream made seekable, the values a
+/// parquet column type reads as, and the writers the sample estate, the tests and an API submission's landing files use.
 /// </summary>
-public static class ParquetScopeReader
+public static class ParquetFiles
 {
     /// <summary>The key-value metadata entry a pandas writer (pyarrow, fastparquet) leaves in the footer.</summary>
     public const string PandasMetadataKey = "pandas";
 
     /// <summary>
     /// Parquet needs a seekable stream (the footer is at the end). A forward-only stream is spilled to a temporary
-    /// file that is deleted when the returned stream closes: disk, never memory, so a scope file of any size reads
-    /// in bounded memory. Stores that can seek natively (local files, blobs through the range reader) never come here.
+    /// file that is deleted when the returned stream closes: disk, never memory, so a file of any size reads in bounded
+    /// memory. Stores that can seek natively (local files, blobs through the range reader) never come here.
     /// </summary>
     public static async Task<Stream> EnsureSeekableAsync(Stream stream, CancellationToken ct = default)
     {
@@ -145,51 +143,6 @@ public static class ParquetScopeReader
         };
     }
 
-    /// <summary>The top-level scalar column names of a file.</summary>
-    public static async Task<IReadOnlyList<string>> ReadColumnsAsync(Stream seekable, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(seekable);
-        using var reader = await ParquetReader.CreateAsync(seekable, leaveStreamOpen: true, cancellationToken: ct).ConfigureAwait(false);
-        return reader.Schema.Fields.OfType<DataField>().Select(f => f.Name).ToList();
-    }
-
-    public static async IAsyncEnumerable<SourceRow> ReadRowsAsync(
-        Stream seekable,
-        IReadOnlySet<string>? columns,
-        [EnumeratorCancellation] CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(seekable);
-        using var reader = await ParquetReader.CreateAsync(seekable, leaveStreamOpen: true, cancellationToken: ct).ConfigureAwait(false);
-        var fields = reader.Schema.Fields
-            .OfType<DataField>()
-            .Where(f => columns is null || columns.Contains(f.Name))
-            .ToArray();
-
-        for (var group = 0; group < reader.RowGroupCount; group++)
-        {
-            ct.ThrowIfCancellationRequested();
-            using var rowGroup = reader.OpenRowGroupReader(group);
-            var data = new Array[fields.Length];
-            for (var i = 0; i < fields.Length; i++)
-            {
-                var column = await rowGroup.ReadColumnAsync(fields[i], ct).ConfigureAwait(false);
-                data[i] = column.Data;
-            }
-
-            var rows = checked((int)rowGroup.RowCount);
-            for (var r = 0; r < rows; r++)
-            {
-                var values = new Dictionary<string, object?>(fields.Length, StringComparer.OrdinalIgnoreCase);
-                for (var i = 0; i < fields.Length; i++)
-                {
-                    values[fields[i].Name] = r < data[i].Length ? Normalize(data[i].GetValue(r)) : null;
-                }
-
-                yield return new SourceRow(values);
-            }
-        }
-    }
-
     /// <summary>
     /// Collapses the parquet CLR types to the small set the renderer understands. A float is read as the number it was
     /// written as (12.3, not the 12.300000190734863 its bits widen to), a decimal and an unsigned 64-bit value keep their
@@ -200,21 +153,21 @@ public static class ParquetScopeReader
         null => null,
         string s => s,
         bool b => b,
-        byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture),
+        byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, CultureInfo.InvariantCulture),
         ulong ul => ul <= long.MaxValue ? (long)ul : (decimal)ul,
         float f => float.IsNaN(f) ? null : Rendering.NumberValues.Widen(f),
         double d => double.IsNaN(d) ? null : d,
         decimal m => m,
         DateTime dt => new DateTimeOffset(dt.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(dt, DateTimeKind.Utc) : dt.ToUniversalTime()),
         DateTimeOffset dto => dto.ToUniversalTime(),
-        DateOnly d => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
-        TimeSpan ts => ts.ToString("c", System.Globalization.CultureInfo.InvariantCulture),
+        DateOnly d => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        TimeSpan ts => ts.ToString("c", CultureInfo.InvariantCulture),
         Guid g => g,
         byte[] bytes => Convert.ToBase64String(bytes),
         _ => value.ToString(),
     };
 
-    /// <summary>Writes rows as one row group, for fixtures, tests and the sample drop generator.</summary>
+    /// <summary>Writes rows as one row group, for the sample estate, the tests and an API submission's landing files.</summary>
     public static Task WriteAsync(Stream target, IReadOnlyList<(string Name, Type ClrType)> columns, IReadOnlyList<IReadOnlyDictionary<string, object?>> rows, CancellationToken ct = default)
         => WriteAsync(target, columns, rows, null, ct);
 
@@ -248,7 +201,7 @@ public static class ParquetScopeReader
             for (var r = 0; r < rows.Count; r++)
             {
                 var v = rows[r].TryGetValue(name, out var raw) ? raw : null;
-                array.SetValue(v is null ? null : Convert.ChangeType(v, Nullable.GetUnderlyingType(clr) ?? clr, System.Globalization.CultureInfo.InvariantCulture), r);
+                array.SetValue(v is null ? null : Convert.ChangeType(v, Nullable.GetUnderlyingType(clr) ?? clr, CultureInfo.InvariantCulture), r);
             }
 
             await rowGroup.WriteColumnAsync(new DataColumn(fields[i], array), ct).ConfigureAwait(false);
@@ -377,7 +330,7 @@ public static class ParquetScopeReader
     }
 }
 
-/// <summary>Writes a parquet file one row group at a time, so a publication of any size never sits in memory whole.</summary>
+/// <summary>Writes a parquet file one row group at a time, so a file of any size never sits in memory whole.</summary>
 public sealed class ParquetRowGroupWriter : IAsyncDisposable
 {
     private readonly ParquetWriter _writer;
@@ -395,7 +348,7 @@ public sealed class ParquetRowGroupWriter : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(columns);
-        var fields = columns.Select(c => new DataField(c.Name, ParquetScopeReader.MakeNullable(c.ClrType))).ToArray();
+        var fields = columns.Select(c => new DataField(c.Name, ParquetFiles.MakeNullable(c.ClrType))).ToArray();
         var schema = new ParquetSchema(fields.Cast<Field>().ToArray());
         var writer = await ParquetWriter.CreateAsync(schema, target, cancellationToken: ct).ConfigureAwait(false);
         writer.CompressionMethod = CompressionMethod.Snappy;
@@ -409,12 +362,12 @@ public sealed class ParquetRowGroupWriter : IAsyncDisposable
         for (var i = 0; i < _fields.Length; i++)
         {
             var name = _columns[i].Name;
-            var clr = ParquetScopeReader.MakeNullable(_columns[i].ClrType);
+            var clr = ParquetFiles.MakeNullable(_columns[i].ClrType);
             var array = Array.CreateInstance(clr, rows.Count);
             for (var r = 0; r < rows.Count; r++)
             {
                 var v = rows[r].TryGetValue(name, out var raw) ? raw : null;
-                array.SetValue(v is null ? null : Convert.ChangeType(v, Nullable.GetUnderlyingType(clr) ?? clr, System.Globalization.CultureInfo.InvariantCulture), r);
+                array.SetValue(v is null ? null : Convert.ChangeType(v, Nullable.GetUnderlyingType(clr) ?? clr, CultureInfo.InvariantCulture), r);
             }
 
             await rowGroup.WriteColumnAsync(new DataColumn(_fields[i], array), ct).ConfigureAwait(false);

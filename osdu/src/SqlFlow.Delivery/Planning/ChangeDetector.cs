@@ -88,9 +88,11 @@ public static class ChangeDetector
             return false;
         }
 
-        var sameSource = source.ModifiedUtc is { } modified
-            ? existing.SourceModifiedUtc == modified
-            : source.Fingerprint is not null && string.Equals(existing.SourceFingerprint, source.Fingerprint, StringComparison.Ordinal);
+        // Both parts of the version have to agree: the ingestion fingerprint says the rows are the ones the version held was
+        // built from, and the business version, when the flow declares one, says the source did not move it either.
+        var sameSource = source.Fingerprint is not null
+            && string.Equals(existing.SourceFingerprint, source.Fingerprint, StringComparison.Ordinal)
+            && (source.ModifiedUtc is not { } modified || existing.SourceModifiedUtc == modified);
 
         return sameSource
             && string.Equals(existing.RenderContext, renderContext, StringComparison.Ordinal)
