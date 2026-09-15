@@ -2,14 +2,14 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
-using SqlFlow.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Catalog;
 
 /// <summary>
-/// The cache store over the catalog's <c>delivery.CacheVersion</c>, <c>delivery.CacheItem</c> and <c>delivery.CacheMember</c>
+/// The cache store over the <c>osdu.CacheVersion</c>, <c>osdu.CacheItem</c> and <c>osdu.CacheMember</c>
 /// tables, one cache per partition. A merge runs in one transaction: it reads the partition's current version and who holds
 /// each record of the captured types, merges the capture in, and when the cached content moved writes the version row
 /// first, which claims the partition's next sequence so a concurrent write fails instead of interleaving, then the records
@@ -17,7 +17,7 @@ namespace SqlFlow.Delivery.Catalog;
 /// written again: its open range already covers the new version, however many flows captured it. Versions never change once
 /// written, so the most recently loaded ones are kept in memory.
 /// </summary>
-public sealed class CatalogCacheStore : ICacheStore
+public sealed class OsduCacheStore : ICacheStore
 {
     /// <summary>The width of a partition name and of a cache flow name in the catalog.</summary>
     public const int MaxNameLength = 200;
@@ -29,11 +29,11 @@ public sealed class CatalogCacheStore : ICacheStore
     /// <summary>How many loaded versions stay in memory. A run renders against one; the GUI reads a handful.</summary>
     private const int RetainedVersions = 8;
 
-    private readonly Func<CatalogDbContext> _factory;
+    private readonly Func<OsduDbContext> _factory;
     private readonly Lock _gate = new();
     private readonly LinkedList<(string Scope, string Version, ReferenceSnapshot Snapshot)> _recent = new();
 
-    public CatalogCacheStore(Func<CatalogDbContext> factory)
+    public OsduCacheStore(Func<OsduDbContext> factory)
     {
         ArgumentNullException.ThrowIfNull(factory);
         _factory = factory;
@@ -90,7 +90,7 @@ public sealed class CatalogCacheStore : ICacheStore
     }
 
     /// <summary>What the synced cache flows declare for a partition, read through an open context.</summary>
-    public static async Task<CacheDeclaration> DeclarationAsync(CatalogDbContext db, string scope, CancellationToken ct = default)
+    public static async Task<CacheDeclaration> DeclarationAsync(OsduDbContext db, string scope, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
@@ -304,7 +304,7 @@ public sealed class CatalogCacheStore : ICacheStore
     }
 
     /// <summary>One version with every record whose range covers its sequence, checked against the hash it was written with.</summary>
-    private static async Task<ReferenceSnapshot> ReadAsync(CatalogDbContext db, DeliveryCacheVersion row, CancellationToken ct)
+    private static async Task<ReferenceSnapshot> ReadAsync(OsduDbContext db, DeliveryCacheVersion row, CancellationToken ct)
     {
         var scope = row.Scope;
         var sequence = row.Sequence;
@@ -338,7 +338,7 @@ public sealed class CatalogCacheStore : ICacheStore
     /// Compares the new version against what the newest one holds, record by record over every type: a record that changed
     /// ends its open range and begins another, one that arrived begins one, and one that left ends its range.
     /// </summary>
-    private static async Task WriteItemsAsync(CatalogDbContext db, string scope, int sequence, IReadOnlyList<ReferenceType> types, CancellationToken ct)
+    private static async Task WriteItemsAsync(OsduDbContext db, string scope, int sequence, IReadOnlyList<ReferenceType> types, CancellationToken ct)
     {
         var open = await db.DeliveryCacheItems.AsNoTracking()
             .Where(i => i.Scope == scope && i.ToSequence == null)
@@ -403,7 +403,7 @@ public sealed class CatalogCacheStore : ICacheStore
     /// types by; a type the merge removed from the partition loses every flow's membership.
     /// </summary>
     private static async Task WriteMembersAsync(
-        CatalogDbContext db, string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheMergePlan plan, CancellationToken ct)
+        OsduDbContext db, string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheMergePlan plan, CancellationToken ct)
     {
         var typeNames = captured.Select(t => t.Name).ToList();
         await db.DeliveryCacheMembers

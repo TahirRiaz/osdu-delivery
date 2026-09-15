@@ -45,7 +45,7 @@ public enum AttemptOutcome
 /// <summary>The phases of the attempts that record a decision not to send, beside the delivery phases the worker reports.</summary>
 public static class AttemptPhases
 {
-    /// <summary>A skipped attempt: the drop carried a version older than the one delivered or queued.</summary>
+    /// <summary>A skipped attempt: the source carried a version older than the one delivered or queued.</summary>
     public const string Stale = "stale";
 
     /// <summary>A skipped attempt: the final hash check found OSDU already holding the queued document and payload.</summary>
@@ -60,7 +60,16 @@ public enum VerifyOutcome
     Error,
 }
 
-/// <summary>One drop handed over by Databricks (design.md section 7.2). Its id is the idempotency key.</summary>
+/// <summary>Where the version of a record came from: the ingestion table's file and row, and when the table last updated the row.</summary>
+public readonly record struct RecordOrigin(string? FileName, long? RowNumber, DateTime? UpdatedUtc)
+{
+    public static RecordOrigin None { get; } = new(null, null, null);
+}
+
+/// <summary>
+/// One plan of a flow over its ingestion tables (docs/stage4-design.md section 3.3): an incremental window, a full read,
+/// a set of record keys, or the records an API submission landed. Its id is the idempotency key.
+/// </summary>
 public sealed record SubmissionState
 {
     public required Guid SubmissionId { get; init; }
@@ -73,17 +82,15 @@ public sealed record SubmissionState
 
     public required string RenderContext { get; init; }
 
-    public required string DropLocation { get; init; }
-
     public string ParametersJson { get; init; } = "{}";
 
     /// <summary>
-    /// What the sending system calls this submission in its own records (a filename, a ticket, a job id), taken from the
-    /// drop's manifest. It is the handle an operator searches by when they know the source's name for the work and not
-    /// this ledger's id. Null when the drop's manifest named none.
+    /// What the sending system calls this submission in its own records (a filename, a ticket, a job id): the handle an
+    /// operator searches by when they know the source's name for the work and not this ledger's id. Null when none was given.
     /// </summary>
     public string? Reference { get; init; }
 
+    /// <summary>How many candidate records the plan estimated when it opened the source.</summary>
     public long RecordCount { get; init; }
 
     public SubmissionStatus Status { get; init; } = SubmissionStatus.Received;
@@ -94,8 +101,8 @@ public sealed record SubmissionState
     /// <summary>How many work batches the intake wrote.</summary>
     public int BatchCount { get; init; }
 
-    /// <summary>How many root-scope partitions the drop declared.</summary>
-    public int Partitions { get; init; }
+    /// <summary>How many key slices the intake was cut into for its fan-out; 1 for a plan that ran on one node.</summary>
+    public int Slices { get; init; }
 
     public DateTime ReceivedUtc { get; init; }
 
@@ -115,7 +122,7 @@ public sealed record SubmissionState
     public long AwaitingApproval { get; init; }
 
     /// <summary>
-    /// Records the drop carried in a version older than the one already delivered or queued: skipped and never sent,
+    /// Records the source carried in a version older than the one already delivered or queued: skipped and never sent,
     /// each with an attempt saying which version it was and which one stands.
     /// </summary>
     public long SkippedStale { get; init; }
@@ -132,61 +139,55 @@ public sealed record SubmissionState
 
     public long Failed { get; init; }
 
-    public string? Error { get; init; }
-
-    /// <summary><see cref="SubmissionKinds.Drop"/> for a drop, <see cref="SubmissionKinds.Replan"/> for the replica's records rendered again.</summary>
-    public string Kind { get; init; } = SubmissionKinds.Drop;
-
-    /// <summary>The drop's manifest as JSON: what plans the submission from the replica without opening the drop. Null for a replan.</summary>
-    public string? ManifestJson { get; init; }
-
-    /// <summary>The flow-wide order of replica loads: a larger sequence carried its records later. 0 until a load began.</summary>
-    public long SourceSequence { get; init; }
-
-    /// <summary>When the drop's records were completely loaded into the flow's replica; null for a flow without one, and until then.</summary>
-    public DateTime? LoadedUtc { get; init; }
-
-    /// <summary>Records read from the drop, keyed or not, duplicates included.</summary>
-    public long SourceRecords { get; init; }
-
-    /// <summary>Distinct records the submission carried into the replica, one per delivery key.</summary>
-    public long LoadedRows { get; init; }
-
-    /// <summary>The ordinals the drop's records were numbered in (duplicates leave gaps): the range a fan-out slices.</summary>
-    public long LoadedOrdinals { get; init; }
-
-    /// <summary>Records the drop carried more than once under one delivery key; the later one stands.</summary>
-    public long Duplicates { get; init; }
-
-    /// <summary>Records without a derivable delivery key: not loaded and not delivered.</summary>
+    /// <summary>Records without a derivable delivery key: not planned, not delivered.</summary>
     public long Untracked { get; init; }
 
-    /// <summary>Records the load added to the replica.</summary>
-    public long ReplicaInserted { get; init; }
+    public string? Error { get; init; }
 
-    /// <summary>Records whose values the load changed in the replica; the others it carried were unchanged.</summary>
-    public long ReplicaUpdated { get; init; }
+    /// <summary>One of <see cref="SubmissionKinds"/>.</summary>
+    public string Kind { get; init; } = SubmissionKinds.Incremental;
 
-    /// <summary>The schema changes the load applied to the replica (tables created, columns added, types widened) and the drift it found, as JSON; null when there were none.</summary>
-    public string? ReplicaSchemaJson { get; init; }
+    /// <summary>The source connection reference as the flow declared it; never a resolved value.</summary>
+    public string SourceConnection { get; init; } = string.Empty;
 
-    /// <summary>When the retention prune removed the submission's record list from the replica; a run of it then reads its drop again.</summary>
-    public DateTime? SourcePrunedUtc { get; init; }
+    /// <summary>The record table's three-part name.</summary>
+    public string SourceObject { get; init; } = string.Empty;
 
-    public bool IsReplan => string.Equals(Kind, SubmissionKinds.Replan, StringComparison.Ordinal);
+    /// <summary>The lower bound (exclusive) of the change window planned; null for a plan without one.</summary>
+    public DateTime? WindowFromUtc { get; init; }
 
-    /// <summary>The submission's records are in the flow's replica with its record list, so it is planned from there without its drop.</summary>
-    public bool IsLoaded => LoadedUtc is not null && SourcePrunedUtc is null;
+    /// <summary>The upper bound (inclusive) of the change window planned; set for incremental and full plans.</summary>
+    public DateTime? WindowToUtc { get; init; }
+
+    /// <summary>What else bounded the read, as JSON (<see cref="SourceWindowDescription"/>).</summary>
+    public string? SourceWindowJson { get; init; }
+
+    /// <summary>The platform run that coordinated the plan.</summary>
+    public Guid? RunId { get; init; }
+
+    /// <summary>The run group that carried an API submission through its pre, ing and OSDU flows.</summary>
+    public Guid? GroupId { get; init; }
+
+    /// <summary>Whether the plan covered the whole scope, so its completion may move the scope's watermark.</summary>
+    public bool CoversScope => Kind is SubmissionKinds.Incremental or SubmissionKinds.Full;
 }
 
-/// <summary>What a submission is: a drop, or a replan of the replica's records.</summary>
+/// <summary>What a submission is: which selection of the ingestion tables it planned.</summary>
 public static class SubmissionKinds
 {
-    /// <summary>A drop (prepared, extracted from SQL, or written from an inline submission), loaded into the flow's replica when it declares one.</summary>
-    public const string Drop = "drop";
+    /// <summary>The rows the tables changed in a window after the scope's watermark.</summary>
+    public const string Incremental = "incremental";
 
-    /// <summary>The replica's records (all of a parameter set, or chosen ones) rendered again under the flow's current mapping, template and cache.</summary>
-    public const string Replan = "replan";
+    /// <summary>Every row of the scope, up to a bound: a first plan, or a replan.</summary>
+    public const string Full = "full";
+
+    /// <summary>Named record keys: a record-scoped run, or the records the ledger asked to plan again.</summary>
+    public const string Keys = "keys";
+
+    /// <summary>The records an API submission landed.</summary>
+    public const string Inline = "inline";
+
+    public static IReadOnlyList<string> All { get; } = [Incremental, Full, Keys, Inline];
 }
 
 /// <summary>The current state of one deliverable (design.md section 7.3).</summary>
@@ -198,6 +199,9 @@ public sealed record RecordState
 
     public required string SourceKey { get; init; }
 
+    /// <summary>The record's key tuple as a JSON array of strings, in the flow's key order: what a key-scoped read uses.</summary>
+    public string? SourceKeyJson { get; init; }
+
     /// <summary>Human-readable label from the mapping's identity.label template (for search and display only).</summary>
     public string? Label { get; init; }
 
@@ -206,16 +210,26 @@ public sealed record RecordState
     /// <summary>The render context of the last delivered document, canonical JSON.</summary>
     public string? RenderContext { get; init; }
 
+    /// <summary>The ingestion fingerprint of the rows the delivered document was built from.</summary>
     public string? SourceFingerprint { get; init; }
 
-    /// <summary>When the source row the delivered document was built from last changed (the flow's source.lastModified).</summary>
+    /// <summary>The business version of the row the delivered document was built from (the flow's source.lastModified).</summary>
     public DateTime? SourceModifiedUtc { get; init; }
+
+    /// <summary>The ingestion file the version OSDU holds came from.</summary>
+    public string? SourceFileName { get; init; }
+
+    /// <summary>The row of that file.</summary>
+    public long? SourceRowNumber { get; init; }
+
+    /// <summary>When the ingestion table last updated that row.</summary>
+    public DateTime? SourceUpdatedUtc { get; init; }
 
     public string? MetadataHash { get; init; }
 
     public string? PayloadHash { get; init; }
 
-    /// <summary>The newest modified time among the chunk files the delivered payload was sent from.</summary>
+    /// <summary>The newest modified time among the payload files the delivered payload was sent from.</summary>
     public DateTime? PayloadModifiedUtc { get; init; }
 
     public string? TargetId { get; init; }
@@ -270,11 +284,20 @@ public sealed record RecordState
 
     public string? PendingRenderContext { get; init; }
 
-    /// <summary>The source fingerprint of the pending work, or of the state a held/failed/deleted record was left in.</summary>
+    /// <summary>The ingestion fingerprint of the pending work, or of the state a held/failed/deleted record was left in.</summary>
     public string? PendingSourceFingerprint { get; init; }
 
-    /// <summary>The source last-modified moment of the pending work, or of the state a held/failed/deleted record was left in.</summary>
+    /// <summary>The business version of the pending work, or of the state a held/failed/deleted record was left in.</summary>
     public DateTime? PendingSourceModifiedUtc { get; init; }
+
+    /// <summary>The ingestion file the queued version came from, or the one a held record was left at.</summary>
+    public string? PendingSourceFileName { get; init; }
+
+    /// <summary>The row of that file.</summary>
+    public long? PendingSourceRowNumber { get; init; }
+
+    /// <summary>When the ingestion table last updated that row.</summary>
+    public DateTime? PendingSourceUpdatedUtc { get; init; }
 
     public string? PendingMetadataHash { get; init; }
 
@@ -283,7 +306,7 @@ public sealed record RecordState
     /// <summary>The payload watermark of the pending work, when it carries a payload.</summary>
     public DateTime? PendingPayloadModifiedUtc { get; init; }
 
-    /// <summary>Drop-relative location of the pending payload chunks, or null when no payload is pending.</summary>
+    /// <summary>Where the pending payload's files are listed from (folder and pattern), or null when no payload is pending.</summary>
     public string? PendingPayloadLocation { get; init; }
 
     public bool PendingMetadata { get; init; }
@@ -303,12 +326,21 @@ public sealed record RecordState
     /// </summary>
     public long? CacheSetId { get; init; }
 
+    /// <summary>When the ledger asked for the record to be planned again (a redeliver, a release, a cache rollout); null once a plan took it.</summary>
+    public DateTime? PlanRequestedUtc { get; init; }
+
     public DateTime CreatedUtc { get; init; }
 
     public DateTime UpdatedUtc { get; init; }
 
     /// <summary>A rendered document is queued for the record, or being delivered right now.</summary>
     public bool HasPendingWork => PendingDocumentRef is not null && Status is RecordStatus.Pending or RecordStatus.Delivering;
+
+    /// <summary>The origin of the version OSDU holds.</summary>
+    public RecordOrigin Origin => new(SourceFileName, SourceRowNumber, SourceUpdatedUtc);
+
+    /// <summary>The origin of the queued version, or of the one a held record was left at.</summary>
+    public RecordOrigin PendingOrigin => new(PendingSourceFileName, PendingSourceRowNumber, PendingSourceUpdatedUtc);
 }
 
 /// <summary>One delivery try, append-only (design.md section 7.3).</summary>
@@ -350,6 +382,15 @@ public sealed record AttemptRecord
 
     /// <summary>The work batch the try belonged to, when it ran from one.</summary>
     public int? WorkBatch { get; init; }
+
+    /// <summary>The ingestion file the attempt's document was built from.</summary>
+    public string? SourceFileName { get; init; }
+
+    /// <summary>The row of that file.</summary>
+    public long? SourceRowNumber { get; init; }
+
+    /// <summary>When the ingestion table last updated that row.</summary>
+    public DateTime? SourceUpdatedUtc { get; init; }
 }
 
 /// <summary>What the worker writes back after processing a claimed record.</summary>
@@ -361,7 +402,7 @@ public sealed record RecordCompletion
 
     public required AttemptRecord Attempt { get; init; }
 
-    /// <summary>When delivered: promote the pending document, hashes and context to current.</summary>
+    /// <summary>When delivered: promote the pending document, hashes, context and origin to current.</summary>
     public bool Promote { get; init; }
 
     /// <summary>
@@ -407,7 +448,8 @@ public sealed record ClaimedWork(
     string? PayloadHash,
     DateTime? PayloadModifiedUtc,
     bool Metadata,
-    bool Payload)
+    bool Payload,
+    RecordOrigin Origin = default)
 {
     /// <summary>The claimed work of a record, or null when it holds no pending document.</summary>
     public static ClaimedWork? Of(RecordState record)
@@ -417,7 +459,8 @@ public sealed record ClaimedWork(
             ? null
             : new ClaimedWork(
                 record.LastSubmissionId, reference, record.PendingRenderContext, record.PendingSourceFingerprint, record.PendingSourceModifiedUtc,
-                record.PendingMetadataHash, record.PendingPayloadHash, record.PendingPayloadModifiedUtc, record.PendingMetadata, record.PendingPayload);
+                record.PendingMetadataHash, record.PendingPayloadHash, record.PendingPayloadModifiedUtc, record.PendingMetadata, record.PendingPayload,
+                record.PendingOrigin);
     }
 }
 
@@ -430,7 +473,7 @@ public enum SkipKind
     /// <summary>Rendered, and the document and payload hashes equal what OSDU holds (or what is already queued).</summary>
     Rendered,
 
-    /// <summary>The drop carries a version older than the one delivered or queued; OSDU keeps the newer one.</summary>
+    /// <summary>The source carries a version older than the one delivered or queued; OSDU keeps the newer one.</summary>
     Stale,
 }
 
@@ -444,12 +487,18 @@ public sealed record SkippedRecord
     /// <summary>What the plan said about the record, for the attempt a stale skip writes.</summary>
     public required string Reason { get; init; }
 
-    /// <summary>The source version the drop carried.</summary>
+    /// <summary>The record's key tuple, as the source read it.</summary>
+    public string? SourceKeyJson { get; init; }
+
+    /// <summary>The ingestion fingerprint the source carried.</summary>
     public string? SourceFingerprint { get; init; }
 
     public DateTime? SourceModifiedUtc { get; init; }
 
-    /// <summary>The payload watermark the drop carried.</summary>
+    /// <summary>The ingestion file and row the plan read, for the attempt a stale skip writes.</summary>
+    public RecordOrigin Origin { get; init; }
+
+    /// <summary>The payload watermark the source carried.</summary>
     public DateTime? PayloadModifiedUtc { get; init; }
 
     /// <summary>The render context the record was rendered under (a rendered skip advances the record to it).</summary>
@@ -467,8 +516,62 @@ public sealed record SkippedRecord
 /// </param>
 public sealed record PendingStaging(int Staged, IReadOnlyList<DeliveryKey> Refused);
 
-/// <summary>Tier-0 watermark: the Delta commit version of a source table for one flow scope (design.md section 6.6).</summary>
-public sealed record SourceWatermark(Guid FlowId, string Scope, string Table, long Version, DateTime RecordedUtc, string? ContextHash = null);
+/// <summary>
+/// The watermark of one flow scope: the upper bound of the last whole-scope plan that completed, and the submission that
+/// wrote it. The next incremental plan reads the rows changed after it, less the flow's overlap.
+/// </summary>
+public sealed record SourceWatermark(Guid FlowId, string Scope, DateTime UpdatedThroughUtc, Guid SubmissionId, DateTime RecordedUtc, string? ContextHash);
+
+/// <summary>A record the ledger asked to be planned again, with the key tuple a key-scoped read finds it by.</summary>
+public sealed record PlanRequestedRecord(DeliveryKey DeliveryKey, string? SourceKeyJson, DateTime RequestedUtc);
+
+/// <summary>One file an API submission landed for a pre flow (the <c>osdu.SubmissionLanding</c> row).</summary>
+public sealed record LandingState
+{
+    public required Guid SubmissionId { get; init; }
+
+    /// <summary><c>record</c>, or a child dataset's name.</summary>
+    public required string Dataset { get; init; }
+
+    public required string PreFlowName { get; init; }
+
+    /// <summary>The full location the file is written to.</summary>
+    public required string Location { get; init; }
+
+    /// <summary>The file name the ingestion table's file column holds for the rows it lands.</summary>
+    public required string FileName { get; init; }
+
+    /// <summary>csv, ndjson, json or parquet.</summary>
+    public required string Format { get; init; }
+
+    public long RowCount { get; init; }
+
+    public long Bytes { get; init; }
+
+    /// <summary>The SHA-256 of the file's content, 64 hexadecimal characters.</summary>
+    public required string ContentHash { get; init; }
+
+    public DateTime? WrittenUtc { get; init; }
+
+    /// <summary>The pre flow member run that took the file.</summary>
+    public Guid? PreRunId { get; init; }
+}
+
+/// <summary>The life of an API submission: accepted, its files landed, its chain queued, and how it ended.</summary>
+public static class InlineStatuses
+{
+    public const string Accepted = "accepted";
+
+    public const string Landed = "landed";
+
+    public const string Queued = "queued";
+
+    public const string Completed = "completed";
+
+    public const string Failed = "failed";
+
+    public static IReadOnlyList<string> All { get; } = [Accepted, Landed, Queued, Completed, Failed];
+}
 
 /// <summary>One stored dependency of a cache set: which cache and cached path it holds, and what it held.</summary>
 public sealed record CacheUse(string Scope, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
@@ -542,19 +645,6 @@ public sealed record UpdateTag
         _ => $"{TypeName} '{ItemId}': {Path} changed from '{OldValue}' to '{NewValue}'",
     };
 }
-
-/// <summary>The compact known-state row Databricks reads at the start of a run (design.md section 6.7).</summary>
-public sealed record KnownState(
-    DeliveryKey DeliveryKey,
-    string SourceKey,
-    string? SourceFingerprint,
-    DateTime? SourceModifiedUtc,
-    string? MetadataHash,
-    string? PayloadHash,
-    DateTime? PayloadModifiedUtc,
-    RecordStatus Status,
-    string? TargetId,
-    long? TargetVersion);
 
 /// <summary>What is uploaded and what is not, per flow: the numbers an operator looks at first.</summary>
 public sealed record FlowStats
@@ -659,7 +749,7 @@ public sealed record RecordQuery
 {
     public RecordStatus? Status { get; init; }
 
-    /// <summary>A delivery key, a target id, or a prefix of the label or source key.</summary>
+    /// <summary>A delivery key, a target id, or a prefix of the label, the source key or the origin file name.</summary>
     public string? Search { get; init; }
 
     public SearchMode Mode { get; init; } = SearchMode.Prefix;
@@ -756,10 +846,6 @@ public sealed record ActivityQuery
     public int Offset { get; init; }
 }
 
-/// <summary>
-/// One operator or scheduler action, persisted for the audit trail: who did what, when, with which inputs, and
-/// what came of it. Record-level history lives in attempts; this is the history of runs and interventions.
-/// </summary>
 /// <summary>The statuses of a retrieval run.</summary>
 public static class RetrievalStatus
 {
@@ -815,6 +901,10 @@ public sealed record RetrievalState
     public string? Error { get; init; }
 }
 
+/// <summary>
+/// One operator or scheduler action, persisted for the audit trail: who did what, when, with which inputs, and
+/// what came of it. Record-level history lives in attempts; this is the history of runs and interventions.
+/// </summary>
 public sealed record ActivityRecord
 {
     public long ActivityId { get; init; }
@@ -823,7 +913,7 @@ public sealed record ActivityRecord
 
     public required string FlowName { get; init; }
 
-    /// <summary>run, submit, plan, verify, known-state, release, redeliver, delete, poll, notification.</summary>
+    /// <summary>deliver, plan, intake, drain, verify, replan, submit, release, redeliver, delete, poll, notification.</summary>
     public required string Kind { get; init; }
 
     /// <summary>cli:&lt;user&gt;, gui:&lt;user&gt;, service:notification, service:schedule.</summary>
@@ -843,7 +933,7 @@ public sealed record ActivityRecord
     /// <summary>Set when the action targeted one record.</summary>
     public Guid? DeliveryKey { get; init; }
 
-    /// <summary>The platform run the activity ran as, when it was a run (deliver, verify, known-state).</summary>
+    /// <summary>The platform run the activity ran as, when it was a run (deliver, plan, verify, replan).</summary>
     public Guid? RunId { get; init; }
 
     public string? Summary { get; init; }
@@ -854,7 +944,7 @@ public sealed record ActivityRecord
 
 /// <summary>
 /// The ledger (design.md section 7): submissions, records and append-only attempts, with leasing for the worker,
-/// plus the activity audit trail and the catalog read-model. Implemented over SQL Server through EF Core; the
+/// plus the activity audit trail and the catalog read-model. Implemented over the <c>osdu</c> schema through EF Core; the
 /// interface keeps the engine free of EF.
 /// </summary>
 public interface ILedger
@@ -869,15 +959,30 @@ public interface ILedger
     /// <summary>
     /// A flow's submissions, newest first. <paramref name="reference"/> narrows them to the ones whose caller-supplied
     /// reference contains it, which is how a source finds what became of work it knows by its own name; null takes them
-    /// all. Whether the match folds case is the catalog collation's to decide, as it is for every other search here.
+    /// all. Whether the match folds case is the database collation's to decide, as it is for every other search here.
     /// </summary>
     Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, string? reference = null, CancellationToken ct = default);
 
-    /// <summary>The records a source sent inline under this submission id (design.md section 3.4); null when the id names none.</summary>
+    /// <summary>The records a source sent through the API under this submission id; null when the id names none.</summary>
     Task<InlineSubmissionState?> GetInlineSubmissionAsync(Guid submissionId, CancellationToken ct = default);
 
-    /// <summary>Records where a run wrote an inline submission's drop, and when.</summary>
-    Task MarkInlineSubmissionWrittenAsync(Guid submissionId, string dropLocation, CancellationToken ct = default);
+    /// <summary>
+    /// Moves an API submission along its life (<see cref="InlineStatuses"/>): the run group and the OSDU member run once its
+    /// chain is queued, and the redacted error when it failed. A value left null keeps what the row holds.
+    /// </summary>
+    Task MarkInlineStatusAsync(Guid submissionId, string status, Guid? groupId, Guid? osduRunId, string? error, CancellationToken ct = default);
+
+    /// <summary>The files an API submission landed, one per dataset, record first.</summary>
+    Task<IReadOnlyList<LandingState>> GetLandingsAsync(Guid submissionId, CancellationToken ct = default);
+
+    /// <summary>Records that a landing file was written, how many bytes it holds, and when.</summary>
+    Task MarkLandingWrittenAsync(Guid submissionId, string dataset, long bytes, DateTime writtenUtc, CancellationToken ct = default);
+
+    /// <summary>Records the pre flow member run that takes a landing file.</summary>
+    Task SetLandingPreRunAsync(Guid submissionId, string dataset, Guid runId, CancellationToken ct = default);
+
+    /// <summary>The landing whose file name an ingestion table's file column holds, or null: the link from a record's origin to the submission that sent it.</summary>
+    Task<LandingState?> FindLandingByFileAsync(string fileName, CancellationToken ct = default);
 
     Task<IReadOnlyDictionary<DeliveryKey, RecordState>> GetRecordsAsync(Guid flowId, IEnumerable<DeliveryKey> keys, CancellationToken ct = default);
 
@@ -891,7 +996,8 @@ public interface ILedger
     /// worker is delivering right now keeps its lease and status, and the new work is queued behind the delivery:
     /// the worker's completion leaves it pending for the next pass. Work carrying a source or payload version older
     /// than the one the record already holds, delivered or queued, is refused, so concurrent intakes can never take
-    /// a record back to an earlier version.
+    /// a record back to an earlier version. Staging writes the record's key tuple and the pending origin, and clears a
+    /// request to plan it again.
     /// </summary>
     Task<PendingStaging> UpsertPendingAsync(IReadOnlyList<RecordState> records, CancellationToken ct = default);
 
@@ -899,12 +1005,22 @@ public interface ILedger
     /// Records what the intake skipped. A record with no pending work moves to the submission; a record with pending
     /// work stays with the submission that queued it. A rendered skip of a delivered record advances its source
     /// version, payload watermark and render context to what was just found identical, so the next plan decides it
-    /// without rendering. A stale skip writes an attempt saying which version the drop carried and which one stands.
+    /// without rendering. A stale skip writes an attempt saying which version and origin the source carried and which
+    /// version stands. Every skip writes the record's key tuple and clears a request to plan it again.
     /// </summary>
     Task MarkSkippedAsync(Guid flowId, IReadOnlyList<SkippedRecord> records, Guid submissionId, CancellationToken ct = default);
 
-    /// <summary>Marks records held without queueing work (render-time holds).</summary>
+    /// <summary>Marks records held without queueing work (render-time holds), writing the key tuple and the origin they were held at.</summary>
     Task MarkHeldAsync(IEnumerable<RecordState> records, CancellationToken ct = default);
+
+    /// <summary>
+    /// The records of a flow the ledger asked to be planned again, in delivery-key order after <paramref name="after"/>, at
+    /// most <paramref name="max"/>: what a run pages through to plan them as a key-scoped read.
+    /// </summary>
+    Task<IReadOnlyList<PlanRequestedRecord>> ListPlanRequestedAsync(Guid flowId, DeliveryKey? after, int max, CancellationToken ct = default);
+
+    /// <summary>Clears the request to plan records again for records a plan saw and left untouched (blocked ones).</summary>
+    Task ClearPlanRequestedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, CancellationToken ct = default);
 
     /// <summary>
     /// Atomically leases up to <paramref name="max"/> pending records (or records whose lease expired) for
@@ -923,7 +1039,10 @@ public interface ILedger
     /// <summary>Writes the attempt and the resulting record state, releasing the lease.</summary>
     Task CompleteAsync(RecordCompletion completion, CancellationToken ct = default);
 
-    /// <summary>Writes many completions in one round trip (a drained batch); each is the same write as <see cref="CompleteAsync"/>.</summary>
+    /// <summary>
+    /// Writes many completions in one round trip (a drained batch); each is the same write as <see cref="CompleteAsync"/>.
+    /// A promoting completion copies the origin of the version it delivered onto the record.
+    /// </summary>
     Task CompleteManyAsync(IReadOnlyList<RecordCompletion> completions, CancellationToken ct = default);
 
     /// <summary>
@@ -1004,8 +1123,8 @@ public interface ILedger
     Task<BoundedCount> CountAsync(Guid flowId, RecordQuery query, int limit, CancellationToken ct = default);
 
     /// <summary>Records matching a lookup across every flow: an exact delivery key, or a prefix over the OSDU id, the
-    /// source key and the label. At most <see cref="RecordListing.LookupCandidateLimit"/> candidates are read from each
-    /// identity index, and the most recently updated of them are returned.</summary>
+    /// source key, the label and the origin file name. At most <see cref="RecordListing.LookupCandidateLimit"/> candidates
+    /// are read from each identity index, and the most recently updated of them are returned.</summary>
     Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, CancellationToken ct = default);
 
     /// <summary>How many records a lookup matches, counting no further than <paramref name="limit"/>.</summary>
@@ -1018,13 +1137,13 @@ public interface ILedger
 
     /// <summary>
     /// Releases held, failed or deleted records: those with a pending document go back to pending for the worker,
-    /// the others are unblocked so the next submission plans them again. Null keys means every blocked record.
+    /// the others are unblocked and asked to be planned again by the flow's next run. Null keys means every blocked record.
     /// </summary>
     Task<int> ReleaseAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
-    /// Forgets what OSDU holds for the records so the next plan redelivers them (the whole record, the metadata
-    /// document or the payload). Returns how many records were marked.
+    /// Forgets what OSDU holds for the records (the whole record, the metadata document or the payload) and asks the
+    /// flow's next run to plan them again. Returns how many records were marked.
     /// </summary>
     Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default);
 
@@ -1045,11 +1164,6 @@ public interface ILedger
     /// contains search is refused.
     /// </summary>
     Task<IReadOnlyList<DeliveryKey>> ListKeysAsync(Guid flowId, RecordQuery query, int max, CancellationToken ct = default);
-
-    Task<IReadOnlyList<KnownState>> KnownStateAsync(Guid flowId, CancellationToken ct = default);
-
-    /// <summary>The known state of every record of the flow, streamed in key order in pages, for publications of any size.</summary>
-    IAsyncEnumerable<KnownState> StreamKnownStateAsync(Guid flowId, int pageSize = 10_000, CancellationToken ct = default);
 
     /// <summary>
     /// The id of the cache set holding exactly these values of <paramref name="scope"/>, creating it the first time it
@@ -1093,30 +1207,23 @@ public interface ILedger
 
     /// <summary>
     /// Carries one batch of an approved tag: marks up to <paramref name="batchSize"/> of its records for
-    /// redelivery in key order from the tag's cursor, advances the cursor and reports what is left. A change over
-    /// millions of records is drained a batch at a time by a caller that decides the pace.
+    /// redelivery in key order from the tag's cursor (asking the flow's next run to plan them again), advances the cursor
+    /// and reports what is left. A change over millions of records is drained a batch at a time by a caller that decides
+    /// the pace.
     /// </summary>
     Task<UpdateRolloutBatch> RollOutTagAsync(long tagId, int batchSize, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>The approved tags with rollout still to do, oldest decision first.</summary>
     Task<IReadOnlyList<UpdateTag>> ListRolloutQueueAsync(int max, CancellationToken ct = default);
 
-    Task<IReadOnlyList<SourceWatermark>> GetWatermarksAsync(Guid flowId, string scope, CancellationToken ct = default);
+    /// <summary>The watermark of one flow scope, or null when no whole-scope plan of it has completed.</summary>
+    Task<SourceWatermark?> GetWatermarkAsync(Guid flowId, string scope, CancellationToken ct = default);
 
-    Task SetWatermarksAsync(IEnumerable<SourceWatermark> watermarks, CancellationToken ct = default);
+    /// <summary>Writes the watermark of one flow scope; a watermark never moves back to an earlier bound.</summary>
+    Task SetWatermarkAsync(SourceWatermark watermark, CancellationToken ct = default);
 
     /// <summary>Removes attempts older than the cut-off, keeping the latest attempt per record.</summary>
     Task<int> PruneAttemptsAsync(DateTime olderThanUtc, CancellationToken ct = default);
-
-    /// <summary>
-    /// Starts loading a submission's records into the flow's replica, or starts it over: clears the counts of an earlier load
-    /// that stopped, and gives the submission the next source sequence of its flow, so the records it carries are the newest
-    /// the replica knows. Returns the submission as it now stands.
-    /// </summary>
-    Task<SubmissionState> BeginSourceLoadAsync(Guid submissionId, CancellationToken ct = default);
-
-    /// <summary>Marks submissions whose record lists the replica's retention prune removed.</summary>
-    Task MarkSourcePrunedAsync(IReadOnlyList<Guid> submissionIds, DateTime prunedUtc, CancellationToken ct = default);
 
     /// <summary>Opens the row of a retrieval run and returns it with its id.</summary>
     Task<RetrievalState> StartRetrievalAsync(RetrievalState retrieval, CancellationToken ct = default);

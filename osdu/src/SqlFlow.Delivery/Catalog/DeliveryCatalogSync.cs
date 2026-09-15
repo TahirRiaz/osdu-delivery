@@ -1,8 +1,10 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using SqlFlow.Catalog;
 using SqlFlow.Core;
 using SqlFlow.Core.Identity;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Templates;
@@ -12,10 +14,11 @@ namespace SqlFlow.Delivery.Catalog;
 
 /// <summary>
 /// The delivery kind's document families in the repository sync: every mapping document (<c>documentType: mapping</c>,
-/// anywhere in the tree) and what every cache flow (<c>flowType: cache</c>) declares it caches become catalog rows, so the
-/// GUI lists what a flow renders with, and what each cache holds, without opening the repository. Rows are keyed by
-/// repository and reference; a document that disappears from the tree loses its row. The sync only reads the
-/// repository: the versions of a cache are written into the catalog by the runs of its cache flow, never by the sync.
+/// anywhere in the tree) and what every cache flow (<c>flowType: cache</c>) declares it caches become rows of the
+/// <c>osdu</c> schema, so the GUI lists what a flow renders with, and what each cache holds, without opening the
+/// repository. Rows are keyed by repository and reference; a document that disappears from the tree loses its row. The
+/// sync only reads the repository: the versions of a cache are written by the runs of its cache flow, never by the sync.
+/// The rows commit with the sync: the <c>osdu</c> context opens on the catalog context's connection and joins its transaction.
 /// </summary>
 public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 {
@@ -26,7 +29,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
     private static readonly JsonSerializerOptions SummaryJson = new(JsonSerializerDefaults.Web);
 
-    /// <summary>The widths of <c>delivery.Template</c>'s kind and version, which a mapping row's pin mirrors.</summary>
+    /// <summary>The widths of <c>osdu.Template</c>'s kind and version, which a mapping row's pin mirrors.</summary>
     private const int MaxTemplateKindLength = 200;
 
     private const int MaxTemplateVersionLength = 64;
@@ -45,6 +48,25 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentNullException.ThrowIfNull(warnings);
+        var transaction = context.Database.CurrentTransaction
+            ?? throw new InvalidOperationException(
+                $"The repository sync of repository {repoId:D} called the delivery extension outside its transaction, so the mapping and cache rows could not commit with the sync.");
+
+        await using var osdu = new OsduDbContext(OsduDbContext.SqlServerOptions(context.Database.GetDbConnection()));
+        await osdu.Database.UseTransactionAsync(transaction.GetDbTransaction(), ct).ConfigureAwait(false);
+        return await ReconcileAsync(osdu, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reconciles the repository's mapping documents and cache declarations into <paramref name="context"/>: the one write the
+    /// sync extension makes, on whatever connection and transaction the context was opened with.
+    /// </summary>
+    public async Task<CatalogSyncExtensionResult> ReconcileAsync(
+        OsduDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        ArgumentNullException.ThrowIfNull(warnings);
 
         var mappings = await SyncMappingsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
         var caches = await SyncCacheDefinitionsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
@@ -52,7 +74,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     }
 
     private async Task<CatalogSyncExtensionResult> SyncMappingsAsync(
-        CatalogDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
+        OsduDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
     {
         var existing = await context.DeliveryMappings.Where(m => m.RepoId == repoId).AsTracking().ToDictionaryAsync(m => m.Id, ct).ConfigureAwait(false);
         var seen = new HashSet<Guid>();
@@ -168,7 +190,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     /// from another path, is left out with a warning, because merged, one name would hold two meanings.
     /// </summary>
     private async Task<CatalogSyncExtensionResult> SyncCacheDefinitionsAsync(
-        CatalogDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
+        OsduDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
     {
         var existing = await context.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).AsTracking().ToDictionaryAsync(c => c.Id, ct).ConfigureAwait(false);
         var seen = new HashSet<Guid>();
@@ -229,7 +251,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             scope => elsewhere
                 .Where(c => c.Scope == scope)
                 .Select(c => new Snapshots.CacheTypeDeclaration(
-                    c.FlowName, c.Name, c.EntityType, c.Kind, c.Query ?? "*", CatalogCacheStore.ParseFields(c.FieldsJson, c.FlowName, c.Name), Snapshots.CacheChangeMode.Auto))
+                    c.FlowName, c.Name, c.EntityType, c.Kind, c.Query ?? "*", OsduCacheStore.ParseFields(c.FieldsJson, c.FlowName, c.Name), Snapshots.CacheChangeMode.Auto))
                 .ToList(),
             StringComparer.Ordinal);
 

@@ -1,5 +1,5 @@
 using Microsoft.EntityFrameworkCore;
-using SqlFlow.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Catalog;
@@ -12,11 +12,11 @@ namespace SqlFlow.Delivery.Catalog;
 public static class CatalogCacheReader
 {
     /// <summary>The cached types of the partition's cache, declared ones first in name order.</summary>
-    public static async Task<IReadOnlyList<CachedTypeInfo>> TypesAsync(CatalogDbContext db, string scope, CancellationToken ct = default)
+    public static async Task<IReadOnlyList<CachedTypeInfo>> TypesAsync(OsduDbContext db, string scope, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
-        var declaration = await CatalogCacheStore.DeclarationAsync(db, scope, ct).ConfigureAwait(false);
+        var declaration = await OsduCacheStore.DeclarationAsync(db, scope, ct).ConfigureAwait(false);
         var types = declaration.TypeNames
             .Order(StringComparer.Ordinal)
             .Select(name =>
@@ -31,7 +31,7 @@ public static class CatalogCacheReader
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (current is not null)
         {
-            foreach (var held in CatalogCacheStore.Info(current).Types.OrderBy(t => t.Name, StringComparer.Ordinal))
+            foreach (var held in OsduCacheStore.Info(current).Types.OrderBy(t => t.Name, StringComparer.Ordinal))
             {
                 if (!types.Any(t => string.Equals(t.Name, held.Name, StringComparison.OrdinalIgnoreCase)))
                 {

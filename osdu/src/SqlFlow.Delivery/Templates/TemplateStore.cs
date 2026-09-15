@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
-using SqlFlow.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Snapshots;
@@ -50,22 +50,22 @@ public interface ITemplateStore
     Task DeleteAsync(TemplateReference reference, CancellationToken ct = default);
 }
 
-/// <summary>The template store over the catalog's <c>delivery.Template</c> table.</summary>
-public sealed class CatalogTemplateStore : ITemplateStore
+/// <summary>The template store over the <c>osdu.Template</c> table.</summary>
+public sealed class OsduTemplateStore : ITemplateStore
 {
     private static readonly Guid TemplateNamespace = DeterministicGuid.Namespace("delivery-template");
 
     /// <summary>How many mapping references a refused delete names.</summary>
     private const int MaxNamedMappings = 20;
 
-    private readonly Func<CatalogDbContext> _factory;
+    private readonly Func<OsduDbContext> _factory;
     private readonly TimeProvider _time;
 
     // A saved version never changes, so a parsed schema is reused for as long as the process lives. The key is the
     // reference, which includes the content version, so a deleted and re-saved version is the same content by definition.
     private readonly ConcurrentDictionary<TemplateReference, SchemaSnapshot> _loaded = new();
 
-    public CatalogTemplateStore(Func<CatalogDbContext> factory, TimeProvider? time = null)
+    public OsduTemplateStore(Func<OsduDbContext> factory, TimeProvider? time = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         _factory = factory;
@@ -196,7 +196,7 @@ public sealed class CatalogTemplateStore : ITemplateStore
         _loaded.TryRemove(reference, out _);
     }
 
-    private static Task<DeliveryTemplate?> FindAsync(CatalogDbContext db, TemplateReference reference, CancellationToken ct)
+    private static Task<DeliveryTemplate?> FindAsync(OsduDbContext db, TemplateReference reference, CancellationToken ct)
         => db.DeliveryTemplates.FirstOrDefaultAsync(t => t.Kind == reference.Kind && t.Version == reference.Version, ct);
 
     private static TemplateInfo Info(DeliveryTemplate row) => new(row.Kind, row.Version, row.CapturedUtc, row.CapturedBy, row.Origin);

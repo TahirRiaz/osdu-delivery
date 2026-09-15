@@ -2,11 +2,11 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using SqlFlow.Core;
-using SqlFlow.Delivery.Storage;
+using SqlFlow.Delivery.Source;
 
-namespace SqlFlow.Delivery.Drops;
+namespace SqlFlow.Delivery.Submissions;
 
-/// <summary>The type names an inline column can take: the manifest's names, so the written drop declares them as they are.</summary>
+/// <summary>The type names an inline column can take, which the landing file writers type their columns by.</summary>
 public static class InlineColumnTypes
 {
     public const string Text = "string";
@@ -36,9 +36,9 @@ public static class InlineColumnTypes
 public sealed record InlineColumn(string Name, string Type);
 
 /// <summary>
-/// Where one record's payload files already are, and what says whether they changed. The location is a folder or a glob
-/// the node opens with its own identity when the run delivers: nothing is uploaded and nothing is copied (design.md
-/// section 3.4). The hash is the payload's content hash for a flow that decides payload changes by hash; a flow that
+/// Where one record's payload files already are, and what says whether they changed. The location is a folder the node
+/// opens with its own identity when the run delivers: nothing is uploaded and nothing is copied (docs/stage4-design.md
+/// section 4.1). The hash is the payload's content hash for a flow that decides payload changes by hash; a flow that
 /// takes the files' modified times as the watermark needs none.
 /// </summary>
 public sealed record InlineFile(string Location, string? Hash);
@@ -50,7 +50,7 @@ public sealed record InlineRecord(
     IReadOnlyDictionary<string, InlineFile> Files);
 
 /// <summary>
-/// The records a source sends in a submission request instead of a drop (design.md section 3.4). Each record has the
+/// The records a source sends in a submission request (docs/stage4-design.md section 4). Each record has the
 /// shape of a mapping fixture, <c>{ "record": { column: value }, "datasets": { child: [ { column: value } ] } }</c>: the
 /// dataset row a mapping reads as <c>dataset.column</c>, and the rows of each child dataset it reads as
 /// <c>dataset.child.column</c>. Values are JSON scalars: string, number, boolean or null. A collection is a child dataset,
@@ -61,7 +61,7 @@ public sealed record InlineRecord(
 /// </summary>
 public sealed partial class InlineRecords
 {
-    /// <summary>Records one submission carries. A larger set is a drop.</summary>
+    /// <summary>Records one submission carries. A larger set is split into several submissions, or landed as files for the pre flow.</summary>
     public const int MaxRecords = 1000;
 
     /// <summary>Child dataset rows across every record of one submission.</summary>
@@ -172,10 +172,10 @@ public sealed partial class InlineRecords
 
         if (count > MaxRecords)
         {
-            throw Invalid("records", string.Create(CultureInfo.InvariantCulture, $"holds {count} records; one submission carries at most {MaxRecords}. Split it, or deliver the set as a drop."));
+            throw Invalid("records", string.Create(CultureInfo.InvariantCulture, $"holds {count} records; one submission carries at most {MaxRecords}. Split it into several submissions, or land the files for the pre-ingestion flow."));
         }
 
-        var root = new ColumnSet(DropManifest.RootScope);
+        var root = new ColumnSet(SourceDatasets.Record);
         var datasets = new Dictionary<string, ColumnSet>(StringComparer.OrdinalIgnoreCase);
         var datasetOrder = new List<ColumnSet>();
         var fileSets = new List<string>();
@@ -218,7 +218,7 @@ public sealed partial class InlineRecords
                 throw Invalid(at, "has no \"record\"; the dataset row is required.");
             }
 
-            var row = ReadRow(rowValue, at + "." + RecordProperty, root, allowDeliveryKey: true);
+            var row = ReadRow(rowValue, at + "." + RecordProperty, root);
             if (row.Count == 0)
             {
                 throw Invalid(at + "." + RecordProperty, "has no columns.");
@@ -235,9 +235,9 @@ public sealed partial class InlineRecords
 
                 foreach (var dataset in datasetsValue.EnumerateObject())
                 {
-                    if (!Identifier().IsMatch(dataset.Name) || dataset.Name.Equals(DropManifest.RootScope, StringComparison.OrdinalIgnoreCase))
+                    if (!Identifier().IsMatch(dataset.Name) || dataset.Name.Equals(SourceDatasets.Record, StringComparison.OrdinalIgnoreCase))
                     {
-                        throw Invalid(datasetsAt, $"names a child dataset that is not an identifier of at most {MaxNameLength} characters (letters, digits, '_' and '-'), or is '{DropManifest.RootScope}', which names the dataset row itself.");
+                        throw Invalid(datasetsAt, $"names a child dataset that is not an identifier of at most {MaxNameLength} characters (letters, digits, '_' and '-'), or is '{SourceDatasets.Record}', which names the dataset row itself.");
                     }
 
                     var datasetAt = datasetsAt + "." + dataset.Name;
@@ -268,10 +268,10 @@ public sealed partial class InlineRecords
                     {
                         if (++childRows > MaxChildRows)
                         {
-                            throw Invalid("records", string.Create(CultureInfo.InvariantCulture, $"hold more than {MaxChildRows} child rows; one submission carries at most that many. Split it, or deliver the set as a drop."));
+                            throw Invalid("records", string.Create(CultureInfo.InvariantCulture, $"hold more than {MaxChildRows} child rows; one submission carries at most that many. Split it into several submissions, or land the files for the pre-ingestion flow."));
                         }
 
-                        rows.Add(ReadRow(child, string.Create(CultureInfo.InvariantCulture, $"{datasetAt}[{rows.Count}]"), set, allowDeliveryKey: false));
+                        rows.Add(ReadRow(child, string.Create(CultureInfo.InvariantCulture, $"{datasetAt}[{rows.Count}]"), set));
                     }
 
                     recordDatasets[set.Dataset] = rows;
@@ -285,7 +285,7 @@ public sealed partial class InlineRecords
         var bytes = Canonical(parsed);
         if (bytes.Length > MaxContentBytes)
         {
-            throw Invalid("records", string.Create(CultureInfo.InvariantCulture, $"take {bytes.Length} bytes in canonical form; one submission carries at most {MaxContentBytes}. Split it, or deliver the set as a drop."));
+            throw Invalid("records", string.Create(CultureInfo.InvariantCulture, $"take {bytes.Length} bytes in canonical form; one submission carries at most {MaxContentBytes}. Split it into several submissions, or land the files for the pre-ingestion flow."));
         }
 
         return new InlineRecords(
@@ -299,7 +299,7 @@ public sealed partial class InlineRecords
             Hashing.ContentHash.Of(bytes));
     }
 
-    private static Dictionary<string, object?> ReadRow(JsonElement element, string at, ColumnSet columns, bool allowDeliveryKey)
+    private static Dictionary<string, object?> ReadRow(JsonElement element, string at, ColumnSet columns)
     {
         if (element.ValueKind != JsonValueKind.Object)
         {
@@ -319,19 +319,6 @@ public sealed partial class InlineRecords
             if (row.ContainsKey(name))
             {
                 throw Invalid(columnAt, "is named twice in the row (column names are compared without case).");
-            }
-
-            if (name.Equals(DropReader.DeliveryKeyColumn, StringComparison.OrdinalIgnoreCase))
-            {
-                if (!allowDeliveryKey)
-                {
-                    throw Invalid(columnAt, $"is reserved in a child row: the row belongs to the record it is nested under, and the written drop joins it by '{DropReader.DeliveryKeyColumn}'.");
-                }
-
-                if (property.Value.ValueKind != JsonValueKind.String || !Guid.TryParse(property.Value.GetString(), CultureInfo.InvariantCulture, out _))
-                {
-                    throw Invalid(columnAt, "must be the record's delivery key as a UUID string when it is sent (docs/delivery/drop-contract.md).");
-                }
             }
 
             var value = Scalar(property.Value, columnAt);
@@ -575,11 +562,11 @@ public sealed partial class InlineRecords
             Dataset = dataset;
         }
 
-        /// <summary>The child dataset's name, or the drop's root scope name for the dataset row.</summary>
+        /// <summary>The child dataset's name, or <see cref="SourceDatasets.Record"/> for the dataset row.</summary>
         public string Dataset { get; }
 
         /// <summary>How messages name the dataset.</summary>
-        private string What => Dataset.Equals(DropManifest.RootScope, StringComparison.Ordinal) ? "the dataset row" : $"child dataset '{Dataset}'";
+        private string What => Dataset.Equals(SourceDatasets.Record, StringComparison.Ordinal) ? "the dataset row" : $"child dataset '{Dataset}'";
 
         /// <summary>Takes a value into its column and returns the column's name as first spelled.</summary>
         public string Observe(string name, object? value, string at)

@@ -1,17 +1,18 @@
 using System.Text.Json;
-using SqlFlow.Catalog;
-using SqlFlow.Core.Runs;
-using SqlFlow.Delivery.Drops;
+using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Submissions;
 using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// An inline submission as the ledger holds it (design.md section 3.4): the records a source sent in the request, exactly
-/// as the control plane accepted them, with the flow, the mapping and the parameter values they were accepted for, the
-/// run options, who sent them and when, and where a run wrote them out as a drop. Its id is the idempotency key, and the
-/// id of the <see cref="SubmissionState"/> the intake registers once a run plans the records.
+/// An API submission as the ledger holds it (docs/stage4-design.md section 4): the records a source sent in the request,
+/// exactly as the control plane accepted them, with the flow, the mapping and the parameter values they were accepted for,
+/// the run options, who sent them and when, and how far it got: its files landed for the pre flows, its chain queued, how
+/// it ended. Its id is the idempotency key, and the id of the <see cref="SubmissionState"/> the OSDU flow registers when it
+/// plans the records.
 /// </summary>
 public sealed record InlineSubmissionState
 {
@@ -24,8 +25,8 @@ public sealed record InlineSubmissionState
     public required string FlowName { get; init; }
 
     /// <summary>
-    /// The mapping the flow pinned when the records were accepted. The written drop's manifest names it, so a flow promoted
-    /// since refuses the drop exactly as it refuses a drop prepared for an earlier mapping.
+    /// The mapping the flow pinned when the records were accepted: the columns the landing files carry are the ones it
+    /// reads, and a repeat of the request under a mapping promoted since is a different request.
     /// </summary>
     public required string MappingReference { get; init; }
 
@@ -39,7 +40,7 @@ public sealed record InlineSubmissionState
 
     /// <summary>
     /// What the sending system calls this submission in its own records, trimmed; null when it named none. It travels
-    /// onto the written drop's manifest and from there onto the submission the intake registers, so one search finds a
+    /// onto the submission the OSDU flow registers when it plans the records, so one search finds a
     /// submission by the name its source knows it by. Part of the request the id names, so a repeat carrying a different
     /// one is a conflict rather than a silent relabel.
     /// </summary>
@@ -65,13 +66,23 @@ public sealed record InlineSubmissionState
     /// <summary>Who sent the records: the caller's actor label.</summary>
     public required string ReceivedBy { get; init; }
 
-    /// <summary>Where the last run that took the submission wrote its drop; null until one has.</summary>
-    public string? DropLocation { get; init; }
+    /// <summary>How far the submission got (<see cref="InlineStatuses"/>).</summary>
+    public string Status { get; init; } = InlineStatuses.Accepted;
 
-    public DateTime? WrittenUtc { get; init; }
+    /// <summary>When every landing file was written; null until then.</summary>
+    public DateTime? LandedUtc { get; init; }
+
+    /// <summary>The run group that carries the submission through its pre, ing and OSDU flows; null until it is queued.</summary>
+    public Guid? GroupId { get; init; }
+
+    /// <summary>The OSDU flow's member run in that group.</summary>
+    public Guid? OsduRunId { get; init; }
+
+    /// <summary>Why the submission failed, redacted; null otherwise.</summary>
+    public string? Error { get; init; }
 
     /// <summary>The operations a submission can ask for: deliver the records, or plan them and change nothing.</summary>
-    public static IReadOnlyList<string> Operations { get; } = [RunParameters.DeliverOperation, RunParameters.PlanOperation];
+    public static IReadOnlyList<string> Operations { get; } = [DeliveryOperations.Deliver, DeliveryOperations.Plan];
 
     /// <summary>The accepted form of a request: the records parsed, the parameters resolved against <paramref name="flow"/>.</summary>
     public static InlineSubmissionState Accept(
@@ -119,6 +130,7 @@ public sealed record InlineSubmissionState
             ContentBytes = records.ContentBytes,
             ReceivedUtc = DateTime.SpecifyKind(receivedUtc, DateTimeKind.Utc),
             ReceivedBy = receivedBy.Length <= MaxActorLength ? receivedBy : receivedBy[..MaxActorLength],
+            Status = InlineStatuses.Accepted,
         };
     }
 
@@ -203,7 +215,7 @@ public sealed record InlineSubmissionState
     }
 }
 
-/// <summary>The catalog row of an inline submission and back.</summary>
+/// <summary>The <c>osdu.InlineSubmission</c> row of an API submission and back.</summary>
 public static class InlineSubmissionRows
 {
     public static DeliveryInlineSubmission ToEntity(InlineSubmissionState state)
@@ -227,8 +239,11 @@ public static class InlineSubmissionRows
             ContentBytes = state.ContentBytes,
             ReceivedUtc = state.ReceivedUtc,
             ReceivedBy = state.ReceivedBy,
-            DropLocation = state.DropLocation,
-            WrittenUtc = state.WrittenUtc,
+            Status = state.Status,
+            LandedUtc = state.LandedUtc,
+            GroupId = state.GroupId,
+            OsduRunId = state.OsduRunId,
+            Error = state.Error,
         };
     }
 
@@ -253,8 +268,11 @@ public static class InlineSubmissionRows
             ContentBytes = entity.ContentBytes,
             ReceivedUtc = DateTime.SpecifyKind(entity.ReceivedUtc, DateTimeKind.Utc),
             ReceivedBy = entity.ReceivedBy,
-            DropLocation = entity.DropLocation,
-            WrittenUtc = entity.WrittenUtc is { } written ? DateTime.SpecifyKind(written, DateTimeKind.Utc) : null,
+            Status = entity.Status,
+            LandedUtc = entity.LandedUtc is { } landed ? DateTime.SpecifyKind(landed, DateTimeKind.Utc) : null,
+            GroupId = entity.GroupId,
+            OsduRunId = entity.OsduRunId,
+            Error = entity.Error,
         };
     }
 }

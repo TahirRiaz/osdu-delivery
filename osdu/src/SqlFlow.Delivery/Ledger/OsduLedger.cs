@@ -1,14 +1,13 @@
-using System.Runtime.CompilerServices;
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
-using SqlFlow.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// The ledger over the catalog database (the <c>delivery</c> schema). Claims are compare-and-swap updates (the
+/// The ledger over the module database's <c>osdu</c> schema (<see cref="OsduDbContext"/>). Claims are compare-and-swap updates (the
 /// platform's notification-delivery shape, design.md section 7.5): a batch of candidates is leased in one UPDATE
 /// guarded by "not currently leased", then read back by the lease token, so two workers can never hold the same
 /// record and a crashed worker's lease simply expires. The same shape claims a whole work batch and its records at
@@ -17,7 +16,7 @@ namespace SqlFlow.Delivery.Ledger;
 /// concurrency. The two volume writes (staging pending records, closing a drained batch) go through a bulk copy
 /// on SQL Server (<see cref="SqlServerLedgerBulk"/>) and through the entity path everywhere else.
 /// </summary>
-public sealed partial class CatalogLedger : ILedger
+public sealed class OsduLedger : ILedger
 {
     /// <summary>Cached item ids or set ids per lookup, well inside the parameter ceiling of one command.</summary>
     private const int LookupChunk = 500;
@@ -32,13 +31,13 @@ public sealed partial class CatalogLedger : ILedger
 
     private const int ChunkSize = 500;
 
-    private readonly Func<CatalogDbContext> _factory;
+    private readonly Func<OsduDbContext> _factory;
     private readonly TimeProvider _time;
 
     /// <summary>The most records a contains search reads (<see cref="RecordListing.ContainsScanLimit"/>); tests lower it.</summary>
     internal int ContainsScanLimit { get; init; } = RecordListing.ContainsScanLimit;
 
-    public CatalogLedger(Func<CatalogDbContext> factory, TimeProvider? time = null)
+    public OsduLedger(Func<OsduDbContext> factory, TimeProvider? time = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         _factory = factory;
@@ -49,7 +48,7 @@ public sealed partial class CatalogLedger : ILedger
 
     /// <summary>A tracking context: the host may pool no-tracking contexts (the control plane does), and the ledger's
     /// read-modify-write operations rely on tracking.</summary>
-    private CatalogDbContext Open()
+    private OsduDbContext Open()
     {
         var db = _factory();
         db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.TrackAll;
@@ -70,20 +69,104 @@ public sealed partial class CatalogLedger : ILedger
         return entity is null ? null : InlineSubmissionRows.ToState(entity);
     }
 
-    public async Task MarkInlineSubmissionWrittenAsync(Guid submissionId, string dropLocation, CancellationToken ct = default)
+    public async Task MarkInlineStatusAsync(Guid submissionId, string status, Guid? groupId, Guid? osduRunId, string? error, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(dropLocation);
-        if (dropLocation.Length > 2000)
+        ArgumentException.ThrowIfNullOrWhiteSpace(status);
+        if (!InlineStatuses.All.Contains(status, StringComparer.Ordinal))
         {
-            throw new DeliveryException($"Inline submission {submissionId:D}: the drop location is {dropLocation.Length} characters, and the ledger holds at most 2000.");
+            throw new DeliveryException($"'{status}' is not a status of an API submission; it is one of {string.Join(", ", InlineStatuses.All)}.");
         }
 
         await using var db = Open();
         var entity = await db.DeliveryInlineSubmissions.FirstOrDefaultAsync(s => s.SubmissionId == submissionId, ct).ConfigureAwait(false)
-            ?? throw new DeliveryException($"Inline submission {submissionId:D} is not in the ledger.");
-        entity.DropLocation = dropLocation;
-        entity.WrittenUtc = Now;
+            ?? throw new DeliveryException($"API submission {submissionId:D} is not in the ledger.");
+        entity.Status = status;
+        entity.GroupId = groupId ?? entity.GroupId;
+        entity.OsduRunId = osduRunId ?? entity.OsduRunId;
+        if (error is not null)
+        {
+            entity.Error = Truncate(Http.HeaderRedaction.RedactMessage(error), 4000);
+        }
+
+        if (status == InlineStatuses.Landed && entity.LandedUtc is null)
+        {
+            entity.LandedUtc = Now;
+        }
+
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<LandingState>> GetLandingsAsync(Guid submissionId, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var rows = await db.DeliverySubmissionLandings.AsNoTracking().Where(l => l.SubmissionId == submissionId).ToListAsync(ct).ConfigureAwait(false);
+        return rows
+            .OrderBy(l => l.Dataset == Source.SourceDatasets.Record ? 0 : 1)
+            .ThenBy(l => l.Dataset, StringComparer.Ordinal)
+            .Select(ToState)
+            .ToList();
+    }
+
+    public async Task MarkLandingWrittenAsync(Guid submissionId, string dataset, long bytes, DateTime writtenUtc, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataset);
+        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        await using var db = Open();
+        var entity = await db.DeliverySubmissionLandings.FirstOrDefaultAsync(l => l.SubmissionId == submissionId && l.Dataset == dataset, ct).ConfigureAwait(false)
+            ?? throw new DeliveryException($"API submission {submissionId:D} has no landing for dataset '{dataset}'.");
+        entity.Bytes = bytes;
+        entity.WrittenUtc = DateTime.SpecifyKind(writtenUtc, DateTimeKind.Utc);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task SetLandingPreRunAsync(Guid submissionId, string dataset, Guid runId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataset);
+        await using var db = Open();
+        var entity = await db.DeliverySubmissionLandings.FirstOrDefaultAsync(l => l.SubmissionId == submissionId && l.Dataset == dataset, ct).ConfigureAwait(false)
+            ?? throw new DeliveryException($"API submission {submissionId:D} has no landing for dataset '{dataset}'.");
+        entity.PreRunId = runId;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<LandingState?> FindLandingByFileAsync(string fileName, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+        await using var db = Open();
+        var entity = await db.DeliverySubmissionLandings.AsNoTracking().FirstOrDefaultAsync(l => l.FileName == fileName, ct).ConfigureAwait(false);
+        return entity is null ? null : ToState(entity);
+    }
+
+    public async Task<IReadOnlyList<PlanRequestedRecord>> ListPlanRequestedAsync(Guid flowId, DeliveryKey? after, int max, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var query = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId && r.PlanRequestedUtc != null);
+        if (after is { } cursor)
+        {
+            var from = cursor.Value;
+            query = query.Where(r => r.DeliveryKey.CompareTo(from) > 0);
+        }
+
+        var rows = await query
+            .OrderBy(r => r.DeliveryKey)
+            .Select(r => new { r.DeliveryKey, r.SourceKeyJson, r.PlanRequestedUtc })
+            .Take(Math.Clamp(max, 1, 10_000))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return rows.Select(r => new PlanRequestedRecord(new DeliveryKey(r.DeliveryKey), r.SourceKeyJson, DateTime.SpecifyKind(r.PlanRequestedUtc!.Value, DateTimeKind.Utc))).ToList();
+    }
+
+    public async Task ClearPlanRequestedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        await using var db = Open();
+        foreach (var chunk in keys.Select(k => k.Value).Distinct().Chunk(ChunkSize))
+        {
+            await db.DeliveryRecords
+                .Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey) && r.PlanRequestedUtc != null)
+                .ExecuteUpdateAsync(s => s.SetProperty(r => r.PlanRequestedUtc, (DateTime?)null), ct)
+                .ConfigureAwait(false);
+        }
     }
 
     public async Task<(SubmissionState Submission, bool Created)> RegisterSubmissionAsync(SubmissionState submission, CancellationToken ct = default)
@@ -246,8 +329,13 @@ public sealed partial class CatalogLedger : ILedger
                 entity.WorkBatch = record.WorkBatch;
                 entity.PendingStepJson = null;
                 entity.PendingRenderContext = record.PendingRenderContext;
+                entity.SourceKeyJson = Truncate(record.SourceKeyJson, 2000) ?? entity.SourceKeyJson;
                 entity.PendingSourceFingerprint = record.PendingSourceFingerprint;
                 entity.PendingSourceModifiedUtc = record.PendingSourceModifiedUtc;
+                entity.PendingSourceFileName = Truncate(record.PendingSourceFileName, DeliveryModel.MaxSourceFileNameLength);
+                entity.PendingSourceRowNumber = record.PendingSourceRowNumber;
+                entity.PendingSourceUpdatedUtc = record.PendingSourceUpdatedUtc;
+                entity.PlanRequestedUtc = null;
                 entity.PendingMetadataHash = record.PendingMetadataHash;
                 entity.PendingPayloadHash = record.PendingPayloadHash;
                 entity.PendingPayloadModifiedUtc = record.PendingPayloadModifiedUtc;
@@ -314,6 +402,15 @@ public sealed partial class CatalogLedger : ILedger
                 .ConfigureAwait(false);
         }
 
+        // A plan that saw a record has answered the request to plan it again, whatever it decided about it.
+        foreach (var chunk in records.Select(r => r.DeliveryKey.Value).Distinct().Chunk(ChunkSize))
+        {
+            await db.DeliveryRecords
+                .Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey) && r.PlanRequestedUtc != null)
+                .ExecuteUpdateAsync(s => s.SetProperty(r => r.PlanRequestedUtc, (DateTime?)null), ct)
+                .ConfigureAwait(false);
+        }
+
         foreach (var chunk in records.Where(r => r.Kind != SkipKind.Unchanged).Chunk(ChunkSize))
         {
             var keys = chunk.Select(r => r.DeliveryKey.Value).ToArray();
@@ -325,10 +422,11 @@ public sealed partial class CatalogLedger : ILedger
                     throw new DeliveryException($"Record {skip.DeliveryKey} is not in the ledger, but a {skip.Kind.ToString().ToLowerInvariant()} skip is only ever decided against a record the ledger holds.");
                 }
 
+                entity.SourceKeyJson = Truncate(skip.SourceKeyJson, 2000) ?? entity.SourceKeyJson;
                 if (skip.Kind == SkipKind.Stale)
                 {
                     // The record is left exactly as it is: the attempt is the whole of what happened, and says which
-                    // version the drop carried and which one stands.
+                    // version and origin the source carried and which version stands.
                     db.DeliveryAttempts.Add(new DeliveryAttempt
                     {
                         DeliveryKey = entity.DeliveryKey,
@@ -340,6 +438,9 @@ public sealed partial class CatalogLedger : ILedger
                         Outcome = StatusText.Of(AttemptOutcome.Skipped),
                         Phase = AttemptPhases.Stale,
                         ResultJson = AttemptResult.WithDetail(null, Truncate(Http.HeaderRedaction.RedactMessage(skip.Reason), 2000)),
+                        SourceFileName = Truncate(skip.Origin.FileName, DeliveryModel.MaxSourceFileNameLength),
+                        SourceRowNumber = skip.Origin.RowNumber,
+                        SourceUpdatedUtc = skip.Origin.UpdatedUtc,
                     });
                     continue;
                 }
@@ -412,8 +513,13 @@ public sealed partial class CatalogLedger : ILedger
                 entity.PendingDocumentRef = null;
                 entity.WorkBatch = null;
                 entity.PendingStepJson = null;
+                entity.SourceKeyJson = Truncate(record.SourceKeyJson, 2000) ?? entity.SourceKeyJson;
                 entity.PendingSourceFingerprint = record.PendingSourceFingerprint;
                 entity.PendingSourceModifiedUtc = record.PendingSourceModifiedUtc;
+                entity.PendingSourceFileName = Truncate(record.PendingSourceFileName, DeliveryModel.MaxSourceFileNameLength);
+                entity.PendingSourceRowNumber = record.PendingSourceRowNumber;
+                entity.PendingSourceUpdatedUtc = record.PendingSourceUpdatedUtc;
+                entity.PlanRequestedUtc = null;
                 entity.PendingMetadata = false;
                 entity.PendingPayload = false;
                 entity.Blocked = true;
@@ -429,6 +535,9 @@ public sealed partial class CatalogLedger : ILedger
                     Outcome = StatusText.Of(AttemptOutcome.Held),
                     Phase = "render",
                     Error = Truncate(record.LastError, 2000),
+                    SourceFileName = Truncate(record.PendingSourceFileName, DeliveryModel.MaxSourceFileNameLength),
+                    SourceRowNumber = record.PendingSourceRowNumber,
+                    SourceUpdatedUtc = record.PendingSourceUpdatedUtc,
                 });
             }
 
@@ -587,6 +696,12 @@ public sealed partial class CatalogLedger : ILedger
                 entity.RenderContext = claimed.RenderContext ?? entity.RenderContext;
                 entity.SourceFingerprint = claimed.SourceFingerprint ?? entity.SourceFingerprint;
                 entity.SourceModifiedUtc = claimed.SourceModifiedUtc ?? entity.SourceModifiedUtc;
+                if (claimed.Origin.UpdatedUtc is not null || claimed.Origin.FileName is not null)
+                {
+                    entity.SourceFileName = Truncate(claimed.Origin.FileName, DeliveryModel.MaxSourceFileNameLength);
+                    entity.SourceRowNumber = claimed.Origin.RowNumber;
+                    entity.SourceUpdatedUtc = claimed.Origin.UpdatedUtc;
+                }
                 if (claimed.Metadata)
                 {
                     entity.MetadataHash = claimed.MetadataHash;
@@ -624,6 +739,12 @@ public sealed partial class CatalogLedger : ILedger
             entity.RenderContext = entity.PendingRenderContext ?? entity.RenderContext;
             entity.SourceFingerprint = entity.PendingSourceFingerprint ?? entity.SourceFingerprint;
             entity.SourceModifiedUtc = entity.PendingSourceModifiedUtc ?? entity.SourceModifiedUtc;
+            if (entity.PendingSourceUpdatedUtc is not null || entity.PendingSourceFileName is not null)
+            {
+                entity.SourceFileName = entity.PendingSourceFileName;
+                entity.SourceRowNumber = entity.PendingSourceRowNumber;
+                entity.SourceUpdatedUtc = entity.PendingSourceUpdatedUtc;
+            }
             if (entity.PendingMetadata)
             {
                 entity.MetadataHash = entity.PendingMetadataHash;
@@ -923,7 +1044,7 @@ public sealed partial class CatalogLedger : ILedger
         return affected > 0;
     }
 
-    private static async Task ReleaseRecordsAsync(CatalogDbContext db, string owner, DateTime nowUtc, CancellationToken ct)
+    private static async Task ReleaseRecordsAsync(OsduDbContext db, string owner, DateTime nowUtc, CancellationToken ct)
     {
         var delivering = StatusText.Of(RecordStatus.Delivering);
         var pending = StatusText.Of(RecordStatus.Pending);
@@ -1048,7 +1169,7 @@ public sealed partial class CatalogLedger : ILedger
     /// A UUID is a delivery key; anything else is a prefix over the three identity columns across every flow, at most
     /// <paramref name="candidates"/> from each column's own index.
     /// </summary>
-    private static IQueryable<DeliveryRecord> LookupFilter(CatalogDbContext db, string term, int candidates)
+    private static IQueryable<DeliveryRecord> LookupFilter(OsduDbContext db, string term, int candidates)
     {
         var t = term.Trim();
         var rows = db.DeliveryRecords.AsNoTracking();
@@ -1068,7 +1189,7 @@ public sealed partial class CatalogLedger : ILedger
     /// filter applies to those. A contains term has no index, so the records the rest of the filter leaves are counted
     /// first, no further than the scan limit, and a filter that leaves more is refused.
     /// </summary>
-    private async Task<IQueryable<DeliveryRecord>> MatchingAsync(CatalogDbContext db, Guid flowId, RecordQuery query, int candidates, CancellationToken ct)
+    private async Task<IQueryable<DeliveryRecord>> MatchingAsync(OsduDbContext db, Guid flowId, RecordQuery query, int candidates, CancellationToken ct)
     {
         var flow = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId);
         var rows = Narrow(db, flow, query);
@@ -1101,7 +1222,7 @@ public sealed partial class CatalogLedger : ILedger
     }
 
     /// <summary>The listing's filters other than its search; each one seeks an index.</summary>
-    private static IQueryable<DeliveryRecord> Narrow(CatalogDbContext db, IQueryable<DeliveryRecord> rows, RecordQuery query)
+    private static IQueryable<DeliveryRecord> Narrow(OsduDbContext db, IQueryable<DeliveryRecord> rows, RecordQuery query)
     {
         if (query.Status is { } status)
         {
@@ -1145,20 +1266,22 @@ public sealed partial class CatalogLedger : ILedger
             : query.Search.Trim();
 
     /// <summary>
-    /// The delivery keys whose source key, label or OSDU id starts with <paramref name="term"/>: at most
+    /// The delivery keys whose source key, label, OSDU id or origin file name starts with <paramref name="term"/>: at most
     /// <paramref name="limit"/> from each column, each read in the order of its own index so the read stops there. A
     /// record matching on two columns appears twice, which a membership test does not mind.
     /// </summary>
     private static IQueryable<Guid> PrefixCandidates(IQueryable<DeliveryRecord> scope, string term, int limit)
         => scope.Where(r => r.SourceKey.StartsWith(term)).OrderBy(r => r.SourceKey).Select(r => r.DeliveryKey).Take(limit)
             .Concat(scope.Where(r => r.Label != null && r.Label.StartsWith(term)).OrderBy(r => r.Label).Select(r => r.DeliveryKey).Take(limit))
-            .Concat(scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).OrderBy(r => r.TargetId).Select(r => r.DeliveryKey).Take(limit));
+            .Concat(scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).OrderBy(r => r.TargetId).Select(r => r.DeliveryKey).Take(limit))
+            .Concat(scope.Where(r => r.SourceFileName != null && r.SourceFileName.StartsWith(term)).OrderBy(r => r.SourceFileName).Select(r => r.DeliveryKey).Take(limit));
 
     /// <summary>Whether any identity column has at least <paramref name="limit"/> prefix matches, so candidates were left out.</summary>
     private static async Task<bool> PrefixCandidatesTruncatedAsync(IQueryable<DeliveryRecord> scope, string term, int limit, CancellationToken ct)
         => await scope.Where(r => r.SourceKey.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit
             || await scope.Where(r => r.Label != null && r.Label.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit
-            || await scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit;
+            || await scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit
+            || await scope.Where(r => r.SourceFileName != null && r.SourceFileName.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit;
 
     public async Task<FlowStats> StatsAsync(Guid flowId, DateTime nowUtc, CancellationToken ct = default)
     {
@@ -1194,13 +1317,13 @@ public sealed partial class CatalogLedger : ILedger
         "SELECT [FlowId], [Status], [LastVerifyOutcome], [DeliveredHour], [Records] FROM [" + DeliveryModel.SchemaName + "].[" + DeliveryModel.RecordCountView + "] WITH (NOEXPAND)";
 
     /// <summary>
-    /// A flow's counts from the <c>delivery.RecordCount</c> indexed view, which SQL Server maintains in the transaction of
+    /// A flow's counts from the <c>osdu.RecordCount</c> indexed view, which SQL Server maintains in the transaction of
     /// every record write: a few rows per flow are read however many records the flow holds. The deliveries of the last
     /// 24 hours are the view's whole hours inside the window plus an index count of the part-hour the window opens in,
     /// so the count is exact to the tick and the index range it reads is under an hour of deliveries.
     /// </summary>
     private static async Task<(Dictionary<string, long> ByStatus, long Drifted, long DeliveredSince)> CountFromViewAsync(
-        CatalogDbContext db, Guid flowId, DateTime since, CancellationToken ct)
+        OsduDbContext db, Guid flowId, DateTime since, CancellationToken ct)
     {
         var counts = db.DeliveryRecordCounts.FromSqlRaw(RecordCountSql).Where(c => c.FlowId == flowId);
         var byStatus = await counts
@@ -1230,7 +1353,7 @@ public sealed partial class CatalogLedger : ILedger
 
     /// <summary>The same counts read from the records themselves, for a catalog without the indexed view (the SQLite test catalog).</summary>
     private static async Task<(Dictionary<string, long> ByStatus, long Drifted, long DeliveredSince)> CountFromRecordsAsync(
-        CatalogDbContext db, Guid flowId, DateTime since, CancellationToken ct)
+        OsduDbContext db, Guid flowId, DateTime since, CancellationToken ct)
     {
         var byStatus = await db.DeliveryRecords
             .Where(r => r.FlowId == flowId)
@@ -1331,10 +1454,11 @@ public sealed partial class CatalogLedger : ILedger
             .SetProperty(r => r.LastError, (string?)null)
             .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false);
 
-        // The others are unblocked: the next submission plans them again from the source.
+        // The others are unblocked and asked to be planned again: the flow's next run reads their rows by key.
         var unblocked = await blocked.Where(r => r.PendingDocumentRef == null).ExecuteUpdateAsync(s => s
             .SetProperty(r => r.Blocked, false)
-            .SetProperty(r => r.LastError, "released; will be planned again on the next submission")
+            .SetProperty(r => r.PlanRequestedUtc, nowUtc)
+            .SetProperty(r => r.LastError, "released; the flow's next run plans it again from its ingestion rows")
             .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false);
 
         return requeued + unblocked;
@@ -1353,6 +1477,7 @@ public sealed partial class CatalogLedger : ILedger
                 .SetProperty(r => r.MetadataHash, (string?)null)
                 .SetProperty(r => r.SourceFingerprint, (string?)null)
                 .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
+                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
                 .SetProperty(r => r.LastError, note)
                 .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false),
             RedeliverScope.Payload => await rows.ExecuteUpdateAsync(s => s
@@ -1360,6 +1485,7 @@ public sealed partial class CatalogLedger : ILedger
                 .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
                 .SetProperty(r => r.SourceFingerprint, (string?)null)
                 .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
+                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
                 .SetProperty(r => r.LastError, note)
                 .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false),
             _ => await rows.ExecuteUpdateAsync(s => s
@@ -1368,6 +1494,7 @@ public sealed partial class CatalogLedger : ILedger
                 .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
                 .SetProperty(r => r.SourceFingerprint, (string?)null)
                 .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
+                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
                 .SetProperty(r => r.LastError, note)
                 .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false),
         };
@@ -1412,7 +1539,7 @@ public sealed partial class CatalogLedger : ILedger
         }
     }
 
-    private static void MarkRemoved(CatalogDbContext db, DeliveryRecord entity, RemovalScope scope, string worker, string note, DateTime nowUtc, string? correlationId)
+    private static void MarkRemoved(OsduDbContext db, DeliveryRecord entity, RemovalScope scope, string worker, string note, DateTime nowUtc, string? correlationId)
     {
         db.DeliveryAttempts.Add(new DeliveryAttempt
         {
@@ -1464,57 +1591,6 @@ public sealed partial class CatalogLedger : ILedger
         entity.PendingPayloadModifiedUtc = null;
         entity.LastError = note;
         entity.UpdatedUtc = nowUtc;
-    }
-
-    public async Task<IReadOnlyList<KnownState>> KnownStateAsync(Guid flowId, CancellationToken ct = default)
-    {
-        var list = new List<KnownState>();
-        await foreach (var row in StreamKnownStateAsync(flowId, 10_000, ct).ConfigureAwait(false))
-        {
-            list.Add(row);
-        }
-
-        return list;
-    }
-
-    public async IAsyncEnumerable<KnownState> StreamKnownStateAsync(Guid flowId, int pageSize = 10_000, [EnumeratorCancellation] CancellationToken ct = default)
-    {
-        var size = Math.Clamp(pageSize, 100, 100_000);
-        Guid? after = null;
-        while (true)
-        {
-            List<KnownState> page;
-            await using (var db = Open())
-            {
-                var query = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId);
-                if (after is { } a)
-                {
-                    query = query.Where(r => r.DeliveryKey.CompareTo(a) > 0);
-                }
-
-                var rows = await query
-                    .OrderBy(r => r.DeliveryKey)
-                    .Select(r => new { r.DeliveryKey, r.SourceKey, r.SourceFingerprint, r.SourceModifiedUtc, r.MetadataHash, r.PayloadHash, r.PayloadModifiedUtc, r.Status, r.TargetId, r.TargetVersion })
-                    .Take(size)
-                    .ToListAsync(ct)
-                    .ConfigureAwait(false);
-                page = rows.Select(r => new KnownState(
-                    new DeliveryKey(r.DeliveryKey), r.SourceKey, r.SourceFingerprint, r.SourceModifiedUtc, r.MetadataHash, r.PayloadHash, r.PayloadModifiedUtc,
-                    StatusText.ToRecordStatus(r.Status), r.TargetId, r.TargetVersion)).ToList();
-            }
-
-            foreach (var row in page)
-            {
-                yield return row;
-            }
-
-            if (page.Count < size)
-            {
-                yield break;
-            }
-
-            after = page[^1].DeliveryKey.Value;
-        }
     }
 
     public async Task<long> EnsureCacheSetAsync(string scope, IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default)
@@ -1799,6 +1875,7 @@ public sealed partial class CatalogLedger : ILedger
                     u => u.SetProperty(r => r.MetadataHash, (string?)null)
                           .SetProperty(r => r.SourceFingerprint, (string?)null)
                           .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
+                          .SetProperty(r => r.PlanRequestedUtc, nowUtc)
                           .SetProperty(r => r.LastError, note)
                           .SetProperty(r => r.UpdatedUtc, nowUtc),
                     ct)
@@ -1830,7 +1907,7 @@ public sealed partial class CatalogLedger : ILedger
     }
 
     /// <summary>Gates or releases sets in one statement; the set table is small, the record table is never touched.</summary>
-    private static async Task SetGateAsync(CatalogDbContext db, IReadOnlyList<long> setIds, bool gated, CancellationToken ct)
+    private static async Task SetGateAsync(OsduDbContext db, IReadOnlyList<long> setIds, bool gated, CancellationToken ct)
     {
         if (setIds.Count == 0)
         {
@@ -1846,7 +1923,7 @@ public sealed partial class CatalogLedger : ILedger
     }
 
     /// <summary>Releases the sets no undecided tag covers any more.</summary>
-    private static async Task ReleaseUngatedAsync(CatalogDbContext db, IReadOnlyList<long> setIds, CancellationToken ct)
+    private static async Task ReleaseUngatedAsync(OsduDbContext db, IReadOnlyList<long> setIds, CancellationToken ct)
     {
         if (setIds.Count == 0)
         {
@@ -1858,7 +1935,7 @@ public sealed partial class CatalogLedger : ILedger
         await SetGateAsync(db, setIds.Where(id => !stillGated.Contains(id)).ToList(), gated: false, ct).ConfigureAwait(false);
     }
 
-    private static IQueryable<DeliveryUpdateTag> TagQuery(CatalogDbContext db, string? status, string? scope)
+    private static IQueryable<DeliveryUpdateTag> TagQuery(OsduDbContext db, string? status, string? scope)
     {
         var query = db.DeliveryUpdateTags.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(status))
@@ -1926,33 +2003,60 @@ public sealed partial class CatalogLedger : ILedger
         CompletedUtc = t.CompletedUtc,
     };
 
-    public async Task<IReadOnlyList<SourceWatermark>> GetWatermarksAsync(Guid flowId, string scope, CancellationToken ct = default)
+    /// <summary>The longest scope key (the flow's parameter values) a watermark is kept under.</summary>
+    public const int MaxWatermarkScopeLength = 400;
+
+    public async Task<SourceWatermark?> GetWatermarkAsync(Guid flowId, string scope, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(scope);
         await using var db = Open();
-        var rows = await db.DeliveryWatermarks.AsNoTracking().Where(w => w.FlowId == flowId && w.Scope == scope).ToListAsync(ct).ConfigureAwait(false);
-        return rows.Select(w => new SourceWatermark(w.FlowId, w.Scope, w.TableName, w.Version, w.RecordedUtc, w.ContextHash)).ToList();
+        var row = await db.DeliverySourceWatermarks.AsNoTracking().FirstOrDefaultAsync(w => w.FlowId == flowId && w.Scope == scope, ct).ConfigureAwait(false);
+        return row is null ? null : ToWatermark(row);
     }
 
-    public async Task SetWatermarksAsync(IEnumerable<SourceWatermark> watermarks, CancellationToken ct = default)
+    public async Task SetWatermarkAsync(SourceWatermark watermark, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(watermarks);
-        await using var db = Open();
-        foreach (var w in watermarks)
+        ArgumentNullException.ThrowIfNull(watermark);
+        if (watermark.Scope.Length > MaxWatermarkScopeLength)
         {
-            var entity = await db.DeliveryWatermarks.FirstOrDefaultAsync(x => x.FlowId == w.FlowId && x.Scope == w.Scope && x.TableName == w.Table, ct).ConfigureAwait(false);
-            if (entity is null)
-            {
-                entity = new DeliverySourceWatermark { FlowId = w.FlowId, Scope = w.Scope, TableName = w.Table };
-                db.DeliveryWatermarks.Add(entity);
-            }
-
-            entity.Version = w.Version;
-            entity.ContextHash = w.ContextHash;
-            entity.RecordedUtc = w.RecordedUtc;
+            throw new DeliveryException(
+                string.Create(CultureInfo.InvariantCulture, $"The parameter values of this run make a scope key of {watermark.Scope.Length} characters; the ledger keeps a watermark under at most {MaxWatermarkScopeLength}. Shorten the flow's parameter values."));
         }
 
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        var through = DateTime.SpecifyKind(watermark.UpdatedThroughUtc, DateTimeKind.Utc);
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await using var db = Open();
+            var entity = await db.DeliverySourceWatermarks.FirstOrDefaultAsync(x => x.FlowId == watermark.FlowId && x.Scope == watermark.Scope, ct).ConfigureAwait(false);
+            if (entity is null)
+            {
+                entity = new DeliverySourceWatermark { FlowId = watermark.FlowId, Scope = watermark.Scope };
+                db.DeliverySourceWatermarks.Add(entity);
+            }
+            else if (through < entity.UpdatedThroughUtc)
+            {
+                // A re-run of an older plan completes after a newer one: the scope's watermark stays where the newer left it.
+                return;
+            }
+
+            entity.UpdatedThroughUtc = through;
+            entity.SubmissionId = watermark.SubmissionId;
+            entity.ContextHash = watermark.ContextHash;
+            entity.RecordedUtc = DateTime.SpecifyKind(watermark.RecordedUtc, DateTimeKind.Utc);
+            try
+            {
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                return;
+            }
+            catch (DbUpdateException) when (attempt < 2)
+            {
+                // Two plans of the scope finished together and both inserted the first watermark: read the winner and compare again.
+            }
+        }
     }
+
+    private static SourceWatermark ToWatermark(DeliverySourceWatermark w)
+        => new(w.FlowId, w.Scope, DateTime.SpecifyKind(w.UpdatedThroughUtc, DateTimeKind.Utc), w.SubmissionId, DateTime.SpecifyKind(w.RecordedUtc, DateTimeKind.Utc), w.ContextHash);
 
     public async Task<int> PruneAttemptsAsync(DateTime olderThanUtc, CancellationToken ct = default)
     {
@@ -2211,6 +2315,24 @@ public sealed partial class CatalogLedger : ILedger
         Error = Truncate(attempt.Error, 2000),
         ResultJson = attempt.ResultJson,
         WorkBatch = attempt.WorkBatch,
+        SourceFileName = Truncate(attempt.SourceFileName, DeliveryModel.MaxSourceFileNameLength),
+        SourceRowNumber = attempt.SourceRowNumber,
+        SourceUpdatedUtc = attempt.SourceUpdatedUtc,
+    };
+
+    private static LandingState ToState(DeliverySubmissionLanding l) => new()
+    {
+        SubmissionId = l.SubmissionId,
+        Dataset = l.Dataset,
+        PreFlowName = l.PreFlowName,
+        Location = l.Location,
+        FileName = l.FileName,
+        Format = l.Format,
+        RowCount = l.RowCount,
+        Bytes = l.Bytes,
+        ContentHash = l.ContentHash,
+        WrittenUtc = l.WrittenUtc is { } written ? DateTime.SpecifyKind(written, DateTimeKind.Utc) : null,
+        PreRunId = l.PreRunId,
     };
 
     private static AttemptRecord ToRecord(DeliveryAttempt a) => new()
@@ -2230,6 +2352,9 @@ public sealed partial class CatalogLedger : ILedger
         Error = a.Error,
         ResultJson = a.ResultJson,
         WorkBatch = a.WorkBatch,
+        SourceFileName = a.SourceFileName,
+        SourceRowNumber = a.SourceRowNumber,
+        SourceUpdatedUtc = a.SourceUpdatedUtc is { } updated ? DateTime.SpecifyKind(updated, DateTimeKind.Utc) : null,
     };
 
     private static ActivityRecord ToRecord(DeliveryActivity a) => new()
@@ -2278,10 +2403,9 @@ public sealed partial class CatalogLedger : ILedger
         entity.FlowName = s.FlowName;
         entity.MappingReference = s.MappingReference;
         entity.RenderContext = s.RenderContext;
-        entity.DropLocation = s.DropLocation;
         entity.WorkLocation = Truncate(s.WorkLocation, 2000);
         entity.BatchCount = s.BatchCount;
-        entity.Partitions = s.Partitions;
+        entity.Slices = s.Slices;
         entity.ParametersJson = s.ParametersJson;
         entity.Reference = Truncate(s.Reference, DeliveryModel.MaxReferenceLength);
         entity.RecordCount = s.RecordCount;
@@ -2299,19 +2423,17 @@ public sealed partial class CatalogLedger : ILedger
         entity.Held = s.Held;
         entity.Failed = s.Failed;
         entity.Error = Truncate(s.Error, 4000);
-        entity.Kind = s.Kind;
-        entity.ManifestJson = s.ManifestJson;
-        entity.SourceSequence = s.SourceSequence;
-        entity.LoadedUtc = s.LoadedUtc;
-        entity.SourceRecords = s.SourceRecords;
-        entity.LoadedRows = s.LoadedRows;
-        entity.LoadedOrdinals = s.LoadedOrdinals;
-        entity.Duplicates = s.Duplicates;
+        entity.Kind = SubmissionKinds.All.Contains(s.Kind, StringComparer.Ordinal)
+            ? s.Kind
+            : throw new DeliveryException($"Submission {s.SubmissionId:D}: '{s.Kind}' is not a submission kind; it is one of {string.Join(", ", SubmissionKinds.All)}.");
         entity.Untracked = s.Untracked;
-        entity.ReplicaInserted = s.ReplicaInserted;
-        entity.ReplicaUpdated = s.ReplicaUpdated;
-        entity.ReplicaSchemaJson = s.ReplicaSchemaJson;
-        entity.SourcePrunedUtc = s.SourcePrunedUtc;
+        entity.SourceConnection = Truncate(s.SourceConnection, 400)!;
+        entity.SourceObject = Truncate(s.SourceObject, 400)!;
+        entity.WindowFromUtc = s.WindowFromUtc;
+        entity.WindowToUtc = s.WindowToUtc;
+        entity.SourceWindowJson = s.SourceWindowJson;
+        entity.RunId = s.RunId;
+        entity.GroupId = s.GroupId;
     }
 
     private static SubmissionState ToState(DeliverySubmission e) => new()
@@ -2321,10 +2443,9 @@ public sealed partial class CatalogLedger : ILedger
         FlowName = e.FlowName,
         MappingReference = e.MappingReference,
         RenderContext = e.RenderContext,
-        DropLocation = e.DropLocation,
         WorkLocation = e.WorkLocation,
         BatchCount = e.BatchCount,
-        Partitions = e.Partitions,
+        Slices = e.Slices,
         ParametersJson = e.ParametersJson,
         Reference = e.Reference,
         RecordCount = e.RecordCount,
@@ -2343,18 +2464,14 @@ public sealed partial class CatalogLedger : ILedger
         Failed = e.Failed,
         Error = e.Error,
         Kind = e.Kind,
-        ManifestJson = e.ManifestJson,
-        SourceSequence = e.SourceSequence,
-        LoadedUtc = e.LoadedUtc,
-        SourceRecords = e.SourceRecords,
-        LoadedRows = e.LoadedRows,
-        LoadedOrdinals = e.LoadedOrdinals,
-        Duplicates = e.Duplicates,
         Untracked = e.Untracked,
-        ReplicaInserted = e.ReplicaInserted,
-        ReplicaUpdated = e.ReplicaUpdated,
-        ReplicaSchemaJson = e.ReplicaSchemaJson,
-        SourcePrunedUtc = e.SourcePrunedUtc,
+        SourceConnection = e.SourceConnection,
+        SourceObject = e.SourceObject,
+        WindowFromUtc = e.WindowFromUtc is { } from ? DateTime.SpecifyKind(from, DateTimeKind.Utc) : null,
+        WindowToUtc = e.WindowToUtc is { } to ? DateTime.SpecifyKind(to, DateTimeKind.Utc) : null,
+        SourceWindowJson = e.SourceWindowJson,
+        RunId = e.RunId,
+        GroupId = e.GroupId,
     };
 
     private static RecordState ToState(DeliveryRecord r) => new()
@@ -2362,11 +2479,15 @@ public sealed partial class CatalogLedger : ILedger
         DeliveryKey = new DeliveryKey(r.DeliveryKey),
         FlowId = r.FlowId,
         SourceKey = r.SourceKey,
+        SourceKeyJson = r.SourceKeyJson,
         Label = r.Label,
         MappingName = r.MappingName,
         RenderContext = r.RenderContext,
         SourceFingerprint = r.SourceFingerprint,
         SourceModifiedUtc = r.SourceModifiedUtc,
+        SourceFileName = r.SourceFileName,
+        SourceRowNumber = r.SourceRowNumber,
+        SourceUpdatedUtc = r.SourceUpdatedUtc,
         MetadataHash = r.MetadataHash,
         PayloadHash = r.PayloadHash,
         PayloadModifiedUtc = r.PayloadModifiedUtc,
@@ -2389,6 +2510,9 @@ public sealed partial class CatalogLedger : ILedger
         PendingRenderContext = r.PendingRenderContext,
         PendingSourceFingerprint = r.PendingSourceFingerprint,
         PendingSourceModifiedUtc = r.PendingSourceModifiedUtc,
+        PendingSourceFileName = r.PendingSourceFileName,
+        PendingSourceRowNumber = r.PendingSourceRowNumber,
+        PendingSourceUpdatedUtc = r.PendingSourceUpdatedUtc,
         PendingMetadataHash = r.PendingMetadataHash,
         PendingPayloadHash = r.PendingPayloadHash,
         PendingPayloadModifiedUtc = r.PendingPayloadModifiedUtc,
@@ -2397,6 +2521,7 @@ public sealed partial class CatalogLedger : ILedger
         PendingPayload = r.PendingPayload,
         Blocked = r.Blocked,
         CacheSetId = r.CacheSetId,
+        PlanRequestedUtc = r.PlanRequestedUtc,
         CreatedUtc = r.CreatedUtc,
         UpdatedUtc = r.UpdatedUtc,
     };

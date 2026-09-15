@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
-using SqlFlow.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Catalog;
@@ -83,7 +83,7 @@ public static class CacheVersions
     public const int MaxVersions = 500;
 
     /// <summary>The versions of a cache, newest first.</summary>
-    public static async Task<IReadOnlyList<CacheVersionInfo>> ListAsync(CatalogDbContext db, string scope, CancellationToken ct = default)
+    public static async Task<IReadOnlyList<CacheVersionInfo>> ListAsync(OsduDbContext db, string scope, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
@@ -92,11 +92,11 @@ public static class CacheVersions
             .OrderByDescending(v => v.Sequence)
             .Take(MaxVersions)
             .ToListAsync(ct).ConfigureAwait(false);
-        return rows.Select(CatalogCacheStore.Info).ToList();
+        return rows.Select(OsduCacheStore.Info).ToList();
     }
 
     /// <summary>The named version of a cache, or its current version when none is named; null when there is no such version.</summary>
-    public static async Task<DeliveryCacheVersion?> ResolveAsync(CatalogDbContext db, string scope, string? version, CancellationToken ct = default)
+    public static async Task<DeliveryCacheVersion?> ResolveAsync(OsduDbContext db, string scope, string? version, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
@@ -115,7 +115,7 @@ public static class CacheVersions
     }
 
     /// <summary>The rows a version of a cache holds: every record whose range covers the version's sequence.</summary>
-    public static IQueryable<DeliveryCacheItem> ItemsAt(CatalogDbContext db, string scope, int sequence)
+    public static IQueryable<DeliveryCacheItem> ItemsAt(OsduDbContext db, string scope, int sequence)
     {
         ArgumentNullException.ThrowIfNull(db);
         return db.DeliveryCacheItems.AsNoTracking()
@@ -127,7 +127,7 @@ public static class CacheVersions
     /// changed, added and removed against that version. With a <paramref name="type"/> the counts cover that type alone,
     /// which is what lets a reader find the versions that changed it. Three grouped queries answer every version at once.
     /// </summary>
-    public static async Task<IReadOnlyList<CacheHistoryEntry>> HistoryAsync(CatalogDbContext db, string scope, string? type, CancellationToken ct = default)
+    public static async Task<IReadOnlyList<CacheHistoryEntry>> HistoryAsync(OsduDbContext db, string scope, string? type, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
@@ -183,7 +183,7 @@ public static class CacheVersions
     /// version holds, and the ones only the earlier version holds. Values compare as the exact text stored (ordered names,
     /// binary collation), so a change of case is a change. Null when the cache holds neither named version.
     /// </summary>
-    public static async Task<CacheComparison?> CompareAsync(CatalogDbContext db, CacheComparisonQuery query, CancellationToken ct = default)
+    public static async Task<CacheComparison?> CompareAsync(OsduDbContext db, CacheComparisonQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(query);
