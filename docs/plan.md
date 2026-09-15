@@ -1,15 +1,20 @@
-# Rebuild plan: OSDU Delivery as a module on SQLFlow
+# Rebuild plan: OSDU Delivery as a dedicated solution on SQLFlow
 
-This plan rebuilds OSDU Delivery from the stripped SQLFlow fork at `D:\Projects\eq\src\osdu-delivery` into this repository,
-as a module on an unmodified, vendored SQLFlow (`sqlflow/`, SQLFlow `fb8d5a6`). Each stage lists what it changes and the
-tests that close it. A stage is finished only when those tests pass; nothing moves to the next stage before that.
+OSDU Delivery becomes a dedicated solution in this repository: its own product, built on its own vendored copy of SQLFlow
+(`sqlflow/`, SQLFlow `fb8d5a6`), and able to adopt SQLFlow's improvements with a `git subtree pull`. The OSDU code is copied
+from the previous implementation at `D:\Projects\eq\src\osdu-delivery` (commit `7377609`) into `osdu/`. The SQLFlow repository
+itself is never changed.
+
+Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass; nothing moves
+to the next stage before that.
 
 ## Why
 
-- **One engine.** The fork copied SQLFlow's platform and then diverged from it (lineage, ingestion and most flow kinds were
-  removed, dispatch was rewritten, the catalog moved from migrations to `EnsureCreated`), so SQLFlow improvements no longer
-  reach it. Vendoring an unmodified SQLFlow and putting OSDU on top through extension points keeps every future SQLFlow
-  change one `git subtree pull` away.
+- **Adopting SQLFlow stays easy.** The previous implementation copied SQLFlow's platform and then changed it in place
+  (lineage, ingestion and most flow kinds removed, dispatch rewritten, the catalog moved from migrations to `EnsureCreated`),
+  so SQLFlow improvements could no longer reach it. Here SQLFlow stays SQLFlow: this project adds only a small set of generic
+  extension points to `sqlflow/`, each in its own commit, and everything OSDU lives in `osdu/`. A SQLFlow update is a subtree
+  pull whose conflicts, if any, are confined to the files carrying those extension points.
 - **Visible stages.** Data arrives through SQLFlow's own pre-ingestion and ingestion flows instead of a drop manifest and a
   replica inside the delivery flow. Each stage is its own flow with its own run, log and failure, ordered by lineage, so an
   operator can see and debug where a record is.
@@ -20,35 +25,39 @@ tests that close it. A stage is finished only when those tests pass; nothing mov
 
 ```text
 osdu-delivery/
-  sqlflow/                                SQLFlow, vendored, never edited here
+  OsduDelivery.sln                        the dedicated solution: SQLFlow's projects from sqlflow/ and the OSDU projects from osdu/
+  sqlflow/                                SQLFlow, vendored; generic extension points only
   osdu/                                   everything OSDU Delivery adds
     src/SqlFlow.Delivery/                 the OSDU module: flow kind, executor, ledger, protocols, rendering, mappings, templates, cache
     src/SqlFlow.Delivery.Data/            OsduDbContext, the osdu schema model, its migrations and schema version
     src/SqlFlow.Delivery.ControlPlane/    delivery and template endpoints, cache rollout and data definitions services
     src/SqlFlow.Delivery.Cli/             the check, cache and template verbs
     hosts/                                control plane, node and CLI builds that compose SQLFlow with the module and its branding
-    gui/                                  the OSDU pages, panels, API client and e2e specs, registered through SQLFlow's GUI module contract
+    gui/                                  the OSDU pages, panels, API client and e2e specs, registered through the GUI module contract
     samples/                              a sample estate: pre, ing and OSDU flows, mappings, cache flow, source files
     tests/                                the module's suites (unit and SQL Server)
     docs/                                 product and design documentation
+  tools/check-vendored-sqlflow.sh         guards the vendored SQLFlow
 ```
 
-The code in `osdu/` was copied from the previous implementation at commit `7377609`; `osdu/README.md` lists where each part
-came from and what was left behind.
+`osdu/README.md` lists where each part of `osdu/` came from and what was left behind.
 
 ## Stage 0: repository foundation (done)
 
 - `sqlflow/` holds SQLFlow `fb8d5a6` as a squashed git subtree.
-- `tools/check-vendored-sqlflow.sh` fails on any difference between `sqlflow/` and its vendored commit.
-- `CLAUDE.md` carries the project rules, including the vendored-code rule and the `osdu` schema rule.
+- `osdu/` holds the OSDU code copied from the previous implementation, without the drop, replica and SQL source path.
+- `tools/check-vendored-sqlflow.sh` lists this project's changes to `sqlflow/` and fails when a commit mixes `sqlflow/` with
+  other paths, or when a line added to `sqlflow/` mentions OSDU or the delivery module.
+- `CLAUDE.md` carries the project rules, including the vendored SQLFlow rule and the `osdu` schema rule.
 
-## Stage 1: extension points in SQLFlow
+## Stage 1: extension points in the vendored SQLFlow
 
-Made in the SQLFlow repository (`B:\SQLFlowV3`, `main`), under its rules (catalog changes ship with migrations, zero warnings,
-SQLFlow's own suites green), then pulled into `sqlflow/`. Every extension point is generic: SQLFlow keeps working without
-any module, and its existing flow kinds keep their current behaviour.
+Made in `sqlflow/` of this repository. Every extension point is generic (any module could use it), lands as its own commit
+touching only `sqlflow/` with a subject starting `sqlflow:`, and follows SQLFlow's standards: catalog changes ship with their
+migration, zero warnings, SQLFlow's existing flow kinds keep their behaviour, and SQLFlow's own suites pass with new tests
+for the extension point.
 
-| Extension point | What SQLFlow gains | Where in SQLFlow today |
+| Extension point | What SQLFlow gains | Where in `sqlflow/` today |
 | --- | --- | --- |
 | Flow kind registry | A module registers a `flowType` (and companion documents such as mappings) instead of the loader's fixed dispatch | `src/SqlFlow.Yaml/YamlDocumentLoader.cs` (fixed loader list and `flowType` chain) |
 | Executor fallback | A registered executor runs a document type the built-in branches do not handle; run artifacts and the requesting actor are available to it | `src/SqlFlow.Execution/DocumentExecutor.cs` (closed switch) |
@@ -63,15 +72,16 @@ any module, and its existing flow kinds keep their current behaviour.
 | GUI module contract | A module adds routes, navigation entries, panels on the pipeline, run and trigger pages, and shared components | `gui/src/App.tsx`, `gui/src/layout/nav.ts`, pipeline, run and trigger pages |
 | Branding | A host sets the product name, logo and "powered by SQLFlow" lockup | GUI shell, login page, CLI banner, notifications |
 
-Closes when: SQLFlow's solution builds clean, SQLFlow's unit and SQL Server suites pass, each extension point has tests
-with a test-only module, and the result is pulled into `sqlflow/` with `tools/check-vendored-sqlflow.sh` passing.
+Closes when: SQLFlow's solution in `sqlflow/` builds clean, SQLFlow's unit and SQL Server suites pass, each extension point
+has tests with a test-only module, and `tools/check-vendored-sqlflow.sh` passes.
 
-## Stage 2: the OSDU backend module
+## Stage 2: the OSDU backend module and the dedicated solution
 
+- Create `OsduDelivery.sln` with SQLFlow's projects from `sqlflow/` and the OSDU projects from `osdu/`.
 - Wire the delivery domain copied into `osdu/src/SqlFlow.Delivery` onto SQLFlow through stage 1's extension points: the flow
   kind and executor, the ledger, the protocols (record, well log, file, manifest), rendering, the preflight gate, templates
   and the mapping builder, the OSDU cache and its refresh, the worker, verifier, retrieval, removal and fan-out.
-- Create `src/SqlFlow.Delivery.Data` with `OsduDbContext`:
+- Build `osdu/src/SqlFlow.Delivery.Data` with `OsduDbContext`:
   - every OSDU table, view and index in the `osdu` schema;
   - the migration history in `[osdu].[__EFMigrationsHistory]`;
   - `[osdu].[SchemaVersion]` with the module version, the last migration, when and by whom, and the minimum SQLFlow catalog
@@ -82,24 +92,23 @@ with a test-only module, and the result is pulled into `sqlflow/` with `tools/ch
     record count view.
 - No foreign keys or navigations into SQLFlow's tables. A build check fails when the module's migration script touches a
   schema other than `osdu`, or SQLFlow's touches `osdu`.
-- Move the control plane endpoints (delivery, templates), the background services (cache rollout, data definitions warmup)
-  and the CLI verbs (`check`, `cache`, `template`) as module registrations.
-- Leave behind what stage 4 replaces: the drop manifest and reader, the scope file readers, the replica, the SQL source
-  extraction, inline-drop writing, the drop-off area and known-state publishing.
+- Register the control plane endpoints (delivery, templates), the background services (cache rollout, data definitions
+  warmup) and the CLI verbs (`check`, `cache`, `template`) through the host module extension point, and build the OSDU
+  Delivery hosts in `osdu/hosts`.
 
-Closes when: the solution builds clean with the module, the moved unit suites and the ledger's SQL Server suites pass against
-a disposable database provisioned by migrations, and the schema-scope check passes.
+Closes when: `OsduDelivery.sln` builds clean, the OSDU unit suites and the ledger's SQL Server suites pass against a disposable
+database provisioned by migrations, and the schema-scope check passes.
 
 ## Stage 3: the OSDU GUI module
 
 - Register the OSDU pages copied into `osdu/gui`: delivery overview, flow tabs, record and submission pages, audit trail,
   mappings, templates, mapping builder, OSDU cache.
-- Register routes, navigation and the per-kind panels through stage 1's GUI module contract; shared components the pages need
-  and SQLFlow lacks go into SQLFlow, not into the module.
+- Register routes, navigation and the per-kind panels through stage 1's GUI module contract; generic shared components the
+  pages need and SQLFlow lacks are added to `sqlflow/` as extension-point commits, OSDU-specific ones stay in `osdu/gui`.
 - The OSDU Delivery host build applies the branding: "OSDU Delivery, powered by SQLFlow".
 
-Closes when: the GUI builds and lints clean for both the plain SQLFlow build and the OSDU Delivery build, and the OSDU e2e
-specs pass against the OSDU Delivery host.
+Closes when: the GUI builds and lints clean for the OSDU Delivery build, and the OSDU e2e specs pass against the OSDU Delivery
+host.
 
 ## Stage 4: the OSDU flow reads ingestion tables
 
@@ -113,34 +122,42 @@ specs pass against the OSDU Delivery host.
 - The engine suites that used sample drops are re-fixtured on ingestion tables; the SQL Server end-to-end suite runs the whole
   chain: files, pre, ing, OSDU flow with a fake protocol.
 
-Closes when: the chain runs end to end on SQL Server in the test suites, lineage orders it in waves, and every moved and new
+Closes when: the chain runs end to end on SQL Server in the test suites, lineage orders it in waves, and every copied and new
 suite passes.
 
 ## Stage 5: live verification
 
 - Run the sample chain against the live OSDU test partition with the project's rule for live work: every id logged in
   `.sqlflow/live-e2e/actions.log` when created, removed at the reversible scope when done, and each confirmed absent.
-- Update the documentation (`docs/`) for the new architecture: how data arrives, the OSDU flow document, the `osdu` schema and
-  its upgrade path, operations.
+- Update the documentation in `osdu/docs` for the new architecture: how data arrives, the OSDU flow document, the `osdu`
+  schema and its upgrade path, operations.
 
 Closes when: records are delivered and verified in the live partition, cleanup is confirmed, and the documentation matches the
 code.
 
-## What moves from the fork
+## What moves from the previous implementation
 
 | Area | Verdict |
 | --- | --- |
-| Ledger, protocols, rendering, templates, mapping builder, cache and refresh, document loader and model, worker, verifier, retrieval, removal, preflight | Moves as it is |
-| Planner, intake, `FlowRuntime`, `DeliveryExecutor` | Moves; its input changes from a drop to ingestion tables |
-| Delivery and template endpoints, CLI verbs, OSDU GUI pages | Move as module registrations |
-| Ledger entities | Move into `OsduDbContext` in the `osdu` schema, delivered by migration |
+| Ledger, protocols, rendering, templates, mapping builder, cache and refresh, document loader and model, worker, verifier, retrieval, removal, preflight | Copied; wired onto the extension points |
+| Planner, intake, `FlowRuntime`, `DeliveryExecutor` | Copied; their input changes from a drop to ingestion tables |
+| Delivery and template endpoints, CLI verbs, OSDU GUI pages | Copied; registered through the host and GUI module extension points |
+| Ledger entities | Copied; become `OsduDbContext` in the `osdu` schema, delivered by migration |
 | Drop manifest and reader, scope file readers, replica, SQL source extraction, inline drops, drop-off area, known-state publishing | Left behind; SQLFlow's pre and ing flows replace them |
-| The fork's platform changes (kind registry, executor and compute registries, run parameters, fan-out, sync extension) | Reworked into SQLFlow's stage 1 extension points |
+| The previous implementation's platform changes (kind registry, executor and compute registries, run parameters, fan-out, sync extension) | Not copied; redone as stage 1's generic extension points in `sqlflow/` |
+
+## Adopting SQLFlow updates
+
+1. `git subtree pull --prefix=sqlflow --squash B:/SQLFlowV3 main`.
+2. Resolve any conflict in the files that carry this project's extension points, keeping SQLFlow's change and the extension
+   point.
+3. `tools/check-vendored-sqlflow.sh`, then build `OsduDelivery.sln` clean and run SQLFlow's and the OSDU suites.
 
 ## Risks
 
-- **SQLFlow keeps moving.** Stage 1 starts from SQLFlow's current `main`, and every extension point keeps SQLFlow's existing
-  flows and suites working.
-- **The GUI pages drifted.** SQLFlow's pipeline, run and trigger pages differ from the fork's, so the per-kind panel slots are
-  designed against SQLFlow's current pages.
-- **Stage 4 is new design.** It is proven only by its new SQL Server end-to-end suite, not by the moved tests.
+- **Extension points in central SQLFlow files.** The loader, executor, run parameters, catalog sync and lineage collector are
+  files SQLFlow keeps changing, so these are where subtree pulls can conflict. Keeping each extension point small and generic
+  keeps those conflicts small.
+- **SQLFlow's GUI pages move.** The per-kind panel slots sit in SQLFlow's pipeline, run and trigger pages, which a later
+  SQLFlow update may reshape.
+- **Stage 4 is new design.** It is proven only by its new SQL Server end-to-end suite, not by the copied tests.

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Fails when sqlflow/ is not exactly the SQLFlow commit it was vendored from.
+# Guards the vendored SQLFlow in sqlflow/.
 #
-# sqlflow/ is a squashed git subtree. Every `git subtree add` or `git subtree pull --squash` records a squash commit
-# whose tree is the vendored SQLFlow content and whose message names the upstream commit (git-subtree-split). This
-# check compares that tree with sqlflow/ as committed at HEAD and with the working tree, so an edit to vendored code is
-# caught whether or not it has been committed. Changes to SQLFlow are made in the SQLFlow repository and pulled in.
+# sqlflow/ is a squashed git subtree of SQLFlow. This project changes it only to add generic extension points, each in a
+# commit of its own that touches nothing outside sqlflow/, and never with OSDU code. The check:
+#   - names the SQLFlow commit sqlflow/ was vendored from and lists every file changed here since then;
+#   - fails when a commit since the vendoring changes sqlflow/ together with any other path;
+#   - fails when a line added to sqlflow/ since the vendoring (committed or not) mentions OSDU or the delivery module.
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
@@ -17,26 +18,47 @@ if [ -z "$squash" ]; then
 fi
 
 upstream="$(git log -1 --format=%B "$squash" | sed -n 's/^git-subtree-split: //p' | head -n 1)"
-expected="$(git rev-parse "$squash^{tree}")"
-
-if ! actual="$(git rev-parse --verify --quiet "HEAD:sqlflow")"; then
+vendored="$(git rev-parse "$squash^{tree}")"
+if ! current="$(git rev-parse --verify --quiet "HEAD:sqlflow")"; then
   echo "check-vendored-sqlflow: HEAD has no sqlflow/ directory." >&2
   exit 1
 fi
 
-if [ "$actual" != "$expected" ]; then
-  echo "check-vendored-sqlflow: sqlflow/ at HEAD differs from SQLFlow ${upstream:-(unknown commit)} as vendored in ${squash}." >&2
-  echo "Files that differ:" >&2
-  git diff --stat "$squash" "HEAD:sqlflow" -- >&2 || git diff --name-status "$expected" "$actual" >&2
-  echo "Make the change in the SQLFlow repository and run: git subtree pull --prefix=sqlflow --squash <sqlflow-repo> main" >&2
-  exit 1
+failed=0
+
+# A commit that changes sqlflow/ must change nothing else.
+while read -r commit; do
+  [ -z "$commit" ] && continue
+  outside="$(git diff-tree --no-commit-id --name-only -r "$commit" | grep -v '^sqlflow/' || true)"
+  if [ -n "$outside" ]; then
+    echo "check-vendored-sqlflow: commit $(git log -1 --format='%h %s' "$commit") changes sqlflow/ together with other paths:" >&2
+    printf '%s\n' "$outside" | sed 's/^/  /' >&2
+    failed=1
+  fi
+done < <(git rev-list --no-merges "$squash"..HEAD -- sqlflow)
+
+# No OSDU code in sqlflow/: added lines, committed since the vendoring or still in the working tree.
+added="$( { git diff -U0 "$vendored" "$current"; git diff -U0 HEAD -- sqlflow; } | grep '^+' | grep -v '^+++' || true)"
+mentions="$(printf '%s\n' "$added" | grep -inE 'osdu|SqlFlow\.Delivery' || true)"
+if [ -n "$mentions" ]; then
+  echo "check-vendored-sqlflow: lines added to sqlflow/ mention OSDU or the delivery module; sqlflow/ holds generic extension points only:" >&2
+  printf '%s\n' "$mentions" | head -n 20 | sed 's/^/  /' >&2
+  failed=1
 fi
 
-if [ -n "$(git status --porcelain -- sqlflow)" ]; then
-  echo "check-vendored-sqlflow: sqlflow/ has uncommitted changes:" >&2
-  git status --short -- sqlflow >&2
-  echo "Vendored SQLFlow is never edited here; revert them and make the change in the SQLFlow repository." >&2
-  exit 1
+echo "check-vendored-sqlflow: sqlflow/ is SQLFlow ${upstream:-(unknown commit)} plus this project's extension points."
+changed="$(git diff --name-status "$vendored" "$current")"
+if [ -n "$changed" ]; then
+  echo "Files changed in sqlflow/ since it was vendored:"
+  printf '%s\n' "$changed" | sed 's/^/  /'
+else
+  echo "No files changed in sqlflow/ since it was vendored."
 fi
 
-echo "check-vendored-sqlflow: sqlflow/ is SQLFlow ${upstream:-(unknown commit)}, unmodified."
+uncommitted="$(git status --porcelain -- sqlflow)"
+if [ -n "$uncommitted" ]; then
+  echo "Uncommitted changes in sqlflow/:"
+  printf '%s\n' "$uncommitted" | sed 's/^/  /'
+fi
+
+exit "$failed"

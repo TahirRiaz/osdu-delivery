@@ -1,7 +1,7 @@
 # osdu/
 
 Everything OSDU Delivery adds to SQLFlow lives in this folder. `sqlflow/` next to it is the engine; nothing here is copied
-from SQLFlow, and nothing in `sqlflow/` is changed for OSDU.
+from SQLFlow, and `sqlflow/` only ever gains generic extension points, never OSDU code.
 
 ## Where the code came from
 

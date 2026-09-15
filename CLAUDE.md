@@ -2,27 +2,29 @@
 
 ## Project Identity
 
-**This project is OSDU Delivery, powered by SQLFlow: a metadata-driven system that publishes subsurface records (wells, wellbores, well logs, and the other OSDU kinds) into an OSDU platform, with per-record traceability.** It is NOT DeltaForge.
+**This project is OSDU Delivery, powered by SQLFlow: a metadata-driven system that publishes subsurface records (wells, wellbores, well logs, and the other OSDU kinds) into an OSDU platform, with per-record traceability.** It is a separate project. It is NOT DeltaForge, and it is not SQLFlow.
 
-- SQLFlow is the engine underneath and is vendored, unmodified, in `sqlflow/`. OSDU Delivery is a module on top of it: the OSDU flow kind, the delivery ledger, the protocols, mappings, templates, the OSDU cache, the OSDU GUI pages, and the hosts that compose SQLFlow with the module.
+- SQLFlow is the engine underneath, vendored in `sqlflow/` as this project's own copy. OSDU Delivery is a module on top of it, in `osdu/`: the OSDU flow kind, the delivery ledger, the protocols, mappings, templates, the OSDU cache, the OSDU GUI pages, and the hosts that compose SQLFlow with the module.
 - The product name shown in the GUI, the CLI banner, and the docs is "OSDU Delivery". Where the product introduces itself (the login page, the workbench title bar, the CLI banner, the README) it carries the lockup "OSDU Delivery, powered by SQLFlow". Prose, page titles and notification subjects keep the short name. The `SqlFlow.*` project, namespace, binary, image and environment-variable names are kept on purpose.
 - Data reaches OSDU through SQLFlow's own flows: a pre-ingestion flow lands source files, an ingestion (`ing`) flow loads the keyed ingestion tables, and the OSDU flow reads those tables and delivers to OSDU. Lineage orders the three like any other flows. There is no drop manifest, no drop reader and no replica: do not reintroduce them.
-- The rebuild follows `docs/plan.md`. The previous implementation at `D:\Projects\eq\src\osdu-delivery` is the working reference the OSDU code is moved from; it is not edited as part of this rebuild.
+- The rebuild follows `docs/plan.md`. The previous implementation at `D:\Projects\eq\src\osdu-delivery` is the working reference the OSDU code was copied from; it is not edited as part of this rebuild.
 - The `deltaforge` MCP server and its documentation describe a different system. Verify behaviour against the source in this repository. OSDU API behaviour (storage, search, legal, entitlements, schema, delete and purge) is verified against the OpenAPI specifications in `D:\Projects\eq\src\osdu-csharp-client-main\openapi_specs`, never from memory.
 
-## Vendored SQLFlow Is Never Edited Here
+## The Vendored SQLFlow: Generic Extension Points Only
 
-**Nothing under `sqlflow/` is changed in this repository. Not a fix, not a hook, not a comment.** `sqlflow/` is a squashed git subtree of the SQLFlow repository (`B:\SQLFlowV3`, branch `main`), and it must stay byte-for-byte the SQLFlow commit it was vendored from.
+**All work happens in this repository. The SQLFlow repository (`B:\SQLFlowV3`) is never changed.** `sqlflow/` is a squashed git subtree of SQLFlow, and this project changes it only to add the generic extension points the OSDU module needs.
 
-- A change SQLFlow needs (an extension point, a fix) is made in the SQLFlow repository under that repository's own rules, committed there, and then brought in: `git subtree pull --prefix=sqlflow --squash B:/SQLFlowV3 main`.
-- `tools/check-vendored-sqlflow.sh` fails when `sqlflow/` differs from its vendored commit, in a commit or in the working tree. Run it before every commit that touches the repository layout, and it must pass before work is handed back.
-- OSDU code uses SQLFlow only through SQLFlow's extension points (flow kinds, executors, compute operations, run parameters, fan-out, catalog sync extension, module database, GUI routes and panels, lineage, branding). When an extension point is missing, it is added to SQLFlow, never worked around by copying SQLFlow code into the module.
+- **Generic only.** A change to `sqlflow/` is an extension point any module could use (a flow kind registry, an executor fallback, run parameters, a module database, a GUI module contract, a lineage contributor, branding). No OSDU code, name, table or wording ever goes into `sqlflow/`; the OSDU side of every extension point lives in `osdu/`.
+- **Its own commits.** Every commit that changes `sqlflow/` touches nothing outside it, and its subject starts with `sqlflow:`. The OSDU work that uses an extension point is a separate commit.
+- **SQLFlow's standards apply inside `sqlflow/`.** A catalog change ships with its EF Core migration, the SQLFlow solution builds with zero warnings, SQLFlow's existing flow kinds keep their behaviour, and SQLFlow's own suites pass, with new tests for each extension point.
+- **Updates.** SQLFlow improvements come in with `git subtree pull --prefix=sqlflow --squash B:/SQLFlowV3 main`, as one reviewable commit. Conflicts can only arise in the files that carry this project's extension points; resolve them keeping both SQLFlow's change and the extension point.
+- `tools/check-vendored-sqlflow.sh` names the SQLFlow commit `sqlflow/` was vendored from, lists every file changed here since, and fails when a commit mixes `sqlflow/` with other paths or when a line added to `sqlflow/` mentions OSDU or the delivery module. It must pass before work is handed back.
 
 ## The OSDU Database Schema, Migrations And Version
 
 **Every OSDU table, view and index lives in the dedicated `osdu` schema, owned by the module's own EF Core context, with its own migration history and its own schema version. SQLFlow's catalog model never contains an OSDU table, and OSDU never changes SQLFlow's tables.**
 
-- The migration history table is `[osdu].[__EFMigrationsHistory]`; migrations live in the module's migrations project, never in SQLFlow's.
+- The migration history table is `[osdu].[__EFMigrationsHistory]`; migrations live in the module's data project, never in SQLFlow's.
 - **Every change to the OSDU model ships with its migration.** A new entity, column, length or index is incomplete until its migration, designer file and refreshed model snapshot are committed together. There is no re-minting of databases.
 - `[osdu].[SchemaVersion]` records the module's schema version, the last migration applied, when and by whom, and the minimum SQLFlow catalog migration it requires. The hosts and `sqlflow db status` refuse to run against pending OSDU migrations, a database newer than the code, or a SQLFlow catalog older than required, and name the migration or version in the message.
 - No foreign keys and no EF navigations from `osdu` into SQLFlow's tables. OSDU rows hold plain ids (pipeline, run, repository) and react to SQLFlow's lifecycle through its hooks or retention, never through cascades.
@@ -73,7 +75,7 @@ When a flow finds no files or seems to point at the wrong place: diagnose and re
 
 ## Single Code Path Principle
 
-**Never create multiple execution pathways for the same feature.** Before implementing something, verify whether an existing path (in the module or in SQLFlow) already handles it, and extend it rather than creating a parallel one. This applies at all layers: backend execution, API routes, GUI commands, and frontend data flows.
+**Never create multiple execution pathways for the same feature.** Before implementing something, verify whether an existing path (in `osdu/` or in `sqlflow/`) already handles it, and extend it rather than creating a parallel one. This applies at all layers: backend execution, API routes, GUI commands, and frontend data flows.
 
 ## Zero Warnings, Zero Errors
 
@@ -85,5 +87,5 @@ When a flow finds no files or seems to point at the wrong place: diagnose and re
 
 ## Tests
 
-- Every stage of `docs/plan.md` is done only when its tests pass: the moved OSDU suites, SQLFlow's own suites for any extension point, and the SQL Server suites against a real database rather than skipping.
+- Every stage of `docs/plan.md` is done only when its tests pass: SQLFlow's own suites and new tests for every extension point, the OSDU suites, and the SQL Server suites against a real database rather than skipping.
 - DB-backed suites need `SQLFLOW_TEST_DB` pointing at a disposable SQL Server database (the git-ignored `.sqlflow/env` is the usual place). Never point it at a catalog that holds real data: the suites migrate and seed the database they are given.
