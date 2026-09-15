@@ -1,14 +1,15 @@
 using SqlFlow.Core.Runs;
+using SqlFlow.Orchestration;
 
 namespace SqlFlow.Delivery.Engine.FanOut;
 
 /// <summary>The member runs a fan-out produced, as one run group.</summary>
 public sealed record FanOutHandle(Guid GroupId, IReadOnlyList<Guid> RunIds);
 
-/// <summary>One member run of a fan-out as the catalog sees it.</summary>
+/// <summary>One member run of a fan-out as the platform last journaled it.</summary>
 public sealed record FanOutMemberState(Guid RunId, int Slot, string Status, string? Error, string? ResultJson)
 {
-    public bool IsTerminal => Status is "succeeded" or "failed" or "cancelled" or "skipped";
+    public bool IsTerminal => Status is not ("queued" or "running");
 
     public bool Succeeded => Status == "succeeded";
 }
@@ -30,37 +31,72 @@ public sealed record FanOutState(IReadOnlyList<FanOutMemberState> Members)
 }
 
 /// <summary>
-/// How a deliver run spreads its work across the fleet (design.md section 16.4): it asks the platform to enqueue
-/// member runs of its own flow (intake partitions, then drains), reads their state while it waits, and takes them
-/// with it when it is cancelled. A seam: the catalog implements it over the run queue; tests and hosts without a
-/// catalog get one that is not available, and the run does everything itself.
+/// How a delivery run spreads its work across the fleet (docs/stage4-design.md section 2.6): it asks the platform to
+/// enqueue member runs of its own flow (intake slices, then drains), reads their state while it waits, and takes them
+/// with it when it is cancelled. One seam, one implementation: the platform hands the run an
+/// <see cref="IRunFanOut"/> when the host it executes on can enqueue runs (the control plane and a node), and a run
+/// without one does all its work itself.
 /// </summary>
 public interface IFanOutDispatcher
 {
-    /// <summary>False when this host cannot enqueue runs (no catalog); the run then works alone.</summary>
+    /// <summary>False when this run cannot enqueue members; the run then works alone.</summary>
     bool Available { get; }
 
-    /// <summary>Enqueues one member run per parameter set under the root run; rejoins members that already exist and are not finished.</summary>
-    Task<FanOutHandle> EnqueueAsync(Guid rootRunId, string operation, IReadOnlyList<RunParameters> members, CancellationToken ct = default);
+    /// <summary>Enqueues one member run per parameter set; a re-executed run gets back the members it already has.</summary>
+    Task<FanOutHandle> EnqueueAsync(IReadOnlyList<RunParameters> members, CancellationToken ct = default);
 
     Task<FanOutState> StateAsync(FanOutHandle handle, CancellationToken ct = default);
 
     Task CancelAsync(FanOutHandle handle, CancellationToken ct = default);
 }
 
-/// <summary>The dispatcher of a host without a catalog: never available.</summary>
+/// <summary>The dispatcher of a run the platform handed a fan-out: the control plane and a node alike.</summary>
+public sealed class RunFanOutDispatcher : IFanOutDispatcher
+{
+    private readonly IRunFanOut _fanOut;
+
+    public RunFanOutDispatcher(IRunFanOut fanOut)
+    {
+        ArgumentNullException.ThrowIfNull(fanOut);
+        _fanOut = fanOut;
+    }
+
+    public bool Available => true;
+
+    public async Task<FanOutHandle> EnqueueAsync(IReadOnlyList<RunParameters> members, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(members);
+        var handle = await _fanOut.EnqueueAsync(members, ct).ConfigureAwait(false);
+        return new FanOutHandle(handle.GroupId, handle.RunIds);
+    }
+
+    public async Task<FanOutState> StateAsync(FanOutHandle handle, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        var members = await _fanOut.MembersAsync(new RunFanOutHandle(handle.GroupId, handle.RunIds), ct).ConfigureAwait(false);
+        return new FanOutState(members.Select(m => new FanOutMemberState(m.RunId, m.Slot, m.Status, m.Error, m.ResultJson)).ToList());
+    }
+
+    public Task CancelAsync(FanOutHandle handle, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        return _fanOut.CancelAsync(new RunFanOutHandle(handle.GroupId, handle.RunIds), ct);
+    }
+}
+
+/// <summary>The dispatcher of a run without a fan-out: never available, so the run does all its work itself.</summary>
 public sealed class NoFanOutDispatcher : IFanOutDispatcher
 {
     public static NoFanOutDispatcher Instance { get; } = new();
 
     public bool Available => false;
 
-    public Task<FanOutHandle> EnqueueAsync(Guid rootRunId, string operation, IReadOnlyList<RunParameters> members, CancellationToken ct = default)
-        => throw new DeliveryException("This host has no catalog connection, so a run cannot fan out.");
+    public Task<FanOutHandle> EnqueueAsync(IReadOnlyList<RunParameters> members, CancellationToken ct = default)
+        => throw new DeliveryException("This run was not given a fan-out, so it cannot enqueue member runs; it does its work itself.");
 
     public Task<FanOutState> StateAsync(FanOutHandle handle, CancellationToken ct = default)
-        => throw new DeliveryException("This host has no catalog connection, so a run cannot fan out.");
+        => throw new DeliveryException("This run was not given a fan-out, so it has no member runs to read.");
 
     public Task CancelAsync(FanOutHandle handle, CancellationToken ct = default)
-        => throw new DeliveryException("This host has no catalog connection, so a run cannot fan out.");
+        => throw new DeliveryException("This run was not given a fan-out, so it has no member runs to cancel.");
 }

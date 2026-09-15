@@ -4,7 +4,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
-using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -51,7 +50,7 @@ public sealed class DeliveryWorker
     private const int FailuresLoggedPerBatch = 10;
 
     private readonly ILedger _ledger;
-    private readonly IDropReader _drops;
+    private readonly IPayloadFiles _payloads;
     private readonly FileStoreRegistry _stores;
     private readonly IDeliveryProtocol _protocol;
     private readonly FlowDefinition _flow;
@@ -72,7 +71,7 @@ public sealed class DeliveryWorker
 
     public DeliveryWorker(
         ILedger ledger,
-        IDropReader drops,
+        IPayloadFiles payloads,
         FileStoreRegistry stores,
         IDeliveryProtocol protocol,
         FlowDefinition flow,
@@ -82,7 +81,7 @@ public sealed class DeliveryWorker
         string? workerId = null)
     {
         ArgumentNullException.ThrowIfNull(ledger);
-        ArgumentNullException.ThrowIfNull(drops);
+        ArgumentNullException.ThrowIfNull(payloads);
         ArgumentNullException.ThrowIfNull(stores);
         ArgumentNullException.ThrowIfNull(protocol);
         ArgumentNullException.ThrowIfNull(flow);
@@ -90,7 +89,7 @@ public sealed class DeliveryWorker
         ArgumentNullException.ThrowIfNull(listener);
         ArgumentNullException.ThrowIfNull(logger);
         _ledger = ledger;
-        _drops = drops;
+        _payloads = payloads;
         _stores = stores;
         _protocol = protocol;
         _flow = flow;
@@ -425,7 +424,9 @@ public sealed class DeliveryWorker
         {
             if (item is null || state.TargetId is null)
             {
-                var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, "no pending document on the record; re-submit the drop", null, null);
+                var (completion, evt, summary) = Settle(
+                    state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null,
+                    "no pending document on the record; release or redeliver it to plan it again", null, null);
                 await record(index, completion, evt, summary).ConfigureAwait(false);
                 continue;
             }
@@ -463,7 +464,7 @@ public sealed class DeliveryWorker
                 Document = document,
                 DeliverMetadata = sendMetadata,
                 DeliverPayload = sendPayload,
-                Payload = state.PendingPayloadLocation is { } location ? new DropPayloadSource(_drops, location) : null,
+                Payload = state.PendingPayloadLocation is { } location ? new StoragePayloadSource(_payloads, PayloadLocation.Parse(location)) : null,
                 ExistingVersion = state.TargetVersion,
                 SourceKey = state.SourceKey,
                 Label = state.Label,
@@ -550,7 +551,7 @@ public sealed class DeliveryWorker
         {
             case RecordHeldException held:
                 return Settle(record, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, held.Message, resultJson, null, keepSteps: true);
-            case HttpStatusException http when IsTerminal(http.StatusCode):
+            case OsduStatusException http when IsTerminal(http.StatusCode):
                 return Settle(record, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, $"HTTP {http.StatusCode} is not retryable: {http.Message}", resultJson, null, keepSteps: true);
             case SqlFlowException or HttpRequestException or IOException or TimeoutException or JsonException or InvalidOperationException:
                 {
@@ -564,7 +565,7 @@ public sealed class DeliveryWorker
 
                     // A service that said how long to wait is not asked again sooner: the transport hands a wait
                     // longer than it will sit through inline up here, and the record's next attempt honours it.
-                    if (failure is HttpStatusException { RetryAfter: { } asked } && asked > backoff)
+                    if (failure is OsduStatusException { RetryAfter: { } asked } && asked > backoff)
                     {
                         backoff = asked;
                     }
@@ -641,6 +642,11 @@ public sealed class DeliveryWorker
                 Error = redacted,
                 ResultJson = redacted is null ? AttemptResult.WithDetail(resultJson, detail) : resultJson,
                 WorkBatch = batch?.Index ?? record.WorkBatch,
+                // The ingestion file and row the document being delivered was built from: what ties this try to the
+                // exact line of the exact file, whatever the record later moves on to.
+                SourceFileName = record.PendingSourceFileName,
+                SourceRowNumber = record.PendingSourceRowNumber,
+                SourceUpdatedUtc = record.PendingSourceUpdatedUtc,
             },
         };
 
@@ -942,25 +948,4 @@ public sealed class DeliveryWorker
             // expected: the renewal loop was told to stop
         }
     }
-}
-
-/// <summary>Opens payload chunks from the drop; each open is a fresh stream so a retried request re-reads the blob.</summary>
-public sealed class DropPayloadSource : IPayloadSource
-{
-    private readonly IDropReader _drops;
-    private readonly string _location;
-    private IReadOnlyList<PayloadChunk>? _chunks;
-
-    public DropPayloadSource(IDropReader drops, string location)
-    {
-        ArgumentNullException.ThrowIfNull(drops);
-        ArgumentException.ThrowIfNullOrWhiteSpace(location);
-        _drops = drops;
-        _location = location;
-    }
-
-    public async Task<IReadOnlyList<PayloadChunk>> ListChunksAsync(CancellationToken ct = default)
-        => _chunks ??= await _drops.ListPayloadChunksAsync(_location, ct).ConfigureAwait(false);
-
-    public Task<Stream> OpenAsync(PayloadChunk chunk, CancellationToken ct = default) => _drops.OpenChunkAsync(chunk, ct);
 }

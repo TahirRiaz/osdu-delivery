@@ -69,7 +69,7 @@ public sealed class OsduLedger : ILedger
         return entity is null ? null : InlineSubmissionRows.ToState(entity);
     }
 
-    public async Task MarkInlineStatusAsync(Guid submissionId, string status, Guid? groupId, Guid? osduRunId, string? error, CancellationToken ct = default)
+    public async Task MarkInlineStatusAsync(Guid submissionId, string status, Guid? groupId, Guid? osduRunId, string? failure, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(status);
         if (!InlineStatuses.All.Contains(status, StringComparer.Ordinal))
@@ -83,9 +83,9 @@ public sealed class OsduLedger : ILedger
         entity.Status = status;
         entity.GroupId = groupId ?? entity.GroupId;
         entity.OsduRunId = osduRunId ?? entity.OsduRunId;
-        if (error is not null)
+        if (failure is not null)
         {
-            entity.Error = Truncate(Http.HeaderRedaction.RedactMessage(error), 4000);
+            entity.Error = Truncate(Http.HeaderRedaction.RedactMessage(failure), 4000);
         }
 
         if (status == InlineStatuses.Landed && entity.LandedUtc is null)

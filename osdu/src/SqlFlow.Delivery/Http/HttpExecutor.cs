@@ -109,7 +109,7 @@ public sealed class HttpExecutor
                 if (!decision.ShouldRetry)
                 {
                     var preview = await PreviewAsync(response, ct).ConfigureAwait(false);
-                    throw new HttpStatusException(code, $"HTTP {code} {status} from {request.Method} {Describe(request.RequestUri)}{CorrelationNote(response, request)}: {preview}", decision.RetryAfter);
+                    throw new OsduStatusException(code, $"HTTP {code} {status} from {request.Method} {Describe(request.RequestUri)}{CorrelationNote(response, request)}: {preview}", decision.RetryAfter);
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);

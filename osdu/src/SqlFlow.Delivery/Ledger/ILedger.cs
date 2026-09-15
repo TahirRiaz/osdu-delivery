@@ -159,7 +159,7 @@ public sealed record SubmissionState
     /// <summary>The upper bound (inclusive) of the change window planned; set for incremental and full plans.</summary>
     public DateTime? WindowToUtc { get; init; }
 
-    /// <summary>What else bounded the read, as JSON (<see cref="SourceWindowDescription"/>).</summary>
+    /// <summary>What else bounded the read, as JSON (<see cref="Source.SourceWindowDescription"/>).</summary>
     public string? SourceWindowJson { get; init; }
 
     /// <summary>The platform run that coordinated the plan.</summary>
@@ -970,7 +970,7 @@ public interface ILedger
     /// Moves an API submission along its life (<see cref="InlineStatuses"/>): the run group and the OSDU member run once its
     /// chain is queued, and the redacted error when it failed. A value left null keeps what the row holds.
     /// </summary>
-    Task MarkInlineStatusAsync(Guid submissionId, string status, Guid? groupId, Guid? osduRunId, string? error, CancellationToken ct = default);
+    Task MarkInlineStatusAsync(Guid submissionId, string status, Guid? groupId, Guid? osduRunId, string? failure, CancellationToken ct = default);
 
     /// <summary>The files an API submission landed, one per dataset, record first.</summary>
     Task<IReadOnlyList<LandingState>> GetLandingsAsync(Guid submissionId, CancellationToken ct = default);

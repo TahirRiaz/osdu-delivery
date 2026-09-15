@@ -77,6 +77,12 @@ public sealed record SourceRecord
     /// <summary>When the ingestion table marked the record row deleted, or null for a live row.</summary>
     public DateTime? DeletedUtc { get; init; }
 
+    /// <summary>
+    /// Why this record cannot be delivered as the source read it, or null when it can: a child dataset over its
+    /// <c>maxRowsPerRecord</c> ceiling, say. The planner holds the record with this reason rather than rendering it.
+    /// </summary>
+    public string? Hold { get; init; }
+
     public IReadOnlyList<SourceRow> ScopeRows(string scope)
         => Scopes.TryGetValue(scope, out var rows) ? rows : [];
 }

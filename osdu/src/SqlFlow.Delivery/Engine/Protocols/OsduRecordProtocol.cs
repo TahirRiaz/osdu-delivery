@@ -132,7 +132,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
         {
             result = await _client.SendJsonAsync(method, url, new JsonArray(toWrite.Select(t => (JsonNode)t.Document).ToArray()), null, ct, idempotent: true).ConfigureAwait(false);
         }
-        catch (HttpStatusException ex) when (toWrite.Count > 1 && ex.StatusCode is >= 400 and < 500 and not (401 or 408 or 425 or 429))
+        catch (OsduStatusException ex) when (toWrite.Count > 1 && ex.StatusCode is >= 400 and < 500 and not (401 or 408 or 425 or 429))
         {
             // The service refused the array as a whole; find out which records it refuses by sending them alone.
             foreach (var (index, work, _) in toWrite)
@@ -145,7 +145,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
         }
         catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
         {
-            steps.Add(RecordsStep, started, (ex as HttpStatusException)?.StatusCode, null, ex.Message);
+            steps.Add(RecordsStep, started, (ex as OsduStatusException)?.StatusCode, null, ex.Message);
             foreach (var (index, _, _) in toWrite)
             {
                 outcomes[index] = DeliveryOutcome.Failed(ex, steps.Steps);
@@ -273,7 +273,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
         {
             result = await _client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 207, 404 }, ct, idempotent: true).ConfigureAwait(false);
         }
-        catch (HttpStatusException ex) when (ex.StatusCode is 400 or 405)
+        catch (OsduStatusException ex) when (ex.StatusCode is 400 or 405)
         {
             // The service refused the list over something in it (a malformed id) or does not offer the bulk
             // endpoint at all; ask it record by record which ones it objects to.
@@ -492,7 +492,7 @@ internal static class RecordWriter
             var result = await client.SendJsonAsync(HttpMethod.Get, url, null, null, ct).ConfigureAwait(false);
             return new ProbeOutcome(true, (int)result.Status, "the service answered", url.AbsolutePath);
         }
-        catch (HttpStatusException ex)
+        catch (OsduStatusException ex)
         {
             return new ProbeOutcome(false, ex.StatusCode, HeaderRedaction.RedactMessage(ex.Message), url.AbsolutePath);
         }

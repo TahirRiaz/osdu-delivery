@@ -6,7 +6,7 @@ namespace SqlFlow.Delivery;
 /// Base exception for every failure the delivery domain raises deliberately, with an actionable message. It is a
 /// <see cref="SqlFlowException"/>, so the platform's run write-back, redaction and error surfaces treat it exactly
 /// like any other engine failure; document failures use the platform's <see cref="FlowValidationException"/> and
-/// non-retryable HTTP statuses its <see cref="HttpStatusException"/>.
+/// non-retryable HTTP statuses its <see cref="OsduStatusException"/>.
 /// </summary>
 public class DeliveryException : SqlFlowException
 {

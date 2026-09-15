@@ -489,7 +489,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             await _client.SendJsonAsync(HttpMethod.Patch, commitUrl, new JsonObject { ["state"] = "commit" }, null, ct).ConfigureAwait(false);
             return;
         }
-        catch (Exception ex) when (ex is HttpStatusException { StatusCode: 409 or 412 or >= 500 } || ex is DeliveryException { InnerException: HttpRequestException or IOException or TaskCanceledException })
+        catch (Exception ex) when (ex is OsduStatusException { StatusCode: 409 or 412 or >= 500 } || ex is DeliveryException { InnerException: HttpRequestException or IOException or TaskCanceledException })
         {
             var state = await SessionStateAsync(targetId, sessionId, ct).ConfigureAwait(false);
             if (state is not ("committed" or "committing"))

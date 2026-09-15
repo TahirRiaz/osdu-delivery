@@ -4,10 +4,8 @@ using Microsoft.Extensions.Logging;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
-using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Engine.FanOut;
 using SqlFlow.Delivery.Engine.Intake;
-using SqlFlow.Delivery.Engine.KnownState;
 using SqlFlow.Delivery.Engine.Planning;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Verify;
@@ -17,8 +15,8 @@ using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
-using SqlFlow.Delivery.Replica;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Storage;
 
 namespace SqlFlow.Delivery.Engine;
@@ -26,7 +24,8 @@ namespace SqlFlow.Delivery.Engine;
 /// <summary>The shared, flow-independent services the engine is composed from.</summary>
 public sealed record EngineContext(
     DeliveryDocumentLoader Documents,
-    IDropReader Drops,
+    IIngestionSourceFactory Sources,
+    IPayloadFiles Payloads,
     FileStoreRegistry Stores,
     ISecretResolver Secrets,
     ILedger? Ledger,
@@ -36,12 +35,8 @@ public sealed record EngineContext(
     IDeliveryListener Listener,
     IFanOutDispatcher? FanOut = null,
     Templates.ITemplateStore? Templates = null,
-    ICacheStore? Cache = null,
-    SqlSource.ISqlSourceConnector? SqlSources = null)
+    ICacheStore? Cache = null)
 {
-    /// <summary>What a flow reading from SQL connects with: the host's connector, SQL Server and Azure SQL unless one is given.</summary>
-    public SqlSource.ISqlSourceConnector SqlConnector => SqlSources ?? SqlSource.SqlServerSourceConnector.Instance;
-
     /// <summary>The environment switch that lets a flow target a loopback address (local OSDU emulators, tests).</summary>
     public const string AllowLoopbackVariable = "SQLFLOW_DELIVERY_ALLOW_LOOPBACK";
 
@@ -49,11 +44,14 @@ public sealed record EngineContext(
     public static bool LoopbackAllowed
         => Environment.GetEnvironmentVariable(AllowLoopbackVariable) is { } v && v.Equals("true", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>The fan-out dispatcher, never null: a host without a catalog gets one that is not available.</summary>
+    /// <summary>The fan-out dispatcher, never null: a run the platform gave no fan-out does its work itself.</summary>
     public IFanOutDispatcher Dispatcher => FanOut ?? NoFanOutDispatcher.Instance;
 
     /// <summary>A context with a different logger factory: the node swaps in the run log for one run.</summary>
     public EngineContext WithLoggers(ILoggerFactory loggers) => this with { Loggers = loggers };
+
+    /// <summary>A context with the fan-out the platform handed this run; every run gets its own.</summary>
+    public EngineContext WithFanOut(IFanOutDispatcher? dispatcher) => this with { FanOut = dispatcher };
 }
 
 /// <summary>What a deliver run did: the intake, the drain, the submission it left, and how far it fanned out.</summary>
@@ -61,11 +59,11 @@ public sealed record RunResult(IntakeResult Intake, WorkerSummary Work, Submissi
 
 /// <summary>
 /// One flow, resolved and ready: parameters applied, render inputs pinned (the mapping from the flow's repository, the
-/// template and the cache from the catalog), and (when a ledger and a target are wired) the protocol, worker, verifier
-/// and publisher over them. Every operation an operator can trigger goes through here and is recorded in the
-/// ledger's activity trail with the <see cref="Actor"/> that asked for it and the platform <see cref="RunId"/>
-/// it ran as. A deliver run coordinates its own fan-out (design.md section 16.4): intake partitions first, then
-/// drains, each a member run of the same flow on any node of the pool, waited for and completed here.
+/// template and the cache from the catalog), and (when a ledger and a target are wired) the source, protocol, worker and
+/// verifier over them. Every operation an operator can trigger goes through here and is recorded in the ledger's
+/// activity trail with the <see cref="Actor"/> that asked for it and the platform <see cref="RunId"/> it ran as. A
+/// deliver run coordinates its own fan-out (docs/stage4-design.md section 2.6): intake slices first, then drains, each a
+/// member run of the same flow on any node of the pool, waited for and completed here.
 /// </summary>
 public sealed class FlowRuntime : IDisposable
 {
@@ -83,12 +81,13 @@ public sealed class FlowRuntime : IDisposable
 
     private readonly EngineContext _context;
     private readonly ResolvedMapping? _mapping;
-    private readonly string? _drop;
     private readonly ILogger _log;
     private HttpRuntime? _http;
     private IDeliveryProtocol? _protocol;
+    private IIngestionSource? _source;
+    private Planner? _planner;
 
-    private FlowRuntime(EngineContext context, FlowDefinition flow, DeliveryLayout layout, MappingCatalog mappings, IReadOnlyDictionary<string, string> parameters, ResolvedMapping? mapping, string? dropLocation)
+    private FlowRuntime(EngineContext context, FlowDefinition flow, DeliveryLayout layout, MappingCatalog mappings, IReadOnlyDictionary<string, string> parameters, ResolvedMapping? mapping)
     {
         _context = context;
         Flow = flow;
@@ -96,7 +95,6 @@ public sealed class FlowRuntime : IDisposable
         Mappings = mappings;
         Parameters = parameters;
         _mapping = mapping;
-        _drop = dropLocation;
         _log = context.Loggers.CreateLogger("run");
     }
 
@@ -108,16 +106,16 @@ public sealed class FlowRuntime : IDisposable
 
     public IReadOnlyDictionary<string, string> Parameters { get; }
 
-    /// <summary>The pinned render inputs. Only a runtime opened with <see cref="CreateAsync(EngineContext, FlowDefinition, IReadOnlyDictionary{string, string}?, string?, CancellationToken)"/> has them.</summary>
+    /// <summary>The pinned render inputs. Only a runtime opened with <see cref="CreateAsync(EngineContext, FlowDefinition, IReadOnlyDictionary{string, string}?, CancellationToken)"/> has them.</summary>
     public ResolvedMapping Mapping => _mapping ?? throw new DeliveryException("This operation renders records and needs the flow's mapping, template and cache; the runtime was opened for target operations only.");
 
-    /// <summary>The drop the runtime reads. Only a runtime opened with the full <see cref="CreateAsync(EngineContext, FlowDefinition, IReadOnlyDictionary{string, string}?, string?, CancellationToken)"/> has one.</summary>
-    public string DropLocation => _drop ?? throw new DeliveryException("This operation reads the drop and needs the flow's parameters; the runtime was opened for target operations only.");
-
-    /// <summary>True when the runtime was opened with a drop and render inputs (deliver, plan), false for target-only work.</summary>
-    public bool HasDrop => _drop is not null;
+    /// <summary>True when the runtime can read the flow's source and render (deliver, plan, intake), false for target-only work.</summary>
+    public bool ReadsSource => _mapping is not null;
 
     public EngineContext Context => _context;
+
+    /// <summary>Which records this run reads: an incremental window by default, or what the run asked for.</summary>
+    public SourceSelection Selection { get; set; } = SourceSelection.Incremental(null);
 
     /// <summary>Who is asking: the run's trigger source (manual:&lt;user&gt;, schedule:&lt;name&gt;), gui:&lt;user&gt; for
     /// an intervention, cli:&lt;user&gt; on a workstation. Recorded on every activity.</summary>
@@ -129,15 +127,21 @@ public sealed class FlowRuntime : IDisposable
     /// <summary>Supplies the captured log for the activity being completed (the executor sets it).</summary>
     public Func<string?>? ActivityLog { get; set; }
 
+    /// <summary>The submission the run works on, when it names one: a re-run, a fan-out member's, or an API submission's.</summary>
+    public Guid? SubmissionId { get; set; }
+
+    /// <summary>The key slices a fan-out member plans of its coordinating run's submission; null plans the whole read.</summary>
+    public IReadOnlyList<int>? Slices { get; set; }
+
     /// <summary>Loads and resolves a flow. Fails at parse time with the file path on every message.</summary>
-    public static async Task<FlowRuntime> CreateAsync(EngineContext context, string flowPath, IReadOnlyDictionary<string, string>? parameters, string? dropOverride, CancellationToken ct = default)
+    public static async Task<FlowRuntime> CreateAsync(EngineContext context, string flowPath, IReadOnlyDictionary<string, string>? parameters, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(context);
         var flow = context.Documents.LoadFlow(flowPath);
-        return await CreateAsync(context, flow, parameters, dropOverride, ct).ConfigureAwait(false);
+        return await CreateAsync(context, flow, parameters, ct).ConfigureAwait(false);
     }
 
-    public static async Task<FlowRuntime> CreateAsync(EngineContext context, FlowDefinition flow, IReadOnlyDictionary<string, string>? parameters, string? dropOverride, CancellationToken ct = default)
+    public static async Task<FlowRuntime> CreateAsync(EngineContext context, FlowDefinition flow, IReadOnlyDictionary<string, string>? parameters, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(flow);
@@ -146,14 +150,13 @@ public sealed class FlowRuntime : IDisposable
         var mappings = new MappingCatalog(layout.MappingsDirectory, context.Documents);
         var resolver = new RenderResolver(mappings, context.Cache, context.Templates);
         var mapping = await resolver.ResolveAsync(flow, ct).ConfigureAwait(false);
-        var drop = dropOverride ?? FlowParameters.DropLocation(flow, values);
-        return new FlowRuntime(context, flow, layout, mappings, values, mapping, drop);
+        return new FlowRuntime(context, flow, layout, mappings, values, mapping);
     }
 
     /// <summary>
-    /// A runtime for the operations that touch the target and the ledger but never the drop (verify, delete,
-    /// release, redeliver, known-state, probe, drain): no parameters are required and no mapping is resolved, so
-    /// they work for a flow whose drop parameters are unknown or whose mapping could not render right now.
+    /// A runtime for the operations that touch the target and the ledger but never the source (verify, delete,
+    /// release, redeliver, probe, drain): no parameters are required and no mapping is resolved, so they work for a
+    /// flow whose parameters are unknown or whose mapping could not render right now.
     /// </summary>
     public static FlowRuntime ForTarget(EngineContext context, FlowDefinition flow)
     {
@@ -162,108 +165,22 @@ public sealed class FlowRuntime : IDisposable
         var layout = DeliveryLayout.Resolve(flow);
         return new FlowRuntime(
             context, flow, layout, new MappingCatalog(layout.MappingsDirectory, context.Documents),
-            new Dictionary<string, string>(StringComparer.Ordinal), null, null);
+            new Dictionary<string, string>(StringComparer.Ordinal), null);
     }
 
-    public Planner Planner => new(_context.Drops, _context.Ledger, _context.Loggers.CreateLogger<Planner>());
+    /// <summary>The flow's ingestion tables, opened once per runtime with the flow's own connection reference.</summary>
+    public IIngestionSource Source => _source ??= _context.Sources.Open(Flow, Parameters);
 
-    /// <summary>The submission the run works on, when it names one: a re-run, a fan-out member's, or the replan the run registered.</summary>
-    public Guid? SubmissionId { get; set; }
+    public Planner Planner => _planner ??= new Planner(Source, _context.Payloads, _context.Ledger, _context.Loggers.CreateLogger<Planner>());
 
-    /// <summary>Renders the drop and reports what would change, every entry collected. Changes nothing, records nothing.</summary>
+    public SubmissionIntake Intake => new(RequireLedger(), Planner, _context.Stores, _context.Time, _context.Listener, _context.Loggers.CreateLogger<SubmissionIntake>()) { RunId = RunId };
+
+    /// <summary>What this run asks the intake for: its selection, the submission it works on, and a member's slices.</summary>
+    public IntakeRequest Request => new(Selection, SubmissionId, Slices);
+
+    /// <summary>Reads the source and reports what would change, every entry collected. Changes nothing, records nothing.</summary>
     public Task<DeliveryPlan> PlanAsync(bool force = false, CancellationToken ct = default)
-        => Planner.PlanAsync(Flow, Mapping, Parameters, DropLocation, force, ct);
-
-    /// <summary>The flow's replica (docs/delivery/replica.md), when it declares one and the ledger is wired; null otherwise.</summary>
-    public ReplicaStore? Replica => Flow.Source.Replica is null || _context.Ledger is null
-        ? null
-        : new ReplicaStore(new ReplicaServices(_context.SqlConnector, _context.Secrets, _context.Drops, _context.Ledger, _context.Time, _context.Loggers.CreateLogger<ReplicaStore>()), Flow);
-
-    public SubmissionIntake Intake => new(RequireLedger(), Planner, _context.Stores, _context.Time, _context.Listener, _context.Loggers.CreateLogger<SubmissionIntake>()) { RunId = RunId, Replica = Replica };
-
-    private IntakeSource Source => new(DropLocation, SubmissionId);
-
-    /// <summary>
-    /// Registers a replan (docs/delivery/replica.md): a submission of the latest record the replica holds for each record of this
-    /// run's parameter values, or for the given records, to be planned again under the flow's current mapping, template and cache.
-    /// Nothing is read from a drop. The runtime then works on the replan.
-    /// </summary>
-    public Task<SubmissionState> ReplanAsync(IReadOnlyList<DeliveryKey>? keys, CancellationToken ct = default)
-        => TrackAsync("replan", new { keys = keys?.Select(k => k.ToString()).ToList(), parameters = Parameters }, keys is { Count: 1 } ? keys[0] : null, async () =>
-        {
-            var ledger = RequireLedger();
-            var replica = Replica ?? throw new DeliveryException($"Flow '{Flow.Name}' declares no source.replica, so there is nothing to replan from; deliver its drop again instead.");
-            if (!await replica.HasLoadedAsync(ct).ConfigureAwait(false))
-            {
-                // Refused before anything is registered, so a replan of an empty replica leaves no submission behind.
-                throw new DeliveryException($"Flow '{Flow.Name}' (replica {replica.Schema}): the replica holds no records yet; deliver a drop to load it before replanning.");
-            }
-
-            var id = Guid.CreateVersion7();
-            await ledger.RegisterSubmissionAsync(new SubmissionState
-            {
-                SubmissionId = id,
-                FlowId = Flow.Id,
-                FlowName = Flow.Name,
-                MappingReference = Mapping.Mapping.Reference,
-                RenderContext = Mapping.Context.Canonical(),
-                DropLocation = string.Empty,
-                ParametersJson = JsonSerializer.Serialize(Parameters),
-                Kind = SubmissionKinds.Replan,
-                ReceivedUtc = _context.Time.GetUtcNow().UtcDateTime,
-            }, ct).ConfigureAwait(false);
-            var begun = await ledger.BeginSourceLoadAsync(id, ct).ConfigureAwait(false);
-            var rows = await replica.CopyLatestAsync(id, begun.SourceSequence, Planner.ScopeKey(Parameters), keys, ct).ConfigureAwait(false);
-            var submission = begun with { LoadedUtc = _context.Time.GetUtcNow().UtcDateTime, SourceRecords = rows, LoadedRows = rows, LoadedOrdinals = rows, RecordCount = rows };
-            await ledger.UpdateSubmissionAsync(submission, ct).ConfigureAwait(false);
-            if (keys is not null && rows < keys.Distinct().Count())
-            {
-                _log.LogWarning(
-                    "{Missing} of the {Asked} record(s) to replan are not in the replica under this run's parameter values, so they are not replanned.",
-                    keys.Distinct().Count() - rows, keys.Distinct().Count());
-            }
-
-            SubmissionId = id;
-            _log.LogInformation("Replan {SubmissionId}: {Rows} record(s) from replica {Schema}.", id, rows, replica.Schema);
-            return (submission, string.Create(CultureInfo.InvariantCulture, $"replan of {rows} record(s) from the replica"), (Guid?)id);
-        }, ct);
-
-    /// <summary>
-    /// Writes an inline submission's records out as this runtime's drop (design.md section 3.4) unless a run already did,
-    /// and records in the ledger where it went. The runtime is opened on <see cref="InlineDrop.Location"/> of the
-    /// submission, so everything after this reads the drop as it would any other.
-    /// </summary>
-    public async Task<InlineDropResult> WriteInlineDropAsync(InlineSubmissionState submission, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(submission);
-        var result = await InlineDrop.WriteAsync(_context.Drops, _context.Stores, DropLocation, Flow, Mapping, submission, ct).ConfigureAwait(false);
-        foreach (var warning in result.Warnings)
-        {
-            _log.LogWarning("{Warning}", warning);
-        }
-
-        if (!result.Written)
-        {
-            _log.LogInformation("Inline submission {SubmissionId}: its drop is already written at {Drop}.", submission.SubmissionId, result.Location);
-            return result;
-        }
-
-        _log.LogInformation(
-            "Inline submission {SubmissionId}: wrote {Records} record(s) sent by {ReceivedBy} at {ReceivedUtc:o} as a drop at {Drop}.",
-            submission.SubmissionId, submission.RecordCount, submission.ReceivedBy, submission.ReceivedUtc, result.Location);
-        await RequireLedger().MarkInlineSubmissionWrittenAsync(submission.SubmissionId, result.Location, ct).ConfigureAwait(false);
-        return result;
-    }
-
-    /// <summary>
-    /// Extracts the flow's records from its SQL source into this runtime's drop (docs/delivery/sql-source.md). The runtime
-    /// is opened on <see cref="SqlSource.SqlDrop.Location"/> of the extraction, so everything after this reads the drop as it
-    /// would any other. <paramref name="full"/> reads every row instead of the rows after the watermark.
-    /// </summary>
-    public Task<SqlSource.SqlDropResult> ExtractSqlDropAsync(Guid extractionId, bool full, CancellationToken ct = default)
-        => SqlSource.SqlDrop.WriteAsync(
-            new SqlSource.SqlDropServices(_context.SqlConnector, _context.Secrets, _context.Stores, _context.Ledger, _context.Time, _log),
-            DropLocation, extractionId, Flow, Mapping, Parameters, full, ct);
+        => Planner.PlanAsync(Flow, Mapping, Parameters, Selection, force, ct);
 
     public async Task<IDeliveryProtocol> ProtocolAsync(CancellationToken ct = default)
     {
@@ -278,16 +195,14 @@ public sealed class FlowRuntime : IDisposable
     }
 
     public async Task<DeliveryWorker> WorkerAsync(CancellationToken ct = default)
-        => new(RequireLedger(), _context.Drops, _context.Stores, await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<DeliveryWorker>()) { RunId = RunId };
+        => new(RequireLedger(), _context.Payloads, _context.Stores, await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<DeliveryWorker>()) { RunId = RunId };
 
     public async Task<Verifier> VerifierAsync(CancellationToken ct = default)
         => new(RequireLedger(), await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<Verifier>());
 
-    public KnownStatePublisher Publisher => new(RequireLedger(), _context.Stores, _context.Time, _context.Loggers.CreateLogger<KnownStatePublisher>());
-
     /// <summary>Intake plus drain, fanned out across the fleet when the flow asks for it: the <c>deliver</c> operation.</summary>
     public Task<RunResult> RunAsync(bool force, CancellationToken ct = default)
-        => TrackAsync("deliver", new { force, drop = DropLocation, parameters = Parameters, fanOut = Flow.Reliability.FanOut }, null, async () =>
+        => TrackAsync("deliver", new { force, source = Flow.Source.Record.Object, selection = Selection.Describe(), parameters = Parameters, fanOut = Flow.Reliability.FanOut }, null, async () =>
         {
             await EnsureLegalTagsAsync(ct).ConfigureAwait(false);
             FanOutHandle? handle = null;
@@ -300,7 +215,7 @@ public sealed class FlowRuntime : IDisposable
                 {
                     // A plan with nothing new is not a run with nothing to send: a record released back to pending with
                     // its rendered document, or one a stopped run left due, still waits in this submission, and the plan
-                    // skips it because the drop's row is exactly what it already queues. What is due now is sent; a record
+                    // skips it because the source row is exactly what it already queues. What is due now is sent; a record
                     // in backoff is not waited for, because a run that planned nothing must not sit out a retry's wait.
                     var worker = await WorkerAsync(ct).ConfigureAwait(false);
                     var sent = await PassUntilNothingClaimableAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
@@ -333,143 +248,12 @@ public sealed class FlowRuntime : IDisposable
             }
         }, ct);
 
-    /// <summary>
-    /// Sends what a stopped run left leased in a submission. The platform runs one execution of a flow at a time, so a
-    /// record still leased when a run of that flow starts belongs to a worker that is gone: a control plane or node
-    /// stopped mid-delivery, whose run was recovered and requeued. Seen live, the recovered run found its submission
-    /// already planned, passed over it while the stopped worker's lease still held the record, and finished with the
-    /// record left delivering. Each such lease is waited out, reclaimed (the ledger notes why) and the record sent, its
-    /// completed steps resumed. A lease running out further ahead than the flow's own lease is not a stopped run's, so it
-    /// is left alone with a warning, and records in backoff are not waited for.
-    /// </summary>
-    private async Task<WorkerSummary> SendOrphanedLeasesAsync(DeliveryWorker worker, Guid submissionId, CancellationToken ct)
-    {
-        var ledger = RequireLedger();
-        var longest = TimeSpan.FromSeconds(Flow.Reliability.LeaseSeconds) + LeaseExpiryMargin;
-        var total = WorkerSummary.Empty;
-        while (await ledger.NextLeaseExpiryAsync(Flow.Id, submissionId, ct).ConfigureAwait(false) is { } expiry)
-        {
-            ct.ThrowIfCancellationRequested();
-            var now = _context.Time.GetUtcNow().UtcDateTime;
-            if (expiry >= now)
-            {
-                var wait = expiry - now + LeaseExpiryMargin;
-                if (wait > longest)
-                {
-                    _log.LogWarning(
-                        "A record of submission {SubmissionId} is leased until {Expiry:o}, further ahead than this flow's lease of {Seconds}s, so a running worker holds it and it is left alone.",
-                        submissionId, expiry, Flow.Reliability.LeaseSeconds);
-                    break;
-                }
-
-                _log.LogInformation(
-                    "A record of submission {SubmissionId} is still leased by a run that stopped; waiting {Seconds}s for the lease to run out.",
-                    submissionId, (int)Math.Ceiling(wait.TotalSeconds));
-                await Task.Delay(wait, _context.Time, ct).ConfigureAwait(false);
-            }
-
-            var reclaimed = await ledger.ReclaimExpiredLeasesAsync(Flow.Id, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
-            total = total.Add(sent);
-            if (reclaimed == 0 && sent.Processed == 0)
-            {
-                // The wait ended without the lease running out, or the lease was reclaimed elsewhere and nothing of it is
-                // left to send: either way there is nothing this run can take over.
-                _log.LogWarning(
-                    "The lease on a record of submission {SubmissionId} (due to run out at {Expiry:o}) could not be reclaimed, so the record is left for a later run.",
-                    submissionId, expiry);
-                break;
-            }
-
-            if (reclaimed > 0)
-            {
-                _log.LogInformation("Reclaimed {Count} record(s) whose lease a stopped run left behind, and sent {Sent}.", reclaimed, sent.Processed);
-            }
-        }
-
-        return total;
-    }
-
-    /// <summary>Claim passes over one submission until nothing of it is claimable, without waiting for records in backoff.</summary>
-    private static async Task<WorkerSummary> PassUntilNothingClaimableAsync(DeliveryWorker worker, Guid submissionId, CancellationToken ct)
-    {
-        var total = WorkerSummary.Empty;
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-            var pass = await worker.PassAsync(submissionId, ct).ConfigureAwait(false);
-            if (pass.Processed == 0 && pass.Batches == 0)
-            {
-                return total;
-            }
-
-            total = total.Add(pass);
-        }
-    }
-
-    /// <summary>
-    /// Sends what settled submissions of the flow still hold. A record released back to pending with its rendered document
-    /// after its submission completed or failed belongs to no run: its own run is over, and a newer drop's plan skips it
-    /// because its row is what the record already queues. The run takes the due records of up to
-    /// <see cref="SettledSubmissionsPerRun"/> such submissions, passes over each until nothing of it is claimable (records
-    /// in backoff are not waited for) and recomputes the totals of each one it sent anything from.
-    /// </summary>
-    private async Task<WorkerSummary> SendSettledLeftoversAsync(DeliveryWorker worker, Guid current, CancellationToken ct)
-    {
-        var ledger = RequireLedger();
-        var settled = await ledger.ListSettledSubmissionsWithDueWorkAsync(Flow.Id, current, _context.Time.GetUtcNow().UtcDateTime, SettledSubmissionsPerRun, ct).ConfigureAwait(false);
-        var total = WorkerSummary.Empty;
-        foreach (var submissionId in settled)
-        {
-            var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
-            if (sent.Processed > 0)
-            {
-                await Intake.CompleteAsync(submissionId, Flow.Id, ct).ConfigureAwait(false);
-                _log.LogInformation(
-                    "Sent {Count} record(s) that submission {SubmissionId} still held after it settled (released back to pending with their rendered documents).",
-                    sent.Processed, submissionId);
-            }
-
-            total = total.Add(sent);
-        }
-
-        return total;
-    }
-
-    /// <summary>
-    /// Asks the legal service about the mapping's legal tags before a run plans or sends anything. Every record the
-    /// mapping renders carries the same tags, and storage refuses a record whose tag is unknown or expired, so a run
-    /// that starts with a bad tag would fail each record it plans with the same error; refusing the run names the tag
-    /// and the service's reason once, before anything reaches the ledger or OSDU. A target that does not ask (see
-    /// <see cref="IDeliveryProtocol.InvalidLegalTagsAsync"/>) is logged as not checked, never taken as valid.
-    /// </summary>
-    private async Task EnsureLegalTagsAsync(CancellationToken ct)
-    {
-        var tags = Mapping.Mapping.Envelope.LegalTags.Select(tag => MappingEntry.ExpandParameters(tag, Mapping.Renderer.ParameterValue)).ToList();
-        var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
-        var invalid = await protocol.InvalidLegalTagsAsync(tags, ct).ConfigureAwait(false);
-        if (invalid is null)
-        {
-            _log.LogInformation(
-                "The mapping's legal tags ({Tags}) were not checked with the legal service before the run: the target does not ask it (validateLegalTags is off, or a well log endpoint names neither ddmsRoot nor legalValidatePath).",
-                string.Join(", ", tags));
-            return;
-        }
-
-        if (invalid.Count > 0)
-        {
-            throw new DeliveryException(
-                string.Create(CultureInfo.InvariantCulture, $"The legal service refuses {invalid.Count} of the legal tag(s) mapping {Mapping.Mapping.Reference} puts on every record, so nothing was planned or sent: ")
-                + string.Join("; ", invalid.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + ": " + kv.Value)));
-        }
-    }
-
-    /// <summary>Intake only: register and plan the drop (or a subset of its partitions) into work batches, leaving the delivery to a drain.</summary>
-    public Task<IntakeResult> IntakeAsync(bool force, IReadOnlyList<int>? partitions = null, CancellationToken ct = default)
-        => TrackAsync("intake", new { force, drop = DropLocation, parameters = Parameters, partitions = partitions is null ? null : SubmissionIntake.DescribePartitions(partitions) }, null, async () =>
+    /// <summary>Intake only: plan this run's records (or a member's share of the slices) into work batches.</summary>
+    public Task<IntakeResult> IntakeAsync(bool force, CancellationToken ct = default)
+        => TrackAsync("intake", new { force, source = Flow.Source.Record.Object, selection = Selection.Describe(), parameters = Parameters, slices = Slices is null ? null : KeySlices.Describe(Slices) }, null, async () =>
         {
             await EnsureLegalTagsAsync(ct).ConfigureAwait(false);
-            var intake = await Intake.IntakeAsync(Flow, Mapping, Parameters, Source, force, partitions, ct).ConfigureAwait(false);
+            var intake = await Intake.IntakeAsync(Flow, Mapping, Parameters, Request, force, ct).ConfigureAwait(false);
             return (intake, intake.AlreadyProcessed ? SubmissionIntake.Summarize(intake.Submission) : intake.Counts.ToString(), intake.Submission.SubmissionId);
         }, ct);
 
@@ -496,13 +280,6 @@ public sealed class FlowRuntime : IDisposable
             return (summary, summary.ToString(), (Guid?)null);
         }, ct);
 
-    public Task<long> PublishKnownStateAsync(string to, CancellationToken ct = default)
-        => TrackAsync("known-state", new { to }, null, async () =>
-        {
-            var count = await Publisher.PublishAsync(Flow, to, ct).ConfigureAwait(false);
-            return (count, string.Create(CultureInfo.InvariantCulture, $"published {count} record(s) to {to}"), (Guid?)null);
-        }, ct);
-
     /// <summary>Releases held, failed or deleted records (all of them when <paramref name="keys"/> is null).</summary>
     public Task<int> ReleaseAsync(IReadOnlyList<DeliveryKey>? keys, CancellationToken ct = default)
         => TrackAsync("release", new { keys = keys?.Select(k => k.ToString()).ToList() }, keys is { Count: 1 } ? keys[0] : null, async () =>
@@ -513,8 +290,8 @@ public sealed class FlowRuntime : IDisposable
         }, ct);
 
     /// <summary>
-    /// Marks records for redelivery (design.md section 7.6: forget what OSDU holds so the next plan re-sends).
-    /// The redelivery itself happens on the next <see cref="RunAsync"/> of the drop that carries the records.
+    /// Marks records for redelivery (design.md section 7.6: forget what OSDU holds so the next plan re-sends), and asks
+    /// the flow's next run to plan them again.
     /// </summary>
     public Task<int> RedeliverAsync(IReadOnlyList<DeliveryKey> keys, RedeliverScope scope, CancellationToken ct = default)
     {
@@ -525,6 +302,44 @@ public sealed class FlowRuntime : IDisposable
             await EmitAsync("record.redeliver", keys, $"redelivery of {scope.ToString().ToLowerInvariant()} requested by {Actor}", ct).ConfigureAwait(false);
             return (marked, $"marked {marked} record(s) for redelivery of {scope.ToString().ToLowerInvariant()}", (Guid?)null);
         }, ct);
+    }
+
+    /// <summary>
+    /// The record keys the ledger asked to be planned again, paged in key order: what a run turns into a key-scoped
+    /// selection so a release, a redelivery and a cache rollout reach the records they marked.
+    /// </summary>
+    public async Task<IReadOnlyList<KeyTuple>> PlanRequestedKeysAsync(int max, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(max, 1);
+        var ledger = RequireLedger();
+        var keys = new List<KeyTuple>();
+        DeliveryKey? after = null;
+        while (keys.Count < max)
+        {
+            var page = await ledger.ListPlanRequestedAsync(Flow.Id, after, Math.Min(max - keys.Count, 500), ct).ConfigureAwait(false);
+            if (page.Count == 0)
+            {
+                break;
+            }
+
+            foreach (var record in page)
+            {
+                if (record.SourceKeyJson is { } json)
+                {
+                    keys.Add(KeyTuple.FromJson(json));
+                }
+                else
+                {
+                    _log.LogWarning(
+                        "Record {Key} waits to be planned again but the ledger holds no source key for it (it predates the ingestion source); deliver the scope to plan it.",
+                        record.DeliveryKey);
+                }
+            }
+
+            after = page[^1].DeliveryKey;
+        }
+
+        return keys;
     }
 
     /// <summary>
@@ -595,154 +410,182 @@ public sealed class FlowRuntime : IDisposable
         }, ct);
     }
 
-    /// <summary>Announces one record's removal, now that the ledger holds it, and says what it did.</summary>
-    private async Task<RemovalRecordResult> AnnounceRemovalAsync(RemovalResult outcome, RemovalScope scope, RecordState record, CancellationToken ct)
+    /// <summary>
+    /// Sends what a stopped run left leased in a submission. The platform runs one execution of a flow at a time, so a
+    /// record still leased when a run of that flow starts belongs to a worker that is gone: a control plane or node
+    /// stopped mid-delivery, whose run was recovered and requeued. Each such lease is waited out, reclaimed (the ledger
+    /// notes why) and the record sent, its completed steps resumed. A lease running out further ahead than the flow's
+    /// own lease is not a stopped run's, so it is left alone with a warning, and records in backoff are not waited for.
+    /// </summary>
+    private async Task<WorkerSummary> SendOrphanedLeasesAsync(DeliveryWorker worker, Guid submissionId, CancellationToken ct)
     {
-        var key = outcome.Removal.Key;
-        if (outcome.Failure is { } failure)
+        var ledger = RequireLedger();
+        var longest = TimeSpan.FromSeconds(Flow.Reliability.LeaseSeconds) + LeaseExpiryMargin;
+        var total = WorkerSummary.Empty;
+        while (await ledger.NextLeaseExpiryAsync(Flow.Id, submissionId, ct).ConfigureAwait(false) is { } expiry)
         {
-            return RemovalRecordResult.Failed(key, record.SourceKey, record.Label, record.TargetId, HeaderRedaction.RedactMessage(failure.Message), record.LastSubmissionId);
+            ct.ThrowIfCancellationRequested();
+            var now = _context.Time.GetUtcNow().UtcDateTime;
+            if (expiry >= now)
+            {
+                var wait = expiry - now + LeaseExpiryMargin;
+                if (wait > longest)
+                {
+                    _log.LogWarning(
+                        "A record of submission {SubmissionId} is leased until {Expiry:o}, further ahead than this flow's lease of {Seconds}s, so a running worker holds it and it is left alone.",
+                        submissionId, expiry, Flow.Reliability.LeaseSeconds);
+                    break;
+                }
+
+                _log.LogInformation(
+                    "A record of submission {SubmissionId} is still leased by a run that stopped; waiting {Seconds}s for the lease to run out.",
+                    submissionId, (int)Math.Ceiling(wait.TotalSeconds));
+                await Task.Delay(wait, _context.Time, ct).ConfigureAwait(false);
+            }
+
+            var reclaimed = await ledger.ReclaimExpiredLeasesAsync(Flow.Id, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
+            total = total.Add(sent);
+            if (reclaimed == 0 && sent.Processed == 0)
+            {
+                // The wait ended without the lease running out, or the lease was reclaimed elsewhere and nothing of it is
+                // left to send: either way there is nothing this run can take over.
+                _log.LogWarning(
+                    "The lease on a record of submission {SubmissionId} (due to run out at {Expiry:o}) could not be reclaimed, so the record is left for a later run.",
+                    submissionId, expiry);
+                break;
+            }
+
+            if (reclaimed > 0)
+            {
+                _log.LogInformation("Reclaimed {Count} record(s) whose lease a stopped run left behind, and sent {Sent}.", reclaimed, sent.Processed);
+            }
         }
 
-        var result = outcome.Outcome!;
-        var now = _context.Time.GetUtcNow().UtcDateTime;
-        await _context.Listener.OnEventAsync(new DeliveryEvent
-        {
-            AtUtc = now,
-            FlowId = Flow.Id,
-            FlowName = Flow.Name,
-            Kind = scope == RemovalScope.History ? "record.history-purged" : "record.deleted",
-            SubmissionId = record.LastSubmissionId,
-            DeliveryKey = key,
-            SourceKey = record.SourceKey,
-            Label = record.Label,
-            TargetId = record.TargetId,
-            TargetVersion = record.TargetVersion,
-            Worker = Actor,
-            Phase = scope == RemovalScope.History ? "purge-history" : "delete",
-            Detail = result.Detail,
-        }, ct).ConfigureAwait(false);
+        return total;
+    }
 
-        return result.AlreadyGone
-            ? RemovalRecordResult.AlreadyGone(key, record.SourceKey, record.Label, record.TargetId, result.Detail, record.LastSubmissionId)
-            : RemovalRecordResult.Removed(key, record.SourceKey, record.Label, record.TargetId, result.Detail, record.LastSubmissionId);
+    /// <summary>Claim passes over one submission until nothing of it is claimable, without waiting for records in backoff.</summary>
+    private static async Task<WorkerSummary> PassUntilNothingClaimableAsync(DeliveryWorker worker, Guid submissionId, CancellationToken ct)
+    {
+        var total = WorkerSummary.Empty;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var pass = await worker.PassAsync(submissionId, ct).ConfigureAwait(false);
+            if (pass.Processed == 0 && pass.Batches == 0)
+            {
+                return total;
+            }
+
+            total = total.Add(pass);
+        }
     }
 
     /// <summary>
-    /// The intake, spread across the fleet when the flow declares a fan-out, the drop is partitioned, and the
-    /// catalog can enqueue runs: every member plans its share of the partitions into work batches, this run plans
-    /// its own share, waits for the members, and finalises the submission with the totals.
+    /// Sends what settled submissions of the flow still hold. A record released back to pending with its rendered document
+    /// after its submission completed or failed belongs to no run: its own run is over, and a newer plan skips it because
+    /// its row is what the record already queues. The run takes the due records of up to
+    /// <see cref="SettledSubmissionsPerRun"/> such submissions, passes over each until nothing of it is claimable (records
+    /// in backoff are not waited for) and recomputes the totals of each one it sent anything from.
+    /// </summary>
+    private async Task<WorkerSummary> SendSettledLeftoversAsync(DeliveryWorker worker, Guid current, CancellationToken ct)
+    {
+        var ledger = RequireLedger();
+        var settled = await ledger.ListSettledSubmissionsWithDueWorkAsync(Flow.Id, current, _context.Time.GetUtcNow().UtcDateTime, SettledSubmissionsPerRun, ct).ConfigureAwait(false);
+        var total = WorkerSummary.Empty;
+        foreach (var submissionId in settled)
+        {
+            var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
+            if (sent.Processed > 0)
+            {
+                await Intake.CompleteAsync(submissionId, Flow.Id, ct).ConfigureAwait(false);
+                _log.LogInformation(
+                    "Sent {Count} record(s) that submission {SubmissionId} still held after it settled (released back to pending with their rendered documents).",
+                    sent.Processed, submissionId);
+            }
+
+            total = total.Add(sent);
+        }
+
+        return total;
+    }
+
+    /// <summary>
+    /// Asks the legal service about the mapping's legal tags before a run plans or sends anything. Every record the
+    /// mapping renders carries the same tags, and storage refuses a record whose tag is unknown or expired, so a run
+    /// that starts with a bad tag would fail each record it plans with the same error; refusing the run names the tag
+    /// and the service's reason once, before anything reaches the ledger or OSDU. A target that does not ask (see
+    /// <see cref="IDeliveryProtocol.InvalidLegalTagsAsync"/>) is logged as not checked, never taken as valid.
+    /// </summary>
+    private async Task EnsureLegalTagsAsync(CancellationToken ct)
+    {
+        var tags = Mapping.Mapping.Envelope.LegalTags.Select(tag => MappingEntry.ExpandParameters(tag, Mapping.Renderer.ParameterValue)).ToList();
+        var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
+        var invalid = await protocol.InvalidLegalTagsAsync(tags, ct).ConfigureAwait(false);
+        if (invalid is null)
+        {
+            _log.LogInformation(
+                "The mapping's legal tags ({Tags}) were not checked with the legal service before the run: the target does not ask it (validateLegalTags is off, or a well log endpoint names neither ddmsRoot nor legalValidatePath).",
+                string.Join(", ", tags));
+            return;
+        }
+
+        if (invalid.Count > 0)
+        {
+            throw new DeliveryException(
+                string.Create(CultureInfo.InvariantCulture, $"The legal service refuses {invalid.Count} of the legal tag(s) mapping {Mapping.Mapping.Reference} puts on every record, so nothing was planned or sent: ")
+                + string.Join("; ", invalid.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + ": " + kv.Value)));
+        }
+    }
+
+    /// <summary>
+    /// The intake, spread across the fleet when the flow declares a fan-out, this run can enqueue members and the read
+    /// is big enough: the candidate keys are cut into contiguous slices, every member plans its share of them, this run
+    /// plans its own, waits for the members, and finalises the submission with the totals.
     /// </summary>
     private async Task<(IntakeResult Result, int Members)> IntakeWithFanOutAsync(bool force, Action<FanOutHandle?> track, CancellationToken ct)
     {
-        if (Flow.Source.Replica is not null)
-        {
-            return await ReplicaIntakeWithFanOutAsync(force, track, ct).ConfigureAwait(false);
-        }
-
-        var dispatcher = _context.Dispatcher;
-        var fanOut = Flow.Reliability.FanOut;
-        var header = await Planner.OpenAsync(Flow, Mapping, Parameters, DropLocation, force, ct).ConfigureAwait(false);
-        var manifest = header.Drop!.Manifest;
-        var applies = fanOut > 0 && dispatcher.Available && RunId is not null && manifest.Partitioned && header.Partitions >= 2 && !header.SkippedWholeRun
-            && (manifest.RecordCount == 0 || manifest.RecordCount >= Flow.Reliability.FanOutMinRecords)
-            && header.Partitions - 1 <= SubmissionIntake.MaxFanOutPartition;
-        if (!applies)
-        {
-            if (fanOut > 0 && !header.SkippedWholeRun && manifest.PartitionCount >= 2 && !manifest.Partitioned)
-            {
-                _log.LogInformation("The drop is not declared partitioned, so its intake runs on this node alone with {Parallelism} renderer(s); declare it partitioned to spread it across {FanOut} member run(s).", Flow.Reliability.EffectiveRenderParallelism, fanOut);
-            }
-
-            return (await Intake.IntakeAsync(Flow, Mapping, Parameters, DropLocation, force, null, ct).ConfigureAwait(false), 0);
-        }
-
-        var shares = Split(header.Partitions, fanOut + 1);
-        var members = shares.Skip(1).Where(s => s.Count > 0).Select(share => new RunParameters
-        {
-            Operation = RunParameters.IntakeOperation,
-            Force = force,
-            Drop = DropLocation,
-            Values = Parameters,
-            SubmissionId = manifest.SubmissionId,
-            Partitions = share,
-        }).ToList();
-
-        // The submission is registered first, so every member finds it and the drop's identity is settled once.
-        var own = await Intake.IntakeAsync(Flow, Mapping, Parameters, DropLocation, force, shares[0], ct).ConfigureAwait(false);
-        if (own.AlreadyProcessed)
-        {
-            return (own, 0);
-        }
-
-        var handle = await dispatcher.EnqueueAsync(RunId!.Value, RunParameters.IntakeOperation, members, ct).ConfigureAwait(false);
-        track(handle);
-        _log.LogInformation("Fanned the intake of {Partitions} partition(s) out to {Members} member run(s) (group {GroupId}); this run planned partitions {Own}.", header.Partitions, members.Count, handle.GroupId, SubmissionIntake.DescribePartitions(shares[0]));
-        var state = await WaitForMembersAsync(handle, "intake", ct).ConfigureAwait(false);
-        track(null);
-
-        var totals = own.Counts;
-        foreach (var member in state.Members)
-        {
-            if (!member.Succeeded)
-            {
-                throw new DeliveryException($"Intake member {member.Slot} (run {member.RunId:D}) {member.Status}: {member.Error ?? "no error recorded"}. The submission stays planned as far as it got; re-run it to finish the intake.");
-            }
-
-            var outcome = IntakeOutcome.Parse(member.ResultJson)
-                ?? throw new DeliveryException($"Intake member {member.Slot} (run {member.RunId:D}) reported no outcome.");
-            totals = totals.Add(outcome.ToCounts());
-        }
-
-        var submission = await Intake.FinalizePlanningAsync(Flow, manifest.SubmissionId, Parameters, DropManifestSummary.Of(manifest), totals, ct).ConfigureAwait(false);
-        return (new IntakeResult(submission, header, totals, AlreadyProcessed: false), members.Count);
-    }
-
-    /// <summary>
-    /// The intake of a flow with a replica: the submission is loaded into the replica here, once, and then planned from it, spread
-    /// across the fleet when the flow declares a fan-out and the submission is big enough. The loaded records are cut into
-    /// contiguous slices of their ordinals; every member plans its share of slices from the replica, this run plans its own, waits
-    /// for the members, and finalises the submission with the totals. No drop has to be partitioned for this.
-    /// </summary>
-    private async Task<(IntakeResult Result, int Members)> ReplicaIntakeWithFanOutAsync(bool force, Action<FanOutHandle?> track, CancellationToken ct)
-    {
         var intake = Intake;
-        var prepared = await intake.PrepareAsync(Flow, Mapping, Parameters, Source, force, ct).ConfigureAwait(false);
+        var prepared = await intake.PrepareAsync(Flow, Mapping, Parameters, Request, force, ct).ConfigureAwait(false);
         if (prepared.Done is { } done)
         {
+            SubmissionId = done.Submission.SubmissionId;
             return (done, 0);
         }
 
         var submission = prepared.Submission;
         SubmissionId = submission.SubmissionId;
+        var header = prepared.Header;
         var dispatcher = _context.Dispatcher;
         var fanOut = Flow.Reliability.FanOut;
-        var slices = SourceSlices.Count(submission.LoadedOrdinals, Flow.Reliability.BatchRecords);
+        var slices = KeySlices.Count(header.Source.EstimatedCandidates, Flow.Reliability.BatchRecords);
         var applies = fanOut > 0 && dispatcher.Available && RunId is not null && slices >= 2
-            && submission.LoadedRows >= Flow.Reliability.FanOutMinRecords
+            && header.Source.EstimatedCandidates >= Flow.Reliability.FanOutMinRecords
             && slices - 1 <= SubmissionIntake.MaxFanOutPartition;
         if (!applies)
         {
-            return (await intake.PlanPreparedAsync(Flow, Parameters, prepared, ct).ConfigureAwait(false), 0);
+            var own = await intake.PlanSlicesAsync(Flow, prepared, null, ct).ConfigureAwait(false);
+            var finalized = await intake.FinalizePlanningAsync(Flow, submission.SubmissionId, Parameters, own, ct).ConfigureAwait(false);
+            return (new IntakeResult(finalized, header, own, AlreadyProcessed: false), 0);
         }
 
-        var shares = SourceSlices.Shares(slices, fanOut + 1);
-        var members = shares.Skip(1).Select(share => new RunParameters
+        var ranges = await Planner.SliceBoundsAsync(header, slices, ct).ConfigureAwait(false);
+        prepared = await intake.RecordSlicesAsync(prepared, ranges, ct).ConfigureAwait(false);
+        var shares = KeySlices.Shares(ranges.Count, fanOut + 1);
+        var members = shares.Skip(1).Where(s => s.Count > 0).Select(share => new RunParameters
         {
-            Operation = RunParameters.IntakeOperation,
-            Force = force,
-            Drop = submission.IsReplan ? null : DropLocation,
+            Operation = DeliveryOperations.Intake,
             Values = Parameters,
-            SubmissionId = submission.SubmissionId,
-            Partitions = share,
+            Payload = new DeliveryRunPayload { SubmissionId = submission.SubmissionId, Slices = share, Force = force }.ToJson(),
         }).ToList();
 
         var totals = await intake.PlanSlicesAsync(Flow, prepared, shares[0], ct).ConfigureAwait(false);
-        var handle = await dispatcher.EnqueueAsync(RunId!.Value, RunParameters.IntakeOperation, members, ct).ConfigureAwait(false);
+        var handle = await dispatcher.EnqueueAsync(members, ct).ConfigureAwait(false);
         track(handle);
         _log.LogInformation(
-            "Fanned the intake of {Records} record(s) in {Slices} slice(s) of the replica out to {Members} member run(s) (group {GroupId}); this run planned slices {Own}.",
-            submission.LoadedRows, slices, members.Count, handle.GroupId, SubmissionIntake.DescribePartitions(shares[0]));
+            "Fanned the intake of {Records} candidate record(s) in {Slices} slice(s) out to {Members} member run(s) (group {GroupId}); this run planned slices {Own}.",
+            header.Source.EstimatedCandidates, ranges.Count, members.Count, handle.GroupId, KeySlices.Describe(shares[0]));
         var state = await WaitForMembersAsync(handle, "intake", ct).ConfigureAwait(false);
         track(null);
 
@@ -758,9 +601,8 @@ public sealed class FlowRuntime : IDisposable
             totals = totals.Add(outcome.ToCounts());
         }
 
-        totals = totals.Add(IntakeCounts.OfUntracked(submission.Untracked));
-        var finalized = await intake.FinalizePlanningAsync(Flow, submission.SubmissionId, Parameters, prepared.Summary, totals, ct).ConfigureAwait(false);
-        return (new IntakeResult(finalized, prepared.Header, totals, AlreadyProcessed: false), members.Count);
+        var settledSubmission = await intake.FinalizePlanningAsync(Flow, submission.SubmissionId, Parameters, totals, ct).ConfigureAwait(false);
+        return (new IntakeResult(settledSubmission, header, totals, AlreadyProcessed: false), members.Count);
     }
 
     /// <summary>
@@ -776,9 +618,13 @@ public sealed class FlowRuntime : IDisposable
         if (fanOut > 0 && dispatcher.Available && RunId is not null && submission.Planned >= Flow.Reliability.FanOutMinRecords)
         {
             var parameters = Enumerable.Range(0, fanOut)
-                .Select(_ => new RunParameters { Operation = RunParameters.DrainOperation, SubmissionId = submission.SubmissionId })
+                .Select(_ => new RunParameters
+                {
+                    Operation = DeliveryOperations.Drain,
+                    Payload = new DeliveryRunPayload { SubmissionId = submission.SubmissionId }.ToJson(),
+                })
                 .ToList();
-            handle = await dispatcher.EnqueueAsync(RunId.Value, RunParameters.DrainOperation, parameters, ct).ConfigureAwait(false);
+            handle = await dispatcher.EnqueueAsync(parameters, ct).ConfigureAwait(false);
             track(handle);
             members = parameters.Count;
             _log.LogInformation("Fanned the drain of {Planned} record(s) in {Batches} batch(es) out to {Members} member run(s) (group {GroupId}); this run drains too.", submission.Planned, submission.BatchCount, members, handle.GroupId);
@@ -862,18 +708,37 @@ public sealed class FlowRuntime : IDisposable
         }
     }
 
-    /// <summary>Deals partitions round-robin over <paramref name="workers"/> shares; share 0 is the coordinator's own.</summary>
-    public static IReadOnlyList<IReadOnlyList<int>> Split(int partitions, int workers)
+    /// <summary>Announces one record's removal, now that the ledger holds it, and says what it did.</summary>
+    private async Task<RemovalRecordResult> AnnounceRemovalAsync(RemovalResult outcome, RemovalScope scope, RecordState record, CancellationToken ct)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(partitions);
-        ArgumentOutOfRangeException.ThrowIfLessThan(workers, 1);
-        var shares = Enumerable.Range(0, workers).Select(_ => new List<int>()).ToList();
-        for (var p = 0; p < partitions; p++)
+        var key = outcome.Removal.Key;
+        if (outcome.Failure is { } failure)
         {
-            shares[p % workers].Add(p);
+            return RemovalRecordResult.Failed(key, record.SourceKey, record.Label, record.TargetId, HeaderRedaction.RedactMessage(failure.Message), record.LastSubmissionId);
         }
 
-        return shares;
+        var result = outcome.Outcome!;
+        var now = _context.Time.GetUtcNow().UtcDateTime;
+        await _context.Listener.OnEventAsync(new DeliveryEvent
+        {
+            AtUtc = now,
+            FlowId = Flow.Id,
+            FlowName = Flow.Name,
+            Kind = scope == RemovalScope.History ? "record.history-purged" : "record.deleted",
+            SubmissionId = record.LastSubmissionId,
+            DeliveryKey = key,
+            SourceKey = record.SourceKey,
+            Label = record.Label,
+            TargetId = record.TargetId,
+            TargetVersion = record.TargetVersion,
+            Worker = Actor,
+            Phase = scope == RemovalScope.History ? "purge-history" : "delete",
+            Detail = result.Detail,
+        }, ct).ConfigureAwait(false);
+
+        return result.AlreadyGone
+            ? RemovalRecordResult.AlreadyGone(key, record.SourceKey, record.Label, record.TargetId, result.Detail, record.LastSubmissionId)
+            : RemovalRecordResult.Removed(key, record.SourceKey, record.Label, record.TargetId, result.Detail, record.LastSubmissionId);
     }
 
     private async Task<T> TrackAsync<T>(string kind, object? parameters, DeliveryKey? key, Func<Task<(T Result, string Summary, Guid? SubmissionId)>> action, CancellationToken ct)
@@ -941,8 +806,7 @@ public sealed class FlowRuntime : IDisposable
     }
 
     private ILedger RequireLedger()
-        => _context.Ledger ?? throw new DeliveryException(
-            "This operation needs the ledger, which lives in the catalog database. Run it through the control plane, or on a node or CLI started with the catalog connection (--db, or the catalog variable); without a catalog only validate is available, since a render reads the mapping's template, and the cache it reads, from the catalog too.");
+        => _context.Ledger ?? throw new DeliveryException(DeliveryServices.NoLedgerMessage);
 
     public void Dispose() => _http?.Dispose();
 }

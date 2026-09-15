@@ -80,7 +80,7 @@ public sealed class RunLogLoggerFactory : ILoggerFactory
             "SubmissionIntake" => "intake",
             "DeliveryWorker" => "deliver",
             "Verifier" => "verify",
-            "KnownStatePublisher" => "known-state",
+            "SqlServerIngestionSource" => "source",
             "LoggingDeliveryListener" => "record",
             _ => name.Length == 0 ? "engine" : char.ToLowerInvariant(name[0]) + name[1..],
         };

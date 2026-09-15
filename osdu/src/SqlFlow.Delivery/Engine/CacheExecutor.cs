@@ -7,6 +7,7 @@ using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Execution;
+using SqlFlow.Orchestration;
 using SqlFlow.Yaml;
 
 namespace SqlFlow.Delivery.Engine;
@@ -27,9 +28,9 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         _provider = provider;
     }
 
-    public bool CanExecute(FlowDocument document) => document is CacheFlowDocument;
+    public bool CanExecute(RegisteredFlowDocument document) => document is CacheFlowDocument;
 
-    public async Task<DocumentExecutionResult> ExecuteAsync(FlowDocument document, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
+    public async Task<DocumentExecutionResult> ExecuteAsync(RegisteredFlowDocument document, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowFile);
@@ -49,7 +50,7 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         var loggers = new RunLogLoggerFactory(runLogger, events, runId, flow.Name);
         var log = loggers.CreateLogger("run");
         var context = _provider.GetRequiredService<EngineContext>().WithLoggers(loggers);
-        var warningSink = _provider.GetService<DocumentExecutor>()?.WarningSink;
+        var warningSink = options.Echo;
 
         var stopwatch = Stopwatch.StartNew();
         object result;
@@ -91,30 +92,30 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         };
     }
 
-    /// <summary>The operation a cache flow runs: refresh (also for the platform's default, deliver) or plan.</summary>
+    /// <summary>The operation a cache flow runs: refresh (its default) or plan.</summary>
     public static string Operation(RunParameters parameters)
     {
         ArgumentNullException.ThrowIfNull(parameters);
-        return parameters.Operation.ToLowerInvariant() switch
+        return (parameters.Operation ?? DeliveryOperations.Refresh) switch
         {
-            RunParameters.RefreshOperation or RunParameters.DeliverOperation => RunParameters.RefreshOperation,
-            RunParameters.PlanOperation => RunParameters.PlanOperation,
-            _ => throw new SqlFlowException(
-                $"A cache flow runs the {RunParameters.RefreshOperation} and {RunParameters.PlanOperation} operations; '{parameters.Operation}' is not one of them."),
+            DeliveryOperations.Refresh => DeliveryOperations.Refresh,
+            DeliveryOperations.Plan => DeliveryOperations.Plan,
+            var other => throw new SqlFlowException(
+                $"A cache flow runs the {DeliveryOperations.Refresh} and {DeliveryOperations.Plan} operations; '{other}' is not one of them."),
         };
     }
 
     private static async Task<object> ExecuteOperationAsync(
         EngineContext context, CacheDefinition flow, string operation, RunParameters parameters, Guid runId, string actor, ILogger log, CancellationToken ct)
     {
-        if (parameters.SubmissionId is not null || parameters.RecordKeys.Count > 0 || parameters.Partitions.Count > 0 || !string.IsNullOrWhiteSpace(parameters.Drop))
+        if (parameters.Payload is not null)
         {
-            throw new SqlFlowException("A cache flow takes no drop, submission, record or partition scope; only the flow's parameter values.");
+            throw new SqlFlowException("A cache flow takes no payload: a refresh sweeps every declared type in full, so there is no submission, record or slice to name.");
         }
 
         var values = FlowParameters.Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, parameters.Values);
         var refresher = new CacheRefresher(context, log);
-        return operation == RunParameters.PlanOperation
+        return operation == DeliveryOperations.Plan
             ? await refresher.PlanAsync(flow, values, ct).ConfigureAwait(false)
             : await refresher.RefreshAsync(flow, values, runId, actor, ct).ConfigureAwait(false);
     }

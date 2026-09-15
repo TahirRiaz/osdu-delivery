@@ -71,7 +71,7 @@ public sealed class CacheRefresher
         }
 
         var outcome = new CacheRefreshOutcome(
-            RunParameters.RefreshOperation, scope, flow.Name, snapshot.Version, previousVersion, write.Written, snapshot.CapturedUtc.UtcDateTime, types);
+            DeliveryOperations.Refresh, scope, flow.Name, snapshot.Version, previousVersion, write.Written, snapshot.CapturedUtc.UtcDateTime, types);
         _logger.LogInformation(
             "Cache of partition {Scope} refreshed by {Flow}: {Outcome}, {Types} type(s), {Items} record(s). {Changed} cached record(s) moved, reaching {Records} delivered record(s) through {Changes} change(s).",
             scope, flow.Name, write.Written ? $"version {snapshot.Version} written and made current" : $"unchanged at version {snapshot.Version}",
@@ -102,7 +102,7 @@ public sealed class CacheRefresher
             types.Add(new CachePlanType(type.Name, type.Kind, type.Query, type.Fields.Select(f => f.Name).ToList(), total));
         }
 
-        return new CachePlanOutcome(RunParameters.PlanOperation, scope, flow.Name, currentVersion, types, types.Sum(t => t.Records));
+        return new CachePlanOutcome(DeliveryOperations.Plan, scope, flow.Name, currentVersion, types, types.Sum(t => t.Records));
     }
 
     /// <summary>

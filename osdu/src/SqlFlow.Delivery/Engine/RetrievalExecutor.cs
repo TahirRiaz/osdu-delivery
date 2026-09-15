@@ -11,6 +11,7 @@ using SqlFlow.Delivery.Engine.Retrieval;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Execution;
+using SqlFlow.Orchestration;
 using SqlFlow.Yaml;
 
 namespace SqlFlow.Delivery.Engine;
@@ -31,9 +32,9 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
         _provider = provider;
     }
 
-    public bool CanExecute(FlowDocument document) => document is RetrievalFlowDocument;
+    public bool CanExecute(RegisteredFlowDocument document) => document is RetrievalFlowDocument;
 
-    public async Task<DocumentExecutionResult> ExecuteAsync(FlowDocument document, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
+    public async Task<DocumentExecutionResult> ExecuteAsync(RegisteredFlowDocument document, string flowFile, DocumentExecutionOptions options, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowFile);
@@ -53,7 +54,7 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
         var loggers = new RunLogLoggerFactory(runLogger, events, runId, flow.Name);
         var log = loggers.CreateLogger("run");
         var context = _provider.GetRequiredService<EngineContext>().WithLoggers(loggers);
-        var warningSink = _provider.GetService<DocumentExecutor>()?.WarningSink;
+        var warningSink = options.Echo;
 
         var stopwatch = Stopwatch.StartNew();
         object result;
@@ -95,34 +96,30 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
         };
     }
 
-    /// <summary>The operation a retrieval flow runs: retrieve (also for the platform's default, deliver) or plan.</summary>
+    /// <summary>The operation a retrieval flow runs: retrieve (its default) or plan.</summary>
     public static string Operation(RunParameters parameters)
     {
         ArgumentNullException.ThrowIfNull(parameters);
-        var operation = parameters.Operation.ToLowerInvariant();
-        return operation switch
+        return (parameters.Operation ?? DeliveryOperations.Retrieve) switch
         {
-            RunParameters.RetrieveOperation or RunParameters.DeliverOperation => RunParameters.RetrieveOperation,
-            RunParameters.PlanOperation => RunParameters.PlanOperation,
-            _ => throw new SqlFlowException($"A retrieval flow runs the {RunParameters.RetrieveOperation} and {RunParameters.PlanOperation} operations; '{parameters.Operation}' is not one of them."),
+            DeliveryOperations.Retrieve => DeliveryOperations.Retrieve,
+            DeliveryOperations.Plan => DeliveryOperations.Plan,
+            var other => throw new SqlFlowException(
+                $"A retrieval flow runs the {DeliveryOperations.Retrieve} and {DeliveryOperations.Plan} operations; '{other}' is not one of them."),
         };
     }
 
     private static async Task<object> ExecuteOperationAsync(EngineContext context, RetrievalDefinition flow, string operation, RunParameters parameters, Guid runId, string actor, ILogger log, CancellationToken ct)
     {
-        if (parameters.SubmissionId is not null || parameters.RecordKeys.Count > 0 || parameters.Partitions.Count > 0 || !string.IsNullOrWhiteSpace(parameters.Drop))
-        {
-            throw new SqlFlowException("A retrieval flow takes no drop, submission, record or partition scope; only the flow's parameter values and force.");
-        }
-
+        var forced = RetrievalFlowKind.Forced(parameters);
         var values = FlowParameters.Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, parameters.Values);
         using var http = new HttpRuntime(flow.Reliability, context.Secrets, context.Time, allowLoopback: EngineContext.LoopbackAllowed);
         var client = await ProtocolFactory.ClientAsync(http, flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, context.Secrets, ct).ConfigureAwait(false);
         var runner = new RetrievalRunner(flow, values, client, context.Stores, context.Ledger, context.Time, context.Loggers.CreateLogger<RetrievalRunner>());
 
-        if (operation == RunParameters.PlanOperation)
+        if (operation == DeliveryOperations.Plan)
         {
-            var (window, estimates) = await runner.EstimateAsync(parameters.Force, ct).ConfigureAwait(false);
+            var (window, estimates) = await runner.EstimateAsync(forced, ct).ConfigureAwait(false);
             foreach (var estimate in estimates)
             {
                 log.LogInformation("plan {Kind}: {Total} matching record(s) (query: {Query})", estimate.Kind, estimate.TotalCount, estimate.Query ?? "none");
@@ -130,10 +127,10 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
 
             var total = estimates.Sum(e => e.TotalCount);
             log.LogInformation("plan: {Total} record(s) would be retrieved into {Location}", total, runner.Location(runId, context.Time.GetUtcNow().UtcDateTime));
-            return new RetrievalPlanOutcome(RunParameters.PlanOperation, window?.Field, window?.From, window?.To, runner.Location(runId, context.Time.GetUtcNow().UtcDateTime), estimates, total);
+            return new RetrievalPlanOutcome(DeliveryOperations.Plan, window?.Field, window?.From, window?.To, runner.Location(runId, context.Time.GetUtcNow().UtcDateTime), estimates, total);
         }
 
-        var result = await runner.RunAsync(runId, actor, parameters.Force, ct).ConfigureAwait(false);
+        var result = await runner.RunAsync(runId, actor, forced, ct).ConfigureAwait(false);
         return RetrieveOutcome.From(result);
     }
 
@@ -166,7 +163,7 @@ public sealed record RetrieveOutcome(
     {
         ArgumentNullException.ThrowIfNull(result);
         return new RetrieveOutcome(
-            RunParameters.RetrieveOperation, result.RetrievalId, result.Location, result.ManifestLocation, result.Window?.Field, result.Window?.From, result.Window?.To,
+            DeliveryOperations.Retrieve, result.RetrievalId, result.Location, result.ManifestLocation, result.Window?.Field, result.Window?.From, result.Window?.To,
             result.Records, result.Files, result.Bytes, result.NothingToDo, result.Kinds);
     }
 }

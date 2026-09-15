@@ -3,13 +3,14 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
-using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Rendering;
+using SqlFlow.Delivery.Source;
+using SqlFlow.Delivery.Storage;
 using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Engine.Planning;
@@ -20,6 +21,9 @@ public sealed record PlanEntry
     public DeliveryKey? Key { get; init; }
 
     public required string SourceKey { get; init; }
+
+    /// <summary>The record's key tuple as the source read it, a JSON array of strings in key order.</summary>
+    public string? SourceKeyJson { get; init; }
 
     public string? Label { get; init; }
 
@@ -33,16 +37,21 @@ public sealed record PlanEntry
 
     public RenderResult? Render { get; init; }
 
+    /// <summary>The ingestion fingerprint of the rows the record was read from.</summary>
     public string? SourceFingerprint { get; init; }
 
-    /// <summary>When the drop says the source row last changed, when the flow declares source.lastModified.</summary>
+    /// <summary>When the record row last changed in business terms, when the flow declares <c>source.lastModified</c>.</summary>
     public DateTime? SourceModifiedUtc { get; init; }
+
+    /// <summary>The file, row and update time the record row carries, which every attempt of it is traced by.</summary>
+    public SourceOrigin Origin { get; init; }
 
     public string? PayloadHash { get; init; }
 
-    /// <summary>The newest modified time among the payload's chunk files, when the flow takes them as the payload watermark.</summary>
+    /// <summary>The newest modified time among the payload's files, when the flow takes them as the payload watermark.</summary>
     public DateTime? PayloadModifiedUtc { get; init; }
 
+    /// <summary>Where the payload's files are listed from: the folder and the pattern, as one text.</summary>
     public string? PayloadLocation { get; init; }
 
     public int? ChunkCount { get; init; }
@@ -56,55 +65,13 @@ public sealed record PlanEntry
     public bool IsDelivery => DeliverMetadata || DeliverPayload;
 }
 
-/// <summary>
-/// One record a plan takes in: read from the header's drop, or read from the flow's replica, where it carries the submission
-/// whose drop it last came from (<see cref="Origin"/>), since that drop is where its payload is.
-/// </summary>
-public sealed class PlanInput
-{
-    private PlanInput(SourceRecord record, Guid? origin, Guid? replicaKey)
-    {
-        Record = record;
-        Origin = origin;
-        ReplicaKey = replicaKey;
-    }
-
-    public SourceRecord Record { get; }
-
-    /// <summary>The submission whose drop a replica record was read from; null for a record read from the header's drop.</summary>
-    public Guid? Origin { get; }
-
-    /// <summary>The delivery key the replica holds the record under; null for a record read from a drop.</summary>
-    public Guid? ReplicaKey { get; }
-
-    public static PlanInput FromDrop(SourceRecord record)
-    {
-        ArgumentNullException.ThrowIfNull(record);
-        return new PlanInput(record, null, null);
-    }
-
-    public static PlanInput FromReplica(SourceRecord record, Guid origin, Guid key)
-    {
-        ArgumentNullException.ThrowIfNull(record);
-        if (origin == Guid.Empty || key == Guid.Empty)
-        {
-            throw new ArgumentException("A replica record names its delivery key and the submission it was read from.", nameof(origin));
-        }
-
-        return new PlanInput(record, origin, key);
-    }
-}
-
-/// <summary>What the planner established before reading a single record: the drop, the checks, the tier-0 decision.</summary>
+/// <summary>What the planner established before reading a single record: the opened source, the checks, the tier-0 decision.</summary>
 public sealed record PlanHeader
 {
     public required FlowDefinition Flow { get; init; }
 
-    /// <summary>The drop the submission was read from: opened from storage, or rebuilt from the manifest the source store kept. Null for a replan, whose rows each name their own.</summary>
-    public required Drop? Drop { get; init; }
-
-    /// <summary>Resolves the drop a stored row was read from; null for a plan without the ledger, which reads only its drop.</summary>
-    public SourceOrigins? Origins { get; init; }
+    /// <summary>The opened read: its window, the tables' columns, the key columns and what the selection could not find.</summary>
+    public required SourceHeader Source { get; init; }
 
     public required ResolvedMapping Mapping { get; init; }
 
@@ -125,7 +92,8 @@ public sealed record PlanHeader
     /// <summary>The payload set the protocol streams, or null for record-only protocols.</summary>
     public string? PayloadName { get; init; }
 
-    public int Partitions => Drop?.Manifest.PartitionCount ?? 0;
+    /// <summary>How many key slices this plan is cut into; 1 when it runs on one node.</summary>
+    public int Slices { get; init; } = 1;
 }
 
 /// <summary>Running totals of a plan, safe to add to from the parallel renderers.</summary>
@@ -154,7 +122,7 @@ public sealed class PlanSummary
     /// </summary>
     public long AwaitingApproval => Interlocked.Read(ref _awaitingApproval);
 
-    /// <summary>Records skipped because the drop carries an older version than the ledger already holds.</summary>
+    /// <summary>Records skipped because the source carries an older version than the ledger already holds.</summary>
     public long Stale => Interlocked.Read(ref _stale);
 
     public long Holds => Interlocked.Read(ref _holds);
@@ -206,7 +174,7 @@ public sealed class PlanSummary
 }
 
 /// <summary>What a run would do (design.md section 11: plan changes nothing), with every entry collected. For the
-/// drops the engine is built for, consume <see cref="Planner.EntriesAsync"/> instead and keep only the summary.</summary>
+/// volumes the engine is built for, consume <see cref="Planner.EntriesAsync"/> instead and keep only the summary.</summary>
 public sealed record DeliveryPlan
 {
     public required PlanHeader Header { get; init; }
@@ -216,8 +184,6 @@ public sealed record DeliveryPlan
     public required PlanSummary Summary { get; init; }
 
     public FlowDefinition Flow => Header.Flow;
-
-    public Drop Drop => Header.Drop ?? throw new InvalidOperationException("A collected plan reads a drop; this header plans stored rows.");
 
     public ResolvedMapping Mapping => Header.Mapping;
 
@@ -244,225 +210,148 @@ public sealed record DeliveryPlan
 }
 
 /// <summary>
-/// Renders a drop against the ledger and decides per record what would change (design.md sections 6.6 and 11).
-/// Works offline: the only inputs are the drop, the pinned snapshots and the ledger (which may be absent, in which
-/// case every record is a create). Records stream from the drop reader in batches through a bounded channel to a
-/// set of parallel renderers, so a plan of any size runs in bounded memory and uses every core (section 16.1).
+/// Reads a flow's ingestion tables against the ledger and decides per record what would change (docs/stage4-design.md
+/// section 2). Works without a ledger, in which case every record is a create. Records stream from the source in key
+/// order through a bounded channel to a set of parallel renderers, so a plan of any size runs in bounded memory and
+/// uses every core (design.md section 16.1).
 /// </summary>
 public sealed class Planner
 {
     /// <summary>Records per render batch: one ledger lookup, one unit of parallelism.</summary>
     public const int RenderBatch = 200;
 
-    private readonly IDropReader _drops;
+    private readonly IIngestionSource _source;
+    private readonly IPayloadFiles _payloads;
     private readonly ILedger? _ledger;
     private readonly ILogger<Planner> _logger;
 
-    public Planner(IDropReader drops, ILedger? ledger, ILogger<Planner> logger)
+    public Planner(IIngestionSource source, IPayloadFiles payloads, ILedger? ledger, ILogger<Planner> logger)
     {
-        ArgumentNullException.ThrowIfNull(drops);
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(payloads);
         ArgumentNullException.ThrowIfNull(logger);
-        _drops = drops;
+        _source = source;
+        _payloads = payloads;
         _ledger = ledger;
         _logger = logger;
     }
 
-    /// <summary>Opens the drop, checks it against the flow and the mapping, and applies the tier-0 gate.</summary>
-    /// <param name="flow">The flow whose drop is planned.</param>
+    /// <summary>The opened source, for the callers that read its slices or reopen a submission's window.</summary>
+    public IIngestionSource Source => _source;
+
+    /// <summary>
+    /// Opens the read, checks the flow and the mapping against the tables, and applies the tier-0 gate.
+    /// </summary>
+    /// <param name="flow">The flow being planned.</param>
     /// <param name="resolved">The pinned render inputs (mapping, template and cache version).</param>
     /// <param name="parameters">The resolved flow parameter values.</param>
-    /// <param name="dropLocation">The drop root to read.</param>
-    /// <param name="force">Skip the tier-0 whole-run gate: plan every record even when no source table advanced.</param>
+    /// <param name="selection">Which records to read: an incremental window, everything, named keys, or a submission's.</param>
+    /// <param name="gate">Apply the tier-0 whole-run gate; false plans the selection whatever the window holds.</param>
+    /// <param name="stored">The window a submission already recorded, so every run of it reads the same rows.</param>
     /// <param name="ct">Cancellation.</param>
     public async Task<PlanHeader> OpenAsync(
         FlowDefinition flow,
         ResolvedMapping resolved,
         IReadOnlyDictionary<string, string> parameters,
-        string dropLocation,
-        bool force = false,
+        SourceSelection selection,
+        bool gate = true,
+        SourceWindow? stored = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(resolved);
         ArgumentNullException.ThrowIfNull(parameters);
-        var drop = await _drops.OpenAsync(dropLocation, flow.Source.Manifest, ct).ConfigureAwait(false);
-        return await OpenDropAsync(flow, resolved, parameters, drop, gate: !force, ct).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Opens a submission the source store holds, without reading its drop. A loaded drop is opened from the manifest its
-    /// load kept, under the same checks and (when <paramref name="gate"/>) the same tier-0 gate as a drop opened from
-    /// storage. A replan is opened from the flow alone: each of its rows names the submission it was read from, and is
-    /// checked against that submission's manifest when the plan first meets it. A null submission opens the latest stored
-    /// rows of the flow without registering anything, which is what a plan from the source store reads.
-    /// </summary>
-    public async Task<PlanHeader> OpenStoredAsync(
-        FlowDefinition flow,
-        ResolvedMapping resolved,
-        IReadOnlyDictionary<string, string> parameters,
-        SubmissionState? submission,
-        bool gate,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(flow);
-        ArgumentNullException.ThrowIfNull(resolved);
-        ArgumentNullException.ThrowIfNull(parameters);
-        var ledger = _ledger ?? throw new DeliveryException("Planning from the source store needs the ledger, which lives in the catalog database.");
-        if (submission is not null && submission.FlowId != flow.Id)
-        {
-            throw new DeliveryException($"Submission {submission.SubmissionId:D} belongs to flow '{submission.FlowName}', not '{flow.Name}'.");
-        }
-
-        if (submission is null || submission.IsReplan)
-        {
-            if (submission is { IsLoaded: false })
-            {
-                throw new DeliveryException(
-                    $"Replan {submission.SubmissionId:D} holds no complete set of stored rows: it stopped before they were copied, or the retention prune removed some of them. Replan the flow again.");
-            }
-
-            return new PlanHeader
-            {
-                Flow = flow,
-                Drop = null,
-                Origins = new SourceOrigins(ledger, flow, resolved, null),
-                Mapping = resolved,
-                Parameters = parameters,
-                Issues = [],
-                PayloadName = PayloadName(flow),
-                GatedCacheSets = (await ledger.GatedCacheSetsAsync(ct).ConfigureAwait(false)).ToHashSet(),
-            };
-        }
-
-        if (!submission.IsLoaded || submission.ManifestJson is not { } json)
-        {
-            throw new DeliveryException($"Submission {submission.SubmissionId:D} is not loaded in the source store; a run of it from its drop loads it.");
-        }
-
-        var manifest = DropManifest.Parse(json, $"submission {submission.SubmissionId:D}");
-        return await OpenDropAsync(flow, resolved, parameters, new Drop(submission.DropLocation, manifest), gate, ct).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// The checks a stored row's origin must pass before the row is rendered under the flow's current mapping: the drop was
-    /// prepared for this flow, the mapping's columns are declared in it, and the flow's bindings hold. The mapping the drop
-    /// was prepared for is deliberately not compared, because rendering stored rows under the mapping the flow pins now is
-    /// what a replan is for.
-    /// </summary>
-    internal static void CheckOrigin(FlowDefinition flow, ResolvedMapping resolved, Drop drop, Guid submissionId)
-    {
-        ArgumentNullException.ThrowIfNull(flow);
-        ArgumentNullException.ThrowIfNull(resolved);
-        ArgumentNullException.ThrowIfNull(drop);
-        var where = $"{flow.SourcePath ?? flow.Name} (the stored rows of submission {submissionId:D})";
-        if (!drop.Manifest.Flow.Equals(flow.Name, StringComparison.Ordinal))
-        {
-            throw new FlowValidationException($"{where}: the drop was prepared for flow '{drop.Manifest.Flow}', not '{flow.Name}'.");
-        }
-
-        var issues = Preflight.Check(resolved.Mapping, resolved.Schema, resolved.References, resolved.Context, drop.Manifest.DeclaredColumns());
-        Preflight.ThrowIfFailed(issues, where);
-        CheckFlowBindings(flow, drop.Manifest, where);
-    }
-
-    private async Task<PlanHeader> OpenDropAsync(
-        FlowDefinition flow, ResolvedMapping resolved, IReadOnlyDictionary<string, string> parameters, Drop drop, bool gate, CancellationToken ct)
-    {
+        ArgumentNullException.ThrowIfNull(selection);
         var where = flow.SourcePath ?? flow.Name;
-        var manifest = drop.Manifest;
-        CheckManifestAgainstFlow(flow, manifest, parameters, where);
+        var source = await _source.OpenAsync(selection, stored, ct).ConfigureAwait(false);
 
-        var issues = Preflight.Check(resolved.Mapping, resolved.Schema, resolved.References, resolved.Context, manifest.DeclaredColumns());
+        var issues = Preflight.Check(resolved.Mapping, resolved.Schema, resolved.References, resolved.Context, source.Columns);
         Preflight.ThrowIfFailed(issues, where);
-        CheckFlowBindings(flow, manifest, where);
+        SourceBindings.Check(flow, resolved.Mapping, source, where);
 
-        var payloadName = PayloadName(flow);
-        var scopeKey = ScopeKey(parameters);
         var gatedSets = _ledger is null ? [] : (await _ledger.GatedCacheSetsAsync(ct).ConfigureAwait(false)).ToHashSet();
         var header = new PlanHeader
         {
             Flow = flow,
-            Drop = drop,
-            Origins = _ledger is null ? null : new SourceOrigins(_ledger, flow, resolved, drop),
+            Source = source,
             Mapping = resolved,
             Parameters = parameters,
             Issues = issues,
-            PayloadName = payloadName,
+            PayloadName = PayloadName(flow),
             GatedCacheSets = gatedSets,
         };
 
-        if (gate && _ledger is not null && flow.Change.UseSourceVersions && manifest.SourceVersions.Count > 0)
+        foreach (var missing in source.MissingKeys)
         {
-            var watermarks = await _ledger.GetWatermarksAsync(flow.Id, scopeKey, ct).ConfigureAwait(false);
-            var known = watermarks.ToDictionary(w => w.Table, w => w.Version, StringComparer.Ordinal);
-            var advanced = manifest.SourceVersions.Where(kv => !known.TryGetValue(kv.Key, out var v) || v < kv.Value).Select(kv => kv.Key).ToList();
+            _logger.LogWarning("The record table {Object} holds no record with key {Key}; it cannot be planned.", flow.Source.Record.Object, missing);
+        }
 
-            // The source is only one of the four inputs. A cache, mapping or schema version that moved changes what
-            // every record renders to, so the scope is re-rendered even when no source table advanced; skipping on
-            // the source alone is how an estate silently keeps serving values the cache no longer holds.
-            var contextHash = resolved.Context.Hash();
-            var contextMoved = watermarks.Count == 0 || watermarks.Any(w => !string.Equals(w.ContextHash, contextHash, StringComparison.Ordinal));
-            if (advanced.Count == 0 && contextMoved)
+        foreach (var outside in source.OutOfScopeKeys)
+        {
+            _logger.LogWarning("Record {Key} is outside this run's scope ({Scope}); the run of its own scope plans it.", outside, ScopeKey(parameters));
+        }
+
+        // Tier 0: nothing changed in the window and no record is waiting to be planned again, so the whole run is
+        // skipped without reading a row. A moved render context is handled by the cache rollout and an explicit
+        // replan, not by re-rendering the scope on every run.
+        if (gate && selection.CoversScope && flow.Change.UseSourceVersions && !source.HasChanges)
+        {
+            var waiting = _ledger is not null && (await _ledger.ListPlanRequestedAsync(flow.Id, null, 1, ct).ConfigureAwait(false)).Count > 0;
+            if (!waiting)
             {
                 _logger.LogInformation(
-                    "Tier 0: no source table advanced for scope {Scope}, but the render context moved to {Context}; planning the scope.",
-                    scopeKey, contextHash);
-            }
-
-            if (advanced.Count == 0 && !contextMoved)
-            {
-                _logger.LogInformation("Tier 0: no source table advanced since the last run for scope {Scope}; skipping the whole run.", scopeKey);
+                    "Tier 0: no row of {Object} changed in the window for scope {Scope}, and no record waits to be planned again; skipping the whole run.",
+                    flow.Source.Record.Object, ScopeKey(parameters));
                 return header with
                 {
                     SkippedWholeRun = true,
-                    SkipReason = $"none of {manifest.SourceVersions.Count} source table(s) advanced since the last run",
+                    SkipReason = source.Window.LowerUtc is { } lower
+                        ? $"no row changed between {Moment(lower)} and {Moment(source.Window.UpperUtc)}"
+                        : $"no row changed up to {Moment(source.Window.UpperUtc)}",
                 };
             }
+
+            _logger.LogInformation("Tier 0: no row changed in the window, but records wait to be planned again; planning those.");
         }
 
         return header;
     }
 
+    /// <summary>The key bounds that cut this read into <paramref name="slices"/> contiguous ranges.</summary>
+    public Task<IReadOnlyList<KeyRange>> SliceBoundsAsync(PlanHeader header, int slices, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(header);
+        return _source.SliceBoundsAsync(header.Source, slices, ct);
+    }
+
     /// <summary>
-    /// Streams the plan entries of the header's drop (or of the given root partitions), rendering <paramref name="parallelism"/>
+    /// Streams the plan entries of the opened read (or of one key range of it), rendering <paramref name="parallelism"/>
     /// batches at a time. Entries arrive in no particular order. The summary is updated as entries are produced.
     /// </summary>
     public IAsyncEnumerable<PlanEntry> EntriesAsync(
         PlanHeader header,
-        IReadOnlyList<int>? partitions,
+        KeyRange? range,
         int parallelism,
         PlanSummary summary,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(header);
-        return EntriesOfAsync(header, DropInputsAsync(header, partitions, ct), parallelism, summary, ct);
-    }
-
-    /// <summary>The records of the header's drop (or of the given root partitions), as plan inputs.</summary>
-    public async IAsyncEnumerable<PlanInput> DropInputsAsync(PlanHeader header, IReadOnlyList<int>? partitions, [EnumeratorCancellation] CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(header);
-        var drop = header.Drop ?? throw new DeliveryException("This plan has no drop to read: it plans rows of the source store.");
-        await foreach (var record in _drops.ReadRecordsAsync(drop, partitions, ct).ConfigureAwait(false))
-        {
-            yield return PlanInput.FromDrop(record);
-        }
+        return EntriesOfAsync(header, _source.ReadAsync(header.Source, range, ct), parallelism, summary, ct);
     }
 
     /// <summary>
-    /// Streams the plan entries of the given inputs, rendering <paramref name="parallelism"/> batches at a time: the one plan
-    /// every source takes, a drop read from storage and rows of the source store alike. Entries arrive in no particular
-    /// order. The summary is updated as entries are produced.
+    /// Streams the plan entries of the given records, rendering <paramref name="parallelism"/> batches at a time: the one
+    /// plan every source takes, the ingestion tables and a test's rows alike. Entries arrive in no particular order.
     /// </summary>
     public async IAsyncEnumerable<PlanEntry> EntriesOfAsync(
         PlanHeader header,
-        IAsyncEnumerable<PlanInput> inputs,
+        IAsyncEnumerable<SourceRecord> records,
         int parallelism,
         PlanSummary summary,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(header);
-        ArgumentNullException.ThrowIfNull(inputs);
+        ArgumentNullException.ThrowIfNull(records);
         ArgumentNullException.ThrowIfNull(summary);
         if (header.SkippedWholeRun)
         {
@@ -472,21 +361,21 @@ public sealed class Planner
         var workers = Math.Clamp(parallelism, 1, 256);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var token = stop.Token;
-        var input = Channel.CreateBounded<List<PlanInput>>(new BoundedChannelOptions(workers * 2) { SingleWriter = true, SingleReader = false });
+        var input = Channel.CreateBounded<List<SourceRecord>>(new BoundedChannelOptions(workers * 2) { SingleWriter = true, SingleReader = false });
         var output = Channel.CreateBounded<List<PlanEntry>>(new BoundedChannelOptions(workers * 2) { SingleWriter = false, SingleReader = true });
 
         var reader = Task.Run(async () =>
         {
             try
             {
-                var batch = new List<PlanInput>(RenderBatch);
-                await foreach (var record in inputs.WithCancellation(token).ConfigureAwait(false))
+                var batch = new List<SourceRecord>(RenderBatch);
+                await foreach (var record in records.WithCancellation(token).ConfigureAwait(false))
                 {
                     batch.Add(record);
                     if (batch.Count == RenderBatch)
                     {
                         await input.Writer.WriteAsync(batch, token).ConfigureAwait(false);
-                        batch = new List<PlanInput>(RenderBatch);
+                        batch = new List<SourceRecord>(RenderBatch);
                     }
                 }
 
@@ -560,17 +449,17 @@ public sealed class Planner
         await reader.ConfigureAwait(false);
     }
 
-    /// <summary>The whole plan collected in memory: for the CLI's check, tests and small drops.</summary>
+    /// <summary>The whole plan collected in memory: for the CLI's check, the tests and small scopes.</summary>
     public async Task<DeliveryPlan> PlanAsync(
         FlowDefinition flow,
         ResolvedMapping resolved,
         IReadOnlyDictionary<string, string> parameters,
-        string dropLocation,
+        SourceSelection selection,
         bool force = false,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        var header = await OpenAsync(flow, resolved, parameters, dropLocation, force, ct).ConfigureAwait(false);
+        var header = await OpenAsync(flow, resolved, parameters, selection, gate: !force, stored: null, ct).ConfigureAwait(false);
         var summary = new PlanSummary();
         var entries = new List<PlanEntry>();
         await foreach (var entry in EntriesAsync(header, null, flow.Reliability.EffectiveRenderParallelism, summary, ct).ConfigureAwait(false))
@@ -578,26 +467,17 @@ public sealed class Planner
             entries.Add(entry);
         }
 
-        var issues = header.Issues;
-        var declared = header.Drop!.Manifest.RecordCount;
-        if (!header.SkippedWholeRun && declared > 0 && declared != summary.Records)
-        {
-            issues = [.. issues, RecordCountIssue(flow, declared, summary.Records)];
-        }
-
-        return new DeliveryPlan { Header = header with { Issues = issues }, Entries = entries, Summary = summary };
-    }
-
-    public static ValidationIssue RecordCountIssue(FlowDefinition flow, long declared, long found)
-    {
-        ArgumentNullException.ThrowIfNull(flow);
-        return ValidationIssue.Warning($"{flow.SourcePath ?? flow.Name}: the manifest declares {declared} record(s) but the drop holds {found}.");
+        return new DeliveryPlan { Header = header, Entries = entries, Summary = summary };
     }
 
     /// <summary>The tier-0 scope key: one flow instance per distinct parameter set.</summary>
     public static string ScopeKey(IReadOnlyDictionary<string, string> parameters)
-        => string.Join(";", parameters.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + "=" + kv.Value));
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        return string.Join(";", parameters.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + "=" + kv.Value));
+    }
 
+    /// <summary>The payload set the flow's protocol streams, or null when it streams none.</summary>
     public static string? PayloadName(FlowDefinition flow)
     {
         ArgumentNullException.ThrowIfNull(flow);
@@ -609,69 +489,84 @@ public sealed class Planner
         return flow.Target.ProtocolOptions.Payload ?? (flow.Source.Payloads.Count == 1 ? flow.Source.Payloads.Keys.First() : null);
     }
 
-    /// <summary>The drop an input's record was read from: the header's, or the one its replica origin names.</summary>
-    private static async ValueTask<Drop> DropOfAsync(PlanHeader header, PlanInput input, CancellationToken ct)
-    {
-        if (input.Origin is not { } origin)
-        {
-            return header.Drop ?? throw new DeliveryException("A record read from a drop reached a plan that has no drop.");
-        }
-
-        var origins = header.Origins ?? throw new DeliveryException("Records of the replica reached a plan opened without the ledger.");
-        return await origins.DropAsync(origin, ct).ConfigureAwait(false);
-    }
-
-    private async Task PlanBatchAsync(PlanHeader header, List<PlanInput> batch, List<PlanEntry> entries, CancellationToken ct)
+    private async Task PlanBatchAsync(PlanHeader header, List<SourceRecord> batch, List<PlanEntry> entries, CancellationToken ct)
     {
         var flow = header.Flow;
         var resolved = header.Mapping;
         var payloadName = header.PayloadName;
+        var payload = payloadName is null ? null : flow.Source.Payloads.GetValueOrDefault(payloadName);
         var renderer = resolved.Renderer;
         var context = resolved.Context.Canonical();
         var gatedSets = header.GatedCacheSets;
         var ordered = flow.Source.LastModified is not null;
-        var keyed = new List<(SourceRecord Record, Drop Drop, DeliveryKey? Key, string SourceKey, string? Label)>(batch.Count);
-        foreach (var input in batch)
+        var fileWatermark = payload is not null && flow.Change.PayloadDetect == ChangeDetection.LastModified;
+        var keyed = new List<(SourceRecord Record, DeliveryKey? Key, string SourceKey, string? Label)>(batch.Count);
+        foreach (var record in batch)
         {
-            var record = input.Record;
-            var from = await DropOfAsync(header, input, ct).ConfigureAwait(false);
             var key = renderer.DeriveKey(record.Row, out var values);
-            keyed.Add((record, from, key, SourceKey.Display(resolved.Mapping.Dataset.System, values), renderer.Label(record.Row)));
+            keyed.Add((record, key, SourceKey.Display(resolved.Mapping.Dataset.System, values), renderer.Label(record.Row)));
         }
 
         var existing = _ledger is null
             ? new Dictionary<DeliveryKey, RecordState>()
             : await _ledger.GetRecordsAsync(flow.Id, keyed.Where(k => k.Key is not null).Select(k => k.Key!.Value), ct).ConfigureAwait(false);
 
-        foreach (var (record, drop, key, sourceKey, label) in keyed)
+        foreach (var (record, key, sourceKey, label) in keyed)
         {
             ct.ThrowIfCancellationRequested();
             if (key is null)
             {
-                entries.Add(new PlanEntry { Key = null, SourceKey = sourceKey, Label = label, Action = PlannedAction.Hold, Reason = "dataset key incomplete: every key column must be non-empty" });
+                entries.Add(new PlanEntry
+                {
+                    Key = null,
+                    SourceKey = sourceKey,
+                    SourceKeyJson = record.SourceKeyJson,
+                    Label = label,
+                    Origin = record.Origin,
+                    Action = PlannedAction.Hold,
+                    Reason = "dataset key incomplete: every key column must be non-empty",
+                });
                 continue;
             }
 
-            // The payload is declared by the drop the record was read from: a replan's records can come from many drops.
-            var payload = payloadName is null ? null : drop.Manifest.Payloads.GetValueOrDefault(payloadName);
-            var fileWatermark = payload is not null && flow.Change.PayloadDetect == ChangeDetection.LastModified;
             var state = existing.GetValueOrDefault(key.Value);
-            var (source, sourceProblem) = ReadSourceVersion(flow, record.Row);
+            var (source, sourceProblem) = ReadSourceVersion(flow, record);
             var hasPayload = payload is not null;
 
-            // What every entry says about the record and the version the drop carries, whatever is decided about it.
+            // What every entry says about the record and the version the source carries, whatever is decided about it.
             var basis = new PlanEntry
             {
                 Key = key,
                 SourceKey = sourceKey,
+                SourceKeyJson = record.SourceKeyJson,
                 Label = label,
                 TargetId = state?.TargetId,
                 Existing = state,
                 Action = PlannedAction.Hold,
                 Reason = string.Empty,
+                Origin = record.Origin,
                 SourceFingerprint = source.Fingerprint,
                 SourceModifiedUtc = source.ModifiedUtc,
             };
+
+            // A row the source read but cannot deliver as it stands (a child dataset over its ceiling).
+            if (record.Hold is { } refusal)
+            {
+                entries.Add(basis with { Reason = refusal });
+                continue;
+            }
+
+            // A soft-deleted record row is not delivered: what OSDU holds is removed deliberately, through a removal
+            // that records itself, never as a side effect of a row disappearing from a table.
+            if (record.DeletedUtc is { } deleted)
+            {
+                entries.Add(basis with
+                {
+                    Reason = $"the ingestion table marked the record row deleted at {Moment(deleted)}; a deleted row is never delivered. "
+                        + "Remove the record from OSDU deliberately, or restore the row in the source.",
+                });
+                continue;
+            }
 
             // A cache change is tagged against the values this record was built from and nobody has approved it:
             // OSDU keeps the document it has. The gate is a set membership test, not a column on the record, so
@@ -690,8 +585,7 @@ public sealed class Planner
             }
 
             // A record held, failed or deleted earlier stays where it is until an operator releases it or the source
-            // moves past the version it was left at (design.md section 7.4). Without a version column, only a
-            // release can unblock it.
+            // moves past the version it was left at (design.md section 7.4).
             if (state is { Blocked: true } && ChangeDetector.StaysBlocked(state, source, ordered))
             {
                 entries.Add(basis with
@@ -708,8 +602,8 @@ public sealed class Planner
                 continue;
             }
 
-            // An older version than the ledger holds, delivered or queued: a replayed or late drop. Sending it would
-            // take OSDU back in time, so it is skipped, and the intake records the skip against the record.
+            // An older version than the ledger holds, delivered or queued: a late row, or a row re-landed behind one
+            // already sent. Sending it would take OSDU back in time, so it is skipped and the intake records the skip.
             if (source.ModifiedUtc is { } modified && ChangeDetector.NewestSourceModified(state) is { } newest && modified < newest)
             {
                 var standing = state!.HasPendingWork && state.PendingSourceModifiedUtc == newest ? "queued" : "delivered";
@@ -717,38 +611,32 @@ public sealed class Planner
                 {
                     Action = PlannedAction.Skip,
                     SkipTier = SkipTier.Stale,
-                    Reason = $"the drop carries the row as last modified {Moment(modified)}, older than the version last modified {Moment(newest)} already {standing}; OSDU keeps the newer version",
+                    Reason = $"the source carries the row as last modified {Moment(modified)}, older than the version last modified {Moment(newest)} already {standing}; OSDU keeps the newer version",
                 });
                 continue;
             }
 
             string? payloadHash = null;
             DateTime? payloadModified = null;
-            string? payloadLocation = null;
+            PayloadLocation? payloadLocation = null;
             int? chunkCount = null;
             if (payload is not null)
             {
-                // A payload that names a location column says where each record's files are, rather than implying it
-                // from the drop's own folders: that is what lets a submission point at files already on the lake
-                // (design.md section 3.4). The node opens the location with its own identity when it delivers.
-                if (payload.LocationColumn is { } locationColumn)
+                var resolution = PayloadLocations.Resolve(flow, header.Parameters, record.Row, payloadName!);
+                if (resolution.Refusal is { } problem)
                 {
-                    payloadLocation = record.Row.GetString(locationColumn);
-                    if (string.IsNullOrWhiteSpace(payloadLocation))
-                    {
-                        entries.Add(basis with { Reason = $"payload '{payloadName}' takes its location from column '{locationColumn}', which this row leaves empty; there is nowhere to read its files from" });
-                        continue;
-                    }
+                    entries.Add(basis with { Reason = problem });
+                    continue;
                 }
 
+                payloadLocation = resolution.Location;
                 if (fileWatermark)
                 {
-                    // The chunk files are the payload's watermark: listing them is the only way to see a rewrite.
-                    payloadLocation ??= _drops.PayloadLocation(drop, payloadName!, key.Value.Value);
-                    var files = PayloadFiles.Of(await _drops.ListPayloadChunksAsync(payloadLocation, ct).ConfigureAwait(false));
+                    // The files are the payload's watermark: listing them is the only way to see a rewrite.
+                    var files = PayloadFiles.Of(await _payloads.ListAsync(payloadLocation!.Value.Folder, payloadLocation.Value.Pattern, ct).ConfigureAwait(false));
                     if (files.Count == 0)
                     {
-                        entries.Add(basis with { Reason = $"no payload chunk files under {payloadLocation}; the payload's watermark is its files, so there is nothing to compare or send" });
+                        entries.Add(basis with { Reason = $"no payload files under {payloadLocation}; the payload's watermark is its files, so there is nothing to compare or send" });
                         continue;
                     }
 
@@ -764,7 +652,7 @@ public sealed class Planner
 
                 if (string.IsNullOrWhiteSpace(payloadHash))
                 {
-                    entries.Add(basis with { Reason = $"payload '{payloadName}' declares hash column '{payload.HashColumn}' but the row carries no value; no payload was prepared" });
+                    entries.Add(basis with { Reason = $"payload '{payloadName}' takes its content hash from column '{payload.HashColumn}', which this row leaves empty" });
                     continue;
                 }
             }
@@ -809,7 +697,7 @@ public sealed class Planner
                     carriedPayload = true;
                     payloadHash = state.PendingPayloadHash;
                     payloadModified = state.PendingPayloadModifiedUtc;
-                    payloadLocation = state.PendingPayloadLocation;
+                    payloadLocation = state.PendingPayloadLocation is { } stored ? PayloadLocation.Parse(stored) : payloadLocation;
                     chunkCount = null;
                     decision = decision with { Reason = $"{decision.Reason}; {why}, so the newer payload already queued is kept" };
                 }
@@ -845,15 +733,14 @@ public sealed class Planner
 
             if (decision.DeliverPayload)
             {
-                payloadLocation ??= _drops.PayloadLocation(drop, payloadName!, key.Value.Value);
-                // The manifest can declare the chunk count per record, which spares a storage listing per record
-                // here (the drain lists the chunks when it streams them anyway); without it the chunks are listed. A
-                // payload carried over from the queue was prepared by another drop, so its count is listed too.
+                // The record row can declare how many files the payload has, which spares a storage listing per
+                // record here (the drain lists them when it streams them anyway); without it they are listed. A
+                // payload carried over from the queue was prepared by an earlier read, so its count is listed too.
                 chunkCount ??= carriedPayload ? null : DeclaredChunkCount(payload!, record.Row);
                 if (chunkCount is null)
                 {
-                    var chunks = await _drops.ListPayloadChunksAsync(payloadLocation, ct).ConfigureAwait(false);
-                    chunkCount = chunks.Count;
+                    var files = await _payloads.ListAsync(payloadLocation!.Value.Folder, payloadLocation.Value.Pattern, ct).ConfigureAwait(false);
+                    chunkCount = files.Count;
                 }
 
                 if (chunkCount == 0)
@@ -861,7 +748,7 @@ public sealed class Planner
                     entries.Add(basis with
                     {
                         TargetId = render.TargetId,
-                        Reason = $"payload hash present but no chunk files under {payloadLocation}",
+                        Reason = $"payload hash present but no files under {payloadLocation}",
                         Render = render,
                         PayloadHash = payloadHash,
                         PayloadModifiedUtc = payloadModified,
@@ -879,7 +766,7 @@ public sealed class Planner
                 Render = render,
                 PayloadHash = payloadHash,
                 PayloadModifiedUtc = payloadModified,
-                PayloadLocation = decision.DeliverPayload ? payloadLocation : null,
+                PayloadLocation = decision.DeliverPayload ? payloadLocation?.ToString() : null,
                 ChunkCount = decision.DeliverPayload ? chunkCount : null,
                 DeliverMetadata = decision.DeliverMetadata,
                 DeliverPayload = decision.DeliverPayload,
@@ -887,23 +774,27 @@ public sealed class Planner
         }
     }
 
-    /// <summary>The version the row carries: its last-modified moment, or its fingerprint, as the flow declares; or why it cannot be read.</summary>
-    private static (SourceVersion Version, string? Problem) ReadSourceVersion(FlowDefinition flow, SourceRow row)
+    /// <summary>
+    /// The version the record carries: the ingestion fingerprint the source computed, completed with the business
+    /// version when the flow declares <c>source.lastModified</c>; or why that column cannot be read.
+    /// </summary>
+    private static (SourceVersion Version, string? Problem) ReadSourceVersion(FlowDefinition flow, SourceRecord record)
     {
-        if (flow.Source.LastModified is { } column)
+        var fingerprint = record.Version.Fingerprint;
+        if (flow.Source.LastModified is not { } column)
         {
-            return LastModifiedColumn.TryRead(row, column, out var modified, out var problem)
-                ? (SourceVersion.At(modified), null)
-                : (default, problem);
+            return (SourceVersion.Of(fingerprint), null);
         }
 
-        return (SourceVersion.Of(flow.Source.Fingerprint is { } fingerprint ? row.GetString(fingerprint) : null), null);
+        return LastModifiedColumn.TryRead(record.Row, column, out var modified, out var problem)
+            ? (new SourceVersion(fingerprint, modified), null)
+            : (default, problem);
     }
 
     private static string Moment(DateTime utc)
         => Json.CanonicalJson.FormatDateTime(new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc)));
 
-    private static int? DeclaredChunkCount(ManifestPayload payload, SourceRow row)
+    private static int? DeclaredChunkCount(FlowPayload payload, SourceRow row)
     {
         if (payload.ChunkCountColumn is not { } column)
         {
@@ -919,90 +810,6 @@ public sealed class Planner
             string s when long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed >= 0 => (int)Math.Min(parsed, int.MaxValue),
             _ => null,
         };
-    }
-
-    private static void CheckManifestAgainstFlow(FlowDefinition flow, DropManifest manifest, IReadOnlyDictionary<string, string> parameters, string where)
-    {
-        if (!manifest.Flow.Equals(flow.Name, StringComparison.Ordinal))
-        {
-            throw new FlowValidationException($"{where}: the drop was prepared for flow '{manifest.Flow}', not '{flow.Name}'.");
-        }
-
-        if (!manifest.Mapping.Equals(flow.Render.Mapping, StringComparison.Ordinal))
-        {
-            throw new FlowValidationException(
-                $"{where}: the drop was prepared for mapping '{manifest.Mapping}' but the flow pins '{flow.Render.Mapping}'. Re-prepare the drop or promote the flow deliberately.");
-        }
-
-        foreach (var (name, value) in manifest.Parameters)
-        {
-            if (parameters.TryGetValue(name, out var supplied) && !supplied.Equals(value, StringComparison.Ordinal))
-            {
-                throw new FlowValidationException($"{where}: parameter '{name}' is '{supplied}' for this run but the drop was prepared with '{value}'.");
-            }
-        }
-    }
-
-    private static void CheckFlowBindings(FlowDefinition flow, DropManifest manifest, string where)
-    {
-        var columns = manifest.DeclaredColumns();
-        var root = columns[DropManifest.RootScope];
-        if (flow.Source.Fingerprint is { } fp && !root.Contains(fp))
-        {
-            throw new FlowValidationException($"{where}: source.fingerprint names column '{fp}', which the drop's root scope does not declare.");
-        }
-
-        if (flow.Source.LastModified is { } lastModified)
-        {
-            var declared = manifest.Root.Columns.FirstOrDefault(c => c.Name.Equals(lastModified, StringComparison.OrdinalIgnoreCase))
-                ?? throw new FlowValidationException($"{where}: source.lastModified names column '{lastModified}', which the drop's root scope does not declare.");
-            if (!declared.Type.Equals("timestamp", StringComparison.OrdinalIgnoreCase) && !declared.Type.Equals("string", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new FlowValidationException(
-                    $"{where}: source.lastModified column '{lastModified}' is declared as {declared.Type}; it must be a timestamp, or a string holding RFC 3339 text.");
-            }
-        }
-
-        var payloadName = PayloadName(flow);
-        if (payloadName is not null)
-        {
-            if (!manifest.Payloads.TryGetValue(payloadName, out var payload))
-            {
-                throw new FlowValidationException($"{where}: the protocol streams payload '{payloadName}' but the manifest declares no such payload.");
-            }
-
-            if (payload.HashColumn is { } hashColumn)
-            {
-                if (!root.Contains(hashColumn))
-                {
-                    throw new FlowValidationException($"{where}: payload '{payloadName}' hashColumn '{hashColumn}' is not declared in the drop's root scope.");
-                }
-            }
-            else if (flow.Change.PayloadDetect != ChangeDetection.LastModified)
-            {
-                throw new FlowValidationException(
-                    $"{where}: payload '{payloadName}' declares no hashColumn. The flow decides payload changes by content hash, so the drop must carry one; "
-                    + "set change.payloadDetect: lastModified to take the chunk files' modified times as the watermark instead.");
-            }
-
-            if (payload.ChunkCountColumn is { } chunkColumn && !root.Contains(chunkColumn))
-            {
-                throw new FlowValidationException($"{where}: payload '{payloadName}' chunkCountColumn '{chunkColumn}' is not declared in the drop's root scope.");
-            }
-
-            if (payload.LocationColumn is { } locationColumn && !root.Contains(locationColumn))
-            {
-                throw new FlowValidationException($"{where}: payload '{payloadName}' locationColumn '{locationColumn}' is not declared in the drop's root scope.");
-            }
-        }
-
-        foreach (var (name, _) in flow.Source.Scopes)
-        {
-            if (!manifest.Scopes.ContainsKey(name))
-            {
-                throw new FlowValidationException($"{where}: source.scopes declares '{name}', which the manifest does not declare.");
-            }
-        }
     }
 }
 
@@ -1028,7 +835,7 @@ public static class PlanFormatting
             PlannedAction.Blocked => "blocked",
             _ => e.Action.ToString().ToLowerInvariant(),
         };
-        var chunks = e.ChunkCount is { } c ? $", {c.ToString(CultureInfo.InvariantCulture)} chunk(s)" : string.Empty;
+        var chunks = e.ChunkCount is { } c ? $", {c.ToString(CultureInfo.InvariantCulture)} file(s)" : string.Empty;
         var label = e.Label is null ? string.Empty : $" [{e.Label}]";
         return $"{action,-24} {e.SourceKey}{label}  {e.TargetId ?? "-"}  ({e.Reason}{chunks})";
     }

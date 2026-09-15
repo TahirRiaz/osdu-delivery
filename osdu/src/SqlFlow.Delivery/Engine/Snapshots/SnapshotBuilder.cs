@@ -461,7 +461,7 @@ public sealed class OsduConnection : IDisposable
         {
             return await send(auth).ConfigureAwait(false);
         }
-        catch (HttpStatusException ex) when (ex.StatusCode == 401)
+        catch (OsduStatusException ex) when (ex.StatusCode == 401)
         {
             _http.AuthResolver.Invalidate();
             var refreshed = await _http.AuthResolver.ResolveAsync(_auth, _http.Auth, ct).ConfigureAwait(false);

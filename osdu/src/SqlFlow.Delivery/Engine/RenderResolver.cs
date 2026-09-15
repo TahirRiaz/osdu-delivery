@@ -77,7 +77,7 @@ public sealed class RenderResolver
             Parameters = parameters,
         };
 
-        var issues = Preflight.Check(mapping, schema, references, context, dropColumns: null);
+        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null);
         Preflight.ThrowIfFailed(issues, where);
         var renderer = new MappingRenderer(mapping, schema, references, context);
         return new ResolvedMapping(mapping, schema, references, context, renderer);
