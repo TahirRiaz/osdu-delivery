@@ -1,0 +1,13 @@
+<Project>
+
+  <!-- Central package versions: SQLFlow's pins apply unchanged (a module never runs a different version of a library
+       SQLFlow loads in the same process), and only the packages the module uses that SQLFlow does not are added here. -->
+  <Import Project="$(MSBuildThisFileDirectory)..\sqlflow\Directory.Packages.props" />
+
+  <ItemGroup>
+    <!-- The ledger suites run the module's model on an in-memory SQLite database on every machine; pinned to the EF
+         Core version SQLFlow uses. -->
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.17" />
+  </ItemGroup>
+
+</Project>

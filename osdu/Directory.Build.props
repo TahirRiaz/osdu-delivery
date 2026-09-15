@@ -1,0 +1,8 @@
+<Project>
+
+  <!-- The OSDU module builds under exactly the quality gates of the SQLFlow it extends: the same target framework,
+       nullable and analyzer settings, documentation generation and warning policy. Importing them, rather than
+       copying them, keeps the two in step when a SQLFlow update changes them. -->
+  <Import Project="$(MSBuildThisFileDirectory)..\sqlflow\Directory.Build.props" />
+
+</Project>

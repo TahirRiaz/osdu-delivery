@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>SqlFlow.Delivery.Cli</RootNamespace>
+    <Description>The OSDU module's CLI verbs (check, cache, template), registered into SQLFlow's CLI as a host module.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Cli\SqlFlow.Cli.csproj" />
+    <ProjectReference Include="..\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
+    <ProjectReference Include="..\SqlFlow.Delivery.Data\SqlFlow.Delivery.Data.csproj" />
+  </ItemGroup>
+
+</Project>

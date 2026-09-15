@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>SqlFlow.Delivery.ControlPlane</RootNamespace>
+    <Description>The OSDU module's control plane surface: the delivery and template endpoints and the cache rollout and data definitions services, registered into SQLFlow's control plane as a host module.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.ControlPlane\SqlFlow.ControlPlane.csproj" />
+    <ProjectReference Include="..\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
+    <ProjectReference Include="..\SqlFlow.Delivery.Data\SqlFlow.Delivery.Data.csproj" />
+  </ItemGroup>
+
+</Project>
