@@ -1,0 +1,49 @@
+## .NET
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+artifacts/
+*.user
+*.suo
+.vs/
+
+## GUI module
+gui/**/node_modules/
+gui/**/dist/
+gui/**/.env.local
+gui/**/playwright-report/
+gui/**/test-results/
+gui/**/tsconfig.tsbuildinfo
+.playwright-mcp/
+
+## Rider / VS Code
+.idea/
+.vscode/
+
+## Test results
+[Tt]est[Rr]esults/
+*.trx
+*.coverage
+coverage/
+*.cobertura.xml
+
+## NuGet
+*.nupkg
+*.snupkg
+.nuget/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Local secrets / env (never commit)
+*.env
+.env
+appsettings.*.local.json
+secrets.json
+
+## SQLFlow run artifacts, model state, the live OSDU action log and local secrets (.sqlflow/env)
+.sqlflow/
