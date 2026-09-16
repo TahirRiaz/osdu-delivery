@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E } from "../playwright.config";
+import { LOADING_FLOWS } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
 // Seeds the estate THROUGH the product: saves the templates the sample mappings pin, imports the sample references as the
@@ -12,9 +13,9 @@ import { adminSession, expect, test } from "./helpers";
 /** The OSDU module's folder: the sample estate and the hosts live beside the GUI. */
 const moduleRoot = join(import.meta.dirname, "..", "..");
 
-function fixtureMeta(): { repoDir: string; headSha: string } {
+function fixtureMeta(): { repoDir: string; headSha: string; sampleDb: string } {
   const metaPath = join(import.meta.dirname, ".fixtures", "meta.json");
-  return JSON.parse(readFileSync(metaPath, "utf8")) as { repoDir: string; headSha: string };
+  return JSON.parse(readFileSync(metaPath, "utf8")) as { repoDir: string; headSha: string; sampleDb: string };
 }
 
 test.describe.serial("seed the estate via repo source sync", () => {
@@ -59,6 +60,23 @@ test.describe.serial("seed the estate via repo source sync", () => {
       { encoding: "utf8", timeout: 400_000, env: { ...process.env, SQLFLOW_E2E_CACHE_DB: E2E.catalogDb } },
     );
     expect(output).toContain("osdu-reference-cache");
+  });
+
+  // A delivery flow reads its records from ingestion tables, which the chain that fills them creates: the pre flows land
+  // the sample files and the ingestion flows key them into the tables the delivery flows plan from. Running them through
+  // the CLI host is the path a node takes, so what the later specs plan against is what production would hold. Landing
+  // before keying is the order the waves run in, and running the chain again loads nothing new.
+  test("load the sample ingestion tables by running the chain", () => {
+    test.setTimeout(900_000);
+    const meta = fixtureMeta();
+    for (const flow of LOADING_FLOWS) {
+      const output = execFileSync(
+        "dotnet",
+        ["run", "--project", join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host"), "--", "run", `${meta.repoDir}/flows/${flow}.yaml`],
+        { encoding: "utf8", timeout: 600_000, env: { ...process.env, OSDU_SAMPLE_DB: meta.sampleDb } },
+      );
+      expect(output, `${flow} reported nothing`).not.toBe("");
+    }
   });
 
   test("register the fixture repo as a source and watch it sync", async ({ adminPage }) => {

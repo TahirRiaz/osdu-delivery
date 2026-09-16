@@ -16,17 +16,23 @@ import { defineConfig, devices } from "@playwright/test";
 const apiPort = Number(process.env.SQLFLOW_E2E_API_PORT ?? 5299);
 const guiPort = Number(process.env.SQLFLOW_E2E_GUI_PORT ?? 5173);
 
+// Overridable so a run can provision its own catalog next to an existing one: a database left behind by an older
+// build cannot always be migrated forward, and pointing the suite at a fresh name is the non-destructive way past it.
+// The suite creates whatever database it is given.
+const catalogDb = process.env.SQLFLOW_E2E_CATALOG_DB
+  ?? "Server=localhost;Database=SqlFlowCatalogE2EOsdu;Trusted_Connection=True;TrustServerCertificate=True";
+
 export const E2E = {
   apiBaseUrl: `http://localhost:${apiPort}`,
   guiBaseUrl: `http://localhost:${guiPort}`,
   adminUsername: "e2e-admin",
   adminPassword: "e2e-admin-password-123456",
   bootstrapSecret: "e2e-bootstrap-secret-0123456789-PADDING",
-  // Overridable so a run can provision its own catalog next to an existing one: a database left behind by an older
-  // build cannot always be migrated forward, and pointing the suite at a fresh name is the non-destructive way past it.
-  // The suite creates whatever database it is given.
-  catalogDb: process.env.SQLFLOW_E2E_CATALOG_DB
-    ?? "Server=localhost;Database=SqlFlowCatalogE2EOsdu;Trusted_Connection=True;TrustServerCertificate=True",
+  catalogDb,
+  // Where the chain's ingestion tables live. The pre and ingestion flows create their own schemas, so this is the
+  // catalog database by default: the suite provisions one database rather than two, and the sample tables sit beside
+  // the catalog's own without touching them.
+  sampleDb: process.env.SQLFLOW_E2E_SAMPLE_DB ?? catalogDb,
 } as const;
 
 export default defineConfig({
@@ -59,6 +65,9 @@ export default defineConfig({
         ASPNETCORE_URLS: E2E.apiBaseUrl,
         ASPNETCORE_ENVIRONMENT: "Production",
         ControlPlane__Catalog__ConnectionReference: E2E.catalogDb,
+        // The sample flows read their ingestion tables through this reference. Without it a plan cannot open the tables
+        // the seed loaded, and every delivery run fails on a connection it cannot resolve.
+        OSDU_SAMPLE_DB: E2E.sampleDb,
         ControlPlane__Jwt__SigningKey: "e2e-signing-key-0123456789abcdef-0123456789abcdef-PADDING",
         ControlPlane__Jwt__BootstrapSecret: E2E.bootstrapSecret,
         // The suite provisions a fresh, dedicated test catalog, so it opts into database creation explicitly.
