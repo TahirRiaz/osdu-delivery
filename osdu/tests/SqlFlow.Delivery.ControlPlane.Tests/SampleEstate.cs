@@ -88,17 +88,30 @@ internal static class SampleEstate
     /// Brings the module's own schema up to date in the catalog database, exactly as the control plane's bootstrap does
     /// before it serves a request. The database itself is never created here: the suite is given a disposable one.
     /// </summary>
-    public static Task MigrateModuleAsync(string connectionString)
+    public static async Task MigrateModuleAsync(string connectionString)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
-        return ModuleDatabases.MigrateAsync(
-            OsduModuleDatabase.Create(),
-            connectionString,
-            allowCreate: false,
-            appliedBy: "control plane module tests",
-            appliedUtc: DateTime.UtcNow,
-            catalogAppliedMigrations: CatalogDatabase.KnownMigrations);
+        // One migrate at a time in this process: the suites run in parallel and every one of them brings the schema up to
+        // date first, and two migrates of the same schema at once fail rather than wait for each other.
+        await ModuleMigrate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await ModuleDatabases.MigrateAsync(
+                OsduModuleDatabase.Create(),
+                connectionString,
+                allowCreate: false,
+                appliedBy: "control plane module tests",
+                appliedUtc: DateTime.UtcNow,
+                catalogAppliedMigrations: CatalogDatabase.KnownMigrations).ConfigureAwait(false);
+        }
+        finally
+        {
+            ModuleMigrate.Release();
+        }
     }
+
+    /// <summary>Serializes the module migrate across the suites of this process.</summary>
+    private static readonly SemaphoreSlim ModuleMigrate = new(1, 1);
 
     /// <summary>
     /// Saves the templates the sample mappings pin into the module's database at <paramref name="connectionString"/>,

@@ -39,6 +39,9 @@ public sealed class DeliveryTemplateApiTests
     private const string WellboreFile = "osdu_wks_master-data--Wellbore_1.3.0.json";
     private const string ReferenceVersion = "20260908T212727Z";
 
+    /// <summary>The source connection of the seeded flow, as a flow declares one: a reference, never a connection string.</summary>
+    private const string SourceConnectionReference = "${env:OSDU_SAMPLE_DB}";
+
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     private static string SampleRoot => Path.Combine(AppContext.BaseDirectory, "samples");
@@ -532,7 +535,12 @@ public sealed class DeliveryTemplateApiTests
                 flowType: delivery
                 name: {flowName}
                 source:
-                  location: C:/drops/{flowName}
+                  connection: {SourceConnectionReference}
+                  record:
+                    object: OsduSample.ing.WellLog
+                    key: [source_project, log_id]
+                  lastModified: update_date
+                  work: ../.work/{flowName}
                 render:
                   mapping: WellLog@1.4.0
                   parameters:
