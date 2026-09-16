@@ -74,11 +74,23 @@ public class SqlServerChainTests
             Assert.All(plan.Entries, e => Assert.Equal(PlannedAction.Create, e.Action));
             Assert.All(plan.Entries, e => Assert.Equal(LogFile, e.Origin.FileName));
             Assert.All(plan.Entries, e => Assert.Equal(1, e.ChunkCount));
+            // The mapping pins a fixture for the logs whose rendering it means to hold (L-1001 and L-2001), not for every
+            // sample log, so each log that has one is compared and the count is asserted: a fixture that stopped matching
+            // would otherwise leave this comparing nothing and still passing.
+            var compared = 0;
             foreach (var log in logs)
             {
                 var entry = plan.Entries.Single(e => e.Key == log.Key);
+                if (Fixture(runtime.Mapping.Mapping, log.LogId) is null)
+                {
+                    continue;
+                }
+
                 AssertRendersTheFixture(runtime.Mapping.Mapping, entry, log.LogId);
+                compared++;
             }
+
+            Assert.Equal(runtime.Mapping.Mapping.Fixtures.Count, compared);
         }
 
         // The group's last member, run now that its first plan has been read.
@@ -480,9 +492,14 @@ public class SqlServerChainTests
     /// Asserts that what the chain rendered from the real tables is exactly what the mapping's fixture pins, compared
     /// canonically so the order the two were written in never decides the outcome.
     /// </summary>
+    /// <summary>The fixture this mapping pins for a log, or null when it pins none for it.</summary>
+    private static MappingFixture? Fixture(MappingDefinition mapping, string logId)
+        => mapping.Fixtures.SingleOrDefault(f => f.Name.StartsWith(logId, StringComparison.Ordinal));
+
     private static void AssertRendersTheFixture(MappingDefinition mapping, PlanEntry entry, string logId)
     {
-        var fixture = mapping.Fixtures.Single(f => f.Name.StartsWith(logId, StringComparison.Ordinal));
+        var fixture = Fixture(mapping, logId)
+            ?? throw new InvalidOperationException($"The mapping pins no fixture for log '{logId}'.");
         Assert.NotNull(entry.Render);
         Assert.Empty(entry.Render!.Holds);
         Assert.Equal(Canonical(JsonNode.Parse(fixture.Expected)), Canonical(entry.Render.Document));
