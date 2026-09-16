@@ -12,11 +12,15 @@
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Xunit.SkippableFact" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <!-- The linked delivery fixtures run the module's model on an in-memory SQLite database, so the suites that need a
+         ledger (the search category, the schema version row) need no SQL Server. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.ControlPlane\SqlFlow.ControlPlane.csproj" />
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
+    <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Sources\SqlFlow.Sources.csproj" />
     <ProjectReference Include="..\..\src\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
     <ProjectReference Include="..\..\src\SqlFlow.Delivery.Data\SqlFlow.Delivery.Data.csproj" />
     <ProjectReference Include="..\..\src\SqlFlow.Delivery.ControlPlane\SqlFlow.Delivery.ControlPlane.csproj" />
@@ -31,13 +35,24 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The delivery suite's own fixtures, linked rather than copied: the in-memory ingestion tables a run reads, the
+         sample well logs they hold, and the SQLite copies of the module's database. One fixture, two suites, so the API
+         tests run a flow against exactly what the engine tests run it against. -->
+    <Compile Include="..\SqlFlow.Delivery.Tests\TestSupport.cs" Link="Fixtures\TestSupport.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\MemoryIngestionTables.cs" Link="Fixtures\MemoryIngestionTables.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\SampleWellLogs.cs" Link="Fixtures\SampleWellLogs.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\SampleEstate.cs" Link="Fixtures\SampleEstate.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- The sample estate the submission and template suites run against, copied next to the binaries so the suites
-         work wherever the build output lands. -->
+         work wherever the build output lands. The data files come too: a submission lands its records beside them. -->
     <Content Include="..\..\samples\recall-welllog\flows\**" Link="samples\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\recall-welllog\mappings\**" Link="samples\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\recall-welllog\templates\**" Link="samples\templates\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\recall-welllog\caches\**" Link="samples\caches\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\recall-welllog\references\**" Link="samples\references\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\recall-welllog\data\**" Link="samples\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

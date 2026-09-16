@@ -12,6 +12,9 @@ using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.ControlPlane;
+using SqlFlow.Delivery.ControlPlane.Api;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
@@ -44,7 +47,7 @@ public sealed class DeliveryTemplateApiTests
     public async Task A_template_is_saved_once_by_a_signed_in_caller_and_read_as_variables_and_as_its_schema()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
+        await ProvisionAsync(cs);
         await using var factory = Factory(cs);
         using var client = factory.CreateClient();
         var reader = await TokenAsync(client, "read");
@@ -87,7 +90,7 @@ public sealed class DeliveryTemplateApiTests
     public async Task A_template_version_a_synced_mapping_pins_is_refused_deletion_until_nothing_pins_it()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
+        await ProvisionAsync(cs);
         await using var factory = Factory(cs);
         using var client = factory.CreateClient();
         var author = await TokenAsync(client, "read", "author");
@@ -100,7 +103,7 @@ public sealed class DeliveryTemplateApiTests
         var version = saved.Template.Version;
 
         var mappingId = Guid.NewGuid();
-        await using (var db = CatalogDatabase.Create(cs))
+        await using (var db = SampleEstate.Context(cs))
         {
             db.DeliveryMappings.Add(new DeliveryMapping
             {
@@ -133,7 +136,7 @@ public sealed class DeliveryTemplateApiTests
         }
         finally
         {
-            await using var db = CatalogDatabase.Create(cs);
+            await using var db = SampleEstate.Context(cs);
             await db.DeliveryMappings.Where(m => m.Id == mappingId).ExecuteDeleteAsync();
         }
 
@@ -150,7 +153,7 @@ public sealed class DeliveryTemplateApiTests
     public async Task The_builder_drafts_from_a_cache_and_checks_what_it_writes()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
+        await ProvisionAsync(cs);
         await using var factory = Factory(cs);
         using var client = factory.CreateClient();
         var author = await TokenAsync(client, "read", "operate", "author");
@@ -267,7 +270,7 @@ public sealed class DeliveryTemplateApiTests
     public async Task The_cache_page_lists_one_cache_per_partition_with_every_cache_flow_that_fills_it()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
+        await ProvisionAsync(cs);
         await using var factory = Factory(cs);
         using var client = factory.CreateClient();
         var reader = await TokenAsync(client, "read");
@@ -302,12 +305,19 @@ public sealed class DeliveryTemplateApiTests
         try
         {
             var warnings = new List<string>();
+            var now = DateTime.UtcNow;
             await using (var db = CatalogDatabase.Create(cs))
             {
-                var now = DateTime.UtcNow;
                 db.Repos.Add(new CatalogRepo { Id = repoId, Name = repoName, RemoteUrl = "https://example/" + repoName + ".git", RootPath = root, FirstSeenUtc = now, LastSyncUtc = now });
                 await db.SaveChangesAsync();
-                var synced = await new DeliveryCatalogSync(new DeliveryDocumentLoader()).SyncAsync(db, repoId, root, now, warnings, CancellationToken.None);
+            }
+
+            await using (var osdu = SampleEstate.Context(cs))
+            {
+                // The one write the sync extension makes: the repository sync opens exactly this context on the
+                // catalog's connection and transaction, and this reconcile is its body.
+                var synced = await new DeliveryCatalogSync(new DeliveryDocumentLoader())
+                    .ReconcileAsync(osdu, repoId, root, now, warnings, CancellationToken.None);
                 Assert.Equal((4, 0), (synced.Added, synced.Invalid));
             }
 
@@ -338,7 +348,7 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal(["UnitOfMeasure"], alone.Types.Select(t => t.Name));
 
             // A capture by either flow lands in the partition's one cache, which the page shows with the flow that wrote it.
-            var store = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
+            var store = new OsduCacheStore(() => SampleEstate.Context(cs));
             var captured = new ReferenceType(
                 "Wellbore", "master-data--Wellbore",
                 [ReferenceItem.FromText(shared + ":master-data--Wellbore:1", new Dictionary<string, string> { ["FacilityName"] = "NO 1/1-A", ["Alias"] = "WELL A" })]);
@@ -361,9 +371,13 @@ public sealed class DeliveryTemplateApiTests
         finally
         {
             await CleanupCachesAsync(cs, shared, single);
+            await using (var osdu = SampleEstate.Context(cs))
+            {
+                await osdu.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
+            }
+
             await using (var db = CatalogDatabase.Create(cs))
             {
-                await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
                 await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
             }
 
@@ -387,7 +401,7 @@ public sealed class DeliveryTemplateApiTests
     public async Task A_reader_browses_the_OSDU_data_definitions_and_gets_a_kind_bundled_with_where_it_came_from()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
+        await ProvisionAsync(cs);
         using var handler = new DataDefinitionsHandler();
         using var http = new HttpClient(handler, disposeHandler: false);
         using var cache = new TemporaryDirectory();
@@ -503,6 +517,7 @@ public sealed class DeliveryTemplateApiTests
     {
         var now = DateTime.UtcNow;
         await using var db = CatalogDatabase.Create(cs);
+        await using var osdu = SampleEstate.Context(cs);
         db.Repos.Add(new CatalogRepo { Id = repoId, Name = repoName, RemoteUrl = "https://example/" + repoName + ".git", RootPath = Path.GetTempPath(), FirstSeenUtc = now, LastSyncUtc = now });
         db.RepoSources.Add(new CatalogRepoSource { Id = sourceId, Name = repoName, RemoteUrl = "https://example/" + repoName + ".git", Branch = "main" });
         db.Pipelines.Add(new CatalogPipeline
@@ -548,7 +563,7 @@ public sealed class DeliveryTemplateApiTests
         {
             var file = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(SampleRoot, "references", type + ".json")))!.AsObject();
             var entityType = file["entityType"]!.GetValue<string>();
-            db.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
+            osdu.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
             {
                 Id = Guid.NewGuid(),
                 RepoId = repoId,
@@ -567,9 +582,10 @@ public sealed class DeliveryTemplateApiTests
         }
 
         await db.SaveChangesAsync();
+        await osdu.SaveChangesAsync();
 
         // Captured at the instant the reference version names, so the version the merge writes carries that label.
-        var store = new CatalogCacheStore(() => CatalogDatabase.Create(cs));
+        var store = new OsduCacheStore(() => SampleEstate.Context(cs));
         var write = await store.MergeAsync(scope, cacheFlowName, types, new CacheCapture(null, "tests", "sample files"), new DateTimeOffset(2026, 9, 8, 21, 27, 27, TimeSpan.Zero));
         Assert.Equal(ReferenceVersion, write.Snapshot.Version);
     }
@@ -577,17 +593,21 @@ public sealed class DeliveryTemplateApiTests
     /// <summary>Removes every version, record and flow membership of the partitions' caches.</summary>
     private static async Task CleanupCachesAsync(string cs, params string[] scopes)
     {
-        await using var db = CatalogDatabase.Create(cs);
-        await db.DeliveryCacheMembers.Where(m => scopes.Contains(m.Scope)).ExecuteDeleteAsync();
-        await db.DeliveryCacheItems.Where(i => scopes.Contains(i.Scope)).ExecuteDeleteAsync();
-        await db.DeliveryCacheVersions.Where(v => scopes.Contains(v.Scope)).ExecuteDeleteAsync();
+        await using var osdu = SampleEstate.Context(cs);
+        await osdu.DeliveryCacheMembers.Where(m => scopes.Contains(m.Scope)).ExecuteDeleteAsync();
+        await osdu.DeliveryCacheItems.Where(i => scopes.Contains(i.Scope)).ExecuteDeleteAsync();
+        await osdu.DeliveryCacheVersions.Where(v => scopes.Contains(v.Scope)).ExecuteDeleteAsync();
     }
 
     private static async Task CleanupAsync(string cs, Guid repoId, string flowName, string scope)
     {
         await CleanupCachesAsync(cs, scope);
+        await using (var osdu = SampleEstate.Context(cs))
+        {
+            await osdu.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
+        }
+
         await using var db = CatalogDatabase.Create(cs);
-        await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
         await db.ComputeTasks.Where(t => t.SourceRef == flowName).ExecuteDeleteAsync();
         await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
         var repoName = await db.Repos.Where(r => r.Id == repoId).Select(r => r.Name).FirstOrDefaultAsync();
@@ -606,8 +626,21 @@ public sealed class DeliveryTemplateApiTests
 
     private static string DetailUrl(string kind, string version) => $"/api/v1/delivery/templates/detail?kind={Uri.EscapeDataString(kind)}&version={version}";
 
+    /// <summary>The control plane with the OSDU module, its own database migrated, and no network warm-up of the schema repository.</summary>
     private static ControlPlaneAppFactory Factory(string cs)
-        => new ControlPlaneAppFactory().WithCatalog(cs).WithSetting("ControlPlane:Worker:Enabled", "false");
+        => new ControlPlaneAppFactory()
+            .WithCatalog(cs)
+            .WithModules(new DeliveryControlPlaneModule())
+            .WithSetting("ControlPlane:Worker:Enabled", "false")
+            .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+            .WithSetting("Osdu:Submissions:Enabled", "false");
+
+    /// <summary>Provisions the catalog and the module's schema: what a control plane's bootstrap does before it serves.</summary>
+    private static async Task ProvisionAsync(string cs)
+    {
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.MigrateModuleAsync(cs);
+    }
 
     private static async Task<string> TokenAsync(HttpClient client, params string[] scopes)
     {

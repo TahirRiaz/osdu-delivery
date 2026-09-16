@@ -1,212 +1,141 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Identity;
+using SqlFlow.Delivery.ControlPlane;
+using SqlFlow.Delivery.ControlPlane.Api;
+using SqlFlow.Delivery.ControlPlane.Background;
+using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Source;
+using SqlFlow.Delivery.Tests;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// Submissions through <c>POST /api/v1/delivery/submissions</c>, both forms, with the records form (design.md section
-/// 3.4) covered as the production path for wellbore master data: what the boundary refuses, that an accepted request
-/// stores its records in the same transaction as the run that takes them, that a repeat answers with that run and queues
-/// nothing (also when repeats race), that a reused id with anything else is a conflict, that a drop still submits as it
-/// did, and that the source contract and the stored records read back. The in-process worker is off, so queued runs stay
-/// queued and the assertions are about what the API stored. Gated on a reachable catalog database.
+/// Records sent through <c>POST /api/v1/delivery/submissions</c> (docs/stage4-design.md section 4): what the boundary
+/// refuses, that an accepted request lands its records as files for the flow's pre-ingestion flows and queues the chain
+/// of pre, ing and OSDU runs that delivers them with the ledger rows describing it, that a repeat answers with that
+/// chain and queues nothing, that a reused id with anything else is a conflict, and that a submission whose request died
+/// is finished by the resume sweep. The in-process worker is off unless a test runs a flow, so the assertions are about
+/// what the API stored. Gated on a reachable catalog database.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class DeliverySubmissionApiTests
 {
-    private const string MappingReference = "Wellbore@1.0.0";
-
-    /// <summary>The sample estate's wellbore mapping, self-contained so the suite needs no repository checkout.</summary>
-    private const string MappingYaml = """
-        documentType: mapping
-        name: Wellbore
-        version: 1.0.0
-        template: { kind: "osdu:wks:master-data--Wellbore:1.3.0", version: 58d6bdbd9d066a06 }
-        dataset: { system: recall, key: [dataset.facility_name], label: "{dataset.facility_name}" }
-        parameters:
-          dataPartition: { required: true }
-        mappings:
-          - { target: osdu.acl.owners, static: [data.default.owners@opendes.dataservices.energy] }
-          - { target: osdu.acl.viewers, static: [data.default.viewers@opendes.dataservices.energy] }
-          - { target: osdu.legal.legaltags, static: [opendes-reference-data-default] }
-          - { target: osdu.legal.otherRelevantDataCountries, static: [NO] }
-          - { target: osdu.data.FacilityName, source: dataset.facility_name, modifiers: [trim] }
-          - { target: osdu.data.FacilityDescription, source: dataset.facility_description, required: false }
-          - { target: osdu.data.FacilityID, source: dataset.facility_id, required: false }
-          - { target: osdu.data.NameAliases, source: dataset.aliases, required: false }
-          - { target: "osdu.data.NameAliases[].AliasName", source: dataset.aliases.alias_name }
-        """;
-
-    private static object Wellbore(string name, string description = "a wellbore", string updated = "2026-09-12T10:00:00Z", params string[] aliases) => new
+    /// <summary>A wellbore as a source system sends it: the columns the sample mapping reads, and its alternative names.</summary>
+    private static object Wellbore(string name, string description = "Sent by the source system", params string[] aliases) => new
     {
         record = new Dictionary<string, object?>
         {
             ["facility_name"] = name,
             ["facility_description"] = description,
             ["facility_id"] = "srn:master-data/Wellbore:" + name,
-            ["update_date"] = updated,
+            ["update_date"] = "2026-09-12T10:00:00Z",
         },
         datasets = new Dictionary<string, object> { ["aliases"] = aliases.Select(a => new { alias_name = a }).ToArray() },
     };
 
-    /// <summary>A wellbore that points at where its payload files already sit, the way a source sends one to a file flow.</summary>
-    private static object PayloadWellbore(string name, string location, string? hash = null) => new
-    {
-        record = new Dictionary<string, object?>
-        {
-            ["facility_name"] = name,
-            ["facility_description"] = "with files",
-            ["facility_id"] = "srn:master-data/Wellbore:" + name,
-            ["update_date"] = "2026-09-12T10:00:00Z",
-        },
-        files = new Dictionary<string, object> { ["files"] = hash is null ? location : new { location, hash } },
-    };
-
     [SkippableFact]
-    public async Task Records_are_stored_with_their_run_and_a_repeat_answers_with_that_run()
+    public async Task Records_land_for_the_pre_flows_and_the_chain_is_queued_with_them()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
         var estate = await Estate.SeedAsync(cs);
         try
         {
             await using var factory = Factory(cs);
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
-            var request = new
-            {
-                flow = estate.RecordsFlow,
-                parameters = new { site = "north" },
-                records = new[] { Wellbore("WB-API-1", "first", aliases: ["A-1", "A-2"]) },
-            };
+            var submissionId = Guid.NewGuid();
 
-            using var first = await PostAsync(client, token, request);
-            Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
-            var accepted = await first.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>();
+            using var response = await PostAsync(client, token, new
+            {
+                submissionId,
+                flow = SampleEstate.WellboreFlowName,
+                reference = "job-17",
+                records = new[] { Wellbore("WB-API-1", aliases: ["A-1", "A-2"]) },
+            });
+
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            var accepted = await response.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>();
             Assert.NotNull(accepted);
             Assert.False(accepted.Replayed);
-            Assert.Equal(estate.RecordsFlow, accepted.FlowName);
-            var submissionId = Assert.IsType<Guid>(accepted.SubmissionId);
-            Assert.Equal($"/api/v1/runs/{accepted.RunId}", first.Headers.Location?.OriginalString);
+            Assert.Equal(submissionId, accepted.SubmissionId);
+            Assert.NotNull(accepted.GroupId);
+            Assert.Equal($"/api/v1/runs/groups/{accepted.GroupId}", response.Headers.Location?.OriginalString);
 
-            await using (var db = CatalogDatabase.Create(cs))
+            await using var osdu = SampleEstate.Context(cs);
+            var stored = await osdu.DeliveryInlineSubmissions.AsNoTracking().SingleAsync(s => s.SubmissionId == submissionId);
+            Assert.Equal(InlineStatuses.Queued, stored.Status);
+            Assert.Equal(accepted.GroupId, stored.GroupId);
+            Assert.Equal(accepted.RunId, stored.OsduRunId);
+            Assert.Equal("job-17", stored.Reference);
+            Assert.Equal(1, stored.RecordCount);
+            Assert.Equal(2, stored.ChildRowCount);
+            Assert.NotNull(stored.LandedUtc);
+            Assert.Null(stored.Error);
+
+            // One landing per dataset, each written where its pre flow reads, and each taken by that flow's member run.
+            var landings = await osdu.DeliverySubmissionLandings.AsNoTracking()
+                .Where(l => l.SubmissionId == submissionId)
+                .OrderBy(l => l.Dataset)
+                .ToListAsync();
+            Assert.Equal(["aliases", "record"], landings.Select(l => l.Dataset));
+            Assert.Equal([SampleEstate.WellboreAliasesPreFlow, SampleEstate.WellborePreFlow], landings.Select(l => l.PreFlowName));
+            foreach (var landing in landings)
             {
-                var run = await db.Runs.AsNoTracking().SingleAsync(r => r.SubmissionId == submissionId);
-                Assert.Equal(accepted.RunId, run.RunId);
-                Assert.Equal("deliver", run.Operation);
-                Assert.False(run.Force);
-                Assert.Equal(RunStatuses.Queued, run.Status);
-
-                var stored = await db.DeliveryInlineSubmissions.AsNoTracking().SingleAsync(s => s.SubmissionId == submissionId);
-                Assert.Equal(estate.RecordsFlow, stored.FlowName);
-                Assert.Equal(MappingReference, stored.MappingReference);
-                Assert.Equal("deliver", stored.Operation);
-                Assert.Equal(1, stored.RecordCount);
-                Assert.Equal(2, stored.ChildRowCount);
-                Assert.Equal("""{"site":"north"}""", stored.ParametersJson);
-                Assert.Equal(64, stored.ContentHash.Length);
-                Assert.Equal(64, stored.RequestHash.Length);
-                Assert.False(string.IsNullOrWhiteSpace(stored.ReceivedBy));
-                Assert.Null(stored.DropLocation);
-                Assert.Null(stored.WrittenUtc);
+                Assert.Equal($"{submissionId:N}_{landing.Dataset}.csv", landing.FileName);
+                Assert.True(File.Exists(landing.Location), landing.Location + " was not written");
+                Assert.NotNull(landing.WrittenUtc);
+                Assert.NotNull(landing.PreRunId);
+                Assert.Equal(64, landing.ContentHash.Length);
+                Assert.True(landing.Bytes > 0);
             }
 
-            // The same request with its keys in another order and other whitespace is the same submission.
-            using var repeat = await PostRawAsync(client, token, $$$"""
-                { "submissionId": "{{{submissionId}}}", "parameters": { "site": "north" }, "flow": "{{{estate.RecordsFlow}}}",
-                  "records": [ { "datasets": { "aliases": [ { "alias_name": "A-1" }, { "alias_name": "A-2" } ] },
-                                 "record": { "update_date": "2026-09-12T10:00:00Z", "facility_id": "srn:master-data/Wellbore:WB-API-1",
-                                             "facility_description": "first", "facility_name": "WB-API-1" } } ] }
-                """);
-            Assert.Equal(HttpStatusCode.OK, repeat.StatusCode);
-            var replayed = await repeat.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>();
-            Assert.True(replayed!.Replayed);
-            Assert.Equal(accepted.RunId, replayed.RunId);
-            Assert.Equal(submissionId, replayed.SubmissionId);
+            var recordFile = await File.ReadAllLinesAsync(landings[1].Location);
+            Assert.Contains("facility_name", recordFile[0], StringComparison.Ordinal);
+            Assert.Contains("WB-API-1", recordFile[1], StringComparison.Ordinal);
+            Assert.Equal(2, await File.ReadAllLinesAsync(landings[0].Location).ContinueWith(t => t.Result.Length - 1, TaskScheduler.Default));
 
-            // The id names one request: other records, another operation or other parameters under it are refused.
-            foreach (var (changed, expected) in new (object Body, string Names)[]
-            {
-                (new { submissionId, flow = estate.RecordsFlow, parameters = new { site = "north" }, records = new[] { Wellbore("WB-API-1", "changed") } }, "the records"),
-                (new { submissionId, flow = estate.RecordsFlow, parameters = new { site = "south" }, records = new[] { Wellbore("WB-API-1", "first", aliases: ["A-1", "A-2"]) } }, "the flow parameter values"),
-                (new { submissionId, flow = estate.RecordsFlow, operation = "plan", parameters = new { site = "north" }, records = new[] { Wellbore("WB-API-1", "first", aliases: ["A-1", "A-2"]) } }, "the operation"),
-            })
-            {
-                using var conflict = await PostAsync(client, token, changed);
-                Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
-                Assert.Contains(expected, await conflict.Content.ReadAsStringAsync(), StringComparison.Ordinal);
-            }
-
-            await using (var db = CatalogDatabase.Create(cs))
-            {
-                Assert.Equal(1, await db.Runs.AsNoTracking().CountAsync(r => r.SubmissionId == submissionId));
-            }
-
-            // What was sent reads back from the ledger, with the run that took it.
-            using var content = await GetAsync(client, token, $"/api/v1/delivery/submissions/{submissionId}/content");
-            Assert.Equal(HttpStatusCode.OK, content.StatusCode);
-            using var body = JsonDocument.Parse(await content.Content.ReadAsStringAsync());
-            Assert.Equal(accepted.RunId, body.RootElement.GetProperty("runIds")[0].GetGuid());
-            Assert.Equal(estate.RecordsFlow, body.RootElement.GetProperty("flowName").GetString());
-            var record = body.RootElement.GetProperty("records")[0];
-            Assert.Equal("WB-API-1", record.GetProperty("record").GetProperty("facility_name").GetString());
-            Assert.Equal("A-1", record.GetProperty("datasets").GetProperty("aliases")[0].GetProperty("alias_name").GetString());
-
-            using var none = await GetAsync(client, token, $"/api/v1/delivery/submissions/{Guid.NewGuid()}/content");
-            Assert.Equal(HttpStatusCode.NotFound, none.StatusCode);
-        }
-        finally
-        {
-            await estate.CleanupAsync(cs);
-        }
-    }
-
-    [SkippableFact]
-    public async Task Concurrent_repeats_of_one_request_queue_one_run()
-    {
-        var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
-        var estate = await Estate.SeedAsync(cs);
-        try
-        {
-            await using var factory = Factory(cs);
-            using var client = factory.CreateClient();
-            var token = await TokenAsync(client);
-            var submissionId = Guid.NewGuid();
-            var body = new { submissionId, pipelineId = estate.RecordsPipeline, parameters = new { site = "north" }, records = new[] { Wellbore("WB-API-RACE") } };
-
-            var responses = await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => PostAsync(client, token, body)));
-            try
-            {
-                Assert.All(responses, r => Assert.True(r.StatusCode is HttpStatusCode.Accepted or HttpStatusCode.OK, $"status {r.StatusCode}"));
-                Assert.Single(responses, r => r.StatusCode == HttpStatusCode.Accepted);
-                var runIds = new HashSet<Guid>();
-                foreach (var response in responses)
-                {
-                    runIds.Add((await response.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!.RunId);
-                }
-
-                Assert.Single(runIds);
-            }
-            finally
-            {
-                foreach (var response in responses)
-                {
-                    response.Dispose();
-                }
-            }
-
+            // The chain the group queued: both pre flows, both ing flows and the OSDU flow, in wave order, each with
+            // the parameters its part of the work needs.
             await using var db = CatalogDatabase.Create(cs);
-            Assert.Equal(1, await db.Runs.AsNoTracking().CountAsync(r => r.SubmissionId == submissionId));
-            Assert.Equal(1, await db.DeliveryInlineSubmissions.AsNoTracking().CountAsync(s => s.SubmissionId == submissionId));
+            var members = await db.Runs.AsNoTracking()
+                .Where(r => r.GroupId == accepted.GroupId)
+                .OrderBy(r => r.GroupWave).ThenBy(r => r.FlowName)
+                .Select(r => new { r.RunId, r.FlowName, r.GroupWave, r.FullLoad, r.FilePattern, r.Operation, r.Payload })
+                .ToListAsync();
+            Assert.Equal(5, members.Count);
+            Assert.Equal(
+                [SampleEstate.WellboreAliasesPreFlow, SampleEstate.WellborePreFlow, SampleEstate.WellboreAliasesIngFlow, SampleEstate.WellboreIngFlow, SampleEstate.WellboreFlowName],
+                members.Select(m => m.FlowName));
+            foreach (var pre in members.Where(m => m.FlowName.EndsWith("-pre", StringComparison.Ordinal)))
+            {
+                Assert.True(pre.FullLoad);
+                Assert.EndsWith(".csv", pre.FilePattern!, StringComparison.Ordinal);
+                Assert.Contains(submissionId.ToString("N"), pre.FilePattern!, StringComparison.Ordinal);
+            }
+
+            var osduMember = members[^1];
+            Assert.Equal(accepted.RunId, osduMember.RunId);
+            Assert.Equal(DeliveryOperations.Deliver, osduMember.Operation);
+            Assert.Equal(submissionId, DeliveryRunPayload.Parse(osduMember.Payload).SubmissionId);
+
+            // The submission is in the flow's activity trail, with who sent it.
+            var activity = await osdu.DeliveryActivities.AsNoTracking().SingleAsync(a => a.SubmissionId == submissionId && a.Kind == "submit");
+            Assert.Equal("completed", activity.Outcome);
+            Assert.Contains("1 record(s) accepted", activity.Summary!, StringComparison.Ordinal);
         }
         finally
         {
@@ -215,10 +144,9 @@ public sealed class DeliverySubmissionApiTests
     }
 
     [SkippableFact]
-    public async Task A_repeat_whose_run_is_gone_takes_the_stored_submission_again()
+    public async Task A_repeat_answers_with_the_chain_that_was_queued_and_queues_nothing()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
         var estate = await Estate.SeedAsync(cs);
         try
         {
@@ -226,26 +154,71 @@ public sealed class DeliverySubmissionApiTests
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
             var submissionId = Guid.NewGuid();
-            var body = new { submissionId, flow = estate.RecordsFlow, parameters = new { site = "north" }, records = new[] { Wellbore("WB-API-GONE") } };
+            var body = new { submissionId, flow = SampleEstate.WellboreFlowName, records = new[] { Wellbore("WB-API-REPEAT") } };
 
             using var first = await PostAsync(client, token, body);
             Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
             var accepted = (await first.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!;
 
-            // Retention removed the run row; the records are still the ledger's, so a repeat queues a run for them.
-            await using (var db = CatalogDatabase.Create(cs))
+            // The same records with their keys in another order and other whitespace are the same submission.
+            using var repeat = await PostRawAsync(client, token, $$$"""
+                { "submissionId": "{{{submissionId}}}", "flow": "{{{SampleEstate.WellboreFlowName}}}",
+                  "records": [ { "datasets": { "aliases": [] },
+                                 "record": { "update_date": "2026-09-12T10:00:00Z", "facility_id": "srn:master-data/Wellbore:WB-API-REPEAT",
+                                             "facility_description": "Sent by the source system", "facility_name": "WB-API-REPEAT" } } ] }
+                """);
+
+            Assert.Equal(HttpStatusCode.OK, repeat.StatusCode);
+            var replayed = (await repeat.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!;
+            Assert.True(replayed.Replayed);
+            Assert.Equal(accepted.GroupId, replayed.GroupId);
+            Assert.Equal(accepted.RunId, replayed.RunId);
+
+            await using var db = CatalogDatabase.Create(cs);
+            Assert.Equal(5, await db.Runs.AsNoTracking().CountAsync(r => r.GroupId == accepted.GroupId));
+            Assert.Equal(1, await db.RunGroups.AsNoTracking().CountAsync(g => g.RepoId == estate.RepoId));
+        }
+        finally
+        {
+            await estate.CleanupAsync(cs);
+        }
+    }
+
+    [SkippableFact]
+    public async Task A_reused_id_with_anything_different_is_a_conflict()
+    {
+        var cs = CatalogTestDb.Require();
+        var estate = await Estate.SeedAsync(cs);
+        try
+        {
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+            var submissionId = Guid.NewGuid();
+            var records = new[] { Wellbore("WB-API-CONFLICT") };
+
+            using (var first = await PostAsync(client, token, new { submissionId, flow = SampleEstate.WellboreFlowName, records }))
             {
-                await db.Runs.Where(r => r.RunId == accepted.RunId).ExecuteDeleteAsync();
+                Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
             }
 
-            using var again = await PostAsync(client, token, body);
-            Assert.Equal(HttpStatusCode.Accepted, again.StatusCode);
-            var second = (await again.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!;
-            Assert.True(second.Replayed);
-            Assert.NotEqual(accepted.RunId, second.RunId);
+            foreach (var (changed, names) in new (object Body, string Names)[]
+            {
+                (new { submissionId, flow = SampleEstate.WellboreFlowName, records = new[] { Wellbore("WB-API-CONFLICT", "changed") } }, "the records"),
+                (new { submissionId, flow = SampleEstate.WellboreFlowName, operation = "plan", records }, "the operation"),
+                (new { submissionId, flow = SampleEstate.WellboreFlowName, reference = "something-else", records }, "the reference"),
+            })
+            {
+                using var conflict = await PostAsync(client, token, changed);
+                Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+                Assert.Contains(names, await conflict.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
 
-            await using var check = CatalogDatabase.Create(cs);
-            Assert.Equal(1, await check.DeliveryInlineSubmissions.AsNoTracking().CountAsync(s => s.SubmissionId == submissionId));
+            // An id a plan of the ingestion tables already used is not a place to put records either.
+            var planned = await Estate.SeedPlannedSubmissionAsync(cs);
+            using var taken = await PostAsync(client, token, new { submissionId = planned, flow = SampleEstate.WellboreFlowName, records });
+            Assert.Equal(HttpStatusCode.Conflict, taken.StatusCode);
+            Assert.Contains("under an id of their own", await taken.Content.ReadAsStringAsync(), StringComparison.Ordinal);
         }
         finally
         {
@@ -257,7 +230,6 @@ public sealed class DeliverySubmissionApiTests
     public async Task The_boundary_refuses_what_a_submission_cannot_be()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
         var estate = await Estate.SeedAsync(cs);
         try
         {
@@ -274,60 +246,28 @@ public sealed class DeliverySubmissionApiTests
                 Assert.Contains(fragment, text, StringComparison.Ordinal);
             }
 
-            await ExpectAsync(new { flow = estate.RecordsFlow, parameters = new { site = "north" } }, HttpStatusCode.BadRequest, "names the drop to deliver");
-            await ExpectAsync(new { flow = estate.RecordsFlow, drop = "C:/drops/x", records = one }, HttpStatusCode.BadRequest, "not both");
-            await ExpectAsync(new { flow = estate.RecordsFlow, parameters = new { site = "north" }, operation = "verify", records = one }, HttpStatusCode.BadRequest, "operation is deliver or plan");
-            await ExpectAsync(new { flow = estate.RecordsFlow, drop = "C:/drops/x", submissionId = Guid.NewGuid() }, HttpStatusCode.BadRequest, "submissionId goes with records");
-            // A drop's own name for itself belongs in the manifest the preparing side writes, where its id already is.
-            await ExpectAsync(new { flow = estate.RecordsFlow, drop = "C:/drops/x", reference = "job-17" }, HttpStatusCode.BadRequest, "on a submission it goes with records");
+            await ExpectAsync(new { flow = SampleEstate.WellboreFlowName }, HttpStatusCode.BadRequest, "carries the records to deliver");
+            await ExpectAsync(new { flow = SampleEstate.WellboreFlowName, operation = "verify", records = one }, HttpStatusCode.BadRequest, "operation is deliver or plan");
+            await ExpectAsync(new { flow = SampleEstate.WellboreFlowName, submissionId = Guid.Empty, records = one }, HttpStatusCode.BadRequest, "non-empty UUID");
+            await ExpectAsync(new { flow = SampleEstate.WellboreFlowName, records = Array.Empty<object>() }, HttpStatusCode.BadRequest, "is empty");
             await ExpectAsync(
-                new { flow = estate.RecordsFlow, parameters = new { site = "north" }, reference = new string('x', 201), records = one },
+                new { flow = SampleEstate.WellboreFlowName, reference = new string('x', 201), records = one },
                 HttpStatusCode.BadRequest,
                 "reference is at most 200 characters");
+            // Every record names every key column of the record table, or the plan could never find its row.
             await ExpectAsync(
-                new { flow = estate.RecordsFlow, parameters = new { site = "north" }, reference = "line\u0007one", records = one },
+                new { flow = SampleEstate.WellboreFlowName, records = new[] { new { record = new Dictionary<string, object?> { ["facility_description"] = "no key" } } } },
                 HttpStatusCode.BadRequest,
-                "control character");
-            await ExpectAsync(new { flow = estate.RecordsFlow, records = one }, HttpStatusCode.BadRequest, "parameter 'site' is required");
-            await ExpectAsync(new { flow = estate.RecordsFlow, parameters = new { site = "north", other = "y" }, records = one }, HttpStatusCode.BadRequest, "'other' is not declared");
-            await ExpectAsync(new { flow = estate.RecordsFlow, parameters = new { site = "north" }, submissionId = Guid.Empty, records = one }, HttpStatusCode.BadRequest, "non-empty UUID");
-            await ExpectAsync(new { flow = estate.RecordsFlow, parameters = new { site = "north" }, records = Array.Empty<object>() }, HttpStatusCode.BadRequest, "is empty");
+                "records[0].record.facility_name is empty");
             await ExpectAsync(
-                new { flow = estate.RecordsFlow, parameters = new { site = "north" }, records = new[] { new { record = new Dictionary<string, object?> { ["facility_name"] = new { nested = 1 } } } } },
+                new { flow = SampleEstate.WellboreFlowName, records = new[] { new { record = new Dictionary<string, object?> { ["facility_name"] = new { nested = 1 } } } } },
                 HttpStatusCode.BadRequest,
-                "records[0].record.facility_name is a nested value");
-            await ExpectAsync(
-                new { flow = estate.RecordsFlow, parameters = new { site = "north" }, records = Enumerable.Range(0, 1001).Select(i => Wellbore($"WB-API-{i}")).ToArray() },
-                HttpStatusCode.BadRequest,
-                "at most 1000");
-            // A flow that streams files takes records too, but each says where its files are, inside what the flow allows.
-            await ExpectAsync(new { flow = estate.PayloadFlow, parameters = new { site = "north" }, records = one }, HttpStatusCode.BadRequest, "points at no files");
-            await ExpectAsync(
-                new { flow = estate.PayloadFlow, parameters = new { site = "north" }, records = new[] { PayloadWellbore("WB-API-OUTSIDE", "C:/somewhere/else") } },
-                HttpStatusCode.BadRequest,
-                "outside what flow");
-            await ExpectAsync(
-                new { flow = estate.PayloadFlow, parameters = new { site = "north" }, records = new[] { PayloadWellbore("WB-API-DOTS", Estate.FileRoot + "/../escape") } },
-                HttpStatusCode.BadRequest,
-                "must not contain '..'");
-            // A flow that streams nothing has nowhere to read files from, so a record that points at some is refused.
-            await ExpectAsync(
-                new { flow = estate.RecordsFlow, parameters = new { site = "north" }, records = new[] { PayloadWellbore("WB-API-NOSTREAM", Estate.FileRoot + "/x") } },
-                HttpStatusCode.BadRequest,
-                "streams no payload files");
-            await ExpectAsync(new { flow = estate.NoManualFlow, parameters = new { site = "north" }, records = one }, HttpStatusCode.BadRequest, "source.manualSubmission");
+                "is a nested value");
+            // A flow that declares no source.submissions has nowhere to land records, so it takes none.
+            await ExpectAsync(new { flow = estate.NoSubmissionsFlow, records = one }, HttpStatusCode.BadRequest, "source.submissions");
             await ExpectAsync(new { flow = "no-such-flow-" + Guid.NewGuid().ToString("N"), records = one }, HttpStatusCode.NotFound, "No active delivery flow");
             await ExpectAsync(new { pipelineId = Guid.NewGuid(), records = one }, HttpStatusCode.NotFound, "pipeline");
-            await ExpectAsync(new { flow = estate.AmbiguousFlow, parameters = new { site = "north" }, records = one }, HttpStatusCode.Conflict, "repositories");
 
-            // A submission id a drop already used is not a place to put records.
-            var dropSubmissionId = await estate.SeedDropSubmissionAsync(cs);
-            await ExpectAsync(
-                new { flow = estate.RecordsFlow, submissionId = dropSubmissionId, parameters = new { site = "north" }, records = one },
-                HttpStatusCode.Conflict,
-                "is a drop submission");
-
-            // A body that is not JSON at all is refused by the boundary, not by the handler.
             using (var malformed = await PostRawAsync(client, token, "{ not json"))
             {
                 Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
@@ -335,7 +275,8 @@ public sealed class DeliverySubmissionApiTests
 
             await using var db = CatalogDatabase.Create(cs);
             Assert.Equal(0, await db.Runs.AsNoTracking().CountAsync(r => r.RepoId == estate.RepoId));
-            Assert.Equal(0, await db.DeliveryInlineSubmissions.AsNoTracking().CountAsync(s => s.FlowName == estate.RecordsFlow));
+            await using var osdu = SampleEstate.Context(cs);
+            Assert.Equal(0, await osdu.DeliveryInlineSubmissions.AsNoTracking().CountAsync(s => s.FlowName == SampleEstate.WellboreFlowName));
         }
         finally
         {
@@ -343,22 +284,63 @@ public sealed class DeliverySubmissionApiTests
         }
     }
 
-    /// <summary>
-    /// Submitting records is an authenticated call on the operate surface. The platform's scope policies only enforce
-    /// <c>admin</c> today (read, operate and author each require an authenticated user), so what is asserted here is
-    /// what the deployment guarantees: no token, no submission.
-    /// </summary>
     [SkippableFact]
-    public async Task Submitting_records_needs_a_token()
+    public async Task The_submission_reads_back_with_its_records_and_the_files_it_landed()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
         var estate = await Estate.SeedAsync(cs);
         try
         {
             await using var factory = Factory(cs);
             using var client = factory.CreateClient();
-            var body = new { flow = estate.RecordsFlow, parameters = new { site = "north" }, records = new[] { Wellbore("WB-API-AUTH") } };
+            var token = await TokenAsync(client);
+            var submissionId = Guid.NewGuid();
+
+            using (var accepted = await PostAsync(client, token, new
+            {
+                submissionId,
+                flow = SampleEstate.WellboreFlowName,
+                records = new[] { Wellbore("WB-API-READBACK", aliases: ["RB-1"]) },
+            }))
+            {
+                Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
+            }
+
+            using var read = await GetAsync(client, token, $"/api/v1/delivery/submissions/{submissionId:D}/content");
+            Assert.Equal(HttpStatusCode.OK, read.StatusCode);
+            var inline = (await read.Content.ReadFromJsonAsync<DeliveryInlineSubmissionDto>())!;
+
+            Assert.Equal(SampleEstate.WellboreFlowName, inline.FlowName);
+            Assert.Equal(SampleEstate.WellboreMapping, inline.MappingReference);
+            Assert.Equal(InlineStatuses.Queued, inline.Status);
+            Assert.NotNull(inline.GroupId);
+            Assert.NotNull(inline.OsduRunId);
+            Assert.Equal(2, inline.Landings.Count);
+            Assert.All(inline.Landings, landing => Assert.NotNull(landing.WrittenUtc));
+            Assert.Contains(inline.RunIds, id => id == inline.OsduRunId);
+            var record = inline.Records[0];
+            Assert.Equal("WB-API-READBACK", record.GetProperty("record").GetProperty("facility_name").GetString());
+            Assert.Equal("RB-1", record.GetProperty("datasets").GetProperty("aliases")[0].GetProperty("alias_name").GetString());
+
+            using var unknown = await GetAsync(client, token, $"/api/v1/delivery/submissions/{Guid.NewGuid():D}/content");
+            Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+        }
+        finally
+        {
+            await estate.CleanupAsync(cs);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Submitting_records_needs_a_token()
+    {
+        var cs = CatalogTestDb.Require();
+        var estate = await Estate.SeedAsync(cs);
+        try
+        {
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var body = new { flow = SampleEstate.WellboreFlowName, records = new[] { Wellbore("WB-API-AUTH") } };
 
             using (var anonymous = await PostAsync(client, token: null, body))
             {
@@ -370,17 +352,28 @@ public sealed class DeliverySubmissionApiTests
                 Assert.Equal(HttpStatusCode.Unauthorized, garbled.StatusCode);
             }
 
-            await using (var db = CatalogDatabase.Create(cs))
+            await using (var osdu = SampleEstate.Context(cs))
             {
-                Assert.Equal(0, await db.DeliveryInlineSubmissions.AsNoTracking().CountAsync(s => s.FlowName == estate.RecordsFlow));
+                Assert.Equal(0, await osdu.DeliveryInlineSubmissions.AsNoTracking().CountAsync(s => s.FlowName == SampleEstate.WellboreFlowName));
             }
 
             // The reads a caller needs to fill in a submission are reads: a read-scoped token gets them.
             var readOnly = await TokenAsync(client, "read");
-            using var contract = await GetAsync(client, readOnly, $"/api/v1/delivery/flows/{estate.RecordsPipeline}/source-contract");
+            using var contract = await GetAsync(client, readOnly, $"/api/v1/delivery/flows/{estate.WellborePipeline}/source-contract");
             Assert.Equal(HttpStatusCode.OK, contract.StatusCode);
+            var source = (await contract.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
+            Assert.True(source.AcceptsRecords);
+            Assert.Equal(["facility_name"], source.Key);
+            Assert.Equal("OsduSample.ing.Wellbore", source.SourceObject);
+            Assert.Equal("update_date", source.LastModifiedColumn);
+            Assert.Empty(source.Payloads);
+
             using var listing = await GetAsync(client, readOnly, "/api/v1/delivery/manual-submission/flows");
             Assert.Equal(HttpStatusCode.OK, listing.StatusCode);
+            var flows = (await listing.Content.ReadFromJsonAsync<List<DeliveryManualFlowDto>>())!;
+            var wellbore = Assert.Single(flows, f => f.FlowName == SampleEstate.WellboreFlowName);
+            Assert.True(wellbore.AcceptsRecords);
+            Assert.DoesNotContain(flows, f => f.FlowName == estate.NoSubmissionsFlow);
 
             using var accepted = await PostAsync(client, await TokenAsync(client), body);
             Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
@@ -391,332 +384,173 @@ public sealed class DeliverySubmissionApiTests
         }
     }
 
-    [SkippableFact]
-    public async Task A_plan_forces_and_defaults_are_recorded_as_asked_and_a_drop_still_submits()
-    {
-        var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
-        var estate = await Estate.SeedAsync(cs);
-        try
-        {
-            await using var factory = Factory(cs);
-            using var client = factory.CreateClient();
-            var token = await TokenAsync(client);
-
-            using var plan = await PostAsync(client, token, new
-            {
-                flow = estate.RecordsFlow,
-                operation = "plan",
-                force = true,
-                parameters = new { site = "north" },
-                records = new[] { Wellbore("WB-API-PLAN") },
-            });
-            Assert.Equal(HttpStatusCode.Accepted, plan.StatusCode);
-            var planned = (await plan.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!;
-
-            // A flow whose parameter has a default needs none in the request, and the default is what is stored.
-            using var defaulted = await PostAsync(client, token, new { flow = estate.DefaultedFlow, records = new[] { Wellbore("WB-API-DEFAULT") } });
-            Assert.Equal(HttpStatusCode.Accepted, defaulted.StatusCode);
-            var defaultedAccepted = (await defaulted.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!;
-
-            using var drop = await PostAsync(client, token, new { pipelineId = estate.RecordsPipeline, drop = "C:/drops/north", parameters = new { site = "north" } });
-            Assert.Equal(HttpStatusCode.Accepted, drop.StatusCode);
-            var dropped = (await drop.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!;
-            Assert.Null(dropped.SubmissionId);
-            Assert.False(dropped.Replayed);
-
-            await using var db = CatalogDatabase.Create(cs);
-            var planRun = await db.Runs.AsNoTracking().SingleAsync(r => r.RunId == planned.RunId);
-            Assert.Equal("plan", planRun.Operation);
-            Assert.True(planRun.Force);
-            Assert.Equal(planned.SubmissionId, planRun.SubmissionId);
-            var storedPlan = await db.DeliveryInlineSubmissions.AsNoTracking().SingleAsync(s => s.SubmissionId == planned.SubmissionId);
-            Assert.Equal("plan", storedPlan.Operation);
-            Assert.True(storedPlan.Force);
-
-            var storedDefault = await db.DeliveryInlineSubmissions.AsNoTracking().SingleAsync(s => s.SubmissionId == defaultedAccepted.SubmissionId);
-            Assert.Equal("""{"site":"south"}""", storedDefault.ParametersJson);
-
-            var dropRun = await db.Runs.AsNoTracking().SingleAsync(r => r.RunId == dropped.RunId);
-            Assert.Equal("deliver", dropRun.Operation);
-            Assert.Null(dropRun.SubmissionId);
-            Assert.Contains("C:/drops/north", dropRun.ParametersJson, StringComparison.Ordinal);
-        }
-        finally
-        {
-            await estate.CleanupAsync(cs);
-        }
-    }
-
     /// <summary>
-    /// A submission to a flow that streams payload files: what is stored is where the files already sit, never the bytes,
-    /// so the records ride in the catalog exactly as a metadata submission does and the node reads the files when it runs.
+    /// A request that stored its records and then died: the sweep lands the files and queues the chain, so a submission
+    /// the ledger accepted is always delivered, whatever happened to the request that accepted it.
     /// </summary>
     [SkippableFact]
-    public async Task A_submission_to_a_flow_that_streams_files_carries_where_they_are()
+    public async Task A_submission_whose_request_died_is_finished_by_the_resume_sweep()
     {
         var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
         var estate = await Estate.SeedAsync(cs);
         try
         {
-            await using var factory = Factory(cs);
-            using var client = factory.CreateClient();
-            var token = await TokenAsync(client);
-            var location = Estate.FileRoot + "/WB-API-FILES";
-
-            using var response = await PostAsync(client, token, new
-            {
-                flow = estate.PayloadFlow,
-                parameters = new { site = "north" },
-                records = new[] { PayloadWellbore("WB-API-FILES", location, "sha256:abc") },
-            });
-            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-            var accepted = (await response.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!;
-
-            await using var db = CatalogDatabase.Create(cs);
-            var stored = await db.DeliveryInlineSubmissions.AsNoTracking().SingleAsync(s => s.SubmissionId == accepted.SubmissionId);
-            Assert.Equal(estate.PayloadFlow, stored.FlowName);
-            Assert.Equal(1, stored.RecordCount);
-            Assert.Contains(location, stored.RecordsJson, StringComparison.Ordinal);
-            Assert.Contains("sha256:abc", stored.RecordsJson, StringComparison.Ordinal);
-        }
-        finally
-        {
-            await estate.CleanupAsync(cs);
-        }
-    }
-
-    [SkippableFact]
-    public async Task The_listing_names_the_flows_that_offer_manual_submission()
-    {
-        var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
-        var estate = await Estate.SeedAsync(cs);
-        try
-        {
-            await using var factory = Factory(cs);
-            using var client = factory.CreateClient();
-            var token = await TokenAsync(client);
-
-            using var offered = await GetAsync(client, token, "/api/v1/delivery/manual-submission/flows");
-            Assert.Equal(HttpStatusCode.OK, offered.StatusCode);
-            var flows = (await offered.Content.ReadFromJsonAsync<List<DeliveryManualFlowDto>>())!;
-            var records = Assert.Single(flows, f => f.FlowName == estate.RecordsFlow);
-            Assert.True(records.AcceptsRecords);
-            Assert.Null(records.RecordsRefusal);
-            Assert.Equal(MappingReference, records.MappingReference);
-            Assert.Equal("OsduRecord", records.Protocol);
-            Assert.Equal(estate.RecordsPipeline, records.PipelineId);
-            Assert.Equal("site", Assert.Single(records.Parameters).Name);
-            Assert.Null(records.PayloadName);
-            // The listing says what the flow's records become: the template version its synced mapping fills.
-            Assert.Equal("osdu:wks:master-data--Wellbore:1.3.0", records.TemplateKind);
-            Assert.Equal("58d6bdbd9d066a06", records.TemplateVersion);
-            // A flow whose mapping the catalog has not synced has no template to name.
-            var unsyncedFlow = Assert.Single(flows, f => f.FlowName == estate.UnsyncedMappingFlow);
-            Assert.Null(unsyncedFlow.TemplateKind);
-            Assert.Null(unsyncedFlow.TemplateVersion);
-            // A flow that streams files offers manual submission on the same terms, and names the payload its records point at.
-            var streaming = Assert.Single(flows, f => f.FlowName == estate.PayloadFlow);
-            Assert.True(streaming.AcceptsRecords);
-            Assert.Equal("files", streaming.PayloadName);
-            // A flow that offers none is not on the list at all.
-            Assert.DoesNotContain(flows, f => f.FlowName == estate.NoManualFlow);
-
-            using var all = await GetAsync(client, token, "/api/v1/delivery/manual-submission/flows?all=true");
-            var everything = (await all.Content.ReadFromJsonAsync<List<DeliveryManualFlowDto>>())!;
-            var noManual = Assert.Single(everything, f => f.FlowName == estate.NoManualFlow);
-            Assert.False(noManual.AcceptsRecords);
-            Assert.Contains("source.manualSubmission", noManual.RecordsRefusal, StringComparison.Ordinal);
-        }
-        finally
-        {
-            await estate.CleanupAsync(cs);
-        }
-    }
-
-    [SkippableFact]
-    public async Task The_source_contract_names_what_a_flow_takes()
-    {
-        var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
-        var estate = await Estate.SeedAsync(cs);
-        try
-        {
-            await using var factory = Factory(cs);
-            using var client = factory.CreateClient();
-            var token = await TokenAsync(client);
-
-            // The sample templates are saved, so the version the mapping pins is one the catalog holds.
-            await SampleEstate.SaveTemplatesAsync(cs);
-            await SampleEstate.SaveCacheAsync(cs);
-            using var records = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.RecordsPipeline}/source-contract");
-            Assert.Equal(HttpStatusCode.OK, records.StatusCode);
-            var contract = (await records.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
-            Assert.True(contract.AcceptsRecords);
-            Assert.Null(contract.RecordsRefusal);
-            Assert.Null(contract.MappingProblem);
-            Assert.Equal(MappingReference, contract.MappingReference);
-            Assert.Equal("OsduRecord", contract.Protocol);
-            // The template version the mapping fills, and the dataset a record is a row of.
-            Assert.Equal(new DeliverySourceTemplateDto("osdu:wks:master-data--Wellbore:1.3.0", "58d6bdbd9d066a06", Saved: true), contract.Template);
-            Assert.Equal("recall", contract.System);
-            Assert.Equal(["facility_name"], contract.Key);
-            Assert.Equal("{dataset.facility_name}", contract.Label);
-            Assert.Equal(["facility_name", "facility_description", "facility_id"], contract.Columns.Select(c => c.Name));
-            // Each column says which template variable it fills, and how.
-            var name = contract.Columns[0];
-            Assert.True(name.Key);
-            Assert.True(name.Label);
-            var fills = Assert.Single(name.Uses);
-            Assert.Equal("osdu.data.FacilityName", fills.Target);
-            Assert.Equal("value", fills.Role);
-            Assert.Equal("dataset.facility_name", fills.Source);
-            Assert.True(fills.Required);
-            Assert.Equal(["trim"], fills.Modifiers);
-            Assert.Null(fills.FindBy);
-            Assert.Null(fills.AppliesWhen);
-            var description = Assert.Single(contract.Columns[1].Uses);
-            Assert.Equal("osdu.data.FacilityDescription", description.Target);
-            Assert.False(description.Required);
-            // The child dataset names the list its rows fill, one item per row.
-            var aliases = Assert.Single(contract.Datasets);
-            Assert.Equal("aliases", aliases.Name);
-            var list = Assert.Single(aliases.Fills);
-            Assert.Equal("osdu.data.NameAliases", list.Target);
-            Assert.False(list.Required);
-            var alias = Assert.Single(aliases.Columns);
-            Assert.Equal("alias_name", alias.Name);
-            Assert.Equal("osdu.data.NameAliases[].AliasName", Assert.Single(alias.Uses).Target);
-            Assert.Equal("update_date", contract.LastModifiedColumn);
-            Assert.Null(contract.FingerprintColumn);
-            var site = Assert.Single(contract.Parameters);
-            Assert.Equal("site", site.Name);
-            Assert.True(site.Required);
-            Assert.Null(site.Default);
-            Assert.Equal(1000, contract.MaxRecords);
-            // A flow that streams nothing says so, and a caller filling in a submission carries no files.
-            Assert.Null(contract.PayloadName);
-            Assert.False(contract.PayloadHashRequired);
-            Assert.Empty(contract.PayloadRoots);
-
-            using var payload = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.PayloadPipeline}/source-contract");
-            var streaming = (await payload.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
-            Assert.True(streaming.AcceptsRecords);
-            Assert.Null(streaming.RecordsRefusal);
-            Assert.Equal("files", streaming.PayloadName);
-            // The flow watches the files' modified times, so a record carries a hash only when its source has one.
-            Assert.False(streaming.PayloadHashRequired);
-            Assert.Equal([Estate.FileRoot], streaming.PayloadRoots);
-
-            // A flow whose pinned mapping the catalog has not synced says so instead of guessing the columns.
-            using var unsynced = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.UnsyncedMappingPipeline}/source-contract");
-            var problem = (await unsynced.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
-            Assert.True(problem.AcceptsRecords);
-            Assert.Empty(problem.Columns);
-            Assert.Null(problem.Template);
-            Assert.Contains("has not synced", problem.MappingProblem, StringComparison.Ordinal);
-
-            // A mapping pinning a template version the catalog does not hold still lists its columns, and says no run can render them.
-            using var unsaved = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.UnsavedTemplatePipeline}/source-contract");
-            var unrenderable = (await unsaved.Content.ReadFromJsonAsync<DeliverySourceContractDto>())!;
-            Assert.NotNull(unrenderable.Template);
-            Assert.False(unrenderable.Template.Saved);
-            Assert.Equal(Estate.UnsavedTemplateVersion, unrenderable.Template.Version);
-            Assert.NotEmpty(unrenderable.Columns);
-            Assert.Contains("which is not saved in the catalog", unrenderable.MappingProblem, StringComparison.Ordinal);
-
-            using var unknown = await GetAsync(client, token, $"/api/v1/delivery/flows/{Guid.NewGuid()}/source-contract");
-            Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
-        }
-        finally
-        {
-            await estate.CleanupAsync(cs);
-        }
-    }
-
-    /// <summary>
-    /// The caller's own name for a submission: stored with the accepted request, read back on the submission's page, and
-    /// part of what a reused id has to match, so a retry that relabels the work is a conflict rather than a silent
-    /// rewrite of what the ledger says the source called it.
-    /// </summary>
-    [SkippableFact]
-    public async Task A_submission_carries_the_name_its_source_knows_it_by()
-    {
-        var cs = CatalogTestDb.Require();
-        await CatalogDatabase.ProvisionAsync(cs);
-        var estate = await Estate.SeedAsync(cs);
-        try
-        {
-            await using var factory = Factory(cs);
+            await using var factory = Factory(cs)
+                .WithSetting("Osdu:Submissions:Enabled", "true")
+                .WithSetting("Osdu:Submissions:PollSeconds", "1")
+                .WithSetting("Osdu:Submissions:GraceSeconds", "1");
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
             var submissionId = Guid.NewGuid();
-            var records = new[] { Wellbore("WB-API-REF-1") };
-            var body = new { submissionId, flow = estate.RecordsFlow, parameters = new { site = "north" }, reference = "  NO 15/9-19 SR___GR.las  ", records };
 
-            using (var first = await PostAsync(client, token, body))
+            using (var accepted = await PostAsync(client, token, new
             {
-                Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+                submissionId,
+                flow = SampleEstate.WellboreFlowName,
+                records = new[] { Wellbore("WB-API-RESUME") },
+            }))
+            {
+                Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
             }
 
-            // Stored trimmed, which is the form every later comparison and search works against.
-            await using (var db = CatalogDatabase.Create(cs))
+            // Wind the submission back to where a died request would have left it: accepted, no chain, no files.
+            await using (var osdu = SampleEstate.Context(cs))
             {
-                var stored = await db.DeliveryInlineSubmissions.AsNoTracking().SingleAsync(s => s.SubmissionId == submissionId);
-                Assert.Equal("NO 15/9-19 SR___GR.las", stored.Reference);
-            }
+                var stored = await osdu.DeliveryInlineSubmissions.SingleAsync(s => s.SubmissionId == submissionId);
+                var groupId = stored.GroupId;
+                stored.Status = InlineStatuses.Accepted;
+                stored.GroupId = null;
+                stored.OsduRunId = null;
+                stored.LandedUtc = null;
+                stored.ReceivedUtc = DateTime.UtcNow.AddMinutes(-5);
+                foreach (var landing in await osdu.DeliverySubmissionLandings.Where(l => l.SubmissionId == submissionId).ToListAsync())
+                {
+                    File.Delete(landing.Location);
+                    landing.WrittenUtc = null;
+                    landing.PreRunId = null;
+                }
 
-            // And read back beside the records it was sent with, where a source goes looking for what it sent.
-            using (var read = await GetAsync(client, token, $"/api/v1/delivery/submissions/{submissionId:D}/content"))
-            {
-                var inline = (await read.Content.ReadFromJsonAsync<DeliveryInlineSubmissionDto>())!;
-                Assert.Equal("NO 15/9-19 SR___GR.las", inline.Reference);
-            }
-
-            // The same request again, however its reference is spaced, is the same submission.
-            using (var repeat = await PostAsync(client, token, body))
-            {
-                Assert.Equal(HttpStatusCode.OK, repeat.StatusCode);
-                Assert.True((await repeat.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!.Replayed);
-            }
-
-            // Relabelling under the same id is a new request wearing an old name, so it is refused saying which.
-            using (var relabelled = await PostAsync(
-                client, token, new { submissionId, flow = estate.RecordsFlow, parameters = new { site = "north" }, reference = "something-else.las", records }))
-            {
-                Assert.Equal(HttpStatusCode.Conflict, relabelled.StatusCode);
-                var text = await relabelled.Content.ReadAsStringAsync();
-                Assert.Contains("the reference", text, StringComparison.Ordinal);
-                Assert.Contains("something-else.las", text, StringComparison.Ordinal);
-            }
-
-            // Dropping it is a change too, not an omission to be filled in from what was stored.
-            using (var dropped = await PostAsync(
-                client, token, new { submissionId, flow = estate.RecordsFlow, parameters = new { site = "north" }, records }))
-            {
-                Assert.Equal(HttpStatusCode.Conflict, dropped.StatusCode);
-                Assert.Contains("the reference (none,", await dropped.Content.ReadAsStringAsync(), StringComparison.Ordinal);
-            }
-
-            // A submission with no reference is the ordinary case and stays absent rather than becoming empty.
-            using (var plain = await PostAsync(
-                client, token, new { flow = estate.RecordsFlow, parameters = new { site = "north" }, records = new[] { Wellbore("WB-API-REF-2") } }))
-            {
-                Assert.Equal(HttpStatusCode.Accepted, plain.StatusCode);
-                var accepted = (await plain.Content.ReadFromJsonAsync<DeliverySubmissionAccepted>())!;
+                await osdu.SaveChangesAsync();
                 await using var db = CatalogDatabase.Create(cs);
-                Assert.Null((await db.DeliveryInlineSubmissions.AsNoTracking().SingleAsync(s => s.SubmissionId == accepted.SubmissionId)).Reference);
+                await db.Runs.Where(r => r.GroupId == groupId).ExecuteDeleteAsync();
+                await db.RunGroups.Where(g => g.GroupId == groupId).ExecuteDeleteAsync();
             }
 
-            // The submissions listing narrows by reference, which is how a source finds work it knows by its own name.
-            // Nothing has run, so the ledger holds no registered submission yet and the filter answers on an empty set
-            // rather than on everything: an unfiltered listing and a filtered one must not be the same answer.
-            using (var filtered = await GetAsync(client, token, $"/api/v1/delivery/flows/{estate.RecordsPipeline}/submissions?reference=15/9-19"))
+            var sweep = factory.Services.GetServices<IHostedService>().OfType<SubmissionLandingService>().Single();
+            await sweep.StartAsync(CancellationToken.None);
+            try
             {
-                Assert.NotNull(await filtered.Content.ReadFromJsonAsync<List<DeliverySubmissionDto>>());
+                DeliveryInlineSubmission? finished = null;
+                for (var attempt = 0; attempt < 40 && finished is null; attempt++)
+                {
+                    await Task.Delay(250);
+                    await using var osdu = SampleEstate.Context(cs);
+                    finished = await osdu.DeliveryInlineSubmissions.AsNoTracking()
+                        .SingleOrDefaultAsync(s => s.SubmissionId == submissionId && s.GroupId != null);
+                }
+
+                Assert.True(finished is not null, "the resume sweep never queued the submission's chain");
+                Assert.Equal(InlineStatuses.Queued, finished!.Status);
+
+                await using var check = SampleEstate.Context(cs);
+                var landings = await check.DeliverySubmissionLandings.AsNoTracking().Where(l => l.SubmissionId == submissionId).ToListAsync();
+                Assert.All(landings, landing => Assert.True(File.Exists(landing.Location), landing.Location + " was not landed again"));
+                Assert.All(landings, landing => Assert.NotNull(landing.WrittenUtc));
             }
+            finally
+            {
+                await sweep.StopAsync(CancellationToken.None);
+            }
+        }
+        finally
+        {
+            await estate.CleanupAsync(cs);
+        }
+    }
+
+    /// <summary>
+    /// The platform's run path end to end over a flow of the module's kind: a triggered <c>plan</c> run of the sample
+    /// wellbore flow, executed by the in-process node, rendering the records the flow's ingestion tables hold. It needs
+    /// no OSDU target, which is what makes it a safe end-to-end proof that the module's kind really executes.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_plan_run_of_the_sample_flow_executes_end_to_end()
+    {
+        var cs = CatalogTestDb.Require();
+        var estate = await Estate.SeedAsync(cs);
+        var tables = new MemoryIngestionTables();
+        tables.Add(new MemoryRecord
+        {
+            Row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["facility_name"] = "OSDU-DEV-1-A",
+                ["facility_description"] = "Sample wellbore A",
+                ["facility_id"] = "srn:master-data/Wellbore:A",
+                ["update_date"] = new DateTime(2026, 9, 1, 6, 30, 0, DateTimeKind.Utc),
+            },
+            UpdatedUtc = new DateTime(2026, 9, 1, 6, 30, 0, DateTimeKind.Utc),
+            FileName = "wellbore_20260901.csv",
+            RowNumber = 1,
+        }).AddChild("aliases", new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["facility_name"] = "OSDU-DEV-1-A",
+            ["alias_name"] = "WB-A",
+        });
+
+        try
+        {
+            await SampleEstate.SaveTemplatesAsync(cs);
+            await using var factory = new ControlPlaneAppFactory()
+                .WithCatalog(cs)
+                .WithModules(new DeliveryControlPlaneModule())
+                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+                .WithSetting("Osdu:Submissions:Enabled", "false")
+                .WithServices(services => services.AddSingleton<IIngestionSourceFactory>(tables));
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+
+            Guid runId;
+            using (var response = await client.SendAsync(Authorized(
+                HttpMethod.Post, "/api/v1/runs", token,
+                new RunTriggerRequest(estate.RepoId, SampleEstate.WellboreFlowName, Operation: DeliveryOperations.Plan))))
+            {
+                Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+                var accepted = await response.Content.ReadFromJsonAsync<RunTriggerAccepted>();
+                Assert.NotNull(accepted);
+                runId = accepted.RunId;
+            }
+
+            string? status = null;
+            string? error = null;
+            for (var attempt = 0; attempt < 160 && status is not ("succeeded" or "failed" or "cancelled"); attempt++)
+            {
+                await Task.Delay(250);
+                using var detail = await client.SendAsync(Authorized(HttpMethod.Get, $"/api/v1/runs/{runId:D}", token));
+                if (detail.StatusCode != HttpStatusCode.OK)
+                {
+                    continue;
+                }
+
+                using var document = JsonDocument.Parse(await detail.Content.ReadAsStringAsync());
+                status = document.RootElement.GetProperty("status").GetString();
+                error = document.RootElement.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+            }
+
+            var log = string.Join(Environment.NewLine, factory.Logs.TakeLast(40));
+            Assert.True(status == "succeeded", $"the plan run ended '{status}': {error}{Environment.NewLine}{log}");
+            Assert.Equal(1, tables.Opens);
+
+            // The run's own trace says what it planned, and the record it planned is in the ledger.
+            using var trace = await client.SendAsync(Authorized(HttpMethod.Get, $"/api/v1/runs/{runId:D}/trace?pageSize=200", token));
+            Assert.Equal(HttpStatusCode.OK, trace.StatusCode);
+            using var timeline = JsonDocument.Parse(await trace.Content.ReadAsStringAsync());
+            var messages = timeline.RootElement.GetProperty("items").EnumerateArray()
+                .Select(e => e.GetProperty("message").GetString() ?? string.Empty)
+                .ToList();
+            Assert.NotEmpty(messages);
+            Assert.True(
+                messages.Exists(m => m.Contains("record", StringComparison.OrdinalIgnoreCase)),
+                "the plan's trace never mentioned a record: " + string.Join(" | ", messages));
         }
         finally
         {
@@ -725,7 +559,24 @@ public sealed class DeliverySubmissionApiTests
     }
 
     private static ControlPlaneAppFactory Factory(string cs)
-        => new ControlPlaneAppFactory().WithCatalog(cs).WithSetting("ControlPlane:Worker:Enabled", "false");
+        => new ControlPlaneAppFactory()
+            .WithCatalog(cs)
+            .WithModules(new DeliveryControlPlaneModule())
+            .WithSetting("ControlPlane:Worker:Enabled", "false")
+            .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+            .WithSetting("Osdu:Submissions:Enabled", "false");
+
+    private static HttpRequestMessage Authorized(HttpMethod method, string path, string token, object? body = null)
+    {
+        var request = new HttpRequestMessage(method, new Uri(path, UriKind.Relative));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        if (body is not null)
+        {
+            request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        }
+
+        return request;
+    }
 
     private static async Task<string> TokenAsync(HttpClient client, params string[] scopes)
     {
@@ -761,196 +612,165 @@ public sealed class DeliverySubmissionApiTests
     }
 
     /// <summary>
-    /// A repository of wellbore flows: one that takes records, one that streams files, one whose parameter has a
-    /// default, one pinning a mapping the catalog never synced, and a second repository holding a flow of the same name
-    /// so an ambiguous name can be refused.
+    /// The sample estate in the catalog: the wellbore chain (two pre flows, two ing flows and the OSDU flow, with the
+    /// lineage edges between them), the mapping the OSDU flow pins, and one delivery flow that declares no submissions,
+    /// so a flow that takes no records can be refused. The documents are the estate's own, copied to a temp repository
+    /// the suite writes its landing files into.
     /// </summary>
-    private sealed record Estate(
-        Guid RepoId,
-        Guid SecondRepoId,
-        string RecordsFlow,
-        Guid RecordsPipeline,
-        string PayloadFlow,
-        Guid PayloadPipeline,
-        string DefaultedFlow,
-        string UnsyncedMappingFlow,
-        Guid UnsyncedMappingPipeline,
-        string AmbiguousFlow,
-        string NoManualFlow,
-        Guid NoManualPipeline,
-        string UnsavedTemplateFlow,
-        Guid UnsavedTemplatePipeline)
+    private sealed record Estate(Guid RepoId, string Root, Guid WellborePipeline, string NoSubmissionsFlow)
     {
-        /// <summary>The one place the file flow lets a submission point at: what is inside is allowed, what is outside is not.</summary>
-        public const string FileRoot = "C:/lake/wellbore";
-
-        /// <summary>A template version no test saves: a mapping that pins it cannot render until someone does.</summary>
-        public const string UnsavedTemplateVersion = "0123456789abcdef";
-
-        private const string UnsavedTemplateMapping = "WellboreUnsaved@1.0.0";
-
         public static async Task<Estate> SeedAsync(string cs)
         {
+            await CatalogDatabase.MigrateAsync(cs);
+            await SampleEstate.MigrateModuleAsync(cs);
+
             var suffix = Guid.NewGuid().ToString("N")[..10];
-            var repoName = "cp-inline-" + suffix;
+            var repoName = "cp-submission-" + suffix;
             var repoId = FlowIdentity.FromName("repo/" + repoName);
-            var secondRepoId = FlowIdentity.FromName("repo/second-" + repoName);
-            var records = "wellbore-records-" + suffix;
-            var payload = "wellbore-files-" + suffix;
-            var defaulted = "wellbore-defaulted-" + suffix;
-            var unsynced = "wellbore-unsynced-" + suffix;
-            var ambiguous = "wellbore-ambiguous-" + suffix;
-            var noManual = "wellbore-no-manual-" + suffix;
-            var unsavedTemplate = "wellbore-unsaved-template-" + suffix;
+            var root = SampleEstate.CopyTo(Path.Combine(Path.GetTempPath(), "sqlflow_cp_sub_" + suffix));
+            var noSubmissions = "wellbore-no-submissions-" + suffix;
             var now = DateTime.UtcNow;
 
             await using var db = CatalogDatabase.Create(cs);
-            db.Repos.Add(new CatalogRepo { Id = repoId, Name = repoName, FirstSeenUtc = now, LastSyncUtc = now });
-            db.Repos.Add(new CatalogRepo { Id = secondRepoId, Name = "second-" + repoName, FirstSeenUtc = now, LastSyncUtc = now });
-            db.Pipelines.Add(Pipeline(repoId, records, RecordsYaml(records, MappingReference, "    required: true"), now));
-            db.Pipelines.Add(Pipeline(repoId, defaulted, RecordsYaml(defaulted, MappingReference, "    default: south"), now));
-            db.Pipelines.Add(Pipeline(repoId, unsynced, RecordsYaml(unsynced, "NeverSynced@9.9.9", "    required: true"), now));
-            db.Pipelines.Add(Pipeline(repoId, ambiguous, RecordsYaml(ambiguous, MappingReference, "    required: true"), now));
-            db.Pipelines.Add(Pipeline(secondRepoId, ambiguous, RecordsYaml(ambiguous, MappingReference, "    required: true"), now));
-            db.Pipelines.Add(Pipeline(repoId, noManual, RecordsYaml(noManual, MappingReference, "    required: true", manualSubmission: false), now));
-            db.Pipelines.Add(Pipeline(repoId, unsavedTemplate, RecordsYaml(unsavedTemplate, UnsavedTemplateMapping, "    required: true"), now));
-            db.Pipelines.Add(Pipeline(repoId, payload, $$"""
-                flowType: delivery
-                name: {{payload}}
-                parameters:
-                  site:
-                    required: true
-                source:
-                  location: C:/drops/files
-                  payloads:
-                    files: files/{deliveryKey}/*.csv
-                  lastModified: update_date
-                  manualSubmission: true
-                  manualSubmissionFileRoots:
-                    - {{FileRoot}}
-                change:
-                  payloadDetect: lastModified
-                render:
-                  mapping: {{MappingReference}}
-                  parameters:
-                    dataPartition: opendes
-                target:
-                  endpoint: https://osdu.example.test
-                  headers:
-                    data-partition-id: opendes
-                  protocol: osduFile
-                  protocolOptions:
-                    payload: files
-                    payloadContentType: text/csv
-                """, now));
-            db.DeliveryMappings.Add(new DeliveryMapping
+            db.Repos.Add(new CatalogRepo { Id = repoId, Name = repoName, RemoteUrl = "https://example/" + repoName + ".git", RootPath = root, FirstSeenUtc = now, LastSyncUtc = now });
+
+            var waves = new (string Flow, string Kind, int Wave)[]
             {
-                Id = Guid.NewGuid(),
+                (SampleEstate.WellborePreFlow, "pre", 0),
+                (SampleEstate.WellboreAliasesPreFlow, "pre", 0),
+                (SampleEstate.WellboreIngFlow, "ing", 1),
+                (SampleEstate.WellboreAliasesIngFlow, "ing", 1),
+                (SampleEstate.WellboreFlowName, "delivery", 2),
+            };
+            foreach (var (flow, kind, wave) in waves)
+            {
+                db.Pipelines.Add(Pipeline(repoId, flow, kind, wave, SampleEstate.FlowYaml(root, flow), SampleEstate.FlowPath(flow), now));
+            }
+
+            // A delivery flow of the same repository that declares no source.submissions: the sample well log flow with
+            // that block removed, so what is refused is the declaration and nothing else about the flow.
+            var welllog = SampleEstate.FlowYaml(root, SampleEstate.FlowName).ReplaceLineEndings("\n");
+            var submissions = welllog.IndexOf("\n  submissions:", StringComparison.Ordinal);
+            var afterSubmissions = welllog.IndexOf("\nrender:", StringComparison.Ordinal);
+            var withoutSubmissions = (welllog[..submissions] + welllog[afterSubmissions..])
+                .Replace("name: " + SampleEstate.FlowName, "name: " + noSubmissions, StringComparison.Ordinal);
+            db.Pipelines.Add(Pipeline(repoId, noSubmissions, "delivery", 2, withoutSubmissions, "flows/" + noSubmissions + ".yaml", now));
+
+            foreach (var (from, to) in new[]
+            {
+                (SampleEstate.WellborePreFlow, SampleEstate.WellboreIngFlow),
+                (SampleEstate.WellboreAliasesPreFlow, SampleEstate.WellboreAliasesIngFlow),
+                (SampleEstate.WellboreIngFlow, SampleEstate.WellboreFlowName),
+                (SampleEstate.WellboreAliasesIngFlow, SampleEstate.WellboreFlowName),
+            })
+            {
+                db.FlowDependencies.Add(new CatalogFlowDependency
+                {
+                    RepoId = repoId,
+                    FromFlow = from,
+                    ToFlow = to,
+                    FromPipelineId = CatalogIdentity.Pipeline(repoId, from),
+                    ToPipelineId = CatalogIdentity.Pipeline(repoId, to),
+                    ViaObjects = "OsduSample.ing.Wellbore",
+                });
+            }
+
+            await db.SaveChangesAsync();
+
+            // The mapping the OSDU flow pins, as the repository sync reconciles it into the module's database.
+            await using var osdu = SampleEstate.Context(cs);
+            osdu.DeliveryMappings.Add(new DeliveryMapping
+            {
+                Id = FlowIdentity.FromName($"delivery-mapping/{repoId:N}/{SampleEstate.WellboreMapping}"),
                 RepoId = repoId,
-                Reference = MappingReference,
+                Reference = SampleEstate.WellboreMapping,
                 Name = "Wellbore",
                 Version = "1.0.0",
-                Kind = "osdu:wks:master-data--Wellbore:1.3.0",
-                TemplateVersion = "58d6bdbd9d066a06",
+                Kind = SampleEstate.WellboreTemplateKind,
+                TemplateVersion = SampleEstate.WellboreTemplateVersion,
                 RelativePath = "mappings/Wellbore@1.0.0.yaml",
                 ContentHash = new string('0', 64),
-                Yaml = MappingYaml,
+                Yaml = await File.ReadAllTextAsync(Path.Combine(root, "mappings", "Wellbore@1.0.0.yaml")),
+                SummaryJson = "{}",
                 Status = "valid",
                 FirstSeenUtc = now,
                 LastSeenUtc = now,
             });
-            db.DeliveryMappings.Add(new DeliveryMapping
-            {
-                Id = Guid.NewGuid(),
-                RepoId = repoId,
-                Reference = UnsavedTemplateMapping,
-                Name = "WellboreUnsaved",
-                Version = "1.0.0",
-                Kind = "osdu:wks:master-data--Wellbore:1.3.0",
-                TemplateVersion = UnsavedTemplateVersion,
-                RelativePath = $"mappings/{UnsavedTemplateMapping}.yaml",
-                ContentHash = new string('1', 64),
-                Yaml = MappingYaml
-                    .Replace("name: Wellbore", "name: WellboreUnsaved", StringComparison.Ordinal)
-                    .Replace("version: 58d6bdbd9d066a06", "version: " + UnsavedTemplateVersion, StringComparison.Ordinal),
-                Status = "valid",
-                FirstSeenUtc = now,
-                LastSeenUtc = now,
-            });
-            await db.SaveChangesAsync();
-            return new Estate(
-                repoId, secondRepoId, records, CatalogIdentity.Pipeline(repoId, records), payload, CatalogIdentity.Pipeline(repoId, payload),
-                defaulted, unsynced, CatalogIdentity.Pipeline(repoId, unsynced), ambiguous, noManual, CatalogIdentity.Pipeline(repoId, noManual),
-                unsavedTemplate, CatalogIdentity.Pipeline(repoId, unsavedTemplate));
+            await osdu.SaveChangesAsync();
+
+            return new Estate(repoId, root, CatalogIdentity.Pipeline(repoId, SampleEstate.WellboreFlowName), noSubmissions);
         }
 
-        /// <summary>A drop's submission in the ledger, so an id it already uses can be refused for records.</summary>
-        public async Task<Guid> SeedDropSubmissionAsync(string cs)
+        /// <summary>A submission the flow planned from its ingestion tables, so an id it already uses can be refused for records.</summary>
+        public static async Task<Guid> SeedPlannedSubmissionAsync(string cs)
         {
             var id = Guid.NewGuid();
-            await using var db = CatalogDatabase.Create(cs);
-            db.DeliverySubmissions.Add(new DeliverySubmission
+            await using var osdu = SampleEstate.Context(cs);
+            osdu.DeliverySubmissions.Add(new DeliverySubmission
             {
                 SubmissionId = id,
-                FlowId = FlowIdentity.FromName(RecordsFlow),
-                FlowName = RecordsFlow,
-                MappingReference = MappingReference,
+                FlowId = FlowId.Of(SampleEstate.WellboreFlowName),
+                FlowName = SampleEstate.WellboreFlowName,
+                MappingReference = SampleEstate.WellboreMapping,
                 RenderContext = "{}",
-                DropLocation = "C:/drops/north",
-                ParametersJson = """{"site":"north"}""",
+                ParametersJson = "{}",
+                Kind = SubmissionKinds.Incremental,
+                SourceConnection = "${env:OSDU_SAMPLE_DB}",
+                SourceObject = "OsduSample.ing.Wellbore",
                 Status = "completed",
                 ReceivedUtc = DateTime.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await osdu.SaveChangesAsync();
             return id;
         }
 
         public async Task CleanupAsync(string cs)
         {
-            await using var db = CatalogDatabase.Create(cs);
-            var flows = new[] { RecordsFlow, PayloadFlow, DefaultedFlow, UnsyncedMappingFlow, AmbiguousFlow, NoManualFlow, UnsavedTemplateFlow };
-            await db.DeliveryInlineSubmissions.Where(s => flows.Contains(s.FlowName)).ExecuteDeleteAsync();
-            await db.DeliverySubmissions.Where(s => flows.Contains(s.FlowName)).ExecuteDeleteAsync();
-            await db.Runs.Where(r => r.RepoId == RepoId || r.RepoId == SecondRepoId).ExecuteDeleteAsync();
-            await db.DeliveryMappings.Where(m => m.RepoId == RepoId).ExecuteDeleteAsync();
-            await db.Pipelines.Where(p => p.RepoId == RepoId || p.RepoId == SecondRepoId).ExecuteDeleteAsync();
-            await db.Repos.Where(r => r.Id == RepoId || r.Id == SecondRepoId).ExecuteDeleteAsync();
+            await using (var osdu = SampleEstate.Context(cs))
+            {
+                var flows = new[] { SampleEstate.WellboreFlowName, NoSubmissionsFlow };
+                await osdu.DeliverySubmissionLandings
+                    .Where(l => osdu.DeliveryInlineSubmissions.Any(s => s.SubmissionId == l.SubmissionId && flows.Contains(s.FlowName)))
+                    .ExecuteDeleteAsync();
+                await osdu.DeliveryInlineSubmissions.Where(s => flows.Contains(s.FlowName)).ExecuteDeleteAsync();
+                await osdu.DeliverySubmissions.Where(s => flows.Contains(s.FlowName)).ExecuteDeleteAsync();
+                await osdu.DeliveryActivities.Where(a => flows.Contains(a.FlowName)).ExecuteDeleteAsync();
+                await osdu.DeliveryMappings.Where(m => m.RepoId == RepoId).ExecuteDeleteAsync();
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await db.RunEvents.Where(e => e.RepoId == RepoId).ExecuteDeleteAsync();
+                await db.Runs.Where(r => r.RepoId == RepoId).ExecuteDeleteAsync();
+                await db.RunGroups.Where(g => g.RepoId == RepoId).ExecuteDeleteAsync();
+                await db.FlowDependencies.Where(d => d.RepoId == RepoId).ExecuteDeleteAsync();
+                await db.Pipelines.Where(p => p.RepoId == RepoId).ExecuteDeleteAsync();
+                await db.Repos.Where(r => r.Id == RepoId).ExecuteDeleteAsync();
+            }
+
+            try
+            {
+                Directory.Delete(Root, recursive: true);
+            }
+            catch (IOException)
+            {
+                // A transient lock on a run-log file must not fail the test; the temp directory is disposable.
+            }
         }
 
-        private static string RecordsYaml(string name, string mapping, string parameterRule, bool manualSubmission = true) => $$"""
-            flowType: delivery
-            name: {{name}}
-            parameters:
-              site:
-            {{parameterRule}}
-                description: The site the wellbores belong to.
-            source:
-              location: C:/drops/{site}
-              lastModified: update_date
-            {{(manualSubmission ? "  manualSubmission: true" : string.Empty)}}
-            render:
-              mapping: {{mapping}}
-              parameters:
-                dataPartition: opendes
-            target:
-              endpoint: https://osdu.example.test
-              headers:
-                data-partition-id: opendes
-              protocol: osduRecord
-            """;
-
-        private static CatalogPipeline Pipeline(Guid repoId, string name, string yaml, DateTime now) => new()
+        private static CatalogPipeline Pipeline(Guid repoId, string name, string kind, int wave, string yaml, string relativePath, DateTime now) => new()
         {
             Id = CatalogIdentity.Pipeline(repoId, name),
             RepoId = repoId,
             Name = name,
-            Kind = "delivery",
-            RelativePath = $"flows/{name}.yaml",
+            Kind = kind,
+            Batch = "recall",
+            RelativePath = relativePath,
             ContentHash = new string('0', 64),
             Yaml = yaml,
-            DefinitionJson = JsonSerializer.Serialize(new { name, flowKind = "delivery" }),
+            DefinitionJson = string.Create(CultureInfo.InvariantCulture, $$"""{"name":"{{name}}","flowKind":"{{kind}}"}"""),
             Active = true,
-            Wave = 0,
+            Wave = wave,
             FirstSeenUtc = now,
             LastSeenUtc = now,
         };
