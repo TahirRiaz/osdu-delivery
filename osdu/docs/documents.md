@@ -267,7 +267,7 @@ schedule: { cron: "0 3 * * *", timezone: UTC, operation: retrieve }
 | `source.query` | A Lucene query narrowing the kinds. The window of an incremental flow is appended as `AND field:[from TO to}`. |
 | `source.incremental` | The watermark: a run covers `[last completed run's upper bound, now minus lag)` on `field`. Only a completed run advances it; `--force` restarts at `since`. |
 | `source.fetchRecords` | The index holds a projection; set this to land the record as storage holds it. Ids storage cannot return are counted and listed in the manifest. |
-| `target.location` | The run's directory root. Without a `{run}` token every run gets a timestamped directory beneath it, so runs never overwrite each other. |
+| `target.location` | The run's directory root. Without a `{run}` token every run gets a timestamped directory beneath it, so runs never overwrite each other. A relative local path is resolved against the working directory of the process running the flow, not the flow file, so the repository sync warns about one: use an absolute path or a storage URI. |
 | `target.rollRecords` | A new file every this many records: `part-00001.jsonl[.gz]`, `part-00002...` under a directory named after the kind. |
 
 A run's directory holds the files per kind and the manifest: the flow, the run, the window, every file with its
@@ -725,3 +725,32 @@ is rendered, and with no OSDU call:
 10. Every fixture renders exactly as declared, and without holds, under this context.
 
 If any check fails, nothing renders.
+
+## Lineage
+
+SQLFlow's lineage graph shows every OSDU flow as a node with its data on both sides, and orders the flows in waves from
+it ([docs/lineage-design.md](../../docs/lineage-design.md)). What each kind contributes:
+
+| Flow | Reads | Writes |
+| --- | --- | --- |
+| Delivery | The record table and every `source.datasets` table, on the server `source.connection` names; the files under the `root` of the payload set its protocol streams; every cache type its mapping reads (`cache.<Type>` sources and `findBy` lines) | The OSDU type its mapping fills (`template.kind`); for `osduFile` and `osduManifest`, also `protocolOptions.datasetKind` |
+| Cache | Each type's `kind`, wildcards included | Each type's `name` in its partition's cache |
+| Retrieval | Each of `source.kinds`, wildcards included | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest under `target.location` |
+
+An **OSDU type** node is one exact kind in one partition of one platform: the platform is the flow's endpoint as written
+(`${env:PETRODB_URL}`; a literal URL is identified by a hash, never shown), the partition is `data-partition-id`, and the
+node is listed under the entity type's group (`master-data`, `reference-data`, `work-product-component`, `dataset`). A
+kind read with wildcards has a node of its own, and also reads every exact kind the estate writes on the same platform
+and partition that it matches segment by segment. A **cache type** node is a cache type name in a partition, whichever
+platform filled it, because a partition has one cache. The catalog explorer lists both under Datasets, and an object's
+Pipelines tab shows which flows write and read it.
+
+So a cache flow capturing wellbores runs after the delivery flow that delivers them, a delivery flow rendering against
+the cache runs after the cache flow, and a file flow reading a retrieval's folder runs after the retrieval. Two flows
+that each read what the other writes are not ordered against each other.
+
+Lineage reads the mapping a delivery flow pins from the checkout the repository sync scans, through the same layout a
+run uses (`render.mappings`, or the nearest `mappings` folder walking up from the flow file), and never outside that
+checkout. A mapping that is missing, invalid, filed under another name, or outside the checkout costs the flow its OSDU
+nodes, and the sync says why; the flow keeps its tables and files. Editing, adding or removing a mapping recomputes the
+lineage on the next sync even when no flow changed.

@@ -63,15 +63,19 @@ public sealed class DeliveryDocumentLoader
         return ParseCache(File.ReadAllText(path), path);
     }
 
-    public MappingDefinition LoadMapping(string path)
+    public MappingDefinition LoadMapping(string path) => LoadMapping(path, path);
+
+    /// <summary>Loads the mapping file at <paramref name="path"/>, naming it <paramref name="source"/> in every message.</summary>
+    public MappingDefinition LoadMapping(string path, string source)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentException.ThrowIfNullOrWhiteSpace(source);
         if (!File.Exists(path))
         {
-            throw new FlowValidationException($"Mapping file not found: '{path}'.");
+            throw new FlowValidationException($"Mapping file not found: '{source}'.");
         }
 
-        return ParseMapping(File.ReadAllText(path), path);
+        return ParseMapping(File.ReadAllText(path), source);
     }
 
     /// <summary>The discriminator of a document: "delivery", "retrieval" or "cache" for a flow, "mapping" for a mapping.</summary>

@@ -56,7 +56,8 @@ and nothing else in `sqlflow/` knows OSDU exists:
 | Catalog sync extension | The mapping documents and the types each cache flow declares, projected during a repository sync, inside the sync's transaction. |
 | Module database | `OsduDbContext` over the `osdu` schema, with its own migrations and schema version. |
 | Run result projection | The delivery counts shown on the run list. |
-| Lineage contributor | The ingestion tables the OSDU flow reads, so lineage orders pre, ing and OSDU flows in waves. |
+| Lineage contributor | What each OSDU flow reads and writes: the ingestion tables, payload files and cache types a delivery flow reads and the OSDU type it writes, the types a cache flow reads and the cache types it writes, the types a retrieval flow reads and the files it lands. Lineage shows them as nodes and orders pre, ing, delivery, cache and retrieval flows in waves. |
+| Catalog sync lineage gate | A changed mapping document recomputes the repository's lineage, since a delivery flow's OSDU type comes from its mapping. |
 | Host modules | The endpoint groups under SQLFlow's authorization policies, the background services, the options sections and the CLI verbs. |
 | GUI module contract | The routes, navigation entries and per-kind panels on the pipeline, run and trigger pages. |
 | Branding | "OSDU Delivery, powered by SQLFlow". |

@@ -8,11 +8,15 @@ namespace SqlFlow.Delivery.Documents;
 /// <summary>
 /// A delivery flow as the platform sees it: the parsed <see cref="FlowDefinition"/> behind the headers every catalog
 /// consumer reads (name, batch, the record table as the source reference, the source connection reference, the OSDU
-/// endpoint as the target reference, the credential references the hygiene check inspects), and the ingestion tables it
-/// reads as declared lineage. A delivery flow always needs its repository tree: its mappings live next to it.
+/// endpoint as the target reference, the credential references the hygiene check inspects), and its lineage: the
+/// ingestion tables, payload files and cache types it reads and the OSDU types it writes (<see cref="DeliveryLineage"/>).
+/// A delivery flow always needs its repository tree: its mappings live next to it.
 /// </summary>
 public sealed record DeliveryFlowDocument : RegisteredFlowDocument
 {
+    /// <summary>What lineage reads the flow's mapping with. The loader holds no state, so one serves every document.</summary>
+    private static readonly DeliveryDocumentLoader MappingDocuments = new();
+
     public required FlowDefinition Flow { get; init; }
 
     public override string Name => Flow.Name;
@@ -32,6 +36,9 @@ public sealed record DeliveryFlowDocument : RegisteredFlowDocument
     public override bool RequiresRepoTree => true;
 
     public override IReadOnlyList<DeclaredDataObject> DeclaredObjects => DeliveryLineage.DeclaredObjects(Flow);
+
+    public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
+        => DeliveryLineage.Describe(Flow, context, MappingDocuments);
 }
 
 /// <summary>The <c>flowType: delivery</c> document kind, registered in every host next to its executor; it also owns

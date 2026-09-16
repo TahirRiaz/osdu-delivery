@@ -9,7 +9,8 @@ namespace SqlFlow.Delivery.Documents;
 /// <summary>
 /// A retrieval flow as the platform sees it: the OSDU endpoint is the source reference, the lake location the
 /// target reference, and the source's secret references are what the hygiene check inspects. It needs no
-/// repository tree: nothing is rendered.
+/// repository tree: nothing is rendered. Its lineage is the OSDU types it reads and the files it lands
+/// (<see cref="RetrievalLineage"/>).
 /// </summary>
 public sealed record RetrievalFlowDocument : RegisteredFlowDocument
 {
@@ -28,6 +29,12 @@ public sealed record RetrievalFlowDocument : RegisteredFlowDocument
     public override IEnumerable<KeyValuePair<string, string>> CredentialReferences => Flow.CredentialReferences();
 
     public override bool RequiresRepoTree => false;
+
+    public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return RetrievalLineage.Describe(Flow);
+    }
 }
 
 /// <summary>The <c>flowType: retrieval</c> document kind, registered in every host next to its executor.</summary>

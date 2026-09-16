@@ -9,7 +9,8 @@ namespace SqlFlow.Delivery.Documents;
 /// <summary>
 /// A cache flow as the platform sees it: the OSDU endpoint is the source reference, the catalog the target, and the
 /// source's secret references are what the hygiene check inspects. It needs no repository tree: everything a refresh
-/// needs is in the document. It reads and writes no database object SQLFlow's lineage knows.
+/// needs is in the document. Its lineage is the OSDU types it reads and the partition cache types it writes
+/// (<see cref="CacheLineage"/>).
 /// </summary>
 public sealed record CacheFlowDocument : RegisteredFlowDocument
 {
@@ -31,6 +32,12 @@ public sealed record CacheFlowDocument : RegisteredFlowDocument
     public override IEnumerable<KeyValuePair<string, string>> CredentialReferences => Flow.CredentialReferences();
 
     public override bool RequiresRepoTree => false;
+
+    public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return CacheLineage.Describe(Flow);
+    }
 }
 
 /// <summary>The <c>flowType: cache</c> document kind, registered in every host next to its executor.</summary>

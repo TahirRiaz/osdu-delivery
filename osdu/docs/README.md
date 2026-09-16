@@ -56,7 +56,8 @@ repo/
 The delivery flow finds `mappings/` by walking up from its own file, or names it under `render.mappings`. A cache
 flow can sit anywhere in the tree; the sample keeps it under `caches/`. The sync projects every flow as a
 pipeline, and the mappings and the types each cache flow declares as read models the GUI lists. Lineage orders the
-three flows in waves, so the OSDU flow runs after the ingestion table it reads has been loaded.
+flows in waves, so the OSDU flow runs after the ingestion table it reads has been loaded, and shows the OSDU type each
+delivery flow writes and the cache types it reads ([documents.md](documents.md#lineage)).
 
 Neither templates nor cache contents are in the repository: the template a mapping pins is saved in the catalog,
 captured from OSDU or imported from a bundled schema file ([mapping-templates.md](mapping-templates.md)), and every

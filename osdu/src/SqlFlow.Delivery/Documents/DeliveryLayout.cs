@@ -21,18 +21,34 @@ public sealed record DeliveryLayout(string MappingsDirectory)
             ? Path.GetDirectoryName(Path.GetFullPath(path)) ?? Directory.GetCurrentDirectory()
             : Directory.GetCurrentDirectory();
 
-        return new DeliveryLayout(Locate(baseDirectory, flow.Render.MappingsDirectory, MappingsDirectoryName));
+        return new DeliveryLayout(Locate(baseDirectory, flow.Render.MappingsDirectory, MappingsDirectoryName, within: null)!);
     }
 
-    private static string Locate(string baseDirectory, string? declared, string name)
+    /// <summary>
+    /// The layout of a flow whose file sits in <paramref name="flowFolder"/>, looked for only where
+    /// <paramref name="within"/> allows: the search for the nearest mappings directory stops at the first folder outside,
+    /// and a declared directory outside gives null. Lineage reads a flow's mappings this way, inside the checkout it scans.
+    /// </summary>
+    public static DeliveryLayout? ResolveWithin(FlowDefinition flow, string flowFolder, Func<string, bool> within)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        ArgumentException.ThrowIfNullOrWhiteSpace(flowFolder);
+        ArgumentNullException.ThrowIfNull(within);
+        return Locate(Path.GetFullPath(flowFolder), flow.Render.MappingsDirectory, MappingsDirectoryName, within) is { } directory
+            ? new DeliveryLayout(directory)
+            : null;
+    }
+
+    private static string? Locate(string baseDirectory, string? declared, string name, Func<string, bool>? within)
     {
         if (!string.IsNullOrWhiteSpace(declared))
         {
-            return Path.GetFullPath(Path.Combine(baseDirectory, declared));
+            var full = Path.GetFullPath(Path.Combine(baseDirectory, declared));
+            return within is null || within(full) ? full : null;
         }
 
         var current = baseDirectory;
-        for (var i = 0; i < MaxAscent && current is not null; i++)
+        for (var i = 0; i < MaxAscent && current is not null && (within is null || within(current)); i++)
         {
             var candidate = Path.Combine(current, name);
             if (Directory.Exists(candidate))

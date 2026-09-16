@@ -23,9 +23,17 @@ public sealed class MappingCatalog
 
     public string Directory => _directory;
 
-    public MappingDefinition Load(string reference)
+    public MappingDefinition Load(string reference) => Load(reference, path => path);
+
+    /// <summary>
+    /// Loads the mapping <paramref name="reference"/> pins, naming every file and folder in its messages as
+    /// <paramref name="shown"/> gives it (a path relative to the repository, say). The reference names a file under the
+    /// directory and nothing else: a name or version carrying a path is refused before any file is looked at.
+    /// </summary>
+    public MappingDefinition Load(string reference, Func<string, string> shown)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+        ArgumentNullException.ThrowIfNull(shown);
         var at = reference.IndexOf('@', StringComparison.Ordinal);
         if (at <= 0 || at == reference.Length - 1)
         {
@@ -34,6 +42,12 @@ public sealed class MappingCatalog
 
         var name = reference[..at];
         var version = reference[(at + 1)..];
+        if (NamesAPath(name) || NamesAPath(version))
+        {
+            throw new FlowValidationException(
+                $"Mapping reference '{reference}' names a path; a mapping is named by its name and version alone, without '/', '\\' or '..'.");
+        }
+
         var candidates = new[]
         {
             Path.Combine(_directory, $"{name}@{version}.yaml"),
@@ -44,17 +58,21 @@ public sealed class MappingCatalog
 
         var path = candidates.FirstOrDefault(File.Exists)
             ?? throw new FlowValidationException(
-                $"Mapping '{reference}' was not found under '{_directory}'. Expected one of: {string.Join(", ", candidates.Select(Path.GetFileName))}.");
+                $"Mapping '{reference}' was not found under '{shown(_directory)}'. Expected one of: {string.Join(", ", candidates.Select(Path.GetFileName))}.");
 
-        var mapping = _loader.LoadMapping(path);
+        var mapping = _loader.LoadMapping(path, shown(path));
         if (!mapping.Name.Equals(name, StringComparison.Ordinal) || !mapping.Version.Equals(version, StringComparison.Ordinal))
         {
             throw new FlowValidationException(
-                $"{path}: declares '{mapping.Reference}' but is filed as '{reference}'. The file name and the document must agree.");
+                $"{shown(path)}: declares '{mapping.Reference}' but is filed as '{reference}'. The file name and the document must agree.");
         }
 
         return mapping;
     }
+
+    private static bool NamesAPath(string part)
+        => part.Contains('/', StringComparison.Ordinal) || part.Contains('\\', StringComparison.Ordinal) || part.Contains("..", StringComparison.Ordinal)
+            || Path.IsPathRooted(part);
 
     public IReadOnlyList<string> List()
     {

@@ -1,12 +1,21 @@
+using SqlFlow.Core;
+using SqlFlow.Core.Lineage;
+using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Engine.Planning;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
 using SqlFlow.Yaml;
 
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// What a delivery flow contributes to SQLFlow's lineage: reads of its record table and of every child dataset table, on
-/// the server its <c>source.connection</c> names. An ingestion flow writing those tables through the same connection
-/// reference lands on the same nodes, so the execution plan orders pre-ingestion, then ingestion, then the delivery flow.
+/// What a delivery flow contributes to SQLFlow's lineage (docs/lineage-design.md section 3). It reads its record table and
+/// every child dataset table on the server its <c>source.connection</c> names, so an ingestion flow writing those tables
+/// through the same reference is ordered before it. It reads the payload files under the root of the payload set its
+/// protocol streams, and every partition cache type its mapping resolves against. It writes the OSDU type its mapping fills
+/// in the partition it delivers to and, for the file and manifest protocols, the dataset kind it registers each file as.
+/// The mapping is the one the flow pins, read from the checkout being scanned and nowhere else; a mapping that cannot be read
+/// costs the flow its OSDU nodes with a warning, never the rest of its lineage.
 /// </summary>
 public static class DeliveryLineage
 {
@@ -26,5 +35,114 @@ public static class DeliveryLineage
         }
 
         return objects;
+    }
+
+    /// <summary>Everything the flow contributes, in a stable order.</summary>
+    public static RegisteredFlowLineage Describe(FlowDefinition flow, RegisteredLineageContext context, DeliveryDocumentLoader documents)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(documents);
+        var who = $"delivery flow '{flow.Name}'";
+        var warnings = new List<string>();
+
+        var files = new List<DeclaredFileLocation>();
+        if (Planner.PayloadName(flow) is { } payloadName && flow.Source.Payloads.TryGetValue(payloadName, out var payload))
+        {
+            files.Add(new DeclaredFileLocation { Relation = LineageRelation.Reads, Location = payload.Root, FilePattern = payload.Pattern });
+        }
+
+        var datasets = new List<DeclaredDataset>();
+        var partition = OsduLineage.Partition(flow.Target.Headers, who, "target.headers", warnings);
+        var mapping = PinnedMapping(flow, context, documents, who, warnings);
+        if (partition is not null)
+        {
+            var endpoint = flow.Target.Endpoint;
+            if (mapping is not null)
+            {
+                Add(datasets, OsduLineage.Type(
+                    LineageRelation.Writes, endpoint, partition, mapping.Kind, who, $"the kind of mapping '{mapping.Reference}'", warnings));
+                foreach (var type in CacheTypes(mapping))
+                {
+                    Add(datasets, OsduLineage.CacheType(LineageRelation.Reads, partition, type, who, warnings));
+                }
+            }
+
+            if (flow.Target.Protocol is DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest)
+            {
+                Add(datasets, OsduLineage.Type(
+                    LineageRelation.Writes, endpoint, partition, flow.Target.ProtocolOptions.DatasetKind, who,
+                    "target.protocolOptions.datasetKind", warnings));
+            }
+        }
+
+        return new RegisteredFlowLineage
+        {
+            Objects = DeclaredObjects(flow),
+            Files = files,
+            Datasets = datasets,
+            Warnings = warnings,
+        };
+    }
+
+    /// <summary>The partition cache types a mapping reads, from its cache sources and its lookups, in name order.</summary>
+    public static IReadOnlyList<string> CacheTypes(MappingDefinition mapping)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+        var types = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in mapping.Entries)
+        {
+            if (entry.Source is { Kind: MappingSourceKind.Cache, CacheType: { } type })
+            {
+                types.Add(type);
+            }
+
+            foreach (var find in entry.FindBy)
+            {
+                types.Add(find.Type);
+            }
+        }
+
+        return types.ToList();
+    }
+
+    /// <summary>
+    /// The mapping the flow pins, read from the mappings directory the flow's layout names inside the scanned checkout, or
+    /// null with a warning saying why it could not be.
+    /// </summary>
+    private static MappingDefinition? PinnedMapping(
+        FlowDefinition flow, RegisteredLineageContext context, DeliveryDocumentLoader documents, string who, List<string> warnings)
+    {
+        var reference = flow.Render.Mapping;
+        var layout = DeliveryLayout.ResolveWithin(flow, context.DocumentFolder, context.Contains);
+        if (layout is null)
+        {
+            warnings.Add(
+                $"{who} shows no OSDU type in lineage: render.mappings '{flow.Render.MappingsDirectory}' lies outside the repository, so mapping '{reference}' is not read.");
+            return null;
+        }
+
+        try
+        {
+            return new MappingCatalog(layout.MappingsDirectory, documents).Load(reference, path => Shown(context, path));
+        }
+        catch (Exception ex) when (ex is SqlFlowException or IOException or UnauthorizedAccessException)
+        {
+            var reason = ex is SqlFlowException ? ex.Message : $"{ex.GetType().Name} reading it";
+            warnings.Add($"{who} shows no OSDU type in lineage: mapping '{reference}' could not be read ({SecretHygiene.RedactedMessage(reason)}).");
+            return null;
+        }
+    }
+
+    /// <summary>A path as a warning names it: relative to the checkout, with forward slashes.</summary>
+    private static string Shown(RegisteredLineageContext context, string path)
+        => Path.GetRelativePath(context.EstateRoot, path).Replace('\\', '/');
+
+    private static void Add(List<DeclaredDataset> datasets, DeclaredDataset? dataset)
+    {
+        if (dataset is not null)
+        {
+            datasets.Add(dataset);
+        }
     }
 }

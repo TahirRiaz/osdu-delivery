@@ -58,6 +58,89 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     }
 
     /// <summary>
+    /// Whether a mapping document changed since the last sync reconciled the mappings: a delivery flow's OSDU type and cache
+    /// reads come from its mapping, so a changed, added or removed mapping changes the lineage while every flow document
+    /// stays the same. Compared by path and content hash against the rows the last sync wrote, through the same discovery
+    /// the reconciliation uses. A document that is a second declaration of a reference already on record (which the
+    /// reconciliation leaves out) is not a change. Cache flows need no check here: they are flows, which the sync compares
+    /// itself.
+    /// </summary>
+    public async Task<bool> LineageInputsChangedAsync(CatalogDbContext context, Guid repoId, string root, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        await using var osdu = new OsduDbContext(OsduDbContext.SqlServerOptions(context.Database.GetDbConnection()));
+        if (context.Database.CurrentTransaction is { } transaction)
+        {
+            await osdu.Database.UseTransactionAsync(transaction.GetDbTransaction(), ct).ConfigureAwait(false);
+        }
+
+        return await MappingsChangedAsync(osdu, repoId, root, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether the repository's mapping documents on disk differ from the mapping rows <paramref name="context"/> holds for
+    /// it, as <see cref="LineageInputsChangedAsync"/> describes.
+    /// </summary>
+    public async Task<bool> MappingsChangedAsync(OsduDbContext context, Guid repoId, string root, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        var stored = await context.DeliveryMappings.AsNoTracking()
+            .Where(m => m.RepoId == repoId)
+            .Select(m => new { m.RelativePath, m.ContentHash, m.Reference })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var hashByPath = stored.ToDictionary(m => m.RelativePath, m => m.ContentHash, StringComparer.Ordinal);
+        var references = stored.Select(m => m.Reference).ToHashSet(StringComparer.Ordinal);
+        var matched = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var file in EnumerateYaml(root))
+        {
+            ct.ThrowIfCancellationRequested();
+            string yaml;
+            try
+            {
+                yaml = await File.ReadAllTextAsync(file, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // What cannot be read now may have been read before: the lineage is recomputed, and the reconciliation reports the file.
+                return true;
+            }
+
+            if (!LooksLikeMapping(yaml))
+            {
+                continue;
+            }
+
+            var relative = Relative(root, file);
+            if (hashByPath.TryGetValue(relative, out var hash) && hash == ContentHash.Of(yaml))
+            {
+                matched.Add(relative);
+                continue;
+            }
+
+            // A file the rows do not hold as it is: a change, unless it declares a reference another file already holds.
+            string reference;
+            try
+            {
+                reference = _documents.ParseMapping(yaml, relative).Reference;
+            }
+            catch (FlowValidationException)
+            {
+                return true;
+            }
+
+            if (!references.Contains(reference) || hashByPath.ContainsKey(relative))
+            {
+                return true;
+            }
+        }
+
+        return matched.Count != hashByPath.Count;
+    }
+
+    /// <summary>
     /// Reconciles the repository's mapping documents and cache declarations into <paramref name="context"/>: the one write the
     /// sync extension makes, on whatever connection and transaction the context was opened with.
     /// </summary>
