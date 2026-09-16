@@ -1,0 +1,210 @@
+[
+  {
+    "file": "wellbore-ddms/openapi.json",
+    "repo": "domain-data-mgmt-services/wellbore/wellbore-domain-services",
+    "from": "docs/api/community/v1/openapi.json",
+    "commit": "e5641a0e4e2dde1c67c12eb916087b67e8087c43",
+    "date": "2026-09-10",
+    "size": 470057
+  },
+  {
+    "file": "seismic-ddms/openapi.yaml",
+    "repo": "domain-data-mgmt-services/seismic/seismic-dms-suite/seismic-store-service",
+    "from": "app/sdms/docs/api/openapi.yaml",
+    "commit": "0eec0a874ba22e550248bf21cedb08a476dde167",
+    "date": "2026-09-11",
+    "size": 113913
+  },
+  {
+    "file": "reservoir-ddms/etp-1.2.avpr",
+    "repo": "domain-data-mgmt-services/reservoir/open-etp-server",
+    "from": "src/lib/oes/common/etp12/etp-1.2.avpr",
+    "commit": "7a22fe7e255a5dcc0d0b62bbabcfe4724e6dd32e",
+    "date": "2026-09-16",
+    "size": 165024
+  },
+  {
+    "file": "reservoir-ddms/best-practices-for-clients.md",
+    "repo": "domain-data-mgmt-services/reservoir/open-etp-server",
+    "from": "docs/bestPracticesForClients.md",
+    "commit": "7a22fe7e255a5dcc0d0b62bbabcfe4724e6dd32e",
+    "date": "2026-09-16",
+    "size": 5329
+  },
+  {
+    "file": "reservoir-ddms/README.md",
+    "repo": "domain-data-mgmt-services/reservoir/open-etp-server",
+    "from": "README.md",
+    "commit": "7a22fe7e255a5dcc0d0b62bbabcfe4724e6dd32e",
+    "date": "2026-09-16",
+    "size": 36154
+  },
+  {
+    "file": "rafs-ddms/openapi.yaml",
+    "repo": "domain-data-mgmt-services/rock-and-fluid-sample/rafs-ddms-services",
+    "from": "docs/api/community/v2/openapi.yaml",
+    "commit": "585258198bf42416dd1e8f5fdf61dc3898b6ce93",
+    "date": "2026-09-10",
+    "size": 303680
+  },
+  {
+    "file": "well-delivery-ddms/swagger.yaml",
+    "repo": "domain-data-mgmt-services/well-delivery/well-delivery",
+    "from": "docs/api/swagger.yaml",
+    "commit": "a508b4e946424de9fbb3110801517f3ae9d36b18",
+    "date": "2026-09-04",
+    "size": 78425
+  },
+  {
+    "file": "production-dspdm/swagger-api.json",
+    "repo": "domain-data-mgmt-services/production/core/dspdm-services",
+    "from": "docs/Swagger-API.json",
+    "commit": "74f4dcba64ee17be80f1574ca27d67a0c4b95e4f",
+    "date": "2026-08-19",
+    "size": 277875
+  },
+  {
+    "file": "production-dspdm/mainservice.openapi.yaml",
+    "repo": "domain-data-mgmt-services/production/core/dspdm-services",
+    "from": "src/dspdm.msp.mainservice/src/main/resources/openapi.yaml",
+    "commit": "74f4dcba64ee17be80f1574ca27d67a0c4b95e4f",
+    "date": "2026-08-19",
+    "size": 547
+  },
+  {
+    "file": "production-dspdm/spatialservice.openapi.yaml",
+    "repo": "domain-data-mgmt-services/production/core/dspdm-services",
+    "from": "src/business-api-spatialservice/src/main/resources/openapi.yaml",
+    "commit": "74f4dcba64ee17be80f1574ca27d67a0c4b95e4f",
+    "date": "2026-08-19",
+    "size": 941
+  },
+  {
+    "file": "production-dspdm/volumeservice.openapi.yaml",
+    "repo": "domain-data-mgmt-services/production/core/dspdm-services",
+    "from": "src/business-api-volumeservice/src/main/resources/openapi.yaml",
+    "commit": "74f4dcba64ee17be80f1574ca27d67a0c4b95e4f",
+    "date": "2026-08-19",
+    "size": 549
+  },
+  {
+    "file": "production-dspdm/wellflowmeasurement.openapi.yaml",
+    "repo": "domain-data-mgmt-services/production/core/dspdm-services",
+    "from": "src/business-api-wellflowmeasurement/src/main/resources/openapi.yaml",
+    "commit": "74f4dcba64ee17be80f1574ca27d67a0c4b95e4f",
+    "date": "2026-08-19",
+    "size": 552
+  },
+  {
+    "file": "production-dspdm/wellstatus.openapi.yaml",
+    "repo": "domain-data-mgmt-services/production/core/dspdm-services",
+    "from": "src/business-api-wellstatus/src/main/resources/openapi.yaml",
+    "commit": "74f4dcba64ee17be80f1574ca27d67a0c4b95e4f",
+    "date": "2026-08-19",
+    "size": 552
+  },
+  {
+    "file": "production-timeseries/ingestion.openapi.yaml",
+    "repo": "domain-data-mgmt-services/production/historian/services/pddms-timeseries-ingestion",
+    "from": "docs/api/azure/openapi.yaml",
+    "commit": "46b4d57e998b68dd82068ec0ab09711facd0baf4",
+    "date": "2026-09-15",
+    "size": 46446
+  },
+  {
+    "file": "production-timeseries/timeseries.openapi.yaml",
+    "repo": "domain-data-mgmt-services/production/historian/services/pddms-timeseries",
+    "from": "docs/api/azure/openapi.yaml",
+    "commit": "3bf10e48ffa8c703e76818efeff406364efe9178",
+    "date": "2026-09-15",
+    "size": 68547
+  },
+  {
+    "file": "reservoir-management-ddms/postman-collection.json",
+    "repo": "domain-data-mgmt-services/reservoir-management/reservoir-management-domain-services",
+    "from": "docs/Reservoir Management Domain Data Management Service.postman_collection.json",
+    "commit": "088ae063eaedfb6ad24c9d8c3e1f52c2cb45d2cd",
+    "date": "2024-04-23",
+    "size": 710221
+  },
+  {
+    "file": "reservoir-management-ddms/README.md",
+    "repo": "domain-data-mgmt-services/reservoir-management/reservoir-management-domain-services",
+    "from": "README.md",
+    "commit": "088ae063eaedfb6ad24c9d8c3e1f52c2cb45d2cd",
+    "date": "2024-04-23",
+    "size": 4639
+  },
+  {
+    "file": "eds-dms/openapi.yaml",
+    "repo": "data-flow/ingestion/external-data-sources/eds-dms",
+    "from": "docs/api/community/v1/openapi.yaml",
+    "commit": "793cddb3ddb18050116088d43824af8ee045961f",
+    "date": "2026-08-27",
+    "size": 8786
+  },
+  {
+    "file": "workflows/ingestion-dags.md",
+    "repo": "data-flow/ingestion/ingestion-dags",
+    "from": "README.md",
+    "commit": "5d3822506bb4d4a5105f3c440e667b76cd122284",
+    "date": "2026-08-27",
+    "size": 12040
+  },
+  {
+    "file": "workflows/osdu-airflow-lib.md",
+    "repo": "data-flow/ingestion/osdu-airflow-lib",
+    "from": "README.md",
+    "commit": "ec1394a8016326d25672d51044099a2feb4a7d28",
+    "date": "2026-09-16",
+    "size": 8869
+  },
+  {
+    "file": "workflows/csv-parser.md",
+    "repo": "data-flow/ingestion/csv-parser/csv-parser",
+    "from": "README.md",
+    "commit": "6c800d2c3cc7d7af6b8ffa4b798f196c178a135a",
+    "date": "2026-09-16",
+    "size": 3453
+  },
+  {
+    "file": "workflows/energistics-parser-dag.md",
+    "repo": "data-flow/ingestion/energistics/energistics-parser-dag",
+    "from": "README.md",
+    "commit": "35e05496f559c360222f1ac8e5f24e63da32eebe",
+    "date": "2026-08-27",
+    "size": 88
+  },
+  {
+    "file": "workflows/segy-to-vds-conversion.md",
+    "repo": "data-flow/ingestion/segy-to-vds-conversion",
+    "from": "README.md",
+    "commit": "b6277de3d7c295a8bcb2a6bfa02dcbae99863d43",
+    "date": "2026-09-15",
+    "size": 14769
+  },
+  {
+    "file": "workflows/segy-to-zgy-conversion.md",
+    "repo": "data-flow/ingestion/segy-to-zgy-conversion",
+    "from": "README.md",
+    "commit": "90fa221d620911e76ee375c6067c1c77ca759d6b",
+    "date": "2026-09-15",
+    "size": 10245
+  },
+  {
+    "file": "workflows/segy-to-mdio-conversion-dag.md",
+    "repo": "data-flow/ingestion/segy-to-mdio-conversion-dag",
+    "from": "README.md",
+    "commit": "a0b2d1ca835a417355ab2c235a764c568d1c4919",
+    "date": "2026-09-15",
+    "size": 686
+  },
+  {
+    "file": "workflows/core-external-data-workflow.md",
+    "repo": "data-flow/ingestion/external-data-sources/core-external-data-workflow",
+    "from": "README.md",
+    "commit": "70e5543ae1e07ae356aec61466535c2b63c8e6f1",
+    "date": "2026-08-26",
+    "size": 2621
+  }
+]

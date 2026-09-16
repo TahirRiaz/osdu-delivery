@@ -1,0 +1,26 @@
+prettyPrint: true
+cacheTTL: 0
+openAPI:
+  servers:
+    - url: '/{MID_PATH}'
+      description: '{HOST}/{MID_PATH}/{API_PATH}'
+      variables:
+        MID_PATH:
+          default: ''
+  info:
+    version: '1.0'
+    title: 'Production DDMS(core) Service'
+  components:
+    securitySchemes:
+      bearerAuth:
+        type: http
+        scheme: bearer
+        bearerFormat: JWT
+      partationId:
+        type: apiKey
+        scheme: string
+        in: header
+        name: data-partition-id      
+  security:
+    - bearerAuth: []
+    - partationId: []

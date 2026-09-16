@@ -1,0 +1,20 @@
+prettyPrint: true
+cacheTTL: 0
+openAPI:
+  servers:
+    - url: /services/dev-businessapi/msp
+    - url: /services/qa-businessapi/msp
+    - url: /services/businessapi/msp    
+    - url: http://localhost:8080/msp
+  info:
+    version: '1.0'
+    title: 'PDM Domain APIs for Well Flow Measurement'
+    description: These APIs are designed to enable user to effortless to access well flow measurement data.
+  components:
+    securitySchemes:
+      bearerAuth:
+        type: http
+        scheme: bearer
+        bearerFormat: JWT
+  security:
+    - bearerAuth: []

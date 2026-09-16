@@ -1,0 +1,1170 @@
+openapi: 3.0.3
+info:
+  title: OSDU Production DDMS. Time-series Ingestion Service
+  version: 1.0.0
+  description: >
+    The Time-series Ingestion Service is part of the OSDU Production Domain Data Management Service (Production DDMS).
+    It is used to store/ingest time-series bulk data into the historian storage system and validate ingestion files.
+  contact:
+    email: dps@OSDU.org
+    name: OSDU Data Platform Team
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+servers:
+  - url: /api/pddms/ingest/v1
+    description: OSDU API Gateway
+security:
+  - BearerAuth: []
+tags:
+  - name: Info
+    description: Service metadata and version information
+  - name: Health
+    description: Kubernetes health check endpoints
+  - name: Ingestion
+    description: Store bulk time-series data points
+paths:
+  /info:
+    get:
+      tags:
+        - Info
+      summary: Detailed version info
+      description: Returns build, version, and dependency information, including status of downstream connections (Entitlements, Storage, Messaging queue).
+      operationId: getDetailedVersionInfo
+      parameters:
+        - $ref: '#/components/parameters/DataPartitionId'
+      responses:
+        '200':
+          description: Version and dependency information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionInfo'
+              example:
+                groupId: org.opengroup.osdu.production
+                artifactId: pddms-timeseries-ingestion
+                version: 0.1.0-SNAPSHOT
+                buildTime: "2026-06-17T02:21:07Z"
+                branch: develop
+                commitId: 3b7f8f4188a4a4ce12c15ecba95b5095f36928f1
+                commitMessage: "Update : Remove unit from response and request\n"
+                connectedOuterServices:
+                  - name: OSDU Core Entitlement service
+                    version: "N/A"
+                  - name: OSDU Core Storage service
+                    version: "N/A"
+                  - name: Messaging queue
+                    version: "N/A"
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+
+  /info/short:
+    get:
+      tags:
+        - Info
+      summary: Short version info
+      description: Returns basic build artifacts and group/version information.
+      operationId: getShortVersionInfo
+      parameters:
+        - $ref: '#/components/parameters/DataPartitionId'
+      responses:
+        '200':
+          description: Basic service version info.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionInfoShort'
+              example:
+                groupId: org.opengroup.osdu.production
+                artifactId: pddms-timeseries-ingestion
+                version: 0.1.0-SNAPSHOT
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+
+  /liveness_check:
+    get:
+      tags:
+        - Health
+      summary: Liveness check
+      description: Kubernetes liveness probe checking if the service is running.
+      operationId: livenessCheck
+      responses:
+        '200':
+          description: Service is alive.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Time Series Ingestion Service is alive
+
+  /readiness_check:
+    get:
+      tags:
+        - Health
+      summary: Readiness check
+      description: Kubernetes readiness probe verifying if the service is ready to accept requests.
+      operationId: readinessCheck
+      responses:
+        '200':
+          description: Service is ready.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Time Series Ingestion Service is ready
+
+  /production-values/{recordId}/timeseries/{timeseriesId}:
+    post:
+      tags:
+        - Ingestion
+      summary: Ingest time-series data
+      description: Stores/ingests data points for a specific timeseries ID within a ProductionValues record.</br><p>Allowed roles&colon; `service.pddms.editor` and `service.pddms.admin`.
+      operationId: ingestTimeSeries
+      parameters:
+        - $ref: '#/components/parameters/RecordId'
+        - $ref: '#/components/parameters/TimeseriesId'
+        - $ref: '#/components/parameters/DataPartitionId'
+      requestBody:
+        description: Time-series unit and data points payload to ingest.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestTimeSeriesRequest'
+            example:
+              points:
+                - timestamp: 978307200000
+                  value: 58883469.74
+                - timestamp: 978310800000
+                  value: 58872291.29
+                - timestamp: 978314400000
+                  value: 58917419.15
+      responses:
+        '202':
+          description: Points accepted for storage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+              examples:
+                accepted:
+                  summary: Ingestion accepted for a single timeseries
+                  value:
+                    - recordId: >-
+                        opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4277
+                      reportingEntityId: 'opendes:master-data--Well:4093'
+                      timeseries:
+                        - timeseriesId: ESTIMATED_GAS_VOLUME
+                          version: 1781769547918
+                          start: 978307200000
+                          end: 978314400000
+                          metadata:
+                            nominalPeriodId: 'opendes:reference-data--ReportingPeriod:Day:'
+                            quantityMethodId: 'opendes:reference-data--QuantityMethod:Estimated:'
+                            durationContextId: 'opendes:reference-data--DurationContext:UptimeHours:'
+                            volumeFlowMeasurementTypeId: 'opendes:reference-data--VolumeFlowMeasurementType:Production:'
+                            propertyId: 'opendes:reference-data--ProductionPropertyType:Volume:'
+                            unitQuantityId: 'opendes:reference-data--UnitQuantity:volume%20per%20time:'
+                            productId: 'opendes:reference-data--ProductKind:Gas:'
+                            dispositionId: 'opendes:reference-data--DispositionType:Sold:'
+                            parameterKindId: 'opendes:reference-data--ParameterKind:Double:'
+                            unitOfMeasureId: 'opendes:reference-data--UnitOfMeasure:1000%20m3%2Fd:'
+                          pointsCount: 3
+                          result:
+                            code: 202
+                            reason: Accepted
+                            message: >-
+                              The request has been accepted for processing, but the processing has
+                              not been completed.
+                      result:
+                        code: 202
+                        reason: Accepted
+                        message: >-
+                          The request has been accepted for processing, but the processing has not
+                          been completed.
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+
+  /production-values/{recordId}/timeseries:
+    post:
+      tags:
+        - Ingestion
+      summary: Ingest multiple timeseries for a single record
+      description: Ingest multiple timeseries data blocks for a single ProductionValues record in a single request.</br><p>Allowed roles&colon; `service.pddms.editor` and `service.pddms.admin`.
+      operationId: ingestTimeSeriesBatchForSingleRecord
+      parameters:
+        - $ref: '#/components/parameters/RecordId'
+        - $ref: '#/components/parameters/DataPartitionId'
+      requestBody:
+        description: List of timeseries and points to ingest.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestTimeSeriesBatchForSingleProductionValuesRequest'
+            example:
+              timeseries:
+                - timeseriesId: ESTIMATED_OIL_VOLUME
+                  points:
+                    - timestamp: 978307200000
+                      value: 1.1
+                    - timestamp: 978310800000
+                      value: 2.1
+                - timeseriesId: ESTIMATED_GAS_VOLUME
+                  points:
+                    - timestamp: 978307200000
+                      value: 1.2
+                    - timestamp: 978310800000
+                      value: 2.2
+                    - timestamp: 978314400000
+                      value: 3.2
+                - timeseriesId: ESTIMATED_CONDENSATE_VOLUME
+                  points:
+                    - timestamp: 978307200000
+                      value: 1.2
+                    - timestamp: 978310800000
+                      value: 2.3
+                    - timestamp: 978314400000
+                      value: 3.31
+                    - timestamp: 978318000000
+
+      responses:
+        '202':
+          description: Points accepted for storage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+              examples:
+                accepted:
+                  summary: Ingestion accepted for multiple timeseries in a single record
+                  value:
+                    - recordId: >-
+                        opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4270
+                      reportingEntityId: 'opendes:master-data--Well:4093'
+                      timeseries:
+                        - timeseriesId: ESTIMATED_OIL_VOLUME
+                          version: 1781770405994
+                          start: 978307200000
+                          end: 978314400000
+                          metadata:
+                            nominalPeriodId: 'opendes:reference-data--ReportingPeriod:Day:'
+                            quantityMethodId: 'opendes:reference-data--QuantityMethod:Estimated:'
+                            durationContextId: 'opendes:reference-data--DurationContext:UptimeHours:'
+                            volumeFlowMeasurementTypeId: 'opendes:reference-data--VolumeFlowMeasurementType:Production:'
+                            propertyId: 'opendes:reference-data--ProductionPropertyType:Volume:'
+                            unitQuantityId: 'opendes:reference-data--UnitQuantity:volume%20per%20time:'
+                            productId: 'opendes:reference-data--ProductKind:Oil:'
+                            dispositionId: 'opendes:reference-data--DispositionType:Sold:'
+                            parameterKindId: 'opendes:reference-data--ParameterKind:Double:'
+                            unitOfMeasureId: 'opendes:reference-data--UnitOfMeasure:bbl%2Fd:'
+                          pointsCount: 3
+                          result:
+                            code: 202
+                            reason: Accepted
+                            message: >-
+                              The request has been accepted for processing, but the processing has
+                              not been completed.
+                        - timeseriesId: ESTIMATED_GAS_VOLUME
+                          version: 1781770405997
+                          start: 978307200000
+                          end: 978314400000
+                          metadata:
+                            nominalPeriodId: 'opendes:reference-data--ReportingPeriod:Day:'
+                            quantityMethodId: 'opendes:reference-data--QuantityMethod:Estimated:'
+                            durationContextId: 'opendes:reference-data--DurationContext:UptimeHours:'
+                            volumeFlowMeasurementTypeId: 'opendes:reference-data--VolumeFlowMeasurementType:Production:'
+                            propertyId: 'opendes:reference-data--ProductionPropertyType:Volume:'
+                            unitQuantityId: 'opendes:reference-data--UnitQuantity:volume%20per%20time:'
+                            productId: 'opendes:reference-data--ProductKind:Gas:'
+                            dispositionId: 'opendes:reference-data--DispositionType:Sold:'
+                            parameterKindId: 'opendes:reference-data--ParameterKind:Double:'
+                            unitOfMeasureId: 'opendes:reference-data--UnitOfMeasure:1000%20m3%2Fd:'
+                          pointsCount: 3
+                          result:
+                            code: 202
+                            reason: Accepted
+                            message: >-
+                              The request has been accepted for processing, but the processing has
+                              not been completed.
+                        - timeseriesId: ESTIMATED_CONDENSATE_VOLUME
+                          version: 1781770405999
+                          start: 978307200000
+                          end: 978339600000
+                          metadata:
+                            nominalPeriodId: 'opendes:reference-data--ReportingPeriod:Day:'
+                            quantityMethodId: 'opendes:reference-data--QuantityMethod:Estimated:'
+                            durationContextId: 'opendes:reference-data--DurationContext:UptimeHours:'
+                            volumeFlowMeasurementTypeId: 'opendes:reference-data--VolumeFlowMeasurementType:Production:'
+                            propertyId: 'opendes:reference-data--ProductionPropertyType:Volume:'
+                            unitQuantityId: 'opendes:reference-data--UnitQuantity:volume%20per%20time:'
+                            productId: 'opendes:reference-data--ProductKind:Condensate:'
+                            dispositionId: 'opendes:reference-data--DispositionType:Sold:'
+                            parameterKindId: 'opendes:reference-data--ParameterKind:Double:'
+                            unitOfMeasureId: 'opendes:reference-data--UnitOfMeasure:bbl%2Fd:'
+                          pointsCount: 10
+                          result:
+                            code: 202
+                            reason: Accepted
+                            message: >-
+                              The request has been accepted for processing, but the processing has
+                              not been completed.
+                      result:
+                        code: 202
+                        reason: Accepted
+                        message: >-
+                          The request has been accepted for processing, but the processing has not
+                          been completed.
+        '207':
+          description: Partially successful request. Individual results and errors are listed in the response array.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+              examples:
+                partialSuccess:
+                  summary: Multi-status where one timeseries ingestion fails
+                  value:
+                    - recordId: >-
+                        opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4270
+                      reportingEntityId: 'opendes:master-data--Well:4093'
+                      timeseries:
+                        - timeseriesId: ESTIMATED_OIL_VOLUME
+                          version: 1781770549186
+                          start: 978307200000
+                          end: 978314400000
+                          metadata:
+                            nominalPeriodId: 'opendes:reference-data--ReportingPeriod:Day:'
+                            quantityMethodId: 'opendes:reference-data--QuantityMethod:Estimated:'
+                            durationContextId: 'opendes:reference-data--DurationContext:UptimeHours:'
+                            volumeFlowMeasurementTypeId: 'opendes:reference-data--VolumeFlowMeasurementType:Production:'
+                            propertyId: 'opendes:reference-data--ProductionPropertyType:Volume:'
+                            unitQuantityId: 'opendes:reference-data--UnitQuantity:volume%20per%20time:'
+                            productId: 'opendes:reference-data--ProductKind:Oil:'
+                            dispositionId: 'opendes:reference-data--DispositionType:Sold:'
+                            parameterKindId: 'opendes:reference-data--ParameterKind:Double:'
+                            unitOfMeasureId: 'opendes:reference-data--UnitOfMeasure:bbl%2Fd:'
+                          pointsCount: 3
+                          result:
+                            code: 202
+                            reason: Accepted
+                            message: >-
+                              The request has been accepted for processing, but the processing has
+                              not been completed.
+                        - timeseriesId: ESTIMATED_ABC_VOLUME
+                          result:
+                            code: 404
+                            reason: Not Found
+                            message: >-
+                              'ESTIMATED_ABC_VOLUME' timeseries not found in
+                              opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4270
+                        - result:
+                            code: 400
+                            reason: Bad Request
+                            message: >-
+                              Invalid point value type. Expected Double, but invalid value(s): 'abc'
+                              of String is(are) found for timestamp(s): 978307200000
+                      result:
+                        code: 207
+                        reason: Multi-Status
+                        message: Partially successful. See sub-requests response codes.
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+
+  /production-values/batch/timeseries:
+    post:
+      tags:
+        - Ingestion
+      summary: Ingest multiple timeseries for multiple records
+      description: Batch ingest timeseries data across multiple ProductionValues records in a single request.</br><p>Allowed roles&colon; `service.pddms.editor` and `service.pddms.admin`.
+      operationId: ingestTimeSeriesBatch
+      parameters:
+        - $ref: '#/components/parameters/DataPartitionId'
+      requestBody:
+        description: Mapping of record IDs and their associated timeseries to ingest.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestTimeSeriesBatchRequest'
+            example:
+              productionValues:
+                - recordId: >-
+                    opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4277
+                  timeseries:
+                    - timeseriesId: ESTIMATED_OIL_VOLUME
+                      points:
+                        - timestamp: 978307200000
+                          value: 1.1
+                        - timestamp: 978310800000
+                          value: 2.1
+                    - timeseriesId: ESTIMATED_GAS_VOLUME
+                      points:
+                        - timestamp: 978307200000
+                          value: 1.2
+                        - timestamp: 978310800000
+                          value: 2.2
+                        - timestamp: 978314400000
+                          value: 3.2
+                - recordId: >-
+                    opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4270
+                  timeseries:
+                    - timeseriesId: ESTIMATED_CONDENSATE_VOLUME
+                      points:
+                        - timestamp: 978307200000
+                          value: 1.1
+                        - timestamp: 978310800000
+                          value: 2.1
+
+      responses:
+        '202':
+          description: Points accepted for storage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+              examples:
+                successful:
+                  summary: Successful request.
+                  value:
+                    - recordId: >-
+                        opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4277
+                      reportingEntityId: 'opendes:master-data--Well:4093'
+                      timeseries:
+                        - timeseriesId: ESTIMATED_OIL_VOLUME
+                          version: 1781770940715
+                          start: 978307200000
+                          end: 978310800000
+                          metadata:
+                            nominalPeriodId: 'opendes:reference-data--ReportingPeriod:Day:'
+                            quantityMethodId: 'opendes:reference-data--QuantityMethod:Estimated:'
+                            durationContextId: 'opendes:reference-data--DurationContext:UptimeHours:'
+                            volumeFlowMeasurementTypeId: 'opendes:reference-data--VolumeFlowMeasurementType:Production:'
+                            propertyId: 'opendes:reference-data--ProductionPropertyType:Volume:'
+                            unitQuantityId: 'opendes:reference-data--UnitQuantity:volume%20per%20time:'
+                            productId: 'opendes:reference-data--ProductKind:Oil:'
+                            dispositionId: 'opendes:reference-data--DispositionType:Sold:'
+                            parameterKindId: 'opendes:reference-data--ParameterKind:Double:'
+                            unitOfMeasureId: 'opendes:reference-data--UnitOfMeasure:bbl%2Fd:'
+                          pointsCount: 2
+                          result:
+                            code: 202
+                            reason: Accepted
+                            message: >-
+                              The request has been accepted for processing, but the processing has
+                              not been completed.
+                        - timeseriesId: ESTIMATED_GAS_VOLUME
+                          version: 1781770940717
+                          start: 978307200000
+                          end: 978314400000
+                          metadata:
+                            nominalPeriodId: 'opendes:reference-data--ReportingPeriod:Day:'
+                            quantityMethodId: 'opendes:reference-data--QuantityMethod:Estimated:'
+                            durationContextId: 'opendes:reference-data--DurationContext:UptimeHours:'
+                            volumeFlowMeasurementTypeId: 'opendes:reference-data--VolumeFlowMeasurementType:Production:'
+                            propertyId: 'opendes:reference-data--ProductionPropertyType:Volume:'
+                            unitQuantityId: 'opendes:reference-data--UnitQuantity:volume%20per%20time:'
+                            productId: 'opendes:reference-data--ProductKind:Gas:'
+                            dispositionId: 'opendes:reference-data--DispositionType:Sold:'
+                            parameterKindId: 'opendes:reference-data--ParameterKind:Double:'
+                            unitOfMeasureId: 'opendes:reference-data--UnitOfMeasure:1000%20m3%2Fd:'
+                          pointsCount: 3
+                          result:
+                            code: 202
+                            reason: Accepted
+                            message: >-
+                              The request has been accepted for processing, but the processing has
+                              not been completed.
+                      result:
+                        code: 202
+                        reason: Accepted
+                        message: >-
+                          The request has been accepted for processing, but the processing has not
+                          been completed.
+                    - recordId: >-
+                        opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4270
+                      reportingEntityId: 'opendes:master-data--Well:4093'
+                      timeseries:
+                        - timeseriesId: ESTIMATED_CONDENSATE_VOLUME
+                          version: 1781770940718
+                          start: 978307200000
+                          end: 978310800000
+                          metadata:
+                            nominalPeriodId: 'opendes:reference-data--ReportingPeriod:Day:'
+                            quantityMethodId: 'opendes:reference-data--QuantityMethod:Estimated:'
+                            durationContextId: 'opendes:reference-data--DurationContext:UptimeHours:'
+                            volumeFlowMeasurementTypeId: 'opendes:reference-data--VolumeFlowMeasurementType:Production:'
+                            propertyId: 'opendes:reference-data--ProductionPropertyType:Volume:'
+                            unitQuantityId: 'opendes:reference-data--UnitQuantity:volume%20per%20time:'
+                            productId: 'opendes:reference-data--ProductKind:Condensate:'
+                            dispositionId: 'opendes:reference-data--DispositionType:Sold:'
+                            parameterKindId: 'opendes:reference-data--ParameterKind:Double:'
+                            unitOfMeasureId: 'opendes:reference-data--UnitOfMeasure:bbl%2Fd:'
+                          pointsCount: 2
+                          result:
+                            code: 202
+                            reason: Accepted
+                            message: >-
+                              The request has been accepted for processing, but the processing has
+                              not been completed.
+                      result:
+                        code: 202
+                        reason: Accepted
+                        message: >-
+                          The request has been accepted for processing, but the processing has not
+                          been completed.
+
+        '207':
+          description: Partially successful request. Individual results and errors are listed in the response array.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+              examples:
+                partialSuccess:
+                  summary: Multi-status batch where one record is not found
+                  value:
+                    - recordId: >-
+                        opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4277
+                      reportingEntityId: 'opendes:master-data--Well:4093'
+                      timeseries:
+                        - timeseriesId: ESTIMATED_abc_VOLUME
+                          result:
+                            code: 404
+                            reason: Not Found
+                            message: >-
+                              'ESTIMATED_abc_VOLUME' timeseries not found in
+                              opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4277
+                        - timeseriesId: ESTIMATED_GAS_VOLUME
+                          version: 1781771181759
+                          start: 978307200000
+                          end: 978314400000
+                          metadata:
+                            nominalPeriodId: 'opendes:reference-data--ReportingPeriod:Day:'
+                            quantityMethodId: 'opendes:reference-data--QuantityMethod:Estimated:'
+                            durationContextId: 'opendes:reference-data--DurationContext:UptimeHours:'
+                            volumeFlowMeasurementTypeId: 'opendes:reference-data--VolumeFlowMeasurementType:Production:'
+                            propertyId: 'opendes:reference-data--ProductionPropertyType:Volume:'
+                            unitQuantityId: 'opendes:reference-data--UnitQuantity:volume%20per%20time:'
+                            productId: 'opendes:reference-data--ProductKind:Gas:'
+                            dispositionId: 'opendes:reference-data--DispositionType:Sold:'
+                            parameterKindId: 'opendes:reference-data--ParameterKind:Double:'
+                            unitOfMeasureId: 'opendes:reference-data--UnitOfMeasure:1000%20m3%2Fd:'
+                          pointsCount: 3
+                          result:
+                            code: 202
+                            reason: Accepted
+                            message: >-
+                              The request has been accepted for processing, but the processing has
+                              not been completed.
+                      result:
+                        code: 207
+                        reason: Multi-Status
+                        message: Partially successful. See sub-requests response codes.
+                    - recordId: >-
+                        opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4270
+                      reportingEntityId: 'opendes:master-data--Well:4093'
+                      timeseries:
+                        - timeseriesId: ESTIMATED_CONDENSATE_VOLUME
+                          version: 1781771181760
+                          start: 978307200000
+                          end: 978310800000
+                          metadata:
+                            nominalPeriodId: 'opendes:reference-data--ReportingPeriod:Day:'
+                            quantityMethodId: 'opendes:reference-data--QuantityMethod:Estimated:'
+                            durationContextId: 'opendes:reference-data--DurationContext:UptimeHours:'
+                            volumeFlowMeasurementTypeId: 'opendes:reference-data--VolumeFlowMeasurementType:Production:'
+                            propertyId: 'opendes:reference-data--ProductionPropertyType:Volume:'
+                            unitQuantityId: 'opendes:reference-data--UnitQuantity:volume%20per%20time:'
+                            productId: 'opendes:reference-data--ProductKind:Condensate:'
+                            dispositionId: 'opendes:reference-data--DispositionType:Sold:'
+                            parameterKindId: 'opendes:reference-data--ParameterKind:Double:'
+                            unitOfMeasureId: 'opendes:reference-data--UnitOfMeasure:bbl%2Fd:'
+                          pointsCount: 2
+                          result:
+                            code: 202
+                            reason: Accepted
+                            message: >-
+                              The request has been accepted for processing, but the processing has
+                              not been completed.
+                      result:
+                        code: 202
+                        reason: Accepted
+                        message: >-
+                          The request has been accepted for processing, but the processing has not
+                          been completed.
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OSDU Entitlement/Token Service JWT Bearer Token
+
+  parameters:
+    DataPartitionId:
+      name: data-partition-id
+      in: header
+      description: The tenant data partition ID.
+      required: true
+      schema:
+        type: string
+        example: opendes
+
+    RecordId:
+      name: recordId
+      in: path
+      description: ProductionValues v2.0.0+ record ID.
+      required: true
+      schema:
+        type: string
+        example: opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4277
+
+    TimeseriesId:
+      name: timeseriesId
+      in: path
+      description: DDMSDatasetID. The timeseries identifier within the record.
+      required: true
+      schema:
+        type: string
+        example: ESTIMATED_GAS_VOLUME
+
+  responses:
+    400BadRequest:
+      description: Bad request. Payload validation failed or payload is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AppError'
+          example:
+            result:
+              code: 400
+              reason: Bad Request
+              message: >-
+                Invalid point value type. Expected Double, but invalid value(s):
+                'abc123' of String is(are) found for timestamp(s): 978307200000
+    401Unauthorized:
+      description: Unauthorized. Authentication failed or token is missing.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AppError'
+          example:
+            result:
+              code: 401
+              reason: Unauthorized
+              message: "The supplied authentication is invalid or has expired."
+    403Forbidden:
+      description: Forbidden. User does not have appropriate permissions (Admin, Editor).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AppError'
+          example:
+            result:
+              code: 403
+              reason: Forbidden
+              message: "User does not have permission to access this resource."
+    404NotFound:
+      description: Not Found. Record or timeseries could not be located.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AppError'
+          example:
+            result:
+              code: 404
+              reason: Not Found
+              message: "Record not found opendes:work-product-component--ProductionValues:VALIDATION_TEST"
+    500InternalError:
+      description: Internal Server Error. Service encountered an unexpected problem.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AppError'
+          example:
+            result:
+              code: 500
+              reason: Internal Server Error
+              message: "Unable to process your request at this time. Please try again later. If the issue persists, please contact support."
+
+  schemas:
+    ResultInfo:
+      type: object
+      required:
+        - code
+        - reason
+        - message
+      properties:
+        code:
+          type: integer
+          format: int32
+          description: HTTP status code
+          example: 202
+        reason:
+          type: string
+          description: Short explanation of the status
+          example: Accepted
+        message:
+          type: string
+          description: Detailed response message
+          example: "The request has been accepted for processing, but the processing has not been completed."
+
+    AppError:
+      type: object
+      required:
+        - result
+      properties:
+        result:
+          $ref: '#/components/schemas/ResultInfo'
+
+    VersionInfo:
+      type: object
+      required:
+        - groupId
+        - artifactId
+        - version
+        - connectedOuterServices
+      properties:
+        groupId:
+          type: string
+          example: org.opengroup.osdu.production
+        artifactId:
+          type: string
+          example: pddms-timeseries-ingestion
+        version:
+          type: string
+          example: 0.1.0-SNAPSHOT
+        buildTime:
+          type: string
+          example: "2026-06-17T02:21:07Z"
+        branch:
+          type: string
+          example: develop
+        commitId:
+          type: string
+          example: 3b7f8f4188a4a4ce12c15ecba95b5095f36928f1
+        commitMessage:
+          type: string
+          example: "Update : Remove unit from response and request"
+        connectedOuterServices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectedOuterService'
+
+    ConnectedOuterService:
+      type: object
+      required:
+        - name
+        - version
+      properties:
+        name:
+          type: string
+          example: OSDU Core Entitlement service
+        version:
+          type: string
+          example: "N/A"
+
+    VersionInfoShort:
+      type: object
+      required:
+        - groupId
+        - artifactId
+        - version
+      properties:
+        groupId:
+          type: string
+          example: org.opengroup.osdu.production
+        artifactId:
+          type: string
+          example: pddms-timeseries-ingestion
+        version:
+          type: string
+          example: 0.1.0-SNAPSHOT
+
+    Point:
+      type: object
+      required:
+        - point
+        - value
+      properties:
+        point:
+          type: integer
+          format: int64
+          description: Unix epoch millisecond timestamp
+          example: 978307200000
+        value:
+          description: Value at the timestamp (number, string, boolean)
+          oneOf:
+            - type: number
+              format: double
+            - type: string
+            - type: boolean
+          example: 58883469.74
+
+    TimeSeriesMetadata:
+      type: object
+      properties:
+        nominalPeriodId:
+          type: string
+          nullable: true
+          example: "opendes:reference-data--ReportingPeriod:Day:"
+        quantityMethodId:
+          type: string
+          nullable: true
+          example: "opendes:reference-data--QuantityMethod:Estimated:"
+        durationContextId:
+          type: string
+          nullable: true
+        volumeFlowMeasurementTypeId:
+          type: string
+          nullable: true
+        propertyId:
+          type: string
+          nullable: true
+          example: gas-production-rate
+        unitQuantityId:
+          type: string
+          nullable: true
+        productId:
+          type: string
+          nullable: true
+        dispositionId:
+          type: string
+          nullable: true
+        parameterKindId:
+          type: string
+          nullable: true
+        unitOfMeasureId:
+          type: string
+          nullable: true
+          example: bbl
+
+    IngestTimeSeriesRequest:
+      type: object
+      required:
+        - points
+      properties:
+        unit:
+          type: string
+          example: bbl
+          description: Base unit for the points provided
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/Point'
+
+    IngestTimeSeriesResponse:
+      type: object
+      required:
+        - timeseriesId
+        - version
+        - count
+        - points
+        - result
+      properties:
+        timeseriesId:
+          type: string
+          example: ESTIMATED_GAS_VOLUME
+        version:
+          type: integer
+          format: int64
+          example: 1781668713201
+        start:
+          type: integer
+          format: int64
+          description: Starting point timestamp of the returned data.
+          example: 978307200000
+        end:
+          type: integer
+          format: int64
+          description: Ending point timestamp of the returned data.
+          example: 978339600000
+        metadata:
+          $ref: '#/components/schemas/TimeSeriesMetadata'
+        count:
+          type: integer
+          format: int32
+          description: Number of points ingested
+          example: 6
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/Point'
+        result:
+          $ref: '#/components/schemas/ResultInfo'
+
+    TimeSeriesErrorResponse:
+      type: object
+      required:
+        - timeseriesId
+        - result
+      properties:
+        timeseriesId:
+          type: string
+          example: ESTIMATED_GAS_VOLUME
+        result:
+          $ref: '#/components/schemas/ResultInfo'
+
+    ProductionValuesErrorResponse:
+      type: object
+      required:
+        - recordId
+        - result
+      properties:
+        recordId:
+          type: string
+          example: opendes:work-product-component--ProductionValues:VALIDATION_TEST
+        result:
+          $ref: '#/components/schemas/ResultInfo'
+
+    BatchResultItem:
+      type: object
+      required:
+        - recordId
+        - result
+      properties:
+        recordId:
+          type: string
+          example: opendes:work-product-component--ProductionValues:5985136c-75f0-5585-91ba-a90f506a4277
+        reportingEntityId:
+          type: string
+          example: opendes:master-data--Well:4093
+        timeseries:
+          type: array
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/IngestTimeSeriesResponse'
+              - $ref: '#/components/schemas/TimeSeriesErrorResponse'
+        result:
+          $ref: '#/components/schemas/ResultInfo'
+
+    BatchResponse:
+      type: array
+      items:
+        oneOf:
+          - $ref: '#/components/schemas/BatchResultItem'
+          - $ref: '#/components/schemas/ProductionValuesErrorResponse'
+
+    IngestTimeSeriesBatchRequest:
+      type: object
+      required:
+        - productionValues
+      properties:
+        productionValues:
+          type: array
+          items:
+            $ref: '#/components/schemas/IngestTimeSeriesBatchProductionValuesRequestItem'
+
+    IngestTimeSeriesBatchProductionValuesRequestItem:
+      type: object
+      required:
+        - recordId
+        - timeseries
+      properties:
+        recordId:
+          type: string
+          example: opendes:work-product-component--ProductionValues:DOUBLE-001
+        timeseries:
+          type: array
+          items:
+            $ref: '#/components/schemas/IngestTimeSeriesBatchTimeSeriesRequestItem'
+
+    IngestTimeSeriesBatchTimeSeriesRequestItem:
+      type: object
+      required:
+        - timeseriesId
+        - points
+      properties:
+        timeseriesId:
+          type: string
+          example: ALLOCATED_PROD_OIL_RATE
+        unit:
+          type: string
+          example: bbl
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/Point'
+
+    IngestTimeSeriesBatchForSingleProductionValuesRequest:
+      type: object
+      required:
+        - timeseries
+      properties:
+        timeseries:
+          type: array
+          items:
+            $ref: '#/components/schemas/IngestTimeSeriesBatchTimeSeriesRequestItem'
+
+    ValidationRequest:
+      type: object
+      properties:
+        source:
+          type: string
+          example: csv-parser
+        kind:
+          type: string
+          example: opendes:wks:dataset--File.Generic:1.0.0
+        acl:
+          $ref: '#/components/schemas/Acl'
+        tags:
+          $ref: '#/components/schemas/Tag'
+        data:
+          $ref: '#/components/schemas/Data'
+        legal:
+          $ref: '#/components/schemas/Legal'
+
+    Acl:
+      type: object
+      required:
+        - viewers
+        - owners
+      properties:
+        viewers:
+          type: array
+          items:
+            type: string
+          example: ["data.default.owners@opendes.contoso.com"]
+        owners:
+          type: array
+          items:
+            type: string
+          example: ["data.default.owners@opendes.contoso.com"]
+
+    Legal:
+      type: object
+      properties:
+        legalTags:
+          type: array
+          items:
+            type: string
+          example: ["opendes-Wellbore-Legal-Tag-Name"]
+        otherRelevantDataCountries:
+          type: array
+          items:
+            type: string
+          example: ["US"]
+        status:
+          type: string
+          example: compliant
+
+    Tag:
+      type: object
+      properties:
+        source:
+          type: object
+          additionalProperties:
+            type: string
+
+    Data:
+      type: object
+      properties:
+        Name:
+          type: string
+          example: csv-parser-input-with-targets-10K-altered-v2-well-100.csv
+        Endian:
+          type: string
+          example: LITTLE
+        DatasetProperties:
+          $ref: '#/components/schemas/DatasetProperty'
+        ExtensionProperties:
+          $ref: '#/components/schemas/ExtensionProperty'
+
+    DatasetProperty:
+      type: object
+      properties:
+        FileSourceInfo:
+          $ref: '#/components/schemas/FileSourceInfo'
+
+    FileSourceInfo:
+      type: object
+      properties:
+        Name:
+          type: string
+        PreloadFilePath:
+          type: string
+        FileSource:
+          type: string
+          example: opendes:dataset--File.Generic:uuid-string
+        PreloadFileCreateUser:
+          type: string
+        PreloadFileCreateDate:
+          type: string
+        PreloadFileModifyUser:
+          type: string
+        PreloadFileModifyDate:
+          type: string
+        FileSize:
+          type: string
+        EncodingFormatTypeID:
+          type: string
+
+    ExtensionProperty:
+      type: object
+      properties:
+        Name:
+          type: string
+        FileContentsDetails:
+          $ref: '#/components/schemas/FileContentsDetail'
+
+    FileContentsDetail:
+      type: object
+      properties:
+        FileContentTypeID:
+          type: string
+        FrameOfReference:
+          type: array
+          items:
+            type: object
+
+    ErrorPropResponse:
+      type: object
+      properties:
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ErrorProperty'
+
+    ErrorProperty:
+      type: object
+      properties:
+        property:
+          type: string
+          example: kind
+        message:
+          type: string
+          example: "Invalid kind format. Expected pattern: <tenantId>:wks:dataset--File.Generic:<version>"
