@@ -1,29 +1,31 @@
 # The ledger
 
-The ledger is the system ([design.md](design.md) section 7): the tables in the catalog database's `delivery`
-schema that say, per record, what OSDU holds, what is waiting, and everything that ever happened to it. It is
-created from the catalog's EF model. Everything an operator or a dashboard asks is answered from
-here, and every answer is index-backed.
+The ledger is the system ([design.md](design.md) section 7): the tables in the `osdu` schema that say, per record,
+what OSDU holds, what is waiting, and everything that ever happened to it. Everything an operator or a dashboard asks
+is answered from here, and every answer is index-backed.
 
-The ledger sits in the same database as the platform's catalog, so one connection, one model and
-one backup cover both, and a run row and the attempts it produced are joined by id.
+The `osdu` schema lives in the same database as the platform's catalog, so one backup covers both and a run row and
+the attempts it produced are joined by id, but it is the module's own: its own EF context (`OsduDbContext`), its own
+migration history and its own schema version, with no foreign keys into SQLFlow's tables
+([architecture.md](architecture.md)). The control plane reaches it on the catalog's connection; a node, which opens
+no catalog connection at all, reaches it through a connection reference of its own.
 
 ## Tables
 
-### `delivery.Submission`: one drop handed over by the preparing side
+### `osdu.Submission`: one plan of a flow over its ingestion tables
 
 | Column | Purpose |
 | --- | --- |
-| `SubmissionId` | Primary key and idempotency key (the manifest's `submissionId`). |
+| `SubmissionId` | Primary key and idempotency key. |
 | `FlowId`, `FlowName`, `MappingReference`, `RenderContext` | What produced the run. |
-| `DropLocation`, `ParametersJson`, `RecordCount` | The handover. |
-| `WorkLocation`, `BatchCount`, `Partitions` | Where the intake wrote its work batches, how many, and how many root partitions the drop declared. |
-| `Kind` | `drop`, or `replan` for the records of the flow's replica planned again ([replica.md](replica.md)). |
-| `ManifestJson` | The drop's manifest, kept so a submission loaded into the replica is planned without opening its drop. |
-| `SourceSequence`, `LoadedUtc` | The flow-wide order of replica loads (a unique index per flow), and when the drop's records were completely loaded. |
-| `SourceRecords`, `LoadedRows`, `LoadedOrdinals`, `Duplicates`, `Untracked` | What the load read: records in the drop, distinct records carried, the ordinals a fan-out slices, records carried twice (the later stands), records without a delivery key. |
-| `ReplicaInserted`, `ReplicaUpdated`, `ReplicaSchemaJson` | What the load did to the replica: records added, records changed, and the schema changes applied and the drift found, by scope. |
-| `SourcePrunedUtc` | When the replica's retention removed the submission's record list; a run of it then loads its drop again. |
+| `ParametersJson`, `RecordCount` | The parameter values the plan read with, and how many records it covered. |
+| `WorkLocation`, `BatchCount`, `Slices` | Where the intake wrote its work batches, how many, and how many key slices it cut the work into for its fan-out members. |
+| `Kind` | Which selection was read: `incremental` (the rows changed in a window after the scope's watermark), `full` (every row of the scope), `keys` (named record keys: a record-scoped run, or the records the ledger asked to plan again) or `inline` (the records an API submission landed). |
+| `SourceConnection`, `SourceObject` | The ingestion database's connection reference exactly as the flow declares it (never a resolved secret), and the three-part name of the record table read. |
+| `WindowFromUtc`, `WindowToUtc` | The `UpdatedDate_DW` window the plan covered. Both null for a keys or inline plan with no window; a full plan records its upper bound. |
+| `SourceWindowJson` | What else bounded the read: the child dataset objects, the overlap seconds, the scope values, the slice boundaries, the key count, and for a keys or inline plan the key digest. |
+| `RunId`, `GroupId` | The run that coordinated the submission, and, for one an API submission queued, the chain run group of pre, ingestion and OSDU runs. |
+| `Untracked` | Rows the plan read that carried no complete record key, so nothing could be delivered under them. |
 | `Status` | `received`, `planned`, `running`, `completed`, `failed`. |
 | `Planned`, `SkippedUnchanged`, `AwaitingApproval`, `SkippedStale`, `UnchangedAtPush`, `Blocked`, `Delivered`, `Held`, `Failed` | Counts scoped to the records this submission touched. `AwaitingApproval` counts the records a cache change waiting for a decision held back: rendered and ready, and not unchanged, so a run says how many wait on an approval instead of hiding them among the records it had no reason to send. `Planned`, `SkippedUnchanged`, `SkippedStale` and `Blocked` describe its latest planning pass: a re-run of the submission plans it again and replaces them. `Delivered` and `UnchangedAtPush` count the distinct records the submission's attempts delivered, or found OSDU already holding at the final hash check, across every pass. `Held` and `Failed` count the records whose last submission this is and that are held or failed now. A re-run that re-sends one record of three already delivered therefore shows 1 planned and 3 delivered; what that run itself did is on the run (`recordsPlanned`, `recordsDelivered`). `SkippedStale` counts rows older than the version delivered or queued. |
 | `ReceivedUtc`, `StartedUtc`, `CompletedUtc`, `Error` | Timeline. |
@@ -32,32 +34,54 @@ The platform's run row carries the submission too: `Run.SubmissionId` when a run
 `Run.ResultSubmissionId` for the submission a deliver run registered or completed, so a submission page lists
 the runs that carried it.
 
-### `delivery.InlineSubmission`: the records a source sent in the request
+### `osdu.InlineSubmission`: the records a source sent in the request
 
-The submissions whose records came in the request rather than in a drop ([design.md](design.md) section 3.4). The row is
-written by the control plane in the same transaction as the run that takes the records, and read by that run, which
-writes them out as a drop; the `delivery.Submission` row of the same id is registered by that run's intake, as for any
-drop.
+The submissions whose records came in the request ([submitting-records.md](submitting-records.md)). The row is written
+by the control plane, which then lands the records as files for the flow's declared pre-ingestion flows and enqueues
+the chain of pre, ingestion and OSDU runs that delivers them. The `osdu.Submission` row of the same id is registered
+by the OSDU run's intake, as for any other plan.
 
 | Column | Purpose |
 | --- | --- |
 | `SubmissionId` | Primary key and idempotency key, the id the caller chose or the one minted for it. |
-| `FlowId`, `FlowName`, `MappingReference` | The flow, and the mapping it pinned when the records were accepted: a flow promoted since refuses them, as it refuses a drop prepared for an earlier mapping. |
+| `FlowId`, `FlowName`, `MappingReference` | The flow, and the mapping it pinned when the records were accepted: a flow promoted since refuses them. |
 | `Operation`, `Force` | What the submission asked for: `deliver` or `plan`, and whether it forces past the change gates. |
 | `ParametersJson` | The flow parameter values, resolved against the flow's declarations. |
 | `RecordsJson`, `ContentHash`, `RecordCount`, `ChildRowCount`, `ContentBytes` | The records in canonical form and their size: what was sent, and what a repeat is compared against. |
 | `RequestHash` | The hash a repeat of the request matches: flow, mapping, operation, force, parameter values and records. A different request under the same id is refused. |
 | `ReceivedUtc`, `ReceivedBy` | When the records arrived and who sent them. |
-| `DropLocation`, `WrittenUtc` | Where the last run wrote them as a drop, and when. Empty until a run has. |
+| `Status`, `LandedUtc` | How far it got: `accepted` (stored), `landed` (its files written), `queued` (its chain enqueued), then `completed` or `failed`; and when the files were written. |
+| `GroupId`, `OsduRunId` | The chain run group the submission queued, and the OSDU flow's own run in it. |
+| `Error` | Why it failed, redacted. |
 
-### `delivery.Record`: the current state of one deliverable
+### `osdu.SubmissionLanding`: the file each dataset was landed as
+
+One row per dataset of an API submission (`record`, or a child dataset's name), keyed by `(SubmissionId, Dataset)`.
+It is what makes a submitted record traceable through the pre and ingestion flows.
+
+| Column | Purpose |
+| --- | --- |
+| `PreFlowName` | The pre-ingestion flow that reads the landing folder. |
+| `Location`, `FileName`, `Format` | The full location written, the file name itself, and the format the pre flow declares (`csv`, `ndjson`, `json` or `parquet`). |
+| `RowCount`, `Bytes`, `ContentHash` | What was written; the hash is what makes a repeated landing a no-op rather than a second file. |
+| `WrittenUtc`, `PreRunId` | When the file was written, and which pre flow member run took it. |
+
+`FileName` is unique across the ledger, and it is the value `FileName_DW` takes on every ingestion row loaded from
+that file. That is the traceability link: a delivered record's origin file resolves back to the submission that
+landed it, even when a scheduled pre run picked the file up before the submission's own chain ran.
+
+### `osdu.Record`: the current state of one deliverable
 
 | Column | Purpose |
 | --- | --- |
 | `DeliveryKey` | Primary key. Deterministic, derived from source data. |
 | `FlowId`, `SourceKey`, `Label`, `MappingName` | Provenance. `Label` is the mapping's `dataset.label` rendered for the row (a wellbore name, a log name), for search and display only. |
-| `RenderContext`, `SourceFingerprint`, `MetadataHash`, `PayloadHash` | What OSDU holds: the gates for tiers 1 and 2. |
-| `SourceModifiedUtc`, `PayloadModifiedUtc` | The last-modified moment of the source row, and the newest modified time of the chunk files, that OSDU's document and payload were built from: the watermarks an incremental drop is ordered against. |
+| `RenderContext`, `SourceFingerprint`, `MetadataHash`, `PayloadHash` | What OSDU holds: the gates for tiers 1 and 2. `SourceFingerprint` is the ingestion fingerprint, computed over the record row's `UpdatedDate_DW` and, per child dataset, its row count and newest `UpdatedDate_DW`. |
+| `SourceModifiedUtc`, `PayloadModifiedUtc` | The last-modified moment of the source row, and the newest modified time of the payload files, that OSDU's document and payload were built from: the watermarks an incremental run is ordered against. |
+| `SourceKeyJson` | The record's key tuple as a JSON array, in `source.record.key` order: what a key-scoped read of the ingestion tables uses. |
+| `SourceFileName`, `SourceRowNumber`, `SourceUpdatedUtc` | Where the version OSDU holds came from: the ingestion row's `FileName_DW`, `RowNumber_DW` and `UpdatedDate_DW`. |
+| `PendingSourceFileName`, `PendingSourceRowNumber`, `PendingSourceUpdatedUtc` | The same for the queued version, or for the state a held, failed or deleted record was left in. |
+| `PlanRequestedUtc` | Set when the ledger asks for the record to be planned again (a redeliver, a release with no pending document, a cache rollout); the next run pages these records and plans them as a keys selection, and planning clears it. |
 | `TargetId`, `TargetVersion` | The OSDU id and the last known version (the drift handle). |
 | `Status` | `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`. |
 | `Blocked` | Set when the record was held, failed or deleted and not released since. |
@@ -69,7 +93,7 @@ drop.
 | `PendingStepJson` | The steps an earlier try of the pending work completed, with what the target returned, so the next try resumes after them. |
 | `TargetStateJson` | Every value the target returned across the record's deliveries (record id and version, dataset ids, file sources, a workflow run id): what OSDU holds for the record. |
 
-### `delivery.Attempt`: append-only, one row per delivery try
+### `osdu.Attempt`: append-only, one row per delivery try
 
 Worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`), the
 phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `none`), the hashes
@@ -86,7 +110,7 @@ held for the record under `returned`), and the error of a refused or failed requ
 service answered with. The OpenAPI descriptions do not declare the header; the storage service answers with the id it
 is sent, and with one of its own when it is sent none.
 
-### `delivery.WorkBatch`: one file of rendered documents
+### `osdu.WorkBatch`: one file of rendered documents
 
 | Column | Purpose |
 | --- | --- |
@@ -101,7 +125,7 @@ A drain claims the oldest queued batch of the flow (or of one submission) and le
 under the batch's token; the records' rows point at the batch and their range in its file. A batch whose drain
 crashed is reclaimed with its records when the lease expires.
 
-### `delivery.Retrieval`: one run of a retrieval flow
+### `osdu.Retrieval`: one run of a retrieval flow
 
 | Column | Purpose |
 | --- | --- |
@@ -114,9 +138,9 @@ crashed is reclaimed with its records when the lease expires.
 | `Records`, `Files`, `Bytes` | What was written (bytes uncompressed). |
 | `StartedUtc`, `CompletedUtc`, `Error` | Timeline and the redacted error. |
 
-### `delivery.Activity`: the audit trail of runs and interventions
+### `osdu.Activity`: the audit trail of runs and interventions
 
-One row per operator or scheduler action: `deliver`, `intake`, `drain`, `submit`, `verify`, `known-state`,
+One row per operator or scheduler action: `deliver`, `intake`, `drain`, `submit`, `verify`,
 `release`, `redeliver`, `delete`. Each carries the actor (the run's requesting user, `schedule` or `manual` for a run;
 `user:<name>` for an intervention from the GUI or the API; `cli:<user>` from a workstation), start and end,
 outcome (`running`, `completed`, `failed`, `cancelled`), the parameters as JSON, the submission, record and
@@ -125,12 +149,19 @@ platform run it targeted when it targeted one, a summary and, for runs, the capt
 Record history is the attempts; run and intervention history is the activities. A record's page in the GUI
 shows both, plus its verify outcomes; a run's page links to what it did to each record through the run id.
 
-### `delivery.SourceWatermark`: tier 0
+### `osdu.SourceWatermark`: tier 0
 
-`(FlowId, Scope, TableName) -> Version`, where the scope is the flow's parameter set. A manifest whose
-`sourceVersions` have not advanced past these skips the whole run (unless the run is forced).
+One row per `(FlowId, Scope)`, where the scope is the flow's parameter set: `UpdatedThroughUtc` is the upper bound of
+the last completed whole-scope plan, with the `SubmissionId` that wrote it, when it was recorded, and the render
+context it was written under. The next run reads the window `(UpdatedThroughUtc - overlapSeconds, now]`, and a scope
+with no watermark is read in full.
 
-### `delivery.Mapping` and `delivery.CacheDefinition`: what the repositories declare
+It moves only when a whole-scope plan finishes and every one of its fan-out members succeeded, so a failed member
+leaves the watermark where it was and the next run covers the same rows again. A `keys` or `inline` plan never moves
+it. When no row changed in the window and no record is waiting to be planned again, the run is skipped entirely,
+unless it is forced.
+
+### `osdu.Mapping` and `osdu.CacheDefinition`: what the repositories declare
 
 Read models the repository sync writes: every mapping document (its reference, kind, the template version it pins
 in `TemplateVersion`, a parsed summary, the YAML, and whether it parses) and every type a cache flow declares (the
@@ -140,9 +171,9 @@ row per repository, cache flow and name (unique on `RepoId`, `FlowName`, `Name`)
 because a refresh reads every declaration of its partition to know the paths the cache keeps for a type. A declaration
 that disagrees with another flow's declaration of the same type for the partition is left out with a warning. They
 back the GUI's Mappings and OSDU cache pages, and the templates listing counts each template version's pins from
-`delivery.Mapping`; nothing writes them but the sync.
+`osdu.Mapping`; nothing writes them but the sync.
 
-### `delivery.CacheVersion`, `delivery.CacheItem` and `delivery.CacheMember`: one cache per partition
+### `osdu.CacheVersion`, `osdu.CacheItem` and `osdu.CacheMember`: one cache per partition
 
 What a cache holds lives here and nowhere else ([design.md](design.md) section 6.2): nothing about it is written to a
 repository. There is one cache per OSDU data partition, keyed by the partition (`Scope`, the `data-partition-id` the
@@ -161,32 +192,32 @@ render context names the version it was rendered against.
 | `PreviousVersion`, `Current` | The version that was current when this one was written, which the capture was merged onto, and whether this is the newest version, the one deliveries render against unless a flow pins another. |
 | `TypesJson`, `Items` | The types the version holds, each with its entity type and record count, and the records across them. |
 
-`delivery.CacheItem` keeps the cached records by version range rather than by copy. A row is one record of one partition's cache
+`osdu.CacheItem` keeps the cached records by version range rather than by copy. A row is one record of one partition's cache
 (`Scope`, `TypeName`, `RecordId`) with its captured values (`FieldsJson`, with every scalar also in `Terms` for search)
 as a run of consecutive versions held them: from the version at `FromSequence` up to, and not including, the one at
 `ToSequence`, which is null while the newest version still holds the record unchanged. A record is stored once per
 partition however many cache flows capture it, and a merge writes rows only for the records that changed, arrived or
 left, so keeping every version costs rows in proportion to what moved.
 
-`delivery.CacheMember` is current state, not history: one row per partition, type, record and cache flow (`Scope`,
+`osdu.CacheMember` is current state, not history: one row per partition, type, record and cache flow (`Scope`,
 `TypeName`, `RecordId`, `FlowName`, which together are the key) saying that the flow's last capture of the type held
 the record. It is what lets several cache flows share one partition's cache. A merge replaces the capturing flow's rows
 for the types it captured, and a record the capturing flow no longer finds leaves the cache only when no other flow's
 row still holds it. The rows of a type the merge removes go with it, and the repository sync deletes a flow's rows for
-a type the flow stops declaring. What each version held is in `delivery.CacheItem`.
+a type the flow stops declaring. What each version held is in `osdu.CacheItem`.
 
-### `delivery.CacheSet`, `delivery.CacheSetEntry` and `delivery.UpdateTag`: what a cache change reaches
+### `osdu.CacheSet`, `osdu.CacheSetEntry` and `osdu.UpdateTag`: what a cache change reaches
 
-A `delivery.CacheSet` is one distinct combination of cached values a render consumed, shared by every record that read
-the same values through the record's `CacheSetId`. Each `delivery.CacheSetEntry` is one value in it: the partition
+A `osdu.CacheSet` is one distinct combination of cached values a render consumed, shared by every record that read
+the same values through the record's `CacheSetId`. Each `osdu.CacheSetEntry` is one value in it: the partition
 whose cache it was read from (`Scope`, the partition the delivery flow delivers to), the type, the cached record, the
-path, and the value as it was read. A `delivery.UpdateTag` is one change a refresh found in values delivered records
+path, and the value as it was read. A `osdu.UpdateTag` is one change a refresh found in values delivered records
 were built from: the partition (`Scope`), the type, the cached record, the
 path, the value before and after, the versions it moved between, `Mode` (`approve` or `auto`), `Status` (`pending`,
 `approved`, `rejected`, `rolling`, `applied`), how many delivered records it reaches and how far the rollout has got
 ([design.md](design.md) section 6.2).
 
-### `delivery.Template`: the templates mappings pin
+### `osdu.Template`: the templates mappings pin
 
 The OSDU schemas mappings are checked and rendered against ([mapping-templates.md](mapping-templates.md)). They are
 saved in the catalog rather than in a repository, because the control plane runs as a container whose disk does not
@@ -200,7 +231,7 @@ survive a restart. A row is written by the GUI's Templates page, `POST /api/v1/d
 | `SchemaJson` | The bundled JSON Schema, every reference resolved into its definitions. |
 | `Origin`, `CapturedBy`, `CapturedUtc` | Where the schema came from (the release, commit and file of the OSDU data definitions, a local data definitions folder, or an imported file), who saved it and when. |
 
-Saving a schema that is already saved adds no row. A version is deleted only while no `delivery.Mapping` row pins it
+Saving a schema that is already saved adds no row. A version is deleted only while no `osdu.Mapping` row pins it
 (the `(Kind, TemplateVersion)` index answers that), so a template a synced mapping pins cannot be removed from under
 it.
 
@@ -224,10 +255,11 @@ at) or an operator releases it. That is what "do not retry without intervention"
 same data never re-attempts a known problem, while a corrected source row flows through on its own.
 
 A released record that still holds its rendered document goes back to pending in its submission, and the flow's next
-deliver run sends it, whichever drop that run is for. A run of the record's own drop sends it although its plan finds
-nothing new for it (the row is what the record already queues); a run of another drop, once its own records are sent,
-takes the due records of up to ten completed or failed submissions and recomputes their totals. A `drain` run sends it
-at any time.
+deliver run sends it, whatever that run itself plans: the row is what the record already queues, so a run whose plan
+finds nothing new for it still sends it. Once a run's own records are sent it takes the due records of up to ten
+completed or failed submissions and recomputes their totals. A `drain` run sends it at any time. A record released
+without a rendered document is stamped to be planned again instead, and the next run reads it from the ingestion
+tables by key.
 
 Versions never go backwards. A row older than the version a record holds, delivered or queued, is skipped with an
 attempt (`skipped`, phase `stale`) naming both versions, and staging refuses work older than what the ledger holds,
@@ -239,11 +271,11 @@ document. Before anything is sent, the worker compares the queued document and p
 says OSDU holds at that moment and sends only the halves that differ; when neither does, it settles the record with
 an attempt (`skipped`, phase `unchanged`) and sends nothing.
 
-**Redeliver** forgets the hashes of what OSDU holds (all of them, or only the metadata or the payload), so the
-next plan of a drop that carries the record sends that part again. From the GUI, redeliver also queues the
-deliver run scoped to the record, so the redelivery happens at once and is recorded under the user who asked.
-It never bypasses the render: the document sent is always the one the pinned mapping produces from the
-current source.
+**Redeliver** forgets the hashes of what OSDU holds (all of them, or only the metadata or the payload) and stamps the
+record to be planned again, so the next plan that reaches it sends that part again. From the GUI, redeliver also
+queues a deliver run scoped to the record, which reads it from the ingestion tables by key, so the redelivery happens
+at once and is recorded under the user who asked. It never bypasses the render: the document sent is always the one
+the pinned mapping produces from the current source rows.
 
 **Removal** takes the record out of OSDU through the flow's protocol, to one of three depths (see
 [operations](operations.md#removing-records-from-osdu)). `record` and `everything` write a `delete` attempt,
@@ -298,7 +330,10 @@ Listings are index-backed so the GUI answers in milliseconds at any estate size:
 | `Retrieval (FlowId, StartedUtc)`, `(FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval flow's runs, the watermark chain (the last done run), the run's row |
 | `Record (FlowId, Label)`, `(FlowId, SourceKey)`, `(FlowId, TargetId)` | prefix search (`LIKE 'term%'`) on the three identity columns |
 | `Record (FlowId, UpdatedUtc)`, `(FlowId, LastDeliveredUtc)`, `(FlowId, LastVerifyOutcome)` | recency listings, the last delivery and the part-hour of the 24-hour count, drift |
-| `Record (FlowId, DeliveryKey)` | key-ordered walks of one flow: the known-state stream, a removal's key list |
+| `Record (FlowId, DeliveryKey)` | key-ordered walks of one flow: a removal's key list, a keys selection's pages |
+| `Record (FlowId, SourceFileName, SourceRowNumber)`, global `(SourceFileName)` | "which records came from this file", inside one flow and across the estate |
+| `Record (FlowId, PlanRequestedUtc) WHERE PlanRequestedUtc IS NOT NULL` | the records the planner pages each run, so it stays as small as the backlog |
+| `SubmissionLanding (FileName)` unique | a record's origin file back to the submission that landed it |
 | `RecordCount` indexed view `(FlowId, Status, LastVerifyOutcome, DeliveredHour)` | flow statistics, read from a few rows per flow (see [Statistics](#statistics)) |
 | `Attempt (DeliveryKey, StartedUtc)`, `(SubmissionId)`, `(RunId, DeliveryKey)`, `(StartedUtc)` | record timeline, submission view, a run's records, pruning |
 | `Activity (FlowId, StartedUtc)`, `(DeliveryKey, StartedUtc)`, `(Kind, StartedUtc)`, `(Actor, StartedUtc)`, `(SubmissionId)`, `(RunId)` | the audit views and their filters |
@@ -328,13 +363,13 @@ Every listing reads a bounded part of the ledger, however many records a flow ho
 ## Statistics
 
 A flow's statistics (`GET /api/v1/delivery/flows/{id}/stats`: the records by status, the drifted ones, the deliveries
-of the last 24 hours) are read on SQL Server from the `delivery.RecordCount` indexed view, which counts the flow's
+of the last 24 hours) are read on SQL Server from the `osdu.RecordCount` indexed view, which counts the flow's
 records by status, last verify outcome and the hour of their last delivery. SQL Server maintains the view in the
 transaction of every record write, so the counts are derived from the ledger, exact, and cost a few rows per flow at
 any volume. The deliveries of the last 24 hours add the view's whole hours inside the window to an index count of the
 part-hour the window opens in, which is exact to the tick and reads under an hour of deliveries. EF cannot declare an
-indexed view, so the catalog creates it right after the tables, and a catalog without it is refused at startup like
-one missing a table. The SQLite catalog the tests use has no indexed views and counts the records directly.
+indexed view, so the module's initial migration creates it alongside the tables. The SQLite database the tests use
+has no indexed views and counts the records directly.
 
 ## Retention
 
@@ -343,14 +378,20 @@ deletes older attempts while keeping the latest per record, so a record's last o
 Activities are small and kept; partition either table by time in the model if volume demands it (see
 [decisions/0005-ledger-retention.md](decisions/0005-ledger-retention.md)).
 
-For the analytical view, publish the known state (a `known-state` run) and, when needed, snapshot the tables
-into Delta. The ledger is a live status store, not a reporting table.
+For the analytical view, snapshot the tables into Delta when one is needed. The ledger is a live status store, not a
+reporting table.
 
 ## Provisioning
 
-The ledger's model is part of the catalog's: `src/SqlFlow.Catalog/DeliveryEntities.cs` declares the entities
-and `DeliveryModel.Configure` the schema. There are no migrations: the database is created from the EF model,
-and nothing upgrades it in place, so a change to these entities means dropping the database and provisioning it
-again (see the repository's CLAUDE.MD). The control plane provisions on start against an empty database when
-`Bootstrap:AllowCreate` is set; `sqlflow db migrate --create` does it by hand, and `sqlflow db status` reports
-whether the database matches the model.
+The ledger is the module's own schema: `osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs` declares the entities,
+`DeliveryModel.Configure` maps them into schema `osdu`, and `OsduDbContext` owns them. Every model change ships with
+its EF migration, with its own history table (`[osdu].[__EFMigrationsHistory]`) and its own schema version
+(`[osdu].[SchemaVersion]`, which also records the minimum SQLFlow catalog migration it requires), so the ledger is
+upgraded in place without touching SQLFlow's catalog.
+
+The indexed view `[osdu].[RecordCount]` is created by the same migration as the tables it counts.
+
+The control plane applies pending migrations on start, and `sqlflow db migrate --db <ref>` does it by hand. Both
+hosts and `sqlflow db status` refuse to run against pending migrations, a database newer than the code, or a catalog
+older than the module requires, naming the migration or version. The SQLite database the tests use is created from
+the model directly and has no indexed view, so those suites count the records instead.

@@ -9,48 +9,51 @@ are a parse error. Every validation failure names the file.
 flowType: delivery                 # required discriminator
 name: recall-welllog               # required; the flow id is derived from it
 
-parameters:                        # optional; {name} tokens usable in source.location
+parameters:                        # optional; {name} tokens usable in source.work and each payload root
   logSource: { required: true, default: null, description: ... }
 
 source:
-  location: abfss://lake@acct.dfs.core.windows.net/osdu-prepare/{logSource}   # or a local path
-  manifest: manifest.json          # default
-  payloads:                        # name -> drop-relative template; must contain {deliveryKey}
-    curves: curves/{deliveryKey}/chunk_*.parquet
-  lastModified: update_date        # root-scope column saying when the row last changed (optional; or fingerprint: <column>, never both)
-  knownState: abfss://lake@acct.dfs.core.windows.net/osdu-prepare/{logSource}/known-state   # where a known-state run publishes when the run names no location (optional)
-  work: abfss://lake@acct.dfs.core.windows.net/osdu-work/{logSource}   # where the intake writes its work batches (default {location}/.work)
-  manualSubmission: true           # the flow also takes records sent in a submission request (default false)
-  manualSubmissionFileRoots:       # where such a record may point at its payload files (default: the fixed part of location)
-    - abfss://lake@acct.dfs.core.windows.net/recall
-  scopes:                          # optional overrides of the manifest's child scopes
-    curves: { records: curves-meta/*.parquet, key: deliveryKey }
-  sql:                             # optional: extract the records from SQL Server or Azure SQL into a drop under work (docs/delivery/sql-source.md)
-    connection: ${keyvault:osdu-kv/recall-sql}   # a reference, or a connection string with no literal secret
-    record: SELECT ... FROM recall.logs WHERE log_source = @logSource AND (@watermark IS NULL OR row_version > @watermark)
-    scopes:                        # one query per child dataset the mapping repeats
-      curves: SELECT ... FROM recall.curves c JOIN recall.logs l ON ... WHERE ...
-    watermark: { column: row_version, type: rowversion, lookback: 0 }   # datetime | datetimeoffset (overlapMinutes) | number | rowversion (lookback)
-    isolation: snapshot            # snapshot | readCommitted | serializable
-    commandTimeoutSeconds: 0       # 0 = as long as the run
-    rowsPerFile: 1000000
-    payloadLocationColumn: payload_location   # when the protocol streams payload files
-    payloadHashColumn: payload_hash           # when payload changes are decided by content hash
-  replica:                         # optional: load every drop's metadata rows into SQL Server or Azure SQL and plan from there (docs/delivery/replica.md)
-    connection: ${keyvault:osdu-kv/recall-replica-sql}   # a reference, or a connection string with no literal secret
-    schema: recall_welllog         # default: the flow's name in letters, digits and '_'
-    inferTypes: false              # infer the type of text columns the manifest declares no type for
-    onConvertError: fail           # fail | silentNull | keepString
-    threshold: 1.0                 # share of values that must convert for an inferred type
-    sample: 0                      # rows profiled when inferring; 0 = all of them
-    preserveLeadingZeros: true     # numbers written with leading zeros stay text
-    culture: nb-NO                 # dates and numbers read in this culture (default: the replica server's locale)
-    allowTableRewrite: false       # allow a schema change that rewrites a table
-    batchUpsert: false             # apply in key windows that commit on their own
-    retentionDays: 90              # keep superseded submission record lists this long; 0 = forever
-    columns:                       # SQLFlow's transform.columns per scope: name, expr, type, as, order, virtual, excludeFromView
-      record:
-        - { name: depth, type: "decimal(18, 4)", expr: "TRY_CONVERT(decimal(18, 4), @ColName)" }
+  connection: ${env:OSDU_SAMPLE_DB}  # the ingestion database, resolved on the node; never a literal secret
+  record:
+    object: OsduSample.ing.WellLog   # three-part name of the record ingestion table
+    key: [source_project, log_id]    # the ing flow's load.keyColumns; must equal the mapping's dataset.key columns
+    scope:                           # optional: column -> parameter, each a typed [column] = @p predicate
+      log_name: logSource
+  datasets:                          # optional child ingestion tables the mapping repeats
+    curves:
+      object: OsduSample.ing.WellLogCurve
+      join: { source_project: source_project, log_id: log_id }   # childColumn: recordColumn, covering every key column
+      orderBy: [curve_ordinal]       # child row order within a record
+      maxRowsPerRecord: 100000       # a record with more child rows than this is held
+  payloads:                          # optional: the file sets a streaming protocol sends
+    curves:
+      root: ../data/curves           # folder the files must sit under; {parameter} tokens; relative to the flow file
+      locationColumn: curve_folder   # record column holding the payload folder
+      pattern: "chunk_*.parquet"     # glob under that folder (default *)
+      hashColumn: payload_hash       # unless change.payloadDetect is lastModified
+      chunkCountColumn: chunk_count  # optional: the declared number of files
+  lastModified: update_date          # optional business version column (the stale gate)
+  systemColumns:                     # defaults shown; fileName: ~ opts out of recording the origin file
+    updated: UpdatedDate_DW
+    fileName: FileName_DW
+    rowNumber: RowNumber_DW
+    deleted: DeletedDate_DW
+  incremental:
+    overlapSeconds: 900              # re-read below the last watermark (default 900, 0 to 86400)
+    pageSize: 1000                   # keys per page
+    isolation: snapshot              # snapshot (default) or readCommitted
+    commandTimeoutSeconds: 0         # 0 = bounded by cancellation
+  work: ../.work/{logSource}         # where the intake writes its work batches (required)
+  submissions:                       # optional: the flow also takes records sent to the API
+    record:
+      preFlow: recall-welllog-pre    # the pre-ingestion flow that reads the landing folder
+      landing: ../data/welllog       # where the record rows land, inside that flow's source.location
+    datasets:
+      curves:
+        preFlow: recall-welllog-curves-pre
+        landing: ../data/curves-meta
+    fileRoots:                       # extra prefixes a submitted record may point payload files inside
+      - ../data/curves
 
 render:                            # the only block that changes what a document is
   mapping: WellLog@1.4.0           # pinned Name@version, never floating
@@ -62,7 +65,7 @@ change:
   detect: renderedHash             # renderedHash | always
   payloadDetect: contentHash       # contentHash | lastModified | always
   onUnchanged: skip                # skip | deliver
-  useSourceVersions: true          # tier-0 gate on the manifest's sourceVersions
+  useSourceVersions: true          # tier-0 gate: skip the run when no row changed in the window
 
 target:
   endpoint: ${env:PETRODB_URL}     # ${env:NAME} and ${keyvault:vault/secret} references
@@ -76,7 +79,7 @@ target:
     data-partition-id: dev         # required: every OSDU service rejects a request without it, so the loader insists on it; its cache is the one the mapping reads
   protocol: osduWellLog            # osduRecord | osduWellLog | osduFile | osduManifest
   protocolOptions:
-    payload: curves                # which source.payloads set the protocol streams
+    payload: curves                # which source.payloads entry the protocol streams
     recordPath: /ddms/v3/welllogs  # protocol defaults shown; override for petrodb-api routes
     recordMethod: POST
     dataPath: /ddms/v3/welllogs/{id}/data
@@ -169,17 +172,24 @@ partition's cache holds no version yet (run a cache flow whose `source.headers.d
 with the refresh operation), or when `render.cacheVersion` pins a version the catalog does not hold. Both the cache and
 the template are read from the catalog, so rendering needs the catalog connection.
 
-### Incremental drops: what changed since the last run
+### Incremental reads: what changed since the last run
 
-A drop does not have to carry every record. The rows it carries are planned; the records it leaves out are left
-exactly as they are. Two watermarks tell the planner which of the rows it does carry have changed, and every row
-that has goes through the whole pipeline: render, the preflight-checked mapping, the hash of the rendered document
+A run does not read every row. It reads the rows the ingestion tables changed in a window above the scope's
+watermark, the records whose child rows changed in it, and any record the ledger asked to plan again. Every row it
+does read goes through the whole pipeline: render, the preflight-checked mapping, the hash of the rendered document
 against what OSDU holds, and the same hash check again by the worker just before anything is sent.
 
 | Key | What it does |
 | --- | --- |
-| `source.lastModified` | A root-scope column saying when the source row last changed: a `timestamp`, or a `string` holding RFC 3339 / ISO 8601 text (without an offset it is read as UTC). A row modified after the version the ledger holds, delivered or queued, is planned; a row at the same moment is skipped without rendering; a row older than that version is **stale**, never sent, and recorded as a skipped attempt against the record. An empty or unreadable value holds the record with a reason naming the column. Declare it or `source.fingerprint`, not both: the fingerprint is compared only for equality, so it cannot tell a newer row from an older replay. |
-| `change.payloadDetect: lastModified` | The payload's chunk files are its watermark. A payload is reconsidered when a chunk file was modified after the ones OSDU's payload was sent from, or the set of chunk files (names, sizes, times) changed; files older than the payload already delivered or queued are stale and never sent. When the drop still declares a `hashColumn`, that hash stays the final check, so rewritten files with the same content are not uploaded again; without one, the files themselves are the payload's identity. Costs one storage listing per record per run. |
+| `source.systemColumns.updated` | The ingestion column the window is taken on, `UpdatedDate_DW` by default. SQLFlow's ingestion stamps it on insert, and on update only for rows whose checksum changed, so an identically re-landed row is never read again. The window is `(watermark - overlapSeconds, now]`, fixed when the read opens. |
+| `source.incremental.overlapSeconds` | How far below the watermark the next run reads again (900 by default), so a transaction that committed after the previous read's upper bound is still picked up. |
+| `source.lastModified` | An optional business version column: a `datetime`, or text holding RFC 3339 / ISO 8601 (without an offset it is read as UTC). A row whose moment is later than the version the ledger holds, delivered or queued, is planned; the same moment is skipped without rendering; an older one is **stale**, never sent, and recorded as a skipped attempt against the record. An empty or unreadable value holds the record with a reason naming the column. |
+| `change.payloadDetect: lastModified` | The payload's files are its watermark. A payload is reconsidered when a file was modified after the ones OSDU's payload was sent from, or the set of files (names, sizes, times) changed; files older than the payload already delivered or queued are stale and never sent. When the flow still declares a `hashColumn`, that hash stays the final check, so rewritten files with the same content are not uploaded again; without one, the files themselves are the payload's identity. Costs one storage listing per record per run. |
+
+The per-record gate is the **ingestion fingerprint**: SHA-256 over the record row's `UpdatedDate_DW` and, per child
+dataset in name order, its row count and newest `UpdatedDate_DW`. A record is skipped without rendering only when
+that fingerprint, the business version when one is declared, the render context and the payload hash all match what
+the ledger holds.
 
 A record whose newer version arrives while an earlier one is being delivered does not lose it: the new work queues
 behind the delivery and the next pass of the same run sends it, after the final check has compared it with what just
@@ -187,33 +197,33 @@ landed. Concurrent intakes cannot take a record backwards either; the ledger ref
 holds and records it as stale. The submission counts the skips (`skippedStale`), and the records the final check found
 OSDU already holding (`unchangedAtPush`), beside the usual counts.
 
-### A flow that reads from SQL
+### Where the records come from
 
-A flow with `source.replica` loads every drop's metadata rows into a SQL Server or Azure SQL database before it plans them,
-landed as text, typed and evolved the way SQLFlow takes a source into a silver table, and plans from there: a re-run of a
-submission never reads its drop again, a fan-out spreads slices of the loaded records instead of drop partitions, and a
-replan (`replan: true` on a run) renders the replica's records again under the current mapping and cache. Payload files are
-never loaded. [replica.md](replica.md) describes the block key by key, what a load does, and what the replica database holds.
+The flow reads the keyed ingestion tables SQLFlow's own pre-ingestion and ingestion flows load
+([architecture.md](architecture.md)). `source.connection` names the database, resolved on the node that runs the
+flow; `source.record.object` is the record table, and each `source.datasets` entry a child table joined to it by the
+record key. Nothing else reads the source: there is no drop, no manifest and no replica, and the flow never extracts
+from a database of its own.
 
-A flow with `source.sql` has no prepared drop: every deliver, plan or intake run extracts its records from the
-database into a drop under `source.work` (which `source.location` defaults to), and delivers that drop. The record
-query and each child query run in one transaction; the watermark moves forward through the flow's source versions, so
-each run extracts only the rows after it. [sql-source.md](sql-source.md) describes the block key by key, the value
-types an extraction writes, and what a change has to move to be delivered again. The connection is checked where the
-flow is read: a literal password is refused.
+`source.record.key` must name the same columns as the mapping's `dataset.key`, and they should be the ing flow's
+`load.keyColumns`, because that is what makes one row one deliverable. The loader refuses a two-part object name, a
+dataset join missing a key column, a dataset named `record`, a scope naming an undeclared parameter, a streaming
+protocol without a `locationColumn`, a missing `hashColumn` under `contentHash`, a literal secret in `connection`, a
+submissions dataset that is not among `datasets`, and a `fileRoots` entry with a wildcard. The removed keys
+(`location`, `manifest`, `records`, `scopes`, `fingerprint`, `knownState`, `manualSubmission`, `sql`, `replica`) are
+refused by name.
 
 ### Parameters
 
-Flow parameters are supplied by `--set name=value` or by the manifest (`parameters`). When both are present
-they must agree. `{name}` tokens are substituted in `source.location`, `source.knownState` and `source.work`,
-in a retrieval flow's `source.query` and `target.location`, and in a cache flow's `types[].query`. A flow reading
-from SQL binds every parameter in its queries as `@name` (text), never substituted into the SQL, and so may not
-declare a parameter named `watermark`.
+Flow parameters are supplied by `--set name=value` or by the run's values. `{name}` tokens are substituted in
+`source.work` and each `source.payloads[].root`, in a retrieval flow's `source.query` and `target.location`, and in a
+cache flow's `types[].query`. `source.record.scope` binds a parameter to a record column instead: each entry becomes
+a typed `[column] = @p` predicate, so the value is bound and never substituted into SQL.
 
 ### Schedules
 
 The inline `schedule` fires the flow on the platform scheduler; `operation` (deliver by default; verify, plan,
-known-state, intake or drain; retrieve or plan on a retrieval flow; refresh or plan on a cache flow) is what every fire runs, and `values`
+intake, drain or replan; retrieve or plan on a retrieval flow; refresh or plan on a cache flow) is what every fire runs, and `values`
 supplies the flow's own parameters. A flow that declares a required parameter **must** give the schedule values for
 it: a fire supplies nothing on its own, so without them every run fails validation with "parameter 'name' is
 required". A run-now's values override the schedule's name by name, leaving the rest in place. A nightly drift pass is a second schedule in the repository's schedule
@@ -273,7 +283,7 @@ schedule: { cron: "0 3 * * *", timezone: UTC, operation: retrieve }
 
 A run's directory holds the files per kind and the manifest: the flow, the run, the window, every file with its
 record count and uncompressed bytes, and per kind the records storage could not read back. The ledger's
-`delivery.Retrieval` row carries the same counts, the outcome and the run id; the pipeline's Retrievals tab lists
+`osdu.Retrieval` row carries the same counts, the outcome and the run id; the pipeline's Retrievals tab lists
 them. The operations are `retrieve` (the default for a retrieval flow) and `plan` (count what the query matches,
 write nothing).
 
@@ -325,8 +335,8 @@ types:
     name: Wellbore
     fields:
       - data.FacilityName
-      # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a drop
-      # naming a wellbore by any one of them resolves to the same record.
+      # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a
+      # source row naming a wellbore by any one of them resolves to the same record.
       - path: data.NameAlias.AliasName
         as: Alias
 
@@ -356,7 +366,7 @@ schedule:
 
 A cache flow's operations are `refresh` and `plan`. `refresh` is the default: a run triggered without an operation, a
 scheduled fire and a run asking for `deliver` all refresh. `plan` counts what each type's search matches and writes
-nothing. A cache flow takes no drop, submission, record or drop partition scope; only its parameter values.
+nothing. A cache flow takes no submission, record or slice scope; only its parameter values.
 
 A refresh sweeps every declared type in full through the search cursor, because a cache holding only the last hour's
 changes cannot answer a lookup, and keeps for every hit each path the partition's cache keeps for the type: the paths
@@ -370,7 +380,7 @@ of a delivered record names the version it was rendered against. A refresh there
 Nothing about a cache is written to the repository: the files define what is cached, and their runs fill the catalog
 ([ledger.md](ledger.md)).
 
-A refresh does not only write a version. Every delivered manifest row points at the set of cached values it was built
+A refresh does not only write a version. Every delivered record points at the set of cached values it was built
 from, so the refresh compares the new version against the one it replaces and raises one tag per changed value: the
 partition, the cached record, the path, the value the replaced version held and the one the new version holds, and how
 many delivered records it reaches. Each set is judged by the value it holds, so a set already built from the new value
@@ -411,7 +421,7 @@ the cache holds the union of what they declare:
   and is carried out automatically otherwise.
 - **Merging a capture.** A captured record replaces what the cache held for it, whichever flow captured it, so the
   newest capture of a record is what every pipeline reads. The catalog records which flows' last capture held each
-  record (`delivery.CacheMember`), and a record the capturing flow no longer finds leaves the cache only when no other
+  record (`osdu.CacheMember`), and a record the capturing flow no longer finds leaves the cache only when no other
   flow's last capture still holds it. Types the capture does not cover are left as they are, except a type no synced
   flow declares any more, which the merge removes. A merge that changes no cached content writes no version; the
   membership is still updated.
@@ -536,8 +546,8 @@ A static entry takes only `appliesWhen` and `description` besides its value. No 
 | `cache.<Type>.<field>` | A field of that cached record, or a path inside one (`Name`, `NameAlias.AliasName`). |
 
 An entry inside a repeater (`osdu.data.Curves[].CurveID`) reads the rows of the child dataset the repeater names, and can
-read the dataset's own row with `dataset.<column>` too. A repeater inside a repeated item is not supported. A drop
-carries each child dataset as the scope of the same name ([drop-contract.md](drop-contract.md)).
+read the dataset's own row with `dataset.<column>` too. A repeater inside a repeated item is not supported. Each child
+dataset is the flow's `source.datasets` entry of the same name, joined to the record by its key.
 
 ### findBy and the cache
 
@@ -606,8 +616,8 @@ must fill text, and never a `time`.
 | `- date` | ISO 8601 only: `2026-09-01`; or a date, `T` or a space, and a time of hours and minutes with optional seconds and up to seven fractional digits, followed by `Z`, an offset (`+02:00` or `+0200`), or nothing. `t` and `z` may be lower case. | `01/02/2026` (either month), `12:30` (a time takes the day the render ran), `Sep 1 2026`, `20260901`, `2026-02-30` |
 | `- date: dd.MM.yyyy` | Exactly that .NET date format, such as `yyyyMMdd` or `dd MMM yyyy HH:mm`. | A format without a four-digit year (`yy` does not say its century), a month and a day of the month, a one-letter standard pattern, an unclosed quote. These are refused when the mapping is read. |
 
-A value without an offset is taken as UTC. A timestamp from the drop, such as a Parquet timestamp column, is a date
-already and is written in its property's form with or without the modifier.
+A value without an offset is taken as UTC. A `datetime` or `datetime2` column of the ingestion table is a date already
+and is written in its property's form with or without the modifier.
 
 A value `date` cannot read holds the record whatever `required` says. So does a value with a time of day where the
 template takes a date, because writing it would drop the time: take the date part first, with
@@ -647,9 +657,9 @@ digits every group is exactly three, so `1.23,5` holds rather than being read as
 minus (`−`). A value `number` cannot read holds the record whatever `required` says, and an entry whose last modifier
 is `number` must fill a number, an integer, or text without a `format`.
 
-Values from the drop are read as the numbers they were written as. A Parquet float column gives `12.3`, not the
-`12.300000190734863` its bits widen to; a decimal column keeps its exact value until the property decides its form; and
-a `NaN` is an empty value, the way numpy and pandas store a missing one, so `required` decides. The dataset key, the
+Values from the ingestion tables are read as the numbers their SQL types hold. A `real` column gives `12.3`, not the
+`12.300000190734863` its bits widen to; a `decimal` column keeps its exact value until the property decides its form;
+and a null is an empty value, so `required` decides. The dataset key, the
 label and conditions read the same text, so a float or decimal key column keys a record by its written value. A static
 number is written as it is, and YAML's `.nan` and `.inf`, alone or inside a static list or object, are refused when the
 mapping is read, because a record cannot carry them.
@@ -690,8 +700,7 @@ decides the type: text becomes a number, an integer or a boolean where the schem
 list of values becomes a list of one, and a value that cannot take the type holds the record with a reason naming the
 target. A variable with no entry, an entry that does not apply and an optional entry with no value are left out; an
 array item that received no value is left out of its array, and an array with no items is left out. A property the
-schema requires in `data` that renders empty holds the record, and so does a dataset key with an empty column, or a
-drop's declared `deliveryKey` that differs from the one the mapping derives.
+schema requires in `data` that renders empty holds the record, and so does a record key with an empty column.
 
 ### Fixtures
 
@@ -714,8 +723,8 @@ is rendered, and with no OSDU call:
    only under a repeater, a single value only on a scalar or a list of values, an object only from `static`.
 3. No entry fills `osdu.id`, `osdu.kind` or a property OSDU sets.
 4. Every property the schema requires in `data` has an entry, and none of those entries is `required: false`.
-5. Every dataset column and child dataset the mapping reads, the dataset key's and the label's included, exists in the
-   drop, when the drop is known.
+5. Every dataset column and child dataset the mapping reads, the record key's and the label's included, exists in the
+   flow's ingestion tables, when those are known.
 6. Every cached type exists in the cache version the render reads and holds the field the source reads. A `findBy` field the cache
    does not hold is a warning; a type holding none of them is an error, because it would hold every record at run time.
 7. A `cache.<Type>.id` source resolves to the entity type the schema expects for its target: `osdu.data.WellboreID`

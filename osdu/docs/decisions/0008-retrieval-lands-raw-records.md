@@ -15,7 +15,7 @@ would be a second mapping language with none of the guarantees of the first.
   schema: each line is the record as OSDU holds it.
 - Incremental flows carry a watermark on a record timestamp field between runs, with a lag for the indexer;
   only a completed run advances it.
-- Every run has a manifest on the lake and a row in `delivery.Retrieval`, with the same counts.
+- Every run has a manifest on the lake and a row in `osdu.Retrieval`, with the same counts.
 
 ## Consequences
 

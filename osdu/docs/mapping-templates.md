@@ -52,7 +52,7 @@ template:
 - **Import a file.** A schema of one's own, which the data definitions do not publish, is uploaded as a bundled schema
   file and saved the same way.
 
-**Where templates are stored.** In the catalog database, table `delivery.Template`. The control plane runs as a
+**Where templates are stored.** In the catalog database, table `osdu.Template`. The control plane runs as a
 container whose disk does not survive a restart, and the catalog is where everything durable already lives. A row
 holds the kind, the version, the schema itself, when it was saved, by whom, and where from.
 
@@ -257,7 +257,7 @@ are all left out, and so is an object or array left with nothing in it.
 
 ### The record shape
 
-The Mappings page shows, next to a mapping's YAML, the shape of the records it renders, without a drop, a row or a
+The Mappings page shows, next to a mapping's YAML, the shape of the records it renders, without a source row or a
 cache. The shape is drawn by the renderer delivery uses, so `id`, `kind`, the envelope, the nesting, the arrays and the
 types are the ones a render writes:
 
@@ -290,7 +290,7 @@ Before any row is rendered (the preflight):
 4. `osdu.acl.owners`, `osdu.acl.viewers`, `osdu.legal.legaltags` and `osdu.legal.otherRelevantDataCountries` are
    static, non-empty and free of repeats, so the legal service can check the tags before a run.
 5. Every property the schema requires has an entry, and none of those entries is `required: false`.
-6. Every dataset column and child dataset exists in the drop, when the drop is known.
+6. Every dataset column and child dataset exists in the flow's ingestion tables, when those are known.
 7. Every cache type exists in the cache, and holds the fields `findBy` compares and the field the source reads.
 8. A cache source resolves to the entity type the schema expects for its target. `osdu.data.WellboreID` can only be
    read from a cached type of `master-data--Wellbore`.
@@ -323,8 +323,8 @@ Records sent by hand, or by a source system through `POST /api/v1/delivery/submi
 (docs/delivery/submitting-records.md):
 
 - **A record is a fixture's input.** `record` holds the dataset row the mapping reads as `dataset.<column>`, and
-  `datasets` holds the rows of each child dataset it reads as `dataset.<child>.<column>`. The run writes each child
-  dataset as the drop scope of the same name.
+  `datasets` holds the rows of each child dataset it reads as `dataset.<child>.<column>`. Each child dataset is the
+  flow's `source.datasets` entry of the same name, and a submission lands its rows as a file of their own.
 - **The source contract speaks in template terms.** `GET /api/v1/delivery/flows/{pipelineId}/source-contract` names the
   template version the flow's mapping pins and whether the catalog holds it, the dataset's system, key and label, every
   column with the template variables it fills (as the value, to find a cached record, or to decide whether an entry
@@ -348,7 +348,7 @@ defined by cache flows, and the versions of each partition's cache live in the c
 
 ## Implementation plan
 
-1. **Catalog.** Add `DeliveryTemplate` to the EF model (schema `delivery`), and a template store over the catalog:
+1. **Catalog.** Add `DeliveryTemplate` to the EF model (schema `osdu`), and a template store over it:
    load by kind, save immutably, list, delete while unused. This is a schema change, so development catalogs are
    re-minted.
 2. **Template model.** Build the variable tree from a schema: paths, types, requiredness, relationships, unit
@@ -369,7 +369,7 @@ defined by cache flows, and the versions of each partition's cache live in the c
 7. **GUI.** A Templates page to browse OSDU schemas, view a schema as a template and save it, and the Mapping
    builder, with the pull request action.
 8. **Samples, tests and docs.** Convert both sample mappings, proving the converted WellLog mapping renders every
-   record of the sample drops byte for byte as before. Import the sample schemas as templates in the tests and the
+   record of the sample estate byte for byte as before. Import the sample schemas as templates in the tests and the
    GUI end-to-end setup. Rewrite the mapping tests, add template, builder and end-to-end coverage, and update the
    documentation that describes mappings.
 

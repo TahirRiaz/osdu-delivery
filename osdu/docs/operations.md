@@ -16,16 +16,18 @@ Everything the platform already reads ([../environment-variables.md](../environm
 | Flow secrets | nodes, the CLI | Whatever the flows reference: `${env:PETRODB_URL}`, `${keyvault:vault/name}`, and so on. A node holds the references its pool's flows need. |
 | `SQLFLOW_DELIVERY_ALLOW_LOOPBACK` | nodes, the CLI | `true` lets a flow target `localhost` (local OSDU stubs, tests). Off by default: the URL guard refuses loopback and private targets. |
 | `ControlPlane:MaxRequestBodyMegabytes` | control plane | The API's request body ceiling, set on purpose rather than left at Kestrel's default. Default 64. |
+| `Osdu:Database:Connection` / `SQLFLOW_OSDU_DB` | nodes (and the CLI) | The `osdu` module database, as a `${env:...}` or `${keyvault:...}` reference. A node opens no catalog connection, so this is how it reaches the ledger, the templates and the caches; the login needs rights on schema `osdu` alone. A literal secret is refused at startup. |
 | Repository layout | flow repositories | `mappings/` next to the flows (or named under `render.mappings`), and the cache flows (`flowType: cache`) that fill the partition caches the mappings read, committed and synced. The templates the mappings pin and every version of every cache live in the catalog, never in the repository; nothing writes to the repository. |
 
 ## First deployment
 
-1. Grant the nodes' identity read on the drop container, write on the work location (`source.work`, or the
-   drop's `.work` folder by default), and read/write on the known-state and retrieval locations (the
-   Unity Catalog external-location grant is on the critical path for Databricks; see [design.md](design.md)
-   section 3.1).
-2. Provision the catalog: the control plane migrates it on start, or `sqlflow db migrate --db <ref>`. The
-   ledger's tables come with it.
+1. Give the nodes what the flows read and write: the ingestion database the OSDU flow's `source.connection`
+   names, read on every payload root and landing folder a flow declares, write on the work location
+   (`source.work`), and read/write on the retrieval locations. A node opens no catalog connection, so it also
+   needs the `osdu` module database connection of its own (`SQLFLOW_OSDU_DB`), with rights on schema `osdu`
+   alone ([../architecture.md](architecture.md)).
+2. Provision the databases: the control plane applies SQLFlow's and the module's migrations on start, or
+   `sqlflow db migrate --db <ref>`. The ledger's `osdu` schema comes with it.
 3. Save the template the mapping pins into the catalog:
 
    ```bash
@@ -55,9 +57,10 @@ Everything the platform already reads ([../environment-variables.md](../environm
    always the current one. Without access to OSDU,
    `sqlflow cache import caches/osdu-reference-cache.yaml --from-dir <dir> --db <ref>` merges type files into the
    partition's cache instead. `sqlflow cache list opendes --db <ref>` lists the versions. The cache flow's `schedule` keeps the cache refreshed ahead of the deliveries.
-6. Have the preparing side write a drop and plan it before anything touches OSDU: trigger a run with
-   operation `plan` and the flow parameters (the GUI's Trigger run dialog, or
-   `sqlflow run flows/recall-welllog.yaml --operation plan --set logSource=STAT_COMP`).
+6. Load the ingestion tables and plan before anything touches OSDU: run the pre-ingestion flow and then the
+   ingestion flow beside the OSDU flow (lineage puts them in that order, so triggering the chain runs them in
+   waves), then trigger the OSDU flow with operation `plan` and the flow parameters (the GUI's Trigger run
+   dialog, or `sqlflow run flows/recall-welllog.yaml --operation plan --set logSource=STAT_COMP`).
 7. Deliver the canary log source (a run with operation `deliver`), then the rest. Put the hourly deliver on
    a schedule.
 
@@ -67,24 +70,18 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 
 | Route | Scope | Purpose |
 | --- | --- | --- |
-| `POST /submissions` | operate | A submission: the manifest notification `{ pipelineId or flow (+ repoId), drop, parameters, force }`, or records sent inline `{ pipelineId or flow (+ repoId), records, parameters, submissionId, operation, force }` ([submitting-records.md](submitting-records.md)). Queues the run and answers 202 with its id; a repeat of an inline request already accepted answers 200 with the run it started, and a different request under the same `submissionId` is 409. |
+| `POST /submissions` | operate | Records sent by a source: `{ pipelineId or flow (+ repoId), records, parameters, submissionId, operation, force, reference, reland }` ([submitting-records.md](submitting-records.md)). The rows are landed as files for the flow's declared pre-ingestion flows and the chain of pre, ingestion and OSDU runs is queued with them; 202 carries the submission id, the chain group and the OSDU run. A repeat of a request already accepted answers 200 with the chain it queued, and a different request under the same `submissionId` is 409. |
 | `GET /flows/{pipelineId}/stats` | read | Record counts by state, drift, the last 24 hours, the last submission. |
 | `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId`, `runId` (the records that run touched, through its attempts), `drifted`. |
 | `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, and the path each removal scope calls. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. `reference` narrows them to the ones whose caller-supplied reference contains it, which is how a source finds work it knows by its own name. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
-| `GET /manual-submission/flows` | read | The flows records can be submitted to by hand (those declaring `source.manualSubmission`), with what each renders with (the mapping, and the template it fills as `templateKind` and `templateVersion`, both null when the mapping is not synced or is invalid), the parameters a submission carries and the payload its records point at. `all=true` lists the other delivery flows too, each with the reason it takes none. |
-| `POST /dropoffs` | operate | Uploads files (multipart) into the deployment's drop-off area, for a submission to point at afterwards. Answers with the location they landed under, each file's size and SHA-256, and the drop-off's id. Refused when no drop-off area is configured (`SQLFLOW_DROPOFF_ROOT`). |
-| `POST /dropoffs/reserve` | operate | Reserves a drop-off the caller uploads into itself, for a file too large to send through the control plane: the row is written first, then one write-only URL per file, valid until `reservedUntilUtc`. Needs a drop-off area on Azure Storage and the Storage Blob Delegator role on the account; refused saying so otherwise. |
-| `POST /dropoffs/{id}/complete` | operate | Closes a reservation once its files are written. What landed is read from storage and is what the ledger records: a reserved file that is missing, a different size, or an unexpected file present fails the completion and leaves the reservation open. Hashes given here are the uploader's own, recorded as asserted. |
-| `GET /dropoffs`, `GET /dropoffs/{id}` | read | The drop-offs, newest first (filterable by `status` and `search`), and one of them with its files, how the bytes got there (`uploadMode`) and where each file's hash came from (`hashSource`). |
-| `DELETE /dropoffs/{id}` | operate | Removes a drop-off's files from storage; the row stays, saying when they went. Re-processing a submission that pointed at them will no longer find its payload. |
-| `GET /dropoff-area` | read | Whether this deployment offers a drop-off area, where it is, what one upload may carry, whether it can hand out upload URLs and what one of those may carry, and how long a completed drop-off is kept (0 for indefinitely). |
-| `GET /flows/{pipelineId}/source-contract` | read | What a source sends the flow ([submitting-records.md](submitting-records.md) section 4): the parameters it declares, the template version its pinned mapping fills and whether it is saved (`template`), the mapping's `system`, dataset `key` and `label`, the dataset row's `columns` with the entries each serves (as the value, a `findBy` value or an `appliesWhen` condition), the child `datasets` with the lists they fill and their columns, the version column, the payload its records point at (with whether a content hash is required and the roots a location may sit inside), and whether it takes records inline (and why not). |
+| `GET /manual-submission/flows` | read | The flows records can be submitted to by hand (those declaring `source.submissions`), with what each renders with (the mapping, and the template it fills as `templateKind` and `templateVersion`, both null when the mapping is not synced or is invalid), the parameters a submission carries and the payloads its records point at. `all=true` lists the other delivery flows too, each with the reason it takes none. |
+| `GET /flows/{pipelineId}/source-contract` | read | What a source sends the flow ([submitting-records.md](submitting-records.md) section 4): the parameters it declares, the template version its pinned mapping fills and whether it is saved (`template`), the mapping's `system`, record `key` and `label`, the dataset row's `columns` with the entries each serves (as the value, a `findBy` value or an `appliesWhen` condition), the child `datasets` with the lists they fill and their columns, the version column, the ingestion table it reads (`sourceObject`) and the system column its incremental reads window on (`updatedColumn`), the payloads its records point at (with whether a content hash is required and the roots a location may sit inside), and whether it takes records (and why not). |
 | `GET /records/{key}`, `/attempts`, `/activities` | read | One record, its delivery history, its interventions. |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
-| `GET /submissions/{id}/content` | read | The records an inline submission carried, as the ledger holds them: who sent them and when, the operation, where a run wrote them as a drop, and the runs that took them. 404 for a drop's submission. |
+| `GET /submissions/{id}/content` | read | The records an API submission carried, as the ledger holds them: who sent them and when, the operation, how far it got (`status`, `landedUtc`, `groupId`, `osduRunId`, `error`), the file landed for each dataset with the pre flow and pre run that took it (`landings`), and the runs that took them. 404 for a submission the ledger holds no records for. |
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
 | `GET /mappings`, `/mappings/{id}` | read | The mapping documents the repositories hold. |
 | `GET /templates` | read | The saved template versions, by kind and newest first, each with where it came from, who saved it and how many synced mappings pin it ([mapping-templates.md](mapping-templates.md)). |
@@ -113,23 +110,25 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /records/{key}/cache` | read | What one record read out of the cache when it was rendered: the partition, the cached item, the path and the value. |
 | `POST /flows/{pipelineId}/release` | operate | Release the flow's blocked records (all, or `keys`). |
 | `POST /flows/{pipelineId}/probe` | operate | Queue a target probe on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
-| `POST /records/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope` all, metadata or payload; `run` true queues a deliver run scoped to the record that marks it with that scope and sends it: for a flow with a replica a replan of the record from the replica under its last submission's parameter values, for any other flow a run of the record's last submission); queue a verify run scoped to it. |
-| `GET /records/{key}/replica` | read | The record as its flow's replica holds it now: every value with its SQL type, the first rows of each child scope, and the submissions that carried it. 404 for a flow without a replica or a record it does not hold. |
+| `POST /records/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope` all, metadata or payload; `run` true queues a deliver run scoped to the record, which reads it from the ingestion tables by key under its last submission's parameter values, marks it with that scope and sends it); queue a verify run scoped to it. |
+| `POST /records/{key}/source` | operate | Queue a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its system columns, its child datasets, and the origin file and row. Nothing is planned or delivered; poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{key}/read` | operate | Queue a read-back of the record as OSDU holds it, on a node. |
 | `POST /records/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
 | `POST /ledger/prune` | admin | Age out attempts older than `olderThanDays`, keeping the latest per record. |
 
-Runs carry the delivery parameters on the platform's trigger (`POST /api/v1/runs`): `operation`, `force`,
-`values`, `drop`, `submissionId`, `recordKeys`, `redeliver` (what a deliver run scoped to `recordKeys` sends again:
-`all`, the default, `metadata` or `payload`), `replan` (a deliver, intake or plan of the flow's replica records rather than
-a drop, scoped by `recordKeys` when given; `sqlflow run --replan`, the run dialog's *Replan from the replica*), `publishTo`,
-and for a fan-out member `partitions` (slices of a replica submission, or partitions of a drop). The run row
-records them, the delivery counts are projected onto it when the run completes (a run's own work: what it planned,
-sent and held, with the submission's totals across every run under `submission`; a fan-out root reports the submission
-its members worked on), and its result (the operation's
-outcome as JSON) and its fan-out membership (root, slot, count) are on the run detail.
+A run carries its `operation` (`deliver`, `plan`, `intake`, `drain`, `verify` or `replan`) and the flow's `values` on
+the platform's trigger (`POST /api/v1/runs`), with the kind's own arguments in the run payload: `force` (lift the
+whole-run gates), `submissionId` (the submission to work on), `recordKeys` (scope the run to named records, at most
+1,000), `redeliver` (what a run scoped to `recordKeys` sends again: `all`, the default, `metadata` or `payload`),
+`slices` (the key slices a fan-out intake member plans) and `reland` (the submission's landing files were written
+again first). The payload is parsed strictly: an unknown property, a wrong type, or one that does not apply to the
+operation is refused, naming it. Reading every row of the scope again is the `replan` operation rather than a payload
+flag. The run row records them, the delivery counts are projected onto it when the run completes (a run's own work:
+what it planned, sent and held, with the submission's totals across every run under `submission`; a fan-out root
+reports the submission its members worked on), and its result (the operation's outcome as JSON) and its fan-out
+membership (root, slot, count) are on the run detail.
 
 ## Removing records from OSDU
 
@@ -160,28 +159,32 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 
 - **Delivery** (Operate): every delivery flow with delivered versus total, pending, held, failed, drifted, and
   its last submission.
-- **A flow's page** (Pipelines): the Delivery tab (stats, submit a drop, submit records, probe the target, release blocked),
-  the Records tab (search and filters, every row opens the record), the Submissions tab. Rows tick: a selection
+- **A flow's page** (Pipelines): the Delivery tab (stats, submit records, probe the target, release blocked),
+  the Records tab (search and filters, every row opens the record), the Submissions tab, which says for each
+  submission which selection it read. Rows tick: a selection
   bar offers "select all N matching" and Remove from OSDU, so a removal can be aimed at exactly the ticked rows
   or at the whole filtered set. A run page links here filtered to the records that run touched.
 - **A record's page**: custody state, hashes, versions, the pending document, the render context; the
-  history of attempts and interventions; Verify, Redeliver, Read back, Release and Remove from OSDU.
+  history of attempts and interventions; Verify, Redeliver, Read back, Source row (the record's rows as the
+  ingestion tables hold them now, read on a node), Release and Remove from OSDU.
 - **The removal dialog**: one surface for both. It names the target first (endpoint as declared, data partition,
   protocol, auth) because that is which OSDU the records are about to leave, then the three scopes side by side
   with what each destroys, whether it can be undone, what the ledger will do, and the exact call it makes. The
   two permanent scopes ask the operator to type the data partition back before the button enables.
-- **A submission's page**: counts, the runs that carried it, its work batches, its attempts, a link to its
-  records, and for records sent inline the Records sent tab: the records as sent, who sent them and when, and where
-  the run wrote them as a drop.
-- **Manual submission** (Operate): every flow whose document offers manual submission, with what it renders with (the
-  mapping and the template kind it fills) and the parameters a submission carries; Submit records opens the same sheet
-  for the flow chosen. A switch lists the flows that take no records too, each saying why.
+- **A submission's page**: which selection it read and the window it covered, the ingestion table and connection it
+  read from, its counts, the runs that carried it and its chain group, its work batches, its attempts, a link to its
+  records, and for records sent through the API the Landed files tab (the file written for each dataset with its pre
+  flow, format, row count, hash and the pre run that took it) and the Records sent tab (the records as sent, who sent
+  them and when, and how far the submission got).
+- **Manual submission** (Operate): every flow whose document declares where its submissions land, with what it renders
+  with (the mapping and the template kind it fills) and the parameters a submission carries; Submit records opens the
+  same sheet for the flow chosen. A switch lists the flows that take no records too, each saying why.
 - **Submit records** (a flow's Delivery tab): one record through a form built from the flow's source contract (each
   field with what it fills, each child dataset with the list it fills, and the template kind and version next to the
   mapping), or any number as JSON in the shape of a mapping fixture (`record` and `datasets`), with the flow parameters,
   a preview (plan) switch, force and an optional submission id. It makes the same `POST /submissions` a source system
-  makes and opens the run it queued. A flow whose document offers no manual submission shows why it takes no records,
-  and for a flow that streams payload files each record also says where its files already are.
+  makes and opens the run it queued. A flow whose document takes no records shows why, and for a flow that streams
+  payload files each record also says where the files of each payload already are.
 - **A retrieval flow's page** (Pipelines): the Retrievals tab, every run with its window, location, counts and
   outcome; a row opens the platform run.
 - **A cache flow's page** (Pipelines): the Cache versions tab names the partition the flow fills and how many other
@@ -260,8 +263,8 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 | Verb | Purpose |
 | --- | --- |
 | `sqlflow validate <flow.yaml>` | The platform's document validation (the CI gate for a folder). |
-| `sqlflow check <flow.yaml> [--drop <location>] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the mapping against its pinned template and the version of the cache of the partition the flow delivers to, both loaded from the catalog, and the drop's manifest when present. |
-| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|known-state\|intake\|drain\|retrieve\|refresh] [--force] [--set name=value]... [--drop <location>] [--submission <id>] [--record <key>]... [--publish-to <location>] [--db <ref>]` | A run on the workstation. A delivery flow's runs need the catalog connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which merges into the cache of its partition in the catalog and so needs it. |
+| `sqlflow check <flow.yaml> [--connect] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the flow, its mappings, its templates and its payload roots. With `--connect` it opens the flow's source connection on this machine and reports the tables, their columns, the key types, the system columns, the current watermark window and the candidate counts. |
+| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|intake\|drain\|replan\|retrieve\|refresh] [--force] [--set name=value]... [--submission <id>] [--record <key>]... [--db <ref>]` | A run on the workstation. A delivery flow's runs need the module database connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which merges into the cache of its partition and so needs it. |
 | `sqlflow cache list <partition\|cache.yaml> [--db <ref>] [--json]` | The versions of a partition's cache (a cache flow's file lists the partition it fills), newest first: the cache flow that wrote each, when it was captured, by whom and in which run, and what it holds. |
 | `sqlflow cache import <cache.yaml> --from-dir <dir> [--db <ref>] [--json]` | Merge type files (`{Name}.json`) into the cache of the flow's partition as that flow's capture, for work without OSDU. The files must match the types, entity types and captured names the cache flow declares. A cache is captured from OSDU with `sqlflow run <cache.yaml>`. |
 | `sqlflow template capture --kind <kind> [--release <tag>]` | Save a kind's schema from the OSDU data definitions as a template version (the newest release by default). |
@@ -275,10 +278,12 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 
 | Symptom | Where to look | Action |
 | --- | --- | --- |
-| Submission `failed` with a validation message | The submission page; the run's trace | Fix the drop or the documents; submit the drop again (the same id is fine). |
+| Submission `failed` with a validation message | The submission page; the run's trace | Fix the documents or the source rows, then run the flow again. |
+| An API submission stuck at `accepted` or `landed` | The submission's Landed files tab | The control plane's resume service lands the files and queues the chain again on its own; the files it wrote are left alone when their hash already matches. |
+| A record is held: the ingestion tables hold no row for its key | The hold names the landing file and the pre and ingestion flows expected to have loaded it | Look at those runs in the chain; the OSDU run reads the record back by key once they have loaded it. |
 | Records `held` | The Records tab filtered to held | Read the last error. Fix the data (reference miss, empty key) or the mapping; then Release (one record, or all blocked). |
 | Records `failed` | The record's History tab | The retry budget is spent; the last error is redacted but specific. Release after fixing the cause. |
-| Records stuck `delivering` | `Lease` on the record page in the past | A worker stopped mid-delivery. The next deliver run of the record's drop (the recovered run, a re-run of the submission, or `drain`) waits out the lease, reclaims it and sends the record; nothing else to do unless a node is wedged. |
+| Records stuck `delivering` | `Lease` on the record page in the past | A worker stopped mid-delivery. The flow's next deliver run (the recovered run, a re-run of the submission, or `drain`) waits out the lease, reclaims it and sends the record; nothing else to do unless a node is wedged. |
 | A verify run reports drift | The Records tab with Drifted only | Decide whether the edit in OSDU was legitimate. Redeliver the record, or set `verify.reconcile: true` so verify runs queue redelivery. |
 | Everything re-renders after a change | The render context on the record | Only `render.*` and the template version its mapping pins enter the render context; a moved mapping version, template version or cache version renders every record that uses it again. Only a record whose rendered document differs is sent; the rest are skipped as unchanged and take the new context. |
 | A run fails: the mapping pins a template that is not saved in the catalog | The run's error names the mapping, the kind and the version | Save that version (the Templates page, `sqlflow template capture` or `import`) and run again. A schema that changed since saves as another version, which the mapping then has to pin. |

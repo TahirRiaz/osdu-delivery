@@ -15,7 +15,7 @@ replica.
 | [design.md](design.md) | The design: the render inputs and the render context, identity, change detection and the cache, the ledger, the delivery protocols, the document model, the preflight gate, streaming, the retrieval kind (section 15), the streaming intake, work batches, returned values and fan-out (section 16). Section numbers are referenced from the code. |
 | [documents.md](documents.md) | The delivery flow, retrieval flow, cache flow and mapping documents key by key. |
 | [mapping-templates.md](mapping-templates.md) | Templates and mappings: the template an OSDU schema becomes and where it is saved, the mapping format entry by entry (sources, `findBy`, modifiers, `appliesWhen`, `required`, fixtures), the checks, and the mapping builder. |
-| [submitting-records.md](submitting-records.md) | The other way in, for a source system: sending records' metadata in the submission itself. What a record looks like, the request and its answers, idempotency, the preview, and what each mistake leads to. |
+| [submitting-records.md](submitting-records.md) | The other way in, for a source system: sending records' metadata in the request, which lands them as files for the flow's pre-ingestion flows. What a record looks like, the chain a submission queues, the request and its answers, idempotency, the preview, and what each mistake leads to. |
 | [ledger.md](ledger.md) | The ledger tables, the cache versions, the record lifecycle, leasing, the indexes behind every listing, retention. |
 | [protocols.md](protocols.md) | The named delivery protocols (`osduRecord`, `osduWellLog`, `osduFile`, `osduManifest`), their steps and returned values, and how to add one. |
 | [operations.md](operations.md) | Running it: the API and the GUI surfaces, the CLI verbs, first deployment, the runbook. |
@@ -25,10 +25,6 @@ replica.
 | [reference/](reference/README.md) | The OSDU-specific reference pages: the CLI verbs, the control plane, authentication, deployment and notifications. |
 | [walkthrough/](walkthrough/1-welllog-schema.md) | A worked example: the WellLog schema, and how it is populated. |
 | [decisions/](decisions/README.md) | The decision records. |
-
-> Some pages still describe the previous implementation's drop path in places. The architecture is the one above;
-> stage 4 of [../../docs/plan.md](../../docs/plan.md) moves the engine's input to the ingestion tables and brings
-> the remaining prose with it.
 
 ## Where the code lives
 

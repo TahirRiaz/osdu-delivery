@@ -37,8 +37,8 @@ workflow trigger) through `DeliveryWork.ReportStepAsync` as soon as it completes
 returned. The worker persists the step on the record before the protocol moves on, so a retry after a crash or
 a later failure resumes after the last step that succeeded: the file uploaded by the previous try is
 registered, not uploaded again; the workflow run triggered by the previous try is polled, not triggered again.
-The attempt carries the full step list (`delivery.Attempt.ResultJson`: each step's name, timing, status,
-returned values and whether it was resumed) and the record's target state (`delivery.Record.TargetStateJson`)
+The attempt carries the full step list (`osdu.Attempt.ResultJson`: each step's name, timing, status,
+returned values and whether it was resumed) and the record's target state (`osdu.Record.TargetStateJson`)
 merges the returned values of every delivery: record id and version, dataset ids, file sources, a session id,
 a workflow run id. See [design.md](design.md) section 16.3.
 

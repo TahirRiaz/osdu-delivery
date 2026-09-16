@@ -2,8 +2,15 @@
 
 The state of OSDU Delivery's testing against OSDU on 2026-09-12: what has been proven against a live OSDU platform,
 what the automated suites cover without one, which defects the live runs found and how they were fixed, and what is
-still missing. The practical guide for the preparing side is [preparing-a-drop.md](preparing-a-drop.md); the runbook
+still missing. The practical guide for a source system is [submitting-records.md](submitting-records.md); the runbook
 is in [operations.md](operations.md).
+
+> **This is a record of runs made on 2026-09-12**, against the implementation as it stood then, when a flow read a
+> prepared drop. It is kept as the evidence of what those runs proved about the protocols, change detection, verify,
+> the interventions and the recovery paths, none of which this change touches. The input is not the same: data now
+> arrives through SQLFlow's pre-ingestion and ingestion flows and the OSDU flow reads the ingestion tables, so the
+> drop, drop-off and known-state mechanics named below no longer exist ([architecture.md](architecture.md)). The live
+> estate has to be driven again on the new path before this page describes the current build.
 
 ## 1. How it is tested
 
@@ -43,7 +50,7 @@ the catalog ([documents.md](documents.md#cache-flow)).
 | `e2e-cache-sync` | retrieval | Wellbore and reference data read into the OSDU cache that `recall-welllog` renders from |
 
 Runs held by the live catalog between its re-mints on 2026-09-10 and 2026-09-12 (the second re-mint added
-`delivery.InlineSubmission`; a full database backup was taken first, and the runs before the first re-mint are in the
+`osdu.InlineSubmission`; a full database backup was taken first, and the runs before the first re-mint are in the
 ledger export taken then):
 
 | Flow | Operation | Runs |
@@ -163,7 +170,7 @@ own file area:
 
 The two-step path: upload the files to the drop-off area, then submit records pointing at where they landed. Proven
 against `e2e-file` on 2026-09-12, marker `ODLIVE20260912D`, with `SQLFLOW_DROPOFF_ROOT` set to the estate's own
-`dropoff` folder and the live catalog re-minted for the new `delivery.DropOff` table (backup
+`dropoff` folder and the live catalog re-minted for the new `osdu.DropOff` table (backup
 `OsduDeliveryLiveE2E-20260912T101353Z.bak` first, repo source registered again afterwards):
 
 | Stage | What was proven |

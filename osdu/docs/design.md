@@ -24,9 +24,9 @@ difference shows up entirely in where state lives and at what grain.
 ### 1.2 Non-goals
 
 - **Not an ETL engine.** It does not read source systems, join, aggregate, or reshape at
-  volume. Databricks does that and hands over prepared data. The one read it makes is a
-  flow's own SQL source ([sql-source.md](sql-source.md)): it runs the queries the flow
-  declares and writes what they return into a drop, without joining or reshaping it.
+  volume. SQLFlow's own pre-ingestion and ingestion flows land the files and load the keyed
+  ingestion tables; the OSDU flow reads those tables by key and by window, without joining
+  or reshaping them ([architecture.md](architecture.md)).
 - **Not an ETL engine on the way back either.** The retrieval kind (section 15) pages
   OSDU's search index into files on the lake and stops there; projecting, joining and
   reshaping what it lands stays with the lake.
@@ -56,106 +56,94 @@ source and each is addressed by a specific decision below.
 
 ## 3. Architecture
 
-Three components, each keeping what it is already good at.
+Data reaches OSDU through three flows on one platform, each keeping what it is good at.
 
 ```
-  Databricks                    storage account              OSDU Delivery                petrodb-api
-  ----------                    ---------------              -------------                -----------
-  read Unity Catalog     -->    source-shaped parquet  -->   render (mapping)      -->    map + OSDU envelope
-  build curve grids             opaque payload chunks        hash + skip                  OSDU client
-  write drop + manifest         manifest                     ledger, lease, retry         (stateless)
-                                                             stream payloads                    |
-                                                                                                v
-                                                                                              OSDU
+  source files        SQLFlow pre        SQLFlow ing          OSDU Delivery              OSDU
+  ------------        -----------        -----------          -------------              ----
+  CSV / JSON /  -->   land raw     -->   keyed upsert    -->  render (mapping)    -->    storage, DDMS,
+  Parquet             typed view         system columns       hash + skip                file, workflow
+  payload files                          UpdatedDate_DW       ledger, lease, retry
+  (left in place)                        FileName_DW          stream payloads
 ```
 
-**Databricks** stays because Unity Catalog managed tables have no door from outside, and
-because the curve grid build is distributed Spark work. It reads, builds grids, writes a
-drop, and posts one manifest notification. It owns no delivery state and makes no OSDU
-calls.
+**The pre-ingestion flow** lands whatever files arrive into a raw table and builds its
+typed view. **The ingestion flow** upserts that view into a keyed ingestion table, stamping
+SQLFlow's system columns: `UpdatedDate_DW`, moved only when a row's checksum changed, and
+`FileName_DW` and `RowNumber_DW`, which say which file and row a value came from. **The
+OSDU flow** reads those tables, renders documents, decides what changed, maintains the
+ledger, leases work, retries, streams payloads, and verifies. It knows nothing about how
+the files arrived.
 
-**OSDU Delivery** owns delivery. It reads the drop, renders documents, decides what
-changed, maintains the ledger, leases work, retries, streams payloads, and verifies.
-It knows nothing about OSDU's APIs.
+Lineage orders the three in waves, so the OSDU flow runs after the table it reads has been
+loaded, and each stage has its own run, log and failure. The system columns are what carry
+traceability across the boundary: the incremental window is taken on `UpdatedDate_DW`, and
+`FileName_DW` and `RowNumber_DW` become each delivered record's origin in the ledger.
 
-**petrodb-api** stays stateless. It keeps the OSDU relationship, the mapping renderer,
-and the reference resolution, and gains upsert-by-natural-key. It never grows a database.
-
-### 3.1 Why the handoff is a storage account
-
-Unity Catalog managed tables and managed volumes are both unreadable from outside
-Databricks without credential vending. `prepare_osdu_payloads` currently issues
-`CREATE VOLUME IF NOT EXISTS` with no `LOCATION`, which creates a managed volume.
-
-The drop must be an **external** location: an external volume with an explicit
-`LOCATION`, or a plain `abfss://` path, on a container the delivery node's identity
-can read. This is a small code change plus a UC external-location grant, and the grant
-is on the critical path.
-
-### 3.2 Why the payload goes past, not through
+### 3.1 Why the payload goes past, not through
 
 The delivery worker holds retries, which means it must be able to re-send a payload.
-Buffering payloads in the worker would size its memory by the largest wellbore. Instead
-the drop holds the payload files and the manifest holds pointers. Retry re-opens the
-blob. See section 13.
+Buffering payloads in the worker would size its memory by the largest wellbore. Instead the
+payload files stay where the preparing side wrote them, the record's own row says which
+folder holds them (`source.payloads[].locationColumn`, under a declared `root`), and a retry
+re-opens the blob. Nothing about a payload is ever loaded into the ingestion tables. See
+section 13.
 
-### 3.3 Trigger
+### 3.2 Trigger
 
-The preparing side posts a **manifest notification** when a drop is complete:
-`POST /api/v1/delivery/submissions` with the flow, the drop location and the flow
-parameters the drop was prepared with. The control plane queues a deliver run for it and
-answers with the run id; the run's intake registers the submission under the manifest's
-`submissionId`, so a notification repeated for the same drop is idempotent. Explicit
-notification beats polling a container, because it carries the idempotency key and cannot
-race a partial write.
+A platform schedule fires the OSDU flow, and the run reads whatever the ingestion tables
+have changed since its scope's watermark. There is no notification to miss and no container
+to poll: the ingestion flow's own run is what makes new rows visible, and lineage means a
+chain triggered together runs pre, then ing, then OSDU.
 
-The preparing side makes exactly one HTTP call per run. A platform schedule can also
-deliver the flow's declared drop on a cadence, as a fallback for a missed notification.
+A run whose window holds no changed row, and for which no record is waiting to be planned
+again, does nothing at all. That is what makes frequent scheduling free on quiet hours.
 
-### 3.4 Records sent in the request
+### 3.3 Records sent in the request
 
-A source with a handful of records to deliver, rather than a prepared set, sends them in
-the submission itself: `POST /api/v1/delivery/submissions` with `records` instead of
-`drop`, each record in the shape of a mapping fixture (its dataset row under `record` and
-its child dataset rows under `datasets`, as JSON scalars). It is the same flow and the same
-mapping, and it takes the same path, because the run turns the records into a drop before
-it reads anything.
+A source with a handful of records to deliver, rather than files it writes itself, sends
+them in the submission: `POST /api/v1/delivery/submissions` with `records`, each in the
+shape of a mapping fixture (its dataset row under `record` and its child dataset rows under
+`datasets`, as JSON scalars). It is the same flow, the same mapping and the same path,
+because the submission lands the rows as files for the flow's own pre-ingestion flows, and
+they become the same rows in the same tables.
 
-- The control plane checks the request's shape and the flow's parameters, and stores the
-  records, the resolved parameter values and the mapping the flow pins in the ledger
-  (`delivery.InlineSubmission`), in the same transaction as the run that takes them. The
-  submission id is the idempotency key: a repeated request answers with the run it
-  started, and a different request under the same id is refused.
-- The run writes the records as a drop under the flow's work location,
-  `{work}/inline/{submissionId}`, never at the declared source location, which belongs to
-  the preparing side. The drop declares every column the mapping reads, so a column the
-  JSON leaves out is null. Each child dataset becomes the drop scope of the same name,
-  and when the mapping reads child datasets or the flow streams a payload the drop is
-  keyed and partitioned, each root row carrying its delivery key and each child row its
-  record's.
-- From there nothing is special: the manifest check (which refuses the records when the
-  flow was promoted to another mapping after they were accepted), the preflight gate, the
-  per-record change gates, the ledger and the drain. The drop carries no source versions,
-  so an inline submission is never skipped by tier 0 and never moves the flow's
-  watermarks.
-- A run that takes the submission again writes the drop again from the ledger when it is
-  gone, so the ledger alone reconstructs what was sent, by whom and when.
+- The control plane checks the request's shape, the record keys, the payload roots, the
+  declared pre flows and the flow's parameters, then stores the submission, one landing row
+  per dataset and a `submit` activity in one transaction (`osdu.InlineSubmission`,
+  `osdu.SubmissionLanding`). The submission id is the idempotency key: a repeated request
+  answers with the chain it queued, and a different request under the same id is refused.
+- It writes one file per dataset into the landing folder the flow declares, under a
+  temporary name the pre flow's `srcFile` does not match, then promotes it, so a pre run
+  never reads a half-written file. A file already there with the same content hash is left
+  alone, which is what makes landing idempotent.
+- It enqueues the chain in one transaction with the ledger rows describing it: the declared
+  pre flows, the ingestion flows between them and the OSDU flow, and the OSDU flow, in wave
+  order. Each pre flow member reads exactly the file this submission landed, whatever its
+  own watermark says.
+- From there nothing is special: the ingestion upsert, the preflight gate, the per-record
+  change gates, the ledger and the drain. The OSDU run plans the submission's keys against
+  the ingestion table, so a key those tables do not hold is held with a reason naming the
+  landing file and the flows expected to have loaded it.
 
-A flow offers this or it does not: `source.manualSubmission` says so in the document, and
-a request to a flow that declares nothing is refused naming the key. It is opt-in because
-a flow fed by a prepared drop should not also accept hand-written records unless the
-estate decided it should.
+A flow offers this or it does not: `source.submissions` says where each dataset's rows land
+and which pre flow reads them, and a request to a flow that declares nothing is refused
+naming the key. It is opt-in because a flow fed by files the preparing side writes should
+not also accept hand-written records unless the estate decided it should.
 
 A submission is metadata plus, for a flow that streams payload files, **where those files
 already are**. Nothing is uploaded through the API and nothing is staged: a record carries
-the location of its files, the drop written from it declares the payload by
-`locationColumn` rather than a path template, and the node opens that location with its
-own identity when it delivers, re-opening it on every retry, exactly as section 3.2
-describes for a prepared drop. Because the node's identity can read whatever it has been
-granted, a record may only point inside `source.manualSubmissionFileRoots`, or, when the
-flow declares none, inside the fixed part of its own `source.location`; anything else is
-refused when the request is accepted, and again before the drop is written.
+the location of its files, which is written into the landing file's `locationColumn` and
+`hashColumn` exactly as a file from the preparing side would carry it, and the node opens
+that location with its own identity when it delivers, re-opening it on every retry, exactly
+as section 3.1 describes. Because the node's identity can read whatever it has been granted,
+a record may only point inside a declared payload `root` or one of
+`source.submissions.fileRoots`; anything else is refused when the request is accepted.
 [submitting-records.md](submitting-records.md) is the contract for the source side.
+
+Because the link between a delivered record and its submission is the landing file name,
+traceability holds even when a scheduled pre run picked the file up and delivered the record
+before the submission's own chain ran.
 
 ## 4. The four inputs and the render context
 
@@ -165,7 +153,7 @@ mutually inconsistent.
 
 | Input | Owner | Clock | Artifact |
 |---|---|---|---|
-| Source data | Databricks / Recall | Continuous | The drop, plus a declared source contract |
+| Source data | The pre and ingestion flows | Continuous | The keyed ingestion tables, with SQLFlow's system columns |
 | Mapping | This repository | Deliberate, gated | A versioned mapping document |
 | Cache (reference and master data) | OSDU, captured into the catalog by a cache flow | Refresh runs | Versioned, immutable |
 | Template (the target schema) | OSDU, saved in the catalog | Pinned by the mapping | Versioned, immutable |
@@ -350,7 +338,7 @@ one project asks for is there for every pipeline reading the partition), every f
 adds records, and the type's changes wait for approval when any flow declaring it asks for
 that. A merge (`CacheMerge`) replaces what the cache held for every captured record,
 whichever flow captured it, so the newest capture is what every pipeline reads. Which flows'
-last capture held each record is kept beside the versions (`delivery.CacheMember`), because a
+last capture held each record is kept beside the versions (`osdu.CacheMember`), because a
 record the capturing flow no longer finds may be exactly what another project's query keeps:
 it leaves the cache only when no other flow's last capture still holds it. Types the capture
 does not cover are untouched, except a type no synced flow declares any more, which is
@@ -363,8 +351,8 @@ partition's next sequence, and the second fails and asks to be run again rather 
 interleaving. `makeCurrent` is gone: versions form one line per partition, and a delivery
 flow that has to stay on an earlier one pins it with `render.cacheVersion`.
 
-**Where it lives.** In the catalog, and only there (`delivery.CacheVersion`,
-`delivery.CacheItem`, `delivery.CacheMember`, each keyed by the partition). The repository holds the definition and nothing else: OSDU Delivery
+**Where it lives.** In the catalog, and only there (`osdu.CacheVersion`,
+`osdu.CacheItem`, `osdu.CacheMember`, each keyed by the partition). The repository holds the definition and nothing else: OSDU Delivery
 reads git and never writes to it, so no capture is committed and no run writes into the
 copy of the repository it executes from. Every version is kept, because a delivered
 record's render context names the version it was rendered against and the ledger has to be
@@ -378,7 +366,7 @@ reads its version from the catalog, which is what keeps a plan working without a
 OSDU.
 
 **Where it is visible.** The repository sync projects each cache flow's declared types, with
-the partition it fills and the endpoint it searches (`delivery.CacheDefinition`), so a
+the partition it fills and the endpoint it searches (`osdu.CacheDefinition`), so a
 refresh knows every path its partition keeps for a type, and the GUI's OSDU cache page shows
 which files fill a partition's cache beside the versions their runs wrote, and searches the
 cached values. Every read of cached records names one partition and one version, the current
@@ -394,7 +382,7 @@ path, and the value it read.
 That trail has to survive the shape of the estate, which is hundreds of millions of
 manifest rows and rising. A row per record per consumed value would be billions of rows
 to write, index and query, so the trail is stored by **dependency set** instead
-(`delivery.CacheSet`, `delivery.CacheSetEntry`): one row per distinct combination of
+(`osdu.CacheSet`, `osdu.CacheSetEntry`): one row per distinct combination of
 cached values, which every record reading the same values shares. A well log estate
 resolves the same handful of units, curve types and wellbores over and over, so the sets
 number in the thousands while the records number in the billions. A render computes its
@@ -410,7 +398,7 @@ including a record that only ever read the id of an item whose name changed. Eac
 judged by the value it holds, since sets built against different cache versions can hold
 different values of one path: a set already holding the new value is not touched.
 
-**Who decides.** Each changed value becomes one tag (`delivery.UpdateTag`): the cached
+**Who decides.** Each changed value becomes one tag (`osdu.UpdateTag`): the cached
 record, the path, the value the replaced version held and the one the new version holds,
 and how many delivered records it reaches.
 One decision covers all of them, because asking an operator to approve twelve million rows
@@ -478,15 +466,16 @@ canonical logical form.
 
 Deciding to skip must not require rendering, or most of the cost is already paid.
 
-**Tier 0, whole run.** Record the Delta commit version of each source table per scope. If
-none has advanced since the last run, skip the entire run. This costs nothing and is what
-makes frequent scheduling free on quiet hours.
+**Tier 0, whole run.** One watermark per `(flow, scope)`, the upper bound of the last
+completed whole-scope plan. If no row changed in the window above it, and no record is
+waiting to be planned again, skip the entire run. This costs one query and is what makes
+frequent scheduling free on quiet hours. The watermark moves only when the plan and every
+one of its fan-out members succeeded, so a failure re-reads rather than skips.
 
-**Tier 1, cheap per-record gate.** A source fingerprint plus the render context. If both
-are unchanged, skip without rendering. `recallcommonmodel:update_date` already exists in
-the source common model as a source-derived audit field alongside `create_date`, and is
-currently emitted by the generator as `DateStamp` but not selected by production. The
-signal is available and unused.
+**Tier 1, cheap per-record gate.** The ingestion fingerprint (the record row's
+`UpdatedDate_DW` and, per child dataset, its row count and newest `UpdatedDate_DW`) plus
+the render context, the business version and the payload hash. If all are unchanged, skip
+without rendering.
 
 **Tier 2, authoritative.** Render and compare `contentHash`. This can still skip when the
 render turns out identical despite a changed source column.
@@ -494,28 +483,28 @@ render turns out identical despite a changed source column.
 A fingerprint only says "different". When the source carries a last-modified column the flow
 names it (`source.lastModified`) and the gate is ordered too: a row modified after the version
 the ledger holds, delivered or queued, is rendered and hashed; the same moment skips at tier 1;
-an older one (a replayed or late drop) is stale and never sent. The payload's chunk files can
+an older one (a replayed or late row) is stale and never sent. The payload's files can
 be the payload's watermark the same way (`change.payloadDetect: lastModified`). Whatever
 triggers the work, the hash decides the push, twice: at plan time against the ledger, and by
 the worker against what OSDU holds at the moment it has the record, because work queued behind
 an in-flight delivery is planned against a state that delivery is about to change.
 
-Two limits to respect. Watermarks **cannot see deletions**, so a periodic full fingerprint
-pass is required as a backstop. And Change Data Feed is not enabled on any source table;
-enabling it would give exact changed-row sets including deletes, which is strictly better
-than a watermark and is worth evaluating against its retention cost.
+Two limits to respect. A watermark **cannot see a deletion** the ingestion flow does not
+record, so a `replan` pass is the backstop where deletions matter; where the ing flow
+declares `systemColumns.deletedDate`, a child row's deletion does move its parent's
+fingerprint. And a keyed upsert never removes child rows on its own, so a child removed at
+the source keeps being delivered unless the ing flow replaces that parent's children.
 
-### 6.7 Closing the loop back to Databricks
+### 6.7 Closing the loop back to the preparing side
 
-Skipping on the delivery side saves the network. Prepare has still built every grid,
-encoded it and written every chunk. To skip the Spark work as well, prepare needs to know
-what the delivery system already holds.
-
-The delivery service publishes a compact **known-state snapshot** (delivery key, source
-fingerprint, payload hash) to a location Databricks reads at the start of a run. That is
-the difference between a quiet run costing a full Spark job and costing almost nothing,
-and it is the point at which the two halves stop being a producer and a consumer and
-become one delivery system.
+> **Superseded.** This section described a known-state snapshot the delivery side published
+> for the preparing job to read. There is no such snapshot and no `known-state` operation
+> any more. The pre and ingestion flows are inside the same platform now, and the ingestion
+> upsert already does the equivalent: a re-landed row whose business columns are identical
+> leaves `UpdatedDate_DW` where it was, so the OSDU run's window never reads it and nothing
+> downstream repeats the work. What a preparing job should skip is decided by SQLFlow's own
+> incremental keys on the pre flow (`incremental.dateColumn`), not by a file this system
+> writes.
 
 ## 7. The ledger
 
@@ -533,21 +522,22 @@ The problems are structural, not tuning: a transaction log entry per state chang
 copy-on-write file rewrites for a single row, optimistic concurrency instead of row
 locking, and no point lookups.
 
-Use SQL Server through EF Core, following SQLFlow's catalog pattern including its
-provisioning discipline: the EF model is the master, the schema is created from it,
-and a change to the entities means the database is provisioned again.
+Use SQL Server through EF Core, in the module's own `osdu` schema with its own context,
+migration history and schema version, so the ledger is upgraded in place without touching
+SQLFlow's catalog.
 
 ### 7.2 Three levels
 
 ```
-submission   one drop handed over by Databricks
+submission   one plan of a flow over its ingestion tables
   record     one deliverable, keyed by delivery key
     attempt  one delivery try, append-only
 ```
 
-**Submission** carries the idempotency key, the drop location, the render context and the
-scope. It is what makes run-scoped reporting honest: the current end-of-run summary counts
-every success and failure for a log source rather than the records the run touched.
+**Submission** carries the idempotency key, which selection was read (incremental, full,
+keys or inline) with the window and the table it read, the render context and the scope. It
+is what makes run-scoped reporting honest: the current end-of-run summary counts every
+success and failure for a log source rather than the records the run touched.
 
 **Record** is the current state of one deliverable. This is the table that answers "what
 is missing".
@@ -699,10 +689,18 @@ parameters:
   logSource: { required: true }
 
 source:
-  location: abfss://lake@account.dfs.core.windows.net/osdu-prepare/{logSource}
-  records: metadata/*.parquet
+  connection: ${env:OSDU_SAMPLE_DB}
+  record:
+    object: OsduSample.ing.WellLog
+    key: [source_project, log_id]
+    scope: { log_name: logSource }
+  datasets:
+    curves:
+      object: OsduSample.ing.WellLogCurve
+      join: { source_project: source_project, log_id: log_id }
   payloads:
-    curves: curves/{deliveryKey}/chunk_*.parquet
+    curves: { root: ../data/curves, locationColumn: curve_folder, hashColumn: payload_hash }
+  work: ../.work/{logSource}
 
 render:
   mapping: WellLog@1.4.0
@@ -793,8 +791,8 @@ which production never sends. Every artifact was individually valid.
 
 Before any render, and with no OSDU call:
 
-1. Every dataset column and child dataset the mapping reads exists in the drop's declared
-   schema.
+1. Every dataset column and child dataset the mapping reads exists in the flow's ingestion
+   tables.
 2. Every cached type the mapping reads exists in the cache version the render reads, with
    the fields it finds by and reads.
 3. Every property the template requires in `data` has an entry that may not be left out.
@@ -852,12 +850,12 @@ The delivery domain runs on the platform's verbs and API; there is no separate d
 
 | Operation | Where | Behaviour |
 |---|---|---|
-| `check` | CLI: `sqlflow check <flow.yaml>` | Everything checkable without OSDU: document parse, the mapping against its pinned template and the version of the cache of the partition the flow delivers to (both read from the catalog) and, when the drop is present, the manifest and the columns the mapping reads. |
+| `check` | CLI: `sqlflow check <flow.yaml> [--connect]` | Everything checkable without OSDU: document parse, the mapping against its pinned template and the version of the cache of the partition the flow delivers to (both read from the module database), and with `--connect` the ingestion tables themselves: their columns, the key types, the system columns, the watermark window and the candidate counts. |
 | `plan` | CLI: `sqlflow run <flow.yaml> --operation plan`; GUI and API: a run with operation `plan` | Renders documents and reports what would be created, updated, skipped or held. Works without OSDU, against the pinned template and the cache version read from the catalog. Changes nothing. |
-| `deliver` | CLI: `sqlflow run <flow.yaml>`; GUI and API: a run, a schedule fire, or `POST /api/v1/delivery/submissions` with a drop or with records (section 3.4) | Executes a submission: intake, plan into the ledger, deliver what changed. |
+| `deliver` | CLI: `sqlflow run <flow.yaml>`; GUI and API: a run, a schedule fire, or `POST /api/v1/delivery/submissions` with records (section 3.3) | Executes a submission: intake, plan into the ledger, deliver what changed. |
 | `verify` | a run with operation `verify` (the record page queues one scoped to the record) | The drift pass: compares OSDU's current version against `targetVersion`. |
-| `known-state` | a run with operation `known-state` | Publishes the compact known state the preparing side reads. |
-| `intake`, `drain` | the fan-out members a deliver run enqueues (section 16.4); also runnable by hand | `intake` registers and plans a drop (or some of its partitions) into work batches without delivering; `drain` delivers the pending batches of a submission (or of the whole flow) without reading the drop. |
+| `replan` | a run with operation `replan` | Reads every row of the scope again, past the whole-run gates, and delivers what renders differently now. Each record's own hashes still decide what is sent. |
+| `intake`, `drain` | the fan-out members a deliver run enqueues (section 16.4); also runnable by hand | `intake` registers and plans a selection (or some of its key slices) into work batches without delivering; `drain` delivers the pending batches of a submission (or of the whole flow) without reading the source. |
 | `retrieve` | a run on a retrieval flow (its default); `plan` on the same flow counts | Pages OSDU's search index into files on the lake (section 15). |
 | `refresh` | a run on a cache flow (its default, and what its schedule fires); `plan` on the same flow counts what each type's search matches | Captures every type the cache flow declares, merges it into the cache of the flow's partition, and writes a new version into the catalog when the cached content moved, then tags the changes that reach delivered records (section 6.2). |
 | `cache` | CLI: `sqlflow cache list`, `sqlflow cache import` | Lists the versions of a partition's cache; merges type files into the flow's partition as that flow's capture, for work without OSDU. |
@@ -885,16 +883,16 @@ kind (`src/SqlFlow.Delivery`). What the domain takes from the platform, and what
   and camelCase keys; the platform reads the envelope (`schedule`, `mode`, `lifecycle`) and
   hands the body to the delivery kind through `IFlowDocumentKind`. Runs go through
   `IFlowDocumentExecutor`, target-side operations through `IComputeOperation`.
-- **A catalog on SQL Server through EF Core, with the model as the schema's only source.**
-  The ledger's tables live in the catalog's `delivery` schema, so one database, one
-  model and one connection serve both.
+- **A catalog on SQL Server through EF Core.** The ledger's tables live in the module's own
+  `osdu` schema in the same database, with its own context, migrations and schema version,
+  so one backup covers both and neither model contains the other's tables.
 - **The run queue, nodes and pools, schedules and chains, the git sync, identity, tokens,
   notifications and the GUI workbench.** Every delivery run is a platform run with a live
   trace and a run artifact; every intervention is an activity in the ledger and, when it
   ran as a run, a run in the history.
 - **File stores, the secret chain and redaction.** Local and Azure Blob reads, `${env:...}`
   and `${keyvault:...}` references, secrets redacted before any log or row. The delivery
-  domain adds only the writers it needs (work batches, the known state).
+  domain adds only the writers it needs (work batches, a submission's landing files).
 - **The HTTP reliability stack.** The delivery copies in `src/SqlFlow.Delivery/Http` keep
   their vendored headers because they diverged from the platform's originals: a request
   factory per attempt so a binary payload streams and retries, no charset handling.
@@ -904,8 +902,9 @@ kind (`src/SqlFlow.Delivery`). What the domain takes from the platform, and what
 - The platform's run is the grain of scheduling, tracing and history. The ledger's record
   is the grain of custody. A deliver run is one submission's intake plus drain; the ledger
   carries what each record went through, linked to the run id.
-- A flow's own parameters (`parameters:`) are substituted into the drop location and travel
-  as run parameter values, recorded on the run and on the submission.
+- A flow's own parameters (`parameters:`) bind the record scope's predicate and are
+  substituted into the work location, and they travel as run parameter values, recorded on
+  the run and on the submission.
 - The mapping lives in the flow's repository (`mappings/`), and a cache is defined there by
   its cache flow; both are synced into the catalog as read models and never edited through
   the API, and a mapping the GUI's mapping builder writes reaches the repository as a pull
@@ -962,11 +961,10 @@ inheriting a default.
 
 ### 14.1 A deliberately small surface
 
-The drop is plain files, so no Delta reader is needed: the drop reader in `src/SqlFlow.Delivery` reads Parquet
-scopes with `Parquet.Net`, CSV scopes with `GenericParsing.Standard` (the parser SQLFlow's CSV source reads with, so a
-file parses the same in both), and JSON scopes with `System.Text.Json` through SQLFlow's streaming record reader and
-path flattener, all pure managed, and reads `abfss` through `Azure.Storage.Blobs` and `Azure.Identity`. There is no
-native code on the delivery path.
+The source is a SQL Server or Azure SQL database, read through `Microsoft.Data.SqlClient`, and the payload files are
+opaque bytes read from storage. `Parquet.Net` remains for the payload shape checks the well log protocol makes and for
+writing a submission's landing files, and `abfss` is read through `Azure.Storage.Blobs` and `Azure.Identity`. All pure
+managed: there is no native code on the delivery path.
 
 The direct dependency set of the solution after the strip:
 
@@ -974,7 +972,7 @@ The direct dependency set of the solution after the strip:
   it), `Microsoft.Extensions.*`, `Microsoft.AspNetCore.Authentication.JwtBearer`,
   `Microsoft.AspNetCore.OpenApi`, `Microsoft.IdentityModel.Protocols.OpenIdConnect`, `Azure.Identity`,
   `Azure.Storage.Blobs`, `Azure.Security.KeyVault.Secrets`
-- Third-party, all MIT and mainstream: `Parquet.Net`, `GenericParsing.Standard` (CSV scopes), `YamlDotNet`, `Cronos`, `MailKit` (the SMTP channel of
+- Third-party, all MIT and mainstream: `Parquet.Net`, `YamlDotNet`, `Cronos`, `MailKit` (the SMTP channel of
   the notification service; the Graph and Slack channels are plain HTTP), `LibGit2Sharp` (git materialisation)
 
 ### 14.2 What was kept out
@@ -1063,7 +1061,7 @@ A forced run restarts at the declared start.
 
 ### 15.3 Tracked like everything else
 
-Every run writes one row to `delivery.Retrieval` (the window, the location, the counts,
+Every run writes one row to `osdu.Retrieval` (the window, the location, the counts,
 the outcome, the run id and the actor) when it starts and closes it when it ends, so the
 GUI lists a flow's retrievals, and the manifest on the lake and the row in the ledger say
 the same thing. The trace carries one line per kind, per hundred pages and per file, never
@@ -1076,28 +1074,29 @@ part, and static values have no source at all. What lands is the record as OSDU 
 
 ## 16. Scale: streaming intake, work batches, returned values and fan-out
 
-A drop can hold millions of rows and a flow billions over time. Nothing in the engine
-holds a drop, a scope or a batch of rendered documents in memory, and one run can spread
-its work across the fleet ([decisions/0006](decisions/0006-work-batches.md)).
+An ingestion table can hold millions of rows and a flow billions over time. Nothing in the
+engine holds a table, a dataset or a batch of rendered documents in memory, and one run can
+spread its work across the fleet ([decisions/0006](decisions/0006-work-batches.md)).
 
 ### 16.1 The intake streams
 
-The drop reader never materialises a scope. Root rows stream one row group at a time. A
-drop whose manifest declares itself `partitioned` (root file i and child file i hold the
-same records, each file sorted by delivery key) is merge-joined partition by partition in
-lockstep; any other drop's child scopes are spilled to a disk-backed hash partition keyed
-by delivery key (buckets sized to a target of 32 MB, at most 1024 of them) and joined
-bucket by bucket. An unsorted partitioned file is a validation error, not a wrong join.
+The source never materialises a table. Candidate records are paged by record key, which is
+deterministic, sliceable, and never splits rows that share an `UpdatedDate_DW`. One command
+per page reads the page's keys into a table variable and then returns one result set per
+dataset joined on those keys, with child rows ordered by the dataset's `orderBy` and grouped
+in memory, so a record arrives with its children and nothing spills to disk. Snapshot
+isolation is the default; a refusal names the `ALTER DATABASE` fix and the `readCommitted`
+alternative, and deadlocks are retried.
 
 Rendering runs on a bounded pipeline: batches of source records flow through a bounded
 channel to a configurable number of renderers (`reliability.renderParallelism`), and the
 plan entries stream out the other end into the ledger and the work batches. Peak memory is
-the channel's capacity times the batch size, never the drop.
+the channel's capacity times the batch size, never the table.
 
 ### 16.2 Work batches
 
 The intake writes rendered documents to JSON Lines work batch files under the flow's work
-location (`source.work`, or `.work` under the drop), `reliability.batchRecords` documents
+location (`source.work`), `reliability.batchRecords` documents
 per batch, and the ledger's record row carries only the batch number and the document's
 byte range within it. A drain leases a whole batch (its due records under one lease
 token), reads the documents by range, and hands the protocol up to
@@ -1127,11 +1126,10 @@ record and how it got there.
 A submission above `reliability.fanOutMinRecords` records, on a flow with
 `reliability.fanOut` above zero, spreads across the fleet. The parent deliver run
 registers the submission, takes its own share of the work, and enqueues `intake` member
-runs for the rest. A flow with a replica ([replica.md](replica.md)) loads the drop into
-the replica first, once, and deals contiguous slices of the loaded records' ordinals: at
-least a work batch each and never more than 1024, which every member plans from the
-replica, so no drop has to be partitioned. A flow without one deals the drop's partitions
-(each member scoped to a partition set). When the members report, it finalises the planning, enqueues `drain` members that lease batches
+runs for the rest. The work is cut into contiguous **key slices**, bounded by
+`ROW_NUMBER() OVER (ORDER BY keys)`: at least a work batch of records each and never more
+than 1024 slices, recorded on the submission, so every member reads exactly its own range of
+the record key and no two members plan the same record. When the members report, it finalises the planning, enqueues `drain` members that lease batches
 concurrently with it, waits for them, settles what is left (expired leases, records in
 backoff), and completes the submission. Members ride the platform's run queue as one
 family under the parent: they pass the pipeline gate together, they are cancelled with
@@ -1158,9 +1156,9 @@ These block schema design and should be settled first.
 3. **Where rendering runs.** petrodb-api with the runtime renderer, or the delivery
    service. Either works and the pinned inputs are neutral, but it determines whether the
    translate renderer is vendored.
-4. **Storage access.** Whether the delivery service's Radix identity can be granted read on
-   the drop container, and the UC external-location grant for the drop. On the critical
-   path.
+4. **Storage and database access.** Whether the nodes' identity can be granted read on the
+   ingestion database the flows declare and on every payload root they stream from. On the
+   critical path.
 5. **The three preserved keys.** `Datasets`, `DDMSDatasets` and `ExtensionProperties` sit
    outside the content hash. Decide whether they are ours.
 6. **Ledger retention.** Attempt table growth, rollup and aging, before the schema exists.
@@ -1183,7 +1181,8 @@ These block schema design and should be settled first.
 4. Move the mapping from generated to interpreted, proving byte-identical output against
    the 56 example fixtures before and after.
 5. Add change detection, metadata first, then payload.
-6. Close the loop back to Databricks with the known-state snapshot.
+6. Close the loop back to the preparing side (superseded by the pre and ingestion flows;
+   see section 6.7).
 7. The file and manifest protocols, the streaming intake with work batches and fan-out,
    and the retrieval kind (sections 8, 15 and 16) landed once the first kind was real.
 
