@@ -49,8 +49,10 @@ public class SqlServerChainTests
         await estate.WritePayloadsAsync(logs);
 
         // The chain runs in the order the run group gates it: both pre flows, then both ingestion flows, then the OSDU
-        // flow. The group is what decides that order, and the executor is what runs each member.
-        var order = await RunChainAsGroupAsync(estate);
+        // flow. The group is what decides that order, and the executor runs each member. Its OSDU member is left to this
+        // test to run, so that the plan below is read while the ledger still holds nothing, which is the moment a first
+        // run of a flow is actually in.
+        var order = await EnqueueChainAndRunIngestionAsync(estate);
         Assert.Equal(
             [estate.Rename("recall-welllog-curves-pre"), estate.Rename("recall-welllog-pre")],
             order.Where(m => m.Wave == 0).Select(m => m.FlowName).OrderBy(n => n, StringComparer.Ordinal).ToList());
@@ -60,7 +62,8 @@ public class SqlServerChainTests
         Assert.Equal(3, await estate.CountAsync(estate.IngSchema, "WellLog"));
         Assert.Equal(logs.Sum(l => l.Curves.Count), await estate.CountAsync(estate.IngSchema, "WellLogCurve"));
 
-        // Rendered from the real tables, each document is the one the mapping's own fixture pins. This is what holds the
+        // The first plan over the loaded tables, with nothing delivered yet: every record is new, so every entry creates.
+        // Rendered from the real tables, each document is the one the mapping's own fixture pins, which is what holds the
         // typing of the ingestion columns (a decimal where the fixture says a number) to the record OSDU receives.
         var flow = estate.DeliveryFlow();
         using (var runtime = await FlowRuntime.CreateAsync(estate.Engine, flow, SampleEstate.Values))
@@ -78,6 +81,7 @@ public class SqlServerChainTests
             }
         }
 
+        // The group's last member, run now that its first plan has been read.
         await estate.DeliverAsync();
 
         Assert.Equal(3, estate.Protocol.Deliveries.Count);
@@ -387,11 +391,14 @@ public class SqlServerChainTests
         => string.Join(" | ", waves.Select(w => w.Wave.ToString(CultureInfo.InvariantCulture) + ": " + string.Join(", ", w.Flows)));
 
     /// <summary>
-    /// Enqueues the chain as one wave-gated run group and runs every member through the document executor in the order
-    /// the queue put it in. The group is the platform's own ordering, so the test never decides for itself what runs
-    /// first; its rows are removed again whatever happens.
+    /// Enqueues the whole chain as one wave-gated run group and runs the flows that load the ingestion tables through the
+    /// document executor, in the order the queue put them in. The group is the platform's own ordering, so a test never
+    /// decides for itself what runs first; its rows are removed again whatever happens.
+    /// <para>The OSDU member is enqueued with the rest but not run here, and the queue's order is returned so the caller
+    /// can see where it sits. A caller that runs it itself can read the flow's first plan before anything is delivered,
+    /// which a helper that delivered on its way through would have made unobservable.</para>
     /// </summary>
-    private static async Task<IReadOnlyList<(string FlowName, int Wave)>> RunChainAsGroupAsync(SqlServerIngestionFixture estate)
+    private static async Task<IReadOnlyList<(string FlowName, int Wave)>> EnqueueChainAndRunIngestionAsync(SqlServerIngestionFixture estate)
     {
         var connectionString = estate.ConnectionString;
         await CatalogDatabase.MigrateAsync(connectionString);
@@ -442,11 +449,7 @@ public class SqlServerChainTests
             foreach (var (flowName, _) in queued)
             {
                 var name = shipped[flowName];
-                if (name == "recall-welllog")
-                {
-                    await estate.DeliverAsync();
-                }
-                else
+                if (name != "recall-welllog")
                 {
                     await estate.RunFlowAsync(name);
                 }
