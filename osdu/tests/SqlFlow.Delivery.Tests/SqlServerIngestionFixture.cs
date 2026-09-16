@@ -1,0 +1,611 @@
+using System.Globalization;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Engine.Protocols;
+using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Templates;
+using SqlFlow.Execution;
+using SqlFlow.Orchestration;
+using Xunit;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>
+/// The sample estate on a real SQL Server, for the chain suite: a copy of the repository's pre, ingestion and OSDU flows
+/// generated with the test database's name and with schemas of this fixture's own, plus the host composition that runs
+/// them (docs/stage4-design.md section 6). What executes is the shipped estate, rewritten only where it names a database,
+/// a schema, a connection reference or a network target, so a chain run here is the chain an operator would run.
+/// <para>Every fixture instance owns a unique pair of schemas (<c>pre_&lt;n&gt;</c> and <c>ing_&lt;n&gt;</c>), a unique flow
+/// name prefix and therefore unique ledger rows, and a unique environment variable holding the connection. Suites and
+/// classes running beside each other never meet, and everything the fixture created is dropped when it is disposed.</para>
+/// <para>The tables themselves are created by SQLFlow's own flows rather than by the fixture: the pre flow creates
+/// <c>pre_&lt;n&gt;.WellLog</c> and its typed view, the ingestion flow creates the keyed <c>ing_&lt;n&gt;.WellLog</c> with
+/// the system columns the delivery reads. The fixture creates only what the engine does not, which is the schemas.</para>
+/// </summary>
+public sealed class SqlServerIngestionFixture : IAsyncDisposable
+{
+    /// <summary>The estate parts copied next to the generated flows; the data folders are written per test instead.</summary>
+    private static readonly string[] CopiedParts = ["mappings", "templates", "caches", "references"];
+
+    /// <summary>The flow documents of the well log chain, by the name they carry in the repository.</summary>
+    private static readonly string[] ChainDocuments =
+    [
+        "recall-welllog-pre", "recall-welllog-curves-pre", "recall-welllog-ing", "recall-welllog-curves-ing", "recall-welllog",
+    ];
+
+    /// <summary>The target block of the shipped delivery flow, which a test replaces with a local placeholder.</summary>
+    private const string ShippedTarget = """
+          endpoint: ${env:PETRODB_URL}
+          auth:
+            type: oauth2ClientCredentials
+            secondarySecretRef: ${env:OSDU_CLIENT_ID}
+            secretRef: ${env:OSDU_CLIENT_SECRET}
+            token:
+              url: ${env:OSDU_TOKEN_URL}
+              body:
+                scope: ${env:OSDU_SCOPE}
+        """;
+
+    /// <summary>What replaces it: tests never call OSDU, and the protocol is a fake one the host is composed with.</summary>
+    private const string LocalTarget = """
+          endpoint: http://localhost:9/petrodb
+          auth:
+            type: none
+        """;
+
+    private static readonly Lazy<string?> ConnectionText = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
+
+    private static readonly Lazy<bool> Reachable = new(() =>
+    {
+        var cs = ConnectionText.Value;
+        if (string.IsNullOrWhiteSpace(cs))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var connection = new SqlConnection(cs);
+            connection.Open();
+            return true;
+        }
+        catch (SqlException)
+        {
+            return false;
+        }
+    });
+
+    /// <summary>The module's schema, brought up to date once per test run; the database itself is never created here.</summary>
+    private static readonly Lazy<Task> Migrated = new(async () =>
+    {
+        await using var db = new OsduDbContext(OsduDbContext.SqlServerOptions(ConnectionText.Value!));
+        await db.Database.MigrateAsync();
+    });
+
+    /// <summary>Serializes the one-time template and cache import across the fixtures of this process.</summary>
+    private static readonly SemaphoreSlim RenderInputs = new(1, 1);
+
+    private static bool _renderInputsImported;
+
+    private readonly ServiceProvider _provider;
+
+    private SqlServerIngestionFixture(string connectionString, string databaseName, string suffix, string root, ServiceProvider provider, FakeProtocol protocol)
+    {
+        ConnectionString = connectionString;
+        DatabaseName = databaseName;
+        Suffix = suffix;
+        Root = root;
+        _provider = provider;
+        Protocol = protocol;
+        Ledger = new OsduLedger(Context, TimeProvider.System);
+    }
+
+    /// <summary>The disposable database the suite was given, as <c>SQLFLOW_TEST_DB</c> names it.</summary>
+    public string ConnectionString { get; }
+
+    /// <summary>Its Initial Catalog: what the generated three-part names are written with.</summary>
+    public string DatabaseName { get; }
+
+    /// <summary>What makes this fixture's schemas, flow names and environment variable its own.</summary>
+    public string Suffix { get; }
+
+    /// <summary>The generated estate: flows, mappings and the data folders the pre flows read.</summary>
+    public string Root { get; }
+
+    /// <summary>The schema the pre-ingestion flows land into.</summary>
+    public string PreSchema => "pre_" + Suffix;
+
+    /// <summary>The schema the ingestion flows keep their keyed tables in, which the OSDU flow reads.</summary>
+    public string IngSchema => "ing_" + Suffix;
+
+    /// <summary>The environment variable the generated flows reference; a flow document never holds a connection string.</summary>
+    public string ConnectionVariable => "SQLFLOW_CHAIN_DB_" + Suffix;
+
+    /// <summary>The prefix every generated flow name carries, so this fixture's ledger rows are its own.</summary>
+    public string FlowPrefix => "rw" + Suffix;
+
+    /// <summary>The OSDU flow's name.</summary>
+    public string DeliveryFlowName => FlowPrefix;
+
+    /// <summary>The OSDU flow's id, which the ledger holds its records, submissions and watermark under.</summary>
+    public Guid FlowId => Identity.FlowId.Of(DeliveryFlowName);
+
+    /// <summary>The record table the OSDU flow reads, as its document names it.</summary>
+    public string RecordObject => $"[{DatabaseName}].[{IngSchema}].[WellLog]";
+
+    /// <summary>The target the fake protocol stands in for; every delivery the chain makes is recorded on it.</summary>
+    public FakeProtocol Protocol { get; }
+
+    /// <summary>The ledger over the module's schema in the test database: what the chain's traceability is asserted from.</summary>
+    public OsduLedger Ledger { get; }
+
+    /// <summary>The engine as the host composed it, over the real ingestion tables and the fake target.</summary>
+    public EngineContext Engine => _provider.GetRequiredService<EngineContext>();
+
+    /// <summary>The document executor every flow of the chain runs through, whatever its kind.</summary>
+    public DocumentExecutor Documents => _provider.GetRequiredService<DocumentExecutor>();
+
+    /// <summary>The composed host, for the services a test needs beyond the engine (the document loaders, the kinds).</summary>
+    public IServiceProvider Services => _provider;
+
+    /// <summary>A context over the module's schema in the test database.</summary>
+    public OsduDbContext Context() => new(OsduDbContext.SqlServerOptions(ConnectionString));
+
+    /// <summary>The path of one generated flow document, by the name the repository gives it.</summary>
+    public string FlowFile(string shippedName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(shippedName);
+        return Path.Combine(Root, "flows", Rename(shippedName) + ".yaml");
+    }
+
+    /// <summary>The folder the generated flows live in, which the lineage collector reads as an estate.</summary>
+    public string FlowsDirectory => Path.Combine(Root, "flows");
+
+    /// <summary>The name a shipped flow carries in this fixture's estate.</summary>
+    public string Rename(string shippedName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(shippedName);
+        return shippedName.Replace("recall-welllog", FlowPrefix, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Refuses the suite when the database it needs is not there, naming what to set. The SQL Server chain runs against a
+    /// real server or not at all: there is no in-memory stand-in for what it proves.
+    /// </summary>
+    private static string Require()
+    {
+        Skip.IfNot(
+            Reachable.Value,
+            "The SQL Server chain tests need a reachable, disposable database. Set SQLFLOW_TEST_DB, for example through the git-ignored .sqlflow/env file.");
+        return ConnectionText.Value!;
+    }
+
+    /// <summary>
+    /// Brings up one fixture: its schemas, its generated estate and the host that runs it.
+    /// </summary>
+    /// <param name="fanOut">How many member runs the OSDU flow's document declares beside a coordinating run; 0 declares none.</param>
+    /// <param name="batchRecords">How many records one work batch holds, which is also what decides the slice count.</param>
+    public static async Task<SqlServerIngestionFixture> StartAsync(int fanOut = 0, int batchRecords = 0, CancellationToken ct = default)
+    {
+        var connectionString = Require();
+        await Migrated.Value.ConfigureAwait(false);
+
+        var builder = new SqlConnectionStringBuilder(connectionString);
+        var databaseName = builder.InitialCatalog;
+        if (string.IsNullOrWhiteSpace(databaseName))
+        {
+            throw new InvalidOperationException(
+                "SQLFLOW_TEST_DB names no Initial Catalog, and the chain's flows read three-part names. Point it at a database, for example Server=localhost,1433;Database=OsduDeliveryTest;...");
+        }
+
+        await RequireSnapshotIsolationAsync(connectionString, databaseName, ct).ConfigureAwait(false);
+
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var root = Samples.NewTempDirectory();
+        var variable = "SQLFLOW_CHAIN_DB_" + suffix;
+        Environment.SetEnvironmentVariable(variable, connectionString);
+
+        var protocol = new FakeProtocol();
+        ServiceProvider? provider = null;
+        try
+        {
+            await CreateSchemasAsync(connectionString, "pre_" + suffix, "ing_" + suffix, ct).ConfigureAwait(false);
+            GenerateEstate(root, databaseName, suffix, variable, fanOut, batchRecords);
+            provider = Compose(connectionString, protocol);
+            await ImportRenderInputsAsync(connectionString, ct).ConfigureAwait(false);
+            return new SqlServerIngestionFixture(connectionString, databaseName, suffix, root, provider, protocol);
+        }
+        catch
+        {
+            if (provider is not null)
+            {
+                await provider.DisposeAsync().ConfigureAwait(false);
+            }
+
+            Environment.SetEnvironmentVariable(variable, null);
+            await DropSchemasAsync(connectionString, "pre_" + suffix, "ing_" + suffix, CancellationToken.None).ConfigureAwait(false);
+            Delete(root);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Runs one flow of the chain through the platform's document executor, the way a node runs a queued run, and fails
+    /// the test with the run's own error when it did not succeed.
+    /// </summary>
+    public async Task<DocumentRunOutcome> RunFlowAsync(string shippedName, RunParameters? parameters = null, Guid? runId = null, CancellationToken ct = default)
+    {
+        var file = FlowFile(shippedName);
+        var outcome = await Documents.RunAsync(
+            file,
+            new DocumentExecutionOptions
+            {
+                Parameters = parameters ?? RunParameters.None,
+                RunId = runId,
+                Actor = "chain tests",
+            },
+            ct).ConfigureAwait(false);
+
+        Assert.True(outcome.Success, $"{outcome.FlowName} ({outcome.FlowKind}) failed: {outcome.Error}");
+        return outcome;
+    }
+
+    /// <summary>
+    /// Runs the four SQLFlow flows that feed the OSDU flow, in the wave order lineage puts them in: the two pre flows
+    /// land whatever files are in their folders, then the two ingestion flows upsert the keyed tables the delivery reads.
+    /// </summary>
+    public async Task RunIngestionChainAsync(CancellationToken ct = default)
+    {
+        await RunFlowAsync("recall-welllog-pre", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("recall-welllog-curves-pre", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("recall-welllog-ing", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("recall-welllog-curves-ing", ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Runs the OSDU flow's <c>deliver</c> operation through the document executor, with this run's values.</summary>
+    public Task<DocumentRunOutcome> DeliverAsync(Guid? runId = null, CancellationToken ct = default)
+        => RunFlowAsync(
+            "recall-welllog",
+            new RunParameters { Operation = DeliveryOperations.Deliver, Values = SampleEstate.Values },
+            runId ?? Guid.NewGuid(),
+            ct);
+
+    /// <summary>The OSDU flow as its generated document declares it, loaded through the module's own loader.</summary>
+    public FlowDefinition DeliveryFlow()
+        => _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("recall-welllog"));
+
+    /// <summary>Writes the well log metadata file the first pre flow reads; naming a new file lands a new batch of rows.</summary>
+    public Task WriteLogFileAsync(string fileName, IReadOnlyList<SampleLog> logs, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+        ArgumentNullException.ThrowIfNull(logs);
+        return SampleWellLogs.WriteCsvAsync(
+            Path.Combine(Root, "data", "welllog", fileName), SampleWellLogs.LogColumns, logs.Select(SampleWellLogs.LogRow).ToList(), ct);
+    }
+
+    /// <summary>Writes the curve metadata file the second pre flow reads.</summary>
+    public Task WriteCurveFileAsync(string fileName, IReadOnlyList<SampleLog> logs, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+        ArgumentNullException.ThrowIfNull(logs);
+        return SampleWellLogs.WriteCsvAsync(
+            Path.Combine(Root, "data", "curves-meta", fileName), SampleWellLogs.CurveColumns, logs.SelectMany(SampleWellLogs.CurveRows).ToList(), ct);
+    }
+
+    /// <summary>Writes one file of rows a test built itself, for the cases a sample log cannot express.</summary>
+    public Task WriteRowsAsync(string folder, string fileName, IReadOnlyList<string> columns, IReadOnlyList<IReadOnlyDictionary<string, string?>> rows, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(folder);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+        return SampleWellLogs.WriteCsvAsync(Path.Combine(Root, "data", folder, fileName), columns, rows, ct);
+    }
+
+    /// <summary>Writes each log's payload files where its row points, so a delivery has chunks to stream.</summary>
+    public async Task WritePayloadsAsync(IReadOnlyList<SampleLog> logs, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(logs);
+        foreach (var log in logs)
+        {
+            await SampleWellLogs.WriteChunkAsync(Path.Combine(Root, "data", "curves", log.SourceProject, log.LogId), log, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>How many rows one of this fixture's tables holds, for the assertions about what the chain loaded.</summary>
+    public async Task<int> CountAsync(string schema, string table, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(schema);
+        ArgumentException.ThrowIfNullOrWhiteSpace(table);
+        await using var connection = new SqlConnection(ConnectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SET QUOTED_IDENTIFIER ON; SELECT COUNT_BIG(*) FROM [{schema}].[{table}];";
+        var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return value is long count ? (int)count : 0;
+    }
+
+    /// <summary>One column of one ingestion row, by its record key, for the assertions about what the upsert left.</summary>
+    public async Task<object?> ValueAsync(string table, string column, string sourceProject, string logId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(table);
+        ArgumentException.ThrowIfNullOrWhiteSpace(column);
+        await using var connection = new SqlConnection(ConnectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            $"SET QUOTED_IDENTIFIER ON; SELECT [{column}] FROM [{IngSchema}].[{table}] WHERE [source_project] = @project AND [log_id] = @log;";
+        command.Parameters.AddWithValue("@project", sourceProject);
+        command.Parameters.AddWithValue("@log", logId);
+        var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return value is DBNull ? null : value;
+    }
+
+    /// <summary>
+    /// Drops everything this fixture created: its two schemas with the tables and views the flows put in them, the ledger
+    /// rows of its flow, its environment variable and its estate on disk. The module's templates and its partition cache
+    /// are left alone: they are shared, identical for every fixture, and what a run renders with.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        await _provider.DisposeAsync().ConfigureAwait(false);
+        await ClearLedgerAsync().ConfigureAwait(false);
+        await DropSchemasAsync(ConnectionString, PreSchema, IngSchema, CancellationToken.None).ConfigureAwait(false);
+        Environment.SetEnvironmentVariable(ConnectionVariable, null);
+        Delete(Root);
+    }
+
+    private async Task ClearLedgerAsync()
+    {
+        await using var db = Context();
+        var keys = await db.DeliveryRecords.Where(r => r.FlowId == FlowId).Select(r => r.DeliveryKey).ToListAsync().ConfigureAwait(false);
+        if (keys.Count > 0)
+        {
+            await db.DeliveryAttempts.Where(a => keys.Contains(a.DeliveryKey)).ExecuteDeleteAsync().ConfigureAwait(false);
+        }
+
+        await db.DeliveryRecords.Where(r => r.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryWorkBatches.Where(b => b.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliverySourceWatermarks.Where(w => w.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryActivities.Where(a => a.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliverySubmissions.Where(s => s.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The host as the CLI and the node compose it: the platform engine, then the module's kinds, then the ledger over the
+    /// module's schema in the test database. The fake target is registered before the module, because the module registers
+    /// the real protocol factory only when nothing else claims it.
+    /// </summary>
+    private static ServiceProvider Compose(string connectionString, FakeProtocol protocol)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Warning));
+        services.AddSingleton<IProtocolFactory>(new FakeProtocolFactory(protocol));
+        services.AddSqlFlowEngine();
+        services.AddDeliveryKind();
+        services.AddDeliveryLedger(_ => () => new OsduDbContext(OsduDbContext.SqlServerOptions(connectionString)));
+        return services.BuildServiceProvider();
+    }
+
+    /// <summary>
+    /// Saves the templates the sample mappings pin and the sample partition's cache into the module's schema, once per
+    /// test run. A render reads both from that database, so a chain run needs them there; the content is the repository's
+    /// own, so a second fixture importing it again changes nothing.
+    /// </summary>
+    private static async Task ImportRenderInputsAsync(string connectionString, CancellationToken ct)
+    {
+        await RenderInputs.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_renderInputsImported)
+            {
+                return;
+            }
+
+            OsduDbContext Contexts() => new(OsduDbContext.SqlServerOptions(connectionString));
+            await Samples.ImportSampleTemplatesAsync(new OsduTemplateStore(Contexts, TimeProvider.System)).ConfigureAwait(false);
+            await Samples.ImportSampleCacheAsync(new OsduCacheStore(Contexts)).ConfigureAwait(false);
+            _renderInputsImported = true;
+        }
+        finally
+        {
+            RenderInputs.Release();
+        }
+    }
+
+    /// <summary>
+    /// Refuses the suite when the database does not allow snapshot isolation, which is how a record and its child rows are
+    /// read as one moment. The setting is the database's own and is never changed here: a suite does not reconfigure the
+    /// database it was lent.
+    /// </summary>
+    private static async Task RequireSnapshotIsolationAsync(string connectionString, string databaseName, CancellationToken ct)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT snapshot_isolation_state FROM sys.databases WHERE database_id = DB_ID();";
+        var state = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        Skip.If(
+            state is not byte on || on == 0,
+            $"The chain reads its ingestion tables under snapshot isolation. Enable it once with ALTER DATABASE [{databaseName}] SET ALLOW_SNAPSHOT_ISOLATION ON.");
+    }
+
+    private static async Task CreateSchemasAsync(string connectionString, string preSchema, string ingSchema, CancellationToken ct)
+    {
+        // SQLFlow's flows create tables, not schemas, and its ingestion stages rows in [raw]; all three are made here.
+        await ExecuteAsync(
+            connectionString,
+            $"""
+            SET QUOTED_IDENTIFIER ON;
+            IF SCHEMA_ID('{preSchema}') IS NULL EXEC(N'CREATE SCHEMA [{preSchema}]');
+            IF SCHEMA_ID('{ingSchema}') IS NULL EXEC(N'CREATE SCHEMA [{ingSchema}]');
+            IF SCHEMA_ID('raw') IS NULL EXEC(N'CREATE SCHEMA [raw]');
+            """,
+            ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Drops the views, then the tables, then the schemas themselves. The order matters: a typed view is bound to the table
+    /// it projects, and a schema cannot be dropped while it holds anything.
+    /// </summary>
+    private static async Task DropSchemasAsync(string connectionString, string preSchema, string ingSchema, CancellationToken ct)
+    {
+        try
+        {
+            await ExecuteAsync(
+                connectionString,
+                $"""
+                SET QUOTED_IDENTIFIER ON;
+                DECLARE @sql nvarchar(max) = N'';
+                SELECT @sql = @sql + N'DROP VIEW [' + s.[name] + N'].[' + v.[name] + N'];'
+                FROM sys.views v INNER JOIN sys.schemas s ON s.[schema_id] = v.[schema_id]
+                WHERE s.[name] IN (N'{preSchema}', N'{ingSchema}');
+                SELECT @sql = @sql + N'DROP TABLE [' + s.[name] + N'].[' + t.[name] + N'];'
+                FROM sys.tables t INNER JOIN sys.schemas s ON s.[schema_id] = t.[schema_id]
+                WHERE s.[name] IN (N'{preSchema}', N'{ingSchema}');
+                IF @sql <> N'' EXEC sp_executesql @sql;
+                IF SCHEMA_ID('{preSchema}') IS NOT NULL EXEC(N'DROP SCHEMA [{preSchema}]');
+                IF SCHEMA_ID('{ingSchema}') IS NOT NULL EXEC(N'DROP SCHEMA [{ingSchema}]');
+                """,
+                ct).ConfigureAwait(false);
+        }
+        catch (SqlException ex)
+        {
+            // The database is a disposable one, and a schema left behind must not turn a passing chain into a failing
+            // suite; it is reported so the leftover is visible rather than silent.
+            throw new InvalidOperationException(
+                $"The chain fixture could not drop its schemas [{preSchema}] and [{ingSchema}] from the test database; drop them by hand. {ex.Message}", ex);
+        }
+    }
+
+    private static async Task ExecuteAsync(string connectionString, string sql, CancellationToken ct)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes this fixture's estate: the shipped mappings, templates, caches and reference records as they are, the five
+    /// chain documents rewritten for this database, and the empty data folders the pre flows read.
+    /// </summary>
+    private static void GenerateEstate(string root, string databaseName, string suffix, string variable, int fanOut, int batchRecords)
+    {
+        foreach (var part in CopiedParts)
+        {
+            CopyDirectory(Path.Combine(Samples.Root, part), Path.Combine(root, part));
+        }
+
+        foreach (var folder in new[] { "welllog", "curves-meta", "curves" })
+        {
+            Directory.CreateDirectory(Path.Combine(root, "data", folder));
+        }
+
+        Directory.CreateDirectory(Path.Combine(root, "flows"));
+        foreach (var name in ChainDocuments)
+        {
+            var shipped = File.ReadAllText(Path.Combine(Samples.Root, "flows", name + ".yaml"));
+            var generated = Generate(shipped, name, databaseName, suffix, variable, fanOut, batchRecords);
+            File.WriteAllText(Path.Combine(root, "flows", name.Replace("recall-welllog", "rw" + suffix, StringComparison.Ordinal) + ".yaml"), generated);
+        }
+    }
+
+    /// <summary>
+    /// One shipped document as this fixture runs it: the same flow, naming this database, these schemas, this connection
+    /// reference and, for the OSDU flow, a target no test ever calls.
+    /// </summary>
+    private static string Generate(string shipped, string name, string databaseName, string suffix, string variable, int fanOut, int batchRecords)
+    {
+        var text = Replace(shipped, "${env:OSDU_SAMPLE_DB}", "${env:" + variable + "}", name)
+            .Replace("recall-welllog", "rw" + suffix, StringComparison.Ordinal)
+            .Replace("OsduSample.pre.", $"[{databaseName}].[pre_{suffix}].", StringComparison.Ordinal)
+            .Replace("OsduSample.ing.", $"[{databaseName}].[ing_{suffix}].", StringComparison.Ordinal);
+
+        if (name.EndsWith("-pre", StringComparison.Ordinal))
+        {
+            text = Replace(text, "\n  schema: pre\n", $"\n  schema: pre_{suffix}\n", name);
+        }
+
+        if (name == "recall-welllog")
+        {
+            text = Replace(text, ShippedTarget, LocalTarget, name);
+            if (fanOut > 0)
+            {
+                text = Replace(
+                    text,
+                    "\n  concurrency: 8\n",
+                    $"\n  concurrency: 8\n  fanOut: {fanOut.ToString(CultureInfo.InvariantCulture)}\n  fanOutMinRecords: 1\n",
+                    name);
+            }
+
+            if (batchRecords > 0)
+            {
+                text = Replace(
+                    text,
+                    "\n  batchSize: 50\n",
+                    $"\n  batchSize: 50\n  batchRecords: {batchRecords.ToString(CultureInfo.InvariantCulture)}\n",
+                    name);
+            }
+        }
+
+        return text;
+    }
+
+    /// <summary>
+    /// Substitutes one piece of a shipped document, refusing loudly when the document no longer holds it. A silent miss
+    /// would leave the estate pointing at the sample's own database or at a real endpoint, which is the one failure this
+    /// fixture must never have.
+    /// </summary>
+    private static string Replace(string text, string old, string replacement, string document)
+    {
+        if (!text.Contains(old, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"The sample flow '{document}.yaml' no longer holds the text the chain fixture rewrites, so the generated estate would not name the test database. Expected to find: {old.Trim()}");
+        }
+
+        return text.Replace(old, replacement, StringComparison.Ordinal);
+    }
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        if (!Directory.Exists(source))
+        {
+            throw new DirectoryNotFoundException(
+                $"The sample estate was not copied next to the test binaries ({source}). It is a Content item of this test project; rebuild the suite.");
+        }
+
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target, overwrite: true);
+        }
+    }
+
+    private static void Delete(string root)
+    {
+        try
+        {
+            Directory.Delete(root, recursive: true);
+        }
+        catch (IOException)
+        {
+            // A run artifact a reader still holds open is left for the operating system's own cleanup.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+}

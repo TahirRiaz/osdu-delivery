@@ -20,6 +20,9 @@
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Core\SqlFlow.Core.csproj" />
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Sources\SqlFlow.Sources.csproj" />
+    <!-- The chain suite asserts that lineage orders the estate's waves pre, then ingestion, then the OSDU flow, which is
+         what the flow set collector and the graph builder decide. -->
+    <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Lineage\SqlFlow.Lineage.csproj" />
     <ProjectReference Include="..\..\src\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
     <ProjectReference Include="..\..\src\SqlFlow.Delivery.Data\SqlFlow.Delivery.Data.csproj" />
   </ItemGroup>
