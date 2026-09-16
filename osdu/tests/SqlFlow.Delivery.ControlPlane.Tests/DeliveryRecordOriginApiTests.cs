@@ -68,8 +68,10 @@ public sealed class DeliveryRecordOriginApiTests
                 },
             ]);
 
-            // One try, which keeps the origin it sent even after the record moves on.
-            await ledger.CompleteAsync(flowId, new RecordCompletion
+            // One try, which keeps the origin it sent even after the record moves on: appended as a worker appends it, and
+            // applied as its lease applies it.
+            var lease = "origin-test/" + Guid.NewGuid().ToString("N");
+            await ledger.AppendAsync(flowId, lease, new LeaseAppend([], [new RecordCompletion
             {
                 DeliveryKey = key,
                 Status = RecordStatus.Delivered,
@@ -88,7 +90,8 @@ public sealed class DeliveryRecordOriginApiTests
                     SourceRowNumber = 7,
                     SourceUpdatedUtc = delivered,
                 },
-            });
+            }]));
+            await ledger.CheckpointLeaseAsync(lease, delivered.AddSeconds(2));
 
             await using var factory = Factory(cs);
             using var client = factory.CreateClient();

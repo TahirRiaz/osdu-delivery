@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
@@ -31,19 +32,19 @@ public sealed record WorkerSummary(long Processed, long Delivered, long Retried,
 
 /// <summary>
 /// The lease-and-retry worker (design.md sections 7.5 and 16.2): the fan-out. Claims whole work batches (a file of
-/// rendered documents and every record of it that is due) and, when no batch is claimable, the individual records
-/// that came due for a retry; processes them with bounded concurrency, in protocol batches when the protocol
-/// accepts arrays; writes one append-only attempt per record with every step the target answered; keeps a
-/// record's completed steps so a retry never repeats an upload; and fires the completion callback
-/// (<see cref="IDeliveryListener"/>) after every outcome. Any number of workers, on any number of nodes, share
-/// the ledger safely: a crashed worker's leases expire and its records are reclaimed by the next claim, a stopping
-/// worker releases them at once. The run trace carries batch-level lines, never one per record.
+/// rendered documents and every record of it that is due) and, when no batch is claimable, a group of records that came
+/// due for a retry, each under one lease; processes them with bounded concurrency, in protocol batches when the protocol
+/// accepts arrays. While it delivers it writes nothing to the records: it renews its lease's one row and appends what it
+/// learns (every step the target answered, before the delivery goes on, and each try's attempt and outcome) through a
+/// <see cref="LeaseJournal"/>, which writes what its concurrent deliveries hand over together. At every renewal the
+/// lease applies what was appended so far and the worker reports the batch's progress on the run's trace; closing the
+/// lease applies the rest and settles the batch. The completion callback (<see cref="IDeliveryListener"/>) fires after
+/// every outcome is written. Any number of workers, on any number of nodes, share the ledger safely: a crashed worker's
+/// lease runs out and the next claim of its flow recovers it, a stopping worker closes its lease at once, and a worker
+/// whose lease was taken over stops sending under it. The run trace carries batch-level lines, never one per record.
 /// </summary>
 public sealed class DeliveryWorker
 {
-    /// <summary>Completions are written to the ledger in groups of this many, or when a batch closes.</summary>
-    public const int CompletionFlush = 200;
-
     /// <summary>The longest one wait for records in backoff lasts before the queue is looked at again.</summary>
     public static readonly TimeSpan DefaultMaxWait = TimeSpan.FromMinutes(5);
 
@@ -68,6 +69,9 @@ public sealed class DeliveryWorker
     /// returns as soon as nothing is due (a single pass of what is claimable now).
     /// </summary>
     public TimeSpan? MaxWait { get; init; } = DefaultMaxWait;
+
+    /// <summary>How often a lease is renewed and checkpointed while the worker delivers: half the lease unless set (tests shorten it).</summary>
+    internal TimeSpan? KeepInterval { get; init; }
 
     public DeliveryWorker(
         ILedger ledger,
@@ -150,97 +154,91 @@ public sealed class DeliveryWorker
         return total;
     }
 
-    /// <summary>One claim: a work batch when one is claimable, else one batch of due records.</summary>
+    /// <summary>One claim: a work batch when one is claimable, else one group of due records.</summary>
     public async Task<WorkerSummary> PassAsync(Guid? submissionId, CancellationToken ct = default)
     {
         var now = _time.GetUtcNow().UtcDateTime;
         var claimed = await _ledger.ClaimWorkBatchAsync(_flow.Id, submissionId, _workerId, Lease, now, RunId, ct).ConfigureAwait(false);
         if (claimed is not null)
         {
-            return await ProcessBatchAsync(claimed, ct).ConfigureAwait(false);
+            _logger.LogInformation(
+                "Claimed batch {Batch} of submission {SubmissionId}: {Records} record(s) due.", claimed.Batch.Index, claimed.Batch.SubmissionId, claimed.Records.Count);
+            return await ProcessLeaseAsync(claimed.Lease, claimed.Batch, claimed.Records, ct).ConfigureAwait(false);
         }
 
-        var records = await _ledger.ClaimAsync(_flow.Id, submissionId, _workerId, _flow.Reliability.BatchSize, Lease, now, ct).ConfigureAwait(false);
-        if (records.Count == 0)
+        var due = await _ledger.ClaimAsync(_flow.Id, submissionId, _workerId, _flow.Reliability.BatchSize, Lease, now, RunId, ct).ConfigureAwait(false);
+        if (due.Lease is not { } lease)
         {
             return WorkerSummary.Empty;
         }
 
-        _logger.LogInformation("Claimed {Count} record(s) due for a retry.", records.Count);
-        var owner = records[0].LeaseOwner ?? _workerId;
-        using var renewals = new CancellationTokenSource();
-        var renewTask = RenewRecordsLoopAsync(records.Select(r => r.DeliveryKey).ToList(), owner, renewals.Token);
-        try
-        {
-            var loaded = new List<(RecordState Record, WorkItem? Item)>(records.Count);
-            foreach (var record in records)
-            {
-                loaded.Add((record, await LoadItemAsync(record, ct).ConfigureAwait(false)));
-            }
-
-            return await ProcessRecordsAsync(loaded, batch: null, owner, ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            await renewals.CancelAsync().ConfigureAwait(false);
-            await AwaitQuietlyAsync(renewTask).ConfigureAwait(false);
-        }
+        _logger.LogInformation("Claimed {Count} record(s) due for a retry.", due.Records.Count);
+        return await ProcessLeaseAsync(lease, batch: null, due.Records, ct).ConfigureAwait(false);
     }
 
-    private async Task<WorkerSummary> ProcessBatchAsync(ClaimedWorkBatch claimed, CancellationToken ct)
+    /// <summary>
+    /// Delivers what one lease holds and closes it: done with the batch's counts, stopped when the run is cancelled,
+    /// failed when the work cannot be read. A lease another worker took over is closed for what this worker sent, and the
+    /// rest is left to that worker.
+    /// </summary>
+    private async Task<WorkerSummary> ProcessLeaseAsync(LeaseState lease, WorkBatchState? batch, IReadOnlyList<RecordState> records, CancellationToken ct)
     {
-        var batch = claimed.Batch;
-        var owner = batch.LeaseOwner ?? _workerId;
         var started = _time.GetUtcNow().UtcDateTime;
-        _logger.LogInformation("Claimed batch {Batch} of submission {SubmissionId}: {Records} record(s) due.", batch.Index, batch.SubmissionId, claimed.Records.Count);
-        using var renewals = new CancellationTokenSource();
-        var renewTask = RenewBatchLoopAsync(batch, owner, renewals.Token);
+        var journal = new LeaseJournal(_ledger, _flow.Id, lease.Token, _listener);
+        using var lost = new CancellationTokenSource();
+        using var keeping = new CancellationTokenSource();
+        using var sending = CancellationTokenSource.CreateLinkedTokenSource(ct, lost.Token);
+        var keeper = KeepLeaseAsync(lease, journal, records.Count, batch, lost, keeping.Token);
         WorkerSummary summary;
         try
         {
-            var submission = await SubmissionAsync(batch.SubmissionId, ct).ConfigureAwait(false);
-            var wanted = claimed.Records.ToDictionary(r => r.DeliveryKey.Value);
-            var loaded = new List<(RecordState Record, WorkItem? Item)>(wanted.Count);
-            if (wanted.Count > 0)
-            {
-                await foreach (var (item, _) in WorkBatchFile.ReadAllAsync(_stores, submission.WorkLocation ?? throw MissingWorkLocation(submission), batch.SubmissionId, batch.Index, ct).ConfigureAwait(false))
-                {
-                    if (wanted.Remove(item.Key, out var record))
-                    {
-                        loaded.Add((record, item));
-                    }
-                }
-
-                // Leased records the file does not hold (the work location was pruned) are held, not silently dropped.
-                foreach (var missing in wanted.Values)
-                {
-                    loaded.Add((missing, null));
-                }
-            }
-
-            summary = await ProcessRecordsAsync(loaded, batch, owner, ct).ConfigureAwait(false);
+            var loaded = batch is null
+                ? await LoadRecordsAsync(records, sending.Token).ConfigureAwait(false)
+                : await LoadBatchAsync(batch, records, sending.Token).ConfigureAwait(false);
+            summary = await ProcessRecordsAsync(loaded, batch, journal, sending.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lost.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            await StopKeepingAsync(keeping, keeper).ConfigureAwait(false);
+            var sent = Summarize(journal) with { Batches = batch is null ? 0 : 1 };
+            _logger.LogWarning(
+                "The lease on {What} is no longer this worker's (it ran out and another worker took it over), so it stopped sending: {Summary}. The rest is left to that worker.",
+                Describe(lease, batch), sent);
+            await _ledger.CloseLeaseAsync(lease.Token, new LeaseClosing { End = LeaseEnd.Stopped }, _time.GetUtcNow().UtcDateTime, CancellationToken.None).ConfigureAwait(false);
+            return sent;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            await renewals.CancelAsync().ConfigureAwait(false);
-            await AwaitQuietlyAsync(renewTask).ConfigureAwait(false);
-            await ReleaseBatchAsync(batch, owner).ConfigureAwait(false);
+            // A stop, not a failure: hand the work back now rather than letting the lease run out, and do not charge the
+            // interrupted tries to the retry budget.
+            await StopKeepingAsync(keeping, keeper).ConfigureAwait(false);
+            await CloseOnStopAsync(lease, batch).ConfigureAwait(false);
             throw;
         }
         catch (Exception ex) when (ex is SqlFlowException or IOException or InvalidOperationException or JsonException)
         {
-            await renewals.CancelAsync().ConfigureAwait(false);
-            await AwaitQuietlyAsync(renewTask).ConfigureAwait(false);
+            await StopKeepingAsync(keeping, keeper).ConfigureAwait(false);
             var message = HeaderRedaction.RedactMessage(ex.Message);
-            _logger.LogError("Batch {Batch} of submission {SubmissionId} could not be processed: {Message}", batch.Index, batch.SubmissionId, message);
-            await _ledger.CompleteWorkBatchAsync(batch.SubmissionId, batch.Index, owner, WorkBatchStatus.Failed, 0, 0, 0, 0, message, _time.GetUtcNow().UtcDateTime, CancellationToken.None).ConfigureAwait(false);
+            _logger.LogError("{What} could not be processed: {Message}", Describe(lease, batch), message);
+            await _ledger.CloseLeaseAsync(lease.Token, new LeaseClosing { End = LeaseEnd.Failed, Failure = message }, _time.GetUtcNow().UtcDateTime, CancellationToken.None).ConfigureAwait(false);
             throw;
         }
+        finally
+        {
+            await StopKeepingAsync(keeping, keeper).ConfigureAwait(false);
+        }
 
-        await renewals.CancelAsync().ConfigureAwait(false);
-        await AwaitQuietlyAsync(renewTask).ConfigureAwait(false);
         var completed = _time.GetUtcNow().UtcDateTime;
-        await _ledger.CompleteWorkBatchAsync(batch.SubmissionId, batch.Index, owner, WorkBatchStatus.Done, summary.Delivered, summary.Held, summary.Failed, summary.Retried, null, completed, CancellationToken.None).ConfigureAwait(false);
+        await _ledger.CloseLeaseAsync(
+            lease.Token,
+            new LeaseClosing { End = LeaseEnd.Done, Delivered = summary.Delivered, Held = summary.Held, Failed = summary.Failed, Retrying = summary.Retried },
+            completed,
+            CancellationToken.None).ConfigureAwait(false);
+        if (batch is null)
+        {
+            return summary;
+        }
+
         _logger.LogInformation("Batch {Batch} done in {Seconds:0.#}s: {Summary}", batch.Index, (completed - started).TotalSeconds, summary);
         await _listener.OnEventAsync(new DeliveryEvent
         {
@@ -257,43 +255,170 @@ public sealed class DeliveryWorker
         return summary with { Batches = 1 };
     }
 
+    /// <summary>The batch's documents for the records its lease holds, read once from its file.</summary>
+    private async Task<IReadOnlyList<(RecordState Record, WorkItem? Item)>> LoadBatchAsync(WorkBatchState batch, IReadOnlyList<RecordState> records, CancellationToken ct)
+    {
+        var loaded = new List<(RecordState Record, WorkItem? Item)>(records.Count);
+        if (records.Count == 0)
+        {
+            return loaded;
+        }
+
+        var submission = await SubmissionAsync(batch.SubmissionId, ct).ConfigureAwait(false);
+        var wanted = records.ToDictionary(r => r.DeliveryKey.Value);
+        await foreach (var (item, _) in WorkBatchFile.ReadAllAsync(_stores, submission.WorkLocation ?? throw MissingWorkLocation(submission), batch.SubmissionId, batch.Index, ct).ConfigureAwait(false))
+        {
+            if (wanted.Remove(item.Key, out var record))
+            {
+                loaded.Add((record, item));
+            }
+        }
+
+        // Leased records the file does not hold (the work location was pruned) are held, not silently dropped.
+        foreach (var missing in wanted.Values)
+        {
+            loaded.Add((missing, null));
+        }
+
+        return loaded;
+    }
+
+    /// <summary>The documents of records due for a retry, each read from its own batch.</summary>
+    private async Task<IReadOnlyList<(RecordState Record, WorkItem? Item)>> LoadRecordsAsync(IReadOnlyList<RecordState> records, CancellationToken ct)
+    {
+        var loaded = new List<(RecordState Record, WorkItem? Item)>(records.Count);
+        foreach (var record in records)
+        {
+            loaded.Add((record, await LoadItemAsync(record, ct).ConfigureAwait(false)));
+        }
+
+        return loaded;
+    }
+
+    private async Task CloseOnStopAsync(LeaseState lease, WorkBatchState? batch)
+    {
+        try
+        {
+            await _ledger.CloseLeaseAsync(lease.Token, new LeaseClosing { End = LeaseEnd.Stopped }, _time.GetUtcNow().UtcDateTime, CancellationToken.None).ConfigureAwait(false);
+            _logger.LogInformation("Handed {What} back on shutdown; the next pass picks it up.", Describe(lease, batch));
+        }
+        catch (Exception ex) when (ex is DeliveryException or InvalidOperationException or DbException or TimeoutException)
+        {
+            // The lease runs out on its own and the next claim of the flow recovers it, charging the interrupted tries.
+            _logger.LogWarning("Could not hand {What} back on shutdown ({Message}); its lease runs out and the next claim recovers it.", Describe(lease, batch), ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Keeps a lease while the worker delivers under it: renews its one row every half lease and, at each renewal, applies
+    /// what the worker appended so far, so the records show their outcomes while the batch runs, and reports the progress
+    /// on the run's trace. A lease that is no longer this worker's, or that could not be renewed before it ran out, is
+    /// lost: <paramref name="lost"/> is cancelled and the worker stops sending under it.
+    /// </summary>
+    private async Task KeepLeaseAsync(LeaseState lease, LeaseJournal journal, int records, WorkBatchState? batch, CancellationTokenSource lost, CancellationToken ct)
+    {
+        var length = Lease;
+        var interval = KeepInterval ?? TimeSpan.FromMilliseconds(Math.Max(length.TotalMilliseconds / 2, 1000));
+        var retry = KeepInterval ?? TimeSpan.FromMilliseconds(Math.Max(length.TotalMilliseconds / 10, 500));
+        var expires = lease.ExpiresUtc;
+        var wait = interval;
+        while (!ct.IsCancellationRequested)
+        {
+            await Task.Delay(wait, _time, ct).ConfigureAwait(false);
+            var now = _time.GetUtcNow().UtcDateTime;
+            bool renewed;
+            try
+            {
+                renewed = await _ledger.RenewLeaseAsync(lease.Token, length, now, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is DbException or TimeoutException or InvalidOperationException)
+            {
+                if (now + retry >= expires)
+                {
+                    _logger.LogWarning("The lease on {What} could not be renewed before it ran out ({Message}); the worker stops sending under it.", Describe(lease, batch), ex.Message);
+                    await lost.CancelAsync().ConfigureAwait(false);
+                    return;
+                }
+
+                _logger.LogWarning("Renewing the lease on {What} failed ({Message}); trying again in {Seconds}s.", Describe(lease, batch), ex.Message, (int)retry.TotalSeconds);
+                wait = retry;
+                continue;
+            }
+
+            if (!renewed)
+            {
+                await lost.CancelAsync().ConfigureAwait(false);
+                return;
+            }
+
+            expires = now + length;
+            wait = interval;
+            try
+            {
+                await _ledger.CheckpointLeaseAsync(lease.Token, now, ct).ConfigureAwait(false);
+                await ReportProgressAsync(lease, journal, records, batch, now).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is DbException or TimeoutException or InvalidOperationException or DeliveryException)
+            {
+                _logger.LogWarning("The progress of {What} could not be applied yet ({Message}); closing its lease applies it.", Describe(lease, batch), ex.Message);
+            }
+        }
+    }
+
+    private async Task ReportProgressAsync(LeaseState lease, LeaseJournal journal, int records, WorkBatchState? batch, DateTime now)
+    {
+        var sent = Summarize(journal);
+        await _listener.OnEventAsync(new DeliveryEvent
+        {
+            AtUtc = now,
+            FlowId = _flow.Id,
+            FlowName = _flow.Name,
+            Kind = "batch.progress",
+            SubmissionId = batch?.SubmissionId ?? lease.SubmissionId,
+            Worker = _workerId,
+            Phase = batch?.Index.ToString(CultureInfo.InvariantCulture) ?? "retries",
+            Duration = now - lease.AcquiredUtc,
+            Detail = string.Create(CultureInfo.InvariantCulture, $"{sent.Processed} of {records} record(s) settled so far: {sent}"),
+        }, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>What a lease's journal has written so far, as a summary.</summary>
+    private static WorkerSummary Summarize(LeaseJournal journal)
+    {
+        var (byStatus, unchanged) = journal.Written;
+        var delivered = byStatus.GetValueOrDefault(RecordStatus.Delivered);
+        var retried = byStatus.GetValueOrDefault(RecordStatus.Pending);
+        var held = byStatus.GetValueOrDefault(RecordStatus.Held);
+        var failed = byStatus.GetValueOrDefault(RecordStatus.Failed);
+        return new WorkerSummary(delivered + retried + held + failed, delivered - unchanged, retried, held, failed, Unchanged: unchanged);
+    }
+
+    private static string Describe(LeaseState lease, WorkBatchState? batch)
+        => batch is null
+            ? $"the records due for a retry (lease {lease.Token})"
+            : string.Create(CultureInfo.InvariantCulture, $"batch {batch.Index} of submission {batch.SubmissionId}");
+
+    private static async Task StopKeepingAsync(CancellationTokenSource keeping, Task keeper)
+    {
+        if (!keeping.IsCancellationRequested)
+        {
+            await keeping.CancelAsync().ConfigureAwait(false);
+        }
+
+        await AwaitQuietlyAsync(keeper).ConfigureAwait(false);
+    }
+
     /// <summary>Delivers a set of leased records: protocol batches when the protocol takes arrays, bounded concurrency otherwise.</summary>
-    private async Task<WorkerSummary> ProcessRecordsAsync(IReadOnlyList<(RecordState Record, WorkItem? Item)> loaded, WorkBatchState? batch, string owner, CancellationToken ct)
+    private async Task<WorkerSummary> ProcessRecordsAsync(IReadOnlyList<(RecordState Record, WorkItem? Item)> loaded, WorkBatchState? batch, LeaseJournal journal, CancellationToken ct)
     {
         var results = new WorkerSummary[loaded.Count];
-        var completions = new List<RecordCompletion>();
-        var events = new List<DeliveryEvent>();
-        var flushLock = new SemaphoreSlim(1, 1);
         var failuresLogged = 0;
 
         async Task RecordAsync(int index, RecordCompletion completion, DeliveryEvent evt, WorkerSummary summary)
         {
+            // Written whatever happens to the run meanwhile: the try happened, and the ledger says so.
+            await journal.OutcomeAsync(completion, evt).ConfigureAwait(false);
             results[index] = summary;
-            List<RecordCompletion>? toWrite = null;
-            List<DeliveryEvent>? toEmit = null;
-            await flushLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-            try
-            {
-                completions.Add(completion);
-                events.Add(evt);
-                if (completions.Count >= CompletionFlush)
-                {
-                    toWrite = [.. completions];
-                    toEmit = [.. events];
-                    completions.Clear();
-                    events.Clear();
-                }
-            }
-            finally
-            {
-                flushLock.Release();
-            }
-
-            if (toWrite is not null)
-            {
-                await FlushAsync(toWrite, toEmit!).ConfigureAwait(false);
-            }
-
             if (summary.Held > 0 || summary.Failed > 0 || summary.Retried > 0)
             {
                 if (Interlocked.Increment(ref failuresLogged) <= FailuresLoggedPerBatch)
@@ -313,11 +438,10 @@ public sealed class DeliveryWorker
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // Claimed but never started: hand them back so the next pass does not wait for the lease to expire.
-                foreach (var (index, record, _) in group)
+                // Claimed but never started: closing the lease hands them back.
+                foreach (var (index, _, _) in group)
                 {
                     results[index] = WorkerSummary.Empty;
-                    await ReleaseAsync(record, owner).ConfigureAwait(false);
                 }
 
                 throw;
@@ -325,7 +449,7 @@ public sealed class DeliveryWorker
 
             try
             {
-                await DeliverGroupAsync(group, batch, owner, RecordAsync, ct).ConfigureAwait(false);
+                await DeliverGroupAsync(group, batch, journal, RecordAsync, ct).ConfigureAwait(false);
             }
             finally
             {
@@ -333,33 +457,7 @@ public sealed class DeliveryWorker
             }
         }).ToList();
 
-        try
-        {
-            await Task.WhenAll(tasks).ConfigureAwait(false);
-        }
-        finally
-        {
-            List<RecordCompletion> rest;
-            List<DeliveryEvent> restEvents;
-            await flushLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-            try
-            {
-                rest = [.. completions];
-                restEvents = [.. events];
-                completions.Clear();
-                events.Clear();
-            }
-            finally
-            {
-                flushLock.Release();
-            }
-
-            if (rest.Count > 0)
-            {
-                await FlushAsync(rest, restEvents).ConfigureAwait(false);
-            }
-        }
-
+        await Task.WhenAll(tasks).ConfigureAwait(false);
         var total = results.Aggregate(WorkerSummary.Empty, (acc, r) => acc.Add(r ?? WorkerSummary.Empty));
         if (failuresLogged > FailuresLoggedPerBatch)
         {
@@ -367,16 +465,6 @@ public sealed class DeliveryWorker
         }
 
         return total;
-    }
-
-    private async Task FlushAsync(List<RecordCompletion> completions, List<DeliveryEvent> events)
-    {
-        await _ledger.CompleteManyAsync(_flow.Id, completions, CancellationToken.None).ConfigureAwait(false);
-        // The completion callback: everything a listener needs to trace each try, after the ledger rows are written.
-        foreach (var evt in events)
-        {
-            await _listener.OnEventAsync(evt, CancellationToken.None).ConfigureAwait(false);
-        }
     }
 
     private static List<List<(int Index, RecordState Record, WorkItem? Item)>> Group(IReadOnlyList<(RecordState Record, WorkItem? Item)> loaded, int size)
@@ -412,7 +500,7 @@ public sealed class DeliveryWorker
     private async Task DeliverGroupAsync(
         List<(int Index, RecordState Record, WorkItem? Item)> group,
         WorkBatchState? batch,
-        string owner,
+        LeaseJournal journal,
         Func<int, RecordCompletion, DeliveryEvent, WorkerSummary, Task> record,
         CancellationToken ct)
     {
@@ -482,7 +570,7 @@ public sealed class DeliveryWorker
                 Label = state.Label,
                 CompletedSteps = completedSteps,
                 TargetState = JsonMerge.ToValues(state.TargetStateJson),
-                StepCompleted = (step, returned, token) => SaveStepAsync(state, completedSteps, step, returned, reportedSteps, token),
+                StepCompleted = (step, returned, _) => SaveStepAsync(state, completedSteps, step, returned, reportedSteps, journal),
             }));
         }
 
@@ -503,13 +591,7 @@ public sealed class DeliveryWorker
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // A stop, not a failure: hand the records back now rather than letting the leases expire, and do not
-            // charge the interrupted try to the retry budget.
-            foreach (var (_, state, _) in works)
-            {
-                await ReleaseAsync(state, owner).ConfigureAwait(false);
-            }
-
+            // A stop, not a failure: closing the lease hands the records back without charging the interrupted try.
             throw;
         }
 
@@ -801,16 +883,17 @@ public sealed class DeliveryWorker
     }
 
     /// <summary>
-    /// Persists a completed step before the protocol moves on, so a crash never repeats it. The step belongs to the
-    /// document the record was claimed with; newer work queued behind the try never inherits it.
+    /// Appends a completed step before the protocol moves on, so a crash never repeats it. The step belongs to the document
+    /// the record was claimed with; newer work queued behind the try never inherits it. It is written whatever happens to
+    /// the run meanwhile, since what it records has already happened at the target.
     /// </summary>
-    private async Task SaveStepAsync(
+    private Task SaveStepAsync(
         RecordState claimed,
         IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> completed,
         string step,
         IReadOnlyDictionary<string, string> returned,
         System.Collections.Concurrent.ConcurrentDictionary<Guid, string> reported,
-        CancellationToken ct)
+        LeaseJournal journal)
     {
         var key = claimed.DeliveryKey;
         var reference = claimed.PendingDocumentRef
@@ -832,7 +915,7 @@ public sealed class DeliveryWorker
         node[step] = ToNode(returned);
         var json = node.ToJsonString();
         reported[key.Value] = json;
-        await _ledger.SaveStepAsync(_flow.Id, key, claimed.LastSubmissionId, reference, json, ct).ConfigureAwait(false);
+        return journal.StepAsync(new RecordStep(key, claimed.LastSubmissionId, reference, json, _time.GetUtcNow().UtcDateTime));
     }
 
     private async Task<WorkItem?> LoadItemAsync(RecordState record, CancellationToken ct)
@@ -876,78 +959,6 @@ public sealed class DeliveryWorker
 
     private static DeliveryException MissingWorkLocation(SubmissionState submission)
         => new($"Submission {submission.SubmissionId} records no work location; its batches cannot be read.");
-
-    private async Task ReleaseAsync(RecordState record, string owner)
-    {
-        try
-        {
-            var released = await _ledger.ReleaseLeaseAsync(_flow.Id, record.DeliveryKey, owner, countAttempt: false, _time.GetUtcNow().UtcDateTime, CancellationToken.None).ConfigureAwait(false);
-            if (released)
-            {
-                await _listener.OnEventAsync(new DeliveryEvent
-                {
-                    AtUtc = _time.GetUtcNow().UtcDateTime,
-                    FlowId = _flow.Id,
-                    FlowName = _flow.Name,
-                    Kind = "record.released",
-                    SubmissionId = record.LastSubmissionId,
-                    DeliveryKey = record.DeliveryKey,
-                    SourceKey = record.SourceKey,
-                    Label = record.Label,
-                    TargetId = record.TargetId,
-                    Worker = _workerId,
-                    Detail = "worker stopped; lease released without charging an attempt",
-                }, CancellationToken.None).ConfigureAwait(false);
-            }
-        }
-        catch (Exception ex) when (ex is DeliveryException or InvalidOperationException or System.Data.Common.DbException)
-        {
-            // The lease will expire on its own; losing one attempt of budget is the worst case.
-            _logger.LogWarning("Could not release {SourceKey} on shutdown: {Message}", record.SourceKey, ex.Message);
-        }
-    }
-
-    private async Task ReleaseBatchAsync(WorkBatchState batch, string owner)
-    {
-        try
-        {
-            await _ledger.ReleaseWorkBatchAsync(batch.SubmissionId, batch.Index, owner, _time.GetUtcNow().UtcDateTime, CancellationToken.None).ConfigureAwait(false);
-            _logger.LogInformation("Released batch {Batch} on shutdown; it will be picked up by the next pass.", batch.Index);
-        }
-        catch (Exception ex) when (ex is DeliveryException or InvalidOperationException or System.Data.Common.DbException)
-        {
-            _logger.LogWarning("Could not release batch {Batch} on shutdown: {Message}", batch.Index, ex.Message);
-        }
-    }
-
-    private async Task RenewBatchLoopAsync(WorkBatchState batch, string owner, CancellationToken ct)
-    {
-        var lease = Lease;
-        var interval = TimeSpan.FromMilliseconds(Math.Max(lease.TotalMilliseconds / 2, 1000));
-        while (!ct.IsCancellationRequested)
-        {
-            await Task.Delay(interval, _time, ct).ConfigureAwait(false);
-            var renewed = await _ledger.RenewWorkBatchLeaseAsync(batch.SubmissionId, batch.Index, owner, lease, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            if (!renewed)
-            {
-                _logger.LogWarning("Lease on batch {Batch} could not be renewed; another worker may have reclaimed it.", batch.Index);
-            }
-        }
-    }
-
-    private async Task RenewRecordsLoopAsync(IReadOnlyList<DeliveryKey> keys, string owner, CancellationToken ct)
-    {
-        var lease = Lease;
-        var interval = TimeSpan.FromMilliseconds(Math.Max(lease.TotalMilliseconds / 2, 1000));
-        while (!ct.IsCancellationRequested)
-        {
-            await Task.Delay(interval, _time, ct).ConfigureAwait(false);
-            foreach (var key in keys)
-            {
-                await _ledger.RenewLeaseAsync(_flow.Id, key, owner, lease, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            }
-        }
-    }
 
     private static async Task AwaitQuietlyAsync(Task task)
     {

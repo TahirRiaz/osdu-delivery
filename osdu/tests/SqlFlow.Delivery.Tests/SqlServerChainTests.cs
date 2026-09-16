@@ -12,6 +12,7 @@ using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.FanOut;
 using SqlFlow.Delivery.Engine.Intake;
 using SqlFlow.Delivery.Engine.Planning;
+using SqlFlow.Delivery.Engine.Worker;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
@@ -402,6 +403,134 @@ public class SqlServerChainTests
             await estate.ForgetCacheAsync(partition);
         }
     }
+
+    /// <summary>
+    /// Case 9: a worker stalls on a record past the end of its lease, and the next claim of the flow recovers the lease.
+    /// When the stalled worker next renews, it finds the lease no longer its own and stops sending; what it held is back
+    /// in the queue, and the next worker sends the whole batch.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_worker_whose_lease_was_recovered_while_it_stalled_stops_sending_and_the_next_worker_sends_the_batch()
+    {
+        await using var estate = await SqlServerIngestionFixture.StartAsync();
+        var (flow, logs, submissionId) = await PlanOneRecordAtATimeAsync(estate);
+        var recovered = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        estate.Protocol.Before = async (_, ct) =>
+        {
+            if (!recovered.Task.IsCompleted)
+            {
+                // Ten minutes on, as far as the recovery is concerned: the stalled worker's lease has run out.
+                try
+                {
+                    recovered.TrySetResult(await estate.Ledger.RecoverExpiredLeasesAsync(flow.Id, DateTime.UtcNow.AddMinutes(10), CancellationToken.None));
+                }
+                catch (Exception ex)
+                {
+                    recovered.TrySetException(ex);
+                    throw;
+                }
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        };
+
+        var summary = await KeptWorker(estate, flow, "stalled", CompositeDeliveryListener.Empty).PassAsync(submissionId).WaitAsync(TimeSpan.FromMinutes(1));
+        Assert.Equal(logs.Count, await recovered.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal((0L, 1), (summary.Processed, summary.Batches));
+        var interrupted = Assert.Single(estate.Protocol.Deliveries);
+        foreach (var log in logs)
+        {
+            var record = await estate.Ledger.GetRecordAsync(flow.Id, log.Key);
+            Assert.Equal((RecordStatus.Pending, (string?)null), (record!.Status, record.LeaseOwner));
+            Assert.Empty(await estate.Ledger.ListAttemptsAsync(flow.Id, log.Key, 10));
+        }
+
+        Assert.Contains("lease expired", (await estate.Ledger.GetRecordAsync(flow.Id, interrupted.Key))!.LastError, StringComparison.Ordinal);
+        Assert.Null(await estate.Ledger.NextLeaseExpiryAsync(flow.Id, submissionId));
+        Assert.Equal(1, await estate.Ledger.CountWorkBatchesAsync(submissionId, WorkBatchStatus.Queued));
+
+        estate.Protocol.Before = null;
+        estate.Protocol.Deliveries.Clear();
+        var next = await KeptWorker(estate, flow, "next", CompositeDeliveryListener.Empty).DrainAsync(submissionId);
+        Assert.Equal(logs.Count, next.Delivered);
+        Assert.Equal(logs.Count, estate.Protocol.Deliveries.Count);
+    }
+
+    /// <summary>
+    /// Case 10: while a batch runs, each renewal of its lease applies what the worker has sent so far, so the records show
+    /// their outcomes before the batch ends, and the batch's progress reaches the run's trace.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_running_batch_applies_what_it_sent_at_each_renewal_and_reports_its_progress()
+    {
+        await using var estate = await SqlServerIngestionFixture.StartAsync();
+        var (flow, logs, submissionId) = await PlanOneRecordAtATimeAsync(estate);
+
+        // The last record is held until the ones sent before it show as delivered: only a checkpoint of the running
+        // batch's lease can have applied them.
+        var sent = new List<Identity.DeliveryKey>();
+        var applied = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        estate.Protocol.Before = async (work, ct) =>
+        {
+            if (sent.Count < logs.Count - 1)
+            {
+                sent.Add(work.Key);
+                return;
+            }
+
+            while (true)
+            {
+                var states = await estate.Ledger.GetRecordsAsync(flow.Id, sent, ct);
+                if (states.Values.All(s => s.Status == RecordStatus.Delivered))
+                {
+                    applied.TrySetResult();
+                    return;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(10), ct);
+            }
+        };
+
+        var events = new RecordingListener();
+        var summary = await KeptWorker(estate, flow, "progress", events).DrainAsync(submissionId).WaitAsync(TimeSpan.FromMinutes(1));
+        await applied.Task;
+        Assert.Equal(logs.Count, summary.Delivered);
+        var progress = events.Events.Where(e => e.Kind == "batch.progress").ToList();
+        Assert.Contains(progress, e => e.Detail!.StartsWith($"{logs.Count - 1} of {logs.Count} record(s) settled so far", StringComparison.Ordinal));
+        Assert.All(progress, e => Assert.Equal(submissionId, e.SubmissionId));
+        Assert.Equal(logs.Count, events.Events.Count(e => e.Kind == "record.delivered"));
+        Assert.Single(events.Events, e => e.Kind == "batch.completed");
+        Assert.Null(await estate.Ledger.NextLeaseExpiryAsync(flow.Id, submissionId));
+    }
+
+    /// <summary>
+    /// Loads the sample rows and plans them into one batch of the delivery flow, sent one record at a time, without
+    /// delivering anything.
+    /// </summary>
+    private static async Task<(FlowDefinition Flow, IReadOnlyList<SampleLog> Logs, Guid SubmissionId)> PlanOneRecordAtATimeAsync(SqlServerIngestionFixture estate)
+    {
+        var logs = SampleWellLogs.Logs();
+        await estate.WriteLogFileAsync(LogFile, logs);
+        await estate.WriteCurveFileAsync(CurveFile, logs);
+        await estate.WritePayloadsAsync(logs);
+        await estate.RunIngestionChainAsync();
+        var shipped = estate.DeliveryFlow();
+        var flow = shipped with { Reliability = shipped.Reliability with { Concurrency = 1 } };
+        using var runtime = await FlowRuntime.CreateAsync(estate.Engine, flow, SampleEstate.Values);
+        runtime.Selection = SourceSelection.Full();
+        var intake = await runtime.IntakeAsync(force: false);
+        Assert.True(intake.Submission.Planned == logs.Count, $"The intake planned {intake.Submission.Planned} of the {logs.Count} sample records: {intake.Counts}.");
+        Assert.Equal(1, intake.Submission.BatchCount);
+        return (flow, logs, intake.Submission.SubmissionId);
+    }
+
+    /// <summary>A worker over the fixture's ledger and target whose lease is renewed, and checkpointed, every 20 ms.</summary>
+    private static DeliveryWorker KeptWorker(SqlServerIngestionFixture estate, FlowDefinition flow, string name, IDeliveryListener listener)
+        => new(estate.Ledger, estate.Engine.Payloads, estate.Engine.Stores, estate.Protocol, flow, TimeProvider.System, listener, Samples.Logger<DeliveryWorker>(), name)
+        {
+            MaxWait = null,
+            KeepInterval = TimeSpan.FromMilliseconds(20),
+        };
 
     /// <summary>
     /// Runs the deliver operation of <paramref name="flow"/> as a coordinating run whose members are nodes of their own,

@@ -157,9 +157,11 @@ public sealed class DeliveryRecord
 
     public string? LastVerifyOutcome { get; set; }
 
+    /// <summary>
+    /// The token of the lease the record is being delivered under (<see cref="DeliveryLease"/>), set once when a worker
+    /// claims it and cleared when the lease applies its outcome or hands it back. The lease holds the expiry.
+    /// </summary>
     public string? LeaseOwner { get; set; }
-
-    public DateTime? LeaseExpiresUtc { get; set; }
 
     public Guid? LastSubmissionId { get; set; }
 
@@ -312,9 +314,8 @@ public sealed class DeliveryWorkBatch
     /// <summary>queued, running, done, failed.</summary>
     public string Status { get; set; } = "queued";
 
+    /// <summary>The token of the lease a worker drains the batch under (<see cref="DeliveryLease"/>), while it runs.</summary>
     public string? LeaseOwner { get; set; }
-
-    public DateTime? LeaseExpiresUtc { get; set; }
 
     public Guid? RunId { get; set; }
 
@@ -333,6 +334,111 @@ public sealed class DeliveryWorkBatch
     public long Retrying { get; set; }
 
     public string? Error { get; set; }
+}
+
+/// <summary>
+/// A worker's hold on work: one row per claim, a work batch or a group of records due for a retry. The worker renews
+/// this one row while it delivers, however many records the claim holds, and the records carry its token. A lease that
+/// ran out belongs to nobody alive, and the next claim of its flow recovers it: it applies what the worker appended and
+/// hands the rest of the work back.
+/// </summary>
+public sealed class DeliveryLease
+{
+    /// <summary>The claim's token: the worker's name and a fresh id.</summary>
+    public string Token { get; set; } = string.Empty;
+
+    public Guid FlowId { get; set; }
+
+    /// <summary>The submission the claim was made for: the batch's, or the one a retry claim named.</summary>
+    public Guid? SubmissionId { get; set; }
+
+    /// <summary>The work batch the lease drains, or null for a group of records due for a retry.</summary>
+    public int? WorkBatch { get; set; }
+
+    /// <summary>Who holds the lease: the worker that claimed it, or the one recovering it.</summary>
+    public string Owner { get; set; } = string.Empty;
+
+    public Guid? RunId { get; set; }
+
+    public DateTime AcquiredUtc { get; set; }
+
+    public DateTime ExpiresUtc { get; set; }
+}
+
+/// <summary>
+/// What a worker appended while it delivered under a lease, not yet applied to the record: a step that completed, or the
+/// outcome of a try. Rows are only ever added. The lease applies them to their records when the worker checkpoints or
+/// closes it, or when the lease is recovered, and deletes them in the same transaction, so each is applied once. The
+/// try's permanent history is its <see cref="DeliveryAttempt"/>, written with the outcome.
+/// </summary>
+public sealed class DeliveryRecordEvent
+{
+    public long EventId { get; set; }
+
+    public string LeaseToken { get; set; } = string.Empty;
+
+    public Guid FlowId { get; set; }
+
+    public Guid DeliveryKey { get; set; }
+
+    /// <summary>step or completion.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>When the step completed or the try ended.</summary>
+    public DateTime AtUtc { get; set; }
+
+    /// <summary>A step: every step of the pending work completed so far and what each returned (a JSON object keyed by step).</summary>
+    public string? StepJson { get; set; }
+
+    /// <summary>A completion: the status the try settles the record in.</summary>
+    public string? Status { get; set; }
+
+    public bool Promote { get; set; }
+
+    public bool NothingSent { get; set; }
+
+    public DateTime? NextAttemptUtc { get; set; }
+
+    public string? Error { get; set; }
+
+    public string? TargetId { get; set; }
+
+    public long? TargetVersion { get; set; }
+
+    /// <summary>The target state the record holds after the try, when the try changed it.</summary>
+    public string? TargetStateJson { get; set; }
+
+    /// <summary>The step progress the record keeps for its next try; null clears it.</summary>
+    public string? PendingStepJson { get; set; }
+
+    // The pending work the try carried, as it stood when the record was claimed: a step belongs to it, and a completion
+    // promotes it when newer work was queued behind the try. A null document reference means the try carried none.
+
+    public Guid? ClaimSubmissionId { get; set; }
+
+    public string? ClaimDocumentRef { get; set; }
+
+    public string? ClaimRenderContext { get; set; }
+
+    public string? ClaimSourceFingerprint { get; set; }
+
+    public DateTime? ClaimSourceModifiedUtc { get; set; }
+
+    public string? ClaimSourceFileName { get; set; }
+
+    public long? ClaimSourceRowNumber { get; set; }
+
+    public DateTime? ClaimSourceUpdatedUtc { get; set; }
+
+    public string? ClaimMetadataHash { get; set; }
+
+    public string? ClaimPayloadHash { get; set; }
+
+    public DateTime? ClaimPayloadModifiedUtc { get; set; }
+
+    public bool ClaimMetadata { get; set; }
+
+    public bool ClaimPayload { get; set; }
 }
 
 /// <summary>
@@ -828,6 +934,9 @@ public static class DeliveryModel
     /// </summary>
     public const int MaxSourceFileNameLength = 800;
 
+    /// <summary>The longest lease token, and the longest worker name a lease records as its owner.</summary>
+    public const int MaxLeaseTokenLength = 200;
+
     /// <param name="modelBuilder">The model being built.</param>
     /// <param name="sqlServer">Whether the model is for SQL Server, the provider whose default collation folds case.</param>
     public static void Configure(ModelBuilder modelBuilder, bool sqlServer)
@@ -883,23 +992,21 @@ public static class DeliveryModel
             e.Property(r => r.PendingPayloadLocation).HasMaxLength(2000);
             e.Property(r => r.PendingDocumentRef).HasMaxLength(64);
 
-            // Worker and intake paths. The worker's reads (the claim, what is due next, what is still leased, the settled
-            // submissions with due work) are answered from these two alone, for a flow and for one submission of it: a
-            // read that went on from an index to the record would hold its place in the index while waiting for a record
-            // another node is writing, and that node, moving the record in the same index, would wait for it in turn.
+            // Worker and intake paths. The worker's reads (the claim, what is due next, the settled submissions with due
+            // work) are answered from these two alone, for a flow and for one submission of it.
             e.HasIndex(r => new { r.FlowId, r.Status, r.NextAttemptUtc })
-                .IncludeProperties(r => new { r.LastSubmissionId, r.LeaseExpiresUtc, r.UpdatedUtc, r.PendingDocumentRef });
+                .IncludeProperties(r => new { r.LastSubmissionId, r.UpdatedUtc, r.PendingDocumentRef });
             e.HasIndex(r => new { r.FlowId, r.LastSubmissionId, r.Status, r.NextAttemptUtc })
-                .IncludeProperties(r => new { r.LeaseExpiresUtc, r.UpdatedUtc });
+                .IncludeProperties(r => r.UpdatedUtc);
             // The rollout walks one set's records in key order, then flow order; the filtered index keeps untagged records out of it.
             e.HasIndex(r => new { r.CacheSetId, r.DeliveryKey, r.FlowId }).HasFilter("[CacheSetId] IS NOT NULL");
             // One OSDU record, one flow: the database refuses a second flow's claim on an id, whatever races the intakes run.
             e.HasIndex(r => r.ClaimedTargetId).IsUnique().HasFilter("[ClaimedTargetId] IS NOT NULL");
             e.HasIndex(r => new { r.LastSubmissionId, r.WorkBatch });
+            // The records a lease holds: the ones a checkpoint or a close hands back, and the ones a submission waits on.
             e.HasIndex(r => r.LeaseOwner);
             // A submission's records, most recent first, read in index order however many the submission holds.
             e.HasIndex(r => new { r.FlowId, r.LastSubmissionId, r.UpdatedUtc });
-            e.HasIndex(r => new { r.Status, r.LeaseExpiresUtc });
             e.HasIndex(r => new { r.FlowId, r.LastVerifiedUtc });
 
             // GUI: prefix search and recency listings, all answered from an index.
@@ -966,10 +1073,42 @@ public static class DeliveryModel
             e.Property(b => b.Status).HasMaxLength(16).IsRequired();
             e.Property(b => b.LeaseOwner).HasMaxLength(200);
             e.Property(b => b.Error).HasMaxLength(2000);
-            // The claim: the oldest queued batch of a flow (or a submission), and the lease sweep.
+            // The claim: the oldest queued batch of a flow (or a submission).
             e.HasIndex(b => new { b.FlowId, b.Status, b.CreatedUtc });
             e.HasIndex(b => new { b.SubmissionId, b.Status });
-            e.HasIndex(b => new { b.Status, b.LeaseExpiresUtc });
+        });
+
+        modelBuilder.Entity<DeliveryLease>(e =>
+        {
+            e.ToTable("Lease", SchemaName);
+            e.HasKey(l => l.Token);
+            e.Property(l => l.Token).HasMaxLength(MaxLeaseTokenLength);
+            e.Property(l => l.Owner).HasMaxLength(MaxLeaseTokenLength).IsRequired();
+            // The sweep: a flow's leases that ran out. A submission's leases: what its run waits on.
+            e.HasIndex(l => new { l.FlowId, l.ExpiresUtc });
+            e.HasIndex(l => new { l.SubmissionId, l.ExpiresUtc });
+        });
+
+        modelBuilder.Entity<DeliveryRecordEvent>(e =>
+        {
+            e.ToTable("RecordEvent", SchemaName);
+            // Clustered on an ever-increasing id: every worker only appends, at the end of the table.
+            e.HasKey(v => v.EventId);
+            e.Property(v => v.EventId).ValueGeneratedOnAdd();
+            e.Property(v => v.LeaseToken).HasMaxLength(MaxLeaseTokenLength).IsRequired();
+            e.Property(v => v.Kind).HasMaxLength(16).IsRequired();
+            e.Property(v => v.Status).HasMaxLength(16);
+            e.Property(v => v.Error).HasMaxLength(2000);
+            e.Property(v => v.TargetId).HasMaxLength(500);
+            e.Property(v => v.ClaimDocumentRef).HasMaxLength(64);
+            e.Property(v => v.ClaimSourceFingerprint).HasMaxLength(200);
+            e.Property(v => v.ClaimSourceFileName).HasMaxLength(MaxSourceFileNameLength);
+            e.Property(v => v.ClaimMetadataHash).HasMaxLength(64);
+            e.Property(v => v.ClaimPayloadHash).HasMaxLength(64);
+            // What a lease applies: its events, record by record, the latest last.
+            e.HasIndex(v => new { v.LeaseToken, v.FlowId, v.DeliveryKey, v.EventId });
+            // A flow's recovery: its events old enough that only a lease that is gone can have left them.
+            e.HasIndex(v => new { v.FlowId, v.AtUtc }).IncludeProperties(v => v.LeaseToken);
         });
 
         modelBuilder.Entity<DeliverySourceWatermark>(e =>

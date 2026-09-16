@@ -451,7 +451,7 @@ public sealed class FlowRuntime : IDisposable
                 await Task.Delay(wait, _context.Time, ct).ConfigureAwait(false);
             }
 
-            var reclaimed = await ledger.ReclaimExpiredLeasesAsync(Flow.Id, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            var reclaimed = await ledger.RecoverExpiredLeasesAsync(Flow.Id, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
             var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
             total = total.Add(sent);
             if (reclaimed == 0 && sent.Processed == 0)
@@ -466,7 +466,7 @@ public sealed class FlowRuntime : IDisposable
 
             if (reclaimed > 0)
             {
-                _log.LogInformation("Reclaimed {Count} record(s) whose lease a stopped run left behind, and sent {Sent}.", reclaimed, sent.Processed);
+                _log.LogInformation("Recovered the leases a stopped run left behind ({Count} record(s) settled or handed back), and sent {Sent}.", reclaimed, sent.Processed);
             }
         }
 
@@ -656,10 +656,10 @@ public sealed class FlowRuntime : IDisposable
         while (await ledger.HasPendingAsync(Flow.Id, submission.SubmissionId, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false))
         {
             ct.ThrowIfCancellationRequested();
-            var reclaimed = await ledger.ReclaimExpiredLeasesAsync(Flow.Id, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            var reclaimed = await ledger.RecoverExpiredLeasesAsync(Flow.Id, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
             if (reclaimed > 0)
             {
-                _log.LogInformation("Reclaimed {Count} record(s) whose lease expired.", reclaimed);
+                _log.LogInformation("Recovered the leases that ran out: {Count} record(s) settled or handed back.", reclaimed);
             }
 
             var more = await worker.DrainAsync(submission.SubmissionId, ct).ConfigureAwait(false);

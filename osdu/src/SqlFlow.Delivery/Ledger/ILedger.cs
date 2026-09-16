@@ -241,8 +241,10 @@ public sealed record RecordState
 
     public VerifyOutcome? LastVerifyOutcome { get; init; }
 
+    /// <summary>The token of the lease the record is being delivered under, while it is.</summary>
     public string? LeaseOwner { get; init; }
 
+    /// <summary>When that lease runs out unless its worker renews it; the lease holds it, not the record.</summary>
     public DateTime? LeaseExpiresUtc { get; init; }
 
     public Guid? LastSubmissionId { get; init; }
@@ -390,7 +392,7 @@ public sealed record AttemptRecord
     public DateTime? SourceUpdatedUtc { get; init; }
 }
 
-/// <summary>What the worker writes back after processing a claimed record.</summary>
+/// <summary>How a try ended for one claimed record: what the worker appends under its lease, applied to the record later.</summary>
 public sealed record RecordCompletion
 {
     public required DeliveryKey DeliveryKey { get; init; }
@@ -673,8 +675,10 @@ public sealed record WorkBatchState
 
     public WorkBatchStatus Status { get; init; } = WorkBatchStatus.Queued;
 
+    /// <summary>The token of the lease the batch is drained under, while it is.</summary>
     public string? LeaseOwner { get; init; }
 
+    /// <summary>When that lease runs out unless its worker renews it.</summary>
     public DateTime? LeaseExpiresUtc { get; init; }
 
     /// <summary>The platform run that is draining, or drained, the batch.</summary>
@@ -698,8 +702,91 @@ public sealed record WorkBatchState
     public string? Error { get; init; }
 }
 
-/// <summary>A claimed batch with the pending records it leased for the claimer.</summary>
-public sealed record ClaimedWorkBatch(WorkBatchState Batch, IReadOnlyList<RecordState> Records);
+/// <summary>
+/// A worker's hold on work (design.md section 16.2): a work batch, or a group of records due for a retry. It is one row
+/// however many records it holds, and the worker renews only that row. The records carry its token.
+/// </summary>
+public sealed record LeaseState
+{
+    public required string Token { get; init; }
+
+    public required Guid FlowId { get; init; }
+
+    /// <summary>The submission the claim was made for: the batch's, or the one a retry claim named.</summary>
+    public Guid? SubmissionId { get; init; }
+
+    /// <summary>The work batch the lease drains, or null for records due for a retry.</summary>
+    public int? WorkBatch { get; init; }
+
+    /// <summary>Who holds the lease: the worker that claimed it, or the one recovering it.</summary>
+    public required string Owner { get; init; }
+
+    public Guid? RunId { get; init; }
+
+    public DateTime AcquiredUtc { get; init; }
+
+    public DateTime ExpiresUtc { get; init; }
+}
+
+/// <summary>A claimed batch, the lease it is drained under, and the pending records the lease holds.</summary>
+public sealed record ClaimedWorkBatch(WorkBatchState Batch, LeaseState Lease, IReadOnlyList<RecordState> Records);
+
+/// <summary>Records due for a retry, claimed together under one lease; no lease when nothing was due.</summary>
+public sealed record ClaimedRecords(LeaseState? Lease, IReadOnlyList<RecordState> Records)
+{
+    public static ClaimedRecords None { get; } = new(null, []);
+}
+
+/// <summary>
+/// A step of a delivery that completed against the target, with every step of the pending work completed so far: what the
+/// record's next try resumes after. It belongs to the pending work the record was claimed with (the submission and the
+/// document reference), and never reaches newer work queued behind the try.
+/// </summary>
+public sealed record RecordStep(DeliveryKey DeliveryKey, Guid? SubmissionId, string DocumentRef, string StepJson, DateTime AtUtc);
+
+/// <summary>What a worker appends under its lease in one write: steps that completed, and tries that ended.</summary>
+public sealed record LeaseAppend(IReadOnlyList<RecordStep> Steps, IReadOnlyList<RecordCompletion> Completions);
+
+/// <summary>How a lease ends, which decides what happens to the work it did not reach.</summary>
+public enum LeaseEnd
+{
+    /// <summary>The worker went through all of it: the batch is done.</summary>
+    Done,
+
+    /// <summary>The worker could not go on (the batch file could not be read): the batch failed.</summary>
+    Failed,
+
+    /// <summary>The worker is stopping: the batch is queued again, and the tries it did not finish are not charged.</summary>
+    Stopped,
+
+    /// <summary>The lease ran out with nobody renewing it: the batch is queued again, and the interrupted tries count.</summary>
+    Expired,
+}
+
+/// <summary>How a worker closes its lease, with the batch's counts when it drained one.</summary>
+public sealed record LeaseClosing
+{
+    public required LeaseEnd End { get; init; }
+
+    public long Delivered { get; init; }
+
+    public long Held { get; init; }
+
+    public long Failed { get; init; }
+
+    public long Retrying { get; init; }
+
+    /// <summary>Why the batch failed, redacted.</summary>
+    public string? Failure { get; init; }
+}
+
+/// <summary>What applying a lease did: the records its appended events settled, and the records it handed back.</summary>
+public sealed record LeaseApplied(int Applied, int Released)
+{
+    public static LeaseApplied None { get; } = new(0, 0);
+
+    public LeaseApplied Add(LeaseApplied other) => new(Applied + other.Applied, Released + other.Released);
+}
 
 /// <summary>Which half of a record a forced redelivery re-sends.</summary>
 public enum RedeliverScope
@@ -972,40 +1059,47 @@ public interface ILedger
     Task ClearPlanRequestedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, CancellationToken ct = default);
 
     /// <summary>
-    /// Atomically leases up to <paramref name="max"/> pending records (or records whose lease expired) for
-    /// <paramref name="owner"/>. Records are returned with the lease applied.
+    /// Claims up to <paramref name="max"/> of the flow's (or submission's) pending records that are due, under one new
+    /// lease for <paramref name="owner"/>, after recovering the flow's leases that ran out. The records come back holding
+    /// the lease; <see cref="ClaimedRecords.None"/> when nothing was due.
     /// </summary>
-    Task<IReadOnlyList<RecordState>> ClaimAsync(Guid flowId, Guid? submissionId, string owner, int max, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default);
-
-    Task<bool> RenewLeaseAsync(Guid flowId, DeliveryKey key, string owner, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default);
+    Task<ClaimedRecords> ClaimAsync(Guid flowId, Guid? submissionId, string owner, int max, TimeSpan lease, DateTime nowUtc, Guid? runId = null, CancellationToken ct = default);
 
     /// <summary>
-    /// Hands a leased record back to <c>pending</c> without writing an attempt: the worker is stopping, not failing.
-    /// With <paramref name="countAttempt"/> false the interrupted try is not charged to the record's retry budget.
+    /// Extends a lease its worker still holds: one row, however many records it holds. False when the lease is gone or
+    /// another worker took it over after it ran out, and the worker must stop sending.
     /// </summary>
-    Task<bool> ReleaseLeaseAsync(Guid flowId, DeliveryKey key, string owner, bool countAttempt, DateTime nowUtc, CancellationToken ct = default);
-
-    /// <summary>Writes the attempt and the resulting state of one of the flow's records, releasing the lease.</summary>
-    Task CompleteAsync(Guid flowId, RecordCompletion completion, CancellationToken ct = default);
+    Task<bool> RenewLeaseAsync(string token, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
-    /// Writes many completions of one flow's records in one round trip (a drained batch); each is the same write as
-    /// <see cref="CompleteAsync"/>. A promoting completion copies the origin of the version it delivered onto the record.
+    /// Appends, in one write, the steps that completed and the tries that ended under a lease: each try's attempt, and
+    /// the events the lease later applies to the records. Nothing is updated. A step is written before the delivery that
+    /// reported it goes on, so a crash never repeats it.
     /// </summary>
-    Task CompleteManyAsync(Guid flowId, IReadOnlyList<RecordCompletion> completions, CancellationToken ct = default);
+    Task AppendAsync(Guid flowId, string token, LeaseAppend append, CancellationToken ct = default);
 
     /// <summary>
-    /// Keeps a delivery's step progress on the record mid-try, so a crash after an upload never repeats it. Written
-    /// only while the record still holds the document the try is delivering: the steps of a superseded document
-    /// must never let the newer one skip an upload it has not made.
+    /// Applies what the lease's worker has appended so far to its records, a slice at a time, and deletes each event with
+    /// its application: a try's outcome settles the record and hands it back from the lease; a step is kept for the next
+    /// try while the record still holds the work it belongs to. A record another lease holds now is left to that lease.
     /// </summary>
-    Task SaveStepAsync(Guid flowId, DeliveryKey key, Guid? submissionId, string documentRef, string stepJson, CancellationToken ct = default);
+    Task<LeaseApplied> CheckpointLeaseAsync(string token, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Ends a lease: applies what its worker appended, hands the records it did not settle back to pending (as
+    /// <paramref name="closing"/> says), settles its batch, and deletes it. A lease another worker recovered meanwhile
+    /// still has its appended events applied, and nothing else.
+    /// </summary>
+    Task<LeaseApplied> CloseLeaseAsync(string token, LeaseClosing closing, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Recovers the flow's leases that ran out before <paramref name="nowUtc"/>: each is taken over by this caller, so two
+    /// never recover the same one, and closed as <see cref="LeaseEnd.Expired"/>. Returns the records settled or handed back.
+    /// </summary>
+    Task<int> RecoverExpiredLeasesAsync(Guid flowId, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>How many distinct records a submission's attempts settled with the given outcome (and phase, when given).</summary>
     Task<long> CountAttemptsAsync(Guid submissionId, AttemptOutcome outcome, string? phase = null, CancellationToken ct = default);
-
-    /// <summary>Releases leases that expired before <paramref name="beforeUtc"/> and returns how many were reclaimed.</summary>
-    Task<int> ReclaimExpiredLeasesAsync(Guid flowId, DateTime beforeUtc, CancellationToken ct = default);
 
     Task<long> CountAsync(Guid flowId, Guid? submissionId, RecordStatus status, CancellationToken ct = default);
 
@@ -1015,8 +1109,9 @@ public interface ILedger
     Task<DateTime?> NextDueAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
-    /// When the earliest lease on a record being delivered runs out, or null when no record is leased. Expired leases
-    /// are included, so a lease a stopped worker left behind stays visible until it is reclaimed.
+    /// When the earliest lease of the flow runs out, or of the submission (its batches, and any lease holding one of its
+    /// records), or null when there is none. Expired leases are included, so a lease a stopped worker left behind stays
+    /// visible until it is recovered.
     /// </summary>
     Task<DateTime?> NextLeaseExpiryAsync(Guid flowId, Guid? submissionId, CancellationToken ct = default);
 
@@ -1031,19 +1126,11 @@ public interface ILedger
     Task AddWorkBatchAsync(WorkBatchState batch, CancellationToken ct = default);
 
     /// <summary>
-    /// Atomically claims the oldest queued (or lease-expired) work batch of the flow, or of one submission, and
-    /// leases its pending records for <paramref name="owner"/>. Null when nothing is claimable.
+    /// Claims the oldest queued work batch of the flow, or of one submission, under a new lease for
+    /// <paramref name="owner"/>, after recovering the flow's leases that ran out, and has the lease hold the batch's
+    /// pending records that are due. Null when nothing is claimable.
     /// </summary>
     Task<ClaimedWorkBatch?> ClaimWorkBatchAsync(Guid flowId, Guid? submissionId, string owner, TimeSpan lease, DateTime nowUtc, Guid? runId = null, CancellationToken ct = default);
-
-    /// <summary>Extends the lease on a batch and on every record leased under its token.</summary>
-    Task<bool> RenewWorkBatchLeaseAsync(Guid submissionId, int batch, string owner, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default);
-
-    /// <summary>Closes a batch with its counts; records it did not reach are handed back to pending.</summary>
-    Task CompleteWorkBatchAsync(Guid submissionId, int batch, string owner, WorkBatchStatus status, long delivered, long held, long failed, long retrying, string? failure, DateTime nowUtc, CancellationToken ct = default);
-
-    /// <summary>Hands a claimed batch (and its leased records) back on a stop, without charging attempts.</summary>
-    Task<bool> ReleaseWorkBatchAsync(Guid submissionId, int batch, string owner, DateTime nowUtc, CancellationToken ct = default);
 
     Task<IReadOnlyList<WorkBatchState>> ListWorkBatchesAsync(Guid submissionId, int max, int offset, CancellationToken ct = default);
 

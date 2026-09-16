@@ -275,7 +275,7 @@ public class SqlServerLedgerTests
         ];
         await ledger.UpsertPendingAsync(_flow, deliveries.Select((d, i) => Work(d.Name, s1, $"0:{i * 10}:10", "mh", now.AddDays(-3))).ToList());
         _clock.Advance(-TimeSpan.FromHours(26));
-        var claimed = await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromDays(2), Now);
+        var claimed = (await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromDays(2), Now)).Records;
         Assert.Equal(4, claimed.Count);
         foreach (var (name, before) in deliveries)
         {
@@ -346,7 +346,7 @@ public class SqlServerLedgerTests
         var first = await ledger.UpsertPendingAsync(_flow, [Work("a", s1, "0:0:10", "mh-a1", Now.AddDays(-3)), Work("b", s1, "0:10:10", "mh-b1", Now.AddDays(-3))]);
         Assert.Equal(2, first.Staged);
         Assert.Empty(first.Refused);
-        var claimed = await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now);
+        var claimed = (await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now)).Records;
         Assert.Equal(2, claimed.Count);
         var a = claimed.Single(r => r.SourceKey.EndsWith("/a", StringComparison.Ordinal));
         var b = claimed.Single(r => r.SourceKey.EndsWith("/b", StringComparison.Ordinal));
@@ -365,7 +365,7 @@ public class SqlServerLedgerTests
         Assert.Equal(s1, (await ledger.GetRecordAsync(_flow, b.DeliveryKey))!.LastSubmissionId);
 
         // The in-flight try's steps never reach the newer work.
-        await ledger.SaveStepAsync(_flow, a.DeliveryKey, s1, "0:0:10", "{\"metadata\":{\"version\":\"1\"}}");
+        await ledger.SaveStepAsync(_flow, a.DeliveryKey, s1, "0:0:10", "{\"metadata\":{\"version\":\"1\"}}", Now);
         Assert.Null((await ledger.GetRecordAsync(_flow, a.DeliveryKey))!.PendingStepJson);
 
         // Two completions take the set-based statement: a was superseded while in flight, b was not.
@@ -394,7 +394,7 @@ public class SqlServerLedgerTests
         var delivered = Now;
         await ledger.UpsertPendingAsync(_flow, [Work("c", s2, "0:22:10", "mh-c1", Now)]);
         _clock.Advance(TimeSpan.FromMinutes(1));
-        var next = await ledger.ClaimAsync(_flow, s2, "w2", 10, TimeSpan.FromMinutes(5), Now);
+        var next = (await ledger.ClaimAsync(_flow, s2, "w2", 10, TimeSpan.FromMinutes(5), Now)).Records;
         Assert.Equal(2, next.Count);
         var a2 = next.Single(r => r.SourceKey.EndsWith("/a", StringComparison.Ordinal));
         var c = next.Single(r => r.SourceKey.EndsWith("/c", StringComparison.Ordinal));
@@ -433,7 +433,7 @@ public class SqlServerLedgerTests
         Assert.Equal((2, 2), (mine.Staged, theirs.Staged));
         Assert.Empty(theirs.Conflicts);
 
-        var claimed = await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now);
+        var claimed = (await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now)).Records;
         Assert.Equal(2, claimed.Count);
         await ledger.CompleteManyAsync(_flow, claimed.Select(r => Completion(r, s1, Now)).ToList());
         foreach (var record in claimed)
@@ -567,17 +567,17 @@ public class SqlServerLedgerTests
         // The batch's lease reaches all seven, and so do its renewal and its release.
         await sliced.AddWorkBatchAsync(new WorkBatchState { SubmissionId = s2, FlowId = _flow, Index = 0, Location = "work/" + _run, RecordCount = 7, CreatedUtc = Now });
         var claimed = await sliced.ClaimWorkBatchAsync(_flow, s2, "w1", TimeSpan.FromMinutes(5), Now);
-        var token = claimed!.Batch.LeaseOwner!;
+        var token = claimed!.Lease.Token;
         Assert.Equal(fresh.Select(r => r.DeliveryKey.Value).Order(), claimed.Records.Select(r => r.DeliveryKey.Value).Order());
         Assert.All(claimed.Records, r => Assert.Equal((RecordStatus.Delivering, token, 1), (r.Status, r.LeaseOwner, r.AttemptCount)));
         _clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.True(await sliced.RenewWorkBatchLeaseAsync(s2, 0, token, TimeSpan.FromMinutes(5), Now));
+        Assert.True(await sliced.RenewLeaseAsync(token, TimeSpan.FromMinutes(5), Now));
         foreach (var record in fresh)
         {
             Assert.Equal(Now.AddMinutes(5), (await ledger.GetRecordAsync(_flow, record.DeliveryKey))!.LeaseExpiresUtc);
         }
 
-        await sliced.CompleteWorkBatchAsync(s2, 0, token, WorkBatchStatus.Failed, 0, 0, 0, 0, "the node stopped", Now);
+        Assert.Equal(new LeaseApplied(0, 7), await sliced.CloseLeaseAsync(token, new LeaseClosing { End = LeaseEnd.Failed, Failure = "the node stopped" }, Now));
         Assert.Equal(7, await ledger.CountAsync(_flow, s2, RecordStatus.Pending));
         foreach (var record in fresh)
         {
@@ -604,8 +604,8 @@ public class SqlServerLedgerTests
     public async Task Staging_leasing_and_releasing_thousands_of_records_never_lock_the_whole_record_table_on_sql_server()
     {
         // SQL Server turns a statement's row locks into a lock on the whole table once the statement holds 5,000 of them on
-        // one index, and a lock on the whole record table stops every node of every flow. Each write below reaches 6,000
-        // records, so each has to run in slices.
+        // one index, and a lock on the record, event or attempt table stops every node of every flow. Each write below
+        // reaches 6,000 records, so each has to run in slices.
         var ledger = await LedgerAsync(_clock);
         const int Records = 6_000;
         var s1 = Guid.NewGuid();
@@ -615,17 +615,21 @@ public class SqlServerLedgerTests
         Assert.Equal(Records, (await ledger.UpsertPendingAsync(_flow, records)).Staged);
         await ledger.AddWorkBatchAsync(new WorkBatchState { SubmissionId = s1, FlowId = _flow, Index = 0, Location = "work/" + _run, RecordCount = Records, CreatedUtc = Now });
         var claimed = await ledger.ClaimWorkBatchAsync(_flow, s1, "w1", TimeSpan.FromMinutes(5), Now);
-        var token = claimed!.Batch.LeaseOwner!;
+        var token = claimed!.Lease.Token;
         Assert.Equal(Records, claimed.Records.Count);
         _clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.True(await ledger.RenewWorkBatchLeaseAsync(s1, 0, token, TimeSpan.FromMinutes(5), Now));
-        await using (var db = Database())
+        Assert.True(await ledger.RenewLeaseAsync(token, TimeSpan.FromMinutes(5), Now));
+
+        // A worker appends what it sent in writes of at most the journal's size; the lease applies them a slice at a time.
+        foreach (var chunk in claimed.Records.Chunk(Engine.Worker.LeaseJournal.MaxEntriesPerWrite))
         {
-            Assert.Equal(Records, await db.DeliveryRecords.CountAsync(r => r.FlowId == _flow && r.LeaseOwner == token && r.LeaseExpiresUtc == Now.AddMinutes(5)));
+            await ledger.AppendAsync(_flow, token, new LeaseAppend([], chunk.Select(r => Completion(r, s1, Now)).ToList()));
         }
 
-        await ledger.CompleteWorkBatchAsync(s1, 0, token, WorkBatchStatus.Failed, 0, 0, 0, 0, "the node stopped", Now);
-        Assert.Equal(Records, await ledger.CountAsync(_flow, s1, RecordStatus.Pending));
+        Assert.Equal(Records, await ledger.CountAttemptsAsync(s1, AttemptOutcome.Delivered));
+        Assert.Equal(new LeaseApplied(Records, 0), await ledger.CheckpointLeaseAsync(token, Now));
+        Assert.Equal(Records, await ledger.CountAsync(_flow, s1, RecordStatus.Delivered));
+        Assert.Equal(LeaseApplied.None, await ledger.CloseLeaseAsync(token, new LeaseClosing { End = LeaseEnd.Done, Delivered = Records }, Now));
         Assert.Equal(Records, await ledger.ForceRedeliverAsync(_flow, records.Select(r => r.DeliveryKey), RedeliverScope.Metadata, Now));
         Assert.Equal(before, await LockEscalationsAsync());
 
@@ -707,10 +711,91 @@ public class SqlServerLedgerTests
         Assert.Equal(("mh-newer", "9:0:10"), (kept!.PendingMetadataHash, kept.PendingDocumentRef));
     }
 
+    [SkippableFact]
+    public async Task Ledger_reads_see_the_last_committed_state_without_waiting_for_a_writer_that_holds_the_rows_on_sql_server()
+    {
+        var ledger = await LedgerAsync(_clock);
+        var s1 = Guid.NewGuid();
+        await ledger.UpsertPendingAsync(_flow, [Work("held", s1, "0:0:10", "mh", Now), Work("other", s1, "0:10:10", "mh", Now)]);
+        await ledger.AddWorkBatchAsync(new WorkBatchState { SubmissionId = s1, FlowId = _flow, Index = 0, Location = "work/" + _run, RecordCount = 2, CreatedUtc = Now });
+
+        // Another session changes the records, the batch and the flow's leases, and keeps its transaction open.
+        await using var writer = new SqlConnection(ConnectionString.Value);
+        await writer.OpenAsync();
+        await using var transaction = (SqlTransaction)await writer.BeginTransactionAsync();
+        await using (var write = writer.CreateCommand())
+        {
+            write.Transaction = transaction;
+            write.CommandText = """
+                UPDATE [osdu].[Record] SET [LastError] = N'uncommitted', [Status] = N'failed' WHERE [FlowId] = @flow;
+                UPDATE [osdu].[WorkBatch] SET [Status] = N'failed' WHERE [SubmissionId] = @submission;
+                INSERT INTO [osdu].[Lease] ([Token], [FlowId], [Owner], [AcquiredUtc], [ExpiresUtc]) VALUES (@token, @flow, N'uncommitted', @now, @now);
+                """;
+            write.Parameters.Add(new SqlParameter("@flow", System.Data.SqlDbType.UniqueIdentifier) { Value = _flow });
+            write.Parameters.Add(new SqlParameter("@submission", System.Data.SqlDbType.UniqueIdentifier) { Value = s1 });
+            write.Parameters.Add(new SqlParameter("@token", System.Data.SqlDbType.NVarChar, 200) { Value = "uncommitted/" + _run });
+            write.Parameters.Add(new SqlParameter("@now", System.Data.SqlDbType.DateTime2) { Value = Now.AddMinutes(-1) });
+            Assert.Equal(4, await write.ExecuteNonQueryAsync());
+        }
+
+        try
+        {
+            // A read that waited would see the writer's rows only after it commits; the writer never does.
+            using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var record = await ledger.GetRecordAsync(_flow, Key("held"), patience.Token);
+            Assert.Equal((RecordStatus.Pending, (string?)null), (record!.Status, record.LastError));
+            Assert.Equal(2, (await ledger.ListAsync(_flow, new RecordQuery(), patience.Token)).Count);
+            Assert.Equal(2, await ledger.CountAsync(_flow, s1, RecordStatus.Pending, patience.Token));
+            Assert.True(await ledger.HasPendingAsync(_flow, s1, Now, patience.Token));
+            Assert.Equal(WorkBatchStatus.Queued, Assert.Single(await ledger.ListWorkBatchesAsync(s1, 10, 0, patience.Token)).Status);
+            Assert.Null(await ledger.NextLeaseExpiryAsync(_flow, null, patience.Token));
+
+            // The measure is live: a read committed read of the same row does wait for the writer.
+            await using var reader = new SqlConnection(ConnectionString.Value);
+            await reader.OpenAsync();
+            await using var read = reader.CreateCommand();
+            read.CommandText = "SET LOCK_TIMEOUT 200; SELECT [LastError] FROM [osdu].[Record] WHERE [FlowId] = @flow AND [DeliveryKey] = @key;";
+            read.Parameters.Add(new SqlParameter("@flow", System.Data.SqlDbType.UniqueIdentifier) { Value = _flow });
+            read.Parameters.Add(new SqlParameter("@key", System.Data.SqlDbType.UniqueIdentifier) { Value = Key("held").Value });
+            Assert.Equal(1222, (await Assert.ThrowsAsync<SqlException>(() => read.ExecuteScalarAsync())).Number);
+        }
+        finally
+        {
+            await transaction.RollbackAsync();
+        }
+    }
+
+    [SkippableFact]
+    public async Task A_pooled_connection_that_served_a_ledger_read_goes_back_to_read_committed_on_sql_server()
+    {
+        await LedgerAsync(_clock);
+
+        // One connection in a pool of this test's own, so the connection the ledger read on is the one checked after.
+        var pooled = new SqlConnectionStringBuilder(ConnectionString.Value) { MaxPoolSize = 1, ApplicationName = "osdu-ledger-isolation-" + _run }.ConnectionString;
+        var ledger = new OsduLedger(() => new OsduDbContext(OsduDbContext.SqlServerOptions(pooled)), _clock);
+        var s1 = Guid.NewGuid();
+        await ledger.UpsertPendingAsync(_flow, [Work("isolation", s1, "0:0:10", "mh", Now)]);
+        try
+        {
+            Assert.NotNull(await ledger.GetRecordAsync(_flow, Key("isolation")));
+
+            await using var connection = new SqlConnection(pooled);
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT [transaction_isolation_level] FROM sys.dm_exec_sessions WHERE [session_id] = @@SPID;";
+            Assert.Equal((short)2, Convert.ToInt16(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture));
+        }
+        finally
+        {
+            await using var connection = new SqlConnection(pooled);
+            SqlConnection.ClearPool(connection);
+        }
+    }
+
     private DeliveryKey Key(string name) => DeliveryKey.Derive("sqlserver-ledger-test", [_run, name]);
 
     /// <summary>
-    /// How many times the database has locked the whole record table instead of its rows. It counts an escalation on the
+    /// How many times the database has locked the whole record, event or attempt table instead of its rows. It counts an escalation on the
     /// index whose locks reached the threshold; attempts are counted on every index of a statement that holds many locks in
     /// all, and say nothing on their own.
     /// </summary>
@@ -721,7 +806,8 @@ public class SqlServerLedgerTests
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT COALESCE(SUM(s.[index_lock_promotion_count]), 0)
-            FROM sys.dm_db_index_operational_stats(DB_ID(), OBJECT_ID(N'osdu.Record'), NULL, NULL) AS s;
+            FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) AS s
+            WHERE s.[object_id] IN (OBJECT_ID(N'osdu.Record'), OBJECT_ID(N'osdu.RecordEvent'), OBJECT_ID(N'osdu.Attempt'));
             """;
         try
         {

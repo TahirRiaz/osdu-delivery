@@ -51,7 +51,7 @@ the runs that carried it.
 | `Status` | `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`. |
 | `Blocked` | Set when the record was held, failed or deleted and not released since. |
 | `LastDeliveredUtc`, `LastVerifiedUtc`, `LastVerifyOutcome` | Custody timestamps. |
-| `LeaseOwner`, `LeaseExpiresUtc` | Worker concurrency control. |
+| `LeaseOwner` | The token of the lease that holds the record while a worker delivers it ([Leasing](#leasing)); the lease row says when it runs out. |
 | `LastSubmissionId`, `AttemptCount`, `NextAttemptUtc`, `LastError` | The pending work's progress; `LastError` is redacted. |
 | `Pending*` | The hashes, context, fingerprint and payload location of the work waiting to be delivered. |
 | `WorkBatch`, `PendingDocumentRef` | Where the pending rendered document is: the work batch and its `batch:offset:length` range in the batch file. The document itself lives on storage, never here. |
@@ -82,13 +82,40 @@ is sent, and with one of its own when it is sent none.
 | `SubmissionId`, `Index` | Primary key: the batch's place in its submission. |
 | `FlowId`, `Location`, `RecordCount` | Whose it is, where the JSON Lines file is, how many documents it holds. |
 | `Status` | `queued`, `running`, `done`, `failed`. |
-| `LeaseOwner`, `LeaseExpiresUtc`, `RunId` | The drain that holds it and the run it is being drained in. |
+| `LeaseOwner`, `RunId` | The token of the lease its drain holds, and the run it is being drained in. |
 | `CreatedUtc`, `StartedUtc`, `CompletedUtc` | Timeline. |
 | `Delivered`, `Held`, `Failed`, `Retrying`, `Error` | How its drain ended. |
 
-A drain claims the oldest queued batch of the flow (or of one submission) and leases the batch's due records
-under the batch's token; the records' rows point at the batch and their range in its file. A batch whose drain
-crashed is reclaimed with its records when the lease expires.
+A drain claims the oldest queued batch of the flow (or of one submission) under a lease of its own and marks the
+batch's due records with the lease's token; the records' rows point at the batch and their range in its file. A batch
+whose drain stopped is recovered with its records once the lease runs out.
+
+### `osdu.Lease`: one claim of a worker
+
+| Column | Purpose |
+| --- | --- |
+| `Token` | Primary key: the worker's name, a slash and a 32-character id, minted per claim. The records the claim holds carry it in `LeaseOwner`, and so does a claimed batch. |
+| `FlowId`, `SubmissionId`, `WorkBatch` | The flow; the submission the claim was limited to; the batch a drain claimed, null for a claim of records outside a running batch. |
+| `Owner` | Who holds the lease: the worker that claimed it, or `{machine}/{process}/recovery` once a recovery has taken it over. |
+| `RunId`, `AcquiredUtc`, `ExpiresUtc` | The run it was claimed in, when, and when it runs out unless it is renewed. |
+
+A worker renews its one lease row, however many records the lease holds.
+
+### `osdu.RecordEvent`: what a worker learned and its lease has not applied yet
+
+One row per step a try completed and per try that ended, appended while the lease is out and deleted as the lease
+applies it ([Leasing](#leasing)).
+
+| Column | Purpose |
+| --- | --- |
+| `EventId` | Primary key, ever-increasing: the order the events were appended in. |
+| `LeaseToken`, `FlowId`, `DeliveryKey` | The lease it was appended under, and the record it concerns. |
+| `Kind`, `AtUtc` | `step` (a step completed; `StepJson` holds the steps so far) or `completion` (a try ended), and when. |
+| `Status`, `Promote`, `NothingSent`, `NextAttemptUtc`, `Error`, `TargetId`, `TargetVersion`, `TargetStateJson`, `PendingStepJson` | For a completion: how the try settles the record. |
+| `Claim*` | What the try was claimed with (submission, document, render context, fingerprint, origin, hashes), so a completion promotes what the try actually delivered even when newer work was queued meanwhile, and a step is kept only while the record still holds that document. |
+
+A try's attempt is written to `osdu.Attempt` in the transaction that appends its completion, so the record's history
+is complete as soon as the try ends.
 
 ### `osdu.Retrieval`: one run of a retrieval flow
 
@@ -288,33 +315,63 @@ An ingestion table can feed several OSDU flows, each rendering the rows with its
 
 ## Leasing
 
+A worker does not write the record table while it delivers. It writes its lease row, the events it appends and the
+attempts; the records change when the lease applies the events.
+
 ```text
-claim:    UPDATE Record SET Status='delivering', LeaseOwner=@token, LeaseExpiresUtc=@now+lease, AttemptCount+=1
-          WHERE DeliveryKey IN (@candidates)
-            AND ((Status='pending' AND (NextAttemptUtc IS NULL OR NextAttemptUtc <= @now))
-              OR (Status='delivering' AND LeaseExpiresUtc < @now))
-          then SELECT ... WHERE LeaseOwner=@token
-renew:    UPDATE ... SET LeaseExpiresUtc=@now+lease WHERE DeliveryKey=@key AND LeaseOwner=@token
-complete: INSERT Attempt; UPDATE Record (status, promote pending -> current when delivered, release lease)
-release:  UPDATE Record SET Status='pending', LeaseOwner=NULL, LeaseExpiresUtc=NULL, AttemptCount=AttemptCount-1
-          WHERE DeliveryKey=@key AND LeaseOwner=@token AND Status='delivering'      (a stopping worker)
+claim:      INSERT Lease (Token, FlowId, SubmissionId, WorkBatch, Owner, ExpiresUtc = @now + lease)
+            UPDATE Record SET Status='delivering', LeaseOwner=@token, AttemptCount+=1
+              WHERE FlowId=@flow AND DeliveryKey IN (@due) AND Status='pending' AND <due>   (1,000 keys a statement)
+renew:      UPDATE Lease SET ExpiresUtc=@now + lease WHERE Token=@token AND Owner=@worker   (one row)
+append:     INSERT Attempt ...; INSERT RecordEvent ...                                      (one transaction a write)
+checkpoint: apply the lease's events to their records, 1,000 records a transaction, deleting what was applied
+close:      checkpoint; hand back what the lease still holds; settle its batch; DELETE Lease
+recover:    UPDATE Lease SET Owner=@recoverer, ExpiresUtc=@now + 5 min WHERE Token=@token AND ExpiresUtc < @now
+            then close it as expired
 ```
 
-The claim is a single compare-and-swap, so two workers never hold one record, and any number of nodes can
-share the ledger. A drain claims a work batch the same way (`WorkBatch.Status` from `queued` to `running`
-under a token) and then leases the batch's due records under that token, a thousand to a statement; completion of
-records is one bulk write per flush of the worker (a staging table and one update on SQL Server), and closing the
-batch releases the token. That
-is what lets a submission's drains spread over the fleet ([design.md](design.md) section 16.4). A deliver run drains its own submission; runs of the same flow on
-several nodes share the ledger safely. A crashed worker's lease expires and the next claim picks the record
-up. A stopping worker releases its records at once without charging the interrupted attempt. Long payload
-uploads renew the lease at half its length.
+- **Claim.** A drain claims the oldest queued batch of the flow (or of one submission): the lease row and the batch's
+  move from `queued` to `running` commit together, so two workers never hold one batch. The batch's due records are
+  then marked with the lease's token, a thousand to a statement. A claim outside the batches takes up to 500 due
+  records of the flow under a lease of its own. Either way the record's move from `pending` to `delivering` is a
+  compare-and-swap, so two leases never hold one record, and any number of nodes share the ledger. That is what lets a
+  submission's drains spread over the fleet ([design.md](design.md) section 16.4).
+- **Renew.** The worker renews its lease at half its length (at least once a second apart), and at each renewal
+  checkpoints the lease and reports its progress to the run's trace (`batch.progress`: how many of its records are
+  settled so far, by outcome). A renewal that finds the lease taken over stops the worker: it stops sending, applies
+  what it appended, and leaves the rest to whoever took the lease over. A renewal that fails on a database error is
+  tried again until the lease would run out.
+- **Append.** The worker's concurrent deliveries hand their completed steps and ended tries to the lease's journal,
+  which writes them with group commit: one write carries whatever was handed over while the previous write was in
+  flight, at most 500 entries. A delivery waits until its entry is written, so a completed step is in the ledger
+  before the next step starts, and a try's `record.*` event reaches the run's trace only after its attempt is stored.
+- **Apply.** A checkpoint applies the lease's events a thousand records to a transaction, in record order, each record
+  taking its latest event. A completion settles the record as the try said (status, backoff, the pending state
+  promoted, the target state) and releases it from the lease; a step keeps the step progress on the record while the
+  record still holds the document the try was claimed with. A record another lease holds by then is left to that
+  lease: the event is dropped, and the try's attempt stays in the history. The events go in the transaction that
+  applies them.
+- **Close.** A worker that ends its lease applies it and hands back what it still holds: records its batch never
+  reached, or that a stop interrupted, go back to pending without charging the try, and the batch is settled (`done`
+  or `failed` with its counts, or `queued` again after a stop). A worker whose lease was taken over applies what it
+  appended, so a try it finished lands on a record no one else holds, and settles nothing else.
+- **Recover.** Every claim of a flow first recovers the flow's leases that ran out. It takes each one over, a
+  compare-and-swap on the lease row, so two recoveries never settle one lease and the stalled worker can no longer
+  renew it. It applies what the stopped worker appended, hands the rest of its records back to pending with the try
+  charged (`LastError` says the lease expired mid-attempt), and queues its batch again. A recovery that stops holds
+  the lease for five minutes, and the next claim after that recovers it. The recovery also applies the flow's events
+  that no lease will: a worker whose lease was taken over applies what it still appends when it closes, and one that
+  stops before closing leaves those events behind. Events older than the five minutes whose lease row is gone are
+  applied like any others.
+
+The record table is therefore the read model of the deliveries: it shows what every lease has applied, which trails
+what the workers have sent by at most one renewal. The attempts are written with each append, and the run's trace
+carries the live progress.
 
 A run recovered after its worker stopped (a control plane or node killed mid-delivery, whose run the reaper
 requeued) finds its submission already planned, and the records its dead worker was sending still leased. The
 platform runs one execution of a flow at a time, so such a lease belongs to nobody alive: the run waits until it
-runs out, reclaims it (`LastError` says the lease expired mid-attempt) and sends the record, resuming the steps the
-dead attempt had reported. Seen live, a recovered run that only passed over the submission finished `succeeded` with
+runs out, recovers it and sends the record, resuming after the steps the dead attempt had appended. Seen live, a recovered run that only passed over the submission finished `succeeded` with
 the record left `delivering` and its change never recorded. A lease running out further ahead than the flow's own
 `reliability.leaseSeconds` is left alone with a warning, because only a running worker renews a lease that far.
 
@@ -327,25 +384,29 @@ SQL Server:
 - **No statement writes more than 1,000 records.** SQL Server turns the row locks a statement holds on one index into
   a lock on the whole table once they reach 5,000, and a lock on the record table would stop every node of every flow
   while it lasted. Staging copies a batch into a staging table once and writes it a thousand records to a transaction.
-  A batch's lease, its renewal and its release, the lease sweep, an operator's release or redelivery and a cache
-  change's marking first read the keys of the records they reach (a plain read, which holds no lock past its row) and
-  then write them a thousand keys to a statement. Every index of the table ends with the table's key, so such a
-  statement finds each record with one seek and locks no record it does not write. Completions are flushed 200 at a
-  time and pruning deletes 4,000 attempts to a statement.
+  A batch's claim and hand-back, an operator's release or redelivery and a cache change's marking first read the keys
+  of the records they reach and then write them a thousand keys to a statement. Every index of the table ends with the
+  table's key, so such a statement finds each record with one seek and locks no record it does not write. A lease
+  applies its events a thousand records to a transaction, a worker's append carries at most 500 events with their
+  attempts, and pruning deletes 4,000 attempts to a statement.
+- **A worker does not write the record table while it delivers.** Keeping a lease is one row, however many records it
+  holds, and what the worker learns goes to `osdu.RecordEvent`, whose ever-increasing key takes every node's appends
+  at its end without touching a record. The records change when a lease is checkpointed, closed or recovered.
 - **Staging locks only records that exist.** A slice finds the records it will update by key and update-locks them to
   the end of its transaction, and inserts the rest. It never locks a range of keys, so intakes of one flow, whose new
   keys interleave, do not wait on each other. A record another staging inserted after the slice looked is refused by
   the table's key; the slice is rolled back and runs again, finds the record and compares its work with it, so newer
   work is never overwritten. The claim check is one seek of the claim index per record.
-- **The worker's reads never wait on a record.** The claim, what is due next, the leases still out and the settled
-  submissions with due work are answered from `(FlowId, Status, NextAttemptUtc)` and
-  `(FlowId, LastSubmissionId, Status, NextAttemptUtc)` alone, which carry the columns those reads need. A read that
-  went on from an index to the table held its place in the index while it waited for a record another node was
-  writing, and that node, moving the record in the same index, waited for the read in turn.
-- **A deadlock victim runs again.** SQL Server ends a deadlock by rolling one statement back. A staging slice, a
-  completion flush, a claim, a lease statement and the worker's reads are each run again, up to five times, after a
-  short wait that grows with each try and differs between nodes; each is written so a second run does what the first
-  would have. Anything else fails with the database's error.
+- **Reads never wait on writes.** Every read of the ledger (a worker's, the planner's, the GUI's, the API's and the
+  CLI's) runs in a snapshot transaction: it sees what was committed when it started and takes no shared locks, so it
+  neither waits for a writer nor holds one up. The connection is set back to read committed before it returns to the
+  pool, so no write runs under snapshot isolation. The database must allow it ([Provisioning](#provisioning)). The
+  claim's reads are also answered from `(FlowId, Status, NextAttemptUtc)` and
+  `(FlowId, LastSubmissionId, Status, NextAttemptUtc)` alone.
+- **A deadlock victim runs again.** SQL Server ends a deadlock by rolling one statement back. A staging slice, an
+  append, an application slice, a claim and a lease statement are each run again, up to five times, after a short wait
+  that grows with each try and differs between nodes; each is written so a second run does what the first would have.
+  Anything else fails with the database's error.
 
 The statistics view is maintained in the transaction of every record write, so the writes of one flow meet on its few
 rows there. Each write holds them only until it commits, and every write above is short.
@@ -356,9 +417,11 @@ Listings are index-backed so the GUI answers in milliseconds at any estate size:
 
 | Index | Serves |
 | --- | --- |
-| `Record (FlowId, Status, NextAttemptUtc) INCLUDE (LastSubmissionId, LeaseExpiresUtc, UpdatedUtc, PendingDocumentRef)`, `(FlowId, LastSubmissionId, Status, NextAttemptUtc) INCLUDE (LeaseExpiresUtc, UpdatedUtc)` | the worker's claim and its other reads (what is due next, the leases still out, the settled submissions with due work), for a flow and for one submission, from the index alone |
+| `Record (FlowId, Status, NextAttemptUtc) INCLUDE (LastSubmissionId, UpdatedUtc, PendingDocumentRef)`, `(FlowId, LastSubmissionId, Status, NextAttemptUtc) INCLUDE (UpdatedUtc)` | the worker's claim and its other reads (what is due next, the settled submissions with due work), for a flow and for one submission, from the index alone |
 | `Record (FlowId, Status, UpdatedUtc)`, `(FlowId, LastSubmissionId, UpdatedUtc)` | a status's or a submission's records, most recent first, read in index order |
-| `Record (LastSubmissionId, WorkBatch)`, `(LeaseOwner)`, `WorkBatch (FlowId, Status, CreatedUtc)`, `(SubmissionId, Status)`, `(Status, LeaseExpiresUtc)` | the batch claim, its records, the records under one lease token (a batch's renewal and release), the lease sweep, the submission's batch list |
+| `Record (LastSubmissionId, WorkBatch)`, `(LeaseOwner)`, `WorkBatch (FlowId, Status, CreatedUtc)`, `(SubmissionId, Status)` | the batch claim, its records, the records one lease holds (its hand-back, and the expiry a listing shows), the submission's batch list |
+| `Lease (FlowId, ExpiresUtc)`, `(SubmissionId, ExpiresUtc)` | the leases of a flow that ran out, for the recovery; the next expiry a run waits for, for a flow and for one submission |
+| `RecordEvent (LeaseToken, FlowId, DeliveryKey, EventId)`, `(FlowId, AtUtc) INCLUDE (LeaseToken)` | one lease's events in record order, a slice at a time, for its checkpoint; a flow's old events, for the recovery of those whose lease is gone |
 | `Retrieval (FlowId, StartedUtc)`, `(FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval flow's runs, the watermark chain (the last done run), the run's row |
 | `Record (FlowId, Label)`, `(FlowId, SourceKey)`, `(FlowId, TargetId)` | prefix search (`LIKE 'term%'`) on the three identity columns |
 | `Record (FlowId, UpdatedUtc)`, `(FlowId, LastDeliveredUtc)`, `(FlowId, LastVerifyOutcome)` | recency listings, the last delivery and the part-hour of the 24-hour count, drift |
@@ -453,6 +516,29 @@ up (the hosts refuse to start against a pending migration anyway).
 included columns (`DROP_EXISTING`, so the table always has the index and the rebuild reads the old index rather than
 the table) and builds `(FlowId, LastSubmissionId, Status, NextAttemptUtc)`. Both are index builds over the record
 table, sized by its row count, and run while no host is up.
+
+`LeasesAndRecordEvents` (module version 1.5.0) moves the worker's writes off the record table (see
+[Leasing](#leasing)). It creates `osdu.Lease` and `osdu.RecordEvent`, and turns every lease a stopped worker left
+behind into a lease row, so the next claim of its flow recovers it like any other: a batch's lease keeps its batch, run
+and expiry, and the records a claim outside the batches leased make one lease per token, expiring with the last of
+them. It then drops the expiry columns of `osdu.Record` and `osdu.WorkBatch` with the indexes that served the old
+lease sweep, and rebuilds the claim's two covering indexes in place without the expiry. Going back down is refused
+while `osdu.RecordEvent` holds an event no lease has applied; a revert puts each lease's expiry back on its batch and
+its records. The rebuilds are index builds over the record table, sized by its row count, and run while no host is up.
+
+From 1.5.0 the ledger reads under snapshot isolation ([Many nodes, one table](#many-nodes-one-table)), so the database
+that holds the `osdu` schema must allow it. Allow it once:
+
+```sql
+ALTER DATABASE [<database>] SET ALLOW_SNAPSHOT_ISOLATION ON;
+```
+
+Azure SQL Database allows it by default; a SQL Server database does not until it is set. The migration leaves the
+setting to the operator because it covers the whole database, SQLFlow's catalog included: while it is on, every update
+and delete in the database keeps the row's previous version in `tempdb` for as long as a snapshot transaction may read
+it, and a row changed meanwhile carries 14 more bytes. The ledger's snapshot reads are short, so the versions are kept
+briefly. A ledger whose database does not allow it refuses its first read, before it claims any work, with an error
+that names the database and the statement above.
 
 The control plane applies pending migrations on start, and `sqlflow db migrate --db <ref>` does it by hand. Both
 hosts and `sqlflow db status` refuse to run against pending migrations, a database newer than the code, or a catalog

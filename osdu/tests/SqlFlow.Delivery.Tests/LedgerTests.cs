@@ -154,14 +154,22 @@ public class SqlLedgerTests : IDisposable
         var submission = Guid.NewGuid();
         await Ledger.UpsertPendingAsync(_flow, [Pending("a", submission), Pending("b", submission)]);
 
-        var claimed = await Ledger.ClaimAsync(_flow, submission, "w1", 10, TimeSpan.FromMinutes(5), Now);
+        var claimed = (await Ledger.ClaimAsync(_flow, submission, "w1", 10, TimeSpan.FromMinutes(5), Now)).Records;
         Assert.Equal(2, claimed.Count);
         Assert.All(claimed, r => Assert.Equal(RecordStatus.Delivering, r.Status));
         Assert.All(claimed, r => Assert.Equal(1, r.AttemptCount));
         Assert.All(claimed, r => Assert.StartsWith("w1/", r.LeaseOwner!, StringComparison.Ordinal));
-        Assert.Empty(await Ledger.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(5), Now));
-        Assert.True(await Ledger.RenewLeaseAsync(_flow, claimed[0].DeliveryKey, claimed[0].LeaseOwner!, TimeSpan.FromMinutes(5), Now));
-        Assert.False(await Ledger.RenewLeaseAsync(_flow, claimed[0].DeliveryKey, "someone-else", TimeSpan.FromMinutes(5), Now));
+        Assert.All(claimed, r => Assert.Equal(Now.AddMinutes(5), r.LeaseExpiresUtc));
+        Assert.Empty((await Ledger.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(5), Now)).Records);
+        // One lease holds both records, and renewing it is one row.
+        Assert.Single(claimed.Select(r => r.LeaseOwner).Distinct());
+        Assert.True(await Ledger.RenewLeaseAsync(claimed[0].LeaseOwner!, TimeSpan.FromMinutes(6), Now));
+        foreach (var leased in claimed)
+        {
+            Assert.Equal(Now.AddMinutes(6), (await Ledger.GetRecordAsync(_flow, leased.DeliveryKey))!.LeaseExpiresUtc);
+        }
+
+        Assert.False(await Ledger.RenewLeaseAsync("someone-else/" + Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(5), Now));
 
         var record = claimed[0];
         await Ledger.CompleteAsync(_flow, new RecordCompletion
@@ -193,17 +201,17 @@ public class SqlLedgerTests : IDisposable
     {
         var submission = Guid.NewGuid();
         await Ledger.UpsertPendingAsync(_flow, [Pending("a", submission)]);
-        var first = await Ledger.ClaimAsync(_flow, null, "w1", 10, TimeSpan.FromMinutes(5), Now);
+        var first = (await Ledger.ClaimAsync(_flow, null, "w1", 10, TimeSpan.FromMinutes(5), Now)).Records;
         Assert.Single(first);
 
         _clock.Advance(TimeSpan.FromMinutes(6));
-        var reclaimed = await Ledger.ReclaimExpiredLeasesAsync(_flow, Now);
+        var reclaimed = await Ledger.RecoverExpiredLeasesAsync(_flow, Now);
         Assert.Equal(1, reclaimed);
         var state = await Ledger.GetRecordAsync(_flow, first[0].DeliveryKey);
         Assert.Equal(RecordStatus.Pending, state!.Status);
         Assert.Contains("lease expired", state.LastError, StringComparison.Ordinal);
 
-        var second = await Ledger.ClaimAsync(_flow, null, "w2", 10, TimeSpan.FromMinutes(5), Now);
+        var second = (await Ledger.ClaimAsync(_flow, null, "w2", 10, TimeSpan.FromMinutes(5), Now)).Records;
         Assert.Single(second);
         Assert.Equal(2, second[0].AttemptCount);
 
@@ -216,27 +224,34 @@ public class SqlLedgerTests : IDisposable
             Error = "503",
             Attempt = new AttemptRecord { DeliveryKey = second[0].DeliveryKey, Worker = "w2", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Failed, Phase = "none", Error = "503" },
         });
-        Assert.Empty(await Ledger.ClaimAsync(_flow, null, "w3", 10, TimeSpan.FromMinutes(5), Now));
+        Assert.Empty((await Ledger.ClaimAsync(_flow, null, "w3", 10, TimeSpan.FromMinutes(5), Now)).Records);
         _clock.Advance(TimeSpan.FromMinutes(11));
-        Assert.Single(await Ledger.ClaimAsync(_flow, null, "w3", 10, TimeSpan.FromMinutes(5), Now));
+        Assert.Single((await Ledger.ClaimAsync(_flow, null, "w3", 10, TimeSpan.FromMinutes(5), Now)).Records);
 
         // A claim that expired while still 'delivering' is picked up directly by the next claim as well.
         _clock.Advance(TimeSpan.FromMinutes(6));
-        Assert.Single(await Ledger.ClaimAsync(_flow, null, "w4", 10, TimeSpan.FromMinutes(5), Now));
+        Assert.Single((await Ledger.ClaimAsync(_flow, null, "w4", 10, TimeSpan.FromMinutes(5), Now)).Records);
     }
 
     [Fact]
-    public async Task Releasing_a_lease_on_shutdown_does_not_charge_the_attempt()
+    public async Task Closing_a_lease_on_shutdown_does_not_charge_the_attempt_and_a_lease_that_runs_out_does()
     {
         var submission = Guid.NewGuid();
         await Ledger.UpsertPendingAsync(_flow, [Pending("a", submission)]);
-        var claimed = await Ledger.ClaimAsync(_flow, submission, "w1", 10, TimeSpan.FromMinutes(5), Now);
-        var record = claimed.Single();
-        Assert.Equal(1, record.AttemptCount);
+        var claim = await Ledger.ClaimAsync(_flow, submission, "w1", 10, TimeSpan.FromMinutes(5), Now);
+        var lease = claim.Lease!;
+        var record = claim.Records.Single();
+        Assert.Equal((1, lease.Token), (record.AttemptCount, record.LeaseOwner));
+        Assert.Equal((_flow, (Guid?)submission, (int?)null, "w1"), (lease.FlowId, lease.SubmissionId, lease.WorkBatch, lease.Owner));
+        Assert.Equal(Now.AddMinutes(5), await Ledger.NextLeaseExpiryAsync(_flow, submission));
 
-        Assert.False(await Ledger.ReleaseLeaseAsync(_flow, record.DeliveryKey, "someone-else", countAttempt: false, Now));
-        Assert.True(await Ledger.ReleaseLeaseAsync(_flow, record.DeliveryKey, record.LeaseOwner!, countAttempt: false, Now));
-        Assert.False(await Ledger.ReleaseLeaseAsync(_flow, record.DeliveryKey, record.LeaseOwner!, countAttempt: false, Now));
+        // A lease nobody holds closes nothing; its holder's close hands the record back, once, and the lease is gone.
+        var stopped = new LeaseClosing { End = LeaseEnd.Stopped };
+        Assert.Equal(LeaseApplied.None, await Ledger.CloseLeaseAsync("someone-else/" + Guid.NewGuid().ToString("N"), stopped, Now));
+        Assert.Equal(new LeaseApplied(0, 1), await Ledger.CloseLeaseAsync(lease.Token, stopped, Now));
+        Assert.Equal(LeaseApplied.None, await Ledger.CloseLeaseAsync(lease.Token, stopped, Now));
+        Assert.False(await Ledger.RenewLeaseAsync(lease.Token, TimeSpan.FromMinutes(5), Now));
+        Assert.Null(await Ledger.NextLeaseExpiryAsync(_flow, submission));
 
         var released = await Ledger.GetRecordAsync(_flow, record.DeliveryKey);
         Assert.Equal(RecordStatus.Pending, released!.Status);
@@ -247,11 +262,19 @@ public class SqlLedgerTests : IDisposable
         Assert.Empty(await Ledger.ListAttemptsAsync(_flow, record.DeliveryKey, 10));
 
         // Immediately claimable again, and the retry budget starts from the first attempt.
-        var again = await Ledger.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(5), Now);
+        var again = (await Ledger.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(5), Now)).Records;
         Assert.Equal(1, again.Single().AttemptCount);
 
-        Assert.True(await Ledger.ReleaseLeaseAsync(_flow, record.DeliveryKey, again[0].LeaseOwner!, countAttempt: true, Now));
-        Assert.Equal(1, (await Ledger.GetRecordAsync(_flow, record.DeliveryKey))!.AttemptCount);
+        // A lease that runs out is recovered by the next claim of the flow, and the interrupted try counts. A worker that
+        // was only slow cannot renew it once it is recovered.
+        _clock.Advance(TimeSpan.FromMinutes(6));
+        Assert.Equal(0, await Ledger.RecoverExpiredLeasesAsync(Guid.NewGuid(), Now));
+        Assert.Equal(1, await Ledger.RecoverExpiredLeasesAsync(_flow, Now));
+        var recovered = await Ledger.GetRecordAsync(_flow, record.DeliveryKey);
+        Assert.Equal((RecordStatus.Pending, 1, (string?)null), (recovered!.Status, recovered.AttemptCount, recovered.LeaseOwner));
+        Assert.Contains("lease expired", recovered.LastError, StringComparison.Ordinal);
+        Assert.False(await Ledger.RenewLeaseAsync(again[0].LeaseOwner!, TimeSpan.FromMinutes(5), Now));
+        Assert.Null(await Ledger.NextLeaseExpiryAsync(_flow, null));
     }
 
     [Fact]
@@ -259,7 +282,7 @@ public class SqlLedgerTests : IDisposable
     {
         var s1 = Guid.NewGuid();
         await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1)]);
-        var claimed = await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(1), Now);
+        var claimed = (await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(1), Now)).Records;
         await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = claimed[0].DeliveryKey,
@@ -296,7 +319,7 @@ public class SqlLedgerTests : IDisposable
         Assert.Contains("released", unblocked.LastError, StringComparison.Ordinal);
 
         await Ledger.UpsertPendingAsync(_flow, [Pending("c", s2)]);
-        var c = await Ledger.ClaimAsync(_flow, s2, "w", 10, TimeSpan.FromMinutes(1), Now);
+        var c = (await Ledger.ClaimAsync(_flow, s2, "w", 10, TimeSpan.FromMinutes(1), Now)).Records;
         var cRecord = c.Single(r => r.SourceKey == "c");
         await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
@@ -329,15 +352,19 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal(WorkBatchStatus.Running, claimed.Batch.Status);
         Assert.Equal(2, claimed.Records.Count);
         Assert.All(claimed.Records, r => Assert.Equal(RecordStatus.Delivering, r.Status));
-        Assert.All(claimed.Records, r => Assert.Equal(claimed.Batch.LeaseOwner, r.LeaseOwner));
+        Assert.All(claimed.Records, r => Assert.Equal(claimed.Lease.Token, r.LeaseOwner));
+        Assert.Equal((claimed.Lease.Token, claimed.Lease.ExpiresUtc), (claimed.Batch.LeaseOwner, claimed.Batch.LeaseExpiresUtc));
+        Assert.Equal(((Guid?)submission, (int?)3), (claimed.Lease.SubmissionId, claimed.Lease.WorkBatch));
 
         // Records leased under the batch are invisible to the individual claim; a record of a queued batch is not.
-        var loose = await Ledger.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(5), Now);
+        var loose = (await Ledger.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(5), Now)).Records;
         Assert.Equal("c", Assert.Single(loose).SourceKey);
-        Assert.True(await Ledger.RenewWorkBatchLeaseAsync(submission, 3, claimed.Batch.LeaseOwner!, TimeSpan.FromMinutes(5), Now));
-        Assert.False(await Ledger.RenewWorkBatchLeaseAsync(submission, 3, "someone-else", TimeSpan.FromMinutes(5), Now));
+        Assert.True(await Ledger.RenewLeaseAsync(claimed.Lease.Token, TimeSpan.FromMinutes(5), Now));
+        Assert.Equal(Now.AddMinutes(5), (await Ledger.ListWorkBatchesAsync(submission, 10, 0)).Single(b => b.Index == 3).LeaseExpiresUtc);
 
-        await Ledger.CompleteManyAsync(_flow, claimed.Records.Select(r => new RecordCompletion
+        // The worker appends; nothing is applied to the records until the lease checkpoints or closes, and the attempts
+        // are there at once.
+        await Ledger.AppendAsync(_flow, claimed.Lease.Token, new LeaseAppend([], claimed.Records.Select(r => new RecordCompletion
         {
             DeliveryKey = r.DeliveryKey,
             Status = RecordStatus.Delivered,
@@ -345,8 +372,10 @@ public class SqlLedgerTests : IDisposable
             TargetVersion = 5,
             TargetStateJson = "{\"recordId\":\"x\"}",
             Attempt = new AttemptRecord { DeliveryKey = r.DeliveryKey, SubmissionId = submission, Worker = "w1", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata", ResultJson = "{\"steps\":[]}", WorkBatch = 3 },
-        }).ToList());
-        await Ledger.CompleteWorkBatchAsync(submission, 3, claimed.Batch.LeaseOwner!, WorkBatchStatus.Done, 2, 0, 0, 0, null, Now);
+        }).ToList()));
+        Assert.Equal(RecordStatus.Delivering, (await Ledger.GetRecordAsync(_flow, claimed.Records[0].DeliveryKey))!.Status);
+        Assert.Equal(2, await Ledger.CountAttemptsAsync(submission, AttemptOutcome.Delivered));
+        Assert.Equal(new LeaseApplied(2, 0), await Ledger.CloseLeaseAsync(claimed.Lease.Token, new LeaseClosing { End = LeaseEnd.Done, Delivered = 2 }, Now));
 
         var batches = await Ledger.ListWorkBatchesAsync(submission, 10, 0);
         var done = batches.Single(b => b.Index == 3);
@@ -363,21 +392,22 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal(3, attempts[0].WorkBatch);
         Assert.Equal("{\"steps\":[]}", attempts[0].ResultJson);
 
-        // Batch 4: its only record is leased by w2, so the claim finds nothing due; a release hands the batch back.
+        // Batch 4: its only record is leased by w2, so the claim finds nothing due; a stop hands the batch back.
         var second = await Ledger.ClaimWorkBatchAsync(_flow, submission, "w1", TimeSpan.FromMinutes(5), Now);
         Assert.NotNull(second);
         Assert.Equal(4, second!.Batch.Index);
         Assert.Empty(second.Records);
-        Assert.True(await Ledger.ReleaseWorkBatchAsync(submission, 4, second.Batch.LeaseOwner!, Now));
+        Assert.Equal(LeaseApplied.None, await Ledger.CloseLeaseAsync(second.Lease.Token, new LeaseClosing { End = LeaseEnd.Stopped }, Now));
         Assert.Equal(1, await Ledger.CountWorkBatchesAsync(submission, WorkBatchStatus.Queued));
 
-        // An expired batch lease is reclaimed by the sweep.
+        // An expired batch lease is recovered by the next claim of the flow.
         var third = await Ledger.ClaimWorkBatchAsync(_flow, submission, "w3", TimeSpan.FromMinutes(1), Now);
         Assert.NotNull(third);
         Assert.Equal(0, await Ledger.CountWorkBatchesAsync(submission, WorkBatchStatus.Queued));
         _clock.Advance(TimeSpan.FromMinutes(2));
-        await Ledger.ReclaimExpiredLeasesAsync(_flow, Now);
+        await Ledger.RecoverExpiredLeasesAsync(_flow, Now);
         Assert.Equal(1, await Ledger.CountWorkBatchesAsync(submission, WorkBatchStatus.Queued));
+        Assert.Null((await Ledger.ListWorkBatchesAsync(submission, 10, 0)).Single(b => b.Index == 4).LeaseOwner);
         Assert.Null(await Ledger.ClaimWorkBatchAsync(Guid.NewGuid(), null, "w4", TimeSpan.FromMinutes(1), Now));
     }
 
@@ -392,29 +422,40 @@ public class SqlLedgerTests : IDisposable
         await sliced.AddWorkBatchAsync(new WorkBatchState { SubmissionId = submission, FlowId = _flow, Index = 0, Location = "batch-0", RecordCount = 5, CreatedUtc = Now });
 
         var claimed = await sliced.ClaimWorkBatchAsync(_flow, submission, "w1", TimeSpan.FromMinutes(5), Now);
-        var token = claimed!.Batch.LeaseOwner!;
+        var token = claimed!.Lease.Token;
         Assert.Equal(5, claimed.Records.Count);
         Assert.All(claimed.Records, r => Assert.Equal((RecordStatus.Delivering, token, 1), (r.Status, r.LeaseOwner, r.AttemptCount)));
 
         _clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.True(await sliced.RenewWorkBatchLeaseAsync(submission, 0, token, TimeSpan.FromMinutes(5), Now));
+        Assert.True(await sliced.RenewLeaseAsync(token, TimeSpan.FromMinutes(5), Now));
         foreach (var record in records)
         {
             Assert.Equal(Now.AddMinutes(5), (await sliced.GetRecordAsync(_flow, record.DeliveryKey))!.LeaseExpiresUtc);
         }
 
+        // Steps, two to a slice, applied in the order they were appended: each record keeps its last.
+        await sliced.AppendAsync(_flow, token, new LeaseAppend(
+            records.SelectMany(r => new[] { 1, 2 }.Select(n => new RecordStep(r.DeliveryKey, submission, r.PendingDocumentRef!, $"{{\"upload\":{{\"n\":\"{n}\"}}}}", Now))).ToList(),
+            []));
+        Assert.Equal(new LeaseApplied(0, 0), await sliced.CheckpointLeaseAsync(token, Now));
+        foreach (var record in records)
+        {
+            Assert.Equal("{\"upload\":{\"n\":\"2\"}}", (await sliced.GetRecordAsync(_flow, record.DeliveryKey))!.PendingStepJson);
+        }
+
         // Closing the batch hands back every record it never reached, without charging the try.
-        await sliced.CompleteWorkBatchAsync(submission, 0, token, WorkBatchStatus.Failed, 0, 0, 0, 0, "the node stopped", Now);
+        Assert.Equal(new LeaseApplied(0, 5), await sliced.CloseLeaseAsync(token, new LeaseClosing { End = LeaseEnd.Failed, Failure = "the node stopped" }, Now));
+        Assert.Equal("the node stopped", (await sliced.ListWorkBatchesAsync(submission, 10, 0)).Single().Error);
         foreach (var record in records)
         {
             var released = await sliced.GetRecordAsync(_flow, record.DeliveryKey);
             Assert.Equal((RecordStatus.Pending, (string?)null, 0), (released!.Status, released.LeaseOwner, released.AttemptCount));
         }
 
-        // An expired lease on every record is reclaimed by the sweep.
-        Assert.Equal(5, (await sliced.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(1), Now)).Count);
+        // A retry lease that runs out hands back every record it holds.
+        Assert.Equal(5, ((await sliced.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(1), Now)).Records).Count);
         _clock.Advance(TimeSpan.FromMinutes(2));
-        Assert.Equal(5, await sliced.ReclaimExpiredLeasesAsync(_flow, Now));
+        Assert.Equal(5, await sliced.RecoverExpiredLeasesAsync(_flow, Now));
         Assert.Equal(5, await sliced.CountAsync(_flow, submission, RecordStatus.Pending));
 
         // Failed records are released, and then redelivered, a slice at a time.
@@ -433,13 +474,97 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_recovered_lease_applies_what_its_worker_appended_and_the_worker_s_late_writes_settle_only_records_no_one_holds()
+    {
+        var submission = Guid.NewGuid();
+        await Ledger.RegisterSubmissionAsync(Submission(submission));
+        var records = new[] { "a", "b", "c", "d" }
+            .Select((name, i) => Pending(name, submission) with { WorkBatch = 0, PendingDocumentRef = $"0:{i * 10}:10" })
+            .ToList();
+        await Ledger.UpsertPendingAsync(_flow, records);
+        await Ledger.AddWorkBatchAsync(new WorkBatchState { SubmissionId = submission, FlowId = _flow, Index = 0, Location = "batch-0", RecordCount = 4, CreatedUtc = Now });
+        var claimed = await Ledger.ClaimWorkBatchAsync(_flow, submission, "w1", TimeSpan.FromMinutes(1), Now);
+        var token = claimed!.Lease.Token;
+        var leased = claimed.Records.ToDictionary(r => r.SourceKey);
+        const string Step = "{\"upload\":{\"done\":\"1\"}}";
+
+        // The worker delivered a and finished a step of b, then stalled. What it appended waits in the log.
+        await Ledger.AppendAsync(_flow, token, new LeaseAppend(
+            [new RecordStep(leased["b"].DeliveryKey, submission, leased["b"].PendingDocumentRef!, Step, Now)],
+            [Delivered(leased["a"], submission)]));
+        Assert.Equal(RecordStatus.Delivering, (await Ledger.GetRecordAsync(_flow, leased["a"].DeliveryKey))!.Status);
+
+        // Its lease runs out, and the recovery applies both, then hands b, c and d back with their try charged.
+        _clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.Equal(4, await Ledger.RecoverExpiredLeasesAsync(_flow, Now));
+        var a = await Ledger.GetRecordAsync(_flow, leased["a"].DeliveryKey);
+        Assert.Equal((RecordStatus.Delivered, (string?)null, 0, (long?)7), (a!.Status, a.LeaseOwner, a.AttemptCount, a.TargetVersion));
+        var b = await Ledger.GetRecordAsync(_flow, leased["b"].DeliveryKey);
+        Assert.Equal((RecordStatus.Pending, (string?)null, 1, Step), (b!.Status, b.LeaseOwner, b.AttemptCount, b.PendingStepJson));
+        Assert.Contains("lease expired", b.LastError, StringComparison.Ordinal);
+        var c = await Ledger.GetRecordAsync(_flow, leased["c"].DeliveryKey);
+        Assert.Equal((RecordStatus.Pending, 1), (c!.Status, c.AttemptCount));
+        var batch = Assert.Single(await Ledger.ListWorkBatchesAsync(submission, 10, 0));
+        Assert.Equal((WorkBatchStatus.Queued, (string?)null, (DateTime?)null), (batch.Status, batch.LeaseOwner, batch.LeaseExpiresUtc));
+        Assert.False(await Ledger.RenewLeaseAsync(token, TimeSpan.FromMinutes(1), Now));
+        Assert.Null(await Ledger.NextLeaseExpiryAsync(_flow, null));
+        Assert.Equal(0, await Ledger.RecoverExpiredLeasesAsync(_flow, Now));
+
+        // The worker wakes, records the try of c it had sent, and closes as if its batch were done. The try lands, since no
+        // one holds c; the batch and the other records are the recovery's, and stay as it left them.
+        await Ledger.AppendAsync(_flow, token, new LeaseAppend([], [Delivered(leased["c"], submission)]));
+        Assert.Equal(new LeaseApplied(1, 0), await Ledger.CloseLeaseAsync(token, new LeaseClosing { End = LeaseEnd.Done, Delivered = 2 }, Now));
+        Assert.Equal(RecordStatus.Delivered, (await Ledger.GetRecordAsync(_flow, leased["c"].DeliveryKey))!.Status);
+        batch = Assert.Single(await Ledger.ListWorkBatchesAsync(submission, 10, 0));
+        Assert.Equal((WorkBatchStatus.Queued, 0L), (batch.Status, batch.Delivered));
+
+        // The next worker takes what is left, b resuming from its step. A try the stalled worker reports for d now is
+        // history, and never touches the record the next worker holds.
+        var next = await Ledger.ClaimWorkBatchAsync(_flow, submission, "w2", TimeSpan.FromMinutes(1), Now);
+        Assert.Equal(new[] { "b", "d" }, next!.Records.Select(r => r.SourceKey).Order());
+        Assert.Equal(Step, next.Records.Single(r => r.SourceKey == "b").PendingStepJson);
+        await Ledger.AppendAsync(_flow, token, new LeaseAppend([], [Delivered(leased["d"], submission)]));
+        Assert.Equal(LeaseApplied.None, await Ledger.CheckpointLeaseAsync(token, Now));
+        var d = await Ledger.GetRecordAsync(_flow, leased["d"].DeliveryKey);
+        Assert.Equal((RecordStatus.Delivering, next.Lease.Token, 2), (d!.Status, d.LeaseOwner, d.AttemptCount));
+        Assert.Single(await Ledger.ListAttemptsAsync(_flow, d.DeliveryKey, 10));
+        Assert.Equal(new LeaseApplied(0, 2), await Ledger.CloseLeaseAsync(next.Lease.Token, new LeaseClosing { End = LeaseEnd.Stopped }, Now));
+        Assert.Equal(2, await Ledger.CountAsync(_flow, submission, RecordStatus.Pending));
+
+        // The stalled worker reports d once more, and stops before it closes. No lease will apply that, so a recovery of
+        // the flow does once the recovery hold has passed; d is no one's now, so the try lands.
+        await Ledger.AppendAsync(_flow, token, new LeaseAppend([], [Delivered(leased["d"], submission)]));
+        Assert.Equal(0, await Ledger.RecoverExpiredLeasesAsync(_flow, Now + OsduLedger.RecoveryHold));
+        Assert.Equal(0, await Ledger.RecoverExpiredLeasesAsync(Guid.NewGuid(), Now + OsduLedger.RecoveryHold + TimeSpan.FromSeconds(1)));
+        Assert.Equal(1, await Ledger.RecoverExpiredLeasesAsync(_flow, Now + OsduLedger.RecoveryHold + TimeSpan.FromSeconds(1)));
+        d = await Ledger.GetRecordAsync(_flow, leased["d"].DeliveryKey);
+        Assert.Equal((RecordStatus.Delivered, (string?)null), (d!.Status, d.LeaseOwner));
+        Assert.Equal(0, await Ledger.RecoverExpiredLeasesAsync(_flow, Now + OsduLedger.RecoveryHold + TimeSpan.FromSeconds(1)));
+    }
+
+    private RecordCompletion Delivered(RecordState claimed, Guid submission) => new()
+    {
+        DeliveryKey = claimed.DeliveryKey,
+        Status = RecordStatus.Delivered,
+        Promote = true,
+        TargetId = claimed.TargetId,
+        TargetVersion = 7,
+        Claimed = ClaimedWork.Of(claimed),
+        Attempt = new AttemptRecord
+        {
+            DeliveryKey = claimed.DeliveryKey, SubmissionId = submission, Worker = "w1", StartedUtc = Now, CompletedUtc = Now,
+            Outcome = AttemptOutcome.Delivered, Phase = "metadata+payload", TargetVersion = 7,
+        },
+    };
+
+    [Fact]
     public async Task Step_progress_and_next_due_are_tracked_on_the_record()
     {
         var submission = Guid.NewGuid();
         await Ledger.UpsertPendingAsync(_flow, [Pending("s", submission)]);
-        var claimed = await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now);
+        var claimed = (await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now)).Records;
         var key = claimed[0].DeliveryKey;
-        await Ledger.SaveStepAsync(_flow, key, submission, "0:0:10", "{\"metadata\":{\"version\":\"3\"}}");
+        await Ledger.SaveStepAsync(_flow, key, submission, "0:0:10", "{\"metadata\":{\"version\":\"3\"}}", Now);
         Assert.Equal("{\"metadata\":{\"version\":\"3\"}}", (await Ledger.GetRecordAsync(_flow, key))!.PendingStepJson);
 
         var next = Now + TimeSpan.FromMinutes(10);
@@ -458,7 +583,7 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal("{\"metadata\":{\"version\":\"3\"}}", (await Ledger.GetRecordAsync(_flow, key))!.PendingStepJson);
 
         _clock.Advance(TimeSpan.FromMinutes(11));
-        var again = await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now);
+        var again = (await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now)).Records;
         Assert.Single(again);
         await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
@@ -481,7 +606,7 @@ public class SqlLedgerTests : IDisposable
     {
         var s = Guid.NewGuid();
         await Ledger.UpsertPendingAsync(_flow, [Pending("a", s)]);
-        var claimed = await Ledger.ClaimAsync(_flow, s, "w", 10, TimeSpan.FromMinutes(1), Now);
+        var claimed = (await Ledger.ClaimAsync(_flow, s, "w", 10, TimeSpan.FromMinutes(1), Now)).Records;
         var key = claimed[0].DeliveryKey;
         await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
@@ -580,7 +705,7 @@ public class SqlLedgerTests : IDisposable
     {
         var s1 = Guid.NewGuid();
         await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
-        var claimed = (await Ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now)).Single();
+        var claimed = ((await Ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now)).Records).Single();
 
         var s2 = Guid.NewGuid();
         var staging = await Ledger.UpsertPendingAsync(_flow, [Pending("a", s2) with { PendingDocumentRef = "7:0:10", WorkBatch = 7, PendingMetadataHash = "mh2", PendingSourceModifiedUtc = Now.AddDays(-1) }]);
@@ -593,7 +718,7 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal("7:0:10", queued.PendingDocumentRef);
 
         // The in-flight try's step progress belongs to its own document and never reaches the newer work.
-        await Ledger.SaveStepAsync(_flow, claimed.DeliveryKey, s1, "0:0:10", "{\"metadata\":{\"version\":\"1\"}}");
+        await Ledger.SaveStepAsync(_flow, claimed.DeliveryKey, s1, "0:0:10", "{\"metadata\":{\"version\":\"1\"}}", Now);
         Assert.Null((await Ledger.GetRecordAsync(_flow, claimed.DeliveryKey))!.PendingStepJson);
 
         await Ledger.CompleteAsync(_flow, new RecordCompletion
@@ -617,7 +742,7 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal(0, settled.AttemptCount);
         Assert.Equal(1, await Ledger.CountAttemptsAsync(s1, AttemptOutcome.Delivered));
         Assert.Equal(0, await Ledger.CountAttemptsAsync(s2, AttemptOutcome.Delivered));
-        Assert.Single(await Ledger.ClaimAsync(_flow, s2, "w2", 10, TimeSpan.FromMinutes(5), Now));
+        Assert.Single((await Ledger.ClaimAsync(_flow, s2, "w2", 10, TimeSpan.FromMinutes(5), Now)).Records);
     }
 
     [Fact]
@@ -626,7 +751,7 @@ public class SqlLedgerTests : IDisposable
         var s1 = Guid.NewGuid();
         var delivered = Now.AddDays(-1);
         await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1) with { PendingSourceModifiedUtc = delivered, PendingPayloadModifiedUtc = delivered }]);
-        var claimed = (await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(5), Now)).Single();
+        var claimed = ((await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(5), Now)).Records).Single();
         await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = claimed.DeliveryKey,
@@ -668,7 +793,7 @@ public class SqlLedgerTests : IDisposable
     {
         var s1 = Guid.NewGuid();
         await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
-        var claimed = (await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(5), Now)).Single();
+        var claimed = ((await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(5), Now)).Records).Single();
         await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = claimed.DeliveryKey,
@@ -722,10 +847,10 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal("dev:y:a", theirs.ClaimedTargetId);
 
         // A claim, a lease and a completion in one flow leave the other flow's record exactly as it was.
-        var claimed = Assert.Single(await Ledger.ClaimAsync(_flow, null, "w1", 10, TimeSpan.FromMinutes(5), Now));
+        var claimed = Assert.Single((await Ledger.ClaimAsync(_flow, null, "w1", 10, TimeSpan.FromMinutes(5), Now)).Records);
         Assert.Equal(_flow, claimed.FlowId);
-        Assert.False(await Ledger.RenewLeaseAsync(other, key, claimed.LeaseOwner!, TimeSpan.FromMinutes(5), Now));
-        Assert.True(await Ledger.RenewLeaseAsync(_flow, key, claimed.LeaseOwner!, TimeSpan.FromMinutes(5), Now));
+        Assert.True(await Ledger.RenewLeaseAsync(claimed.LeaseOwner!, TimeSpan.FromMinutes(5), Now));
+        Assert.Null((await Ledger.GetRecordAsync(other, key))!.LeaseOwner);
         await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = key,

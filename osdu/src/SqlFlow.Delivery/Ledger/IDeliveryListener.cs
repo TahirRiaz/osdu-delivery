@@ -9,7 +9,7 @@ public sealed record DeliveryEvent
 
     public required string FlowName { get; init; }
 
-    /// <summary>record.delivered, record.retry, record.held, record.failed, record.released, submission.planned, submission.completed, verify.completed.</summary>
+    /// <summary>record.delivered, record.unchanged, record.retry, record.held, record.failed, record.released, batch.progress, batch.completed, submission.planned, submission.completed, verify.completed.</summary>
     public required string Kind { get; init; }
 
     public Guid? SubmissionId { get; init; }

@@ -10,15 +10,18 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The <c>LedgerPerFlow</c> migration run over a ledger written before it: records keyed by their flow, every attempt
-/// given its record's flow, the OSDU ids already written claimed, an interrupted rollout's cursor completed, and the
-/// ledgers it cannot convert refused with a message that says why. Each test works in a database of its own, created on
-/// the server <c>SQLFLOW_TEST_DB</c> names and dropped afterwards: the migration has to start from the schema it upgrades,
-/// and the suite's shared database is already past it.
+/// The ledger's migrations run over a ledger written before them. <c>LedgerPerFlow</c>: records keyed by their flow, every
+/// attempt given its record's flow, the OSDU ids already written claimed, an interrupted rollout's cursor completed, and
+/// the ledgers it cannot convert refused with a message that says why. <c>LeasesAndRecordEvents</c>: the leases stopped
+/// workers left behind kept as lease rows, and a revert refused while an appended event is not on its record. Each test
+/// works in a database of its own, created on the server <c>SQLFLOW_TEST_DB</c> names and dropped afterwards: a migration
+/// has to start from the schema it upgrades, and the suite's shared database is already past it.
 /// </summary>
 public sealed class SqlServerLedgerMigrationTests
 {
     private const string Before = "20260916105416_RemoveManualSubmission";
+
+    private const string BeforeLeases = "20260916133609_CoverWorkerReads";
 
     private static readonly Lazy<string?> TestDatabase = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
 
@@ -52,6 +55,7 @@ public sealed class SqlServerLedgerMigrationTests
     public async Task An_existing_ledger_is_keyed_per_flow_with_every_attempt_claim_and_cursor_placed()
     {
         await using var database = await ScratchDatabase.CreateAsync();
+        await database.AllowSnapshotAsync();
         await database.MigrateAsync(Before);
 
         var submission = Guid.NewGuid();
@@ -171,6 +175,103 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(["DeliveryKey"], await database.KeyColumnsAsync());
     }
 
+    [SkippableFact]
+    public async Task Leases_in_flight_become_lease_rows_and_going_back_waits_until_every_appended_event_is_applied()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.AllowSnapshotAsync();
+        await database.MigrateAsync(BeforeLeases);
+
+        var submission = Guid.NewGuid();
+        var run = Guid.NewGuid();
+        var inBatch = Guid.NewGuid();
+        var retried = Guid.NewGuid();
+        var retriedLater = Guid.NewGuid();
+        var idle = Guid.NewGuid();
+        var batchToken = "node-a/" + Guid.NewGuid().ToString("N");
+        var retryToken = "node-b/" + Guid.NewGuid().ToString("N");
+        await database.ExecuteAsync(
+            """
+            INSERT INTO [osdu].[WorkBatch] ([SubmissionId], [Index], [FlowId], [Location], [RecordCount], [Status], [CreatedUtc], [StartedUtc], [RunId],
+                [LeaseOwner], [LeaseExpiresUtc], [Delivered], [Held], [Failed], [Retrying])
+            VALUES (@submission, 0, @logs, N'work/0', 1, N'running', @now, @now, @run, @batchToken, DATEADD(MINUTE, 5, @now), 0, 0, 0, 0);
+            INSERT INTO [osdu].[Record] ([FlowId], [DeliveryKey], [SourceKey], [MappingName], [Status], [AttemptCount], [PendingMetadata], [PendingPayload],
+                [Blocked], [CreatedUtc], [UpdatedUtc], [LastSubmissionId], [PendingDocumentRef], [WorkBatch], [LeaseOwner], [LeaseExpiresUtc])
+            VALUES
+                (@logs, @inBatch, N'a', N'WellLog', N'delivering', 1, 1, 0, 0, @now, @now, @submission, N'0:0:10', 0, @batchToken, DATEADD(MINUTE, 5, @now)),
+                (@logs, @retried, N'b', N'WellLog', N'delivering', 2, 1, 0, 0, @now, @now, @submission, N'0:10:10', NULL, @retryToken, DATEADD(MINUTE, -1, @now)),
+                (@logs, @retriedLater, N'c', N'WellLog', N'delivering', 2, 1, 0, 0, @now, DATEADD(SECOND, 1, @now), @submission, N'0:20:10', NULL, @retryToken, DATEADD(MINUTE, 1, @now)),
+                (@logs, @idle, N'd', N'WellLog', N'pending', 0, 1, 0, 0, @now, @now, @submission, N'0:30:10', NULL, NULL, NULL);
+            """,
+            ("submission", submission), ("run", run), ("inBatch", inBatch), ("retried", retried), ("retriedLater", retriedLater), ("idle", idle),
+            ("batchToken", batchToken), ("retryToken", retryToken));
+
+        await database.MigrateAsync(null);
+
+        // The batch's lease keeps its batch, run and expiry; the retry claim's records make one lease, expiring with the last.
+        await using (var db = database.Context())
+        {
+            var leases = await db.DeliveryLeases.AsNoTracking().ToDictionaryAsync(l => l.Token);
+            Assert.Equal(2, leases.Count);
+            var batch = leases[batchToken];
+            Assert.Equal(
+                (Logs, (Guid?)submission, (int?)0, "node-a", (Guid?)run, Now, Now.AddMinutes(5)),
+                (batch.FlowId, batch.SubmissionId, batch.WorkBatch, batch.Owner, batch.RunId, batch.AcquiredUtc, batch.ExpiresUtc));
+            var retry = leases[retryToken];
+            Assert.Equal(
+                (Logs, (Guid?)null, (int?)null, "node-b", (Guid?)null, Now.AddSeconds(1), Now.AddMinutes(1)),
+                (retry.FlowId, retry.SubmissionId, retry.WorkBatch, retry.Owner, retry.RunId, retry.AcquiredUtc, retry.ExpiresUtc));
+        }
+
+        Assert.Equal(0L, await database.ScalarAsync(
+            "SELECT COUNT_BIG(*) FROM sys.columns WHERE [name] = N'LeaseExpiresUtc' AND [object_id] IN (OBJECT_ID(N'[osdu].[Record]'), OBJECT_ID(N'[osdu].[WorkBatch]'));"));
+
+        // The ledger reads them as its own.
+        var ledger = new OsduLedger(database.Context, TimeProvider.System);
+        var leased = await ledger.GetRecordAsync(Logs, new DeliveryKey(retried));
+        Assert.Equal((retryToken, (DateTime?)Now.AddMinutes(1)), (leased!.LeaseOwner, leased.LeaseExpiresUtc));
+        Assert.Equal(Now.AddMinutes(1), await ledger.NextLeaseExpiryAsync(Logs, null));
+
+        // A worker appends under the batch's lease, and going back is refused while that is not on the record.
+        const string Step = "{\"upload\":{\"done\":\"1\"}}";
+        await ledger.AppendAsync(Logs, batchToken, new LeaseAppend([new RecordStep(new DeliveryKey(inBatch), submission, "0:0:10", Step, Now)], []));
+        var refused = await Assert.ThrowsAsync<SqlException>(() => database.MigrateAsync(BeforeLeases));
+        Assert.Contains("1 delivery event(s) in osdu.RecordEvent have not been applied to their records", refused.Message, StringComparison.Ordinal);
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[RecordEvent];"));
+
+        // Once the lease applies it, the migration goes back and puts each lease's expiry on its batch and its records.
+        Assert.Equal(LeaseApplied.None, await ledger.CheckpointLeaseAsync(batchToken, Now));
+        Assert.Equal(Step, (await ledger.GetRecordAsync(Logs, new DeliveryKey(inBatch)))!.PendingStepJson);
+        await database.MigrateAsync(BeforeLeases);
+        const string Expiry = "SELECT DATEDIFF(SECOND, @now, [LeaseExpiresUtc]) FROM [osdu].[Record] WHERE [DeliveryKey] = @key;";
+        Assert.Equal(300L, await database.ScalarAsync(Expiry, ("key", inBatch)));
+        Assert.Equal(60L, await database.ScalarAsync(Expiry, ("key", retried)));
+        Assert.Equal(60L, await database.ScalarAsync(Expiry, ("key", retriedLater)));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Record] WHERE [DeliveryKey] = @key AND [LeaseExpiresUtc] IS NULL;", ("key", idle)));
+        Assert.Equal(300L, await database.ScalarAsync("SELECT DATEDIFF(SECOND, @now, [LeaseExpiresUtc]) FROM [osdu].[WorkBatch] WHERE [SubmissionId] = @submission;", ("submission", submission)));
+        Assert.Equal(0L, await database.ScalarAsync(
+            "SELECT COUNT_BIG(*) FROM sys.tables WHERE [name] IN (N'Lease', N'RecordEvent') AND SCHEMA_NAME([schema_id]) = N'osdu';"));
+    }
+
+    [SkippableFact]
+    public async Task A_ledger_database_that_does_not_allow_snapshot_isolation_is_named_before_any_work_is_claimed()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(null);
+        var ledger = new OsduLedger(database.Context, TimeProvider.System);
+        Assert.Equal(1, (await ledger.UpsertPendingAsync(Logs, [Pending(Logs, Guid.NewGuid(), "opendes:work-product-component--WellLog:s")])).Staged);
+
+        var refused = await Assert.ThrowsAsync<DeliveryException>(() => ledger.ClaimAsync(Logs, null, "w1", 10, TimeSpan.FromMinutes(5), Now));
+        Assert.Contains($"ALTER DATABASE [{database.Name}] SET ALLOW_SNAPSHOT_ISOLATION ON", refused.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<DeliveryException>(() => ledger.ClaimWorkBatchAsync(Logs, null, "w1", TimeSpan.FromMinutes(5), Now));
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Lease];"));
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Record] WHERE [Status] <> N'pending' OR [AttemptCount] <> 0;"));
+
+        // Allowed once, the same ledger claims the record.
+        await database.AllowSnapshotAsync();
+        Assert.Single((await ledger.ClaimAsync(Logs, null, "w1", 10, TimeSpan.FromMinutes(5), Now)).Records);
+    }
+
     private static RecordState Pending(Guid flow, Guid key, string targetId) => new()
     {
         DeliveryKey = new DeliveryKey(key),
@@ -221,6 +322,16 @@ public sealed class SqlServerLedgerMigrationTests
 
         public OsduDbContext Context() => new(OsduDbContext.SqlServerOptions(ConnectionString));
 
+        /// <summary>Lets the database run snapshot transactions, as the ledger's reads need.</summary>
+        public async Task AllowSnapshotAsync()
+        {
+            await using var connection = new SqlConnection(_master);
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"ALTER DATABASE [{Name}] SET ALLOW_SNAPSHOT_ISOLATION ON;";
+            await command.ExecuteNonQueryAsync();
+        }
+
         /// <summary>Migrates to <paramref name="target"/>, up or down, or to the newest migration when it is null.</summary>
         public async Task MigrateAsync(string? target)
         {
@@ -235,31 +346,42 @@ public sealed class SqlServerLedgerMigrationTests
             }
         }
 
-        /// <summary>Runs a batch with the test's flows and clock as <c>@logs</c>, <c>@wellbores</c> and <c>@now</c>, and the given ids.</summary>
-        public async Task ExecuteAsync(string sql, params (string Name, Guid Value)[] ids)
+        /// <summary>Runs a batch with the test's flows and clock as <c>@logs</c>, <c>@wellbores</c> and <c>@now</c>, and the given values.</summary>
+        public async Task ExecuteAsync(string sql, params (string Name, object Value)[] values)
         {
             await using var connection = new SqlConnection(ConnectionString);
             await connection.OpenAsync();
-            await using var command = connection.CreateCommand();
+            await using var command = Command(connection, sql, values);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        /// <summary>A number the query answers, with the same parameters as <see cref="ExecuteAsync"/>.</summary>
+        public async Task<long> ScalarAsync(string sql, params (string Name, object Value)[] values)
+        {
+            await using var connection = new SqlConnection(ConnectionString);
+            await connection.OpenAsync();
+            await using var command = Command(connection, sql, values);
+            return Convert.ToInt64(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        private static SqlCommand Command(SqlConnection connection, string sql, (string Name, object Value)[] values)
+        {
+            var command = connection.CreateCommand();
             command.CommandText = sql;
             command.Parameters.Add(new SqlParameter("@logs", System.Data.SqlDbType.UniqueIdentifier) { Value = Logs });
             command.Parameters.Add(new SqlParameter("@wellbores", System.Data.SqlDbType.UniqueIdentifier) { Value = Wellbores });
             command.Parameters.Add(new SqlParameter("@now", System.Data.SqlDbType.DateTime2) { Value = Now });
-            foreach (var (name, value) in ids)
+            foreach (var (name, value) in values)
             {
-                command.Parameters.Add(new SqlParameter("@" + name, System.Data.SqlDbType.UniqueIdentifier) { Value = value });
+                command.Parameters.Add(value switch
+                {
+                    Guid id => new SqlParameter("@" + name, System.Data.SqlDbType.UniqueIdentifier) { Value = id },
+                    string text => new SqlParameter("@" + name, System.Data.SqlDbType.NVarChar, 4000) { Value = text },
+                    _ => throw new ArgumentException($"The parameter @{name} is a {value.GetType().Name}; the scratch database takes ids and text.", nameof(values)),
+                });
             }
 
-            await command.ExecuteNonQueryAsync();
-        }
-
-        public async Task<long> ScalarAsync(string sql)
-        {
-            await using var connection = new SqlConnection(ConnectionString);
-            await connection.OpenAsync();
-            await using var command = connection.CreateCommand();
-            command.CommandText = sql;
-            return Convert.ToInt64(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+            return command;
         }
 
         /// <summary>The columns of the record table's primary key, in key order.</summary>

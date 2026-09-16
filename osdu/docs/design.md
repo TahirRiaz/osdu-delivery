@@ -558,7 +558,7 @@ row, and `attempt_count` counting state writes rather than attempts.
 | `targetVersion` | Last known OSDU version. The handle for drift detection. |
 | `status` | See below. |
 | `lastDeliveredUtc`, `lastVerifiedUtc` | Custody timestamps. |
-| `leaseOwner`, `leaseExpiresUtc` | Concurrency control for the worker. |
+| `leaseOwner` | The lease holding the record while a worker delivers it (section 7.5). |
 
 ### 7.4 Status
 
@@ -572,8 +572,14 @@ that stops the loop.
 
 ### 7.5 Leasing, not status flags
 
-The worker claims a record with a lease and an expiry. A crashed worker's lease expires
-and the record is reclaimed by a sweep.
+The worker claims its records under a lease: one row with an owner and an expiry, whose
+token the claimed records carry. The worker renews that one row, however many records it
+holds, and appends what it learns (a completed step, a try's outcome and its attempt) to an
+event log; the lease applies the log to the records when the worker checkpoints it at each
+renewal, when it closes it, or, once it has run out, when the next claim of the flow
+recovers it. The record table is the read model of the deliveries, and the ledger reads it
+under snapshot isolation, so readers and writers never wait on each other
+([ledger.md](ledger.md#leasing)).
 
 This deletes the `in_progress` write entirely, which is one of the two round trips per
 record in the current design, and it removes the best-effort duplicate guard that
@@ -1099,17 +1105,20 @@ location (`source.work`), `reliability.batchRecords` documents
 per batch, and the ledger's record row carries only the batch number and the document's
 byte range within it. A drain leases a whole batch (its due records under one lease
 token), reads the documents by range, and hands the protocol up to
-`protocolOptions.batchSize` records per request where the service takes arrays. A batch
-that finishes closes with its counts; a crashed drain's lease expires and the next drain
-reclaims the batch. The submission page lists the batches.
+`protocolOptions.batchSize` records per request where the service takes arrays. While it
+runs, each renewal of its lease applies what it has sent so far and reports the batch's
+progress to the run's trace. A batch that finishes closes with its counts; a stopped
+drain's lease runs out and the next claim of the flow recovers the batch, applying what the
+drain had sent. The submission page lists the batches.
 
 ### 16.3 Steps and returned values
 
 A protocol reports every step it takes (a record write, an upload, a registration, a
 workflow trigger, a poll) with its timing, the status the target answered and what the
 target returned: record ids and versions, file sources and dataset ids, a session id, a
-workflow run id. A completed step is persisted on the record before the next step starts,
-so a retry resumes after the last step that succeeded instead of repeating it: a file
+workflow run id. A completed step is written to the ledger (appended under the record's
+lease, and on the record once the lease applies it) before the next step starts, so a
+retry resumes after the last step that succeeded instead of repeating it: a file
 uploaded and registered by the previous try is referenced, not uploaded again; a workflow
 run triggered by the previous try is polled, not triggered again. A step whose repetition
 would create a second thing is marked before its request goes out, not only after it
@@ -1135,18 +1144,20 @@ family under the parent: they pass the pipeline gate together, they are cancelle
 their root, and the run page shows the family. A host without a catalog cannot fan out
 and runs the whole submission itself.
 
-Every member writes the same record table, each pushing several records at once. The
-ledger keeps them from waiting on each other: no statement writes more than a thousand
+Every member writes the same ledger, each pushing several records at once. The ledger
+keeps them from waiting on each other: a worker renews one lease row and appends what it
+learns to an event log instead of writing its records, and the records change a thousand
+to a transaction when a lease applies its log; no statement writes more than a thousand
 records, so the database never locks the whole table; staging locks only the records that
-exist, never a range of keys; the worker's reads come from covering indexes; and a
-statement the database ends as a deadlock victim runs again
+exist, never a range of keys; every read runs under snapshot isolation; and a statement
+the database ends as a deadlock victim runs again
 ([ledger.md](ledger.md#many-nodes-one-table)).
 
 ### 16.5 The trace stays at operation grain
 
 Fifty million rows must not produce fifty million trace events. The run trace carries the
-operations: the intake's counts, every batch's outcome, every protocol step that changed
-the target, the fan-out members, the settle. Per-record lines exist only at the trace log
+operations: the intake's counts, every batch's progress at each renewal of its lease and
+its outcome, every protocol step that changed the target, the fan-out members, the settle. Per-record lines exist only at the trace log
 level, off by default; per-record history lives in the ledger, where it is indexed.
 
 ## 17. Open decisions

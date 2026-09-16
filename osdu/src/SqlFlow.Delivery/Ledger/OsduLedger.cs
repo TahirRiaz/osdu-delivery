@@ -7,16 +7,17 @@ using SqlFlow.Delivery.Protocols;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// The ledger over the module database's <c>osdu</c> schema (<see cref="OsduDbContext"/>). Claims are compare-and-swap updates (the
-/// platform's notification-delivery shape, design.md section 7.5): a batch of candidates is leased in one UPDATE
-/// guarded by "not currently leased", then read back by the lease token, so two workers can never hold the same
-/// record and a crashed worker's lease simply expires. The same shape claims a whole work batch and its records at
-/// once (section 16.2). Every query the GUI issues is index-backed (see <see cref="DeliveryModel"/>). Each
-/// operation opens its own context from the factory, so the ledger is safe to share across the worker's bounded
-/// concurrency. The two volume writes (staging pending records, closing a drained batch) go through a bulk copy
-/// on SQL Server (<see cref="SqlServerLedgerBulk"/>) and through the entity path everywhere else.
+/// The ledger over the module database's <c>osdu</c> schema (<see cref="OsduDbContext"/>). A claim is one lease row
+/// (design.md section 16.2): the worker takes a work batch, or a group of records due for a retry, under a new token in
+/// one compare-and-swap, the records it holds carry the token, and a crashed worker's lease simply runs out and is
+/// recovered by the next claim of its flow. While it delivers, a worker renews its one row and appends what it learns;
+/// the lease applies that to the records a slice at a time. Reads run under snapshot isolation on SQL Server, so they
+/// never wait for a writer. Every query the GUI issues is index-backed (see <see cref="DeliveryModel"/>). Each operation
+/// opens its own context from the factory, so the ledger is safe to share across the worker's bounded concurrency. The
+/// volume writes (staging pending records, appending and applying a lease's events) go through a bulk copy and
+/// set-based statements on SQL Server (<see cref="SqlServerLedgerBulk"/>) and through the entity path everywhere else.
 /// </summary>
-public sealed class OsduLedger : ILedger
+public sealed partial class OsduLedger : ILedger
 {
     /// <summary>Cached item ids or set ids per lookup, well inside the parameter ceiling of one command.</summary>
     private const int LookupChunk = 500;
@@ -68,27 +69,29 @@ public sealed class OsduLedger : ILedger
 
     public async Task<SubmissionState?> GetSubmissionAsync(Guid submissionId, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var entity = await db.DeliverySubmissions.AsNoTracking().FirstOrDefaultAsync(s => s.SubmissionId == submissionId, ct).ConfigureAwait(false);
+        var entity = await ReadAsync(db => db.DeliverySubmissions.FirstOrDefaultAsync(s => s.SubmissionId == submissionId, ct), ct).ConfigureAwait(false);
         return entity is null ? null : ToState(entity);
     }
 
     public async Task<IReadOnlyList<PlanRequestedRecord>> ListPlanRequestedAsync(Guid flowId, DeliveryKey? after, int max, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var query = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId && r.PlanRequestedUtc != null);
-        if (after is { } cursor)
-        {
-            var from = cursor.Value;
-            query = query.Where(r => r.DeliveryKey.CompareTo(from) > 0);
-        }
+        var rows = await ReadAsync(
+            db =>
+            {
+                var query = db.DeliveryRecords.Where(r => r.FlowId == flowId && r.PlanRequestedUtc != null);
+                if (after is { } cursor)
+                {
+                    var from = cursor.Value;
+                    query = query.Where(r => r.DeliveryKey.CompareTo(from) > 0);
+                }
 
-        var rows = await query
-            .OrderBy(r => r.DeliveryKey)
-            .Select(r => new { r.DeliveryKey, r.SourceKeyJson, r.PlanRequestedUtc })
-            .Take(Math.Clamp(max, 1, 10_000))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+                return query
+                    .OrderBy(r => r.DeliveryKey)
+                    .Select(r => new { r.DeliveryKey, r.SourceKeyJson, r.PlanRequestedUtc })
+                    .Take(Math.Clamp(max, 1, 10_000))
+                    .ToListAsync(ct);
+            },
+            ct).ConfigureAwait(false);
         return rows.Select(r => new PlanRequestedRecord(new DeliveryKey(r.DeliveryKey), r.SourceKeyJson, DateTime.SpecifyKind(r.PlanRequestedUtc!.Value, DateTimeKind.Utc))).ToList();
     }
 
@@ -144,14 +147,18 @@ public sealed class OsduLedger : ILedger
 
     public async Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var query = db.DeliverySubmissions.AsNoTracking();
-        if (flowId is { } f)
-        {
-            query = query.Where(s => s.FlowId == f);
-        }
+        var list = await ReadAsync(
+            db =>
+            {
+                var query = db.DeliverySubmissions.AsQueryable();
+                if (flowId is { } f)
+                {
+                    query = query.Where(s => s.FlowId == f);
+                }
 
-        var list = await query.OrderByDescending(s => s.ReceivedUtc).Take(Math.Clamp(max, 1, 1000)).ToListAsync(ct).ConfigureAwait(false);
+                return query.OrderByDescending(s => s.ReceivedUtc).Take(Math.Clamp(max, 1, 1000)).ToListAsync(ct);
+            },
+            ct).ConfigureAwait(false);
         return list.Select(ToState).ToList();
     }
 
@@ -159,13 +166,14 @@ public sealed class OsduLedger : ILedger
     {
         ArgumentNullException.ThrowIfNull(keys);
         var result = new Dictionary<DeliveryKey, RecordState>();
-        await using var db = Open();
         foreach (var chunk in keys.Select(k => k.Value).Distinct().Chunk(ChunkSize))
         {
-            var rows = await db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey)).ToListAsync(ct).ConfigureAwait(false);
-            foreach (var row in rows)
+            var states = await ReadAsync(
+                async db => await WithLeasesAsync(db, await db.DeliveryRecords.Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey)).ToListAsync(ct).ConfigureAwait(false), ct).ConfigureAwait(false),
+                ct).ConfigureAwait(false);
+            foreach (var state in states)
             {
-                result[new DeliveryKey(row.DeliveryKey)] = ToState(row);
+                result[state.DeliveryKey] = state;
             }
         }
 
@@ -174,9 +182,10 @@ public sealed class OsduLedger : ILedger
 
     public async Task<RecordState?> GetRecordAsync(Guid flowId, DeliveryKey key, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var row = await db.DeliveryRecords.AsNoTracking().FirstOrDefaultAsync(r => r.FlowId == flowId && r.DeliveryKey == key.Value, ct).ConfigureAwait(false);
-        return row is null ? null : ToState(row);
+        var states = await ReadAsync(
+            async db => await WithLeasesAsync(db, await db.DeliveryRecords.Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value).Take(1).ToListAsync(ct).ConfigureAwait(false), ct).ConfigureAwait(false),
+            ct).ConfigureAwait(false);
+        return states.Count == 0 ? null : states[0];
     }
 
     public async Task<PendingStaging> UpsertPendingAsync(Guid flowId, IReadOnlyList<RecordState> records, CancellationToken ct = default)
@@ -205,6 +214,9 @@ public sealed class OsduLedger : ILedger
             var existing = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
             var claims = await ClaimsOfOtherFlowsAsync(
                 db, flowId, chunk.Select(r => existing.GetValueOrDefault(r.DeliveryKey.Value)?.TargetId ?? r.TargetId), ct).ConfigureAwait(false);
+            var tokens = existing.Values.Where(r => r.Status == delivering).Select(r => r.LeaseOwner).OfType<string>().Distinct(StringComparer.Ordinal).ToList();
+            var live = (await db.DeliveryLeases.Where(l => tokens.Contains(l.Token) && l.ExpiresUtc > now).Select(l => l.Token).ToListAsync(ct).ConfigureAwait(false))
+                .ToHashSet(StringComparer.Ordinal);
             foreach (var record in chunk)
             {
                 var inFlight = false;
@@ -238,7 +250,7 @@ public sealed class OsduLedger : ILedger
                 }
                 else
                 {
-                    inFlight = entity.Status == delivering && entity.LeaseExpiresUtc is { } expires && expires > now;
+                    inFlight = entity.Status == delivering && entity.LeaseOwner is { } token && live.Contains(token);
                 }
 
                 // Current-state columns (what OSDU holds) are preserved; only the pending work is (re)written. A record
@@ -258,7 +270,6 @@ public sealed class OsduLedger : ILedger
                     entity.AttemptCount = 0;
                     entity.LastError = null;
                     entity.LeaseOwner = null;
-                    entity.LeaseExpiresUtc = null;
                 }
 
                 entity.PendingDocumentRef = record.PendingDocumentRef;
@@ -500,7 +511,6 @@ public sealed class OsduLedger : ILedger
                 entity.LastError = Truncate(record.LastError, 2000);
                 entity.LastSubmissionId = record.LastSubmissionId;
                 entity.LeaseOwner = null;
-                entity.LeaseExpiresUtc = null;
                 entity.PendingDocumentRef = null;
                 entity.WorkBatch = null;
                 entity.PendingStepJson = null;
@@ -537,64 +547,6 @@ public sealed class OsduLedger : ILedger
         }
     }
 
-    public async Task<IReadOnlyList<RecordState>> ClaimAsync(Guid flowId, Guid? submissionId, string owner, int max, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
-        var token = owner + "/" + Guid.NewGuid().ToString("N");
-        var expires = nowUtc + lease;
-        var pending = StatusText.Of(RecordStatus.Pending);
-        var delivering = StatusText.Of(RecordStatus.Delivering);
-
-        await using var db = Open();
-        var candidates = await RetryDeadlockAsync(
-            () => db.DeliveryRecords
-                .Where(r => r.FlowId == flowId
-                    && (submissionId == null || r.LastSubmissionId == submissionId)
-                    && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
-                        || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc)))
-                .OrderBy(r => r.NextAttemptUtc)
-                .ThenBy(r => r.UpdatedUtc)
-                .Select(r => r.DeliveryKey)
-                .Take(Math.Clamp(max, 1, ChunkSize))
-                .ToListAsync(ct),
-            ct).ConfigureAwait(false);
-
-        if (candidates.Count == 0)
-        {
-            return [];
-        }
-
-        // The claim is one statement, and a record it leased no longer matches it, so running it again after a deadlock
-        // leases what the first run would have.
-        var claimed = await RetryDeadlockAsync(
-            () => db.DeliveryRecords
-                .Where(r => r.FlowId == flowId
-                    && candidates.Contains(r.DeliveryKey)
-                    && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
-                        || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc)))
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(r => r.Status, delivering)
-                    .SetProperty(r => r.LeaseOwner, token)
-                    .SetProperty(r => r.LeaseExpiresUtc, expires)
-                    .SetProperty(r => r.AttemptCount, r => r.AttemptCount + 1)
-                    .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
-            ct).ConfigureAwait(false);
-
-        if (claimed == 0)
-        {
-            return [];
-        }
-
-        return await LeasedAsync(db, token, ct).ConfigureAwait(false);
-    }
-
-    /// <summary>The records leased under <paramref name="token"/>.</summary>
-    private static async Task<IReadOnlyList<RecordState>> LeasedAsync(OsduDbContext db, string token, CancellationToken ct)
-    {
-        var rows = await RetryDeadlockAsync(() => db.DeliveryRecords.AsNoTracking().Where(r => r.LeaseOwner == token).ToListAsync(ct), ct).ConfigureAwait(false);
-        return rows.Select(ToState).ToList();
-    }
-
     /// <summary>
     /// Runs <paramref name="work"/>, and again when the database ended a deadlock by rolling it back. Only for a read, or
     /// for one statement whose second run does what the first would have: a claim, a lease, a release.
@@ -616,319 +568,78 @@ public sealed class OsduLedger : ILedger
         }
     }
 
-    public async Task<bool> RenewLeaseAsync(Guid flowId, DeliveryKey key, string owner, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default)
+    public Task<long> CountAttemptsAsync(Guid submissionId, AttemptOutcome outcome, string? phase = null, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var expires = nowUtc + lease;
-        var affected = await RetryDeadlockAsync(
-            () => db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value && r.LeaseOwner == owner)
-                .ExecuteUpdateAsync(s => s.SetProperty(r => r.LeaseExpiresUtc, expires), ct),
-            ct).ConfigureAwait(false);
-        return affected > 0;
-    }
-
-    public async Task<bool> ReleaseLeaseAsync(Guid flowId, DeliveryKey key, string owner, bool countAttempt, DateTime nowUtc, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
-        await using var db = Open();
-        var delivering = StatusText.Of(RecordStatus.Delivering);
-        var pending = StatusText.Of(RecordStatus.Pending);
-        var affected = await RetryDeadlockAsync(
-            () => db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value && r.LeaseOwner == owner && r.Status == delivering)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(r => r.Status, pending)
-                    .SetProperty(r => r.LeaseOwner, (string?)null)
-                    .SetProperty(r => r.LeaseExpiresUtc, (DateTime?)null)
-                    .SetProperty(r => r.AttemptCount, r => countAttempt ? r.AttemptCount : (r.AttemptCount > 0 ? r.AttemptCount - 1 : 0))
-                    .SetProperty(r => r.LastError, "the worker stopped mid-attempt and released the record for the next pass")
-                    .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
-            ct).ConfigureAwait(false);
-        return affected > 0;
-    }
-
-    public Task CompleteAsync(Guid flowId, RecordCompletion completion, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(completion);
-        return CompleteManyAsync(flowId, [completion], ct);
-    }
-
-    public async Task CompleteManyAsync(Guid flowId, IReadOnlyList<RecordCompletion> completions, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(completions);
-        foreach (var completion in completions)
-        {
-            if (completion.Attempt.DeliveryKey != completion.DeliveryKey)
-            {
-                throw new ArgumentException(
-                    $"The completion of record {completion.DeliveryKey} carries an attempt of record {completion.Attempt.DeliveryKey}; an attempt belongs to the record it completes.",
-                    nameof(completions));
-            }
-        }
-
-        if (completions.Count == 0)
-        {
-            return;
-        }
-
-        var now = Now;
-        await using var db = Open();
-        if (SqlServerLedgerBulk.Applies(db) && completions.Count > 1)
-        {
-            // A deadlock rolls the whole completion back, attempts included, and the statement reads each record afresh.
-            await RetryDeadlockAsync(() => SqlServerLedgerBulk.CompleteManyAsync(db, flowId, completions, now, ct), ct).ConfigureAwait(false);
-            return;
-        }
-
-        foreach (var chunk in completions.Chunk(ChunkSize))
-        {
-            var keys = chunk.Select(c => c.DeliveryKey.Value).ToArray();
-            var entities = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
-            foreach (var completion in chunk)
-            {
-                if (!entities.TryGetValue(completion.DeliveryKey.Value, out var entity))
-                {
-                    throw new DeliveryException($"Record {completion.DeliveryKey} is not in the ledger of flow {flowId:D}.");
-                }
-
-                db.DeliveryAttempts.Add(ToEntity(flowId, completion.Attempt));
-                ApplyCompletion(entity, completion, now);
-            }
-
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        }
-    }
-
-
-    private static void ApplyCompletion(DeliveryRecord entity, RecordCompletion completion, DateTime now)
-    {
-        entity.LeaseOwner = null;
-        entity.LeaseExpiresUtc = null;
-        entity.UpdatedUtc = now;
-
-        // What the try did to the target is true whatever happened to the queue in the meantime.
-        if (completion.TargetId is not null)
-        {
-            entity.TargetId = completion.TargetId;
-        }
-
-        if (completion.TargetVersion is not null)
-        {
-            entity.TargetVersion = completion.TargetVersion;
-        }
-
-        if (completion.TargetStateJson is not null)
-        {
-            entity.TargetStateJson = completion.TargetStateJson;
-        }
-
-        if (completion.Claimed is { } claimed && IsSuperseded(entity, claimed))
-        {
-            // Newer work was queued while this try was in flight. What the try delivered is now what OSDU holds, and
-            // the newer work stays pending with its own step progress and a fresh retry budget: the next pass sends
-            // it, after the final hash check against what just landed.
-            if (completion.Promote)
-            {
-                entity.RenderContext = claimed.RenderContext ?? entity.RenderContext;
-                entity.SourceFingerprint = claimed.SourceFingerprint ?? entity.SourceFingerprint;
-                entity.SourceModifiedUtc = claimed.SourceModifiedUtc ?? entity.SourceModifiedUtc;
-                if (claimed.Origin.UpdatedUtc is not null || claimed.Origin.FileName is not null)
-                {
-                    entity.SourceFileName = Truncate(claimed.Origin.FileName, DeliveryModel.MaxSourceFileNameLength);
-                    entity.SourceRowNumber = claimed.Origin.RowNumber;
-                    entity.SourceUpdatedUtc = claimed.Origin.UpdatedUtc;
-                }
-                if (claimed.Metadata)
-                {
-                    entity.MetadataHash = claimed.MetadataHash;
-                }
-
-                if (claimed.Payload)
-                {
-                    entity.PayloadHash = claimed.PayloadHash;
-                    entity.PayloadModifiedUtc = claimed.PayloadModifiedUtc ?? entity.PayloadModifiedUtc;
-                }
-
-                if (!completion.NothingSent)
-                {
-                    entity.LastDeliveredUtc = now;
-                    entity.LastVerifiedUtc = null;
-                    entity.LastVerifyOutcome = null;
-                }
-            }
-
-            entity.Status = StatusText.Of(RecordStatus.Pending);
-            entity.Blocked = false;
-            entity.NextAttemptUtc = null;
-            entity.LastError = null;
-            entity.AttemptCount = 0;
-            return;
-        }
-
-        entity.Status = StatusText.Of(completion.Status);
-        entity.Blocked = completion.Status is RecordStatus.Held or RecordStatus.Failed;
-        entity.NextAttemptUtc = completion.NextAttemptUtc;
-        entity.LastError = Truncate(completion.Error, 2000);
-        entity.PendingStepJson = completion.PendingStepJson;
-        if (completion.Promote)
-        {
-            entity.RenderContext = entity.PendingRenderContext ?? entity.RenderContext;
-            entity.SourceFingerprint = entity.PendingSourceFingerprint ?? entity.SourceFingerprint;
-            entity.SourceModifiedUtc = entity.PendingSourceModifiedUtc ?? entity.SourceModifiedUtc;
-            if (entity.PendingSourceUpdatedUtc is not null || entity.PendingSourceFileName is not null)
-            {
-                entity.SourceFileName = entity.PendingSourceFileName;
-                entity.SourceRowNumber = entity.PendingSourceRowNumber;
-                entity.SourceUpdatedUtc = entity.PendingSourceUpdatedUtc;
-            }
-            if (entity.PendingMetadata)
-            {
-                entity.MetadataHash = entity.PendingMetadataHash;
-            }
-
-            if (entity.PendingPayload)
-            {
-                entity.PayloadHash = entity.PendingPayloadHash;
-                entity.PayloadModifiedUtc = entity.PendingPayloadModifiedUtc ?? entity.PayloadModifiedUtc;
-            }
-
-            if (!completion.NothingSent)
-            {
-                entity.LastDeliveredUtc = now;
-                entity.LastVerifiedUtc = null;
-                entity.LastVerifyOutcome = null;
-            }
-
-            entity.PendingDocumentRef = null;
-            entity.WorkBatch = null;
-            entity.PendingMetadata = false;
-            entity.PendingPayload = false;
-            entity.PendingPayloadLocation = null;
-            entity.AttemptCount = 0;
-        }
-    }
-
-    /// <summary>
-    /// Whether the record now carries other pending work than the claimed try: newer work queued behind it. A record
-    /// whose pending document is gone (a removal while the try ran) is not superseded; the completion settles it.
-    /// </summary>
-    private static bool IsSuperseded(DeliveryRecord entity, ClaimedWork claimed)
-        => entity.PendingDocumentRef is not null
-            && (!string.Equals(entity.PendingDocumentRef, claimed.DocumentRef, StringComparison.Ordinal) || entity.LastSubmissionId != claimed.SubmissionId);
-
-    public async Task SaveStepAsync(Guid flowId, DeliveryKey key, Guid? submissionId, string documentRef, string stepJson, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(documentRef);
-        await using var db = Open();
-        await db.DeliveryRecords
-            .Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value && r.PendingDocumentRef == documentRef && r.LastSubmissionId == submissionId)
-            .ExecuteUpdateAsync(s => s.SetProperty(r => r.PendingStepJson, stepJson), ct)
-            .ConfigureAwait(false);
-    }
-
-    public async Task<long> CountAttemptsAsync(Guid submissionId, AttemptOutcome outcome, string? phase = null, CancellationToken ct = default)
-    {
-        await using var db = Open();
         var text = StatusText.Of(outcome);
-        var query = db.DeliveryAttempts.AsNoTracking().Where(a => a.SubmissionId == submissionId && a.Outcome == text);
-        if (phase is not null)
-        {
-            query = query.Where(a => a.Phase == phase);
-        }
+        return ReadAsync(
+            db =>
+            {
+                var query = db.DeliveryAttempts.Where(a => a.SubmissionId == submissionId && a.Outcome == text);
+                if (phase is not null)
+                {
+                    query = query.Where(a => a.Phase == phase);
+                }
 
-        return await query.Select(a => a.DeliveryKey).Distinct().LongCountAsync(ct).ConfigureAwait(false);
+                return query.Select(a => a.DeliveryKey).Distinct().LongCountAsync(ct);
+            },
+            ct);
     }
 
-    public async Task<int> ReclaimExpiredLeasesAsync(Guid flowId, DateTime beforeUtc, CancellationToken ct = default)
+    public Task<long> CountAsync(Guid flowId, Guid? submissionId, RecordStatus status, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var delivering = StatusText.Of(RecordStatus.Delivering);
-        var pending = StatusText.Of(RecordStatus.Pending);
-        var running = StatusText.Of(WorkBatchStatus.Running);
-        var queued = StatusText.Of(WorkBatchStatus.Queued);
-        await RetryDeadlockAsync(
-            () => db.DeliveryWorkBatches
-                .Where(b => b.FlowId == flowId && b.Status == running && b.LeaseExpiresUtc != null && b.LeaseExpiresUtc < beforeUtc)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(b => b.Status, queued)
-                    .SetProperty(b => b.LeaseOwner, (string?)null)
-                    .SetProperty(b => b.LeaseExpiresUtc, (DateTime?)null), ct),
-            ct).ConfigureAwait(false);
-        return await WriteEachAsync(
-            db.DeliveryRecords.Where(r => r.FlowId == flowId && r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < beforeUtc),
-            slice => slice.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.Status, pending)
-                .SetProperty(r => r.LeaseOwner, (string?)null)
-                .SetProperty(r => r.LeaseExpiresUtc, (DateTime?)null)
-                .SetProperty(r => r.LastError, "the lease expired mid-attempt (the worker stopped) and the record was requeued"), ct),
-            ct).ConfigureAwait(false);
-    }
-
-    public async Task<long> CountAsync(Guid flowId, Guid? submissionId, RecordStatus status, CancellationToken ct = default)
-    {
-        await using var db = Open();
         var text = StatusText.Of(status);
-        return await RetryDeadlockAsync(
-            () => db.DeliveryRecords.LongCountAsync(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == text, ct),
-            ct).ConfigureAwait(false);
+        return ReadAsync(
+            db => db.DeliveryRecords.LongCountAsync(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == text, ct),
+            ct);
     }
 
-    public async Task<bool> HasPendingAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
+    public Task<bool> HasPendingAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
     {
-        await using var db = Open();
         var pending = StatusText.Of(RecordStatus.Pending);
         var delivering = StatusText.Of(RecordStatus.Delivering);
-        return await RetryDeadlockAsync(
-            () => db.DeliveryRecords.AnyAsync(r => r.FlowId == flowId
-                && (submissionId == null || r.LastSubmissionId == submissionId)
-                && (r.Status == pending || r.Status == delivering), ct),
-            ct).ConfigureAwait(false);
+        return ReadAsync(
+            db => db.DeliveryRecords.AnyAsync(
+                r => r.FlowId == flowId
+                    && (submissionId == null || r.LastSubmissionId == submissionId)
+                    && (r.Status == pending || r.Status == delivering),
+                ct),
+            ct);
     }
 
-    public async Task<DateTime?> NextDueAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
+    public Task<DateTime?> NextDueAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
     {
-        await using var db = Open();
         var pending = StatusText.Of(RecordStatus.Pending);
-        return await RetryDeadlockAsync(
-            () => db.DeliveryRecords
+        return ReadAsync(
+            db => db.DeliveryRecords
                 .Where(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == pending && r.NextAttemptUtc != null && r.NextAttemptUtc > nowUtc)
                 .MinAsync(r => r.NextAttemptUtc, ct),
-            ct).ConfigureAwait(false);
-    }
-
-    public async Task<DateTime?> NextLeaseExpiryAsync(Guid flowId, Guid? submissionId, CancellationToken ct = default)
-    {
-        await using var db = Open();
-        var delivering = StatusText.Of(RecordStatus.Delivering);
-        return await RetryDeadlockAsync(
-            () => db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == delivering && r.LeaseExpiresUtc != null)
-                .MinAsync(r => r.LeaseExpiresUtc, ct),
-            ct).ConfigureAwait(false);
+            ct);
     }
 
     public async Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, Guid? except, DateTime nowUtc, int max, CancellationToken ct = default)
     {
-        await using var db = Open();
         var pending = StatusText.Of(RecordStatus.Pending);
         var completed = StatusText.Of(SubmissionStatus.Completed);
         var failed = StatusText.Of(SubmissionStatus.Failed);
-        var settled = db.DeliverySubmissions.AsNoTracking()
-            .Where(s => s.FlowId == flowId && (s.Status == completed || s.Status == failed) && (except == null || s.SubmissionId != except))
-            .Select(s => s.SubmissionId);
-        return await db.DeliveryRecords.AsNoTracking()
-            .Where(r => r.FlowId == flowId
-                && r.Status == pending
-                && r.PendingDocumentRef != null
-                && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc)
-                && r.LastSubmissionId != null
-                && settled.Contains(r.LastSubmissionId.Value))
-            .Select(r => r.LastSubmissionId!.Value)
-            .Distinct()
-            .Take(Math.Clamp(max, 1, 100))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        return await ReadAsync(
+            db =>
+            {
+                var settled = db.DeliverySubmissions
+                    .Where(s => s.FlowId == flowId && (s.Status == completed || s.Status == failed) && (except == null || s.SubmissionId != except))
+                    .Select(s => s.SubmissionId);
+                return db.DeliveryRecords
+                    .Where(r => r.FlowId == flowId
+                        && r.Status == pending
+                        && r.PendingDocumentRef != null
+                        && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc)
+                        && r.LastSubmissionId != null
+                        && settled.Contains(r.LastSubmissionId.Value))
+                    .Select(r => r.LastSubmissionId!.Value)
+                    .Distinct()
+                    .Take(Math.Clamp(max, 1, 100))
+                    .ToListAsync(ct);
+            },
+            ct).ConfigureAwait(false);
     }
 
     public async Task AddWorkBatchAsync(WorkBatchState batch, CancellationToken ct = default)
@@ -945,7 +656,6 @@ public sealed class OsduLedger : ILedger
                     .SetProperty(b => b.RecordCount, batch.RecordCount)
                     .SetProperty(b => b.Status, StatusText.Of(WorkBatchStatus.Queued))
                     .SetProperty(b => b.LeaseOwner, (string?)null)
-                    .SetProperty(b => b.LeaseExpiresUtc, (DateTime?)null)
                     .SetProperty(b => b.CompletedUtc, (DateTime?)null)
                     .SetProperty(b => b.Error, (string?)null), ct)
                 .ConfigureAwait(false);
@@ -963,151 +673,6 @@ public sealed class OsduLedger : ILedger
             CreatedUtc = batch.CreatedUtc == default ? Now : batch.CreatedUtc,
         });
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
-    }
-
-    public async Task<ClaimedWorkBatch?> ClaimWorkBatchAsync(Guid flowId, Guid? submissionId, string owner, TimeSpan lease, DateTime nowUtc, Guid? runId = null, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
-        var queued = StatusText.Of(WorkBatchStatus.Queued);
-        var running = StatusText.Of(WorkBatchStatus.Running);
-        var expires = nowUtc + lease;
-        await using var db = Open();
-
-        // Losing the race for a candidate is ordinary; the next candidate is tried a few times before answering "nothing now".
-        for (var attempt = 0; attempt < 3; attempt++)
-        {
-            var candidate = await RetryDeadlockAsync(
-                () => db.DeliveryWorkBatches.AsNoTracking()
-                    .Where(b => b.FlowId == flowId
-                        && (submissionId == null || b.SubmissionId == submissionId)
-                        && (b.Status == queued || (b.Status == running && b.LeaseExpiresUtc != null && b.LeaseExpiresUtc < nowUtc)))
-                    .OrderBy(b => b.CreatedUtc)
-                    .ThenBy(b => b.Index)
-                    .Select(b => new { b.SubmissionId, b.Index })
-                    .FirstOrDefaultAsync(ct),
-                ct).ConfigureAwait(false);
-            if (candidate is null)
-            {
-                return null;
-            }
-
-            var token = owner + "/" + Guid.NewGuid().ToString("N");
-            var won = await RetryDeadlockAsync(
-                () => db.DeliveryWorkBatches
-                    .Where(b => b.SubmissionId == candidate.SubmissionId && b.Index == candidate.Index
-                        && (b.Status == queued || (b.Status == running && b.LeaseExpiresUtc != null && b.LeaseExpiresUtc < nowUtc)))
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(b => b.Status, running)
-                        .SetProperty(b => b.LeaseOwner, token)
-                        .SetProperty(b => b.LeaseExpiresUtc, expires)
-                        .SetProperty(b => b.RunId, b => runId ?? b.RunId)
-                        .SetProperty(b => b.StartedUtc, b => b.StartedUtc ?? nowUtc), ct),
-                ct).ConfigureAwait(false);
-            if (won == 0)
-            {
-                continue;
-            }
-
-            // Lease the batch's records that are due under the same token: the individual claim path then never
-            // sees them, and an expired lease hands them back exactly as for a single record. The lease is a slice of
-            // the batch at a time, however large the batch, and a record claimed elsewhere meanwhile is no longer due.
-            var pending = StatusText.Of(RecordStatus.Pending);
-            var delivering = StatusText.Of(RecordStatus.Delivering);
-            await WriteEachAsync(
-                db.DeliveryRecords.Where(r => r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index && r.FlowId == flowId),
-                db.DeliveryRecords
-                    .Where(r => r.FlowId == flowId && r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index
-                        && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
-                            || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc))),
-                slice => slice.ExecuteUpdateAsync(s => s
-                    .SetProperty(r => r.Status, delivering)
-                    .SetProperty(r => r.LeaseOwner, token)
-                    .SetProperty(r => r.LeaseExpiresUtc, expires)
-                    .SetProperty(r => r.AttemptCount, r => r.AttemptCount + 1)
-                    .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
-                ct).ConfigureAwait(false);
-
-            var batch = await RetryDeadlockAsync(
-                () => db.DeliveryWorkBatches.AsNoTracking().FirstAsync(b => b.SubmissionId == candidate.SubmissionId && b.Index == candidate.Index, ct),
-                ct).ConfigureAwait(false);
-            return new ClaimedWorkBatch(ToState(batch), await LeasedAsync(db, token, ct).ConfigureAwait(false));
-        }
-
-        return null;
-    }
-
-    public async Task<bool> RenewWorkBatchLeaseAsync(Guid submissionId, int batch, string owner, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default)
-    {
-        await using var db = Open();
-        var expires = nowUtc + lease;
-        var affected = await db.DeliveryWorkBatches
-            .Where(b => b.SubmissionId == submissionId && b.Index == batch && b.LeaseOwner == owner)
-            .ExecuteUpdateAsync(s => s.SetProperty(b => b.LeaseExpiresUtc, expires), ct)
-            .ConfigureAwait(false);
-        if (affected == 0)
-        {
-            return false;
-        }
-
-        await WriteEachAsync(
-            db.DeliveryRecords.Where(r => r.LeaseOwner == owner),
-            slice => slice.ExecuteUpdateAsync(s => s.SetProperty(r => r.LeaseExpiresUtc, expires), ct),
-            ct).ConfigureAwait(false);
-        return true;
-    }
-
-    public async Task CompleteWorkBatchAsync(Guid submissionId, int batch, string owner, WorkBatchStatus status, long delivered, long held, long failed, long retrying, string? failure, DateTime nowUtc, CancellationToken ct = default)
-    {
-        await using var db = Open();
-        var text = StatusText.Of(status);
-        await db.DeliveryWorkBatches
-            .Where(b => b.SubmissionId == submissionId && b.Index == batch)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, text)
-                .SetProperty(b => b.LeaseOwner, (string?)null)
-                .SetProperty(b => b.LeaseExpiresUtc, (DateTime?)null)
-                .SetProperty(b => b.CompletedUtc, nowUtc)
-                .SetProperty(b => b.Delivered, delivered)
-                .SetProperty(b => b.Held, held)
-                .SetProperty(b => b.Failed, failed)
-                .SetProperty(b => b.Retrying, retrying)
-                .SetProperty(b => b.Error, Truncate(failure, 2000)), ct)
-            .ConfigureAwait(false);
-
-        // Anything still leased under the batch's token was never reached (a stop, a crash mid-batch): hand it back
-        // without charging the try.
-        await ReleaseRecordsAsync(db, owner, nowUtc, ct).ConfigureAwait(false);
-    }
-
-    public async Task<bool> ReleaseWorkBatchAsync(Guid submissionId, int batch, string owner, DateTime nowUtc, CancellationToken ct = default)
-    {
-        await using var db = Open();
-        var queued = StatusText.Of(WorkBatchStatus.Queued);
-        var affected = await db.DeliveryWorkBatches
-            .Where(b => b.SubmissionId == submissionId && b.Index == batch && b.LeaseOwner == owner)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, queued)
-                .SetProperty(b => b.LeaseOwner, (string?)null)
-                .SetProperty(b => b.LeaseExpiresUtc, (DateTime?)null), ct)
-            .ConfigureAwait(false);
-        await ReleaseRecordsAsync(db, owner, nowUtc, ct).ConfigureAwait(false);
-        return affected > 0;
-    }
-
-    private async Task ReleaseRecordsAsync(OsduDbContext db, string owner, DateTime nowUtc, CancellationToken ct)
-    {
-        var delivering = StatusText.Of(RecordStatus.Delivering);
-        var pending = StatusText.Of(RecordStatus.Pending);
-        await WriteEachAsync(
-            db.DeliveryRecords.Where(r => r.LeaseOwner == owner),
-            db.DeliveryRecords.Where(r => r.LeaseOwner == owner && r.Status == delivering),
-            slice => slice.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.Status, pending)
-                .SetProperty(r => r.LeaseOwner, (string?)null)
-                .SetProperty(r => r.LeaseExpiresUtc, (DateTime?)null)
-                .SetProperty(r => r.AttemptCount, r => r.AttemptCount > 0 ? r.AttemptCount - 1 : 0)
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
-            ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1156,31 +721,37 @@ public sealed class OsduLedger : ILedger
     /// <summary>A record's key: its flow and its delivery key.</summary>
     private readonly record struct RecordKey(Guid FlowId, Guid DeliveryKey);
 
-    public async Task<IReadOnlyList<WorkBatchState>> ListWorkBatchesAsync(Guid submissionId, int max, int offset, CancellationToken ct = default)
-    {
-        await using var db = Open();
-        var rows = await db.DeliveryWorkBatches.AsNoTracking()
-            .Where(b => b.SubmissionId == submissionId)
-            .OrderBy(b => b.Index)
-            .Skip(Math.Max(0, offset))
-            .Take(Math.Clamp(max, 1, 1000))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-        return rows.Select(ToState).ToList();
-    }
+    public Task<IReadOnlyList<WorkBatchState>> ListWorkBatchesAsync(Guid submissionId, int max, int offset, CancellationToken ct = default)
+        => ReadAsync<IReadOnlyList<WorkBatchState>>(
+            async db =>
+            {
+                // A running batch shows when its lease runs out.
+                var rows = await db.DeliveryWorkBatches
+                    .Where(b => b.SubmissionId == submissionId)
+                    .OrderBy(b => b.Index)
+                    .Skip(Math.Max(0, offset))
+                    .Take(Math.Clamp(max, 1, 1000))
+                    .Select(b => new { Batch = b, Expires = db.DeliveryLeases.Where(l => l.Token == b.LeaseOwner).Select(l => (DateTime?)l.ExpiresUtc).FirstOrDefault() })
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
+                return rows.Select(r => ToState(r.Batch) with { LeaseExpiresUtc = r.Expires }).ToList();
+            },
+            ct);
 
-    public async Task<long> CountWorkBatchesAsync(Guid submissionId, WorkBatchStatus? status, CancellationToken ct = default)
-    {
-        await using var db = Open();
-        var query = db.DeliveryWorkBatches.AsNoTracking().Where(b => b.SubmissionId == submissionId);
-        if (status is { } s)
-        {
-            var text = StatusText.Of(s);
-            query = query.Where(b => b.Status == text);
-        }
+    public Task<long> CountWorkBatchesAsync(Guid submissionId, WorkBatchStatus? status, CancellationToken ct = default)
+        => ReadAsync(
+            db =>
+            {
+                var query = db.DeliveryWorkBatches.Where(b => b.SubmissionId == submissionId);
+                if (status is { } s)
+                {
+                    var text = StatusText.Of(s);
+                    query = query.Where(b => b.Status == text);
+                }
 
-        return await query.LongCountAsync(ct).ConfigureAwait(false);
-    }
+                return query.LongCountAsync(ct);
+            },
+            ct);
 
     public async Task<IReadOnlyList<RecordState>> ListAsync(Guid flowId, RecordQuery query, CancellationToken ct = default)
     {
@@ -1193,72 +764,87 @@ public sealed class OsduLedger : ILedger
                 $"A record listing pages through its first {RecordListing.CountLimit} records, and offset {query.Offset} is past them. Narrow the filter (a status, a submission, a run or a search) to reach the records beyond."));
         }
 
-        await using var db = Open();
-        var rows = await MatchingAsync(db, flowId, query, RecordListing.CountLimit, ct).ConfigureAwait(false);
+        return await ReadAsync(
+            async db =>
+            {
+                var rows = await MatchingAsync(db, flowId, query, RecordListing.CountLimit, ct).ConfigureAwait(false);
 
-        // Ties broken by key: a bulk write stamps a whole batch with one update time, and the pages must still partition it.
-        var list = await rows
-            .OrderByDescending(r => r.UpdatedUtc)
-            .ThenByDescending(r => r.DeliveryKey)
-            .Skip(query.Offset)
-            .Take(Math.Clamp(query.Max, 1, 1000))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-        return list.Select(ToState).ToList();
+                // Ties broken by key: a bulk write stamps a whole batch with one update time, and the pages must still partition it.
+                var list = await rows
+                    .OrderByDescending(r => r.UpdatedUtc)
+                    .ThenByDescending(r => r.DeliveryKey)
+                    .Skip(query.Offset)
+                    .Take(Math.Clamp(query.Max, 1, 1000))
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
+                return await WithLeasesAsync(db, list, ct).ConfigureAwait(false);
+            },
+            ct).ConfigureAwait(false);
     }
 
     public async Task<BoundedCount> CountAsync(Guid flowId, RecordQuery query, int limit, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        await using var db = Open();
-        var rows = await MatchingAsync(db, flowId, query, limit, ct).ConfigureAwait(false);
-        var count = await rows.Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false);
-        if (count >= limit)
-        {
-            return new BoundedCount(count, Exact: false);
-        }
+        return await ReadAsync(
+            async db =>
+            {
+                var rows = await MatchingAsync(db, flowId, query, limit, ct).ConfigureAwait(false);
+                var count = await rows.Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false);
+                if (count >= limit)
+                {
+                    return new BoundedCount(count, Exact: false);
+                }
 
-        // Below the limit the count is exact, unless a prefix search left out candidates another filter would have kept.
-        var truncated = PrefixTerm(query) is { } term
-            && Narrows(query)
-            && await PrefixCandidatesTruncatedAsync(db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), term, limit, ct).ConfigureAwait(false);
-        return new BoundedCount(count, Exact: !truncated);
+                // Below the limit the count is exact, unless a prefix search left out candidates another filter would have kept.
+                var truncated = PrefixTerm(query) is { } term
+                    && Narrows(query)
+                    && await PrefixCandidatesTruncatedAsync(db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), term, limit, ct).ConfigureAwait(false);
+                return new BoundedCount(count, Exact: !truncated);
+            },
+            ct).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<DeliveryKey>> ListKeysAsync(Guid flowId, RecordQuery query, int max, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
-        await using var db = Open();
-        var rows = await MatchingAsync(db, flowId, query, RecordListing.CountLimit + 1, ct).ConfigureAwait(false);
-        var keys = await rows
-            .OrderBy(r => r.DeliveryKey)
-            .Select(r => r.DeliveryKey)
-            .Take(Math.Clamp(max, 1, RemovalLimits.MaxSelection))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        var keys = await ReadAsync(
+            async db =>
+            {
+                var rows = await MatchingAsync(db, flowId, query, RecordListing.CountLimit + 1, ct).ConfigureAwait(false);
+                return await rows
+                    .OrderBy(r => r.DeliveryKey)
+                    .Select(r => r.DeliveryKey)
+                    .Take(Math.Clamp(max, 1, RemovalLimits.MaxSelection))
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
+            },
+            ct).ConfigureAwait(false);
         return keys.Select(k => new DeliveryKey(k)).ToList();
     }
 
     public async Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
-        await using var db = Open();
-        var rows = await LookupFilter(db, term, RecordListing.LookupCandidateLimit)
-            .OrderByDescending(r => r.UpdatedUtc)
-            .ThenByDescending(r => r.DeliveryKey)
-            .Take(Math.Clamp(max, 1, 200))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-        return rows.Select(ToState).ToList();
+        return await ReadAsync(
+            async db =>
+            {
+                var rows = await LookupFilter(db, term, RecordListing.LookupCandidateLimit)
+                    .OrderByDescending(r => r.UpdatedUtc)
+                    .ThenByDescending(r => r.DeliveryKey)
+                    .Take(Math.Clamp(max, 1, 200))
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
+                return await WithLeasesAsync(db, rows, ct).ConfigureAwait(false);
+            },
+            ct).ConfigureAwait(false);
     }
 
     public async Task<BoundedCount> CountLookupAsync(string term, int limit, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        await using var db = Open();
-        var count = await LookupFilter(db, term, limit).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false);
+        var count = await ReadAsync(db => LookupFilter(db, term, limit).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
         return new BoundedCount(count, Exact: count < limit);
     }
 
@@ -1403,9 +989,12 @@ public sealed class OsduLedger : ILedger
             || await scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit
             || await scope.Where(r => r.SourceFileName != null && r.SourceFileName.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit;
 
-    public async Task<FlowStats> StatsAsync(Guid flowId, DateTime nowUtc, CancellationToken ct = default)
+    public Task<FlowStats> StatsAsync(Guid flowId, DateTime nowUtc, CancellationToken ct = default)
+        => ReadAsync(db => StatsAsync(db, flowId, nowUtc, ct), ct);
+
+    /// <summary>A flow's statistics, every count read from one snapshot of the ledger.</summary>
+    private static async Task<FlowStats> StatsAsync(OsduDbContext db, Guid flowId, DateTime nowUtc, CancellationToken ct)
     {
-        await using var db = Open();
         var since = nowUtc.AddHours(-24);
         var (byStatus, drifted, last24) = SqlServerLedgerBulk.Applies(db)
             ? await CountFromViewAsync(db, flowId, since, ct).ConfigureAwait(false)
@@ -1413,7 +1002,7 @@ public sealed class OsduLedger : ILedger
         var lastDelivered = await db.DeliveryRecords.Where(r => r.FlowId == flowId).MaxAsync(r => r.LastDeliveredUtc, ct).ConfigureAwait(false);
         var lastVerified = await db.DeliveryRecords.Where(r => r.FlowId == flowId).MaxAsync(r => r.LastVerifiedUtc, ct).ConfigureAwait(false);
         var submissions = await db.DeliverySubmissions.LongCountAsync(s => s.FlowId == flowId, ct).ConfigureAwait(false);
-        var lastSubmission = await db.DeliverySubmissions.AsNoTracking().Where(s => s.FlowId == flowId).OrderByDescending(s => s.ReceivedUtc).FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        var lastSubmission = await db.DeliverySubmissions.Where(s => s.FlowId == flowId).OrderByDescending(s => s.ReceivedUtc).FirstOrDefaultAsync(ct).ConfigureAwait(false);
 
         return new FlowStats
         {
@@ -1492,41 +1081,45 @@ public sealed class OsduLedger : ILedger
 
     public async Task<IReadOnlyList<AttemptRecord>> ListAttemptsAsync(Guid flowId, DeliveryKey key, int max, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var rows = await db.DeliveryAttempts.AsNoTracking()
-            .Where(a => a.FlowId == flowId && a.DeliveryKey == key.Value)
-            .OrderByDescending(a => a.StartedUtc)
-            .ThenByDescending(a => a.AttemptId)
-            .Take(Math.Clamp(max, 1, 1000))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        var rows = await ReadAsync(
+            db => db.DeliveryAttempts
+                .Where(a => a.FlowId == flowId && a.DeliveryKey == key.Value)
+                .OrderByDescending(a => a.StartedUtc)
+                .ThenByDescending(a => a.AttemptId)
+                .Take(Math.Clamp(max, 1, 1000))
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
         return rows.Select(ToRecord).ToList();
     }
 
     public async Task<IReadOnlyList<AttemptRecord>> ListAttemptsForSubmissionAsync(Guid submissionId, int max, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var rows = await db.DeliveryAttempts.AsNoTracking()
-            .Where(a => a.SubmissionId == submissionId)
-            .OrderByDescending(a => a.StartedUtc)
-            .ThenByDescending(a => a.AttemptId)
-            .Take(Math.Clamp(max, 1, 5000))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        var rows = await ReadAsync(
+            db => db.DeliveryAttempts
+                .Where(a => a.SubmissionId == submissionId)
+                .OrderByDescending(a => a.StartedUtc)
+                .ThenByDescending(a => a.AttemptId)
+                .Take(Math.Clamp(max, 1, 5000))
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
         return rows.Select(ToRecord).ToList();
     }
 
     public async Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default)
     {
-        await using var db = Open();
         var delivered = StatusText.Of(RecordStatus.Delivered);
-        var query = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId && r.Status == delivered && r.TargetId != null);
-        if (verifiedBeforeUtc is { } before)
-        {
-            query = query.Where(r => r.LastVerifiedUtc == null || r.LastVerifiedUtc < before);
-        }
+        var rows = await ReadAsync(
+            db =>
+            {
+                var query = db.DeliveryRecords.Where(r => r.FlowId == flowId && r.Status == delivered && r.TargetId != null);
+                if (verifiedBeforeUtc is { } before)
+                {
+                    query = query.Where(r => r.LastVerifiedUtc == null || r.LastVerifiedUtc < before);
+                }
 
-        var rows = await query.OrderBy(r => r.LastVerifiedUtc).Take(Math.Clamp(max, 1, 10_000)).ToListAsync(ct).ConfigureAwait(false);
+                return query.OrderBy(r => r.LastVerifiedUtc).Take(Math.Clamp(max, 1, 10_000)).ToListAsync(ct);
+            },
+            ct).ConfigureAwait(false);
         return rows.Select(ToState).ToList();
     }
 
@@ -1708,7 +1301,6 @@ public sealed class OsduLedger : ILedger
         entity.LastVerifiedUtc = null;
         entity.LastVerifyOutcome = null;
         entity.LeaseOwner = null;
-        entity.LeaseExpiresUtc = null;
         entity.NextAttemptUtc = null;
         entity.AttemptCount = 0;
         entity.PendingDocumentRef = null;
@@ -1793,11 +1385,12 @@ public sealed class OsduLedger : ILedger
 
     public async Task<IReadOnlyList<CacheUse>> ListCacheSetAsync(long setId, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var rows = await db.DeliveryCacheSetEntries.AsNoTracking()
-            .Where(e => e.SetId == setId)
-            .OrderBy(e => e.Scope).ThenBy(e => e.TypeName).ThenBy(e => e.Path)
-            .ToListAsync(ct).ConfigureAwait(false);
+        var rows = await ReadAsync(
+            db => db.DeliveryCacheSetEntries
+                .Where(e => e.SetId == setId)
+                .OrderBy(e => e.Scope).ThenBy(e => e.TypeName).ThenBy(e => e.Path)
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
         return rows.Select(e => new CacheUse(e.Scope, e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)).ToList();
     }
 
@@ -1811,14 +1404,15 @@ public sealed class OsduLedger : ILedger
             return [];
         }
 
-        await using var db = Open();
         var found = new List<CacheSetUse>();
         foreach (var chunk in itemIds.Chunk(LookupChunk))
         {
             var ids = chunk.ToList();
-            var rows = await db.DeliveryCacheSetEntries.AsNoTracking()
-                .Where(e => e.Scope == scope && e.TypeName == typeName && ids.Contains(e.ItemId))
-                .ToListAsync(ct).ConfigureAwait(false);
+            var rows = await ReadAsync(
+                db => db.DeliveryCacheSetEntries
+                    .Where(e => e.Scope == scope && e.TypeName == typeName && ids.Contains(e.ItemId))
+                    .ToListAsync(ct),
+                ct).ConfigureAwait(false);
             found.AddRange(rows.Select(e => new CacheSetUse(e.SetId, e.Scope, e.TypeName, e.ItemId, e.Path, ToKind(e.Kind), e.ValueHash, e.ValueText)));
         }
 
@@ -1833,17 +1427,21 @@ public sealed class OsduLedger : ILedger
             return 0;
         }
 
-        await using var db = Open();
-        long total = 0;
-        foreach (var chunk in setIds.Chunk(LookupChunk))
-        {
-            var ids = chunk.ToList();
-            total += await db.DeliveryRecords.AsNoTracking()
-                .Where(r => r.CacheSetId != null && ids.Contains(r.CacheSetId!.Value))
-                .LongCountAsync(ct).ConfigureAwait(false);
-        }
+        return await ReadAsync(
+            async db =>
+            {
+                long total = 0;
+                foreach (var chunk in setIds.Chunk(LookupChunk))
+                {
+                    var ids = chunk.ToList();
+                    total += await db.DeliveryRecords
+                        .Where(r => r.CacheSetId != null && ids.Contains(r.CacheSetId!.Value))
+                        .LongCountAsync(ct).ConfigureAwait(false);
+                }
 
-        return total;
+                return total;
+            },
+            ct).ConfigureAwait(false);
     }
 
     public async Task<int> TagUpdatesAsync(IReadOnlyList<UpdateTag> tags, DateTime nowUtc, CancellationToken ct = default)
@@ -1919,26 +1517,21 @@ public sealed class OsduLedger : ILedger
     }
 
     public async Task<IReadOnlyList<long>> GatedCacheSetsAsync(CancellationToken ct = default)
-    {
-        await using var db = Open();
-        return await db.DeliveryCacheSets.AsNoTracking().Where(c => c.Gated).Select(c => c.SetId).ToListAsync(ct).ConfigureAwait(false);
-    }
+        => await ReadAsync(db => db.DeliveryCacheSets.Where(c => c.Gated).Select(c => c.SetId).ToListAsync(ct), ct).ConfigureAwait(false);
 
     public async Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, string? scope = null, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var rows = await TagQuery(db, status, scope)
-            .OrderByDescending(t => t.TagId)
-            .Skip(Math.Max(0, offset)).Take(Math.Clamp(max, 1, 1000))
-            .ToListAsync(ct).ConfigureAwait(false);
+        var rows = await ReadAsync(
+            db => TagQuery(db, status, scope)
+                .OrderByDescending(t => t.TagId)
+                .Skip(Math.Max(0, offset)).Take(Math.Clamp(max, 1, 1000))
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
         return rows.Select(ToTag).ToList();
     }
 
-    public async Task<int> CountTagsAsync(string? status, string? scope = null, CancellationToken ct = default)
-    {
-        await using var db = Open();
-        return await TagQuery(db, status, scope).CountAsync(ct).ConfigureAwait(false);
-    }
+    public Task<int> CountTagsAsync(string? status, string? scope = null, CancellationToken ct = default)
+        => ReadAsync(db => TagQuery(db, status, scope).CountAsync(ct), ct);
 
     public async Task<int> DecideTagsAsync(IReadOnlyList<long> tagIds, bool approve, string actor, DateTime nowUtc, CancellationToken ct = default)
     {
@@ -2042,12 +1635,13 @@ public sealed class OsduLedger : ILedger
 
     public async Task<IReadOnlyList<UpdateTag>> ListRolloutQueueAsync(int max, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var rows = await db.DeliveryUpdateTags.AsNoTracking()
-            .Where(t => t.Status == "approved" || t.Status == "rolling")
-            .OrderBy(t => t.DecidedUtc ?? t.DetectedUtc)
-            .Take(Math.Clamp(max, 1, 1000))
-            .ToListAsync(ct).ConfigureAwait(false);
+        var rows = await ReadAsync(
+            db => db.DeliveryUpdateTags
+                .Where(t => t.Status == "approved" || t.Status == "rolling")
+                .OrderBy(t => t.DecidedUtc ?? t.DetectedUtc)
+                .Take(Math.Clamp(max, 1, 1000))
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
         return rows.Select(ToTag).ToList();
     }
 
@@ -2154,8 +1748,7 @@ public sealed class OsduLedger : ILedger
     public async Task<SourceWatermark?> GetWatermarkAsync(Guid flowId, string scope, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
-        await using var db = Open();
-        var row = await db.DeliverySourceWatermarks.AsNoTracking().FirstOrDefaultAsync(w => w.FlowId == flowId && w.Scope == scope, ct).ConfigureAwait(false);
+        var row = await ReadAsync(db => db.DeliverySourceWatermarks.FirstOrDefaultAsync(w => w.FlowId == flowId && w.Scope == scope, ct), ct).ConfigureAwait(false);
         return row is null ? null : ToWatermark(row);
     }
 
@@ -2286,22 +1879,24 @@ public sealed class OsduLedger : ILedger
 
     public async Task<RetrievalState?> LastRetrievalAsync(Guid flowId, string status, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var entity = await db.DeliveryRetrievals.AsNoTracking()
-            .Where(r => r.FlowId == flowId && r.Status == status)
-            .OrderByDescending(r => r.StartedUtc).ThenByDescending(r => r.RetrievalId)
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        var entity = await ReadAsync(
+            db => db.DeliveryRetrievals
+                .Where(r => r.FlowId == flowId && r.Status == status)
+                .OrderByDescending(r => r.StartedUtc).ThenByDescending(r => r.RetrievalId)
+                .FirstOrDefaultAsync(ct),
+            ct).ConfigureAwait(false);
         return entity is null ? null : ToState(entity);
     }
 
     public async Task<IReadOnlyList<RetrievalState>> ListRetrievalsAsync(Guid flowId, int max, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var rows = await db.DeliveryRetrievals.AsNoTracking()
-            .Where(r => r.FlowId == flowId)
-            .OrderByDescending(r => r.StartedUtc).ThenByDescending(r => r.RetrievalId)
-            .Take(Math.Clamp(max, 1, 1000))
-            .ToListAsync(ct).ConfigureAwait(false);
+        var rows = await ReadAsync(
+            db => db.DeliveryRetrievals
+                .Where(r => r.FlowId == flowId)
+                .OrderByDescending(r => r.StartedUtc).ThenByDescending(r => r.RetrievalId)
+                .Take(Math.Clamp(max, 1, 1000))
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
         return rows.Select(ToState).ToList();
     }
 
@@ -2368,48 +1963,46 @@ public sealed class OsduLedger : ILedger
 
     public async Task<ActivityRecord?> GetActivityAsync(long activityId, CancellationToken ct = default)
     {
-        await using var db = Open();
-        var entity = await db.DeliveryActivities.AsNoTracking().FirstOrDefaultAsync(a => a.ActivityId == activityId, ct).ConfigureAwait(false);
+        var entity = await ReadAsync(db => db.DeliveryActivities.FirstOrDefaultAsync(a => a.ActivityId == activityId, ct), ct).ConfigureAwait(false);
         return entity is null ? null : ToRecord(entity);
     }
 
     public async Task<IReadOnlyList<ActivityRecord>> ListActivitiesAsync(ActivityQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
-        await using var db = Open();
-        var list = await FilterActivities(db.DeliveryActivities.AsNoTracking(), query)
-            .OrderByDescending(a => a.StartedUtc)
-            .ThenByDescending(a => a.ActivityId)
-            .Skip(Math.Max(0, query.Offset))
-            .Take(Math.Clamp(query.Max, 1, 1000))
-            .Select(a => new DeliveryActivity
-            {
-                ActivityId = a.ActivityId,
-                FlowId = a.FlowId,
-                FlowName = a.FlowName,
-                Kind = a.Kind,
-                Actor = a.Actor,
-                StartedUtc = a.StartedUtc,
-                CompletedUtc = a.CompletedUtc,
-                Outcome = a.Outcome,
-                ParametersJson = a.ParametersJson,
-                SubmissionId = a.SubmissionId,
-                DeliveryKey = a.DeliveryKey,
-                RunId = a.RunId,
-                Summary = a.Summary,
-                // The log is fetched per activity, not in listings.
-                Log = null,
-            })
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        var list = await ReadAsync(
+            db => FilterActivities(db.DeliveryActivities, query)
+                .OrderByDescending(a => a.StartedUtc)
+                .ThenByDescending(a => a.ActivityId)
+                .Skip(Math.Max(0, query.Offset))
+                .Take(Math.Clamp(query.Max, 1, 1000))
+                .Select(a => new DeliveryActivity
+                {
+                    ActivityId = a.ActivityId,
+                    FlowId = a.FlowId,
+                    FlowName = a.FlowName,
+                    Kind = a.Kind,
+                    Actor = a.Actor,
+                    StartedUtc = a.StartedUtc,
+                    CompletedUtc = a.CompletedUtc,
+                    Outcome = a.Outcome,
+                    ParametersJson = a.ParametersJson,
+                    SubmissionId = a.SubmissionId,
+                    DeliveryKey = a.DeliveryKey,
+                    RunId = a.RunId,
+                    Summary = a.Summary,
+                    // The log is fetched per activity, not in listings.
+                    Log = null,
+                })
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
         return list.Select(ToRecord).ToList();
     }
 
-    public async Task<int> CountActivitiesAsync(ActivityQuery query, CancellationToken ct = default)
+    public Task<int> CountActivitiesAsync(ActivityQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
-        await using var db = Open();
-        return await FilterActivities(db.DeliveryActivities.AsNoTracking(), query).CountAsync(ct).ConfigureAwait(false);
+        return ReadAsync(db => FilterActivities(db.DeliveryActivities, query).CountAsync(ct), ct);
     }
 
     private static IQueryable<DeliveryActivity> FilterActivities(IQueryable<DeliveryActivity> rows, ActivityQuery query)
@@ -2537,7 +2130,6 @@ public sealed class OsduLedger : ILedger
         RecordCount = b.RecordCount,
         Status = StatusText.ToWorkBatchStatus(b.Status),
         LeaseOwner = b.LeaseOwner,
-        LeaseExpiresUtc = b.LeaseExpiresUtc,
         RunId = b.RunId,
         CreatedUtc = b.CreatedUtc,
         StartedUtc = b.StartedUtc,
@@ -2648,7 +2240,6 @@ public sealed class OsduLedger : ILedger
         LastVerifiedUtc = r.LastVerifiedUtc,
         LastVerifyOutcome = StatusText.ToVerifyOutcome(r.LastVerifyOutcome),
         LeaseOwner = r.LeaseOwner,
-        LeaseExpiresUtc = r.LeaseExpiresUtc,
         LastSubmissionId = r.LastSubmissionId,
         AttemptCount = r.AttemptCount,
         NextAttemptUtc = r.NextAttemptUtc,

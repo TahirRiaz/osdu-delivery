@@ -390,7 +390,7 @@ public class RemovalLedgerTests : IDisposable
             PendingMetadataHash = "mh",
             PendingMetadata = true,
         }]);
-        var claimed = await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now);
+        var claimed = (await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now)).Records;
         var record = claimed.Single(r => r.DeliveryKey == key);
         await Ledger.CompleteAsync(_flow, new RecordCompletion
         {

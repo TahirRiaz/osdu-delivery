@@ -89,8 +89,9 @@ are its run parameters, its log is the run trace, and its counts are projected o
    to the ledger and the rendered documents to work batch files on the flow's work location.
 2. **Deliver.** Lease work batches, send their records through the flow's protocol (`osduRecord`, `osduWellLog`,
    `osduFile`, `osduManifest`), report every step and what the target returned, and write one append-only attempt
-   per try. Back off and retry, resume after completed steps, hold what retrying cannot fix, and release leases on
-   a stop, so any number of nodes share the work. A large submission fans its intake and its drains out over member
+   per try. A worker keeps one lease row per claim and appends what it learns; the lease applies that to the records
+   at each renewal and when it closes. Back off and retry, resume after completed steps, hold what retrying cannot
+   fix, and hand leases back on a stop, so any number of nodes share the work. A large submission fans its intake and its drains out over member
    runs across the fleet.
 3. **Verify.** Read delivered records back from OSDU and compare versions; queue drifted records for redelivery
    when the flow reconciles.

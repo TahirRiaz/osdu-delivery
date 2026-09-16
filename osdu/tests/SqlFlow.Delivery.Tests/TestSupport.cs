@@ -370,6 +370,34 @@ public sealed class FakeProtocol : IDeliveryProtocol
         => Task.FromResult(new ProbeOutcome(Reachable, Reachable ? 200 : 503, Reachable ? "the service answered" : "service unavailable", "/about"));
 }
 
+/// <summary>A listener that keeps every event it is given, for tests that follow what a worker reported.</summary>
+public sealed class RecordingListener : IDeliveryListener
+{
+    private readonly object _gate = new();
+    private readonly List<DeliveryEvent> _events = [];
+
+    public IReadOnlyList<DeliveryEvent> Events
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _events];
+            }
+        }
+    }
+
+    public ValueTask OnEventAsync(DeliveryEvent evt, CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            _events.Add(evt);
+        }
+
+        return ValueTask.CompletedTask;
+    }
+}
+
 /// <summary>Hands the engine a ready-made protocol instead of building one over HTTP.</summary>
 public sealed class FakeProtocolFactory : IProtocolFactory
 {

@@ -373,13 +373,16 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     private Task ClearLedgerAsync() => ForgetFlowAsync(FlowId);
 
     /// <summary>
-    /// Deletes every ledger row of <paramref name="flowId"/>: its records, attempts, work batches, watermarks, activities and
-    /// submissions. The sample rows give every fixture the same delivery keys; the flow is what makes the rows a flow's.
-    /// A test that delivers through a flow of its own beside the fixture's forgets that flow when it ends.
+    /// Deletes every ledger row of <paramref name="flowId"/>: its record events, leases, attempts, records, work batches,
+    /// watermarks, activities and submissions. The sample rows give every fixture the same delivery keys; the flow is what
+    /// makes the rows a flow's. A test that delivers through a flow of its own beside the fixture's forgets that flow when
+    /// it ends.
     /// </summary>
     public async Task ForgetFlowAsync(Guid flowId)
     {
         await using var db = Context();
+        await db.DeliveryRecordEvents.Where(e => e.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryLeases.Where(l => l.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
         await db.DeliveryAttempts.Where(a => a.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
         await db.DeliveryRecords.Where(r => r.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
         await db.DeliveryWorkBatches.Where(b => b.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);

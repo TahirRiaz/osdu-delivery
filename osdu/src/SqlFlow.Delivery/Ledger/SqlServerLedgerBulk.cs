@@ -9,16 +9,17 @@ using SqlFlow.Delivery.Identity;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// The two writes that carry the volume of a submission (staging the pending records, and closing the records of a
-/// drained batch with their attempts), done as one bulk copy into a staging table plus set-based statements when the
-/// module database is SQL Server (design.md section 16.2). Every other provider takes the entity path in
-/// <see cref="OsduLedger"/>, which is the same write row by row. Both write one flow's records: a record is its flow and
-/// its delivery key together, and every statement matches on both.
-/// <para>Many nodes write the record table at once, so neither write takes a lock on a range of keys, and no statement
-/// writes more records than the caller's slice: SQL Server turns the row locks of a statement that takes 5,000 of them on
-/// one table into a lock on the whole table, which would stop every other flow's writes while it ran. A completion
-/// writes what one flush of the worker closes; staging copies the whole batch once and writes it a slice at a time, each
-/// slice in a transaction of its own, so a record is staged whole or not at all and a failure keeps the slices before it.</para>
+/// The writes that carry the volume of a submission, as bulk copies and set-based statements when the module database is
+/// SQL Server (design.md section 16.2): staging the pending records, appending what workers learn under their leases
+/// (attempts and record events), and applying those events to the records. Every other provider takes the entity path in
+/// <see cref="OsduLedger"/>, which is the same write row by row. A record is its flow and its delivery key together, and
+/// every statement that writes one matches on both.
+/// <para>Many nodes write these tables at once, so no write takes a lock on a range of keys, and no statement touches more
+/// rows than the caller's slice: SQL Server turns the row locks of a statement that takes 5,000 of them on one index into a
+/// lock on the whole table, which would stop every other node while it ran. Staging copies the whole batch once and
+/// writes it a slice at a time, each slice in a transaction of its own, so a record is staged whole or not at all and a
+/// failure keeps the slices before it. An append only adds rows, at the end of two tables clustered on ever-increasing
+/// ids. An application takes a slice of a lease's events, settles their records and deletes them in one transaction.</para>
 /// </summary>
 internal static class SqlServerLedgerBulk
 {
@@ -33,6 +34,9 @@ internal static class SqlServerLedgerBulk
 
     /// <summary>The record table's key, through which the database refuses a record another staging inserted first.</summary>
     private const string RecordKey = "PK_Record";
+
+    /// <summary>The event table's key: an application reads and deletes exactly its slice through it, never a range of the table.</summary>
+    private const string EventKey = "PK_RecordEvent";
 
     /// <summary>How many times one slice of staging is tried when a concurrent writer got there first.</summary>
     private const int ContentionAttempts = 5;
@@ -119,9 +123,9 @@ internal static class SqlServerLedgerBulk
         WHERE s.[Slice] = @slice AND s.[TargetId] IS NOT NULL;
         """;
 
-    // The records the slice found are updated, and the others inserted. A record being delivered right now keeps its
-    // status, lease, retry count and last error: the new work queues behind the delivery, whose completion leaves it
-    // pending. Every right-hand side reads the row as it was. Staging answers a request to plan the record again, so the
+    // The records the slice found are updated, and the others inserted. A record being delivered right now (its lease is
+    // alive) keeps its status, lease, retry count and last error: the new work queues behind the delivery, whose
+    // completion leaves it pending. Every right-hand side reads the row as it was. Staging answers a request to plan the record again, so the
     // request is cleared, and claims the record's OSDU id for its flow the first time it queues a document. A record
     // another staging inserted after the slice looked is never overwritten here: the insert fails on the table's key,
     // and the slice runs again and finds it.
@@ -132,11 +136,10 @@ internal static class SqlServerLedgerBulk
                 [TargetId] = COALESCE(t.[TargetId], s.[TargetId]),
                 [ClaimedTargetId] = COALESCE(t.[ClaimedTargetId], s.[TargetId] COLLATE Latin1_General_100_BIN2),
                 [LastSubmissionId] = s.[LastSubmissionId], [NextAttemptUtc] = NULL,
-                [Status] = CASE WHEN t.[Status] = N'delivering' AND t.[LeaseExpiresUtc] > @now THEN t.[Status] ELSE N'pending' END,
-                [AttemptCount] = CASE WHEN t.[Status] = N'delivering' AND t.[LeaseExpiresUtc] > @now THEN t.[AttemptCount] ELSE 0 END,
-                [LastError] = CASE WHEN t.[Status] = N'delivering' AND t.[LeaseExpiresUtc] > @now THEN t.[LastError] ELSE NULL END,
-                [LeaseOwner] = CASE WHEN t.[Status] = N'delivering' AND t.[LeaseExpiresUtc] > @now THEN t.[LeaseOwner] ELSE NULL END,
-                [LeaseExpiresUtc] = CASE WHEN t.[Status] = N'delivering' AND t.[LeaseExpiresUtc] > @now THEN t.[LeaseExpiresUtc] ELSE NULL END,
+                [Status] = CASE WHEN f.[InFlight] = 1 THEN t.[Status] ELSE N'pending' END,
+                [AttemptCount] = CASE WHEN f.[InFlight] = 1 THEN t.[AttemptCount] ELSE 0 END,
+                [LastError] = CASE WHEN f.[InFlight] = 1 THEN t.[LastError] ELSE NULL END,
+                [LeaseOwner] = CASE WHEN f.[InFlight] = 1 THEN t.[LeaseOwner] ELSE NULL END,
                 [PendingDocumentRef] = s.[PendingDocumentRef], [WorkBatch] = s.[WorkBatch], [PendingStepJson] = NULL,
                 [PendingRenderContext] = s.[PendingRenderContext], [PendingSourceFingerprint] = s.[PendingSourceFingerprint],
                 [PendingSourceModifiedUtc] = s.[PendingSourceModifiedUtc],
@@ -148,6 +151,8 @@ internal static class SqlServerLedgerBulk
                 [CacheSetId] = s.[CacheSetId], [Blocked] = 0, [PlanRequestedUtc] = NULL, [UpdatedUtc] = @now
         FROM [osdu].[Record] AS t WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey])))
         INNER JOIN #PendingStage AS s ON t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
+        CROSS APPLY (SELECT CASE WHEN t.[Status] = N'delivering' AND EXISTS (
+            SELECT 1 FROM [osdu].[Lease] AS l WHERE l.[Token] = t.[LeaseOwner] AND l.[ExpiresUtc] > @now) THEN 1 ELSE 0 END AS [InFlight]) AS f
         WHERE s.[Slice] = @slice AND s.[Existing] = 1;
         SET @updated = @@ROWCOUNT;
         INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [SourceKeyJson], [Label], [MappingName], [TargetId], [ClaimedTargetId], [Status], [LastSubmissionId], [AttemptCount],
@@ -165,50 +170,58 @@ internal static class SqlServerLedgerBulk
         SELECT @updated + @@ROWCOUNT;
         """;
 
-    private const string CompletionStageSql = """
-        CREATE TABLE #CompletionStage (
-            [DeliveryKey] uniqueidentifier NOT NULL PRIMARY KEY,
-            [Status] nvarchar(16) NOT NULL,
-            [Blocked] bit NOT NULL,
-            [Promote] bit NOT NULL,
-            [NothingSent] bit NOT NULL,
-            [NextAttemptUtc] datetime2 NULL,
-            [LastError] nvarchar(2000) NULL,
-            [TargetId] nvarchar(500) NULL,
-            [TargetVersion] bigint NULL,
-            [HasTargetState] bit NOT NULL,
-            [TargetStateJson] nvarchar(max) NULL,
-            [PendingStepJson] nvarchar(max) NULL,
-            [HasClaim] bit NOT NULL,
-            [ClaimSubmissionId] uniqueidentifier NULL,
-            [ClaimDocumentRef] nvarchar(64) NULL,
-            [ClaimRenderContext] nvarchar(max) NULL,
-            [ClaimSourceFingerprint] nvarchar(200) NULL,
-            [ClaimSourceModifiedUtc] datetime2 NULL,
-            [ClaimSourceFileName] nvarchar(800) NULL,
-            [ClaimSourceRowNumber] bigint NULL,
-            [ClaimSourceUpdatedUtc] datetime2 NULL,
-            [ClaimMetadataHash] nvarchar(64) NULL,
-            [ClaimPayloadHash] nvarchar(64) NULL,
-            [ClaimPayloadModifiedUtc] datetime2 NULL,
-            [ClaimMetadata] bit NOT NULL,
-            [ClaimPayload] bit NOT NULL);
+    // The next slice of a lease's events, in record order, and the latest of each record among them. A record's events
+    // are applied in the order they were appended, a slice at a time, so a slice may end part way through a record: its
+    // latest event there is older than the ones the next slice applies, and a step carries every step before it. A try's
+    // completion is its record's last event. A record another lease holds now is that lease's to settle. The events go in
+    // the same transaction as their application, so each is applied once.
+    private const string ApplyEventsSql = $$"""
+        CREATE TABLE #Events ([EventId] bigint NOT NULL PRIMARY KEY);
+        INSERT INTO #Events ([EventId])
+        SELECT TOP (@slice) e.[EventId]
+        FROM [osdu].[RecordEvent] AS e
+        WHERE e.[LeaseToken] = @token
+        ORDER BY e.[FlowId], e.[DeliveryKey], e.[EventId];
+        DECLARE @events int = @@ROWCOUNT;
+
+        SELECT l.* INTO #Latest
+        FROM (
+            SELECT e.*, ROW_NUMBER() OVER (PARTITION BY e.[FlowId], e.[DeliveryKey] ORDER BY e.[EventId] DESC) AS [Rank]
+            FROM #Events AS n
+            INNER JOIN [osdu].[RecordEvent] AS e WITH (FORCESEEK ({{EventKey}} ([EventId]))) ON e.[EventId] = n.[EventId]) AS l
+        WHERE l.[Rank] = 1;
+
+        {{CompletionUpdateSql}}
+        DECLARE @applied int = @@ROWCOUNT;
+
+        UPDATE r SET [PendingStepJson] = s.[StepJson]
+        FROM [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey])))
+        INNER JOIN #Latest AS s ON r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
+        WHERE s.[Kind] = N'step'
+          AND (r.[LeaseOwner] IS NULL OR r.[LeaseOwner] = @token)
+          AND r.[PendingDocumentRef] = s.[ClaimDocumentRef]
+          AND (r.[LastSubmissionId] = s.[ClaimSubmissionId] OR (r.[LastSubmissionId] IS NULL AND s.[ClaimSubmissionId] IS NULL));
+
+        DELETE e FROM [osdu].[RecordEvent] AS e WITH (FORCESEEK ({{EventKey}} ([EventId]))) INNER JOIN #Events AS n ON n.[EventId] = e.[EventId];
+        DROP TABLE #Latest;
+        DROP TABLE #Events;
+        SELECT @events, @applied;
         """;
 
     // The same write as OsduLedger.ApplyCompletion. A record now carrying other pending work than the try claimed
     // (newer work queued behind it) promotes what the try delivered from the claim and goes back to pending, keeping
     // the newer work and its step progress; any other record settles as the completion says, promoting its own
     // pending columns. A promotion carries the origin of the version it delivered: the claim's when superseded, the
-    // pending origin otherwise, and only when the work names one.
-    private const string CompletionUpdateSql = """
+    // pending origin otherwise, and only when the work names one. The delivery time is when the try ended.
+    private const string CompletionUpdateSql = $$"""
         UPDATE r SET
             [Status] = CASE WHEN x.[Superseded] = 1 THEN N'pending' ELSE s.[Status] END,
-            [Blocked] = CASE WHEN x.[Superseded] = 1 THEN CAST(0 AS bit) ELSE s.[Blocked] END,
-            [LeaseOwner] = NULL, [LeaseExpiresUtc] = NULL, [UpdatedUtc] = @now,
+            [Blocked] = CASE WHEN x.[Superseded] = 1 THEN CAST(0 AS bit) WHEN s.[Status] IN (N'held', N'failed') THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END,
+            [LeaseOwner] = NULL, [UpdatedUtc] = @now,
             [NextAttemptUtc] = CASE WHEN x.[Superseded] = 1 THEN NULL ELSE s.[NextAttemptUtc] END,
-            [LastError] = CASE WHEN x.[Superseded] = 1 THEN NULL ELSE s.[LastError] END,
+            [LastError] = CASE WHEN x.[Superseded] = 1 THEN NULL ELSE s.[Error] END,
             [TargetId] = COALESCE(s.[TargetId], r.[TargetId]), [TargetVersion] = COALESCE(s.[TargetVersion], r.[TargetVersion]),
-            [TargetStateJson] = CASE WHEN s.[HasTargetState] = 1 THEN s.[TargetStateJson] ELSE r.[TargetStateJson] END,
+            [TargetStateJson] = COALESCE(s.[TargetStateJson], r.[TargetStateJson]),
             [PendingStepJson] = CASE WHEN x.[Superseded] = 1 THEN r.[PendingStepJson] ELSE s.[PendingStepJson] END,
             [RenderContext] = CASE WHEN s.[Promote] = 0 THEN r.[RenderContext]
                 WHEN x.[Superseded] = 1 THEN COALESCE(s.[ClaimRenderContext], r.[RenderContext])
@@ -240,7 +253,7 @@ internal static class SqlServerLedgerBulk
             [PayloadModifiedUtc] = CASE WHEN s.[Promote] = 0 THEN r.[PayloadModifiedUtc]
                 WHEN x.[Superseded] = 1 THEN CASE WHEN s.[ClaimPayload] = 1 THEN COALESCE(s.[ClaimPayloadModifiedUtc], r.[PayloadModifiedUtc]) ELSE r.[PayloadModifiedUtc] END
                 WHEN r.[PendingPayload] = 1 THEN COALESCE(r.[PendingPayloadModifiedUtc], r.[PayloadModifiedUtc]) ELSE r.[PayloadModifiedUtc] END,
-            [LastDeliveredUtc] = CASE WHEN s.[Promote] = 1 AND s.[NothingSent] = 0 THEN @now ELSE r.[LastDeliveredUtc] END,
+            [LastDeliveredUtc] = CASE WHEN s.[Promote] = 1 AND s.[NothingSent] = 0 THEN s.[AtUtc] ELSE r.[LastDeliveredUtc] END,
             [LastVerifiedUtc] = CASE WHEN s.[Promote] = 1 AND s.[NothingSent] = 0 THEN NULL ELSE r.[LastVerifiedUtc] END,
             [LastVerifyOutcome] = CASE WHEN s.[Promote] = 1 AND s.[NothingSent] = 0 THEN NULL ELSE r.[LastVerifyOutcome] END,
             [PendingDocumentRef] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN NULL ELSE r.[PendingDocumentRef] END,
@@ -249,15 +262,16 @@ internal static class SqlServerLedgerBulk
             [PendingPayload] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN CAST(0 AS bit) ELSE r.[PendingPayload] END,
             [PendingPayloadLocation] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN NULL ELSE r.[PendingPayloadLocation] END,
             [AttemptCount] = CASE WHEN s.[Promote] = 1 OR x.[Superseded] = 1 THEN 0 ELSE r.[AttemptCount] END
-        FROM [osdu].[Record] AS r
-        INNER JOIN #CompletionStage AS s ON r.[FlowId] = @flowId AND r.[DeliveryKey] = s.[DeliveryKey]
+        FROM [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey])))
+        INNER JOIN #Latest AS s ON r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
         CROSS APPLY (SELECT CASE
-            WHEN s.[HasClaim] = 1 AND r.[PendingDocumentRef] IS NOT NULL
+            WHEN s.[ClaimDocumentRef] IS NOT NULL AND r.[PendingDocumentRef] IS NOT NULL
                  AND (r.[PendingDocumentRef] <> s.[ClaimDocumentRef]
                       OR r.[LastSubmissionId] <> s.[ClaimSubmissionId]
                       OR (r.[LastSubmissionId] IS NULL AND s.[ClaimSubmissionId] IS NOT NULL)
                       OR (r.[LastSubmissionId] IS NOT NULL AND s.[ClaimSubmissionId] IS NULL))
-            THEN 1 ELSE 0 END AS [Superseded]) AS x;
+            THEN 1 ELSE 0 END AS [Superseded]) AS x
+        WHERE s.[Kind] = N'completion' AND (r.[LeaseOwner] IS NULL OR r.[LeaseOwner] = @token);
         """;
 
     /// <summary>
@@ -372,22 +386,60 @@ internal static class SqlServerLedgerBulk
     private static bool IsRaceIndex(string message)
         => message.Contains($"'{ClaimIndex}'", StringComparison.Ordinal) || message.Contains($"'{RecordKey}'", StringComparison.Ordinal);
 
-    public static Task<int> CompleteManyAsync(OsduDbContext db, Guid flowId, IReadOnlyList<RecordCompletion> completions, DateTime now, CancellationToken ct)
+    /// <summary>
+    /// Appends a lease's attempts and record events in one transaction: two bulk copies, and nothing updated. A deadlock
+    /// rolls both back, and the caller writes them again.
+    /// </summary>
+    public static Task<int> AppendAsync(OsduDbContext db, IReadOnlyList<DeliveryAttempt> attempts, IReadOnlyList<DeliveryRecordEvent> events, CancellationToken ct)
         => InTransactionAsync(db, async (connection, transaction) =>
         {
-            using (var attempts = AttemptTable(flowId, completions))
+            if (attempts.Count > 0)
             {
-                await BulkCopyAsync(connection, transaction, "[osdu].[Attempt]", attempts, ct).ConfigureAwait(false);
+                using var table = AttemptTable(attempts);
+                await BulkCopyAsync(connection, transaction, "[osdu].[Attempt]", table, ct).ConfigureAwait(false);
             }
 
-            await ExecuteAsync(connection, transaction, CompletionStageSql, ct).ConfigureAwait(false);
-            using (var stage = CompletionTable(completions))
+            if (events.Count > 0)
             {
-                await BulkCopyAsync(connection, transaction, "#CompletionStage", stage, ct).ConfigureAwait(false);
+                using var table = EventTable(events);
+                await BulkCopyAsync(connection, transaction, "[osdu].[RecordEvent]", table, ct).ConfigureAwait(false);
             }
 
-            return await ScalarAsync(connection, transaction, CompletionUpdateSql + "SELECT @@ROWCOUNT;", now, flowId, slice: null, ct).ConfigureAwait(false);
+            return attempts.Count + events.Count;
         }, ct);
+
+    /// <summary>
+    /// Applies the next <paramref name="slice"/> events of a lease to their records and deletes them, in one transaction.
+    /// Returns how many events the slice took (fewer than the slice when none are left after it) and how many tries it settled.
+    /// </summary>
+    public static Task<(int Records, int Applied)> ApplyEventsAsync(OsduDbContext db, string token, int slice, DateTime now, CancellationToken ct)
+        => InTransactionAsync(db, async (connection, transaction) =>
+        {
+            await using var command = Command(connection, transaction, ApplyEventsSql, slice);
+            command.Parameters.Add(new SqlParameter("@token", SqlDbType.NVarChar, DeliveryModel.MaxLeaseTokenLength) { Value = token });
+            command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
+            await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                throw new DeliveryException($"Applying the events of lease {token} returned no counts.");
+            }
+
+            return (reader.GetInt32(0), reader.GetInt32(1));
+        }, ct);
+
+    /// <summary>Whether a read failed because the database does not allow snapshot isolation (3951, 3952).</summary>
+    internal static bool IsSnapshotRefused(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is SqlException sql && sql.Errors.Cast<SqlError>().Any(e => e.Number is 3951 or 3952))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static async Task<T> InTransactionAsync<T>(OsduDbContext db, Func<SqlConnection, SqlTransaction, Task<T>> work, CancellationToken ct)
     {
@@ -542,7 +594,7 @@ internal static class SqlServerLedgerBulk
         return table;
     }
 
-    private static DataTable AttemptTable(Guid flowId, IReadOnlyList<RecordCompletion> completions)
+    private static DataTable AttemptTable(IReadOnlyList<DeliveryAttempt> attempts)
     {
         var table = new DataTable();
         table.Columns.Add("FlowId", typeof(Guid));
@@ -563,35 +615,36 @@ internal static class SqlServerLedgerBulk
         table.Columns.Add("SourceFileName", typeof(string));
         table.Columns.Add("SourceRowNumber", typeof(long));
         table.Columns.Add("SourceUpdatedUtc", typeof(DateTime));
-        foreach (var c in completions)
+        foreach (var a in attempts)
         {
-            var a = c.Attempt;
             table.Rows.Add(
-                flowId, a.DeliveryKey.Value, Value(a.SubmissionId), Value(a.RunId), Truncate(a.Worker, 200), a.StartedUtc, a.CompletedUtc,
-                StatusText.Of(a.Outcome), Truncate(a.Phase, 32), Value(a.MetadataHash), Value(a.PayloadHash), Value(a.TargetVersion),
-                Value(Truncate(a.Error, 2000)), Value(a.ResultJson), Value(a.WorkBatch),
-                Value(Truncate(a.SourceFileName, DeliveryModel.MaxSourceFileNameLength)), Value(a.SourceRowNumber), Value(a.SourceUpdatedUtc));
+                a.FlowId, a.DeliveryKey, Value(a.SubmissionId), Value(a.RunId), a.Worker, a.StartedUtc, a.CompletedUtc,
+                a.Outcome, a.Phase, Value(a.MetadataHash), Value(a.PayloadHash), Value(a.TargetVersion),
+                Value(a.Error), Value(a.ResultJson), Value(a.WorkBatch),
+                Value(a.SourceFileName), Value(a.SourceRowNumber), Value(a.SourceUpdatedUtc));
         }
 
         return table;
     }
 
-    private static DataTable CompletionTable(IReadOnlyList<RecordCompletion> completions)
+    private static DataTable EventTable(IReadOnlyList<DeliveryRecordEvent> events)
     {
         var table = new DataTable();
+        table.Columns.Add("LeaseToken", typeof(string));
+        table.Columns.Add("FlowId", typeof(Guid));
         table.Columns.Add("DeliveryKey", typeof(Guid));
+        table.Columns.Add("Kind", typeof(string));
+        table.Columns.Add("AtUtc", typeof(DateTime));
+        table.Columns.Add("StepJson", typeof(string));
         table.Columns.Add("Status", typeof(string));
-        table.Columns.Add("Blocked", typeof(bool));
         table.Columns.Add("Promote", typeof(bool));
         table.Columns.Add("NothingSent", typeof(bool));
         table.Columns.Add("NextAttemptUtc", typeof(DateTime));
-        table.Columns.Add("LastError", typeof(string));
+        table.Columns.Add("Error", typeof(string));
         table.Columns.Add("TargetId", typeof(string));
         table.Columns.Add("TargetVersion", typeof(long));
-        table.Columns.Add("HasTargetState", typeof(bool));
         table.Columns.Add("TargetStateJson", typeof(string));
         table.Columns.Add("PendingStepJson", typeof(string));
-        table.Columns.Add("HasClaim", typeof(bool));
         table.Columns.Add("ClaimSubmissionId", typeof(Guid));
         table.Columns.Add("ClaimDocumentRef", typeof(string));
         table.Columns.Add("ClaimRenderContext", typeof(string));
@@ -605,18 +658,15 @@ internal static class SqlServerLedgerBulk
         table.Columns.Add("ClaimPayloadModifiedUtc", typeof(DateTime));
         table.Columns.Add("ClaimMetadata", typeof(bool));
         table.Columns.Add("ClaimPayload", typeof(bool));
-        foreach (var c in completions)
+        foreach (var e in events)
         {
-            var claim = c.Claimed;
             table.Rows.Add(
-                c.DeliveryKey.Value, StatusText.Of(c.Status), c.Status is RecordStatus.Held or RecordStatus.Failed, c.Promote, c.NothingSent,
-                Value(c.NextAttemptUtc), Value(Truncate(c.Error, 2000)), Value(c.TargetId), Value(c.TargetVersion),
-                c.TargetStateJson is not null, Value(c.TargetStateJson), Value(c.PendingStepJson),
-                claim is not null, Value(claim?.SubmissionId), Value(claim?.DocumentRef), Value(claim?.RenderContext), Value(claim?.SourceFingerprint),
-                Value(claim?.SourceModifiedUtc),
-                Value(Truncate(claim?.Origin.FileName, DeliveryModel.MaxSourceFileNameLength)), Value(claim?.Origin.RowNumber), Value(claim?.Origin.UpdatedUtc),
-                Value(claim?.MetadataHash), Value(claim?.PayloadHash), Value(claim?.PayloadModifiedUtc),
-                claim?.Metadata ?? false, claim?.Payload ?? false);
+                e.LeaseToken, e.FlowId, e.DeliveryKey, e.Kind, e.AtUtc, Value(e.StepJson),
+                Value(e.Status), e.Promote, e.NothingSent, Value(e.NextAttemptUtc), Value(e.Error),
+                Value(e.TargetId), Value(e.TargetVersion), Value(e.TargetStateJson), Value(e.PendingStepJson),
+                Value(e.ClaimSubmissionId), Value(e.ClaimDocumentRef), Value(e.ClaimRenderContext), Value(e.ClaimSourceFingerprint),
+                Value(e.ClaimSourceModifiedUtc), Value(e.ClaimSourceFileName), Value(e.ClaimSourceRowNumber), Value(e.ClaimSourceUpdatedUtc),
+                Value(e.ClaimMetadataHash), Value(e.ClaimPayloadHash), Value(e.ClaimPayloadModifiedUtc), e.ClaimMetadata, e.ClaimPayload);
         }
 
         return table;

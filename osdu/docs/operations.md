@@ -27,7 +27,10 @@ Everything the platform already reads ([../environment-variables.md](../environm
    needs the `osdu` module database connection of its own (`SQLFLOW_OSDU_DB`), with rights on schema `osdu`
    alone ([../architecture.md](architecture.md)).
 2. Provision the databases: the control plane applies SQLFlow's and the module's migrations on start, or
-   `sqlflow db migrate --db <ref>`. The ledger's `osdu` schema comes with it.
+   `sqlflow db migrate --db <ref>`. The ledger's `osdu` schema comes with it. The ledger reads under snapshot
+   isolation, so allow it once on the database that holds the `osdu` schema (Azure SQL Database allows it by
+   default): `ALTER DATABASE [<database>] SET ALLOW_SNAPSHOT_ISOLATION ON;`
+   ([ledger.md](ledger.md#provisioning)).
 3. Save the template the mapping pins into the catalog:
 
    ```bash
@@ -268,7 +271,9 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 | A record-scoped run plans nothing: the ingestion tables hold no row for its key | The run's trace names the record table and the key | Look at the pre and ingestion runs that load that table; a run scoped to the record reads it by key once they have loaded it. |
 | Records `held` | The Records tab filtered to held | Read the last error. Fix the data (reference miss, empty key) or the mapping; then Release (one record, or all blocked). |
 | Records `failed` | The record's History tab | The retry budget is spent; the last error is redacted but specific. Release after fixing the cause. |
-| Records stuck `delivering` | `Lease` on the record page in the past | A worker stopped mid-delivery. The flow's next deliver run (the recovered run, a re-run of the submission, or `drain`) waits out the lease, reclaims it and sends the record; nothing else to do unless a node is wedged. |
+| Records stuck `delivering` | `Lease` on the record page in the past | A worker stopped mid-delivery. The flow's next deliver run (the recovered run, a re-run of the submission, or `drain`) waits out the lease, recovers it (applying what the stopped worker had sent) and sends the rest; nothing else to do unless a node is wedged. |
+| Records show `delivering` while the run's trace says they were sent | The run's trace: `batch.progress` for the batch | Expected while the batch runs: a worker applies what it sent to the records at each renewal of its lease and when the batch closes, so the records trail the trace by at most one renewal. The attempts are there at once. |
+| A run fails: the database does not allow snapshot isolation | The error names the database and the statement | Run the `ALTER DATABASE ... SET ALLOW_SNAPSHOT_ISOLATION ON` it names, once, and run again. Nothing was claimed. |
 | A verify run reports drift | The Records tab with Drifted only | Decide whether the edit in OSDU was legitimate. Redeliver the record, or set `verify.reconcile: true` so verify runs queue redelivery. |
 | Everything re-renders after a change | The render context on the record | Only `render.*` and the template version its mapping pins enter the render context; a moved mapping version, template version or cache version renders every record that uses it again. Only a record whose rendered document differs is sent; the rest are skipped as unchanged and take the new context. |
 | A run fails: the mapping pins a template that is not saved in the catalog | The run's error names the mapping, the kind and the version | Save that version (the Templates page, `sqlflow template capture` or `import`) and run again. A schema that changed since saves as another version, which the mapping then has to pin. |

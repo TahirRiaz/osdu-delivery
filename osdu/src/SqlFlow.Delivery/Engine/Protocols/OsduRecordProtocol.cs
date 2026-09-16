@@ -178,6 +178,9 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
             }
         }
 
+        // Every record of the request is written at the target now, so their steps are reported together, and the worker
+        // writes them to the ledger in one go.
+        var reports = new List<Task>(toWrite.Count);
         foreach (var (index, work, _) in toWrite)
         {
             var version = versions.TryGetValue(work.TargetId, out var text) ? RecordWriter.ParseVersion(text) : RecordWriter.ParseVersion(single);
@@ -194,7 +197,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
 
             var own = new DeliverySteps(_time);
             own.Add(RecordsStep, started, (int)result.Status, returned);
-            await work.ReportStepAsync(RecordsStep, returned, ct).ConfigureAwait(false);
+            reports.Add(work.ReportStepAsync(RecordsStep, returned, ct));
             outcomes[index] = new DeliveryOutcome
             {
                 MetadataDelivered = true,
@@ -206,6 +209,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
             };
         }
 
+        await Task.WhenAll(reports).ConfigureAwait(false);
         return outcomes;
     }
 

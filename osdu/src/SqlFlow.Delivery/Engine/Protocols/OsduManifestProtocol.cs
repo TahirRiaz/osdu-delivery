@@ -429,6 +429,9 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         var values = run.Values();
         values["workflow"] = _options.WorkflowName;
         values["records"] = group.Count.ToString(CultureInfo.InvariantCulture);
+        // The run was triggered for every record of the group, so their steps are reported together, and the worker writes
+        // them to the ledger in one go before the run is polled.
+        var reports = new List<Task>(group.Count);
         foreach (var staged in group)
         {
             var mine = new Dictionary<string, string>(values, StringComparer.Ordinal);
@@ -438,9 +441,10 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
             }
 
             staged.Steps.Add(ManifestStep, started, (int)result.Status, mine);
-            await staged.Work.ReportStepAsync(ManifestStep, mine, ct).ConfigureAwait(false);
+            reports.Add(staged.Work.ReportStepAsync(ManifestStep, mine, ct));
         }
 
+        await Task.WhenAll(reports).ConfigureAwait(false);
         _logger.LogInformation("Workflow run {RunId} of {Workflow} triggered for {Count} record(s) ({Status}).", runId, _options.WorkflowName, group.Count, run.Status);
         return run;
     }
