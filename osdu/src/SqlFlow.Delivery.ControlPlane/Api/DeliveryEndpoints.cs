@@ -1,28 +1,34 @@
 using System.Security.Claims;
 using System.Text.Json;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using SqlFlow.Catalog;
+using SqlFlow.ControlPlane.Api;
 using SqlFlow.ControlPlane.Background;
+using SqlFlow.ControlPlane.Hosting;
 using SqlFlow.Core;
 using SqlFlow.Core.Compute;
 using SqlFlow.Core.Runs;
-using SqlFlow.Delivery;
+using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
-using SqlFlow.Delivery.Drops;
 using SqlFlow.Delivery.Engine;
-using SqlFlow.Delivery.Engine.Intake;
 using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Submissions;
 using SqlFlow.Delivery.Templates;
 using SqlFlow.Delivery.Validation;
 
-namespace SqlFlow.ControlPlane.Api;
+namespace SqlFlow.Delivery.ControlPlane.Api;
 
 /// <summary>A delivery flow's record counts by state, drift, throughput, and its last submission: the flow's dashboard card.</summary>
 public sealed record DeliveryFlowStatsDto(
@@ -30,14 +36,19 @@ public sealed record DeliveryFlowStatsDto(
     long Deleted, long Drifted, long DeliveredLast24h, DateTime? LastDeliveredUtc, DateTime? LastVerifiedUtc, long Submissions,
     DeliverySubmissionDto? LastSubmission);
 
-/// <summary>One drop as the ledger received it and what became of it.</summary>
+/// <summary>
+/// One plan of a flow over its ingestion tables as the ledger received it, and what became of it: which selection it
+/// read (<c>Kind</c>, the window and what else bounded it), where the records came from (<c>SourceConnection</c> as the
+/// flow declares it, <c>SourceObject</c>), and the run and chain group that carried it.
+/// </summary>
 public sealed record DeliverySubmissionDto(
-    Guid SubmissionId, Guid FlowId, string FlowName, string MappingReference, string RenderContext, string DropLocation,
+    Guid SubmissionId, Guid FlowId, string FlowName, string MappingReference, string RenderContext,
     string ParametersJson, long RecordCount, string Status, DateTime ReceivedUtc, DateTime? StartedUtc, DateTime? CompletedUtc,
     long Planned, long SkippedUnchanged, long AwaitingApproval, long SkippedStale, long UnchangedAtPush, long Blocked, long Delivered, long Held, long Failed, string? Error,
-    string? WorkLocation, int BatchCount, int Partitions, string? Reference = null,
-    string Kind = SubmissionKinds.Drop, DateTime? LoadedUtc = null, long SourceRecords = 0, long LoadedRows = 0, long Duplicates = 0, long Untracked = 0,
-    long ReplicaInserted = 0, long ReplicaUpdated = 0, JsonElement? ReplicaSchema = null, DateTime? SourcePrunedUtc = null);
+    string? WorkLocation, int BatchCount, int Slices, string? Reference = null,
+    string Kind = SubmissionKinds.Incremental, long Untracked = 0,
+    string SourceConnection = "", string SourceObject = "", DateTime? WindowFromUtc = null, DateTime? WindowToUtc = null,
+    JsonElement? SourceWindow = null, Guid? RunId = null, Guid? GroupId = null);
 
 /// <summary>One retrieval run of a retrieval flow: the window it covered, where its files went, and its outcome.</summary>
 public sealed record DeliveryRetrievalDto(
@@ -174,45 +185,53 @@ public sealed record DeliveryCacheDiffItemDto(
 public sealed record DeliveryCacheHistoryEntryDto(DeliveryCacheVersionDto Version, string? Before, long Changed, long Added, long Removed);
 
 /// <summary>
-/// A submission. Either the manifest notification (<c>drop</c>: the preparing side has finished a drop and asks for it to
-/// be delivered) or inline records (<c>records</c>: a source sends the records themselves, each in the shape of a mapping
-/// fixture, design.md section 3.4). The flow is named by pipeline id, or by repository and flow name, or by flow name
-/// alone when it is unique. <c>operation</c> is deliver (the default) or plan. <c>submissionId</c> is the idempotency
-/// key of inline records; a drop's is the one its manifest carries.
+/// Records a source sends the flow through the API (docs/stage4-design.md section 4): each in the shape of a mapping
+/// fixture. They land as files for the flow's declared pre-ingestion flows, and the chain of pre, ing and OSDU runs the
+/// submission queues delivers them. The flow is named by pipeline id, or by repository and flow name, or by flow name
+/// alone when it is unique. <c>operation</c> is deliver (the default) or plan. <c>submissionId</c> is the idempotency key.
 /// </summary>
 /// <remarks>
 /// <c>reference</c> is the caller's own name for this submission (a filename, a ticket, a job id): stored, searchable,
 /// never interpreted, and part of the request the <c>submissionId</c> names, so a repeat carrying a different one is a
-/// conflict. A drop's reference is the one its manifest carries, as its submission id is.
+/// conflict. <c>reland</c> writes the landing files again from what the ledger stored before the chain is queued, for a
+/// submission whose files were removed from the landing folders.
 /// </remarks>
 public sealed record DeliverySubmissionRequest(
-    Guid? PipelineId, Guid? RepoId, string? Flow, string? Drop, IReadOnlyDictionary<string, string>? Parameters, bool Force = false, string? Pool = null,
-    JsonElement? Records = null, Guid? SubmissionId = null, string? Operation = null, string? Reference = null);
+    Guid? PipelineId, Guid? RepoId, string? Flow, IReadOnlyDictionary<string, string>? Parameters, bool Force = false, string? Pool = null,
+    JsonElement? Records = null, Guid? SubmissionId = null, string? Operation = null, string? Reference = null, bool Reland = false);
 
 /// <summary>
-/// A submission was accepted: the run that takes it, the submission id when the records came inline, and whether this
-/// answers a repeat of a request already accepted (the run is then the one that request started).
+/// A submission was accepted: the chain group that carries it, the OSDU flow's run in that group, the submission id, and
+/// whether this answers a repeat of a request already accepted (the group is then the one that request queued).
 /// </summary>
-public sealed record DeliverySubmissionAccepted(Guid RunId, Guid PipelineId, string FlowName, string Status, Guid? SubmissionId = null, bool Replayed = false);
+public sealed record DeliverySubmissionAccepted(
+    Guid RunId, Guid PipelineId, string FlowName, string Status, Guid? SubmissionId = null, bool Replayed = false, Guid? GroupId = null);
 
-/// <summary>An inline submission's records as the ledger holds them, with who sent them, where a run wrote them, and the runs that took them.</summary>
+/// <summary>One file a submission landed for a pre-ingestion flow, and what became of it.</summary>
+public sealed record DeliverySubmissionLandingDto(
+    string Dataset, string PreFlowName, string Location, string FileName, string Format, long RowCount, long Bytes,
+    string ContentHash, DateTime? WrittenUtc, Guid? PreRunId);
+
+/// <summary>An API submission's records as the ledger holds them, with who sent them, how far it got, and the files it landed.</summary>
 public sealed record DeliveryInlineSubmissionDto(
     Guid SubmissionId, Guid FlowId, string FlowName, Guid? PipelineId, string MappingReference, string Operation, bool Force, string ParametersJson,
-    int RecordCount, long ChildRowCount, int ContentBytes, string ContentHash, DateTime ReceivedUtc, string ReceivedBy, string? DropLocation,
-    DateTime? WrittenUtc, IReadOnlyList<Guid> RunIds, JsonElement Records, string? Reference = null);
+    int RecordCount, long ChildRowCount, int ContentBytes, string ContentHash, DateTime ReceivedUtc, string ReceivedBy, string Status,
+    DateTime? LandedUtc, Guid? GroupId, Guid? OsduRunId, string? Error, IReadOnlyList<DeliverySubmissionLandingDto> Landings,
+    IReadOnlyList<Guid> RunIds, JsonElement Records, string? Reference = null);
 
 /// <summary>One parameter a flow declares, for a caller filling in a submission.</summary>
 public sealed record DeliveryFlowParameterDto(string Name, bool Required, string? Default, string? Description);
 
 /// <summary>
-/// One delivery flow as the manual submission page lists it: whether its document offers manual submission
-/// (<c>source.manualSubmission</c>), what it renders with and the template version that mapping fills (null while the
-/// mapping is not synced or is invalid), the parameter values a submission has to carry, and the payload its records point
-/// at when it streams one. A flow that does not offer it is listed only when the caller asks for all of them, and says why.
+/// One delivery flow as the submission page lists it: whether its document takes records through the API
+/// (<c>source.submissions</c>, with the pre-ingestion flows they land for), what it renders with and the template version
+/// that mapping fills (null while the mapping is not synced or is invalid), the parameter values a submission has to
+/// carry, and the payload sets its records point at. A flow that takes none is listed only when the caller asks for all
+/// of them, and says why.
 /// </summary>
 public sealed record DeliveryManualFlowDto(
     Guid PipelineId, Guid RepoId, string FlowName, string? Batch, string MappingReference, string Protocol,
-    bool AcceptsRecords, string? RecordsRefusal, IReadOnlyList<DeliveryFlowParameterDto> Parameters, string? PayloadName,
+    bool AcceptsRecords, string? RecordsRefusal, IReadOnlyList<DeliveryFlowParameterDto> Parameters, IReadOnlyList<string> Payloads,
     string? TemplateKind, string? TemplateVersion);
 
 /// <summary>The template version a flow's mapping fills, and whether the catalog holds it: a run renders only with a saved version.</summary>
@@ -252,9 +271,9 @@ public sealed record DeliverySourceContractDto(
     IReadOnlyList<DeliveryFlowParameterDto> Parameters,
     DeliverySourceTemplateDto? Template, string? System, IReadOnlyList<string> Key, string? Label,
     IReadOnlyList<DeliverySourceColumnDto> Columns, IReadOnlyList<DeliverySourceDatasetDto> Datasets,
-    string? LastModifiedColumn, string? FingerprintColumn, string? MappingProblem,
+    string? LastModifiedColumn, string SourceObject, string UpdatedColumn, string? MappingProblem,
     int MaxRecords, int MaxChildRows, int MaxContentBytes,
-    string? PayloadName, bool PayloadHashRequired, IReadOnlyList<string> PayloadRoots);
+    IReadOnlyList<string> Payloads, bool PayloadHashRequired, IReadOnlyList<string> PayloadRoots);
 
 /// <summary>A run was queued for a record-scoped operation (redeliver, verify).</summary>
 public sealed record DeliveryRunAccepted(Guid RunId, string Status);
@@ -315,6 +334,9 @@ public static class DeliveryEndpoints
 {
     private const int MaxAttempts = 500;
 
+    /// <summary>Runs one submission's page lists: the run that registered it and everything that has worked on it since.</summary>
+    private const int MaxSubmissionRuns = 100;
+
     /// <summary>How often an inline submission's insert is tried when it loses to a concurrent request for the same id.</summary>
     private const int MaxAcceptAttempts = 3;
 
@@ -339,7 +361,6 @@ public static class DeliveryEndpoints
         delivery.MapGet("/records/{key:guid}", GetRecordAsync).WithName("GetDeliveryRecord");
         delivery.MapGet("/records/{key:guid}/attempts", ListRecordAttemptsAsync).WithName("ListDeliveryRecordAttempts");
         delivery.MapGet("/records/{key:guid}/activities", ListRecordActivitiesAsync).WithName("ListDeliveryRecordActivities");
-        delivery.MapGet("/records/{key:guid}/replica", GetRecordReplicaAsync).WithName("GetDeliveryRecordReplica");
         delivery.MapGet("/submissions/{submissionId:guid}", GetSubmissionAsync).WithName("GetDeliverySubmission");
         delivery.MapGet("/submissions/{submissionId:guid}/attempts", ListSubmissionAttemptsAsync).WithName("ListDeliverySubmissionAttempts");
         delivery.MapGet("/submissions/{submissionId:guid}/batches", ListSubmissionBatchesAsync).WithName("ListDeliverySubmissionBatches");
@@ -361,8 +382,8 @@ public static class DeliveryEndpoints
     {
         ArgumentNullException.ThrowIfNull(group);
         var delivery = group.MapGroup("/delivery").WithTags("Delivery");
-        // Inline records ride in the body, so the route reads a larger body than the default and no larger than that.
-        delivery.MapPost("/submissions", SubmitAsync).WithName("SubmitDeliveryDrop")
+        // The records ride in the body, so the route reads a larger body than the default and no larger than that.
+        delivery.MapPost("/submissions", SubmitAsync).WithName("SubmitDeliveryRecords")
             .WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(InlineRecords.MaxRequestBytes));
         delivery.MapPost("/flows/{pipelineId:guid}/release", ReleaseFlowAsync).WithName("ReleaseDeliveryFlowRecords");
         delivery.MapPost("/flows/{pipelineId:guid}/probe", ProbeAsync).WithName("ProbeDeliveryTarget");
@@ -371,10 +392,11 @@ public static class DeliveryEndpoints
         delivery.MapPost("/records/{key:guid}/redeliver", RedeliverAsync).WithName("RedeliverDeliveryRecord");
         delivery.MapPost("/records/{key:guid}/verify", VerifyRecordAsync).WithName("VerifyDeliveryRecord");
         delivery.MapPost("/records/{key:guid}/read", ReadRecordAsync).WithName("ReadDeliveryRecordBack");
+        delivery.MapPost("/records/{key:guid}/source", ReadSourceAsync).WithName("ReadDeliveryRecordSource");
         delivery.MapPost("/records/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove", RemoveRecordsAsync).WithName("RemoveDeliveryRecords");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove/preview", PreviewRemovalAsync).WithName("PreviewDeliveryRemoval");
-        delivery.MapPost("/ledger/prune", PruneAsync).WithName("PruneDeliveryLedger").RequireAuthorization("admin");
+        delivery.MapPost("/ledger/prune", PruneAsync).WithName("PruneDeliveryLedger").RequireAuthorization(ControlPlanePolicies.Admin);
         return group;
     }
 
@@ -554,12 +576,7 @@ public static class DeliveryEndpoints
         }
 
         var pipeline = await FindPipelineAsync(db, submission.FlowId, ct).ConfigureAwait(false);
-        var runIds = await db.Runs.AsNoTracking()
-            .Where(r => r.SubmissionId == submissionId || r.ResultSubmissionId == submissionId)
-            .OrderByDescending(r => r.EnqueuedUtc)
-            .Select(r => r.RunId)
-            .Take(100)
-            .ToListAsync(ct).ConfigureAwait(false);
+        var runIds = await SubmissionRunsAsync(db, submissionId, submission.RunId, submission.GroupId, ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliverySubmissionDetailDto(ToDto(submission), pipeline?.Id, runIds));
     }
 
@@ -652,9 +669,9 @@ public static class DeliveryEndpoints
             : TypedResults.Ok(ToDto(activity));
     }
 
-    private static async Task<Ok<IReadOnlyList<DeliveryMappingDto>>> ListMappingsAsync(Guid? repoId, string? status, CatalogDbContext db, CancellationToken ct)
+    private static async Task<Ok<IReadOnlyList<DeliveryMappingDto>>> ListMappingsAsync(Guid? repoId, string? status, OsduDbContext osdu, CancellationToken ct)
     {
-        var query = db.DeliveryMappings.AsNoTracking().AsQueryable();
+        var query = osdu.DeliveryMappings.AsNoTracking().AsQueryable();
         if (repoId is { } r)
         {
             query = query.Where(m => m.RepoId == r);
@@ -670,9 +687,9 @@ public static class DeliveryEndpoints
         return TypedResults.Ok<IReadOnlyList<DeliveryMappingDto>>(rows.Select(ToDto).ToList());
     }
 
-    private static async Task<Results<Ok<DeliveryMappingDetailDto>, ProblemHttpResult>> GetMappingAsync(Guid mappingId, CatalogDbContext db, CancellationToken ct)
+    private static async Task<Results<Ok<DeliveryMappingDetailDto>, ProblemHttpResult>> GetMappingAsync(Guid mappingId, OsduDbContext osdu, CancellationToken ct)
     {
-        var row = await db.DeliveryMappings.AsNoTracking().FirstOrDefaultAsync(m => m.Id == mappingId, ct).ConfigureAwait(false);
+        var row = await osdu.DeliveryMappings.AsNoTracking().FirstOrDefaultAsync(m => m.Id == mappingId, ct).ConfigureAwait(false);
         return row is null ? NotFound("mapping", mappingId) : TypedResults.Ok(new DeliveryMappingDetailDto(ToDto(row), row.Yaml));
     }
 
@@ -683,9 +700,9 @@ public static class DeliveryEndpoints
     /// <paramref name="repoId"/>, the caches the repository's cache flows fill. Read-only: a cache is defined in YAML and
     /// filled by runs.
     /// </summary>
-    private static async Task<Ok<IReadOnlyList<DeliveryCacheDto>>> ListCachesAsync(Guid? repoId, CatalogDbContext db, CancellationToken ct)
+    private static async Task<Ok<IReadOnlyList<DeliveryCacheDto>>> ListCachesAsync(Guid? repoId, CatalogDbContext db, OsduDbContext osdu, CancellationToken ct)
     {
-        var definitions = await db.DeliveryCacheDefinitions.AsNoTracking()
+        var definitions = await osdu.DeliveryCacheDefinitions.AsNoTracking()
             .OrderBy(c => c.Scope).ThenBy(c => c.Name).ThenBy(c => c.FlowName)
             .Take(MaxCacheDefinitions)
             .ToListAsync(ct).ConfigureAwait(false);
@@ -718,10 +735,10 @@ public static class DeliveryEndpoints
             .Where(s => scheduleIds.Contains(s.Id))
             .Select(s => new DeliveryCacheScheduleDto(s.Id, s.Name, s.Cron, s.IntervalSeconds, s.Parents.Any()))
             .ToListAsync(ct).ConfigureAwait(false);
-        var currentRows = await db.DeliveryCacheVersions.AsNoTracking()
+        var currentRows = await osdu.DeliveryCacheVersions.AsNoTracking()
             .Where(v => scopes.Contains(v.Scope) && v.Current)
             .ToListAsync(ct).ConfigureAwait(false);
-        var versionCounts = await db.DeliveryCacheVersions.AsNoTracking()
+        var versionCounts = await osdu.DeliveryCacheVersions.AsNoTracking()
             .Where(v => scopes.Contains(v.Scope))
             .GroupBy(v => v.Scope)
             .Select(g => new { Scope = g.Key, Count = g.Count() })
@@ -732,7 +749,7 @@ public static class DeliveryEndpoints
             .Select(group =>
             {
                 var scope = group.Key;
-                var current = currentRows.FirstOrDefault(v => v.Scope == scope) is { } row ? CatalogCacheStore.Info(row) : null;
+                var current = currentRows.FirstOrDefault(v => v.Scope == scope) is { } row ? OsduCacheStore.Info(row) : null;
                 var held = current?.Types.ToDictionary(t => t.Name, t => t.Items, StringComparer.OrdinalIgnoreCase)
                     ?? new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
 
@@ -764,7 +781,7 @@ public static class DeliveryEndpoints
                         var fields = new List<(string Path, string As, List<string> Flows)>();
                         foreach (var declaration in ordered)
                         {
-                            foreach (var field in CatalogCacheStore.ParseFields(declaration.FieldsJson, declaration.FlowName, declaration.Name))
+                            foreach (var field in OsduCacheStore.ParseFields(declaration.FieldsJson, declaration.FlowName, declaration.Name))
                             {
                                 var known = fields.FindIndex(f => f.As.Equals(field.Name, StringComparison.OrdinalIgnoreCase));
                                 if (known < 0)
@@ -801,7 +818,7 @@ public static class DeliveryEndpoints
     /// names it, and without one it is the current version, the one delivery flows render against.
     /// </summary>
     private static async Task<Results<Ok<PagedResult<DeliveryCachedItemDto>>, ProblemHttpResult>> ListCachedItemsAsync(
-        string? scope, string? type, string? search, string? version, int? page, int? pageSize, CatalogDbContext db, CancellationToken ct)
+        string? scope, string? type, string? search, string? version, int? page, int? pageSize, OsduDbContext osdu, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(scope))
         {
@@ -810,7 +827,7 @@ public static class DeliveryEndpoints
 
         var (p, size) = PageRequest.Normalize(page, pageSize);
         var partition = scope.Trim();
-        var resolved = await CacheVersions.ResolveAsync(db, partition, version, ct).ConfigureAwait(false);
+        var resolved = await CacheVersions.ResolveAsync(osdu, partition, version, ct).ConfigureAwait(false);
         if (resolved is null)
         {
             return string.IsNullOrWhiteSpace(version)
@@ -818,7 +835,7 @@ public static class DeliveryEndpoints
                 : UnknownCacheVersion(partition, version.Trim());
         }
 
-        var query = CacheVersions.ItemsAt(db, partition, resolved.Sequence);
+        var query = CacheVersions.ItemsAt(osdu, partition, resolved.Sequence);
         if (!string.IsNullOrWhiteSpace(type))
         {
             var t = type.Trim();
@@ -843,14 +860,14 @@ public static class DeliveryEndpoints
 
     /// <summary>The versions of one partition's cache, newest first, each with the flow and run that wrote it: what the version picker offers.</summary>
     private static async Task<Results<Ok<IReadOnlyList<DeliveryCacheVersionDto>>, ProblemHttpResult>> ListCacheVersionsAsync(
-        string? scope, CatalogDbContext db, CancellationToken ct)
+        string? scope, OsduDbContext osdu, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(scope))
         {
             return NoCacheNamed();
         }
 
-        var versions = await CacheVersions.ListAsync(db, scope.Trim(), ct).ConfigureAwait(false);
+        var versions = await CacheVersions.ListAsync(osdu, scope.Trim(), ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryCacheVersionDto>>(versions.Select(ToVersionDto).ToList());
     }
 
@@ -860,14 +877,14 @@ public static class DeliveryEndpoints
     /// changed it can be told apart.
     /// </summary>
     private static async Task<Results<Ok<IReadOnlyList<DeliveryCacheHistoryEntryDto>>, ProblemHttpResult>> ListCacheHistoryAsync(
-        string? scope, string? type, CatalogDbContext db, CancellationToken ct)
+        string? scope, string? type, OsduDbContext osdu, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(scope))
         {
             return NoCacheNamed();
         }
 
-        var history = await CacheVersions.HistoryAsync(db, scope.Trim(), string.IsNullOrWhiteSpace(type) ? null : type.Trim(), ct).ConfigureAwait(false);
+        var history = await CacheVersions.HistoryAsync(osdu, scope.Trim(), string.IsNullOrWhiteSpace(type) ? null : type.Trim(), ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryCacheHistoryEntryDto>>(history
             .Select(h => new DeliveryCacheHistoryEntryDto(ToVersionDto(h.Version), h.Before, h.Changes.Changed, h.Changes.Added, h.Changes.Removed))
             .ToList());
@@ -906,7 +923,7 @@ public static class DeliveryEndpoints
     /// </summary>
     private static async Task<Results<Ok<DeliveryCacheDiffDto>, ProblemHttpResult>> CompareCacheVersionsAsync(
         string? scope, string? from, string? to, string? type, string? change, string? search, int? page, int? pageSize,
-        CatalogDbContext db, CancellationToken ct)
+        OsduDbContext osdu, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(scope))
         {
@@ -942,7 +959,7 @@ public static class DeliveryEndpoints
             Skip = (int)Math.Min(int.MaxValue, (long)(p - 1) * size),
             Take = size,
         };
-        var diff = await CacheVersions.CompareAsync(db, query, ct).ConfigureAwait(false);
+        var diff = await CacheVersions.CompareAsync(osdu, query, ct).ConfigureAwait(false);
         if (diff is null)
         {
             var named = query.ToVersion is null ? $"'{query.FromVersion}' (or has no current version)" : $"'{query.FromVersion}' or '{query.ToVersion}'";
@@ -1018,38 +1035,23 @@ public static class DeliveryEndpoints
     // ---- Interventions -------------------------------------------------------------------------------------------
 
     private static async Task<Results<Accepted<DeliverySubmissionAccepted>, Ok<DeliverySubmissionAccepted>, ProblemHttpResult>> SubmitAsync(
-        DeliverySubmissionRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher,
-        TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
+        DeliverySubmissionRequest request, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger,
+        EngineContext engine, IRunDispatcher dispatcher, TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
     {
         if (request is null)
         {
-            return InvalidSubmission("A submission names its flow, and either the drop to deliver (drop) or the records to deliver (records).");
+            return InvalidSubmission("A submission names its flow and carries the records to deliver (records).");
         }
 
-        var hasDrop = !string.IsNullOrWhiteSpace(request.Drop);
-        var hasRecords = request.Records is { ValueKind: not (JsonValueKind.Undefined or JsonValueKind.Null) };
-        if (hasDrop == hasRecords)
+        if (request.Records is not { ValueKind: not (JsonValueKind.Undefined or JsonValueKind.Null) } records)
         {
-            return InvalidSubmission(hasDrop
-                ? "A submission names a drop or carries records, not both."
-                : "A submission names the drop to deliver (drop) or carries the records to deliver (records).");
+            return InvalidSubmission("A submission carries the records to deliver (records).");
         }
 
-        var operation = string.IsNullOrWhiteSpace(request.Operation) ? RunParameters.DeliverOperation : request.Operation.Trim().ToLowerInvariant();
+        var operation = string.IsNullOrWhiteSpace(request.Operation) ? DeliveryOperations.Deliver : request.Operation.Trim().ToLowerInvariant();
         if (!InlineSubmissionState.Operations.Contains(operation, StringComparer.Ordinal))
         {
             return InvalidSubmission($"operation is {string.Join(" or ", InlineSubmissionState.Operations)}.");
-        }
-
-        if (hasDrop && request.SubmissionId is not null)
-        {
-            return InvalidSubmission("A drop's submission id is the one its manifest carries; submissionId goes with records.");
-        }
-
-        if (hasDrop && request.Reference is not null)
-        {
-            return InvalidSubmission(
-                "A drop's reference is the one its manifest carries, as its submission id is. Put 'reference' in the manifest the preparing side writes; on a submission it goes with records.");
         }
 
         if (SubmissionReference.Refusal(request.Reference) is { } referenceRefusal)
@@ -1063,41 +1065,26 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        if (hasRecords)
-        {
-            return await SubmitRecordsAsync(request, request.Records!.Value, operation, flow, db, ledger, dispatcher, clock, user, ct).ConfigureAwait(false);
-        }
-
-        var parameters = new RunParameters
-        {
-            Operation = operation,
-            Force = request.Force,
-            Drop = request.Drop!.Trim(),
-            Values = request.Parameters ?? new Dictionary<string, string>(StringComparer.Ordinal),
-        };
-        try
-        {
-            parameters.Validate();
-        }
-        catch (SqlFlowException ex)
-        {
-            return InvalidSubmission(ex.Message, "Invalid run parameters");
-        }
-
-        var runId = await EnqueueRunAsync(db, dispatcher, flow, parameters, request.Pool, user, ct).ConfigureAwait(false);
-        return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliverySubmissionAccepted(runId, flow.Pipeline.Id, flow.Pipeline.Name, RunStatuses.Queued));
+        return await SubmitRecordsAsync(request, records, operation, flow, db, osdu, documents, ledger, engine, dispatcher, clock, user, ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Inline records (design.md section 3.4). The records are checked, and stored in the same transaction as the run that
-    /// takes them, under the submission id the caller chose or a new one. The same request again answers with the run it
-    /// started and queues nothing; the same id with anything different is a conflict, since the id names one request.
+    /// Records sent through the API (docs/stage4-design.md section 4). They are checked, stored under the submission id the
+    /// caller chose or a new one, landed as files for the flow's pre-ingestion flows, and then the chain of pre, ing and
+    /// OSDU runs that delivers them is queued with the ledger rows that describe it. The same request again answers with
+    /// the chain it queued and queues nothing; the same id with anything different is a conflict, since the id names one
+    /// request.
     /// </summary>
     private static async Task<Results<Accepted<DeliverySubmissionAccepted>, Ok<DeliverySubmissionAccepted>, ProblemHttpResult>> SubmitRecordsAsync(
-        DeliverySubmissionRequest request, JsonElement recordsElement, string operation, FlowContext flow, CatalogDbContext db, ILedger ledger,
-        IRunDispatcher dispatcher, TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
+        DeliverySubmissionRequest request, JsonElement recordsElement, string operation, FlowContext flow, CatalogDbContext db, OsduDbContext osdu,
+        DeliveryDocumentLoader documents, ILedger ledger, EngineContext engine, IRunDispatcher dispatcher, TimeProvider clock, ClaimsPrincipal user,
+        CancellationToken ct)
     {
-        if (InlineDrop.Refusal(flow.Flow) is { } refusal)
+        var preFlows = await db.Pipelines.AsNoTracking()
+            .Where(p => p.RepoId == flow.Pipeline.RepoId && p.Active)
+            .Select(p => p.Name)
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (SubmissionLanding.Refusal(flow.Flow, preFlows) is { } refusal)
         {
             return InvalidSubmission(refusal, "Records not accepted by this flow");
         }
@@ -1110,7 +1097,7 @@ public static class DeliveryEndpoints
         IReadOnlyDictionary<string, string> values;
         try
         {
-            new RunParameters { Values = request.Parameters ?? new Dictionary<string, string>(StringComparer.Ordinal) }.Validate();
+            RunParameters.ValidateKindArguments(operation, request.Parameters, payload: null);
             values = FlowParameters.Resolve(flow.Flow, request.Parameters);
         }
         catch (Exception ex) when (ex is SqlFlowException or FlowValidationException)
@@ -1128,37 +1115,71 @@ public static class DeliveryEndpoints
             return InvalidSubmission(ex.Message, "Invalid records");
         }
 
+        if (KeyRefusal(flow.Flow, records) is { } keyRefusal)
+        {
+            return InvalidSubmission(keyRefusal, "Invalid records");
+        }
+
         // Where the records say their files are is checked before anything is stored: the node opens those locations with
         // its own identity when the run delivers, so the flow's roots are what keeps a submission from having any file
-        // that identity can read shipped to OSDU (design.md section 3.4).
-        if (InlineDrop.FilesRefusal(flow.Flow, records) is { } filesRefusal)
+        // that identity can read shipped to OSDU (docs/stage4-design.md section 4.2).
+        if (SubmissionLanding.FilesRefusal(flow.Flow, values, records) is { } filesRefusal)
         {
             return InvalidSubmission(filesRefusal, "Invalid records");
+        }
+
+        // The landing files carry the columns the pinned mapping reads, so the mapping the catalog holds for the flow has
+        // to be readable before anything is stored; a run would otherwise land files no ingestion table could serve.
+        var (mapping, mappingProblem) = await ResolveMappingAsync(osdu, documents, flow, ct).ConfigureAwait(false);
+        if (mapping is null)
+        {
+            return SubmissionConflict(mappingProblem!);
         }
 
         var submissionId = request.SubmissionId ?? Guid.CreateVersion7();
         var accepted = InlineSubmissionState.Accept(
             submissionId, flow.Flow, operation, request.Force, values, records, clock.GetUtcNow().UtcDateTime, RequestActor.Label(user), request.Reference);
-        var stored = await ledger.GetInlineSubmissionAsync(submissionId, ct).ConfigureAwait(false);
-        if (stored is null && await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false) is { } dropSubmission)
+
+        IReadOnlyList<LandingFile> files;
+        IReadOnlyList<LandingContent> contents;
+        try
         {
-            return SubmissionConflict($"Submission {submissionId:D} is a drop submission of flow '{dropSubmission.FlowName}'; records are sent under an id of their own.");
+            files = SubmissionLanding.Plan(accepted, flow.Flow, mapping, values);
+            var rendered = new List<LandingContent>(files.Count);
+            foreach (var file in files)
+            {
+                rendered.Add(await LandingFileWriter.RenderAsync(file, ct).ConfigureAwait(false));
+            }
+
+            contents = rendered;
+        }
+        catch (Exception ex) when (ex is DeliveryException or FlowValidationException)
+        {
+            return InvalidSubmission(Redacted(ex), "The records could not be landed");
+        }
+
+        var stored = await ledger.GetInlineSubmissionAsync(submissionId, ct).ConfigureAwait(false);
+        if (stored is null && await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false) is { } planned)
+        {
+            return SubmissionConflict(
+                $"Submission {submissionId:D} is a {planned.Kind} submission of flow '{planned.FlowName}'; records are sent under an id of their own.");
         }
 
         for (var attempt = 1; stored is null; attempt++)
         {
             try
             {
-                var runId = await EnqueueRunAsync(db, dispatcher, flow, InlineRunParameters(accepted, values), request.Pool, user, [InlineSubmissionRows.ToEntity(accepted)], ct).ConfigureAwait(false);
-                return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliverySubmissionAccepted(runId, flow.Pipeline.Id, flow.Pipeline.Name, RunStatuses.Queued, submissionId));
+                await StoreAsync(osdu, accepted, files, contents, ct).ConfigureAwait(false);
+                await RecordSubmitActivityAsync(ledger, accepted, files, clock, ct).ConfigureAwait(false);
+                stored = accepted;
             }
             catch (DbUpdateException) when (attempt < MaxAcceptAttempts)
             {
-                // The insert lost to another request for the same id: a duplicate key, or a deadlock between the two
-                // serializable transactions. Rows and run commit together, so what that request stored decides whether
-                // this one is a repeat or a conflict; while nothing is stored yet, the insert is tried again. The failed
-                // inserts are dropped from this context first, or its next save would try them again.
-                db.ChangeTracker.Clear();
+                // The insert lost to another request for the same id: a duplicate key, or a deadlock between two
+                // requests. What that request stored decides whether this one is a repeat or a conflict; while nothing
+                // is stored yet, the insert is tried again. The failed inserts leave the context first, or its next
+                // save would try them again.
+                osdu.ChangeTracker.Clear();
                 stored = await ledger.GetInlineSubmissionAsync(submissionId, ct).ConfigureAwait(false);
             }
         }
@@ -1171,28 +1192,150 @@ public static class DeliveryEndpoints
                 $"{string.Join(", ", differences)}. A submission id names one request: send changed records under a new id.");
         }
 
-        var run = await db.Runs.AsNoTracking()
-            .Where(r => r.SubmissionId == submissionId)
-            .OrderBy(r => r.EnqueuedUtc)
-            .Select(r => new { r.RunId, r.Status })
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        if (run is not null)
+        // A repeat of a request whose chain is already queued answers with that chain: the records are landed once and
+        // delivered once, however many times the source repeats itself.
+        if (stored.GroupId is { } queued && !request.Reland)
         {
-            return TypedResults.Ok(new DeliverySubmissionAccepted(run.RunId, flow.Pipeline.Id, flow.Pipeline.Name, run.Status, submissionId, Replayed: true));
+            return TypedResults.Ok(new DeliverySubmissionAccepted(
+                stored.OsduRunId ?? Guid.Empty, flow.Pipeline.Id, flow.Pipeline.Name, RunStatuses.Queued, submissionId, Replayed: true, queued));
         }
 
-        // The run that took it is no longer in the catalog (its row was removed): a new run takes the stored submission.
-        var again = await EnqueueRunAsync(db, dispatcher, flow, InlineRunParameters(stored, stored.Parameters()), request.Pool, user, ct).ConfigureAwait(false);
-        return TypedResults.Accepted($"/api/v1/runs/{again}", new DeliverySubmissionAccepted(again, flow.Pipeline.Id, flow.Pipeline.Name, RunStatuses.Queued, submissionId, Replayed: true));
+        try
+        {
+            await LandAsync(engine, ledger, files, contents, clock, submissionId, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is DeliveryException or IOException or UnauthorizedAccessException)
+        {
+            await ledger.MarkInlineStatusAsync(submissionId, InlineStatuses.Accepted, null, null, Redacted(ex), ct).ConfigureAwait(false);
+            return TypedResults.Problem(
+                detail: $"Submission {submissionId:D} was accepted, and its records could not be landed for the pre-ingestion flows: {Redacted(ex)}",
+                statusCode: StatusCodes.Status502BadGateway,
+                title: "The records could not be landed");
+        }
+
+        var chain = await EnqueueChainAsync(db, dispatcher, ledger, flow, stored, files, request.Pool, user, ct).ConfigureAwait(false);
+        return chain.Problem is { } chainProblem
+            ? chainProblem
+            : TypedResults.Accepted(
+                $"/api/v1/runs/groups/{chain.GroupId}",
+                new DeliverySubmissionAccepted(chain.OsduRunId, flow.Pipeline.Id, flow.Pipeline.Name, RunStatuses.Queued, submissionId, Replayed: false, chain.GroupId));
     }
 
-    private static RunParameters InlineRunParameters(InlineSubmissionState submission, IReadOnlyDictionary<string, string> values) => new()
+    /// <summary>Why the records cannot be planned by key, or null: every record names every key column of the flow's record table.</summary>
+    private static string? KeyRefusal(FlowDefinition flow, InlineRecords records)
     {
-        Operation = submission.Operation,
-        Force = submission.Force,
-        SubmissionId = submission.SubmissionId,
-        Values = values,
-    };
+        for (var i = 0; i < records.Records.Count; i++)
+        {
+            foreach (var column in flow.Source.Record.Key)
+            {
+                if (!records.Records[i].Row.TryGetValue(column, out var value) || value is null || (value is string text && string.IsNullOrWhiteSpace(text)))
+                {
+                    return string.Create(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        $"records[{i}].record.{column} is empty; flow '{flow.Name}' keys its records by {string.Join(", ", flow.Source.Record.Key)}, so every record names every key column.");
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The flow's pinned mapping as the catalog holds it, or why the records cannot be landed without it.</summary>
+    internal static async Task<(MappingDefinition? Mapping, string? Problem)> ResolveMappingAsync(
+        OsduDbContext osdu, DeliveryDocumentLoader documents, FlowContext flow, CancellationToken ct)
+    {
+        var reference = flow.Flow.Render.Mapping;
+        var row = await osdu.DeliveryMappings.AsNoTracking()
+            .FirstOrDefaultAsync(m => m.RepoId == flow.Pipeline.RepoId && m.Reference == reference, ct).ConfigureAwait(false);
+        if (row is null)
+        {
+            return (null, $"Flow '{flow.Flow.Name}' pins mapping '{reference}', which the catalog has not synced from the flow's repository, so the columns its records land with are unknown. Re-sync the repository.");
+        }
+
+        if (!string.Equals(row.Status, "valid", StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, $"Mapping '{reference}' is invalid in the catalog: {row.Message}");
+        }
+
+        try
+        {
+            return (documents.ParseMapping(row.Yaml, row.RelativePath), null);
+        }
+        catch (FlowValidationException ex)
+        {
+            return (null, $"Mapping '{reference}' does not parse: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Stores the accepted request: the submission and one landing row per dataset, in one transaction, so a submission
+    /// never exists without the files it promises. The rows are the module's own, so the write runs on the module's
+    /// database rather than the catalog's.
+    /// </summary>
+    private static async Task StoreAsync(
+        OsduDbContext osdu, InlineSubmissionState accepted, IReadOnlyList<LandingFile> files, IReadOnlyList<LandingContent> contents, CancellationToken ct)
+    {
+        osdu.DeliveryInlineSubmissions.Add(InlineSubmissionRows.ToEntity(accepted));
+        for (var i = 0; i < files.Count; i++)
+        {
+            var file = files[i];
+            osdu.DeliverySubmissionLandings.Add(new DeliverySubmissionLanding
+            {
+                SubmissionId = accepted.SubmissionId,
+                Dataset = file.Dataset,
+                PreFlowName = file.PreFlowName,
+                Location = file.Location,
+                FileName = file.FileName,
+                Format = file.Format,
+                RowCount = file.Rows.Count,
+                Bytes = contents[i].Length,
+                ContentHash = contents[i].ContentHash,
+            });
+        }
+
+        await osdu.SaveChangesAsync(ct).ConfigureAwait(false);
+        osdu.ChangeTracker.Clear();
+    }
+
+    /// <summary>Records the request in the flow's activity trail, with who sent it and what it landed.</summary>
+    private static async Task RecordSubmitActivityAsync(
+        ILedger ledger, InlineSubmissionState accepted, IReadOnlyList<LandingFile> files, TimeProvider clock, CancellationToken ct)
+    {
+        var now = clock.GetUtcNow().UtcDateTime;
+        var activity = await ledger.StartActivityAsync(
+            new ActivityRecord
+            {
+                FlowId = accepted.FlowId,
+                FlowName = accepted.FlowName,
+                Kind = "submit",
+                Actor = accepted.ReceivedBy,
+                StartedUtc = now,
+                ParametersJson = accepted.ParametersJson,
+                SubmissionId = accepted.SubmissionId,
+            },
+            ct).ConfigureAwait(false);
+        var summary = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{accepted.RecordCount} record(s) accepted for {accepted.Operation}, landing as {string.Join(", ", files.Select(f => f.FileName))}");
+        await ledger.CompleteActivityAsync(activity.ActivityId, "completed", summary, null, now, accepted.SubmissionId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes the landing files and records what landed. Writing the same submission twice is a no-op: a file already
+    /// there with the same content is the file this write would produce, so a resumed submission never lands twice.
+    /// </summary>
+    internal static async Task LandAsync(
+        EngineContext engine, ILedger ledger, IReadOnlyList<LandingFile> files, IReadOnlyList<LandingContent> contents, TimeProvider clock,
+        Guid submissionId, CancellationToken ct)
+    {
+        for (var i = 0; i < files.Count; i++)
+        {
+            await LandingFileWriter.WriteAsync(engine.Stores, files[i], contents[i], ct).ConfigureAwait(false);
+            await ledger.MarkLandingWrittenAsync(submissionId, files[i].Dataset, contents[i].Length, clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+        }
+
+        await ledger.MarkInlineStatusAsync(submissionId, InlineStatuses.Landed, null, null, null, ct).ConfigureAwait(false);
+    }
 
     private static ProblemHttpResult InvalidSubmission(string detail, string title = "Invalid request")
         => TypedResults.Problem(detail: detail, statusCode: StatusCodes.Status400BadRequest, title: title);
@@ -1201,13 +1344,13 @@ public static class DeliveryEndpoints
         => TypedResults.Problem(detail: detail, statusCode: StatusCodes.Status409Conflict, title: "Submission id already used");
 
     /// <summary>
-    /// The flows records can be submitted to by hand: every active delivery flow whose document offers manual
-    /// submission, with the template version its mapping fills. With <c>all</c> the flows that do not are listed too, each
-    /// with the reason, so an operator can see why a flow is not on the list. A flow whose document no longer parses is
-    /// left out of both.
+    /// The flows records can be sent to through the API: every active delivery flow whose document declares where its
+    /// submissions land (<c>source.submissions</c>), with the template version its mapping fills. With <c>all</c> the
+    /// flows that take none are listed too, each with the reason, so an operator can see why a flow is not on the list. A
+    /// flow whose document no longer parses is left out of both.
     /// </summary>
     private static async Task<Ok<IReadOnlyList<DeliveryManualFlowDto>>> ListManualSubmissionFlowsAsync(
-        bool? all, CatalogDbContext db, DeliveryDocumentLoader documents, CancellationToken ct)
+        bool? all, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, CancellationToken ct)
     {
         var pipelines = await db.Pipelines.AsNoTracking()
             .Where(p => p.Active && p.Kind == FlowDefinition.FlowTypeName)
@@ -1215,9 +1358,18 @@ public static class DeliveryEndpoints
             .Take(MaxManualSubmissionFlows)
             .ToListAsync(ct).ConfigureAwait(false);
 
-        // The template version each synced mapping of these repositories fills, so the listing says what a flow's records become.
+        // The flow names each repository holds, which a flow's declared pre-ingestion flows have to be among.
         var repoIds = pipelines.Select(p => p.RepoId).Distinct().ToList();
-        var synced = await db.DeliveryMappings.AsNoTracking()
+        var flowNames = await db.Pipelines.AsNoTracking()
+            .Where(p => repoIds.Contains(p.RepoId) && p.Active)
+            .Select(p => new { p.RepoId, p.Name })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var namesByRepo = flowNames
+            .GroupBy(p => p.RepoId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyCollection<string>)g.Select(p => p.Name).ToList());
+
+        // The template version each synced mapping of these repositories fills, so the listing says what a flow's records become.
+        var synced = await osdu.DeliveryMappings.AsNoTracking()
             .Where(m => repoIds.Contains(m.RepoId) && m.Status == "valid")
             .Select(m => new { m.RepoId, m.Reference, m.Kind, m.TemplateVersion })
             .ToListAsync(ct).ConfigureAwait(false);
@@ -1242,7 +1394,7 @@ public static class DeliveryEndpoints
                 continue;
             }
 
-            var refusal = InlineDrop.Refusal(flow);
+            var refusal = SubmissionLanding.Refusal(flow, namesByRepo.GetValueOrDefault(pipeline.RepoId, []));
             if (refusal is not null && all != true)
             {
                 continue;
@@ -1255,7 +1407,7 @@ public static class DeliveryEndpoints
                 flow.Parameters.OrderBy(kv => kv.Key, StringComparer.Ordinal)
                     .Select(kv => new DeliveryFlowParameterDto(kv.Key, kv.Value.Required, kv.Value.Default, kv.Value.Description))
                     .ToList(),
-                InlineDrop.PayloadContract(flow).PayloadName,
+                flow.Source.Payloads.Keys.Order(StringComparer.Ordinal).ToList(),
                 pin?.Kind,
                 pin?.Version));
         }
@@ -1271,7 +1423,7 @@ public static class DeliveryEndpoints
     /// column the mapping reads with the template variables each fills, and whether the flow takes records inline.
     /// </summary>
     private static async Task<Results<Ok<DeliverySourceContractDto>, ProblemHttpResult>> GetSourceContractAsync(
-        Guid pipelineId, CatalogDbContext db, DeliveryDocumentLoader documents, CancellationToken ct)
+        Guid pipelineId, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
         if (flow is null)
@@ -1281,7 +1433,7 @@ public static class DeliveryEndpoints
 
         var definition = flow.Flow;
         var reference = definition.Render.Mapping;
-        var row = await db.DeliveryMappings.AsNoTracking()
+        var row = await osdu.DeliveryMappings.AsNoTracking()
             .FirstOrDefaultAsync(m => m.RepoId == flow.Pipeline.RepoId && m.Reference == reference, ct).ConfigureAwait(false);
         MappingDefinition? mapping = null;
         string? mappingProblem = null;
@@ -1311,7 +1463,7 @@ public static class DeliveryEndpoints
         {
             var kind = mapping.Template.Kind;
             var version = mapping.Template.Version;
-            var saved = await db.DeliveryTemplates.AsNoTracking().AnyAsync(t => t.Kind == kind && t.Version == version, ct).ConfigureAwait(false);
+            var saved = await osdu.DeliveryTemplates.AsNoTracking().AnyAsync(t => t.Kind == kind && t.Version == version, ct).ConfigureAwait(false);
             template = new DeliverySourceTemplateDto(kind, version, saved);
             columns = MappingColumns.Read(mapping);
             if (!saved)
@@ -1320,8 +1472,25 @@ public static class DeliveryEndpoints
             }
         }
 
-        var refusal = InlineDrop.Refusal(definition);
-        var payload = InlineDrop.PayloadContract(definition);
+        var preFlows = await db.Pipelines.AsNoTracking()
+            .Where(p => p.RepoId == flow.Pipeline.RepoId && p.Active)
+            .Select(p => p.Name)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var refusal = SubmissionLanding.Refusal(definition, preFlows);
+
+        // The payload contract is read with the flow's declared defaults, since a caller asking what a flow takes has not
+        // chosen its parameter values yet; a submission's own values are checked against the roots when it is accepted.
+        IReadOnlyDictionary<string, string> values;
+        try
+        {
+            values = FlowParameters.Resolve(definition, null);
+        }
+        catch (FlowValidationException)
+        {
+            values = new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        var payload = SubmissionLanding.PayloadContract(definition, values);
         return TypedResults.Ok(new DeliverySourceContractDto(
             flow.Pipeline.Id, flow.Pipeline.Name, reference, definition.Target.Protocol.ToString(), refusal is null, refusal,
             definition.Parameters.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => new DeliveryFlowParameterDto(kv.Key, kv.Value.Required, kv.Value.Default, kv.Value.Description)).ToList(),
@@ -1331,9 +1500,9 @@ public static class DeliveryEndpoints
                 d.Name,
                 d.Repeaters.Select(r => new DeliverySourceRepeaterDto(r.Target.Text, r.Required)).ToList(),
                 d.Columns.Select(ToColumnDto).ToList())).ToList() ?? [],
-            definition.Source.LastModified, definition.Source.Fingerprint, mappingProblem,
+            definition.Source.LastModified, definition.Source.Record.Object, definition.Source.SystemColumns.Updated, mappingProblem,
             InlineRecords.MaxRecords, InlineRecords.MaxChildRows, InlineRecords.MaxContentBytes,
-            payload.PayloadName, payload.HashRequired, payload.Roots));
+            payload.Payloads, payload.RequiresHash, payload.Roots));
     }
 
     /// <summary>A column of the source contract, with every entry that reads it in the mapping's own notation.</summary>
@@ -1355,7 +1524,7 @@ public static class DeliveryEndpoints
             use.Find?.ToString(),
             use.Entry.AppliesWhen?.ToString())).ToList());
 
-    /// <summary>The records an inline submission carried, as the ledger holds them.</summary>
+    /// <summary>The records an API submission carried, as the ledger holds them, with the files they landed and the runs that took them.</summary>
     private static async Task<Results<Ok<DeliveryInlineSubmissionDto>, ProblemHttpResult>> GetSubmissionContentAsync(
         Guid submissionId, CatalogDbContext db, ILedger ledger, CancellationToken ct)
     {
@@ -1363,22 +1532,19 @@ public static class DeliveryEndpoints
         if (inline is null)
         {
             return TypedResults.Problem(
-                detail: $"Submission {submissionId:D} carries no inline records: it is a drop submission, or no submission has that id.",
+                detail: $"Submission {submissionId:D} carries no records sent through the API: it was planned from the ingestion tables, or no submission has that id.",
                 statusCode: StatusCodes.Status404NotFound, title: "Not found");
         }
 
         var pipeline = await FindPipelineAsync(db, inline.FlowId, ct).ConfigureAwait(false);
-        var runIds = await db.Runs.AsNoTracking()
-            .Where(r => r.SubmissionId == submissionId)
-            .OrderByDescending(r => r.EnqueuedUtc)
-            .Select(r => r.RunId)
-            .Take(100)
-            .ToListAsync(ct).ConfigureAwait(false);
+        var landings = await ledger.GetLandingsAsync(submissionId, ct).ConfigureAwait(false);
+        var runIds = await SubmissionRunsAsync(db, submissionId, inline.OsduRunId, inline.GroupId, ct).ConfigureAwait(false);
         using var records = JsonDocument.Parse(inline.RecordsJson);
         return TypedResults.Ok(new DeliveryInlineSubmissionDto(
             inline.SubmissionId, inline.FlowId, inline.FlowName, pipeline?.Id, inline.MappingReference, inline.Operation, inline.Force, inline.ParametersJson,
-            inline.RecordCount, inline.ChildRowCount, inline.ContentBytes, inline.ContentHash, inline.ReceivedUtc, inline.ReceivedBy, inline.DropLocation,
-            inline.WrittenUtc, runIds, records.RootElement.Clone(), inline.Reference));
+            inline.RecordCount, inline.ChildRowCount, inline.ContentBytes, inline.ContentHash, inline.ReceivedUtc, inline.ReceivedBy, inline.Status,
+            inline.LandedUtc, inline.GroupId, inline.OsduRunId, inline.Error, landings.Select(ToDto).ToList(), runIds, records.RootElement.Clone(),
+            inline.Reference));
     }
 
     private static async Task<Results<Ok<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseFlowAsync(
@@ -1430,34 +1596,19 @@ public static class DeliveryEndpoints
         }
 
         // With a run, the node marks and re-sends in one recorded run (the mark carries the run id and the scope);
-        // without one, the mark is made here under the caller's name and the next delivery of the drop sends the
-        // record. A flow with a replica replans the record from it, under the parameter values its last submission was
-        // opened with, so nobody has to send the drop again; any other flow's run works on the record's last submission,
-        // whose drop holds the record's source row. Either way the run carries the parameter values a flow declaring a
-        // required parameter cannot run without.
+        // without one, the mark is made here under the caller's name and the flow's next run sends the record. The run
+        // reads the record by the key tuple the ledger stored, under the parameter values its last plan ran with, so a
+        // flow whose scope is a parameter reads the row in the record's own scope rather than in the flow's defaults.
         if (request?.Run ?? true)
         {
             var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
-            RunParameters parameters;
-            if (flow.Flow.Source.Replica is not null)
+            var last = record?.LastSubmissionId is { } lastId ? await ledger.GetSubmissionAsync(lastId, ct).ConfigureAwait(false) : null;
+            var parameters = new RunParameters
             {
-                var last = record?.LastSubmissionId is { } lastId ? await ledger.GetSubmissionAsync(lastId, ct).ConfigureAwait(false) : null;
-                parameters = new RunParameters
-                {
-                    RecordKeys = [key],
-                    Redeliver = scope.ToString().ToLowerInvariant(),
-                    Values = SubmissionValues(last?.ParametersJson),
-                };
-            }
-            else
-            {
-                parameters = new RunParameters
-                {
-                    RecordKeys = [key],
-                    Redeliver = scope.ToString().ToLowerInvariant(),
-                    SubmissionId = record?.LastSubmissionId,
-                };
-            }
+                Operation = DeliveryOperations.Deliver,
+                Values = SubmissionValues(last?.ParametersJson),
+                Payload = new DeliveryRunPayload { RecordKeys = [key], Redeliver = scope.ToString().ToLowerInvariant() }.ToJson(),
+            };
             var runId = await EnqueueRunAsync(db, dispatcher, flow, parameters, request?.Pool, user, ct).ConfigureAwait(false);
             return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryRedeliverResult(1, runId));
         }
@@ -1468,15 +1619,14 @@ public static class DeliveryEndpoints
         return TypedResults.Ok(new DeliveryRedeliverResult(marked, null));
     }
 
-    /// <summary>Rows of a child scope a record's replica view shows; the rest are counted.</summary>
-    private const int ReplicaChildRows = 200;
-
     /// <summary>
-    /// A record as its flow's replica holds it now: its values with their SQL types, the first rows of each child scope, and the
-    /// submissions that carried it. Read from the replica database with the flow's own connection reference.
+    /// The record's rows as the ingestion tables hold them now (docs/stage4-design.md section 5.3): a compute task on a
+    /// node, which opens the flow's source with the flow's own connection reference and reads the record by the key tuple
+    /// the ledger stored. Nothing is planned and nothing is delivered; the task's result carries the record row with its
+    /// system columns, its child datasets and the origin file and row the ingestion tables record.
     /// </summary>
-    private static async Task<Results<Ok<SqlFlow.Delivery.Replica.ReplicaRecordView>, ProblemHttpResult>> GetRecordReplicaAsync(
-        Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger, CancellationToken ct)
+    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadSourceAsync(
+        Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, problem) = await ResolveForRecordAsync(db, documents, ledger, key, ct).ConfigureAwait(false);
         if (flow is null)
@@ -1484,25 +1634,17 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        using var runtime = FlowRuntime.ForTarget(engine, flow.Flow);
-        if (runtime.Replica is not { } replica)
+        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["deliveryKey"] = key.ToString("D") };
+        var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
+        if (record?.LastSubmissionId is { } lastId
+            && await ledger.GetSubmissionAsync(lastId, ct).ConfigureAwait(false) is { ParametersJson.Length: > 2 } last)
         {
-            return TypedResults.Problem(
-                detail: $"Flow '{flow.Flow.Name}' declares no source.replica, so its records are read from their drops and have no replica view.",
-                statusCode: StatusCodes.Status404NotFound, title: "No replica");
+            // The scope predicate of the read is the one the record was planned under, so a flow whose scope is a
+            // parameter reads the row in the record's own scope rather than in the flow's declared defaults.
+            arguments["values"] = last.ParametersJson;
         }
 
-        try
-        {
-            var view = await replica.ReadRecordAsync(new DeliveryKey(key), ReplicaChildRows, ct).ConfigureAwait(false);
-            return view is null
-                ? TypedResults.Problem(detail: $"Replica {replica.Schema} holds no record {key:D}: no drop the replica loaded carried it.", statusCode: StatusCodes.Status404NotFound, title: "Not in the replica")
-                : TypedResults.Ok(view);
-        }
-        catch (Exception ex) when (ex is DeliveryException or Microsoft.Data.SqlClient.SqlException)
-        {
-            return TypedResults.Problem(detail: SqlFlow.Delivery.Http.HeaderRedaction.RedactMessage(ex.Message), statusCode: StatusCodes.Status502BadGateway, title: "The replica could not be read");
-        }
+        return await EnqueueOperationAsync(db, dispatcher, flow, ReadSourceRowOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
     }
 
     /// <summary>The flow parameter values a submission was opened with; none when it recorded none or is unknown.</summary>
@@ -1532,7 +1674,11 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        var parameters = new RunParameters { Operation = RunParameters.VerifyOperation, Force = true, RecordKeys = [key] };
+        var parameters = new RunParameters
+        {
+            Operation = DeliveryOperations.Verify,
+            Payload = new DeliveryRunPayload { RecordKeys = [key], Force = true }.ToJson(),
+        };
         var runId = await EnqueueRunAsync(db, dispatcher, flow, parameters, null, user, ct).ConfigureAwait(false);
         return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryRunAccepted(runId, RunStatuses.Queued));
     }
@@ -1850,6 +1996,27 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>The submission's flow: by pipeline id, by repository and name, or by a name unique among the delivery flows.</summary>
+    /// <summary>
+    /// The flow a stored submission belongs to, for the work its own request did not finish: the active delivery pipeline
+    /// whose name yields the submission's flow id. The problem is a sentence, not an HTTP result, because the caller is
+    /// the resume sweep rather than a request.
+    /// </summary>
+    internal static async Task<(FlowContext? Flow, string? Problem)> ResolveSubmissionFlowAsync(
+        CatalogDbContext db, DeliveryDocumentLoader documents, InlineSubmissionState submission, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(submission);
+        var pipeline = await FindPipelineAsync(db, submission.FlowId, ct).ConfigureAwait(false);
+        if (pipeline is null)
+        {
+            return (null, $"Flow '{submission.FlowName}' is no longer in any synced repository, so submission {submission.SubmissionId:D} cannot be delivered. Restore the flow document and sync.");
+        }
+
+        var (flow, problem) = Parse(documents, pipeline);
+        return flow is null
+            ? (null, $"The catalog's copy of flow '{submission.FlowName}' cannot be read, so submission {submission.SubmissionId:D} cannot be delivered: {problem?.ProblemDetails.Detail}")
+            : (flow, null);
+    }
+
     private static async Task<(FlowContext? Flow, ProblemHttpResult? Problem)> ResolveSubmissionFlowAsync(
         CatalogDbContext db, DeliveryDocumentLoader documents, DeliverySubmissionRequest request, CancellationToken ct)
     {
@@ -1880,6 +2047,25 @@ public static class DeliveryEndpoints
         return Parse(documents, candidates[0]);
     }
 
+    /// <summary>
+    /// The runs that worked on one submission, newest first: the run that registered it, every member of the chain group
+    /// that carried it, and every run whose kind arguments name it (a re-run, a drain, a fan-out member). A run carries
+    /// the submission in its payload rather than in a column of its own, so the payload is what the listing matches.
+    /// </summary>
+    private static async Task<IReadOnlyList<Guid>> SubmissionRunsAsync(
+        CatalogDbContext db, Guid submissionId, Guid? runId, Guid? groupId, CancellationToken ct)
+    {
+        var named = submissionId.ToString("D");
+        return await db.Runs.AsNoTracking()
+            .Where(r => (runId != null && r.RunId == runId)
+                || (groupId != null && r.GroupId == groupId)
+                || (r.Payload != null && r.Payload.Contains(named)))
+            .OrderByDescending(r => r.EnqueuedUtc)
+            .Select(r => r.RunId)
+            .Take(MaxSubmissionRuns)
+            .ToListAsync(ct).ConfigureAwait(false);
+    }
+
     /// <summary>The active delivery pipeline whose flow name yields <paramref name="flowId"/>; the ledger keys flows by name.</summary>
     private static async Task<CatalogPipeline?> FindPipelineAsync(CatalogDbContext db, Guid flowId, CancellationToken ct)
     {
@@ -1893,18 +2079,87 @@ public static class DeliveryEndpoints
 
     private static Task<Guid> EnqueueRunAsync(
         CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, RunParameters parameters, string? pool, ClaimsPrincipal user, CancellationToken ct)
-        => EnqueueRunAsync(db, dispatcher, flow, parameters, pool, user, null, ct);
-
-    /// <summary>Queues a run of the flow, with <paramref name="companions"/> inserted in the same transaction as the run row.</summary>
-    private static Task<Guid> EnqueueRunAsync(
-        CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, RunParameters parameters, string? pool, ClaimsPrincipal user,
-        IReadOnlyList<object>? companions, CancellationToken ct)
         => dispatcher.EnqueueAsync(
             db,
             new RunEnqueueRequest(
                 flow.Pipeline.RepoId, flow.Pipeline.Name, flow.Pipeline.Kind, string.IsNullOrWhiteSpace(pool) ? null : pool.Trim(), null, parameters,
-                RequestedBy: RequestActor.Of(user), Companions: companions),
+                RequestedBy: RequestActor.Of(user)),
             ct);
+
+    /// <summary>
+    /// Queues the chain that delivers an API submission (docs/stage4-design.md section 4.2 step 4): the pre-ingestion
+    /// flows that read its landed files, the ingestion flows between them and the OSDU flow, and the OSDU flow itself,
+    /// as one wave-ordered run group. The submission's own rows commit with the runs: the group and the OSDU member run
+    /// land on the submission, and each landing records the pre flow run that takes it, so nothing is ever queued
+    /// without the ledger saying so. A chain another request queued first is answered with, rather than queued again.
+    /// </summary>
+    internal static async Task<(Guid GroupId, Guid OsduRunId, ProblemHttpResult? Problem)> EnqueueChainAsync(
+        CatalogDbContext db, IRunDispatcher dispatcher, ILedger ledger, FlowContext flow, InlineSubmissionState submission,
+        IReadOnlyList<LandingFile> files, string? pool, ClaimsPrincipal? user, CancellationToken ct)
+    {
+        var landings = files.Select(f => new SubmissionLandingRef(f.Dataset, f.PreFlowName, f.FileName)).ToList();
+        var (chain, refusal) = await SubmissionChain.PlanAsync(db, flow.Pipeline.RepoId, flow.Pipeline.Name, submission, landings, ct).ConfigureAwait(false);
+        if (chain is null)
+        {
+            await ledger.MarkInlineStatusAsync(submission.SubmissionId, InlineStatuses.Failed, null, null, refusal, ct).ConfigureAwait(false);
+            return (Guid.Empty, Guid.Empty, TypedResults.Problem(
+                detail: refusal, statusCode: StatusCodes.Status409Conflict, title: "The submission's chain cannot run"));
+        }
+
+        async Task<bool> CommitAsync(CatalogDbContext catalog, RunGroupEnqueueResult planned, CancellationToken token)
+        {
+            var transaction = catalog.Database.CurrentTransaction
+                ?? throw new DeliveryException(
+                    $"The chain of submission {submission.SubmissionId:D} was enqueued outside a transaction, so the submission's rows could not commit with its runs.");
+            await using var context = new OsduDbContext(OsduDbContext.SqlServerOptions(catalog.Database.GetDbConnection()));
+            await context.Database.UseTransactionAsync(transaction.GetDbTransaction(), token).ConfigureAwait(false);
+            var inline = await context.DeliveryInlineSubmissions
+                .FirstOrDefaultAsync(s => s.SubmissionId == submission.SubmissionId, token).ConfigureAwait(false);
+            if (inline is null || inline.GroupId is not null)
+            {
+                // Another request queued this submission's chain between the read above and this transaction: nothing is
+                // enqueued, and the caller answers with the chain that request queued.
+                return false;
+            }
+
+            inline.Status = InlineStatuses.Queued;
+            inline.GroupId = planned.GroupId;
+            inline.OsduRunId = chain.OsduRunId(planned.RunIds);
+            inline.Error = null;
+            var rows = await context.DeliverySubmissionLandings
+                .Where(l => l.SubmissionId == submission.SubmissionId)
+                .ToListAsync(token).ConfigureAwait(false);
+            foreach (var row in rows)
+            {
+                row.PreRunId = chain.PreRunId(row.Dataset, planned.RunIds);
+            }
+
+            await context.SaveChangesAsync(token).ConfigureAwait(false);
+            return true;
+        }
+
+        var result = await dispatcher.EnqueueGroupAsync(
+            db,
+            new RunGroupEnqueueRequest(
+                flow.Pipeline.RepoId, RunGroupModes.Node, chain.Anchor, chain.Members, string.IsNullOrWhiteSpace(pool) ? null : pool.Trim(), null,
+                chain.MemberParameters, RequestedBy: user is null ? null : RequestActor.Of(user)),
+            CommitAsync,
+            ct).ConfigureAwait(false);
+        if (result is not null)
+        {
+            return (result.GroupId, chain.OsduRunId(result.RunIds), null);
+        }
+
+        var queued = await ledger.GetInlineSubmissionAsync(submission.SubmissionId, ct).ConfigureAwait(false);
+        return queued?.GroupId is { } groupId
+            ? (groupId, queued.OsduRunId ?? Guid.Empty, null)
+            : (Guid.Empty, Guid.Empty, TypedResults.Problem(
+                detail: $"Submission {submission.SubmissionId:D} could not be queued: its chain was declined and the ledger records no group for it.",
+                statusCode: StatusCodes.Status409Conflict, title: "The submission was not queued"));
+    }
+
+    /// <summary>A failure as it may be stored and shown: the message with every resolved secret redacted out of it.</summary>
+    private static string Redacted(Exception ex) => SecretHygiene.RedactedMessage(ex);
 
     /// <summary>Queues a target-side operation for a node: the flow file's location rides along, every credential
     /// stays a reference the node resolves.</summary>
@@ -1943,11 +2198,14 @@ public static class DeliveryEndpoints
         => TypedResults.Problem(detail: $"No {resource} '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
 
     private static DeliverySubmissionDto ToDto(SubmissionState s) => new(
-        s.SubmissionId, s.FlowId, s.FlowName, s.MappingReference, s.RenderContext, s.DropLocation, s.ParametersJson, s.RecordCount,
+        s.SubmissionId, s.FlowId, s.FlowName, s.MappingReference, s.RenderContext, s.ParametersJson, s.RecordCount,
         s.Status.ToString().ToLowerInvariant(), s.ReceivedUtc, s.StartedUtc, s.CompletedUtc, s.Planned, s.SkippedUnchanged, s.AwaitingApproval, s.SkippedStale, s.UnchangedAtPush, s.Blocked,
-        s.Delivered, s.Held, s.Failed, s.Error, s.WorkLocation, s.BatchCount, s.Partitions, s.Reference,
-        s.Kind, s.LoadedUtc, s.SourceRecords, s.LoadedRows, s.Duplicates, s.Untracked, s.ReplicaInserted, s.ReplicaUpdated,
-        s.ReplicaSchemaJson is null ? null : JsonDocument.Parse(s.ReplicaSchemaJson).RootElement.Clone(), s.SourcePrunedUtc);
+        s.Delivered, s.Held, s.Failed, s.Error, s.WorkLocation, s.BatchCount, s.Slices, s.Reference,
+        s.Kind, s.Untracked, s.SourceConnection, s.SourceObject, s.WindowFromUtc, s.WindowToUtc,
+        ParseJsonOrNull(s.SourceWindowJson), s.RunId, s.GroupId);
+
+    private static DeliverySubmissionLandingDto ToDto(LandingState l) => new(
+        l.Dataset, l.PreFlowName, l.Location, l.FileName, l.Format, l.RowCount, l.Bytes, l.ContentHash, l.WrittenUtc, l.PreRunId);
 
     private static DeliveryWorkBatchDto ToDto(WorkBatchState b) => new(
         b.SubmissionId, b.Index, b.Location, b.RecordCount, b.Status.ToString().ToLowerInvariant(), b.LeaseOwner, b.LeaseExpiresUtc, b.RunId,

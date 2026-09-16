@@ -1,14 +1,17 @@
 using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
-using SqlFlow.ControlPlane.Background;
+using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core;
 using SqlFlow.Core.Identity;
-using SqlFlow.Delivery;
 using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
@@ -16,7 +19,7 @@ using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
 using SqlFlow.Delivery.Validation;
 
-namespace SqlFlow.ControlPlane.Api;
+namespace SqlFlow.Delivery.ControlPlane.Api;
 
 /// <summary>A saved template version, and how many synced mappings pin it.</summary>
 public sealed record DeliveryTemplateDto(string Kind, string Version, DateTime CapturedUtc, string CapturedBy, string Origin, int PinnedBy);
@@ -194,15 +197,15 @@ public static class DeliveryTemplateEndpoints
         return group;
     }
 
-    private static async Task<Ok<IReadOnlyList<DeliveryTemplateDto>>> ListTemplatesAsync(ITemplateStore templates, CatalogDbContext db, CancellationToken ct)
+    private static async Task<Ok<IReadOnlyList<DeliveryTemplateDto>>> ListTemplatesAsync(ITemplateStore templates, OsduDbContext osdu, CancellationToken ct)
     {
         var saved = await templates.ListAsync(ct).ConfigureAwait(false);
-        var pins = await PinsAsync(db, ct).ConfigureAwait(false);
+        var pins = await PinsAsync(osdu, ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryTemplateDto>>(saved.Select(t => ToDto(t, pins)).ToList());
     }
 
     private static async Task<Results<Ok<DeliveryTemplateDetailDto>, ProblemHttpResult>> GetTemplateAsync(
-        string? kind, string? version, string? scope, ITemplateStore templates, CatalogDbContext db, CancellationToken ct)
+        string? kind, string? version, string? scope, ITemplateStore templates, OsduDbContext osdu, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(kind) || string.IsNullOrWhiteSpace(version))
         {
@@ -217,8 +220,8 @@ public static class DeliveryTemplateEndpoints
         }
 
         var info = (await templates.ListAsync(ct).ConfigureAwait(false)).FirstOrDefault(t => t.Reference == reference);
-        var pins = await PinsAsync(db, ct).ConfigureAwait(false);
-        var types = string.IsNullOrWhiteSpace(scope) ? [] : await CatalogCacheReader.TypesAsync(db, scope.Trim(), ct).ConfigureAwait(false);
+        var pins = await PinsAsync(osdu, ct).ConfigureAwait(false);
+        var types = string.IsNullOrWhiteSpace(scope) ? [] : await CatalogCacheReader.TypesAsync(osdu, scope.Trim(), ct).ConfigureAwait(false);
         return TypedResults.Ok(Detail(OsduTemplate.From(schema), info is null ? null : ToDto(info, pins), types));
     }
 
@@ -238,7 +241,7 @@ public static class DeliveryTemplateEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryTemplateDetailDto>, ProblemHttpResult>> PreviewTemplateAsync(
-        DeliveryTemplatePreviewRequest request, ITemplateStore templates, OsduDataDefinitions definitions, CatalogDbContext db, CancellationToken ct)
+        DeliveryTemplatePreviewRequest request, ITemplateStore templates, OsduDataDefinitions definitions, OsduDbContext osdu, CancellationToken ct)
     {
         if (request is null || string.IsNullOrWhiteSpace(request.Kind) || request.Schema.ValueKind == JsonValueKind.Undefined)
         {
@@ -253,8 +256,8 @@ public static class DeliveryTemplateEndpoints
 
         var schema = imported.Schema;
         var info = (await templates.ListAsync(ct).ConfigureAwait(false)).FirstOrDefault(t => t.Kind == schema.Kind && t.Version == schema.Version);
-        var pins = await PinsAsync(db, ct).ConfigureAwait(false);
-        var types = string.IsNullOrWhiteSpace(request.Scope) ? [] : await CatalogCacheReader.TypesAsync(db, request.Scope.Trim(), ct).ConfigureAwait(false);
+        var pins = await PinsAsync(osdu, ct).ConfigureAwait(false);
+        var types = string.IsNullOrWhiteSpace(request.Scope) ? [] : await CatalogCacheReader.TypesAsync(osdu, request.Scope.Trim(), ct).ConfigureAwait(false);
         return TypedResults.Ok(Detail(OsduTemplate.From(schema), info is null ? null : ToDto(info, pins), types));
     }
 
@@ -414,7 +417,7 @@ public static class DeliveryTemplateEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryTemplateSavedDto>, ProblemHttpResult>> SaveTemplateAsync(
-        DeliveryTemplateSaveRequest request, ITemplateStore templates, OsduDataDefinitions definitions, CatalogDbContext db, ClaimsPrincipal user, CancellationToken ct)
+        DeliveryTemplateSaveRequest request, ITemplateStore templates, OsduDataDefinitions definitions, OsduDbContext osdu, ClaimsPrincipal user, CancellationToken ct)
     {
         if (request is null || string.IsNullOrWhiteSpace(request.Kind) || string.IsNullOrWhiteSpace(request.Origin)
             || request.Schema.ValueKind == JsonValueKind.Undefined)
@@ -429,7 +432,7 @@ public static class DeliveryTemplateEndpoints
         }
 
         var saved = await templates.SaveAsync(imported.Schema, imported.Origin(request.Origin.Trim()), RequestActor.Label(user), ct).ConfigureAwait(false);
-        var pins = await PinsAsync(db, ct).ConfigureAwait(false);
+        var pins = await PinsAsync(osdu, ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryTemplateSavedDto(
             ToDto(saved.Template, pins), saved.Outcome == TemplateSaveOutcome.Created ? "created" : "unchanged"));
     }
@@ -518,21 +521,21 @@ public static class DeliveryTemplateEndpoints
     }
 
     /// <summary>Every partition's cache, with the flows filling it, its current version and its types, for the builder's cache picker.</summary>
-    private static async Task<Ok<IReadOnlyList<DeliveryBuilderCacheDto>>> ListBuilderCachesAsync(CatalogDbContext db, CancellationToken ct)
+    private static async Task<Ok<IReadOnlyList<DeliveryBuilderCacheDto>>> ListBuilderCachesAsync(OsduDbContext osdu, CancellationToken ct)
     {
-        var declared = await db.DeliveryCacheDefinitions.AsNoTracking()
+        var declared = await osdu.DeliveryCacheDefinitions.AsNoTracking()
             .Select(c => new { c.Scope, c.FlowName })
             .Distinct()
             .ToListAsync(ct).ConfigureAwait(false);
         var scopes = declared.Select(c => c.Scope).Distinct().ToList();
-        var current = await db.DeliveryCacheVersions.AsNoTracking()
+        var current = await osdu.DeliveryCacheVersions.AsNoTracking()
             .Where(v => scopes.Contains(v.Scope) && v.Current)
             .ToDictionaryAsync(v => v.Scope, v => v.Version, StringComparer.Ordinal, ct).ConfigureAwait(false);
 
         var result = new List<DeliveryBuilderCacheDto>(scopes.Count);
         foreach (var scope in scopes.Order(StringComparer.Ordinal))
         {
-            var types = await CatalogCacheReader.TypesAsync(db, scope, ct).ConfigureAwait(false);
+            var types = await CatalogCacheReader.TypesAsync(osdu, scope, ct).ConfigureAwait(false);
             result.Add(new DeliveryBuilderCacheDto(
                 scope,
                 declared.Where(c => c.Scope == scope).Select(c => c.FlowName).Distinct().Order(StringComparer.Ordinal).ToList(),
@@ -544,7 +547,7 @@ public static class DeliveryTemplateEndpoints
     }
 
     private static async Task<Results<Ok<MappingDraft>, ProblemHttpResult>> DraftMappingAsync(
-        DeliveryMappingDraftRequest request, ITemplateStore templates, CatalogDbContext db, CancellationToken ct)
+        DeliveryMappingDraftRequest request, ITemplateStore templates, OsduDbContext osdu, CancellationToken ct)
     {
         if (request is null || string.IsNullOrWhiteSpace(request.Kind) || string.IsNullOrWhiteSpace(request.Version))
         {
@@ -558,7 +561,7 @@ public static class DeliveryTemplateEndpoints
             return Problem($"There is no saved template {reference}.", StatusCodes.Status404NotFound, "Not found");
         }
 
-        var types = string.IsNullOrWhiteSpace(request.Scope) ? [] : await CatalogCacheReader.TypesAsync(db, request.Scope.Trim(), ct).ConfigureAwait(false);
+        var types = string.IsNullOrWhiteSpace(request.Scope) ? [] : await CatalogCacheReader.TypesAsync(osdu, request.Scope.Trim(), ct).ConfigureAwait(false);
         return TypedResults.Ok(MappingBuilder.Draft(OsduTemplate.From(schema), types, request.Name, request.MappingVersion, request.System));
     }
 
@@ -641,7 +644,7 @@ public static class DeliveryTemplateEndpoints
 
         try
         {
-            foreach (var issue in Preflight.Check(mapping, schema, references, context, dropColumns: null))
+            foreach (var issue in Preflight.Check(mapping, schema, references, context, sourceColumns: null))
             {
                 issues.Add(new MappingDraftIssue(
                     issue.Severity == IssueSeverity.Error ? MappingDraftIssue.ErrorSeverity : MappingDraftIssue.WarningSeverity, issue.Message));
@@ -731,9 +734,9 @@ public static class DeliveryTemplateEndpoints
 
     private static bool IsError(MappingDraftIssue issue) => issue.Severity == MappingDraftIssue.ErrorSeverity;
 
-    private static async Task<Dictionary<(string Kind, string Version), int>> PinsAsync(CatalogDbContext db, CancellationToken ct)
+    private static async Task<Dictionary<(string Kind, string Version), int>> PinsAsync(OsduDbContext osdu, CancellationToken ct)
     {
-        var rows = await db.DeliveryMappings.AsNoTracking()
+        var rows = await osdu.DeliveryMappings.AsNoTracking()
             .Where(m => m.TemplateVersion != string.Empty)
             .GroupBy(m => new { m.Kind, m.TemplateVersion })
             .Select(g => new { g.Key.Kind, g.Key.TemplateVersion, Count = g.Count() })

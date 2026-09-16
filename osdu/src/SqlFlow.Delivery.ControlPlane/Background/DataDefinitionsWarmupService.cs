@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Templates;
 
-namespace SqlFlow.ControlPlane.Background;
+namespace SqlFlow.Delivery.ControlPlane.Background;
 
 /// <summary>
 /// Brings the local copy of the OSDU data definitions up when the control plane starts: loads (or reads) the release list

@@ -1,13 +1,16 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using SqlFlow.ControlPlane.Configuration;
 using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.ControlPlane.Configuration;
 using SqlFlow.Delivery.Ledger;
 
-namespace SqlFlow.ControlPlane.Background;
+namespace SqlFlow.Delivery.ControlPlane.Background;
 
 /// <summary>
 /// Carries approved cache changes out to the estate, at a pace an operator sets. When a cached value moves, the
-/// records built from it must be delivered again, and one corrected unit can reach millions of manifest rows: doing
+/// records built from it must be delivered again, and one corrected unit can reach millions of records: doing
 /// that in one statement would hold locks on the delivery table for as long as it takes and flood OSDU behind it.
 /// This service instead takes one approved change at a time and marks a bounded batch of its records for
 /// redelivery, in delivery-key order from the change's own cursor, then stops until the next tick. A change drains
@@ -17,7 +20,7 @@ namespace SqlFlow.ControlPlane.Background;
 /// <remarks>
 /// Hosted on every replica: the pass claims nothing, but each batch's update is idempotent (marking a record for
 /// redelivery twice is the same as once) and the cursor only moves forward, so two replicas ticking at once cost a
-/// little duplicated work and never a wrong result. <c>ControlPlane:CacheRollout:BatchSize</c> and
+/// little duplicated work and never a wrong result. <c>Osdu:CacheRollout:BatchSize</c> and
 /// <c>:BatchesPerPass</c> bound the work of one tick; <c>:PollSeconds</c> sets how often a tick happens.
 /// </remarks>
 public sealed partial class CacheUpdateRolloutService : BackgroundService
@@ -30,7 +33,7 @@ public sealed partial class CacheUpdateRolloutService : BackgroundService
     public CacheUpdateRolloutService(
         IServiceProvider services,
         TimeProvider clock,
-        IOptions<ControlPlaneOptions> options,
+        IOptions<CacheRolloutOptions> options,
         ILogger<CacheUpdateRolloutService> logger)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -39,7 +42,7 @@ public sealed partial class CacheUpdateRolloutService : BackgroundService
         ArgumentNullException.ThrowIfNull(logger);
         _services = services;
         _clock = clock;
-        _options = options.Value.CacheRollout;
+        _options = options.Value;
         _logger = logger;
     }
 
