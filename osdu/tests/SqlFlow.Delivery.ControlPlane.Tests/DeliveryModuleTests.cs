@@ -289,18 +289,14 @@ public sealed class DeliveryModuleTests
         Assert.Empty(none.Items);
         Assert.Equal(0, none.Total);
 
-        // The contract the search holds every contributor to: at most a page of hits, each with an id, a title and a
-        // route the GUI can open.
+        // The contract the search holds every contributor to, asserted through the platform's own rule rather than a
+        // restatement of it here, so this test cannot drift from what the control plane actually enforces.
         foreach (var answer in new[] { contribution, none })
         {
-            Assert.True(answer.Items.Count <= 5);
-            Assert.True(answer.Total >= 0);
-            Assert.All(answer.Items, item =>
-            {
-                Assert.False(string.IsNullOrWhiteSpace(item.Id));
-                Assert.False(string.IsNullOrWhiteSpace(item.Title));
-                Assert.StartsWith("/delivery/records/", item.Route!, StringComparison.Ordinal);
-            });
+            Assert.Null(SearchContributors.ContractViolation(answer, pageSize: 5));
+
+            // What is this module's own claim, and not the platform's: every record hit opens on the record's page.
+            Assert.All(answer.Items, item => Assert.StartsWith("/delivery/records/", item.Route!, StringComparison.Ordinal));
         }
     }
 

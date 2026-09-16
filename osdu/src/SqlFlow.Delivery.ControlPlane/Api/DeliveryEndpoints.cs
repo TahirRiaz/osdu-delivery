@@ -68,7 +68,10 @@ public sealed record DeliveryRecordDto(
     DateTime? LastDeliveredUtc, DateTime? LastVerifiedUtc, string? LastVerifyOutcome, string? LeaseOwner, DateTime? LeaseExpiresUtc,
     Guid? LastSubmissionId, int AttemptCount, DateTime? NextAttemptUtc, string? LastError, bool HasPendingDocument,
     bool PendingMetadata, bool PendingPayload, string? PendingPayloadLocation, bool Blocked, DateTime CreatedUtc, DateTime UpdatedUtc,
-    string? PendingDocumentRef, int? WorkBatch, JsonElement? TargetState, JsonElement? PendingSteps);
+    string? PendingDocumentRef, int? WorkBatch, JsonElement? TargetState, JsonElement? PendingSteps,
+    string? SourceFileName, long? SourceRowNumber, DateTime? SourceUpdatedUtc,
+    string? PendingSourceFileName, long? PendingSourceRowNumber, DateTime? PendingSourceUpdatedUtc,
+    string? SourceKeyJson, DateTime? PlanRequestedUtc);
 
 /// <summary>A record with the pipeline it belongs to. The pending document itself lives in the submission's work batches on
 /// storage, which the nodes read; its reference and batch are on the record.</summary>
@@ -78,7 +81,8 @@ public sealed record DeliveryRecordDetailDto(
 /// <summary>One delivery try, as the append-only history holds it: its outcome, and every step with what the target returned.</summary>
 public sealed record DeliveryAttemptDto(
     long AttemptId, Guid DeliveryKey, Guid? SubmissionId, Guid? RunId, string Worker, DateTime StartedUtc, DateTime CompletedUtc,
-    string Outcome, string Phase, string? MetadataHash, string? PayloadHash, long? TargetVersion, string? Error, JsonElement? Result, int? WorkBatch);
+    string Outcome, string Phase, string? MetadataHash, string? PayloadHash, long? TargetVersion, string? Error, JsonElement? Result, int? WorkBatch,
+    string? SourceFileName, long? SourceRowNumber, DateTime? SourceUpdatedUtc);
 
 /// <summary>One entry of the audit trail: who did what, when, with which inputs, and how it ended.</summary>
 public sealed record DeliveryActivityDto(
@@ -2224,11 +2228,19 @@ public static class DeliveryEndpoints
         r.TargetId, r.TargetVersion, r.Status.ToString().ToLowerInvariant(), r.LastDeliveredUtc, r.LastVerifiedUtc,
         r.LastVerifyOutcome?.ToString().ToLowerInvariant(), r.LeaseOwner, r.LeaseExpiresUtc, r.LastSubmissionId, r.AttemptCount, r.NextAttemptUtc,
         r.LastError, r.PendingDocumentRef is not null, r.PendingMetadata, r.PendingPayload, r.PendingPayloadLocation, r.Blocked, r.CreatedUtc, r.UpdatedUtc,
-        r.PendingDocumentRef, r.WorkBatch, ParseJsonOrNull(r.TargetStateJson), ParseJsonOrNull(r.PendingStepJson));
+        r.PendingDocumentRef, r.WorkBatch, ParseJsonOrNull(r.TargetStateJson), ParseJsonOrNull(r.PendingStepJson),
+        // Where the record came from. Traceability is the product: a delivered record says which ingestion file and row
+        // it was built from, and a record with work waiting says which file and row that work will be built from.
+        r.SourceFileName, r.SourceRowNumber, r.SourceUpdatedUtc,
+        r.PendingSourceFileName, r.PendingSourceRowNumber, r.PendingSourceUpdatedUtc,
+        r.SourceKeyJson, r.PlanRequestedUtc);
 
     private static DeliveryAttemptDto ToDto(AttemptRecord a) => new(
         a.AttemptId, a.DeliveryKey.Value, a.SubmissionId, a.RunId, a.Worker, a.StartedUtc, a.CompletedUtc, a.Outcome.ToString().ToLowerInvariant(),
-        a.Phase, a.MetadataHash, a.PayloadHash, a.TargetVersion, a.Error, ParseJsonOrNull(a.ResultJson), a.WorkBatch);
+        a.Phase, a.MetadataHash, a.PayloadHash, a.TargetVersion, a.Error, ParseJsonOrNull(a.ResultJson), a.WorkBatch,
+        // The origin of the document this try sent, which is what makes a past attempt reconstructible from the ledger
+        // alone even after the record has moved on to a newer row.
+        a.SourceFileName, a.SourceRowNumber, a.SourceUpdatedUtc);
 
     private static DeliveryActivityDto ToDto(ActivityRecord a) => new(
         a.ActivityId, a.FlowId, a.FlowName, a.Kind, a.Actor, a.StartedUtc, a.CompletedUtc, a.Outcome, a.ParametersJson, a.SubmissionId,

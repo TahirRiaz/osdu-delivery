@@ -187,6 +187,19 @@ export interface DeliveryRecord {
   targetState: Record<string, unknown> | null;
   /** The steps of the pending delivery an earlier try completed, with what they returned. */
   pendingSteps: Record<string, unknown> | null;
+  /** The ingestion file the delivered document was built from, and the row of it. */
+  sourceFileName: string | null;
+  sourceRowNumber: number | null;
+  /** When the ingestion table last updated that row. */
+  sourceUpdatedUtc: string | null;
+  /** The same three for work that is waiting: where the pending document will be built from. */
+  pendingSourceFileName: string | null;
+  pendingSourceRowNumber: number | null;
+  pendingSourceUpdatedUtc: string | null;
+  /** The key columns that find the record's row in the ingestion tables, as JSON. */
+  sourceKeyJson: string | null;
+  /** When a plan last asked for this record, for a record waiting on one. */
+  planRequestedUtc: string | null;
 }
 
 export interface DeliveryRecordDetail {
@@ -253,6 +266,10 @@ export interface DeliveryAttempt {
   /** The steps the try took and what the target returned, null for tries that recorded none. */
   result: DeliveryAttemptResult | null;
   workBatch: number | null;
+  /** The ingestion file and row the document this try sent was built from, and when that row last changed. */
+  sourceFileName: string | null;
+  sourceRowNumber: number | null;
+  sourceUpdatedUtc: string | null;
 }
 
 /** One entry of the audit trail: who did what, when, with which inputs, and how it ended. */
