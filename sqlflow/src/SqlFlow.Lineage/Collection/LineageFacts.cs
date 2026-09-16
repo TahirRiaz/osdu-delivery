@@ -384,6 +384,37 @@ public static class ServerIdentity
     /// an <c>inline:</c> hash.</summary>
     public const string Subscriber = "subscriber";
 
+    /// <summary>The prefix of every dataset identity (<see cref="Dataset"/>).</summary>
+    public const string DatasetPrefix = "dataset:";
+
+    /// <summary>
+    /// The identity the datasets of one external system instance live on: <c>dataset:&lt;system&gt;</c>, followed by
+    /// the instance's own identity when the system has instances. The instance is identified by <see cref="From"/>, so
+    /// two declarations naming the same reference share a node and a literal address is hashed, never echoed. The
+    /// prefix can never collide with a real server reference.
+    /// </summary>
+    public static string Dataset(string system, string? instance)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(system);
+        return string.IsNullOrWhiteSpace(instance)
+            ? DatasetPrefix + system.Trim()
+            : DatasetPrefix + system.Trim() + ":" + From(instance);
+    }
+
+    /// <summary>The system of a dataset identity or a node key built on one, or null for any other identity.</summary>
+    public static string? DatasetSystem(string serverRefOrKey)
+    {
+        ArgumentNullException.ThrowIfNull(serverRefOrKey);
+        if (!serverRefOrKey.StartsWith(DatasetPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var rest = serverRefOrKey[DatasetPrefix.Length..];
+        var end = rest.IndexOfAny([':', '|']);
+        return end < 0 ? rest : rest[..end];
+    }
+
     public static string From(string connectionReference)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionReference);
