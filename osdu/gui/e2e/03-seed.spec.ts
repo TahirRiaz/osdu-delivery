@@ -18,23 +18,23 @@ function fixtureMeta(): { repoDir: string; headSha: string; sampleDb: string } {
   return JSON.parse(readFileSync(metaPath, "utf8")) as { repoDir: string; headSha: string; sampleDb: string };
 }
 
+/** The ingestion tables the chain loads, each keyed by the identity column the delivery flows page and fan out by. */
+const INGESTION_TABLES = ["WellLog", "WellLogCurve", "Wellbore", "WellboreAlias"] as const;
+
 /**
- * Lets the sample database serve snapshot reads. A delivery flow reads a record and its child rows as one moment, which
- * is snapshot isolation unless the flow says otherwise, and a database the suite has just created does not allow it. The
- * setting is idempotent, so a rerun against the same database changes nothing. sqlcmd is used because the suite already
- * needs a local SQL Server; the password, when the connection string carries one, travels in SQLCMDPASSWORD so it never
- * appears on a command line.
+ * Runs one batch against the sample database. sqlcmd is used because the suite already needs a local SQL Server; the
+ * password, when the connection string carries one, travels in SQLCMDPASSWORD so it never appears on a command line.
  */
-function allowSnapshotIsolation(connectionString: string): void {
+function sampleSql(connectionString: string, query: string, what: string): void {
   const parts = connectionParts(connectionString);
   const pick = (...keys: string[]) => connectionValue(parts, ...keys);
   const server = pick("server", "data source", "address", "addr");
   const database = pick("database", "initial catalog");
   if (!server || !database) {
-    throw new Error("The sample database connection string names no server or no database, so snapshot isolation cannot be enabled on it.");
+    throw new Error(`The sample database connection string names no server or no database, so the suite cannot ${what}.`);
   }
 
-  const args = ["-S", server, "-d", database, "-b", "-I", "-Q", "ALTER DATABASE CURRENT SET ALLOW_SNAPSHOT_ISOLATION ON;"];
+  const args = ["-S", server, "-d", database, "-b", "-I", "-Q", query];
   const env: NodeJS.ProcessEnv = { ...process.env };
   const user = pick("user id", "uid", "user");
   if (user) {
@@ -53,10 +53,38 @@ function allowSnapshotIsolation(connectionString: string): void {
   } catch (error) {
     const failure = error as { stdout?: string; stderr?: string; message: string };
     throw new Error(
-      `Could not allow snapshot isolation on ${database} at ${server}: ${(failure.stdout || failure.stderr || failure.message).trim()}`,
+      `Could not ${what} on ${database} at ${server}: ${(failure.stdout || failure.stderr || failure.message).trim()}`,
       { cause: error },
     );
   }
+}
+
+/**
+ * Lets the sample database serve snapshot reads. A delivery flow reads a record and its child rows as one moment, which
+ * is snapshot isolation unless the flow says otherwise, and a database the suite has just created does not allow it. The
+ * setting is idempotent, so a rerun against the same database changes nothing.
+ */
+function allowSnapshotIsolation(connectionString: string): void {
+  sampleSql(connectionString, "ALTER DATABASE CURRENT SET ALLOW_SNAPSHOT_ISOLATION ON;", "allow snapshot isolation");
+}
+
+/**
+ * Drops the chain's ingestion tables that an earlier suite created without the identity key the delivery flows page by.
+ * The ingestion flows create a table with its identity key only when the table is new, and they probe their watermark
+ * from the table itself, so a dropped table is created again with the key and loaded in full on this run.
+ */
+function replaceTablesWithoutIdentityKey(connectionString: string): void {
+  const names = INGESTION_TABLES.map((table) => `N'${table}'`).join(", ");
+  sampleSql(
+    connectionString,
+    `DECLARE @sql nvarchar(max) = N'';
+SELECT @sql = @sql + N'DROP TABLE ' + QUOTENAME(s.[name]) + N'.' + QUOTENAME(t.[name]) + N';'
+FROM sys.tables AS t INNER JOIN sys.schemas AS s ON s.[schema_id] = t.[schema_id]
+WHERE s.[name] = N'ing' AND t.[name] IN (${names})
+  AND NOT EXISTS (SELECT 1 FROM sys.identity_columns AS c WHERE c.[object_id] = t.[object_id] AND c.[name] = N'RecId');
+IF @sql <> N'' EXEC sp_executesql @sql;`,
+    "replace the ingestion tables that lack their identity key",
+  );
 }
 
 test.describe.serial("seed the estate via repo source sync", () => {
@@ -111,6 +139,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
     test.setTimeout(900_000);
     const meta = fixtureMeta();
     allowSnapshotIsolation(meta.sampleDb);
+    replaceTablesWithoutIdentityKey(meta.sampleDb);
     for (const flow of LOADING_FLOWS) {
       const output = execFileSync(
         "dotnet",

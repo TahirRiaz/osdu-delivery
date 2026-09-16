@@ -132,11 +132,18 @@ public sealed record SourceWindow(DateTime? LowerUtc, DateTime UpperUtc);
 public sealed record SourceKeyColumn(string Name, string SqlType);
 
 /// <summary>
-/// A contiguous range of the record key space, dealt to one run of a fan-out: records whose key is above
-/// <paramref name="From"/> and at most <paramref name="To"/>, either bound open when it is null. Slices partition the key
-/// space, so a record a read meets falls in exactly one of them.
+/// A contiguous range of the order a read pages in, dealt to one run of a fan-out: records whose value is above
+/// <paramref name="From"/> and at most <paramref name="To"/>, either bound open when it is null. Slices partition that
+/// order, so a record a read meets falls in exactly one of them.
 /// </summary>
-public readonly record struct KeyRange(int Slice, KeyTuple? From, KeyTuple? To);
+/// <param name="Slice">The slice index members name in their run payload.</param>
+/// <param name="From">The exclusive lower bound, or null for the start.</param>
+/// <param name="To">The inclusive upper bound, or null for the end.</param>
+/// <param name="On">
+/// The identity primary key column the bounds are values of (<c>source.record.primaryKey</c>), or null when they are record
+/// keys. A read refuses a range cut on another column than the one it pages by.
+/// </param>
+public readonly record struct KeyRange(int Slice, KeyTuple? From, KeyTuple? To, string? On = null);
 
 /// <summary>
 /// What an opened read knows before any row is read: the window it fixed, the columns each table holds, the key columns and
@@ -154,6 +161,9 @@ public sealed record SourceHeader
 
     /// <summary>The record key columns in key order, with the SQL type each holds.</summary>
     public required IReadOnlyList<SourceKeyColumn> KeyColumns { get; init; }
+
+    /// <summary>The identity primary key the read pages and is cut by, or null when it pages by the record key.</summary>
+    public string? PrimaryKey { get; init; }
 
     /// <summary>How many records the read expects to meet; an estimate, used to decide the fan-out and to size the slices.</summary>
     public long EstimatedCandidates { get; init; }
@@ -191,12 +201,17 @@ public interface IIngestionSource
     /// </summary>
     Task<SourceHeader> OpenAsync(SourceSelection selection, SourceWindow? stored, CancellationToken ct = default);
 
-    /// <summary>The key bounds that cut this read into <paramref name="slices"/> contiguous ranges of roughly equal size.</summary>
+    /// <summary>
+    /// Bounds that cut this read into at most <paramref name="slices"/> contiguous ranges of the record table's identity
+    /// primary key, holding roughly as many candidates each. A read of one slice needs no bounds; a flow that names no
+    /// primary key cannot be cut into more.
+    /// </summary>
     Task<IReadOnlyList<KeyRange>> SliceBoundsAsync(SourceHeader header, int slices, CancellationToken ct = default);
 
     /// <summary>
-    /// The records of this read, in key order, whole or limited to one key range. Each record carries its row, its child
-    /// dataset rows, its origin, its ingestion fingerprint and its key as the source read it.
+    /// The records of this read, whole or limited to one range, in the order the read pages in: the identity primary key
+    /// when the flow names one, the record key otherwise. Each record carries its row, its child dataset rows, its origin,
+    /// its ingestion fingerprint and its key as the source read it.
     /// </summary>
     IAsyncEnumerable<SourceRecord> ReadAsync(SourceHeader header, KeyRange? range, CancellationToken ct = default);
 }

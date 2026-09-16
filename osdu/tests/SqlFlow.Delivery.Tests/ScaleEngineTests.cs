@@ -165,6 +165,7 @@ public class ScaleEngineTests : IDisposable
         Assert.Equal(3, result.Submission.Delivered);
         Assert.Equal(3, result.Submission.BatchCount);
         Assert.Equal(3, result.Submission.Slices);
+        Assert.Equal("RecId", SourceWindowDescription.Parse(result.Submission.SourceWindowJson)!.SlicedOn);
         Assert.Equal(3, protocol.Deliveries.Count);
 
         var intakeMembers = dispatcher.Enqueued.Where(e => e.Operation == DeliveryOperations.Intake).ToList();

@@ -1134,10 +1134,13 @@ record and how it got there.
 A submission above `reliability.fanOutMinRecords` records, on a flow with
 `reliability.fanOut` above zero, spreads across the fleet. The parent deliver run
 registers the submission, takes its own share of the work, and enqueues `intake` member
-runs for the rest. The work is cut into contiguous **key slices**, bounded by
-`ROW_NUMBER() OVER (ORDER BY keys)`: at least a work batch of records each and never more
-than 1024 slices, recorded on the submission, so every member reads exactly its own range of
-the record key and no two members plan the same record. When the members report, it finalises the planning, enqueues `drain` members that lease batches
+runs for the rest. The work is cut into contiguous **slices of the record table's identity
+primary key** (`source.record.primaryKey`, which a fanned-out flow must name): the parent
+counts the candidates per range of key values in one aggregate, so nothing ranks or sorts
+the candidates, and cuts at most 1024 slices of a work batch or more each, holding their
+shares give or take one counted range. The bounds and the column are recorded on the
+submission, so every member reads exactly its own range, paging by the primary key, and no
+two members plan the same record ([documents.md](documents.md#the-identity-primary-key)). When the members report, it finalises the planning, enqueues `drain` members that lease batches
 concurrently with it, waits for them, settles what is left (expired leases, records in
 backoff), and completes the submission. Members ride the platform's run queue as one
 family under the parent: they pass the pipeline gate together, they are cancelled with

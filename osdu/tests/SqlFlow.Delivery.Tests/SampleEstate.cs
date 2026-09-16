@@ -55,6 +55,8 @@ public static class SampleEstate
         {
             Row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
             {
+                // The identity primary key the ingestion flow gives the table (target.identityColumn): the row's place in it.
+                ["RecId"] = rowNumber,
                 ["source_project"] = log.SourceProject,
                 ["log_id"] = log.LogId,
                 ["wellbore_uwi"] = log.WellboreUwi,

@@ -36,9 +36,11 @@ public sealed class SqlServerIngestionSourceFactory : IIngestionSourceFactory
 
 /// <summary>
 /// Reads a flow's records out of the ingestion tables SQLFlow loads (docs/stage4-design.md sections 2.2 and 2.3). A read
-/// fixes its window at open, pages candidate record keys in key order, and then reads one page's rows as one command: the
-/// record rows and one result set per child dataset, under snapshot isolation by default so a record and its child rows
-/// always describe the same moment.
+/// fixes its window at open, pages its candidates by the record table's identity primary key (or by the record key when
+/// the flow names none), and then reads one page's rows as one command: the record rows and one result set per child
+/// dataset, under snapshot isolation by default so a record and its child rows always describe the same moment. A fan-out
+/// cuts the candidates into ranges of the primary key from a count per range of its values, so nothing ranks or sorts
+/// every candidate.
 /// </summary>
 public sealed class SqlServerIngestionSource : IIngestionSource
 {
@@ -108,6 +110,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             Window = window,
             Columns = columns,
             KeyColumns = layout.Key,
+            PrimaryKey = layout.PrimaryKey?.Name,
             EstimatedCandidates = candidates,
             HasChanges = candidates > 0,
             MissingKeys = missing,
@@ -122,39 +125,55 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         var layout = Layout();
         if (slices == 1 || header.EstimatedCandidates <= 1)
         {
-            return [new KeyRange(0, null, null)];
+            return [new KeyRange(0, null, null, layout.PrimaryKey?.Name)];
         }
 
-        var size = (long)Math.Ceiling(header.EstimatedCandidates / (double)slices);
+        var primaryKey = layout.PrimaryKey
+            ?? throw new DeliveryException(
+                $"Flow '{_flow.Name}': a read is cut into slices on the record table's identity primary key, and the flow names none under source.record.primaryKey.");
         await using var connection = await IngestionConnection.OpenAsync(_flow.Source.Connection, _flow.Name, _secrets, ct).ConfigureAwait(false);
-        await using var command = Command(connection, IngestionSql.SliceBounds(layout, header.Selection.Kind, header.Window.LowerUtc is not null));
+        await using var command = Command(connection, IngestionSql.SliceHistogram(layout, header.Selection.Kind, header.Window.LowerUtc is not null));
         Bind(command, layout, header, IngestionSql.KeyBounds.None, null, null);
-        command.Parameters.Add(new SqlParameter(IngestionSql.SliceSizeParameter, SqlDbType.BigInt) { Value = size });
+        command.Parameters.Add(new SqlParameter(IngestionSql.BucketsParameter, SqlDbType.BigInt) { Value = (long)slices * KeySlices.BucketsPerSlice });
 
-        var bounds = new List<KeyTuple>();
-        await using (var reader = await ExecuteReaderAsync(command, "read the slice bounds", ct).ConfigureAwait(false))
+        long lowest;
+        long width;
+        var buckets = new List<(long Bucket, long Count)>();
+        await using (var reader = await ExecuteReaderAsync(command, "count the candidates per range of the primary key", ct).ConfigureAwait(false))
         {
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.IsDBNull(0))
+            {
+                // Nothing to cut: the candidates the read counted at open are gone.
+                return [new KeyRange(0, null, null, primaryKey.Name)];
+            }
+
+            lowest = reader.GetInt64(0);
+            width = reader.GetInt64(1);
+            if (!await reader.NextResultAsync(ct).ConfigureAwait(false))
+            {
+                throw new DeliveryException($"Flow '{_flow.Name}': the source did not return how the candidates spread over {primaryKey.Name}.");
+            }
+
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
-                bounds.Add(ReadKey(reader, layout));
+                buckets.Add((reader.GetInt64(0), reader.GetInt64(1)));
             }
         }
 
-        // The last bound would end where the key space does, leaving an empty slice behind it.
-        while (bounds.Count > slices - 1)
-        {
-            bounds.RemoveAt(bounds.Count - 1);
-        }
-
+        var bounds = KeySlices.CutHistogram(lowest, width, buckets, slices);
         var ranges = new List<KeyRange>(bounds.Count + 1);
         KeyTuple? from = null;
         for (var i = 0; i < bounds.Count; i++)
         {
-            ranges.Add(new KeyRange(i, from, bounds[i]));
-            from = bounds[i];
+            var to = KeyTuple.Of(bounds[i].ToString(CultureInfo.InvariantCulture));
+            ranges.Add(new KeyRange(i, from, to, primaryKey.Name));
+            from = to;
         }
 
-        ranges.Add(new KeyRange(bounds.Count, from, null));
+        ranges.Add(new KeyRange(bounds.Count, from, null, primaryKey.Name));
+        _logger.LogInformation(
+            "Cut {Candidates} candidate record(s) into {Slices} range(s) of {Column}, from {Buckets} counted range(s) of {Width} value(s) each.",
+            buckets.Sum(b => b.Count), ranges.Count, primaryKey.Name, buckets.Count, width);
         return ranges;
     }
 
@@ -162,6 +181,13 @@ public sealed class SqlServerIngestionSource : IIngestionSource
     {
         ArgumentNullException.ThrowIfNull(header);
         var layout = Layout();
+        if (range is { } slice && !string.Equals(slice.On, layout.PrimaryKey?.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DeliveryException(
+                $"Flow '{_flow.Name}': slice {slice.Slice} of this submission was cut on {(slice.On is null ? "the record key" : $"column '{slice.On}'")}, "
+                + $"and the flow now reads by {(layout.PrimaryKey is { } declared ? $"column '{declared.Name}'" : "the record key")}. Plan a new submission rather than re-running this one.");
+        }
+
         var pageSize = _flow.Source.Incremental.PageSize;
         await using var connection = await IngestionConnection.OpenAsync(_flow.Source.Connection, _flow.Name, _secrets, ct).ConfigureAwait(false);
         var after = range?.From;
@@ -240,6 +266,20 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             key.Add(new SourceKeyColumn(column, declared.SqlType));
         }
 
+        SourceKeyColumn? primaryKey = null;
+        if (source.Record.PrimaryKey is { } primaryKeyName)
+        {
+            var declared = Column(record, recordName, primaryKeyName, $"{where}: source.record.primaryKey names column '{primaryKeyName}'");
+            if (!declared.IsInteger)
+            {
+                throw new FlowValidationException(
+                    $"{where}: source.record.primaryKey names column '{declared.Name}' of {recordName}, which is {declared.SqlType}. "
+                    + "A read is paged and cut on an integer identity column (the ingestion flow's target.identityColumn).");
+            }
+
+            primaryKey = new SourceKeyColumn(declared.Name, declared.SqlType);
+        }
+
         var updated = Column(record, recordName, source.SystemColumns.Updated, $"{where}: source.systemColumns.updated names column '{source.SystemColumns.Updated}'");
         if (!updated.IsMoment)
         {
@@ -297,11 +337,17 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         {
             Record = recordName,
             Key = key,
+            PrimaryKey = primaryKey,
             Updated = updated.Name,
             Deleted = deleted?.Name,
             Scope = source.Record.Scope.Select(s => new KeyValuePair<string, string>(s.Key, s.Value)).ToList(),
             Datasets = datasets,
         };
+
+        if (primaryKey is not null)
+        {
+            await GuardPrimaryKeyAsync(connection, _layout, recordName, where, ct).ConfigureAwait(false);
+        }
 
         if (nullableKeys.Count > 0)
         {
@@ -309,6 +355,55 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         }
 
         return _layout;
+    }
+
+    /// <summary>
+    /// Refuses a declared primary key the read cannot rely on. Ranges of it deal records to runs, so it has to be the
+    /// table's own single-column primary key (unique, and the index every other index points at), an identity column (so
+    /// the values ascend as rows arrive), and the record key has to be unique on its own: a record held by two rows could
+    /// otherwise fall into two ranges and be planned by two runs.
+    /// </summary>
+    private async Task GuardPrimaryKeyAsync(SqlConnection connection, IngestionLayout layout, SourceObjectName recordName, string where, CancellationToken ct)
+    {
+        var primaryKey = layout.PrimaryKey!;
+        await using var command = Command(connection, IngestionSql.PrimaryKeyProbe(recordName));
+        command.Parameters.Add(new SqlParameter(IngestionSql.ObjectParameter, SqlDbType.NVarChar, 386) { Value = recordName.ToString() });
+        command.Parameters.Add(new SqlParameter(IngestionSql.ColumnParameter, SqlDbType.NVarChar, 128) { Value = primaryKey.Name });
+        command.Parameters.Add(new SqlParameter(IngestionSql.KeyNamesParameter, SqlDbType.NVarChar, -1) { Value = JsonSerializer.Serialize(layout.Key.Select(k => _tables[SourceDatasets.Record][k.Name].Name)) });
+        bool identity;
+        bool isPrimaryKey;
+        bool keyUnique;
+        await using (var reader = await ExecuteReaderAsync(command, "check the record table's primary key", ct).ConfigureAwait(false))
+        {
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                throw new DeliveryException($"Flow '{_flow.Name}': the source did not say whether {recordName} has the primary key the flow names.");
+            }
+
+            identity = reader.GetInt32(0) == 1;
+            isPrimaryKey = reader.GetInt32(1) == 1;
+            keyUnique = reader.GetInt32(2) == 1;
+        }
+
+        var column = SourceObjectName.Quote(primaryKey.Name);
+        if (!identity || !isPrimaryKey)
+        {
+            var missing = !identity && !isPrimaryKey
+                ? "neither an identity column nor the table's primary key"
+                : !identity ? "not an identity column" : "not the table's single-column primary key";
+            throw new FlowValidationException(
+                $"{where}: source.record.primaryKey names column '{primaryKey.Name}' of {recordName}, which is {missing}. "
+                + $"The ingestion flow creates it with target.identityColumn: {primaryKey.Name} when it creates the table. An existing table needs it added once, "
+                + $"which rewrites the table (drop a plain column of that name first): ALTER TABLE {recordName.Quoted} ADD {column} bigint IDENTITY(1, 1) NOT NULL "
+                + $"CONSTRAINT {SourceObjectName.Quote("PK_" + recordName.Name)} PRIMARY KEY CLUSTERED; (NONCLUSTERED when the table already has a clustered index).");
+        }
+
+        if (!keyUnique)
+        {
+            throw new FlowValidationException(
+                $"{where}: source.record.key ({string.Join(", ", layout.Key.Select(k => k.Name))}) has no unique index without a filter on {recordName}, so a record could be held by two rows "
+                + "and a fan-out could deal them to two runs. The ingestion flow's load.keyColumns creates one (NCI_KeyColumn); a table that keeps history (SCD2) filters it and cannot be read by ranges of its primary key.");
+        }
     }
 
     /// <summary>
@@ -421,6 +516,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         return (found.Count - outOfScope.Count, missing, outOfScope);
     }
 
+    /// <summary>One page of candidates, each as its value in the order the read pages in: its primary key, or its record key.</summary>
     private async Task<IReadOnlyList<KeyTuple>> CandidatePageAsync(
         SqlConnection connection, IngestionLayout layout, SourceHeader header, KeyTuple? after, KeyRange? range, int pageSize, CancellationToken ct)
     {
@@ -433,7 +529,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         await using var reader = await ExecuteReaderAsync(command, "read a page of candidate record keys", ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
-            page.Add(ReadKey(reader, layout));
+            page.Add(ReadOrder(reader, layout));
         }
 
         return page;
@@ -453,12 +549,12 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         BindScope(command, layout);
         if (bounds.After && after is not null)
         {
-            BindKey(command, layout, IngestionSql.AfterPrefix, after);
+            BindOrder(command, layout, IngestionSql.AfterPrefix, after);
         }
 
         if (bounds.To && to is not null)
         {
-            BindKey(command, layout, IngestionSql.ToPrefix, to);
+            BindOrder(command, layout, IngestionSql.ToPrefix, to);
         }
     }
 
@@ -489,12 +585,19 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         }
     }
 
-    private void BindKey(SqlCommand command, IngestionLayout layout, string prefix, KeyTuple key)
+    /// <summary>Binds a value in the order the read pages in, one parameter per column of that order.</summary>
+    private void BindOrder(SqlCommand command, IngestionLayout layout, string prefix, KeyTuple value)
     {
         var record = _tables[SourceDatasets.Record];
-        for (var i = 0; i < layout.Key.Count; i++)
+        if (value.Values.Count != layout.Order.Count)
         {
-            command.Parameters.Add(record[layout.Key[i].Name].Parameter(prefix + i.ToString(CultureInfo.InvariantCulture), key.Values[i]));
+            throw new DeliveryException(
+                $"Flow '{_flow.Name}': a page bound has {value.Values.Count} part(s), and the read pages by {string.Join(", ", layout.Order.Select(o => o.Name))}.");
+        }
+
+        for (var i = 0; i < layout.Order.Count; i++)
+        {
+            command.Parameters.Add(record[layout.Order[i].Name].Parameter(prefix + i.ToString(CultureInfo.InvariantCulture), value.Values[i]));
         }
     }
 
@@ -503,6 +606,19 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         {
             Value = JsonSerializer.Serialize(keys.Select(k => k.Values).ToList()),
         });
+
+    /// <summary>A candidate's value in the order the read pages in.</summary>
+    private static KeyTuple ReadOrder(SqlDataReader reader, IngestionLayout layout)
+    {
+        var parts = new string[layout.Order.Count];
+        for (var i = 0; i < parts.Length; i++)
+        {
+            parts[i] = SourceRow.Stringify(SourceValues.Normalize(reader.GetValue(i)))
+                ?? throw new DeliveryException($"The record table {layout.Record} returned a null in column '{layout.Order[i].Name}', which cannot place a record.");
+        }
+
+        return new KeyTuple(parts);
+    }
 
     private static KeyTuple ReadKey(SqlDataReader reader, IngestionLayout layout)
     {
@@ -729,6 +845,9 @@ public sealed class SqlServerIngestionSource : IIngestionSource
 
         /// <summary>Whether the column can be compared, indexed and carried in a table variable's column list.</summary>
         public bool Comparable => !Uncomparable.Contains(TypeName) && MaxLength >= 0;
+
+        /// <summary>Whether the column holds a whole number.</summary>
+        public bool IsInteger => TypeName.ToLowerInvariant() is "bigint" or "int" or "smallint" or "tinyint";
 
         /// <summary>Whether the column holds a date and time.</summary>
         public bool IsMoment => TypeName.ToLowerInvariant() is "datetime" or "datetime2" or "smalldatetime" or "datetimeoffset" or "date";

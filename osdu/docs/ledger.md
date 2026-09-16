@@ -23,7 +23,7 @@ no catalog connection at all, reaches it through a connection reference of its o
 | `Kind` | Which selection was read: `incremental` (the rows changed in a window after the scope's watermark), `full` (every row of the scope), or `keys` (named record keys: a record-scoped run, or the records the ledger asked to plan again). |
 | `SourceConnection`, `SourceObject` | The ingestion database's connection reference exactly as the flow declares it (never a resolved secret), and the three-part name of the record table read. |
 | `WindowFromUtc`, `WindowToUtc` | The `UpdatedDate_DW` window the plan covered. Both null for a keys plan with no window; a full plan records its upper bound. |
-| `SourceWindowJson` | What else bounded the read: the child dataset objects, the overlap seconds, the scope values, the slice boundaries, the key count, and for a keys plan the key digest. |
+| `SourceWindowJson` | What else bounded the read: the child dataset objects, the overlap seconds, the scope values, the slice boundaries and the identity primary key column they are values of (`slicedOn`), the key count, and for a keys plan the key digest. |
 | `RunId` | The run that coordinated the submission. |
 | `Untracked` | Rows the plan read that carried no complete record key, so nothing could be delivered under them. |
 | `Status` | `received`, `planned`, `running`, `completed`, `failed`. |

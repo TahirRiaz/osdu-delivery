@@ -38,6 +38,7 @@ public sealed class DeliveryPlanRunApiTests
         {
             Row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
             {
+                ["RecId"] = 1L,
                 ["facility_name"] = "OSDU-DEV-1-A",
                 ["facility_description"] = "Sample wellbore A",
                 ["facility_id"] = "srn:master-data/Wellbore:A",

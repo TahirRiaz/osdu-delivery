@@ -16,6 +16,9 @@ source:
 target:
   server: sample
   object: OsduSample.ing.WellLogCurve
+  # The identity primary key every ingestion table carries: the clustered key the other indexes point at, and the
+  # column the OSDU flow pages and fans out by (source.record.primaryKey).
+  identityColumn: RecId
 
 load:
   keyColumns: [source_project, log_id, curve_id]

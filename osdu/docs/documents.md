@@ -17,6 +17,7 @@ source:
   record:
     object: OsduSample.ing.WellLog   # three-part name of the record ingestion table
     key: [source_project, log_id]    # the ing flow's load.keyColumns; must equal the mapping's dataset.key columns
+    primaryKey: RecId                # the table's identity primary key (the ing flow's target.identityColumn); required with fanOut
     scope:                           # optional: column -> parameter, each a typed [column] = @p predicate
       log_name: logSource
   datasets:                          # optional child ingestion tables the mapping repeats
@@ -128,7 +129,7 @@ reliability:
   batchSize: 50
   batchRecords: 500                # rendered documents per work batch file
   renderParallelism: 0             # renderers in the intake pipeline (0 = the machine's cores)
-  fanOut: 0                        # member runs a large submission spreads over (0 = none; at most 64)
+  fanOut: 0                        # member runs a large submission spreads over (0 = none; at most 64; needs source.record.primaryKey)
   fanOutMinRecords: 1000           # below this a submission never fans out
 
 schedule:                          # service: what to run, when, and with which parameter values
@@ -201,6 +202,31 @@ dataset join missing a key column, a dataset named `record`, a scope naming an u
 protocol without a `locationColumn`, a missing `hashColumn` under `contentHash`, and a literal secret in `connection`.
 The removed keys (`location`, `manifest`, `records`, `scopes`, `fingerprint`, `knownState`, `manualSubmission`,
 `submissions`, `sql`, `replica`) are refused by name.
+
+### The identity primary key
+
+`source.record.primaryKey` names the record table's identity primary key: an integer identity column that is the
+table's own single-column primary key, which SQLFlow's ingestion creates when the ing flow sets
+`target.identityColumn` (the samples use `RecId`). The table is then clustered on it, so every other index carries
+only that narrow value as its row locator. The record key stays what identifies a record, derives its delivery key and
+OSDU id, and joins the child tables; the primary key is how the rows are found and dealt out.
+
+- **Paging.** A read pages by the primary key: each page is a seek on the clustered key after the last value read,
+  and the page's rows are read by it. Without one, a read pages by the record key.
+- **Fan-out.** A flow with `reliability.fanOut` above zero must name it, and the loader refuses one that does not. The
+  coordinating run counts the candidates per range of primary key values (about 64 ranges per slice, one aggregate
+  over the candidates, which ranks and sorts nothing) and cuts them into at most 1024 contiguous slices of the
+  primary key, each holding its share of candidates give or take one counted range. The submission records the bounds
+  and the column they were cut on, and each member reads exactly its own range. A re-run of a submission cut on
+  another column than the flow now names is refused.
+- **What a run checks.** Opening the source, a run refuses a declared column that is not an integer, not an identity
+  column, or not the table's single-column primary key, and a record key without a unique index that has no filter
+  (a record held by two rows could otherwise fall into two ranges). The message says what is missing and, for a table
+  that lacks the key, the statement that adds one:
+  `ALTER TABLE [db].[schema].[table] ADD [RecId] bigint IDENTITY(1, 1) NOT NULL CONSTRAINT [PK_table] PRIMARY KEY CLUSTERED;`
+  That rewrites the table, so run it while nothing loads it. SQLFlow adds `target.identityColumn` only when it
+  creates a table: set on an existing table, it adds a plain nullable column that nothing fills, which a run refuses as
+  not an identity column (drop it before adding the real one).
 
 ### Parameters
 

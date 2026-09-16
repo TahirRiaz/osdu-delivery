@@ -77,6 +77,8 @@ internal sealed class FlowSourceTableYaml
 
     public List<string>? Key { get; set; }
 
+    public string? PrimaryKey { get; set; }
+
     public Dictionary<string, string>? Scope { get; set; }
 }
 

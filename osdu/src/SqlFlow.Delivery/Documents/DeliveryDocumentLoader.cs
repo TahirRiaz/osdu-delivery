@@ -324,6 +324,7 @@ internal static partial class FlowMapper
             {
                 Object = Require(record.Object, "source.record.object", source),
                 Key = (record.Key ?? []).Select(k => k?.Trim() ?? string.Empty).ToList(),
+                PrimaryKey = Optional(record.PrimaryKey),
                 Scope = Trimmed(record.Scope),
             },
             Datasets = datasets,
@@ -389,6 +390,11 @@ internal static partial class FlowMapper
             {
                 throw new FlowValidationException($"{source}: source.record.key names column '{column}' more than once.");
             }
+        }
+
+        if (src.Record.PrimaryKey is { } primaryKey)
+        {
+            CheckColumn(primaryKey, "source.record.primaryKey", source);
         }
 
         foreach (var (column, parameter) in src.Record.Scope)
@@ -591,6 +597,13 @@ internal static partial class FlowMapper
         if (flow.Reliability.FanOutMinRecords < 1)
         {
             throw new FlowValidationException($"{source}: reliability.fanOutMinRecords must be at least 1.");
+        }
+
+        if (flow.Reliability.FanOut > 0 && flow.Source.Record.PrimaryKey is null)
+        {
+            throw new FlowValidationException(
+                $"{source}: reliability.fanOut spreads a submission over ranges of the record table's identity primary key, and source.record.primaryKey names none. "
+                + "Name the column (the ingestion flow creates it with target.identityColumn, for example RecId), or set reliability.fanOut to 0.");
         }
 
         if (flow.Reliability.RenderParallelism is < 0 or > 256)

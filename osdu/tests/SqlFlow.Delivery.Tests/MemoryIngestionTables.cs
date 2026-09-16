@@ -51,9 +51,9 @@ public sealed class MemoryRecord
 
 /// <summary>
 /// The ingestion tables a flow reads, in memory: the fast suites' stand-in for SQL Server. It answers exactly what the
-/// SQL Server source answers (the window, the scope predicate, key selections, key slices, the ingestion fingerprint and
-/// each record's origin), so the planner, the intake and the worker run their real code paths on every machine, and the
-/// SQL Server contract suite proves the two agree.
+/// SQL Server source answers (the window, the scope predicate, key selections, slices of the identity primary key, the
+/// order a read pages in, the ingestion fingerprint and each record's origin), so the planner, the intake and the worker
+/// run their real code paths on every machine, and the SQL Server contract suite proves the two agree.
 /// </summary>
 public sealed class MemoryIngestionTables : IIngestionSourceFactory
 {
@@ -138,6 +138,7 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
                 Window = window,
                 Columns = Columns(),
                 KeyColumns = _flow.Source.Record.Key.Select(k => new SourceKeyColumn(k, "nvarchar(400)")).ToList(),
+                PrimaryKey = PrimaryKey,
                 EstimatedCandidates = candidates,
                 HasChanges = candidates > 0,
                 MissingKeys = missing,
@@ -145,26 +146,32 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
             });
         }
 
+        private string? PrimaryKey => _flow.Source.Record.PrimaryKey;
+
         public Task<IReadOnlyList<KeyRange>> SliceBoundsAsync(SourceHeader header, int slices, CancellationToken ct = default)
         {
             ArgumentNullException.ThrowIfNull(header);
             ArgumentOutOfRangeException.ThrowIfLessThan(slices, 1);
-            var keys = Candidates(header).Select(KeyOf).OrderBy(k => k.Json, StringComparer.Ordinal).ToList();
-            if (slices == 1 || keys.Count <= 1)
+            var candidates = Candidates(header).ToList();
+            if (slices == 1 || candidates.Count <= 1)
             {
-                return Task.FromResult<IReadOnlyList<KeyRange>>([new KeyRange(0, null, null)]);
+                return Task.FromResult<IReadOnlyList<KeyRange>>([new KeyRange(0, null, null, PrimaryKey)]);
             }
 
-            var size = (int)Math.Ceiling(keys.Count / (double)slices);
+            var primaryKey = PrimaryKey
+                ?? throw new DeliveryException($"Flow '{_flow.Name}': a read is cut into slices on the record table's identity primary key, and the flow names none under source.record.primaryKey.");
+            var ids = candidates.Select(IdOf).Order().ToList();
+            var size = (int)Math.Ceiling(ids.Count / (double)slices);
             var ranges = new List<KeyRange>();
             KeyTuple? from = null;
-            for (var cut = size - 1; cut < keys.Count - 1; cut += size)
+            for (var cut = size - 1; cut < ids.Count - 1; cut += size)
             {
-                ranges.Add(new KeyRange(ranges.Count, from, keys[cut]));
-                from = keys[cut];
+                var to = KeyTuple.Of(ids[cut].ToString(CultureInfo.InvariantCulture));
+                ranges.Add(new KeyRange(ranges.Count, from, to, primaryKey));
+                from = to;
             }
 
-            ranges.Add(new KeyRange(ranges.Count, from, null));
+            ranges.Add(new KeyRange(ranges.Count, from, null, primaryKey));
             return Task.FromResult<IReadOnlyList<KeyRange>>(ranges);
         }
 
@@ -172,25 +179,48 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
         {
             ArgumentNullException.ThrowIfNull(header);
             await Task.CompletedTask.ConfigureAwait(false);
-            foreach (var record in Candidates(header).OrderBy(r => KeyOf(r).Json, StringComparer.Ordinal))
+            if (range is { } slice && !string.Equals(slice.On, PrimaryKey, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new DeliveryException($"Flow '{_flow.Name}': slice {slice.Slice} was cut on {slice.On ?? "the record key"}, and the flow reads by {PrimaryKey ?? "the record key"}.");
+            }
+
+            var ordered = PrimaryKey is null
+                ? Candidates(header).OrderBy(r => KeyOf(r).Json, StringComparer.Ordinal)
+                : Candidates(header).OrderBy(IdOf);
+            foreach (var record in ordered)
             {
                 ct.ThrowIfCancellationRequested();
                 var key = KeyOf(record);
-                if (range is { } bounds)
+                if (range is { } bounds && !Within(record, key, bounds))
                 {
-                    if (bounds.From is { } from && string.CompareOrdinal(key.Json, from.Json) <= 0)
-                    {
-                        continue;
-                    }
-
-                    if (bounds.To is { } to && string.CompareOrdinal(key.Json, to.Json) > 0)
-                    {
-                        continue;
-                    }
+                    continue;
                 }
 
                 yield return Build(record, key);
             }
+        }
+
+        /// <summary>Whether a record falls in a range of the order the read pages in.</summary>
+        private bool Within(MemoryRecord record, KeyTuple key, KeyRange bounds)
+        {
+            if (PrimaryKey is null)
+            {
+                return (bounds.From is not { } from || string.CompareOrdinal(key.Json, from.Json) > 0)
+                    && (bounds.To is not { } to || string.CompareOrdinal(key.Json, to.Json) <= 0);
+            }
+
+            var id = IdOf(record);
+            return (bounds.From is not { } lower || id > long.Parse(lower.Values[0], CultureInfo.InvariantCulture))
+                && (bounds.To is not { } upper || id <= long.Parse(upper.Values[0], CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>A record's identity primary key, which every row of a table that names one carries.</summary>
+        private long IdOf(MemoryRecord record)
+        {
+            var column = PrimaryKey ?? throw new InvalidOperationException("The flow names no primary key.");
+            return record.Row.TryGetValue(column, out var value) && value is not null
+                ? Convert.ToInt64(value, CultureInfo.InvariantCulture)
+                : throw new DeliveryException($"A record row of flow '{_flow.Name}' has no value in its primary key column '{column}'.");
         }
 
         private SourceRecord Build(MemoryRecord record, KeyTuple key)

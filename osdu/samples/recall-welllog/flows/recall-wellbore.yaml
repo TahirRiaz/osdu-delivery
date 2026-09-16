@@ -12,6 +12,7 @@ source:
   record:
     object: OsduSample.ing.Wellbore
     key: [facility_name]
+    primaryKey: RecId
   datasets:
     aliases:
       object: OsduSample.ing.WellboreAlias

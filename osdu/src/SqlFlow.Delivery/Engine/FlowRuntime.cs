@@ -571,14 +571,16 @@ public sealed class FlowRuntime : IDisposable
         var applies = fanOut > 0 && dispatcher.Available && RunId is not null && slices >= 2
             && header.Source.EstimatedCandidates >= Flow.Reliability.FanOutMinRecords
             && slices - 1 <= SubmissionIntake.MaxFanOutPartition;
-        if (!applies)
+        // The candidates are cut on the record table's identity primary key; when they sit so close together that fewer
+        // than two ranges come out, the read is one run's.
+        var ranges = applies ? await Planner.SliceBoundsAsync(header, slices, ct).ConfigureAwait(false) : [];
+        if (ranges.Count < 2)
         {
             var own = await intake.PlanSlicesAsync(Flow, prepared, null, ct).ConfigureAwait(false);
             var finalized = await intake.FinalizePlanningAsync(Flow, submission.SubmissionId, Parameters, own, ct).ConfigureAwait(false);
             return (new IntakeResult(finalized, header, own, AlreadyProcessed: false), 0);
         }
 
-        var ranges = await Planner.SliceBoundsAsync(header, slices, ct).ConfigureAwait(false);
         prepared = await intake.RecordSlicesAsync(prepared, ranges, ct).ConfigureAwait(false);
         var shares = KeySlices.Shares(ranges.Count, fanOut + 1);
         var members = shares.Skip(1).Where(s => s.Count > 0).Select(share => new RunParameters

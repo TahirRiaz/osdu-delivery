@@ -204,8 +204,9 @@ null. `SourceRecord.Origin` becomes `SourceOrigin(FileName, RowNumber, UpdatedUt
 ### 2.6 Fan-out by key ranges
 
 When `reliability.fanOut > 0`, the dispatcher is available, a run id exists and the estimate is at least
-`fanOutMinRecords`: slice bounds from `ROW_NUMBER() OVER (ORDER BY keys)` (at most 1024 slices, each at least
-`batchRecords`, `Source/KeySlices.cs`), stored on `Submission.SourceWindowJson`; members run `Operation = intake` with
+`fanOutMinRecords`: slice bounds on the record table's identity primary key (`source.record.primaryKey`, required
+with a fan-out), cut from a count of the candidates per range of key values rather than by ranking them (at most 1024
+slices, each at least `batchRecords`, `Source/KeySlices.cs`), stored with the column on `Submission.SourceWindowJson`; members run `Operation = intake` with
 `Payload = {"submissionId":"...","slices":[i..j]}`; drains run `Operation = drain` with the submission id.
 
 ### 2.7 Connection

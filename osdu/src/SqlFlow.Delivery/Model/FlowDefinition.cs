@@ -146,6 +146,14 @@ public sealed record FlowSourceTable
     /// <summary>The key columns, in order: the ingestion flow's <c>load.keyColumns</c>, and the mapping's <c>dataset.key</c>.</summary>
     public required IReadOnlyList<string> Key { get; init; }
 
+    /// <summary>
+    /// The record table's identity primary key (the column SQLFlow's ingestion creates with <c>target.identityColumn</c>,
+    /// such as <c>RecId</c>), or null. A read pages by it, and a fan-out cuts its slices on it: ranges of one ascending
+    /// integer, found by counting the candidates per range of values instead of ranking every candidate by its key.
+    /// Required when the flow fans out. A record is still identified by <see cref="Key"/>.
+    /// </summary>
+    public string? PrimaryKey { get; init; }
+
     /// <summary>The scope predicate: a column of the record table bound to a flow parameter (<c>[column] = @parameter</c>).</summary>
     public IReadOnlyDictionary<string, string> Scope { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
 }

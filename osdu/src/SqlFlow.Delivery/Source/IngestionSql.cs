@@ -36,6 +36,12 @@ public sealed record IngestionLayout
     /// <summary>The record key columns in key order, with the SQL type each holds.</summary>
     public required IReadOnlyList<SourceKeyColumn> Key { get; init; }
 
+    /// <summary>The record table's identity primary key, when the flow names one (<c>source.record.primaryKey</c>).</summary>
+    public SourceKeyColumn? PrimaryKey { get; init; }
+
+    /// <summary>The columns a read pages in and bounds its ranges by: the identity primary key, or the record key without one.</summary>
+    public IReadOnlyList<SourceKeyColumn> Order => PrimaryKey is { } primaryKey ? [primaryKey] : Key;
+
     /// <summary>The record table's update column, which an incremental read windows on.</summary>
     public required string Updated { get; init; }
 
@@ -68,8 +74,14 @@ public static class IngestionSql
     /// <summary>The parameter holding a JSON array of key tuples (each an array of the key parts, in key order).</summary>
     public const string KeysParameter = "@keys";
 
-    /// <summary>The parameter holding how many candidate records one slice holds.</summary>
-    public const string SliceSizeParameter = "@size";
+    /// <summary>The parameter holding how many ranges of identity values the candidates are counted in.</summary>
+    public const string BucketsParameter = "@buckets";
+
+    /// <summary>The parameter holding the column a primary key probe is about.</summary>
+    public const string ColumnParameter = "@column";
+
+    /// <summary>The parameter holding the record key's column names, as a JSON array.</summary>
+    public const string KeyNamesParameter = "@key_names";
 
     /// <summary>The prefix of the parameters holding the key the page resumes after.</summary>
     public const string AfterPrefix = "@a";
@@ -87,7 +99,7 @@ public static class IngestionSql
     public const string ObjectParameter = "@object";
 
     /// <summary>Which bounds a candidate query carries beyond its selection.</summary>
-    /// <param name="After">A keyset bound: only keys above the page's last key.</param>
+    /// <param name="After">A keyset bound: only values above the page's last one, in the order the read pages in.</param>
     /// <param name="From">A slice's exclusive lower bound.</param>
     /// <param name="To">A slice's inclusive upper bound.</param>
     public readonly record struct KeyBounds(bool After, bool From, bool To)
@@ -107,6 +119,50 @@ public static class IngestionSql
             INNER JOIN {database}.sys.types t ON t.user_type_id = c.user_type_id
             WHERE c.[object_id] = OBJECT_ID({ObjectParameter})
             ORDER BY c.column_id;
+            """;
+    }
+
+    /// <summary>
+    /// What the record table says about a declared primary key: whether the column is an identity column, whether it
+    /// alone is the table's primary key, and whether the record key has a unique index without a filter, so no record is
+    /// held by two rows that two ranges could deal to two runs.
+    /// </summary>
+    public static string PrimaryKeyProbe(SourceObjectName table)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        var database = SourceObjectName.Quote(table.Database);
+        return $"""
+            DECLARE @id int = OBJECT_ID({ObjectParameter});
+            SELECT
+                CAST(CASE WHEN EXISTS (
+                    SELECT 1 FROM {database}.sys.identity_columns AS c WHERE c.[object_id] = @id AND c.[name] = {ColumnParameter})
+                    THEN 1 ELSE 0 END AS int) AS is_identity,
+                CAST(CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM {database}.sys.indexes AS i
+                    WHERE i.[object_id] = @id AND i.is_primary_key = 1
+                      AND (SELECT COUNT(*) FROM {database}.sys.index_columns AS ic
+                           WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id AND ic.key_ordinal > 0) = 1
+                      AND EXISTS (
+                          SELECT 1
+                          FROM {database}.sys.index_columns AS ic
+                          INNER JOIN {database}.sys.columns AS c ON c.[object_id] = ic.[object_id] AND c.column_id = ic.column_id
+                          WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id AND ic.key_ordinal = 1 AND c.[name] = {ColumnParameter}))
+                    THEN 1 ELSE 0 END AS int) AS is_primary_key,
+                CAST(CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM {database}.sys.indexes AS i
+                    WHERE i.[object_id] = @id AND i.is_unique = 1 AND i.has_filter = 0
+                      AND (SELECT COUNT(*) FROM {database}.sys.index_columns AS ic
+                           WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id AND ic.key_ordinal > 0)
+                          = (SELECT COUNT(*) FROM OPENJSON({KeyNamesParameter}))
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM {database}.sys.index_columns AS ic
+                          INNER JOIN {database}.sys.columns AS c ON c.[object_id] = ic.[object_id] AND c.column_id = ic.column_id
+                          WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id AND ic.key_ordinal > 0
+                            AND c.[name] NOT IN (SELECT [value] FROM OPENJSON({KeyNamesParameter}))))
+                    THEN 1 ELSE 0 END AS int) AS key_is_unique;
             """;
     }
 
@@ -156,38 +212,50 @@ public static class IngestionSql
     public static string CandidateCount(IngestionLayout layout, SourceSelectionKind kind, bool hasLower)
         => $"SELECT COUNT_BIG(*) FROM ({CandidateSet(layout, kind, hasLower, KeyBounds.None)}) q;";
 
-    /// <summary>One page of candidate record keys, in key order, resuming after the previous page's last key.</summary>
+    /// <summary>
+    /// One page of candidates, in the order the read pages in (the identity primary key, or the record key without one),
+    /// resuming after the previous page's last value.
+    /// </summary>
     public static string CandidatePage(IngestionLayout layout, SourceSelectionKind kind, bool hasLower, KeyBounds bounds)
     {
         ArgumentNullException.ThrowIfNull(layout);
         return $"""
-            SELECT TOP ({PageParameter}) {KeyList(layout, "q")}
+            SELECT TOP ({PageParameter}) {OrderList(layout, "q")}
             FROM ({CandidateSet(layout, kind, hasLower, bounds)}) q
-            ORDER BY {KeyList(layout, "q")};
+            ORDER BY {OrderList(layout, "q")};
             """;
     }
 
     /// <summary>
-    /// The keys that cut the candidate set into slices: every <c>@size</c>-th key in key order, which become the slices'
-    /// inclusive upper bounds (the last slice runs to the end of the key space).
+    /// How the candidates spread over the identity primary key, for cutting them into slices without ranking them: the
+    /// lowest value and the width of a range of values (first result), then how many candidates each non-empty range holds
+    /// (second result), about <c>@buckets</c> ranges in all. Both reads aggregate; neither sorts the candidates. A read with
+    /// no candidates answers a null lowest value and no ranges.
     /// </summary>
-    public static string SliceBounds(IngestionLayout layout, SourceSelectionKind kind, bool hasLower)
+    public static string SliceHistogram(IngestionLayout layout, SourceSelectionKind kind, bool hasLower)
     {
         ArgumentNullException.ThrowIfNull(layout);
+        var primaryKey = layout.PrimaryKey
+            ?? throw new InvalidOperationException("A read is cut into slices on the record table's identity primary key, and the layout names none.");
+        var column = "q." + SourceObjectName.Quote(primaryKey.Name);
+        var candidates = CandidateSet(layout, kind, hasLower, KeyBounds.None);
         return $"""
-            SELECT {KeyList(layout, "b")}
-            FROM (
-                SELECT {KeyList(layout, "q")}, ROW_NUMBER() OVER (ORDER BY {KeyList(layout, "q")}) AS rn
-                FROM ({CandidateSet(layout, kind, hasLower, KeyBounds.None)}) q
-            ) b
-            WHERE b.rn % {SliceSizeParameter} = 0
-            ORDER BY b.rn;
+            DECLARE @lowest bigint, @highest bigint;
+            SELECT @lowest = CAST(MIN({column}) AS bigint), @highest = CAST(MAX({column}) AS bigint) FROM ({candidates}) q;
+            DECLARE @width bigint = CASE WHEN @lowest IS NULL THEN NULL ELSE ((@highest - @lowest) / {BucketsParameter}) + 1 END;
+            SELECT @lowest AS lowest, @width AS width;
+            SELECT (CAST({column} AS bigint) - @lowest) / @width AS bucket, COUNT_BIG(*) AS candidates
+            FROM ({candidates}) q
+            WHERE @width IS NOT NULL
+            GROUP BY (CAST({column} AS bigint) - @lowest) / @width
+            ORDER BY bucket;
             """;
     }
 
     /// <summary>
-    /// The rows of one page: the page's keys into a table variable, then the record rows, then one result set per child
-    /// dataset, each joined on the keys, ordered so a reader can group child rows by record in one forward pass.
+    /// The rows of one page: the page's record keys into a table variable, then the record rows, then one result set per
+    /// child dataset, each joined on the record keys and ordered by them. A page of identity values finds its record rows
+    /// by the primary key and takes their record keys from them.
     /// </summary>
     public static string PageRows(IngestionLayout layout)
     {
@@ -196,10 +264,24 @@ public static class IngestionSql
         var names = string.Join(", ", layout.Key.Select(k => SourceObjectName.Quote(k.Name)));
         var sql = new StringBuilder();
         sql.Append("DECLARE @page_keys TABLE (").Append(columns).AppendLine(");");
-        sql.Append("INSERT INTO @page_keys (").Append(names).Append(") SELECT ").Append(names)
-            .Append(" FROM OPENJSON(").Append(KeysParameter).Append(") WITH (").Append(OpenJsonColumns(layout)).AppendLine(");");
-        sql.Append("SELECT r.* FROM ").Append(layout.Record.Quoted).Append(" r INNER JOIN @page_keys k ON ").Append(JoinOn(layout, "r", "k"))
-            .Append(" ORDER BY ").Append(KeyList(layout, "r")).AppendLine(";");
+        if (layout.PrimaryKey is { } primaryKey)
+        {
+            var id = SourceObjectName.Quote(primaryKey.Name);
+            sql.Append("DECLARE @page_ids TABLE (").Append(id).Append(' ').Append(primaryKey.SqlType).AppendLine(" NOT NULL PRIMARY KEY);");
+            sql.Append("INSERT INTO @page_ids (").Append(id).Append(") SELECT ").Append(id)
+                .Append(" FROM OPENJSON(").Append(KeysParameter).Append(") WITH (").Append(OpenJsonColumns(layout.Order)).AppendLine(");");
+            sql.Append("INSERT INTO @page_keys (").Append(names).Append(") SELECT ").Append(KeyList(layout, "r")).Append(" FROM ")
+                .Append(layout.Record.Quoted).Append(" r INNER JOIN @page_ids p ON r.").Append(id).Append(" = p.").Append(id).AppendLine(";");
+            sql.Append("SELECT r.* FROM ").Append(layout.Record.Quoted).Append(" r INNER JOIN @page_ids p ON r.").Append(id).Append(" = p.").Append(id)
+                .Append(" ORDER BY r.").Append(id).AppendLine(";");
+        }
+        else
+        {
+            sql.Append("INSERT INTO @page_keys (").Append(names).Append(") SELECT ").Append(names)
+                .Append(" FROM OPENJSON(").Append(KeysParameter).Append(") WITH (").Append(OpenJsonColumns(layout.Key)).AppendLine(");");
+            sql.Append("SELECT r.* FROM ").Append(layout.Record.Quoted).Append(" r INNER JOIN @page_keys k ON ").Append(JoinOn(layout, "r", "k"))
+                .Append(" ORDER BY ").Append(KeyList(layout, "r")).AppendLine(";");
+        }
 
         foreach (var dataset in layout.Datasets)
         {
@@ -218,14 +300,17 @@ public static class IngestionSql
         return sql.ToString();
     }
 
-    /// <summary>The distinct record keys a selection covers, as a derived table whose columns are the key columns.</summary>
+    /// <summary>
+    /// The distinct records a selection covers, as a derived table whose columns are the columns the read pages in: the
+    /// identity primary key, or the record key columns without one.
+    /// </summary>
     internal static string CandidateSet(IngestionLayout layout, SourceSelectionKind kind, bool hasLower, KeyBounds bounds)
     {
         ArgumentNullException.ThrowIfNull(layout);
         if (kind == SourceSelectionKind.Keys)
         {
             return $"""
-                SELECT DISTINCT {KeyList(layout, "r")}
+                SELECT DISTINCT {OrderList(layout, "r")}
                 FROM {layout.Record.Quoted} r
                 INNER JOIN OPENJSON({KeysParameter}) WITH ({OpenJsonColumns(layout)}) j ON {JoinOn(layout, "r", "j")}
                 {Where(layout, "r", null, bounds)}
@@ -234,7 +319,7 @@ public static class IngestionSql
 
         var window = kind == SourceSelectionKind.Incremental;
         var records = $"""
-            SELECT DISTINCT {KeyList(layout, "r")}
+            SELECT DISTINCT {OrderList(layout, "r")}
             FROM {layout.Record.Quoted} r
             {Where(layout, "r", window ? WindowPredicate("r", layout.Updated, hasLower) : null, bounds)}
             """;
@@ -261,7 +346,7 @@ public static class IngestionSql
 
             var on = string.Join(" AND ", dataset.Join.Select(j => $"c.{SourceObjectName.Quote(j.Key)} = r.{SourceObjectName.Quote(j.Value)}"));
             parts.Add($"""
-                SELECT DISTINCT {KeyList(layout, "r")}
+                SELECT DISTINCT {OrderList(layout, "r")}
                 FROM {layout.Record.Quoted} r
                 INNER JOIN {dataset.Object.Quoted} c ON {on}
                 {Where(layout, "r", "(" + string.Join(" OR ", changed.Select(c => "(" + c + ")")) + ")", bounds)}
@@ -314,20 +399,20 @@ public static class IngestionSql
     private static string ScopePredicate(IngestionLayout layout, string alias)
         => string.Join(" AND ", layout.Scope.Select((s, i) => $"{alias}.{SourceObjectName.Quote(s.Key)} = {ScopePrefix}{i.ToString(CultureInfo.InvariantCulture)}"));
 
-    /// <summary>The key of a row is above the key the parameters hold, comparing part by part in key order.</summary>
-    private static string Above(IngestionLayout layout, string alias, string prefix) => Compare(layout, alias, prefix, ">");
+    /// <summary>A row is above the value the parameters hold, comparing part by part in the order the read pages in.</summary>
+    private static string Above(IngestionLayout layout, string alias, string prefix) => Compare(layout.Order, alias, prefix, ">");
 
-    /// <summary>The key of a row is at most the key the parameters hold.</summary>
-    private static string AtMost(IngestionLayout layout, string alias, string prefix) => Compare(layout, alias, prefix, "<", orEqual: true);
+    /// <summary>A row is at most the value the parameters hold.</summary>
+    private static string AtMost(IngestionLayout layout, string alias, string prefix) => Compare(layout.Order, alias, prefix, "<", orEqual: true);
 
-    private static string Compare(IngestionLayout layout, string alias, string prefix, string op, bool orEqual = false)
+    private static string Compare(IReadOnlyList<SourceKeyColumn> order, string alias, string prefix, string op, bool orEqual = false)
     {
         var text = new StringBuilder();
-        for (var i = 0; i < layout.Key.Count; i++)
+        for (var i = 0; i < order.Count; i++)
         {
-            var column = $"{alias}.{SourceObjectName.Quote(layout.Key[i].Name)}";
+            var column = $"{alias}.{SourceObjectName.Quote(order[i].Name)}";
             var parameter = prefix + i.ToString(CultureInfo.InvariantCulture);
-            var last = i == layout.Key.Count - 1;
+            var last = i == order.Count - 1;
             text.Append('(').Append(column).Append(' ').Append(op).Append(last && orEqual ? "= " : " ").Append(parameter);
             if (!last)
             {
@@ -335,7 +420,7 @@ public static class IngestionSql
             }
         }
 
-        for (var i = 0; i < layout.Key.Count - 1; i++)
+        for (var i = 0; i < order.Count - 1; i++)
         {
             text.Append("))");
         }
@@ -347,9 +432,14 @@ public static class IngestionSql
     private static string KeyList(IngestionLayout layout, string alias)
         => string.Join(", ", layout.Key.Select(k => $"{alias}.{SourceObjectName.Quote(k.Name)}"));
 
+    private static string OrderList(IngestionLayout layout, string alias)
+        => string.Join(", ", layout.Order.Select(k => $"{alias}.{SourceObjectName.Quote(k.Name)}"));
+
     private static string JoinOn(IngestionLayout layout, string left, string right)
         => string.Join(" AND ", layout.Key.Select(k => $"{left}.{SourceObjectName.Quote(k.Name)} = {right}.{SourceObjectName.Quote(k.Name)}"));
 
-    private static string OpenJsonColumns(IngestionLayout layout)
-        => string.Join(", ", layout.Key.Select((k, i) => $"{SourceObjectName.Quote(k.Name)} {k.SqlType} '$[{i.ToString(CultureInfo.InvariantCulture)}]'"));
+    private static string OpenJsonColumns(IngestionLayout layout) => OpenJsonColumns(layout.Key);
+
+    private static string OpenJsonColumns(IReadOnlyList<SourceKeyColumn> columns)
+        => string.Join(", ", columns.Select((k, i) => $"{SourceObjectName.Quote(k.Name)} {k.SqlType} '$[{i.ToString(CultureInfo.InvariantCulture)}]'"));
 }

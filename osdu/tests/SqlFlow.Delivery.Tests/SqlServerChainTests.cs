@@ -316,7 +316,11 @@ public class SqlServerChainTests
         Assert.Equal(batches.Count, batches.Select(b => b.Index).Distinct().Count());
         Assert.Contains(batches, b => b.Index >= SubmissionIntake.BatchBase(1));
 
-        // The slices were dealt from one read, and the scope's watermark was written once, by the coordinating run.
+        // The slices were cut on the table's identity primary key and dealt from one read, and the scope's watermark was
+        // written once, by the coordinating run.
+        var window = SourceWindowDescription.Parse(result.Submission.SourceWindowJson)!;
+        Assert.Equal("RecId", window.SlicedOn);
+        Assert.Equal(result.Submission.Slices, window.Slices.Count);
         var intakeMembers = dispatcher.Enqueued.Where(e => e.Operation == DeliveryOperations.Intake).ToList();
         Assert.Equal(2, intakeMembers.Count);
         Assert.Equal(
