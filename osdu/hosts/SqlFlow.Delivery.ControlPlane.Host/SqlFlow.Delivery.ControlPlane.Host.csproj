@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>SqlFlow.Delivery.ControlPlane.Host</RootNamespace>
+    <Description>The OSDU Delivery control plane: SQLFlow's control plane composed with the OSDU module and the product's branding.</Description>
+    <UserSecretsId>osdu-delivery-control-plane</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SqlFlow.Delivery.ControlPlane\SqlFlow.Delivery.ControlPlane.csproj" />
+  </ItemGroup>
+
+</Project>
