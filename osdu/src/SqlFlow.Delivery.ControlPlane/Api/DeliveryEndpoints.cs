@@ -1080,9 +1080,13 @@ public static class DeliveryEndpoints
         DeliveryDocumentLoader documents, ILedger ledger, EngineContext engine, IRunDispatcher dispatcher, TimeProvider clock, ClaimsPrincipal user,
         CancellationToken ct)
     {
+        // The repository's flows as the landing checks see them: a declared pre flow has to be one of these, and the
+        // catalog's copy of its document is what says whether it would read the file this submission lands for it. A
+        // submission landing where no pre flow reads, or under a name none of them selects, would be accepted and then
+        // deliver nothing, with every run in the chain reporting success, so it is refused here.
         var preFlows = await db.Pipelines.AsNoTracking()
             .Where(p => p.RepoId == flow.Pipeline.RepoId && p.Active)
-            .Select(p => p.Name)
+            .Select(p => new SubmissionPreFlow(p.Name, p.RelativePath, p.DefinitionJson))
             .ToListAsync(ct).ConfigureAwait(false);
         if (SubmissionLanding.Refusal(flow.Flow, preFlows) is { } refusal)
         {
@@ -1358,15 +1362,16 @@ public static class DeliveryEndpoints
             .Take(MaxManualSubmissionFlows)
             .ToListAsync(ct).ConfigureAwait(false);
 
-        // The flow names each repository holds, which a flow's declared pre-ingestion flows have to be among.
+        // The flows each repository holds, which a flow's declared pre-ingestion flows have to be among, with the stored
+        // definition that says what each of them reads.
         var repoIds = pipelines.Select(p => p.RepoId).Distinct().ToList();
         var flowNames = await db.Pipelines.AsNoTracking()
             .Where(p => repoIds.Contains(p.RepoId) && p.Active)
-            .Select(p => new { p.RepoId, p.Name })
+            .Select(p => new { p.RepoId, PreFlow = new SubmissionPreFlow(p.Name, p.RelativePath, p.DefinitionJson) })
             .ToListAsync(ct).ConfigureAwait(false);
         var namesByRepo = flowNames
             .GroupBy(p => p.RepoId)
-            .ToDictionary(g => g.Key, g => (IReadOnlyCollection<string>)g.Select(p => p.Name).ToList());
+            .ToDictionary(g => g.Key, g => (IReadOnlyCollection<SubmissionPreFlow>)g.Select(p => p.PreFlow).ToList());
 
         // The template version each synced mapping of these repositories fills, so the listing says what a flow's records become.
         var synced = await osdu.DeliveryMappings.AsNoTracking()
@@ -1474,8 +1479,11 @@ public static class DeliveryEndpoints
 
         var preFlows = await db.Pipelines.AsNoTracking()
             .Where(p => p.RepoId == flow.Pipeline.RepoId && p.Active)
-            .Select(p => p.Name)
+            .Select(p => new SubmissionPreFlow(p.Name, p.RelativePath, p.DefinitionJson))
             .ToListAsync(ct).ConfigureAwait(false);
+
+        // A caller asking what a flow accepts has chosen no parameter values yet, so the landing folders are rendered
+        // with the flow's declared defaults here; a submission's own values are checked when it is accepted.
         var refusal = SubmissionLanding.Refusal(definition, preFlows);
 
         // The payload contract is read with the flow's declared defaults, since a caller asking what a flow takes has not

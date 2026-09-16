@@ -1,3 +1,5 @@
+using SqlFlow.Core;
+using SqlFlow.Core.Files;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
@@ -30,6 +32,17 @@ public sealed record LandingFile(
 public sealed record SubmissionPayloadContract(IReadOnlyList<string> Payloads, IReadOnlyList<string> Roots, bool RequiresHash);
 
 /// <summary>
+/// A flow of the repository as the landing checks see it: its name, the path its document sits at, and the catalog's
+/// parsed copy of that document. A declared pre flow has to be one of these, and the file it is asked to read has to be
+/// one it would actually pick up, which is read out of <paramref name="DefinitionJson"/> through the platform's shared
+/// file selection rather than by knowing the pre flow's kind.
+/// </summary>
+/// <param name="Name">The flow's name, which is what a delivery flow's <c>preFlow</c> names.</param>
+/// <param name="RelativePath">The document's path, which a relative <c>source.location</c> resolves against. Null when unknown, which skips the folder check.</param>
+/// <param name="DefinitionJson">The catalog's parsed copy of the document. Null when unknown, which skips the file checks.</param>
+public sealed record SubmissionPreFlow(string Name, string? RelativePath = null, string? DefinitionJson = null);
+
+/// <summary>
 /// Turns the records a source sent through the API into the files its pre-ingestion flows read (docs/stage4-design.md
 /// section 4.1). Nothing is delivered from the request itself: the rows land as files, the pre and ing flows load them
 /// into the same ingestion tables a file drop would, and the OSDU flow then reads them by key like any other record. That
@@ -37,10 +50,22 @@ public sealed record SubmissionPayloadContract(IReadOnlyList<string> Payloads, I
 /// </summary>
 public static class SubmissionLanding
 {
-    /// <summary>Why this flow cannot take API submissions, or null when it can.</summary>
+    /// <summary>
+    /// Why this flow cannot take API submissions, or null when it can (docs/stage4-design.md section 4.2 step 1). Beyond
+    /// the flow declaring somewhere for records to land, every declared pre flow has to be a flow this repository holds
+    /// and has to be one that would actually read the file it is given: the landing folder is a folder it reads from, the
+    /// generated file name matches its file-name glob, and the landing format is the format it parses. A submission whose
+    /// files no pre flow picks up would be accepted, land, and then deliver nothing, with no run reporting a fault, so it
+    /// is refused at the door instead.
+    /// </summary>
     /// <param name="flow">The flow the records were sent for.</param>
-    /// <param name="preFlows">The names of the flows the repository holds, which the declared pre flows must be among.</param>
-    public static string? Refusal(FlowDefinition flow, IReadOnlyCollection<string> preFlows)
+    /// <param name="preFlows">The flows the repository holds, which the declared pre flows must be among.</param>
+    /// <param name="values">
+    /// The parameter values the landing folders are rendered with. Null takes the flow's declared defaults, which is what
+    /// a caller has before any values are chosen; a folder that does not render without them is left to the run rather
+    /// than compared half-rendered.
+    /// </param>
+    public static string? Refusal(FlowDefinition flow, IReadOnlyCollection<SubmissionPreFlow> preFlows, IReadOnlyDictionary<string, string>? values = null)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(preFlows);
@@ -49,9 +74,15 @@ public static class SubmissionLanding
             return $"flow '{flow.Name}' takes no records through the API: it declares no source.submissions, so there is nowhere for them to land.";
         }
 
-        if (!preFlows.Contains(submissions.Record.PreFlow, StringComparer.OrdinalIgnoreCase))
+        var resolved = values ?? DeclaredValues(flow);
+        if (Find(preFlows, submissions.Record.PreFlow) is not { } recordPreFlow)
         {
             return $"flow '{flow.Name}' lands its records for pre flow '{submissions.Record.PreFlow}', which this repository does not hold.";
+        }
+
+        if (ReadRefusal(flow, submissions.Record, recordPreFlow, resolved, SourceDatasets.Record, "source.submissions.record.landing") is { } recordRefusal)
+        {
+            return recordRefusal;
         }
 
         foreach (var (name, dataset) in submissions.Datasets)
@@ -61,13 +92,106 @@ public static class SubmissionLanding
                 return $"flow '{flow.Name}' lands dataset '{name}', which source.datasets does not declare.";
             }
 
-            if (!preFlows.Contains(dataset.PreFlow, StringComparer.OrdinalIgnoreCase))
+            if (Find(preFlows, dataset.PreFlow) is not { } datasetPreFlow)
             {
                 return $"flow '{flow.Name}' lands its '{name}' rows for pre flow '{dataset.PreFlow}', which this repository does not hold.";
+            }
+
+            if (ReadRefusal(flow, dataset, datasetPreFlow, resolved, name, $"source.submissions.datasets.{name}.landing") is { } refusal)
+            {
+                return refusal;
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Why the pre flow would not read the file this dataset lands, or null when it would. The three checks are the pre
+    /// flow's own selection, read from the catalog's copy of its document through the platform's shared file selection,
+    /// so what counts as "a file this flow reads" is decided in exactly one place for the engine, lineage and this door.
+    /// </summary>
+    private static string? ReadRefusal(
+        FlowDefinition flow, FlowSubmissionDataset dataset, SubmissionPreFlow preFlow,
+        IReadOnlyDictionary<string, string> values, string datasetName, string what)
+    {
+        var lands = datasetName == SourceDatasets.Record ? "its records" : $"its '{datasetName}' rows";
+        if (!LandingFormats.All.Contains(dataset.Format, StringComparer.Ordinal))
+        {
+            return $"flow '{flow.Name}' lands {lands} as '{dataset.Format}', which is not a landing format; it is one of {string.Join(", ", LandingFormats.All)}.";
+        }
+
+        // What the pre flow reads is only knowable from the catalog's copy of its document. Without one, or with one that
+        // describes no file source, this check has nothing to decide on and says nothing, rather than refusing a
+        // submission on an absence of evidence. Only a pre flow that demonstrably would not read the file is refused.
+        if (preFlow.DefinitionJson is not { } definition || FileSelection.FromDefinition(definition) is not { } selection)
+        {
+            return null;
+        }
+
+        // The name the landing file will carry has to be one the pre flow's glob accepts, or the pre flow would run and
+        // select nothing. The generated name is checked, not a pattern, so this is the same decision the engine makes.
+        var fileName = FileName(Guid.Empty, datasetName, dataset.Format);
+        var pattern = FileSelection.PatternOf(selection);
+        if (!FileSelection.NameMatchesGlob(pattern, fileName))
+        {
+            return $"flow '{flow.Name}' lands {lands} as '{fileName}', which pre flow '{preFlow.Name}' would not read: it selects '{pattern}'.";
+        }
+
+        // A location naming a secret or a parameter of the pre flow cannot be compared here, and an unknown document path
+        // leaves a relative location with no base, so in both cases the folder is left to the run rather than guessed at.
+        if (selection.Location is not { } location || location.Length == 0 || location.Contains("${", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (preFlow.RelativePath is null && !Path.IsPathRooted(location) && !location.Contains("://", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        string landing, reads;
+        try
+        {
+            landing = FlowParameters.ResolvePath(flow, dataset.Landing, values, what);
+            reads = FlowParameters.ResolvePath(flow with { SourcePath = preFlow.RelativePath }, location, values, $"the source.location of pre flow '{preFlow.Name}'");
+        }
+        catch (FlowValidationException)
+        {
+            // The landing folder does not render with these values. That is the parameter check's refusal to report, in
+            // its own words, rather than this one's.
+            return null;
+        }
+
+        // A path still carrying a {parameter} token was rendered without a value for it, which happens when the flow
+        // requires one and none has been chosen yet. Two unrendered paths cannot be compared, so the folder is left to
+        // the run, exactly as an unresolvable secret reference is.
+        if (landing.Contains('{', StringComparison.Ordinal) || reads.Contains('{', StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return PayloadRoots.IsUnder(landing, reads)
+            ? null
+            : $"flow '{flow.Name}' lands {lands} in '{landing}', which pre flow '{preFlow.Name}' does not read from: it reads '{reads}'.";
+    }
+
+    private static SubmissionPreFlow? Find(IReadOnlyCollection<SubmissionPreFlow> preFlows, string name)
+        => preFlows.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The flow's parameters at their declared defaults, for a caller that has chosen no values yet.</summary>
+    private static IReadOnlyDictionary<string, string> DeclaredValues(FlowDefinition flow)
+    {
+        try
+        {
+            return FlowParameters.Resolve(flow, null);
+        }
+        catch (FlowValidationException)
+        {
+            // A flow with a required parameter has no defaults to render with; the folder check then has nothing to
+            // compare and is skipped, while the name and format checks still apply.
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
     }
 
     /// <summary>What a submission may say about its payload files: which sets it can name, and where those files must sit.</summary>
