@@ -11,7 +11,7 @@ adds on top and how the two meet.
 
 ## Data arrives through three flows
 
-```
+```text
 source files ──pre──▶ pre tables ──ing──▶ ingestion tables ──osdu──▶ OSDU platform
                                                               │
                                                               └──▶ the ledger (osdu schema)
@@ -81,7 +81,10 @@ of its own: see [environment-variables.md](environment-variables.md).
 ## A delivery run
 
 A delivery run is an ordinary platform run: its operation, the flow's parameter values and the kind's JSON payload
-are its run parameters, its log is the run trace, and its counts are projected onto the run row.
+are its run parameters, its log is the run trace, and its counts are projected onto the run row. A flow that declares
+interfaces is one source delivering several OSDU types: its run checks every interface first, then takes them in the
+waves of what they wait for, each interface going through the steps below under a ledger identity of its own
+([operations.md](operations.md#running-a-source)).
 
 1. **Intake.** Register the submission, read the changed records from the ingestion tables, stream each through the
    pinned mapping against its pinned template and the cache version it reads, and decide per record what changed

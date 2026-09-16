@@ -52,6 +52,9 @@ public sealed record EngineContext(
 
     /// <summary>A context with the fan-out the platform handed this run; every run gets its own.</summary>
     public EngineContext WithFanOut(IFanOutDispatcher? dispatcher) => this with { FanOut = dispatcher };
+
+    /// <summary>A context whose loggers say, on every line, that it is about <paramref name="interfaceName"/>.</summary>
+    public EngineContext ForInterface(string interfaceName) => this with { Loggers = new InterfaceLoggerFactory(Loggers, interfaceName) };
 }
 
 /// <summary>What a deliver run did: the intake, the drain, the submission it left, and how far it fanned out.</summary>
@@ -86,6 +89,9 @@ public sealed class FlowRuntime : IDisposable
     private IDeliveryProtocol? _protocol;
     private IIngestionSource? _source;
     private Planner? _planner;
+
+    /// <summary>True once the mapping's legal tags were asked about for this runtime (a source's preflight asks up front).</summary>
+    private bool _legalTagsChecked;
 
     private FlowRuntime(EngineContext context, FlowDefinition flow, DeliveryLayout layout, MappingCatalog mappings, IReadOnlyDictionary<string, string> parameters, ResolvedMapping? mapping)
     {
@@ -132,6 +138,12 @@ public sealed class FlowRuntime : IDisposable
 
     /// <summary>The key slices a fan-out member plans of its coordinating run's submission; null plans the whole read.</summary>
     public IReadOnlyList<int>? Slices { get; set; }
+
+    /// <summary>
+    /// What judges this run's records for the interface as a whole, or null when nothing does: the planning reports what it
+    /// held, the worker every record it settles. Whoever sets it cancels the run's token when it trips.
+    /// </summary>
+    public FailureGuard? Guard { get; set; }
 
     /// <summary>Loads and resolves a flow. Fails at parse time with the file path on every message.</summary>
     public static async Task<FlowRuntime> CreateAsync(EngineContext context, string flowPath, IReadOnlyDictionary<string, string>? parameters, CancellationToken ct = default)
@@ -195,7 +207,7 @@ public sealed class FlowRuntime : IDisposable
     }
 
     public async Task<DeliveryWorker> WorkerAsync(CancellationToken ct = default)
-        => new(RequireLedger(), _context.Payloads, _context.Stores, await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<DeliveryWorker>()) { RunId = RunId };
+        => new(RequireLedger(), _context.Payloads, _context.Stores, await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<DeliveryWorker>()) { RunId = RunId, Guard = Guard };
 
     public async Task<Verifier> VerifierAsync(CancellationToken ct = default)
         => new(RequireLedger(), await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<Verifier>());
@@ -210,6 +222,12 @@ public sealed class FlowRuntime : IDisposable
             {
                 var (intake, intakeMembers) = await IntakeWithFanOutAsync(force, h => handle = h, ct).ConfigureAwait(false);
                 handle = null;
+                if (!intake.AlreadyProcessed)
+                {
+                    // What the planning could not render counts before anything is sent; a guard it trips cancels the run here.
+                    Guard?.Planned(intake.Counts.Held, intake.Counts.Planned);
+                    ct.ThrowIfCancellationRequested();
+                }
 
                 if (intake.NothingToDo)
                 {
@@ -240,13 +258,46 @@ public sealed class FlowRuntime : IDisposable
                 var settledLeftovers = await SendSettledLeftoversAsync(await WorkerAsync(ct).ConfigureAwait(false), intake.Submission.SubmissionId, ct).ConfigureAwait(false);
                 return (new RunResult(intake, work.Add(settledLeftovers), submission, intakeMembers, drainMembers), SubmissionIntake.Summarize(submission), submission.SubmissionId);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested && handle is not null)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // A cancelled root takes its members with it.
-                await CancelMembersAsync(handle).ConfigureAwait(false);
+                if (handle is not null)
+                {
+                    // A cancelled root takes its members with it.
+                    await CancelMembersAsync(handle).ConfigureAwait(false);
+                }
+
+                await SettleStoppedAsync().ConfigureAwait(false);
                 throw;
             }
         }, ct);
+
+    /// <summary>
+    /// Closes the submission this run was delivering when it stopped (its failure guard tripped, or the run was cancelled),
+    /// failed with why, while records of it are still pending, so the flow's next run sends them as it sends what any
+    /// closed submission still holds. It is bookkeeping after the stop, so it runs whatever the run's token says; a ledger
+    /// that cannot be reached leaves the submission open, and a drain of it sends the rest.
+    /// </summary>
+    private async Task SettleStoppedAsync()
+    {
+        if (SubmissionId is not { } submissionId || _context.Ledger is null)
+        {
+            return;
+        }
+
+        var reason = Guard?.Reason is { } tripped
+            ? $"stopped: {tripped}"
+            : "stopped: the run was cancelled before its records were all sent";
+        try
+        {
+            await Intake.StopAsync(submissionId, Flow.Id, reason, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is DeliveryException or System.Data.Common.DbException or InvalidOperationException or TimeoutException)
+        {
+            _log.LogWarning(
+                "Submission {SubmissionId} stays open after the stop ({Message}); a drain of it sends the records it still holds.",
+                submissionId, HeaderRedaction.RedactMessage(ex.Message));
+        }
+    }
 
     /// <summary>Intake only: plan this run's records (or a member's share of the slices) into work batches.</summary>
     public Task<IntakeResult> IntakeAsync(bool force, CancellationToken ct = default)
@@ -526,8 +577,16 @@ public sealed class FlowRuntime : IDisposable
     /// and the service's reason once, before anything reaches the ledger or OSDU. A target that does not ask (see
     /// <see cref="IDeliveryProtocol.InvalidLegalTagsAsync"/>) is logged as not checked, never taken as valid.
     /// </summary>
+    public Task CheckLegalTagsAsync(CancellationToken ct = default) => EnsureLegalTagsAsync(ct);
+
+    /// <summary>The legal tag check, asked once per runtime; see <see cref="CheckLegalTagsAsync"/>.</summary>
     private async Task EnsureLegalTagsAsync(CancellationToken ct)
     {
+        if (_legalTagsChecked)
+        {
+            return;
+        }
+
         var tags = Mapping.Mapping.Envelope.LegalTags.Select(tag => MappingEntry.ExpandParameters(tag, Mapping.Renderer.ParameterValue)).ToList();
         var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
         var invalid = await protocol.InvalidLegalTagsAsync(tags, ct).ConfigureAwait(false);
@@ -536,6 +595,7 @@ public sealed class FlowRuntime : IDisposable
             _log.LogInformation(
                 "The mapping's legal tags ({Tags}) were not checked with the legal service before the run: the target does not ask it (validateLegalTags is off, or a well log endpoint names neither ddmsRoot nor legalValidatePath).",
                 string.Join(", ", tags));
+            _legalTagsChecked = true;
             return;
         }
 
@@ -545,6 +605,8 @@ public sealed class FlowRuntime : IDisposable
                 string.Create(CultureInfo.InvariantCulture, $"The legal service refuses {invalid.Count} of the legal tag(s) mapping {Mapping.Mapping.Reference} puts on every record, so nothing was planned or sent: ")
                 + string.Join("; ", invalid.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + ": " + kv.Value)));
         }
+
+        _legalTagsChecked = true;
     }
 
     /// <summary>
@@ -587,7 +649,7 @@ public sealed class FlowRuntime : IDisposable
         {
             Operation = DeliveryOperations.Intake,
             Values = Parameters,
-            Payload = new DeliveryRunPayload { SubmissionId = submission.SubmissionId, Slices = share, Force = force }.ToJson(),
+            Payload = new DeliveryRunPayload { SubmissionId = submission.SubmissionId, Slices = share, Force = force, Interface = Flow.Interface }.ToJson(),
         }).ToList();
 
         var totals = await intake.PlanSlicesAsync(Flow, prepared, shares[0], ct).ConfigureAwait(false);
@@ -631,7 +693,7 @@ public sealed class FlowRuntime : IDisposable
                 .Select(_ => new RunParameters
                 {
                     Operation = DeliveryOperations.Drain,
-                    Payload = new DeliveryRunPayload { SubmissionId = submission.SubmissionId }.ToJson(),
+                    Payload = new DeliveryRunPayload { SubmissionId = submission.SubmissionId, Interface = Flow.Interface }.ToJson(),
                 })
                 .ToList();
             handle = await dispatcher.EnqueueAsync(parameters, ct).ConfigureAwait(false);
@@ -733,7 +795,8 @@ public sealed class FlowRuntime : IDisposable
         {
             AtUtc = now,
             FlowId = Flow.Id,
-            FlowName = Flow.Name,
+            FlowName = Flow.Label,
+            Interface = Flow.Interface,
             Kind = scope == RemovalScope.History ? "record.history-purged" : "record.deleted",
             SubmissionId = record.LastSubmissionId,
             DeliveryKey = key,
@@ -763,7 +826,7 @@ public sealed class FlowRuntime : IDisposable
         var activity = await ledger.StartActivityAsync(new ActivityRecord
         {
             FlowId = Flow.Id,
-            FlowName = Flow.Name,
+            FlowName = Flow.Label,
             Kind = kind,
             Actor = Actor,
             StartedUtc = started,
@@ -805,13 +868,13 @@ public sealed class FlowRuntime : IDisposable
     {
         if (keys is null)
         {
-            await _context.Listener.OnEventAsync(new DeliveryEvent { AtUtc = _context.Time.GetUtcNow().UtcDateTime, FlowId = Flow.Id, FlowName = Flow.Name, Kind = kind, Worker = Actor, Detail = detail + " (all blocked records)" }, ct).ConfigureAwait(false);
+            await _context.Listener.OnEventAsync(new DeliveryEvent { AtUtc = _context.Time.GetUtcNow().UtcDateTime, FlowId = Flow.Id, FlowName = Flow.Label, Interface = Flow.Interface, Kind = kind, Worker = Actor, Detail = detail + " (all blocked records)" }, ct).ConfigureAwait(false);
             return;
         }
 
         foreach (var key in keys)
         {
-            await _context.Listener.OnEventAsync(new DeliveryEvent { AtUtc = _context.Time.GetUtcNow().UtcDateTime, FlowId = Flow.Id, FlowName = Flow.Name, Kind = kind, DeliveryKey = key, Worker = Actor, Detail = detail }, ct).ConfigureAwait(false);
+            await _context.Listener.OnEventAsync(new DeliveryEvent { AtUtc = _context.Time.GetUtcNow().UtcDateTime, FlowId = Flow.Id, FlowName = Flow.Label, Interface = Flow.Interface, Kind = kind, DeliveryKey = key, Worker = Actor, Detail = detail }, ct).ConfigureAwait(false);
         }
     }
 

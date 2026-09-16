@@ -7,7 +7,11 @@ public sealed record DeliveryEvent
 
     public required Guid FlowId { get; init; }
 
+    /// <summary>The flow as the ledger records it: its name, and <c>/interface</c> for an interface of a source.</summary>
     public required string FlowName { get; init; }
+
+    /// <summary>The interface of its source the event belongs to, or null for a flow in the single form.</summary>
+    public string? Interface { get; init; }
 
     /// <summary>record.delivered, record.unchanged, record.retry, record.held, record.failed, record.released, batch.progress, batch.completed, submission.planned, submission.completed, verify.completed.</summary>
     public required string Kind { get; init; }

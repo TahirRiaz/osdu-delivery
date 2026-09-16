@@ -43,6 +43,12 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         "recall-welllog-pre", "recall-welllog-curves-pre", "recall-welllog-ing", "recall-welllog-curves-ing", "recall-welllog",
     ];
 
+    /// <summary>The flows that load the wellbore tables, generated for a fixture that asks for them.</summary>
+    private static readonly string[] WellboreChainDocuments =
+    [
+        "recall-wellbore-pre", "recall-wellbore-aliases-pre", "recall-wellbore-ing", "recall-wellbore-aliases-ing",
+    ];
+
     /// <summary>
     /// The target block of the shipped delivery flow, which a test replaces with a local placeholder. Its line endings are
     /// normalized because this source file's own are whatever the checkout wrote, and the document it is matched against
@@ -182,8 +188,14 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     public string Rename(string shippedName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(shippedName);
-        return shippedName.Replace("recall-welllog", FlowPrefix, StringComparison.Ordinal);
+        return Rename(shippedName, Suffix);
     }
+
+    /// <summary>The name a shipped flow of either chain carries in an estate generated with <paramref name="suffix"/>.</summary>
+    private static string Rename(string shippedName, string suffix)
+        => shippedName
+            .Replace("recall-welllog", "rw" + suffix, StringComparison.Ordinal)
+            .Replace("recall-wellbore", "wb" + suffix, StringComparison.Ordinal);
 
     /// <summary>
     /// Refuses the suite when the database it needs is not there, naming what to set. The SQL Server chain runs against a
@@ -202,7 +214,9 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// </summary>
     /// <param name="fanOut">How many member runs the OSDU flow's document declares beside a coordinating run; 0 declares none.</param>
     /// <param name="batchRecords">How many records one work batch holds, which is also what decides the slice count.</param>
-    public static async Task<SqlServerIngestionFixture> StartAsync(int fanOut = 0, int batchRecords = 0, CancellationToken ct = default)
+    /// <param name="wellboreChain">Whether the estate also holds the flows that load the wellbore tables, for a source
+    /// whose interfaces read them beside the well logs.</param>
+    public static async Task<SqlServerIngestionFixture> StartAsync(int fanOut = 0, int batchRecords = 0, bool wellboreChain = false, CancellationToken ct = default)
     {
         var connectionString = Require();
         await Migrated.Value.ConfigureAwait(false);
@@ -227,7 +241,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         try
         {
             await CreateSchemasAsync(connectionString, "pre_" + suffix, "ing_" + suffix, ct).ConfigureAwait(false);
-            GenerateEstate(root, databaseName, suffix, variable, fanOut, batchRecords);
+            GenerateEstate(root, databaseName, suffix, variable, fanOut, batchRecords, wellboreChain);
             provider = Compose(connectionString, protocol);
             await ImportRenderInputsAsync(connectionString, ct).ConfigureAwait(false);
             return new SqlServerIngestionFixture(connectionString, databaseName, suffix, root, provider, protocol);
@@ -277,6 +291,28 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         await RunFlowAsync("recall-welllog-curves-pre", ct: ct).ConfigureAwait(false);
         await RunFlowAsync("recall-welllog-ing", ct: ct).ConfigureAwait(false);
         await RunFlowAsync("recall-welllog-curves-ing", ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the flows that load the wellbore tables (a fixture started with the wellbore chain): the two pre flows land
+    /// the wellbore and alias files, then the two ingestion flows upsert the keyed tables a source's wellbores read.
+    /// </summary>
+    public async Task RunWellboreChainAsync(CancellationToken ct = default)
+    {
+        foreach (var name in WellboreChainDocuments)
+        {
+            await RunFlowAsync(name, ct: ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Writes the wellbore and alias files the wellbore chain's pre flows read.</summary>
+    public async Task WriteWellboreFilesAsync(
+        IReadOnlyList<IReadOnlyDictionary<string, string?>> wellbores, IReadOnlyList<IReadOnlyDictionary<string, string?>> aliases, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(wellbores);
+        ArgumentNullException.ThrowIfNull(aliases);
+        await SampleWellLogs.WriteCsvAsync(Path.Combine(Root, "data", "wellbore", "wellbore_20260901.csv"), SampleWellLogs.WellboreColumns, wellbores, ct).ConfigureAwait(false);
+        await SampleWellLogs.WriteCsvAsync(Path.Combine(Root, "data", "wellbore-aliases", "wellbore_aliases_20260901.csv"), SampleWellLogs.AliasColumns, aliases, ct).ConfigureAwait(false);
     }
 
     /// <summary>Runs the OSDU flow's <c>deliver</c> operation through the document executor, with this run's values.</summary>
@@ -372,23 +408,51 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
 
     private Task ClearLedgerAsync() => ForgetFlowAsync(FlowId);
 
+    /// <summary>The ledger tables a flow's rows are forgotten from, the rows that refer to others first.</summary>
+    private static readonly Type[] LedgerTables =
+    [
+        typeof(DeliveryRecordEvent), typeof(DeliveryLease), typeof(DeliveryAttempt), typeof(DeliveryRecord),
+        typeof(DeliveryWorkBatch), typeof(DeliverySourceWatermark), typeof(DeliveryActivity), typeof(DeliverySubmission),
+    ];
+
+    /// <summary>
+    /// The rows one statement of <see cref="ForgetFlowAsync"/> deletes: the ledger's own limit. SQL Server locks a whole
+    /// table once one statement holds 5,000 row locks on one of its indexes, and the ledger suite's lock escalation test
+    /// counts such locks across the database while the other suites run, so a cleanup of a large case must not take them.
+    /// </summary>
+    private const int ForgetChunk = 1000;
+
     /// <summary>
     /// Deletes every ledger row of <paramref name="flowId"/>: its record events, leases, attempts, records, work batches,
-    /// watermarks, activities and submissions. The sample rows give every fixture the same delivery keys; the flow is what
-    /// makes the rows a flow's. A test that delivers through a flow of its own beside the fixture's forgets that flow when
-    /// it ends.
+    /// watermarks, activities and submissions, <see cref="ForgetChunk"/> rows to a statement. The sample rows give every
+    /// fixture the same delivery keys; the flow is what makes the rows a flow's. A test that delivers through a flow of its
+    /// own beside the fixture's forgets that flow when it ends.
     /// </summary>
     public async Task ForgetFlowAsync(Guid flowId)
     {
-        await using var db = Context();
-        await db.DeliveryRecordEvents.Where(e => e.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliveryLeases.Where(l => l.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliveryAttempts.Where(a => a.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliveryRecords.Where(r => r.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliveryWorkBatches.Where(b => b.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliverySourceWatermarks.Where(w => w.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliveryActivities.Where(a => a.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliverySubmissions.Where(s => s.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        List<string> tables;
+        await using (var db = Context())
+        {
+            tables = LedgerTables
+                .Select(type => db.Model.FindEntityType(type) ?? throw new InvalidOperationException($"{type.Name} is not an entity of the module's model."))
+                .Select(entity => $"[{entity.GetSchema()}].[{entity.GetTableName()}]")
+                .ToList();
+        }
+
+        await using var connection = new SqlConnection(ConnectionString);
+        await connection.OpenAsync().ConfigureAwait(false);
+        foreach (var table in tables)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"SET QUOTED_IDENTIFIER ON; DELETE TOP ({ForgetChunk.ToString(CultureInfo.InvariantCulture)}) FROM {table} WHERE [FlowId] = @flow;";
+            command.Parameters.Add(new SqlParameter("@flow", System.Data.SqlDbType.UniqueIdentifier) { Value = flowId });
+            int deleted;
+            do
+            {
+                deleted = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            while (deleted > 0);
+        }
     }
 
     /// <summary>
@@ -531,28 +595,29 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
 
     /// <summary>
     /// Writes this fixture's estate: the shipped mappings, templates, caches and reference records as they are, the five
-    /// chain documents rewritten for this database, and the empty data folders the pre flows read.
+    /// chain documents rewritten for this database (and, when asked for, the four flows that load the wellbore tables), and
+    /// the empty data folders the pre flows read.
     /// </summary>
-    internal static void GenerateEstate(string root, string databaseName, string suffix, string variable, int fanOut, int batchRecords)
+    internal static void GenerateEstate(string root, string databaseName, string suffix, string variable, int fanOut, int batchRecords, bool wellboreChain = false)
     {
         foreach (var part in CopiedParts)
         {
             CopyDirectory(Path.Combine(Samples.Root, part), Path.Combine(root, part));
         }
 
-        foreach (var folder in new[] { "welllog", "curves-meta", "curves" })
+        foreach (var folder in new[] { "welllog", "curves-meta", "curves", "wellbore", "wellbore-aliases" })
         {
             Directory.CreateDirectory(Path.Combine(root, "data", folder));
         }
 
         Directory.CreateDirectory(Path.Combine(root, "flows"));
-        foreach (var name in ChainDocuments)
+        foreach (var name in wellboreChain ? ChainDocuments.Concat(WellboreChainDocuments) : ChainDocuments)
         {
             // The repository is checked out with whatever line endings the platform writes, so every document is read as
             // one normalized text; the rewrites below are line based and would otherwise match nothing.
             var shipped = File.ReadAllText(Path.Combine(Samples.Root, "flows", name + ".yaml")).ReplaceLineEndings("\n");
             var generated = Generate(shipped, name, databaseName, suffix, variable, fanOut, batchRecords);
-            File.WriteAllText(Path.Combine(root, "flows", name.Replace("recall-welllog", "rw" + suffix, StringComparison.Ordinal) + ".yaml"), generated);
+            File.WriteAllText(Path.Combine(root, "flows", Rename(name, suffix) + ".yaml"), generated);
         }
     }
 
@@ -562,8 +627,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// </summary>
     private static string Generate(string shipped, string name, string databaseName, string suffix, string variable, int fanOut, int batchRecords)
     {
-        var text = Replace(shipped.ReplaceLineEndings("\n"), "${env:OSDU_SAMPLE_DB}", "${env:" + variable + "}", name)
-            .Replace("recall-welllog", "rw" + suffix, StringComparison.Ordinal);
+        var text = Rename(Replace(shipped.ReplaceLineEndings("\n"), "${env:OSDU_SAMPLE_DB}", "${env:" + variable + "}", name), suffix);
         text = QualifyObjectNames(text, name, databaseName, suffix);
 
         if (name.EndsWith("-pre", StringComparison.Ordinal))

@@ -541,6 +541,66 @@ public sealed class DeliveryMapping
 }
 
 /// <summary>
+/// One interface of a delivery flow document, as the repository sync found it (docs/interfaces-design.md section 4): the
+/// pipeline it belongs to, the ledger identity its records, submissions and statistics are kept under, and what it delivers
+/// and how. The API and the GUI find the pipeline of a ledger identity here, and the interfaces of a pipeline, without
+/// parsing a document. A document in the single form has one row, whose interface name is empty. The row of an interface
+/// the repository no longer declares is kept, inactive, so the records it delivered still lead to their flow.
+/// </summary>
+public sealed class DeliveryInterface
+{
+    /// <summary>The longest interface name.</summary>
+    public const int MaxInterfaceLength = 64;
+
+    /// <summary>Stable id: derived from the repository, the flow's name and the interface's name.</summary>
+    public Guid Id { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The flow's name: its pipeline in the repository.</summary>
+    public string FlowName { get; set; } = string.Empty;
+
+    /// <summary>The interface's name; empty for a document in the single form.</summary>
+    public string Interface { get; set; } = string.Empty;
+
+    /// <summary>Where the interface is in its document, from 0.</summary>
+    public int Ordinal { get; set; }
+
+    /// <summary>The ledger identity (the flow id every ledger row of the interface carries).</summary>
+    public Guid LedgerFlowId { get; set; }
+
+    /// <summary>The name the ledger identity is derived from: the flow, <c>flow/interface</c>, or the ledger it adopts.</summary>
+    public string LedgerName { get; set; } = string.Empty;
+
+    /// <summary>The route the interface is delivered by: storage, file, manifest or ddms.</summary>
+    public string Route { get; set; } = string.Empty;
+
+    /// <summary>Why it goes by that route; null for the single form, whose document names its protocol.</summary>
+    public string? RouteReason { get; set; }
+
+    /// <summary>The mapping it pins (Name@version).</summary>
+    public string MappingReference { get; set; } = string.Empty;
+
+    /// <summary>The OSDU kind the mapping fills, when the repository holds a valid mapping of that reference; empty otherwise.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The record table it reads.</summary>
+    public string RecordObject { get; set; } = string.Empty;
+
+    /// <summary>The interfaces of the document it waits for (<c>after:</c>), as a JSON array of names.</summary>
+    public string AfterJson { get; set; } = "[]";
+
+    public string RelativePath { get; set; } = string.Empty;
+
+    /// <summary>False once the repository no longer declares the interface.</summary>
+    public bool Active { get; set; } = true;
+
+    public DateTime FirstSeenUtc { get; set; }
+
+    public DateTime LastSeenUtc { get; set; }
+}
+
+/// <summary>
 /// A template: the OSDU schema of one kind, captured from OSDU or imported from a file, which every mapping for that
 /// kind is checked and rendered against (docs/delivery/mapping-templates.md). Templates are owned by OSDU Delivery. A
 /// version is identified by the kind and the hash of its schema, and never changes; a mapping pins the version it fills.
@@ -1176,6 +1236,25 @@ public static class DeliveryModel
             e.HasIndex(m => new { m.RepoId, m.Kind });
             // A template delete asks which mappings pin the version.
             e.HasIndex(m => new { m.Kind, m.TemplateVersion });
+        });
+
+        modelBuilder.Entity<DeliveryInterface>(e =>
+        {
+            e.ToTable("Interface", SchemaName);
+            e.HasKey(i => i.Id);
+            e.Property(i => i.FlowName).HasMaxLength(400).IsRequired();
+            e.Property(i => i.Interface).HasMaxLength(DeliveryInterface.MaxInterfaceLength).IsRequired();
+            e.Property(i => i.LedgerName).HasMaxLength(200).IsRequired();
+            e.Property(i => i.Route).HasMaxLength(32).IsRequired();
+            e.Property(i => i.RouteReason).HasMaxLength(1000);
+            e.Property(i => i.MappingReference).HasMaxLength(200).IsRequired();
+            e.Property(i => i.Kind).HasMaxLength(200).IsRequired();
+            e.Property(i => i.RecordObject).HasMaxLength(400).IsRequired();
+            e.Property(i => i.AfterJson).HasMaxLength(4000).IsRequired();
+            e.Property(i => i.RelativePath).HasMaxLength(1000).IsRequired();
+            e.HasIndex(i => new { i.RepoId, i.FlowName, i.Interface }).IsUnique();
+            // A record's page, a submission's page and the record search find the pipeline behind a ledger identity.
+            e.HasIndex(i => i.LedgerFlowId);
         });
 
         modelBuilder.Entity<DeliveryTemplate>(e =>

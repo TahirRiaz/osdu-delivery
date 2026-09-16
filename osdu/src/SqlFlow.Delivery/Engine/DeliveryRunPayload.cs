@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Source;
 
 namespace SqlFlow.Delivery.Engine;
@@ -119,7 +120,11 @@ public sealed record DeliveryRunPayload
 
     public const string SlicesProperty = "slices";
 
-    private static readonly string[] Properties = [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty];
+    public const string InterfaceProperty = "interface";
+
+    public const string InterfacesProperty = "interfaces";
+
+    private static readonly string[] Properties = [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty, InterfaceProperty, InterfacesProperty];
 
     public static DeliveryRunPayload None { get; } = new();
 
@@ -138,9 +143,18 @@ public sealed record DeliveryRunPayload
     /// <summary>The key slices of <see cref="SubmissionId"/> an intake member plans.</summary>
     public IReadOnlyList<int> Slices { get; init; } = [];
 
+    /// <summary>
+    /// The one interface of the source the run works on: what a fan-out member, a record-scoped run and a run on a
+    /// submission name when the flow declares several. Null for a flow in the single form, and for a run of the whole source.
+    /// </summary>
+    public string? Interface { get; init; }
+
+    /// <summary>The interfaces a run of a source runs, in any order; empty runs every interface.</summary>
+    public IReadOnlyList<string> Interfaces { get; init; } = [];
+
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty
-        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0;
+        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && Interface is null && Interfaces.Count == 0;
 
     /// <summary>The payload of a run's parameters; none when it carries none.</summary>
     public static DeliveryRunPayload Parse(RunParameters parameters)
@@ -182,6 +196,8 @@ public sealed record DeliveryRunPayload
             RecordKeys = Keys(root[RecordKeysProperty]),
             Redeliver = root[RedeliverProperty] is null ? null : Text(root[RedeliverProperty], RedeliverProperty),
             Slices = SliceList(root[SlicesProperty]),
+            Interface = root[InterfaceProperty] is null ? null : Text(root[InterfaceProperty], InterfaceProperty),
+            Interfaces = Names(root[InterfacesProperty]),
         };
     }
 
@@ -225,6 +241,34 @@ public sealed record DeliveryRunPayload
         if (Slices.Distinct().Count() != Slices.Count)
         {
             throw new SqlFlowException("payload slices names a slice more than once.");
+        }
+
+        if (Interface is { } named && !SourceDefinition.IsInterfaceName(named))
+        {
+            throw new SqlFlowException($"payload interface '{named}' is not an interface name: a letter followed by letters, digits, '_' and '-'.");
+        }
+
+        foreach (var name in Interfaces)
+        {
+            if (!SourceDefinition.IsInterfaceName(name))
+            {
+                throw new SqlFlowException($"payload interfaces holds '{name}', which is not an interface name: a letter followed by letters, digits, '_' and '-'.");
+            }
+        }
+
+        if (Interfaces.Distinct(StringComparer.OrdinalIgnoreCase).Count() != Interfaces.Count)
+        {
+            throw new SqlFlowException("payload interfaces names an interface more than once.");
+        }
+
+        if (Interface is not null && Interfaces.Count > 0)
+        {
+            throw new SqlFlowException("payload names both an interface and interfaces; a run works on one interface or runs a selection of them, not both.");
+        }
+
+        if (Interfaces.Count > 0 && (SubmissionId is not null || RecordKeys.Count > 0 || Slices.Count > 0))
+        {
+            throw new SqlFlowException("payload interfaces selects interfaces for a run of the source; a run on a submission, on records or on slices works on one interface, which 'interface' names.");
         }
 
         if (SubmissionId is not null && RecordKeys.Count > 0)
@@ -302,6 +346,16 @@ public sealed record DeliveryRunPayload
             root[SlicesProperty] = new JsonArray(Slices.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray());
         }
 
+        if (Interface is { } named)
+        {
+            root[InterfaceProperty] = named;
+        }
+
+        if (Interfaces.Count > 0)
+        {
+            root[InterfacesProperty] = new JsonArray(Interfaces.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
+        }
+
         return root.ToJsonString();
     }
 
@@ -354,6 +408,21 @@ public sealed record DeliveryRunPayload
         }
 
         return array.Select(item => Id(item, RecordKeysProperty)).ToList();
+    }
+
+    private static IReadOnlyList<string> Names(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return [];
+        }
+
+        if (node is not JsonArray array || array.Count > SourceDefinition.MaxInterfaces)
+        {
+            throw new SqlFlowException($"payload {InterfacesProperty} must be an array of at most {SourceDefinition.MaxInterfaces} interface names.");
+        }
+
+        return array.Select(item => Text(item, InterfacesProperty)).ToList();
     }
 
     private static IReadOnlyList<int> SliceList(JsonNode? node)

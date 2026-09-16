@@ -40,7 +40,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
         {
             return new
             {
-                flow = flow.Name,
+                flow = flow.Label,
                 deliveryKey = key.DeliveryKey,
                 sourceKey = key.Key.Values,
                 found = false,
@@ -53,7 +53,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
         {
             return new
             {
-                flow = flow.Name,
+                flow = flow.Label,
                 deliveryKey = key.DeliveryKey,
                 sourceKey = key.Key.Values,
                 found = false,
@@ -66,7 +66,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
         {
             return new
             {
-                flow = flow.Name,
+                flow = flow.Label,
                 deliveryKey = key.DeliveryKey,
                 sourceKey = key.Key.Values,
                 found = true,
@@ -89,7 +89,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
 
         return new
         {
-            flow = flow.Name,
+            flow = flow.Label,
             deliveryKey = key.DeliveryKey,
             sourceKey = key.Key.Values,
             found = false,
@@ -107,7 +107,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
 
         var key = DeliveryKey.Parse(payload.RequireArgument("deliveryKey"));
         var record = await RequireLedger().GetRecordAsync(flow.Id, key, ct).ConfigureAwait(false)
-            ?? throw new SqlFlowException($"Record {key} is not in the ledger for flow '{flow.Name}'.");
+            ?? throw new SqlFlowException($"Record {key} is not in the ledger for flow '{flow.Label}'.");
         var stored = record.SourceKeyJson
             ?? throw new SqlFlowException($"Record {key} carries no source key, so the row it came from cannot be looked up; deliver the flow once to record it.");
         return (KeyTuple.FromJson(stored), key.Value);

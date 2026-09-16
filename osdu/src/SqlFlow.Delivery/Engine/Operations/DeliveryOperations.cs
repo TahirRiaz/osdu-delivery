@@ -19,7 +19,8 @@ namespace SqlFlow.Delivery.Engine.Operations;
 /// credentials it uses and carries the flow file's location (<c>repoRoot</c> + <c>relativePath</c> as the
 /// catalog knows them, or an absolute <c>flowFile</c>); the node resolves every credential itself, exactly as it
 /// does for a run. The document must declare the named flow, so a stale catalog can never aim an operation at
-/// the wrong target.
+/// the wrong target. A flow that declares interfaces is acted on through the one the task names (<c>interface</c>); the
+/// others are never touched.
 /// </summary>
 public abstract class DeliveryOperation : IComputeOperation
 {
@@ -45,11 +46,13 @@ public abstract class DeliveryOperation : IComputeOperation
     {
         ArgumentNullException.ThrowIfNull(payload);
         var flowFile = ResolveFlowFile(payload);
-        var flow = _context.Documents.LoadFlow(flowFile);
-        if (!string.Equals(flow.Name, payload.SourceRef, StringComparison.OrdinalIgnoreCase))
+        var source = _context.Documents.LoadSource(flowFile);
+        if (!string.Equals(source.Name, payload.SourceRef, StringComparison.OrdinalIgnoreCase))
         {
-            throw new SqlFlowException($"The flow file declares '{flow.Name}', not '{payload.SourceRef}'. The file and the catalog have drifted; re-sync the repository.");
+            throw new SqlFlowException($"The flow file declares '{source.Name}', not '{payload.SourceRef}'. The file and the catalog have drifted; re-sync the repository.");
         }
+
+        var flow = source.Interface(payload.Argument("interface"));
 
         var result = await RunAsync(flow, payload, ct).ConfigureAwait(false);
         return JsonSerializer.Serialize(result, JsonOptions);
@@ -122,7 +125,7 @@ public sealed class ProbeTargetOperation : DeliveryOperation
             var probe = await protocol.ProbeAsync(ct).ConfigureAwait(false);
             return new
             {
-                flow = flow.Name,
+                flow = flow.Label,
                 protocol = protocol.Kind.ToString(),
                 endpoint = flow.Target.Endpoint,
                 auth = flow.Target.Auth.Type.ToString(),
@@ -160,10 +163,10 @@ public sealed class ReadRecordOperation : DeliveryOperation
             var key = DeliveryKey.Parse(payload.RequireArgument("deliveryKey"));
             deliveryKey = key.Value;
             var record = await RequireLedger().GetRecordAsync(flow.Id, key, ct).ConfigureAwait(false)
-                ?? throw new SqlFlowException($"Record {key} is not in the ledger for flow '{flow.Name}'.");
+                ?? throw new SqlFlowException($"Record {key} is not in the ledger for flow '{flow.Label}'.");
             // What a record's page reads back is what this flow wrote: an id the record never claimed can be another flow's.
             targetId = record.ClaimedTargetId
-                ?? throw new SqlFlowException($"Record {key} has not queued a document for OSDU in flow '{flow.Name}', so this flow wrote nothing to read back.");
+                ?? throw new SqlFlowException($"Record {key} has not queued a document for OSDU in flow '{flow.Label}', so this flow wrote nothing to read back.");
         }
 
         var (http, protocol) = await OpenTargetAsync(flow, ct).ConfigureAwait(false);
@@ -173,7 +176,7 @@ public sealed class ReadRecordOperation : DeliveryOperation
             JsonObject? document = await protocol.ReadAsync(targetId, ct).ConfigureAwait(false);
             return new
             {
-                flow = flow.Name,
+                flow = flow.Label,
                 deliveryKey,
                 targetId,
                 correlationId = correlation.Id,
@@ -214,7 +217,7 @@ public sealed class DeleteRecordOperation : DeliveryOperation
         var summary = await runtime.RemoveAsync(selection, scope, ct).ConfigureAwait(false);
         return new
         {
-            flow = flow.Name,
+            flow = flow.Label,
             scope = RemovalScopes.Wire(scope),
             summary.Selected,
             summary.Removed,

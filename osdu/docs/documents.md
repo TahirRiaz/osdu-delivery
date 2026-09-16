@@ -245,6 +245,153 @@ required". A run-now's values override the schedule's name by name, leaving the 
 library with `operation: verify` and the flow as its member. Run-now on a schedule keeps its operation and adds
 `force`.
 
+## A source with interfaces
+
+A delivery document can also describe a whole source system: the connection, the target and the defaults once, and
+under `interfaces` one entry for each OSDU type the source delivers
+([../../docs/interfaces-design.md](../../docs/interfaces-design.md)). Both forms load into one model and run on one
+engine. A document without `interfaces` (the form above) is a source with one interface and keeps the ledger of its
+own name. A type that is better managed on its own, or delivered again often, can stay in a document of its own.
+
+```yaml
+flowType: delivery
+name: recall                          # the source: one pipeline in the catalog, one schedule, one run
+parameters:
+  logSource: { required: true }
+schedule: { cron: "0 * * * *", values: { logSource: STAT_COMP } }
+
+source:                               # shared by every interface
+  connection: ${env:OSDU_SAMPLE_DB}
+  lastModified: update_date
+  work: ../.work/recall/{logSource}
+render:
+  parameters: { dataPartition: opendes }
+target:
+  endpoint: ${env:PETRODB_URL}
+  auth: { ... }
+  headers: { data-partition-id: opendes }
+  protocolOptions:
+    ddmsRoot: /api/os-wellbore-ddms   # where the DDMS sits under the endpoint, for the interfaces delivered through one
+reliability:
+  concurrency: 8
+  fanOut: 2
+  parallelInterfaces: 4               # how many interfaces of one wave run at once (1 to 32, default 4)
+failWhen: { failedPercent: 20 }       # every interface's stop rules, unless it sets its own
+
+interfaces:
+  wellbores:
+    ledger: recall-wellbore           # keep the ledger of the flow this interface replaces
+    record: { object: OsduSample.ing.Wellbore, key: [facility_name], primaryKey: RecId }
+    datasets:
+      aliases: { object: OsduSample.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
+    mapping: Wellbore@1.0.0
+  welllogs:
+    ledger: recall-welllog
+    record: { object: OsduSample.ing.WellLog, key: [source_project, log_id], primaryKey: RecId, scope: { log_name: logSource } }
+    datasets:
+      curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+    bulk: { root: ../data/curves, locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
+    protocolOptions: { sessionThresholdChunks: 1 }
+    mapping: WellLog@1.4.0
+    after: [wellbores]
+    failWhen: { consecutiveFailures: 50 }
+```
+
+### What an interface declares
+
+| Key | Meaning |
+| --- | --- |
+| `record` | The interface's record table, as `source.record` declares it: `object`, `key`, `primaryKey`, `scope`. Required. |
+| `datasets` | Its child tables, as `source.datasets`. |
+| `mapping` | The pinned mapping (`Name@version`), as `render.mapping`. Required. |
+| `files` | The files each record carries as datasets: a payload set (`root`, `locationColumn`, `pattern`, `hashColumn`, `chunkCountColumn`), uploaded and registered before the record. |
+| `bulk` | The DDMS bulk data each record carries, a payload set of the same shape, written after the record. |
+| `route` | `storage`, `file`, `manifest` or `ddms`: names the route instead of letting what the interface declares decide it. |
+| `ledger` | The name of an existing flow whose ledger the interface keeps. |
+| `after` | The interfaces of this document it waits for. |
+| `failWhen` | Its stop rules, laid over the source's. |
+| `description` | Free text. |
+| `lastModified`, `systemColumns`, `incremental` | The source's settings, overridden for this interface. |
+| `render` | `cacheVersion`, and `parameters` merged over the source's. |
+| `change`, `reliability`, `verify`, `protocolOptions` | The source's blocks, with the interface's keys laid over them. |
+
+An interface's block is laid over the source's key by key: a key the interface sets replaces the source's, a key it
+leaves out keeps the source's value, a nested block (`reliability.retry`) is laid over the same way, a map
+(`render.parameters`, `protocolOptions.uploadHeaders`, `protocolOptions.workflowPayload`) is merged key by key, and a
+list (`reliability.skipStatusCodes`, `protocolOptions.preserveDataKeys`) replaces the source's list whole. `systemColumns`
+is merged column by column, and a column the interface opts out of (`fileName: ~`) stays opted out for it. What one
+interface lays over the shared blocks never reaches another. Every message about an interface names its own keys
+(`interfaces.welllogs.record.key`).
+
+What belongs to an interface is refused at the source level, each named: `source.record`, `source.datasets`,
+`source.payloads`, `render.mapping`, `target.protocol` and `target.protocolOptions.payload`.
+`reliability.parallelInterfaces` is the source's own setting: it is refused on an interface and in a document that
+declares no interfaces.
+
+An interface name is a letter followed by letters, digits, `_` and `-`, at most 64 characters, and unique in its
+document regardless of case. A document declares at most 200 interfaces.
+
+### Routes
+
+What an interface's records carry decides how they are delivered:
+
+| The interface declares | Route | Each record |
+| --- | --- | --- |
+| no `files`, no `bulk` | `storage` | is written through the storage service (the `osduRecord` protocol). |
+| `files` | `file` | has its files uploaded and registered through the file service, then is written through the storage service (`osduFile`). |
+| `bulk` | `ddms` | is written through its DDMS, then its bulk data (`osduWellLog`). |
+| `route: manifest`, with or without `files` | `manifest` | has its files registered first, then goes through the ingestion workflow in manifests (`osduManifest`). |
+
+`route:` names a route outright, and a route that cannot deliver what the interface declares is refused when the
+document loads: `storage` with `files` or `bulk`, `file` without `files` or with `bulk`, `manifest` with `bulk`, and
+`ddms` with `files`. An interface that declares both `files` and `bulk` is refused too: deliver them through two
+interfaces, one for each.
+
+A `ddms` interface needs to know where its DDMS is: `ddmsRoot` under the source's or its own `protocolOptions`, or
+paths of its own (`recordPath` and the rest). Without paths of its own it writes to the wellbore DDMS's well log
+collection, so the run's preflight refuses a mapping that renders another entity type, naming the paths to set. The
+same check applies to a flow in the single form whose `target.protocol` is `osduWellLog`. The four routes are the four
+protocols of [protocols.md](protocols.md); a document without interfaces still names its protocol with
+`target.protocol`.
+
+### Ledger identity
+
+Every interface keeps a ledger of its own: its records, submissions, watermark, OSDU id claims and statistics are
+kept under the flow id derived from `<flow>/<interface>` (as the ledger records it, `recall/welllogs`; ids ignore case).
+A document without interfaces keeps the flow id of its own name.
+
+`ledger: <name>` keeps the ledger of an existing flow instead, so consolidating single-kind flows into one source loses
+no history and sends nothing again that has not changed. Remove the flow whose ledger was adopted: while two flows keep
+one ledger, the repository sync warns, naming both. Two interfaces of one document never keep the same ledger, and a
+ledger name is at most 200 characters.
+
+### Order
+
+`after:` names the interfaces an interface waits for. A run takes the interfaces in waves: the first wave holds every
+interface that waits for nothing, and each later wave the interfaces whose dependencies all ran before it. Up to
+`reliability.parallelInterfaces` interfaces of one wave run at once, and each still plans, fans out and drains as a
+run of that interface alone does. An `after:` naming an interface the document does not declare, the interface
+itself, or one interface twice is refused, and so are interfaces that wait for each other, naming the cycle
+(`the interfaces a -> b -> a wait for each other`).
+
+### When an interface stops
+
+A record with a data problem is held and the interface goes on. `failWhen` says when the records' failures add up to
+a failure of the interface itself:
+
+| Key | The interface stops when | Default |
+| --- | --- | --- |
+| `outageFailures` | this many records in a row could not reach the service (a transport failure, a timeout, HTTP 408, 429 or 5xx) or were refused by it (HTTP 401 or 403), with none delivered in between. 0 turns the rule off. | 25 |
+| `consecutiveFailures` | this many records in a row failed with problems of one class (data, connection or permission), with none delivered in between. | not set |
+| `failedPercent` | held and failed records reach this share (above 0, at most 100) of the records the run settled, judged once `minRecords` have settled. A planning pass that holds this share of the records it took up stops the interface before it sends anything. | not set |
+| `minRecords` | how many records have to settle before `failedPercent` is judged. | 100 |
+
+A record scheduled for another try counts toward the failures in a row, not toward the share. A stopped interface
+stops its work, hands back the records it had not sent without charging them a try, and closes its submission as
+failed (`stopped: <why>`), so its next deliver run sends what is left. The interfaces waiting for it are skipped, and
+the others carry on ([operations.md](operations.md#running-a-source)). `failWhen` applies to a document without
+interfaces too, whose run then ends failed with the reason.
+
 ## Retrieval flow
 
 The reverse direction ([design.md](design.md) section 15): OSDU's search index into JSON Lines files on the lake.

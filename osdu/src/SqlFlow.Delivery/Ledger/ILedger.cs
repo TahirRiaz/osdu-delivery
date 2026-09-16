@@ -1117,8 +1117,9 @@ public interface ILedger
 
     /// <summary>
     /// The completed or failed submissions of the flow, other than <paramref name="except"/>, that still hold records due
-    /// for delivery with their rendered documents: records released back to pending after their run was over. At most
-    /// <paramref name="max"/>. It reads the flow's pending records, which a run leaves few of once its own are sent.
+    /// for delivery with their rendered documents: records released back to pending after their run was over, and the
+    /// records a stopped run handed back untried when it closed its submission as failed. At most <paramref name="max"/>.
+    /// It reads the flow's pending records, which a run leaves few of once its own are sent.
     /// </summary>
     Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, Guid? except, DateTime nowUtc, int max, CancellationToken ct = default);
 

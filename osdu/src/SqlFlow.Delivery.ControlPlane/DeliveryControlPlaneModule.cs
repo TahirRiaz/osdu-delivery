@@ -71,6 +71,10 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
             services.AddHostedService<DataDefinitionsWarmupService>();
         }
 
+        // The pipelines synced before the read model of sources and interfaces existed are described once at start, so a
+        // record's page finds its flow without waiting for its repository's next sync.
+        services.AddHostedService<InterfaceCatalogBackfillService>();
+
         if (rollout.Enabled)
         {
             services.AddHostedService<CacheUpdateRolloutService>();

@@ -73,6 +73,9 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
     /// <summary>Every selection a read was opened for, in order.</summary>
     public List<SourceSelection> Selections { get; } = [];
 
+    /// <summary>What a shape check reports as wrong with the tables, as the SQL Server source reports a missing table; null when nothing is.</summary>
+    public string? ShapeProblem { get; set; }
+
     public MemoryRecord Add(MemoryRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
@@ -107,6 +110,11 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
             _values = values;
             _time = time;
         }
+
+        public Task VerifyAsync(CancellationToken ct = default)
+            => _tables.ShapeProblem is { } problem
+                ? Task.FromException(new DeliveryException($"Flow '{_flow.Label}': {problem}"))
+                : Task.CompletedTask;
 
         public Task<SourceHeader> OpenAsync(SourceSelection selection, SourceWindow? stored, CancellationToken ct = default)
         {

@@ -149,7 +149,7 @@ public sealed class SubmissionIntake
             : null;
         if (existing is not null && existing.FlowId != flow.Id)
         {
-            throw new DeliveryException($"Submission {existing.SubmissionId:D} belongs to flow '{existing.FlowName}', not '{flow.Name}'.");
+            throw new DeliveryException($"Submission {existing.SubmissionId:D} belongs to flow '{existing.FlowName}', not '{flow.Label}'.");
         }
 
         var described = existing is null ? null : SourceWindowDescription.Parse(existing.SourceWindowJson);
@@ -169,7 +169,7 @@ public sealed class SubmissionIntake
             {
                 SubmissionId = Guid.CreateVersion7(),
                 FlowId = flow.Id,
-                FlowName = flow.Name,
+                FlowName = flow.Label,
                 MappingReference = resolved.Mapping.Reference,
                 RenderContext = resolved.Context.Canonical(),
                 ParametersJson = JsonSerializer.Serialize(parameters),
@@ -579,7 +579,8 @@ public sealed class SubmissionIntake
             {
                 AtUtc = now,
                 FlowId = flow.Id,
-                FlowName = flow.Name,
+                FlowName = flow.Label,
+                Interface = flow.Interface,
                 Kind = "record.held",
                 SubmissionId = submission.SubmissionId,
                 DeliveryKey = record.DeliveryKey,
@@ -673,6 +674,32 @@ public sealed class SubmissionIntake
         return submission;
     }
 
+    /// <summary>
+    /// Closes a submission whose run stopped before its records were all sent (a failure guard tripped, the run was
+    /// cancelled): its totals counted as <see cref="CompleteAsync"/> counts them, and, while records of it are still
+    /// pending, failed with <paramref name="reason"/>. A closed submission's pending records are sent by the flow's next
+    /// run, so what the stop left is not stranded behind a submission nobody works on any more.
+    /// </summary>
+    public async Task<SubmissionState> StopAsync(Guid submissionId, Guid flowId, string reason, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        var submission = await CompleteAsync(submissionId, flowId, ct).ConfigureAwait(false);
+        if (submission.Status is SubmissionStatus.Completed or SubmissionStatus.Failed)
+        {
+            return submission;
+        }
+
+        submission = submission with
+        {
+            Status = SubmissionStatus.Failed,
+            Error = reason,
+            CompletedUtc = _time.GetUtcNow().UtcDateTime,
+        };
+        await _ledger.UpdateSubmissionAsync(submission, ct).ConfigureAwait(false);
+        await EmitAsync(null, submission, "submission.completed", $"{reason}; {Summarize(submission)}", ct).ConfigureAwait(false);
+        return submission;
+    }
+
     public static string Summarize(SubmissionState s)
     {
         ArgumentNullException.ThrowIfNull(s);
@@ -696,7 +723,8 @@ public sealed class SubmissionIntake
         {
             AtUtc = _time.GetUtcNow().UtcDateTime,
             FlowId = submission.FlowId,
-            FlowName = flow?.Name ?? submission.FlowName,
+            FlowName = flow?.Label ?? submission.FlowName,
+            Interface = flow?.Interface,
             Kind = kind,
             SubmissionId = submission.SubmissionId,
             Worker = "intake",

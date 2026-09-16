@@ -207,6 +207,7 @@ public sealed class DeliveryPlanRunApiTests
                 await osdu.DeliverySubmissions.Where(s => s.FlowId == flowId).ExecuteDeleteAsync();
                 await osdu.DeliveryActivities.Where(a => a.FlowId == flowId).ExecuteDeleteAsync();
                 await osdu.DeliveryMappings.Where(m => m.RepoId == RepoId).ExecuteDeleteAsync();
+                await osdu.DeliveryInterfaces.Where(i => i.RepoId == RepoId).ExecuteDeleteAsync();
             }
 
             await using (var db = CatalogDatabase.Create(cs))

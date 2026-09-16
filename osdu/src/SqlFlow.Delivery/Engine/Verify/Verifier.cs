@@ -106,7 +106,8 @@ public sealed class Verifier
         {
             AtUtc = _time.GetUtcNow().UtcDateTime,
             FlowId = _flow.Id,
-            FlowName = _flow.Name,
+            FlowName = _flow.Label,
+            Interface = _flow.Interface,
             Kind = "verify.completed",
             Worker = "verify",
             Detail = summary.ToString() + (reconcile ? " (reconcile on)" : string.Empty),
@@ -145,7 +146,8 @@ public sealed class Verifier
                 {
                     AtUtc = _time.GetUtcNow().UtcDateTime,
                     FlowId = _flow.Id,
-                    FlowName = _flow.Name,
+                    FlowName = _flow.Label,
+                    Interface = _flow.Interface,
                     Kind = "verify.drifted",
                     SubmissionId = record.LastSubmissionId,
                     DeliveryKey = record.DeliveryKey,

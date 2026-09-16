@@ -6,6 +6,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Rendering;
@@ -56,6 +57,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
     private readonly IReadOnlyDictionary<string, string> _values;
     private readonly ISecretResolver _secrets;
     private readonly ILogger<SqlServerIngestionSource> _logger;
+    private readonly KeyPaths _keys;
     private readonly Dictionary<string, IReadOnlyDictionary<string, SourceColumn>> _tables = new(StringComparer.OrdinalIgnoreCase);
     private IngestionLayout? _layout;
     private string? _fileNameColumn;
@@ -68,9 +70,16 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         ArgumentNullException.ThrowIfNull(secrets);
         ArgumentNullException.ThrowIfNull(logger);
         _flow = flow;
+        _keys = KeyPaths.Of(flow);
         _values = values;
         _secrets = secrets;
         _logger = logger;
+    }
+
+    public async Task VerifyAsync(CancellationToken ct = default)
+    {
+        await using var connection = await IngestionConnection.OpenAsync(_flow.Source.Connection, _flow.Name, _secrets, ct).ConfigureAwait(false);
+        await BuildLayoutAsync(connection, ct).ConfigureAwait(false);
     }
 
     public async Task<SourceHeader> OpenAsync(SourceSelection selection, SourceWindow? stored, CancellationToken ct = default)
@@ -130,7 +139,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
 
         var primaryKey = layout.PrimaryKey
             ?? throw new DeliveryException(
-                $"Flow '{_flow.Name}': a read is cut into slices on the record table's identity primary key, and the flow names none under source.record.primaryKey.");
+                $"Flow '{_flow.Label}': a read is cut into slices on the record table's identity primary key, and the flow names none under {_keys.Name("source.record.primaryKey")}.");
         await using var connection = await IngestionConnection.OpenAsync(_flow.Source.Connection, _flow.Name, _secrets, ct).ConfigureAwait(false);
         await using var command = Command(connection, IngestionSql.SliceHistogram(layout, header.Selection.Kind, header.Window.LowerUtc is not null));
         Bind(command, layout, header, IngestionSql.KeyBounds.None, null, null);
@@ -151,7 +160,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             width = reader.GetInt64(1);
             if (!await reader.NextResultAsync(ct).ConfigureAwait(false))
             {
-                throw new DeliveryException($"Flow '{_flow.Name}': the source did not return how the candidates spread over {primaryKey.Name}.");
+                throw new DeliveryException($"Flow '{_flow.Label}': the source did not return how the candidates spread over {primaryKey.Name}.");
             }
 
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -184,7 +193,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         if (range is { } slice && !string.Equals(slice.On, layout.PrimaryKey?.Name, StringComparison.OrdinalIgnoreCase))
         {
             throw new DeliveryException(
-                $"Flow '{_flow.Name}': slice {slice.Slice} of this submission was cut on {(slice.On is null ? "the record key" : $"column '{slice.On}'")}, "
+                $"Flow '{_flow.Label}': slice {slice.Slice} of this submission was cut on {(slice.On is null ? "the record key" : $"column '{slice.On}'")}, "
                 + $"and the flow now reads by {(layout.PrimaryKey is { } declared ? $"column '{declared.Name}'" : "the record key")}. Plan a new submission rather than re-running this one.");
         }
 
@@ -215,7 +224,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
     }
 
     private IngestionLayout Layout()
-        => _layout ?? throw new DeliveryException($"Flow '{_flow.Name}': the source has to be opened before it is read.");
+        => _layout ?? throw new DeliveryException($"Flow '{_flow.Label}': the source has to be opened before it is read.");
 
     private SqlCommand Command(SqlConnection connection, string text)
     {
@@ -231,15 +240,15 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         var value = await ExecuteScalarAsync(command, "read the source database's clock", ct).ConfigureAwait(false);
         return value is DateTime moment
             ? DateTime.SpecifyKind(moment, DateTimeKind.Utc)
-            : throw new DeliveryException($"Flow '{_flow.Name}': the source database did not answer with a moment for the read's upper bound.");
+            : throw new DeliveryException($"Flow '{_flow.Label}': the source database did not answer with a moment for the read's upper bound.");
     }
 
     private async Task<IngestionLayout> BuildLayoutAsync(SqlConnection connection, CancellationToken ct)
     {
         var source = _flow.Source;
-        var where = _flow.SourcePath ?? _flow.Name;
+        var where = KeyPaths.Where(_flow);
         var recordName = SourceObjectName.Parse(source.Record.Object);
-        var record = await ReadColumnsAsync(connection, recordName, "source.record.object", ct).ConfigureAwait(false);
+        var record = await ReadColumnsAsync(connection, recordName, _keys.Name("source.record.object"), ct).ConfigureAwait(false);
         _tables[SourceDatasets.Record] = record;
 
         var key = new List<SourceKeyColumn>(source.Record.Key.Count);
@@ -251,7 +260,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         var nullableKeys = new List<string>();
         foreach (var column in source.Record.Key)
         {
-            var declared = Column(record, recordName, column, $"{where}: source.record.key names column '{column}'");
+            var declared = Column(record, recordName, column, $"{where}: {_keys.Name("source.record.key")} names column '{column}'");
             if (declared.Nullable)
             {
                 nullableKeys.Add(declared.Name);
@@ -260,7 +269,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             if (!declared.Comparable)
             {
                 throw new FlowValidationException(
-                    $"{where}: source.record.key names column '{column}' of {recordName}, which is {declared.SqlType}. A key column has to be a comparable type (text with a length, a number, a date, a uniqueidentifier).");
+                    $"{where}: {_keys.Name("source.record.key")} names column '{column}' of {recordName}, which is {declared.SqlType}. A key column has to be a comparable type (text with a length, a number, a date, a uniqueidentifier).");
             }
 
             key.Add(new SourceKeyColumn(column, declared.SqlType));
@@ -269,36 +278,36 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         SourceKeyColumn? primaryKey = null;
         if (source.Record.PrimaryKey is { } primaryKeyName)
         {
-            var declared = Column(record, recordName, primaryKeyName, $"{where}: source.record.primaryKey names column '{primaryKeyName}'");
+            var declared = Column(record, recordName, primaryKeyName, $"{where}: {_keys.Name("source.record.primaryKey")} names column '{primaryKeyName}'");
             if (!declared.IsInteger)
             {
                 throw new FlowValidationException(
-                    $"{where}: source.record.primaryKey names column '{declared.Name}' of {recordName}, which is {declared.SqlType}. "
+                    $"{where}: {_keys.Name("source.record.primaryKey")} names column '{declared.Name}' of {recordName}, which is {declared.SqlType}. "
                     + "A read is paged and cut on an integer identity column (the ingestion flow's target.identityColumn).");
             }
 
             primaryKey = new SourceKeyColumn(declared.Name, declared.SqlType);
         }
 
-        var updated = Column(record, recordName, source.SystemColumns.Updated, $"{where}: source.systemColumns.updated names column '{source.SystemColumns.Updated}'");
+        var updated = Column(record, recordName, source.SystemColumns.Updated, $"{where}: {_keys.Name("source.systemColumns.updated")} names column '{source.SystemColumns.Updated}'");
         if (!updated.IsMoment)
         {
             throw new FlowValidationException(
-                $"{where}: source.systemColumns.updated names column '{source.SystemColumns.Updated}' of {recordName}, which is {updated.SqlType}. An incremental read windows on a date and time column (SQLFlow's UpdatedDate_DW).");
+                $"{where}: {_keys.Name("source.systemColumns.updated")} names column '{source.SystemColumns.Updated}' of {recordName}, which is {updated.SqlType}. An incremental read windows on a date and time column (SQLFlow's UpdatedDate_DW).");
         }
 
         var deleted = Optional(record, source.SystemColumns.Deleted);
         if (source.SystemColumns.DeletedDeclared && source.SystemColumns.Deleted is { } declaredDeleted && deleted is null)
         {
-            throw new FlowValidationException($"{where}: source.systemColumns.deleted names column '{declaredDeleted}', which the record table {recordName} does not hold.");
+            throw new FlowValidationException($"{where}: {_keys.Name("source.systemColumns.deleted")} names column '{declaredDeleted}', which the record table {recordName} does not hold.");
         }
 
         _fileNameColumn = Optional(record, source.SystemColumns.FileName)?.Name;
         if (_fileNameColumn is not null && record[_fileNameColumn].MaxCharacters > MaxFileNameLength)
         {
             throw new FlowValidationException(
-                $"{where}: source.systemColumns.fileName names column '{_fileNameColumn}' of {recordName}, which holds up to {record[_fileNameColumn].MaxCharacters.ToString(CultureInfo.InvariantCulture)} characters. "
-                + $"The ledger stores a record's origin file in {MaxFileNameLength.ToString(CultureInfo.InvariantCulture)} characters; land the files under a shorter root, or opt out with source.systemColumns.fileName: ~.");
+                $"{where}: {_keys.Name("source.systemColumns.fileName")} names column '{_fileNameColumn}' of {recordName}, which holds up to {record[_fileNameColumn].MaxCharacters.ToString(CultureInfo.InvariantCulture)} characters. "
+                + $"The ledger stores a record's origin file in {MaxFileNameLength.ToString(CultureInfo.InvariantCulture)} characters; land the files under a shorter root, or opt out with {_keys.Name("source.systemColumns.fileName")}: ~.");
         }
 
         _rowNumberColumn = Optional(record, source.SystemColumns.RowNumber)?.Name;
@@ -307,20 +316,20 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         foreach (var (name, dataset) in source.Datasets.OrderBy(d => d.Key, StringComparer.Ordinal))
         {
             var objectName = SourceObjectName.Parse(dataset.Object);
-            var columns = await ReadColumnsAsync(connection, objectName, $"source.datasets.{name}.object", ct).ConfigureAwait(false);
+            var columns = await ReadColumnsAsync(connection, objectName, $"{_keys.Name("source.datasets")}.{name}.object", ct).ConfigureAwait(false);
             _tables[name] = columns;
             var join = new List<KeyValuePair<string, string>>(dataset.Join.Count);
             foreach (var recordColumn in source.Record.Key)
             {
                 var childColumn = dataset.Join.FirstOrDefault(j => j.Value.Equals(recordColumn, StringComparison.OrdinalIgnoreCase)).Key
-                    ?? throw new FlowValidationException($"{where}: source.datasets.{name}.join does not cover key column '{recordColumn}' of the record table.");
-                Column(columns, objectName, childColumn, $"{where}: source.datasets.{name}.join names child column '{childColumn}'");
+                    ?? throw new FlowValidationException($"{where}: {_keys.Name("source.datasets")}.{name}.join does not cover key column '{recordColumn}' of the record table.");
+                Column(columns, objectName, childColumn, $"{where}: {_keys.Name("source.datasets")}.{name}.join names child column '{childColumn}'");
                 join.Add(new KeyValuePair<string, string>(childColumn, recordColumn));
             }
 
             foreach (var order in dataset.OrderBy)
             {
-                Column(columns, objectName, order, $"{where}: source.datasets.{name}.orderBy names column '{order}'");
+                Column(columns, objectName, order, $"{where}: {_keys.Name("source.datasets")}.{name}.orderBy names column '{order}'");
             }
 
             datasets.Add(new IngestionDataset(
@@ -377,7 +386,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         {
             if (!await reader.ReadAsync(ct).ConfigureAwait(false))
             {
-                throw new DeliveryException($"Flow '{_flow.Name}': the source did not say whether {recordName} has the primary key the flow names.");
+                throw new DeliveryException($"Flow '{_flow.Label}': the source did not say whether {recordName} has the primary key the flow names.");
             }
 
             identity = reader.GetInt32(0) == 1;
@@ -392,7 +401,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
                 ? "neither an identity column nor the table's primary key"
                 : !identity ? "not an identity column" : "not the table's single-column primary key";
             throw new FlowValidationException(
-                $"{where}: source.record.primaryKey names column '{primaryKey.Name}' of {recordName}, which is {missing}. "
+                $"{where}: {_keys.Name("source.record.primaryKey")} names column '{primaryKey.Name}' of {recordName}, which is {missing}. "
                 + $"The ingestion flow creates it with target.identityColumn: {primaryKey.Name} when it creates the table. An existing table needs it added once, "
                 + $"which rewrites the table (drop a plain column of that name first): ALTER TABLE {recordName.Quoted} ADD {column} bigint IDENTITY(1, 1) NOT NULL "
                 + $"CONSTRAINT {SourceObjectName.Quote("PK_" + recordName.Name)} PRIMARY KEY CLUSTERED; (NONCLUSTERED when the table already has a clustered index).");
@@ -401,7 +410,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         if (!keyUnique)
         {
             throw new FlowValidationException(
-                $"{where}: source.record.key ({string.Join(", ", layout.Key.Select(k => k.Name))}) has no unique index without a filter on {recordName}, so a record could be held by two rows "
+                $"{where}: {_keys.Name("source.record.key")} ({string.Join(", ", layout.Key.Select(k => k.Name))}) has no unique index without a filter on {recordName}, so a record could be held by two rows "
                 + "and a fan-out could deal them to two runs. The ingestion flow's load.keyColumns creates one (NCI_KeyColumn); a table that keeps history (SCD2) filters it and cannot be read by ranges of its primary key.");
         }
     }
@@ -436,7 +445,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         throw new FlowValidationException(
             $"{where}: the record table {recordName} holds a row whose key column {(unknown.Count == 1 ? $"'{unknown[0]}' is" : $"{string.Join(" and ", unknown.Select(u => $"'{u}'"))} are")} null, "
             + "so that row has no identity to deliver under and could not be told apart from another like it. "
-            + "Give every row a key, or narrow source.record.scope to the rows that have one.");
+            + $"Give every row a key, or narrow {_keys.Name("source.record.scope")} to the rows that have one.");
     }
 
     private async Task<IReadOnlyDictionary<string, SourceColumn>> ReadColumnsAsync(SqlConnection connection, SourceObjectName table, string declaredAt, CancellationToken ct)
@@ -462,7 +471,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         if (columns.Count == 0)
         {
             throw new DeliveryException(
-                $"Flow '{_flow.Name}': the table {table}, declared under {declaredAt}, was not found on the source database, or the identity this node connects with cannot see it. "
+                $"Flow '{_flow.Label}': the table {table}, declared under {declaredAt}, was not found on the source database, or the identity this node connects with cannot see it. "
                 + "Check the ingestion flow that loads it has run, and that the node's login is granted SELECT on it.");
         }
 
@@ -578,7 +587,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             if (!_values.TryGetValue(parameter, out var value))
             {
                 throw new DeliveryException(
-                    $"Flow '{_flow.Name}': source.record.scope binds column '{column}' to parameter '{parameter}', and this run supplies no value for it. Supply it with --set {parameter}=value or the run's values.");
+                    $"Flow '{_flow.Label}': {_keys.Name("source.record.scope")} binds column '{column}' to parameter '{parameter}', and this run supplies no value for it. Supply it with --set {parameter}=value or the run's values.");
             }
 
             command.Parameters.Add(record[column].Parameter(IngestionSql.ScopePrefix + i.ToString(CultureInfo.InvariantCulture), value));
@@ -592,7 +601,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         if (value.Values.Count != layout.Order.Count)
         {
             throw new DeliveryException(
-                $"Flow '{_flow.Name}': a page bound has {value.Values.Count} part(s), and the read pages by {string.Join(", ", layout.Order.Select(o => o.Name))}.");
+                $"Flow '{_flow.Label}': a page bound has {value.Values.Count} part(s), and the read pages by {string.Join(", ", layout.Order.Select(o => o.Name))}.");
         }
 
         for (var i = 0; i < layout.Order.Count; i++)
@@ -702,7 +711,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
                 {
                     if (!await reader.NextResultAsync(ct).ConfigureAwait(false))
                     {
-                        throw new DeliveryException($"Flow '{_flow.Name}': the source page did not return the rows of child dataset '{dataset.Name}'.");
+                        throw new DeliveryException($"Flow '{_flow.Label}': the source page did not return the rows of child dataset '{dataset.Name}'.");
                     }
 
                     while (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -811,13 +820,13 @@ public sealed class SqlServerIngestionSource : IIngestionSource
     }
 
     private DeliveryException Failure(SqlException ex, string what)
-        => new($"Flow '{_flow.Name}': the source database refused to {what} for {_flow.Source.Record.Object} (SQL error {ex.Number}): {SecretHygiene.RedactedMessage(ex.Message)}", ex);
+        => new($"Flow '{_flow.Label}': the source database refused to {what} for {_flow.Source.Record.Object} (SQL error {ex.Number}): {SecretHygiene.RedactedMessage(ex.Message)}", ex);
 
     private DeliveryException SnapshotRefusal(SqlException ex)
         => new(
-            $"Flow '{_flow.Name}': the source database does not allow snapshot isolation, which is how a record and its child rows are read as one moment (SQL error {ex.Number}). "
+            $"Flow '{_flow.Label}': the source database does not allow snapshot isolation, which is how a record and its child rows are read as one moment (SQL error {ex.Number}). "
             + $"Enable it with ALTER DATABASE [{_layout?.Record.Database ?? _flow.Source.Record.Object}] SET ALLOW_SNAPSHOT_ISOLATION ON, "
-            + "or read each result set as it is committed with source.incremental.isolation: readCommitted.",
+            + $"or read each result set as it is committed with {_keys.Name("source.incremental.isolation")}: readCommitted.",
             ex);
 
     /// <summary>One column of a source table, as the database describes it.</summary>
@@ -945,7 +954,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             if (rows.Count >= dataset.MaxRowsPerRecord)
             {
                 Hold ??= $"child dataset '{dataset.Name}' holds more than {dataset.MaxRowsPerRecord.ToString(CultureInfo.InvariantCulture)} rows for this record, "
-                    + $"which is source.datasets.{dataset.Name}.maxRowsPerRecord; raise the ceiling deliberately, or split the record in the source";
+                    + "which is the maxRowsPerRecord its declaration allows; raise the ceiling deliberately, or split the record in the source";
                 return;
             }
 

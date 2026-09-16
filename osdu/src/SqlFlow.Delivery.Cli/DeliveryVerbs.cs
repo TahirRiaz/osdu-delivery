@@ -41,8 +41,66 @@ internal static class DeliveryVerbs
         var ct = context.CancellationToken;
         var engine = context.Services.GetRequiredService<EngineContext>();
         var values = RunParameters.ParseValues(context.Arguments.GetOptions("--set"));
-        using var runtime = await FlowRuntime.CreateAsync(engine, flowPath, values, ct).ConfigureAwait(false);
-        var flow = runtime.Flow;
+        var connect = context.Arguments.HasFlag("--connect");
+        var source = engine.Documents.LoadSource(flowPath);
+        var named = context.Arguments.GetOption("--interface");
+        var flows = named is null ? source.Interfaces : [source.Interface(named)];
+
+        var checks = new List<(JsonObject Result, Action Write)>(flows.Count);
+        foreach (var flow in flows)
+        {
+            checks.Add(await CheckFlowAsync(context, engine, flow, values, connect, ct).ConfigureAwait(false));
+        }
+
+        if (!source.DeclaresInterfaces)
+        {
+            // The single form reports as it always has: one flow, one object.
+            var (result, write) = checks[0];
+            if (context.Json)
+            {
+                context.Out.WriteLine(CanonicalJson.Pretty(result));
+                return 0;
+            }
+
+            write();
+            return 0;
+        }
+
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["flow"] = source.Name,
+                ["interfaces"] = new JsonArray(checks.Select(c => (JsonNode)c.Result).ToArray()),
+            }));
+            return 0;
+        }
+
+        context.Out.WriteLine(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{source.Name}: {checks.Count} of {source.Interfaces.Count} interface(s) checked, in the order they run: {string.Join(" then ", Waves(source, flows))}"));
+        foreach (var (_, write) in checks)
+        {
+            write();
+        }
+
+        return 0;
+    }
+
+    /// <summary>The waves the checked interfaces run in, each written as its interfaces joined by '+'.</summary>
+    private static IEnumerable<string> Waves(Model.SourceDefinition source, IReadOnlyList<Model.FlowDefinition> flows)
+        => Model.InterfaceOrder.Waves(flows.Select(f => f.Interface ?? string.Empty).ToList(), Model.InterfaceOrder.Declared(source))
+            .Select(wave => string.Join(" + ", wave));
+
+    /// <summary>
+    /// Everything checkable for one flow (one interface of a source): what the check answers as JSON, and how it writes it
+    /// as text. The runtime is opened and disposed here, so a source's interfaces are checked one at a time.
+    /// </summary>
+    private static async Task<(JsonObject Result, Action Write)> CheckFlowAsync(
+        CliVerbContext context, EngineContext engine, Model.FlowDefinition flow, IReadOnlyDictionary<string, string> values, bool connect, CancellationToken ct)
+    {
+        using var runtime = await FlowRuntime.CreateAsync(flow.Interface is null ? engine : engine.ForInterface(flow.Interface), flow, values, ct).ConfigureAwait(false);
+        RouteChecks.Check(flow, runtime.Mapping.Mapping.Kind);
         var roots = PayloadRoots.Of(flow, runtime.Parameters);
 
         var result = new JsonObject
@@ -74,41 +132,65 @@ internal static class DeliveryVerbs
                 : null,
         };
 
-        if (context.Arguments.HasFlag("--connect"))
+        if (flow.Interface is { } interfaceName)
+        {
+            result["interface"] = interfaceName;
+            result["ledger"] = flow.LedgerName;
+            result["route"] = new JsonObject
+            {
+                ["name"] = RouteChecks.Name(flow.Target.Protocol),
+                ["reason"] = flow.RouteReason,
+            };
+            result["after"] = new JsonArray(flow.After.Select(a => (JsonNode)JsonValue.Create(a)).ToArray());
+        }
+
+        if (connect)
         {
             result["read"] = await ReadAsync(engine, runtime, ct).ConfigureAwait(false);
         }
 
-        if (context.Json)
-        {
-            context.Out.WriteLine(CanonicalJson.Pretty(result));
-            return 0;
-        }
-
-        context.Out.WriteLine($"OK  {flow.Name} ({flow.Id:D})");
-        context.Out.WriteLine($"    mapping     {runtime.Mapping.Mapping.Reference}");
-        context.Out.WriteLine($"    template    {runtime.Mapping.Mapping.Template} (saved {runtime.Mapping.Schema.CapturedUtc:u})");
-        context.Out.WriteLine(runtime.Mapping.Context.CacheScope is { } scope
+        // What the text form needs is captured now: the runtime is gone by the time it writes.
+        var reference = runtime.Mapping.Mapping.Reference;
+        var template = runtime.Mapping.Mapping.Template.ToString();
+        var captured = runtime.Mapping.Schema.CapturedUtc;
+        var cacheLine = runtime.Mapping.Context.CacheScope is { } scope
             ? $"    cache       partition {scope} version {runtime.Mapping.References.Version} ({runtime.Mapping.References.Types.Count} type(s))"
-            : "    cache       none (the mapping reads nothing from a cache)");
-        context.Out.WriteLine($"    context     {runtime.Mapping.Context.Hash()[..16]}");
-        context.Out.WriteLine($"    mappings    {runtime.Layout.MappingsDirectory}");
-        context.Out.WriteLine(
-            $"    source      {flow.Source.Connection} {flow.Source.Record.Object}"
-            + (flow.Source.Datasets.Count == 0 ? string.Empty : $" (+{flow.Source.Datasets.Count} dataset(s))"));
-        context.Out.WriteLine(roots.Count == 0
-            ? "    payloads    none (the flow streams no payload files)"
-            : $"    payloads    under {string.Join(", ", roots)}");
-        if (result["read"] is JsonObject read)
+            : "    cache       none (the mapping reads nothing from a cache)";
+        var contextHash = runtime.Mapping.Context.Hash()[..16];
+        var mappings = runtime.Layout.MappingsDirectory;
+
+        void Write()
         {
-            WriteRead(context, read);
-        }
-        else
-        {
-            context.Out.WriteLine("    tables      not read (run with --connect to open the ingestion tables)");
+            context.Out.WriteLine($"OK  {flow.Label} ({flow.Id:D})");
+            if (flow.Interface is not null)
+            {
+                context.Out.WriteLine($"    ledger      {flow.LedgerName}");
+                context.Out.WriteLine($"    route       {RouteChecks.Name(flow.Target.Protocol)}: {flow.RouteReason}");
+                context.Out.WriteLine(flow.After.Count == 0 ? "    after       nothing" : $"    after       {string.Join(", ", flow.After)}");
+            }
+
+            context.Out.WriteLine($"    mapping     {reference}");
+            context.Out.WriteLine($"    template    {template} (saved {captured:u})");
+            context.Out.WriteLine(cacheLine);
+            context.Out.WriteLine($"    context     {contextHash}");
+            context.Out.WriteLine($"    mappings    {mappings}");
+            context.Out.WriteLine(
+                $"    source      {flow.Source.Connection} {flow.Source.Record.Object}"
+                + (flow.Source.Datasets.Count == 0 ? string.Empty : $" (+{flow.Source.Datasets.Count} dataset(s))"));
+            context.Out.WriteLine(roots.Count == 0
+                ? "    payloads    none (the flow streams no payload files)"
+                : $"    payloads    under {string.Join(", ", roots)}");
+            if (result["read"] is JsonObject read)
+            {
+                WriteRead(context, read);
+            }
+            else
+            {
+                context.Out.WriteLine("    tables      not read (run with --connect to open the ingestion tables)");
+            }
         }
 
-        return 0;
+        return (result, Write);
     }
 
     /// <summary>

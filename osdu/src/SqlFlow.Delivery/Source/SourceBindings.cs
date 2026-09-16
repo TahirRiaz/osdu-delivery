@@ -1,4 +1,5 @@
 using SqlFlow.Core;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.Source;
@@ -30,6 +31,7 @@ public static class SourceBindings
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(header);
         ArgumentException.ThrowIfNullOrWhiteSpace(where);
+        var keys = KeyPaths.Of(flow);
 
         var record = header.Columns.TryGetValue(SourceDatasets.Record, out var columns)
             ? columns
@@ -39,12 +41,12 @@ public static class SourceBindings
 
         foreach (var (column, parameter) in flow.Source.Record.Scope)
         {
-            Require(record, column, $"{where}: source.record.scope binds column '{column}' to parameter '{parameter}', which the record table {flow.Source.Record.Object} does not hold");
+            Require(record, column, $"{where}: {keys.Name("source.record.scope")} binds column '{column}' to parameter '{parameter}', which the record table {flow.Source.Record.Object} does not hold");
         }
 
         if (flow.Source.LastModified is { } lastModified)
         {
-            Require(record, lastModified, $"{where}: source.lastModified names column '{lastModified}', which the record table {flow.Source.Record.Object} does not hold");
+            Require(record, lastModified, $"{where}: {keys.Name("source.lastModified")} names column '{lastModified}', which the record table {flow.Source.Record.Object} does not hold");
         }
 
         CheckPayload(flow, record, where);
@@ -53,13 +55,14 @@ public static class SourceBindings
         {
             if (!header.Columns.ContainsKey(name))
             {
-                throw new FlowValidationException($"{where}: source.datasets declares '{name}', which the opened source does not describe.");
+                throw new FlowValidationException($"{where}: {keys.Name("source.datasets")} declares '{name}', which the opened source does not describe.");
             }
         }
     }
 
     private static void CheckKey(FlowDefinition flow, MappingDefinition mapping, string where)
     {
+        var keys = KeyPaths.Of(flow);
         var source = flow.Source.Record.Key;
         var dataset = mapping.Dataset.Key;
         var same = source.Count == dataset.Count
@@ -67,13 +70,14 @@ public static class SourceBindings
         if (!same)
         {
             throw new FlowValidationException(
-                $"{where}: source.record.key is [{string.Join(", ", source)}] but mapping '{flow.Render.Mapping}' keys its records by [{string.Join(", ", dataset)}]. "
+                $"{where}: {keys.Name("source.record.key")} is [{string.Join(", ", source)}] but mapping '{flow.Render.Mapping}' keys its records by [{string.Join(", ", dataset)}]. "
                 + "A record's identity is one thing: the two have to name the same columns in the same order.");
         }
     }
 
     private static void CheckPayload(FlowDefinition flow, IReadOnlySet<string> record, string where)
     {
+        var keys = KeyPaths.Of(flow);
         if (PayloadName(flow) is not { } payloadName)
         {
             return;
@@ -82,7 +86,7 @@ public static class SourceBindings
         if (!flow.Source.Payloads.TryGetValue(payloadName, out var payload))
         {
             throw new FlowValidationException(
-                $"{where}: the {flow.Target.Protocol} protocol streams payload '{payloadName}', which source.payloads does not declare.");
+                $"{where}: the {flow.Target.Protocol} protocol streams payload '{payloadName}', which {keys.Name("source.payloads")} does not declare.");
         }
 
         if (payload.LocationColumn is { } location)

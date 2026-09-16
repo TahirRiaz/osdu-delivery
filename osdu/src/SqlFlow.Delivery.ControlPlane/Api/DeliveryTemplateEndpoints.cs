@@ -490,9 +490,12 @@ public static class DeliveryTemplateEndpoints
             {
                 try
                 {
-                    var flow = documents.ParseFlow(pipeline.Yaml, pipeline.RelativePath);
-                    flows.Add(new DeliveryBuilderFlowDto(
-                        pipeline.Id, pipeline.Name, flow.Render.Mapping, flow.Render.Parameters, flow.Target.Endpoint, CacheScopeOf(flow)));
+                    // A source offers one connection per interface: each pins its own mapping and render parameters.
+                    foreach (var flow in documents.ParseSource(pipeline.Yaml, pipeline.RelativePath).Interfaces)
+                    {
+                        flows.Add(new DeliveryBuilderFlowDto(
+                            pipeline.Id, flow.Label, flow.Render.Mapping, flow.Render.Parameters, flow.Target.Endpoint, CacheScopeOf(flow)));
+                    }
                 }
                 catch (FlowValidationException)
                 {

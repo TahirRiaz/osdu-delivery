@@ -30,7 +30,8 @@ public sealed class DeliveryDocumentLoader
         .WithAttemptingUnquotedStringTypeDeserialization()
         .Build();
 
-    public FlowDefinition LoadFlow(string path)
+    /// <summary>Loads a delivery flow document as a source: every interface it declares, or the one its single form is.</summary>
+    public SourceDefinition LoadSource(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         if (!File.Exists(path))
@@ -38,8 +39,14 @@ public sealed class DeliveryDocumentLoader
             throw new FlowValidationException($"Flow file not found: '{path}'.");
         }
 
-        return ParseFlow(File.ReadAllText(path), path);
+        return ParseSource(File.ReadAllText(path), path);
     }
+
+    /// <summary>Loads a delivery flow that delivers one interface: a document in the single form, or one declaring one interface.</summary>
+    public FlowDefinition LoadFlow(string path) => LoadFlow(path, null);
+
+    /// <summary>Loads one interface of a delivery flow document; a null name takes the document's only one.</summary>
+    public FlowDefinition LoadFlow(string path, string? interfaceName) => OneInterface(LoadSource(path), interfaceName, path);
 
     public RetrievalDefinition LoadRetrieval(string path)
     {
@@ -95,7 +102,8 @@ public sealed class DeliveryDocumentLoader
         throw new FlowValidationException($"{source}: the document declares no 'flowType' (delivery, retrieval, cache) and no 'documentType: mapping'.");
     }
 
-    public FlowDefinition ParseFlow(string yaml, string source = "<inline>")
+    /// <summary>Parses a delivery flow document as a source: every interface it declares, or the one its single form is.</summary>
+    public SourceDefinition ParseSource(string yaml, string source = "<inline>")
     {
         ArgumentNullException.ThrowIfNull(yaml);
         var kind = Probe(yaml, source);
@@ -106,6 +114,25 @@ public sealed class DeliveryDocumentLoader
 
         var y = Deserialize<FlowYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
         return FlowMapper.Map(y, source);
+    }
+
+    /// <summary>Parses a delivery flow that delivers one interface: a document in the single form, or one declaring one interface.</summary>
+    public FlowDefinition ParseFlow(string yaml, string source = "<inline>") => ParseFlow(yaml, source, null);
+
+    /// <summary>Parses one interface of a delivery flow document; a null name takes the document's only one.</summary>
+    public FlowDefinition ParseFlow(string yaml, string source, string? interfaceName)
+        => OneInterface(ParseSource(yaml, source), interfaceName, source);
+
+    private static FlowDefinition OneInterface(SourceDefinition parsed, string? interfaceName, string source)
+    {
+        try
+        {
+            return parsed.Interface(interfaceName);
+        }
+        catch (DeliveryException ex)
+        {
+            throw new FlowValidationException($"{source}: {ex.Message}", ex);
+        }
     }
 
     public RetrievalDefinition ParseRetrieval(string yaml, string source = "<inline>")
@@ -193,6 +220,73 @@ public sealed class DeliveryDocumentLoader
     }
 }
 
+/// <summary>
+/// How a message names a key of the document: in the single form as written (<c>source.record</c>), for an interface
+/// under the interface (<c>interfaces.wells.record</c>), and for a key the source declares for every interface and an
+/// interface may override, with the interface it applies to.
+/// </summary>
+internal sealed record KeyPaths(string? Interface)
+{
+    public static KeyPaths Single { get; } = new((string?)null);
+
+    public static KeyPaths ForInterface(string name) => new(name);
+
+    private string At => $"interfaces.{Interface}";
+
+    public string Record => Interface is null ? "source.record" : At + ".record";
+
+    public string Datasets => Interface is null ? "source.datasets" : At + ".datasets";
+
+    public string Mapping => Interface is null ? "render.mapping" : At + ".mapping";
+
+    /// <summary>A payload set: <c>source.payloads.name</c>, or the interface's <c>files</c> or <c>bulk</c>.</summary>
+    public string Payload(string name) => Interface is null ? $"source.payloads.{name}" : $"{At}.{name}";
+
+    /// <summary>A key the single form writes as <paramref name="key"/>, and the interface form at the source or the interface.</summary>
+    public string Shared(string key) => Interface is null ? key : $"{key} of interface '{Interface}'";
+
+    /// <summary>The key paths of the document a flow definition was read from.</summary>
+    public static KeyPaths Of(FlowDefinition flow)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        return flow.Interface is null ? Single : ForInterface(flow.Interface);
+    }
+
+    /// <summary>
+    /// The key a message names for what the single form writes as <paramref name="singleFormKey"/>: the record table, the
+    /// child tables, the payload sets and the mapping under the interface, and any other key with the interface it applies to.
+    /// </summary>
+    public string Name(string singleFormKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(singleFormKey);
+        if (Interface is null)
+        {
+            return singleFormKey;
+        }
+
+        foreach (var (single, own) in new[] { ("source.record", ".record"), ("source.datasets", ".datasets"), ("render.mapping", ".mapping") })
+        {
+            if (singleFormKey.Equals(single, StringComparison.Ordinal) || singleFormKey.StartsWith(single + ".", StringComparison.Ordinal))
+            {
+                return At + own + singleFormKey[single.Length..];
+            }
+        }
+
+        const string payloads = "source.payloads.";
+        return singleFormKey.StartsWith(payloads, StringComparison.Ordinal)
+            ? $"{At}.{singleFormKey[payloads.Length..]}"
+            : Shared(singleFormKey);
+    }
+
+    /// <summary>Where a message about a flow says it comes from: the file, and the interface when the flow is one.</summary>
+    public static string Where(FlowDefinition flow)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        var where = flow.SourcePath ?? flow.Name;
+        return flow.Interface is null ? where : $"{where} (interface '{flow.Interface}')";
+    }
+}
+
 internal static partial class FlowMapper
 {
     /// <summary>The tenant header every OSDU service requires on every request.</summary>
@@ -214,7 +308,46 @@ internal static partial class FlowMapper
     [System.Text.RegularExpressions.GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$")]
     private static partial System.Text.RegularExpressions.Regex DatasetName();
 
-    public static FlowDefinition Map(FlowYaml y, string source)
+    /// <summary>The names of the parts an interface's record carries, as its route reads them from the source's payload sets.</summary>
+    public const string FilesPayload = "files";
+
+    public const string BulkPayload = "bulk";
+
+    public static SourceDefinition Map(FlowYaml y, string source)
+    {
+        var name = Require(y.Name, "name", source);
+        var description = string.IsNullOrWhiteSpace(y.Description) ? null : y.Description!.Trim();
+        var batch = string.IsNullOrWhiteSpace(y.Batch) ? null : y.Batch!.Trim();
+        var path = source == "<inline>" ? null : source;
+        if (y.Interfaces is null)
+        {
+            if (y.Reliability?.ParallelInterfaces is not null)
+            {
+                throw new FlowValidationException($"{source}: reliability.parallelInterfaces says how many interfaces run at once, and the document declares no interfaces.");
+            }
+
+            var flow = MapFlow(y, source, KeyPaths.Single);
+            CheckLedgerName(flow.Name, "name", source);
+            return new SourceDefinition { SourcePath = path, Name = name, Description = description, Batch = batch, Interfaces = [flow] };
+        }
+
+        return new SourceDefinition
+        {
+            SourcePath = path,
+            Name = name,
+            Description = description,
+            Batch = batch,
+            DeclaresInterfaces = true,
+            Interfaces = MapInterfaces(y, name, source),
+            ParallelInterfaces = MapParallelInterfaces(y.Reliability, source),
+        };
+    }
+
+    /// <summary>
+    /// One flow definition out of a document shaped as the single form: the document itself, or the view of one interface
+    /// the interface form builds (<see cref="InterfaceView"/>), whose messages name the interface's keys.
+    /// </summary>
+    private static FlowDefinition MapFlow(FlowYaml y, string source, KeyPaths paths)
     {
         var name = Require(y.Name, "name", source);
         var src = y.Source ?? throw Missing("source", source);
@@ -222,10 +355,10 @@ internal static partial class FlowMapper
         var target = y.Target ?? throw Missing("target", source);
 
         var protocol = ParseEnum<DeliveryProtocol>(Require(target.Protocol, "target.protocol", source), "target.protocol", source);
-        var mapping = Require(render.Mapping, "render.mapping", source);
+        var mapping = Require(render.Mapping, paths.Mapping, source);
         if (!mapping.Contains('@', StringComparison.Ordinal))
         {
-            throw new FlowValidationException($"{source}: render.mapping '{mapping}' must be pinned as 'Name@version'; floating references are not allowed.");
+            throw new FlowValidationException($"{source}: {paths.Mapping} '{mapping}' must be pinned as 'Name@version'; floating references are not allowed.");
         }
 
         var flow = new FlowDefinition
@@ -234,11 +367,12 @@ internal static partial class FlowMapper
             Name = name,
             Description = string.IsNullOrWhiteSpace(y.Description) ? null : y.Description!.Trim(),
             Batch = string.IsNullOrWhiteSpace(y.Batch) ? null : y.Batch!.Trim(),
+            Interface = paths.Interface,
             Parameters = (y.Parameters ?? []).ToDictionary(
                 kv => kv.Key,
                 kv => new FlowParameter { Required = kv.Value?.Required ?? false, Default = kv.Value?.Default, Description = kv.Value?.Description },
                 StringComparer.Ordinal),
-            Source = MapSource(src, source),
+            Source = MapSource(src, source, paths),
             Render = new FlowRender
             {
                 Mapping = mapping,
@@ -248,9 +382,9 @@ internal static partial class FlowMapper
             },
             Change = new FlowChange
             {
-                Detect = ParseEnum(y.Change?.Detect, ChangeDetection.RenderedHash, "change.detect", source),
-                PayloadDetect = ParseEnum(y.Change?.PayloadDetect, ChangeDetection.ContentHash, "change.payloadDetect", source),
-                OnUnchanged = ParseEnum(y.Change?.OnUnchanged, UnchangedAction.Skip, "change.onUnchanged", source),
+                Detect = ParseEnum(y.Change?.Detect, ChangeDetection.RenderedHash, paths.Shared("change.detect"), source),
+                PayloadDetect = ParseEnum(y.Change?.PayloadDetect, ChangeDetection.ContentHash, paths.Shared("change.payloadDetect"), source),
+                OnUnchanged = ParseEnum(y.Change?.OnUnchanged, UnchangedAction.Skip, paths.Shared("change.onUnchanged"), source),
                 UseSourceVersions = y.Change?.UseSourceVersions ?? true,
             },
             Target = new FlowTarget
@@ -261,12 +395,440 @@ internal static partial class FlowMapper
                 Protocol = protocol,
                 ProtocolOptions = MapOptions(target.ProtocolOptions),
             },
-            Reliability = MapReliability(y.Reliability, source),
+            Reliability = MapReliability(y.Reliability, source, paths),
             Verify = new FlowVerify { Reconcile = y.Verify?.Reconcile ?? false },
+            FailWhen = MapFailWhen(y.FailWhen, source, paths),
         };
 
-        Validate(flow, source);
+        Validate(flow, source, paths);
         return flow;
+    }
+
+    /// <summary>
+    /// The interfaces of a document in the interface form, in document order: each one's view of the source mapped as a
+    /// flow, its route resolved from what it declares, its ledger identity, and what it waits for. Refuses what belongs to
+    /// an interface written at the source level, two interfaces sharing a ledger identity, and interfaces that wait for
+    /// each other.
+    /// </summary>
+    private static List<FlowDefinition> MapInterfaces(FlowYaml y, string name, string source)
+    {
+        var interfaces = y.Interfaces!;
+        var src = y.Source ?? throw Missing("source", source);
+        var target = y.Target ?? throw Missing("target", source);
+        RefuseAtSourceLevel(src, y.Render, target, source);
+        if (y.Render is { } shared)
+        {
+            // What the source declares for every interface is checked once, whatever the interfaces make of it.
+            MapCacheVersion(shared, source);
+        }
+
+        if (interfaces.Count == 0)
+        {
+            throw new FlowValidationException($"{source}: interfaces lists no interface. List each OSDU type the source delivers under it, or write the document in the single form.");
+        }
+
+        if (interfaces.Count > SourceDefinition.MaxInterfaces)
+        {
+            throw new FlowValidationException(
+                string.Create(CultureInfo.InvariantCulture, $"{source}: interfaces lists {interfaces.Count} interfaces; one document declares at most {SourceDefinition.MaxInterfaces}. Split the source into several documents."));
+        }
+
+        var flows = new List<FlowDefinition>(interfaces.Count);
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, declared) in interfaces)
+        {
+            var interfaceName = key ?? string.Empty;
+            if (!SourceDefinition.IsInterfaceName(interfaceName))
+            {
+                throw new FlowValidationException(
+                    string.Create(CultureInfo.InvariantCulture, $"{source}: interfaces names an interface '{interfaceName}'; an interface name is a letter followed by letters, digits, '_' and '-', at most {SourceDefinition.MaxInterfaceNameLength} characters."));
+            }
+
+            if (!names.Add(interfaceName))
+            {
+                throw new FlowValidationException($"{source}: interfaces declares '{interfaceName}' more than once (interface names are compared ignoring case, as the ledger identities made from them are).");
+            }
+
+            var at = $"interfaces.{interfaceName}";
+            var i = declared ?? throw new FlowValidationException($"{source}: {at} declares nothing; an interface needs at least its record and its mapping.");
+            if (i.Reliability?.ParallelInterfaces is not null)
+            {
+                throw new FlowValidationException($"{source}: {at}.reliability.parallelInterfaces is the source's setting: how many of its interfaces run at once. Set it under reliability.");
+            }
+
+            var paths = KeyPaths.ForInterface(interfaceName);
+            var route = ResolveRoute(i, at, source);
+            var flow = MapFlow(InterfaceView(y, i, route), source, paths) with
+            {
+                Description = string.IsNullOrWhiteSpace(i.Description) ? null : i.Description.Trim(),
+                AdoptedLedger = MapLedger(i.Ledger, at, source),
+                After = (i.After ?? []).Select(a => a?.Trim() ?? string.Empty).ToList(),
+                RouteReason = route.Reason,
+            };
+
+            if (flow.Target.Protocol == DeliveryProtocol.OsduWellLog && flow.Target.ProtocolOptions is { DdmsRoot: null, RecordPath: null })
+            {
+                throw new FlowValidationException(
+                    $"{source}: {at} is delivered through a DDMS, and the source's endpoint is the platform every interface reaches its services under. "
+                    + $"Say where the DDMS is under it with target.protocolOptions.ddmsRoot or {at}.protocolOptions.ddmsRoot (the wellbore DDMS is usually deployed under /api/os-wellbore-ddms).");
+            }
+
+            flows.Add(flow);
+        }
+
+        CheckAfter(flows, source);
+        CheckLedgers(flows, source);
+        return flows;
+    }
+
+    /// <summary>What belongs to an interface, written at the source level, is refused rather than applied to every interface.</summary>
+    private static void RefuseAtSourceLevel(FlowSourceYaml src, FlowRenderYaml? render, FlowTargetYaml target, string source)
+    {
+        var misplaced = new List<string>();
+        if (src.Record is not null)
+        {
+            misplaced.Add("source.record (each interface's record table is interfaces.<name>.record)");
+        }
+
+        if (src.Datasets is not null)
+        {
+            misplaced.Add("source.datasets (each interface's child tables are interfaces.<name>.datasets)");
+        }
+
+        if (src.Payloads is not null)
+        {
+            misplaced.Add($"source.payloads (an interface's files are interfaces.<name>.{FilesPayload}, its DDMS bulk data interfaces.<name>.{BulkPayload})");
+        }
+
+        if (!string.IsNullOrWhiteSpace(render?.Mapping))
+        {
+            misplaced.Add("render.mapping (each interface pins its own mapping as interfaces.<name>.mapping)");
+        }
+
+        if (!string.IsNullOrWhiteSpace(target.Protocol))
+        {
+            misplaced.Add("target.protocol (each interface's route follows from what it declares, or is named with interfaces.<name>.route)");
+        }
+
+        if (!string.IsNullOrWhiteSpace(target.ProtocolOptions?.Payload))
+        {
+            misplaced.Add("target.protocolOptions.payload (an interface's route sends its own files or bulk data)");
+        }
+
+        if (misplaced.Count > 0)
+        {
+            throw new FlowValidationException($"{source}: the document declares interfaces, so these belong to an interface rather than the source: {string.Join("; ", misplaced)}.");
+        }
+    }
+
+    /// <summary>
+    /// One interface as a document in the single form: the source's shared blocks with the interface's own settings laid
+    /// over them, its record table, child tables and payload parts as the source's, and the route it resolved to as the
+    /// target's protocol.
+    /// </summary>
+    private static FlowYaml InterfaceView(FlowYaml y, InterfaceYaml i, InterfaceRoute route)
+    {
+        var src = y.Source!;
+        var target = y.Target!;
+        var payloads = new Dictionary<string, FlowPayloadYaml>(StringComparer.Ordinal);
+        if (i.Files is not null)
+        {
+            payloads[FilesPayload] = i.Files;
+        }
+
+        if (i.Bulk is not null)
+        {
+            payloads[BulkPayload] = i.Bulk;
+        }
+
+        var options = YamlOverlay.Apply(target.ProtocolOptions, i.ProtocolOptions) ?? new ProtocolOptionsYaml();
+        options.Payload = route.Payload;
+
+        // Where a DDMS sits under the endpoint is a setting of the interfaces delivered through one; an interface delivered
+        // another way leaves the source's value alone rather than being refused for it.
+        if (route.Protocol != DeliveryProtocol.OsduWellLog)
+        {
+            options.DdmsRoot = i.ProtocolOptions?.DdmsRoot;
+        }
+
+        var render = y.Render ?? new FlowRenderYaml();
+        var parameters = new Dictionary<string, string>(render.Parameters ?? [], StringComparer.Ordinal);
+        foreach (var (key, value) in i.Render?.Parameters ?? [])
+        {
+            parameters[key] = value;
+        }
+
+        return new FlowYaml
+        {
+            FlowType = y.FlowType,
+            Name = y.Name,
+            Batch = y.Batch,
+            Parameters = y.Parameters,
+            Source = new FlowSourceYaml
+            {
+                Connection = src.Connection,
+                Record = i.Record,
+                Datasets = i.Datasets,
+                Payloads = payloads,
+                LastModified = string.IsNullOrWhiteSpace(i.LastModified) ? src.LastModified : i.LastModified,
+                SystemColumns = OverlaySystemColumns(src.SystemColumns, i.SystemColumns),
+                Incremental = YamlOverlay.Apply(src.Incremental, i.Incremental),
+                Work = src.Work,
+            },
+            Render = new FlowRenderYaml
+            {
+                Mapping = i.Mapping,
+                CacheVersion = string.IsNullOrWhiteSpace(i.Render?.CacheVersion) ? render.CacheVersion : i.Render.CacheVersion,
+                Parameters = parameters,
+                Mappings = render.Mappings,
+            },
+            Change = YamlOverlay.Apply(y.Change, i.Change),
+            Target = new FlowTargetYaml
+            {
+                Endpoint = target.Endpoint,
+                Auth = target.Auth,
+                Headers = target.Headers,
+                Protocol = route.Protocol.ToString(),
+                ProtocolOptions = options,
+            },
+            Reliability = YamlOverlay.Apply(y.Reliability, i.Reliability),
+            Verify = YamlOverlay.Apply(y.Verify, i.Verify),
+            FailWhen = YamlOverlay.Apply(y.FailWhen, i.FailWhen),
+        };
+    }
+
+    /// <summary>The system columns an interface names over the ones its source names; a column opted out of stays opted out.</summary>
+    private static FlowSystemColumnsYaml? OverlaySystemColumns(FlowSystemColumnsYaml? shared, FlowSystemColumnsYaml? over)
+    {
+        if (over is null || shared is null)
+        {
+            return over ?? shared;
+        }
+
+        var merged = new FlowSystemColumnsYaml();
+        if (over.HasUpdated || shared.HasUpdated)
+        {
+            merged.Updated = over.HasUpdated ? over.Updated : shared.Updated;
+        }
+
+        if (over.HasFileName || shared.HasFileName)
+        {
+            merged.FileName = over.HasFileName ? over.FileName : shared.FileName;
+        }
+
+        if (over.HasRowNumber || shared.HasRowNumber)
+        {
+            merged.RowNumber = over.HasRowNumber ? over.RowNumber : shared.RowNumber;
+        }
+
+        if (over.HasDeleted || shared.HasDeleted)
+        {
+            merged.Deleted = over.HasDeleted ? over.Deleted : shared.Deleted;
+        }
+
+        return merged;
+    }
+
+    /// <summary>How an interface is delivered, the payload part its route sends, and why.</summary>
+    private sealed record InterfaceRoute(DeliveryProtocol Protocol, string? Payload, string Reason);
+
+    /// <summary>
+    /// The route of an interface, from what its records carry (docs/interfaces-design.md section 5.2): nothing beside the
+    /// record goes through the storage service, files through the file service before the record, DDMS bulk data through a
+    /// DDMS after the record. <c>route:</c> names one outright, and a route that cannot deliver what the interface declares
+    /// is refused, so nothing it declares is silently left unsent.
+    /// </summary>
+    private static InterfaceRoute ResolveRoute(InterfaceYaml i, string at, string source)
+    {
+        var files = i.Files is not null;
+        var bulk = i.Bulk is not null;
+        var named = string.IsNullOrWhiteSpace(i.Route) ? null : (InterfaceRouteName?)ParseEnum<InterfaceRouteName>(i.Route!.Trim(), at + ".route", source);
+        var filesKey = $"{at}.{FilesPayload}";
+        var bulkKey = $"{at}.{BulkPayload}";
+
+        void Refuse(bool refused, string why)
+        {
+            if (refused)
+            {
+                throw new FlowValidationException($"{source}: {why}");
+            }
+        }
+
+        switch (named)
+        {
+            case InterfaceRouteName.Storage:
+                Refuse(files || bulk, $"{at}.route is storage, which writes the record alone, so {(files ? filesKey : bulkKey)} would never be sent. Remove it, or choose the route that delivers it.");
+                return new InterfaceRoute(DeliveryProtocol.OsduRecord, null, $"{at}.route names the storage route: each record is written through the storage service");
+            case InterfaceRouteName.File:
+                Refuse(!files, $"{at}.route is file, which uploads and registers each record's files, and the interface declares none under {filesKey}.");
+                Refuse(bulk, $"{at}.route is file, which does not write DDMS bulk data, so {bulkKey} would never be sent.");
+                return new InterfaceRoute(DeliveryProtocol.OsduFile, FilesPayload, $"{at}.route names the file route: each record's files are uploaded and registered through the file service before the record is written");
+            case InterfaceRouteName.Manifest:
+                Refuse(bulk, $"{at}.route is manifest, which sends records through the ingestion workflow and writes no DDMS bulk data, so {bulkKey} would never be sent.");
+                return new InterfaceRoute(
+                    DeliveryProtocol.OsduManifest,
+                    files ? FilesPayload : null,
+                    $"{at}.route names the manifest route: the records go through the ingestion workflow in manifests" + (files ? ", their files registered first" : string.Empty));
+            case InterfaceRouteName.Ddms:
+                Refuse(files, $"{at}.route is ddms, which writes the record and its bulk data through a DDMS and registers no files, so {filesKey} would never be sent. Deliver the files through an interface of their own.");
+                return new InterfaceRoute(
+                    DeliveryProtocol.OsduWellLog,
+                    bulk ? BulkPayload : null,
+                    $"{at}.route names the ddms route: each record is written through its DDMS" + (bulk ? ", then its bulk data" : string.Empty));
+        }
+
+        Refuse(files && bulk, $"{at} declares both {FilesPayload} and {BulkPayload}. A record's files and its DDMS bulk data are delivered by different routes; deliver them through two interfaces, one for each.");
+        if (files)
+        {
+            return new InterfaceRoute(DeliveryProtocol.OsduFile, FilesPayload, $"{at} declares {FilesPayload}, so each record's files are uploaded and registered through the file service before the record is written through the storage service");
+        }
+
+        if (bulk)
+        {
+            return new InterfaceRoute(DeliveryProtocol.OsduWellLog, BulkPayload, $"{at} declares {BulkPayload}, so each record is written through its DDMS and its bulk data after it");
+        }
+
+        return new InterfaceRoute(DeliveryProtocol.OsduRecord, null, $"{at} declares no {FilesPayload} and no {BulkPayload}, so each record is written through the storage service");
+    }
+
+    /// <summary>The routes an interface can name with <c>route:</c>.</summary>
+    private enum InterfaceRouteName
+    {
+        Storage,
+        File,
+        Manifest,
+        Ddms,
+    }
+
+    private static string? MapLedger(string? ledger, string at, string source)
+    {
+        if (ledger is null)
+        {
+            return null;
+        }
+
+        var name = ledger.Trim();
+        if (name.Length == 0 || name.Any(char.IsControl))
+        {
+            throw new FlowValidationException($"{source}: {at}.ledger must name the flow whose ledger the interface adopts.");
+        }
+
+        return name;
+    }
+
+    /// <summary>Every <c>after:</c> names another interface of the document, once, and the interfaces wait for no cycle.</summary>
+    private static void CheckAfter(IReadOnlyList<FlowDefinition> flows, string source)
+    {
+        var names = flows.Select(f => f.Interface!).ToList();
+        foreach (var flow in flows)
+        {
+            var at = $"interfaces.{flow.Interface}.after";
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var after in flow.After)
+            {
+                if (!names.Contains(after, StringComparer.OrdinalIgnoreCase))
+                {
+                    throw new FlowValidationException($"{source}: {at} names '{after}', which is not an interface of this document; it declares {string.Join(", ", names)}.");
+                }
+
+                if (string.Equals(after, flow.Interface, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new FlowValidationException($"{source}: {at} names the interface itself.");
+                }
+
+                if (!seen.Add(after))
+                {
+                    throw new FlowValidationException($"{source}: {at} names '{after}' more than once.");
+                }
+            }
+        }
+
+        var declared = flows.SelectMany(f => f.After.Select(a => new InterfaceDependency(f.Interface!, a, string.Empty)));
+        if (InterfaceOrder.Cycle(names, declared) is { } cycle)
+        {
+            throw new FlowValidationException($"{source}: the interfaces {string.Join(" -> ", cycle)} wait for each other through after:, so none of them could run first.");
+        }
+    }
+
+    /// <summary>Two interfaces of one document never share a ledger, and every ledger name fits where the ledger records it.</summary>
+    private static void CheckLedgers(IReadOnlyList<FlowDefinition> flows, string source)
+    {
+        foreach (var flow in flows)
+        {
+            CheckLedgerName(flow.Label, $"the interface's name '{flow.Label}'", source);
+            if (flow.AdoptedLedger is { } adopted)
+            {
+                CheckLedgerName(adopted, $"interfaces.{flow.Interface}.ledger", source);
+            }
+        }
+
+        foreach (var group in flows.GroupBy(f => f.Id))
+        {
+            var sharing = group.ToList();
+            if (sharing.Count > 1)
+            {
+                throw new FlowValidationException(
+                    $"{source}: the interfaces {string.Join(", ", sharing.Select(f => f.Interface))} would keep the same ledger ('{sharing[0].LedgerName}'); each interface keeps a ledger of its own.");
+            }
+        }
+    }
+
+    /// <summary>A name the ledger records a flow under fits the width the ledger keeps it in.</summary>
+    private static void CheckLedgerName(string name, string what, string source)
+    {
+        if (name.Length > FlowDefinition.MaxLedgerNameLength)
+        {
+            throw new FlowValidationException(
+                string.Create(CultureInfo.InvariantCulture, $"{source}: {what} is {name.Length} characters; the ledger records a flow under at most {FlowDefinition.MaxLedgerNameLength}."));
+        }
+    }
+
+    private static int MapParallelInterfaces(FlowReliabilityYaml? reliability, string source)
+    {
+        var parallel = reliability?.ParallelInterfaces ?? SourceDefinition.DefaultParallelInterfaces;
+        return parallel is < 1 or > SourceDefinition.MaxParallelInterfaces
+            ? throw new FlowValidationException(
+                string.Create(CultureInfo.InvariantCulture, $"{source}: reliability.parallelInterfaces must be between 1 and {SourceDefinition.MaxParallelInterfaces}."))
+            : parallel;
+    }
+
+    private static FlowFailWhen MapFailWhen(FailWhenYaml? declared, string source, KeyPaths paths)
+    {
+        var defaults = new FlowFailWhen();
+        if (declared is null)
+        {
+            return defaults;
+        }
+
+        var failWhen = new FlowFailWhen
+        {
+            FailedPercent = declared.FailedPercent,
+            MinRecords = declared.MinRecords ?? defaults.MinRecords,
+            ConsecutiveFailures = declared.ConsecutiveFailures,
+            OutageFailures = declared.OutageFailures ?? defaults.OutageFailures,
+        };
+
+        if (failWhen.FailedPercent is { } percent && (double.IsNaN(percent) || percent <= 0 || percent > 100))
+        {
+            throw new FlowValidationException($"{source}: {paths.Shared("failWhen.failedPercent")} must be above 0 and at most 100.");
+        }
+
+        if (failWhen.MinRecords < 1)
+        {
+            throw new FlowValidationException($"{source}: {paths.Shared("failWhen.minRecords")} must be at least 1.");
+        }
+
+        if (failWhen.ConsecutiveFailures is < 1)
+        {
+            throw new FlowValidationException($"{source}: {paths.Shared("failWhen.consecutiveFailures")} must be at least 1.");
+        }
+
+        if (failWhen.OutageFailures < 0)
+        {
+            throw new FlowValidationException($"{source}: {paths.Shared("failWhen.outageFailures")} must not be negative (0 turns the outage rule off).");
+        }
+
+        return failWhen;
     }
 
     /// <summary>
@@ -285,13 +847,13 @@ internal static partial class FlowMapper
         return string.IsNullOrWhiteSpace(render.CacheVersion) ? FlowRender.CurrentCacheVersion : render.CacheVersion!.Trim();
     }
 
-    private static FlowSource MapSource(FlowSourceYaml src, string source)
+    private static FlowSource MapSource(FlowSourceYaml src, string source, KeyPaths paths)
     {
-        var record = src.Record ?? throw Missing("source.record", source);
+        var record = src.Record ?? throw Missing(paths.Record, source);
         var datasets = new Dictionary<string, FlowSourceDataset>(StringComparer.Ordinal);
         foreach (var (name, dataset) in src.Datasets ?? [])
         {
-            var at = $"source.datasets.{name}";
+            var at = $"{paths.Datasets}.{name}";
             var declared = dataset ?? throw Missing(at + ".object", source);
             datasets[name.Trim()] = new FlowSourceDataset
             {
@@ -305,7 +867,7 @@ internal static partial class FlowMapper
         var payloads = new Dictionary<string, FlowPayload>(StringComparer.Ordinal);
         foreach (var (name, payload) in src.Payloads ?? [])
         {
-            var at = $"source.payloads.{name}";
+            var at = paths.Payload(name);
             var declared = payload ?? throw Missing(at + ".root", source);
             payloads[name.Trim()] = new FlowPayload
             {
@@ -322,7 +884,7 @@ internal static partial class FlowMapper
             Connection = Require(src.Connection, "source.connection", source),
             Record = new FlowSourceTable
             {
-                Object = Require(record.Object, "source.record.object", source),
+                Object = Require(record.Object, $"{paths.Record}.object", source),
                 Key = (record.Key ?? []).Select(k => k?.Trim() ?? string.Empty).ToList(),
                 PrimaryKey = Optional(record.PrimaryKey),
                 Scope = Trimmed(record.Scope),
@@ -330,12 +892,12 @@ internal static partial class FlowMapper
             Datasets = datasets,
             Payloads = payloads,
             LastModified = Optional(src.LastModified),
-            SystemColumns = MapSystemColumns(src.SystemColumns, source),
+            SystemColumns = MapSystemColumns(src.SystemColumns, source, paths),
             Incremental = new FlowIncremental
             {
                 OverlapSeconds = src.Incremental?.OverlapSeconds ?? FlowIncremental.DefaultOverlapSeconds,
                 PageSize = src.Incremental?.PageSize ?? FlowIncremental.DefaultPageSize,
-                Isolation = ParseEnum(src.Incremental?.Isolation, SourceIsolation.Snapshot, "source.incremental.isolation", source),
+                Isolation = ParseEnum(src.Incremental?.Isolation, SourceIsolation.Snapshot, paths.Shared("source.incremental.isolation"), source),
                 CommandTimeoutSeconds = src.Incremental?.CommandTimeoutSeconds ?? 0,
             },
             Work = Require(src.Work, "source.work", source),
@@ -343,7 +905,7 @@ internal static partial class FlowMapper
     }
 
     /// <summary>System columns: a column the flow names, one it opts out of with <c>~</c>, and the default for one it leaves out.</summary>
-    private static FlowSystemColumns MapSystemColumns(FlowSystemColumnsYaml? declared, string source)
+    private static FlowSystemColumns MapSystemColumns(FlowSystemColumnsYaml? declared, string source, KeyPaths paths)
     {
         var defaults = new FlowSystemColumns();
         if (declared is null)
@@ -354,7 +916,7 @@ internal static partial class FlowMapper
         if (declared.HasUpdated && string.IsNullOrWhiteSpace(declared.Updated))
         {
             throw new FlowValidationException(
-                $"{source}: source.systemColumns.updated cannot be opted out of: it is the column an incremental read windows on and a record's fingerprint is built from.");
+                $"{source}: {paths.Shared("source.systemColumns.updated")} cannot be opted out of: it is the column an incremental read windows on and a record's fingerprint is built from.");
         }
 
         return new FlowSystemColumns
@@ -371,48 +933,48 @@ internal static partial class FlowMapper
     /// What a flow's source must be for a run to read it (docs/stage4-design.md section 1.1). Every rule names the key it is
     /// about; the bindings to the tables' actual columns are checked when a run opens the source.
     /// </summary>
-    private static void ValidateSource(FlowDefinition flow, string source)
+    private static void ValidateSource(FlowDefinition flow, string source, KeyPaths paths)
     {
         var src = flow.Source;
         IngestionConnection.CheckDeclared(src.Connection, source);
-        CheckObject(src.Record.Object, "source.record.object", source);
+        CheckObject(src.Record.Object, $"{paths.Record}.object", source);
 
         if (src.Record.Key.Count == 0)
         {
-            throw new FlowValidationException($"{source}: source.record.key must name the record table's key columns (the ingestion flow's load.keyColumns).");
+            throw new FlowValidationException($"{source}: {paths.Record}.key must name the record table's key columns (the ingestion flow's load.keyColumns).");
         }
 
         var key = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var column in src.Record.Key)
         {
-            CheckColumn(column, "source.record.key", source);
+            CheckColumn(column, $"{paths.Record}.key", source);
             if (!key.Add(column))
             {
-                throw new FlowValidationException($"{source}: source.record.key names column '{column}' more than once.");
+                throw new FlowValidationException($"{source}: {paths.Record}.key names column '{column}' more than once.");
             }
         }
 
         if (src.Record.PrimaryKey is { } primaryKey)
         {
-            CheckColumn(primaryKey, "source.record.primaryKey", source);
+            CheckColumn(primaryKey, $"{paths.Record}.primaryKey", source);
         }
 
         foreach (var (column, parameter) in src.Record.Scope)
         {
-            CheckColumn(column, "source.record.scope", source);
+            CheckColumn(column, $"{paths.Record}.scope", source);
             if (!flow.Parameters.ContainsKey(parameter))
             {
-                throw new FlowValidationException($"{source}: source.record.scope binds column '{column}' to parameter '{parameter}', which is not declared under parameters.");
+                throw new FlowValidationException($"{source}: {paths.Record}.scope binds column '{column}' to parameter '{parameter}', which is not declared under parameters.");
             }
         }
 
         foreach (var (name, dataset) in src.Datasets)
         {
-            var at = $"source.datasets.{name}";
+            var at = $"{paths.Datasets}.{name}";
             if (!DatasetName().IsMatch(name) || name.Length > MaxColumnLength || name.Equals(SourceDatasets.Record, StringComparison.OrdinalIgnoreCase))
             {
                 throw new FlowValidationException(
-                    $"{source}: source.datasets names a dataset '{name}'; a child dataset is letters, digits and '_', and '{SourceDatasets.Record}' names the record table itself.");
+                    $"{source}: {paths.Datasets} names a dataset '{name}'; a child dataset is letters, digits and '_', and '{SourceDatasets.Record}' names the record table itself.");
             }
 
             CheckObject(dataset.Object, at + ".object", source);
@@ -427,7 +989,7 @@ internal static partial class FlowMapper
                 if (!key.Contains(recordColumn))
                 {
                     throw new FlowValidationException(
-                        $"{source}: {at}.join joins child column '{child}' to record column '{recordColumn}', which is not a key column of source.record.key.");
+                        $"{source}: {at}.join joins child column '{child}' to record column '{recordColumn}', which is not a key column of {paths.Record}.key.");
                 }
             }
 
@@ -454,7 +1016,7 @@ internal static partial class FlowMapper
 
         foreach (var (name, payload) in src.Payloads)
         {
-            var at = $"source.payloads.{name}";
+            var at = paths.Payload(name);
             CheckTokens(flow, payload.Root, at + ".root", source);
             foreach (var column in new[] { payload.LocationColumn, payload.HashColumn, payload.ChunkCountColumn }.OfType<string>())
             {
@@ -488,42 +1050,42 @@ internal static partial class FlowMapper
                 if (payload.LocationColumn is null)
                 {
                     throw new FlowValidationException(
-                        $"{source}: the {flow.Target.Protocol} protocol streams payload '{payloadName}', so source.payloads.{payloadName}.locationColumn must name the record column holding each record's payload folder.");
+                        $"{source}: the {flow.Target.Protocol} protocol streams payload '{payloadName}', so {paths.Payload(payloadName)}.locationColumn must name the record column holding each record's payload folder.");
                 }
 
                 if (payload.HashColumn is null && flow.Change.PayloadDetect != ChangeDetection.LastModified)
                 {
                     throw new FlowValidationException(
-                        $"{source}: the flow decides payload changes by content hash, so source.payloads.{payloadName}.hashColumn must name the record column holding it; or take the files' modified times instead with change.payloadDetect: lastModified.");
+                        $"{source}: the flow decides payload changes by content hash, so {paths.Payload(payloadName)}.hashColumn must name the record column holding it; or take the files' modified times instead with {paths.Shared("change.payloadDetect")}: lastModified.");
                 }
             }
         }
 
         if (src.LastModified is { } lastModified)
         {
-            CheckColumn(lastModified, "source.lastModified", source);
+            CheckColumn(lastModified, paths.Shared("source.lastModified"), source);
         }
 
         foreach (var column in new[] { src.SystemColumns.Updated, src.SystemColumns.FileName, src.SystemColumns.RowNumber, src.SystemColumns.Deleted }.OfType<string>())
         {
-            CheckColumn(column, "source.systemColumns", source);
+            CheckColumn(column, paths.Shared("source.systemColumns"), source);
         }
 
         if (src.Incremental.OverlapSeconds is < 0 or > FlowIncremental.MaxOverlapSeconds)
         {
             throw new FlowValidationException(
-                string.Create(CultureInfo.InvariantCulture, $"{source}: source.incremental.overlapSeconds must be between 0 and {FlowIncremental.MaxOverlapSeconds}."));
+                string.Create(CultureInfo.InvariantCulture, $"{source}: {paths.Shared("source.incremental.overlapSeconds")} must be between 0 and {FlowIncremental.MaxOverlapSeconds}."));
         }
 
         if (src.Incremental.PageSize is < 1 or > FlowIncremental.MaxPageSize)
         {
             throw new FlowValidationException(
-                string.Create(CultureInfo.InvariantCulture, $"{source}: source.incremental.pageSize must be between 1 and {FlowIncremental.MaxPageSize}."));
+                string.Create(CultureInfo.InvariantCulture, $"{source}: {paths.Shared("source.incremental.pageSize")} must be between 1 and {FlowIncremental.MaxPageSize}."));
         }
 
         if (src.Incremental.CommandTimeoutSeconds < 0)
         {
-            throw new FlowValidationException($"{source}: source.incremental.commandTimeoutSeconds must not be negative (0 lets a read run as long as the run does).");
+            throw new FlowValidationException($"{source}: {paths.Shared("source.incremental.commandTimeoutSeconds")} must not be negative (0 lets a read run as long as the run does).");
         }
 
         CheckTokens(flow, src.Work, "source.work", source);
@@ -558,57 +1120,57 @@ internal static partial class FlowMapper
         }
     }
 
-    private static void Validate(FlowDefinition flow, string source)
+    private static void Validate(FlowDefinition flow, string source, KeyPaths paths)
     {
-        ValidateSource(flow, source);
+        ValidateSource(flow, source, paths);
 
         if (flow.Change.Detect == ChangeDetection.LastModified)
         {
             throw new FlowValidationException(
-                $"{source}: change.detect cannot be lastModified. A document is always decided by the hash of what it renders to; the source row's business version column is source.lastModified.");
+                $"{source}: {paths.Shared("change.detect")} cannot be lastModified. A document is always decided by the hash of what it renders to; the source row's business version column is source.lastModified.");
         }
 
         if (flow.Change.PayloadDetect == ChangeDetection.LastModified && !DeliveryProtocols.CarriesPayload(flow.Target.Protocol))
         {
             throw new FlowValidationException(
-                $"{source}: change.payloadDetect is lastModified, but the {flow.Target.Protocol} protocol delivers no payload files to take the watermark from.");
+                $"{source}: {paths.Shared("change.payloadDetect")} is lastModified, but the {flow.Target.Protocol} protocol delivers no payload files to take the watermark from.");
         }
 
         if (flow.Reliability.Concurrency < 1)
         {
-            throw new FlowValidationException($"{source}: reliability.concurrency must be at least 1.");
+            throw new FlowValidationException($"{source}: {paths.Shared("reliability.concurrency")} must be at least 1.");
         }
 
         if (flow.Reliability.Retry.Attempts < 1)
         {
-            throw new FlowValidationException($"{source}: reliability.retry.attempts must be at least 1.");
+            throw new FlowValidationException($"{source}: {paths.Shared("reliability.retry.attempts")} must be at least 1.");
         }
 
         if (flow.Reliability.BatchRecords is < 1 or > 100_000)
         {
-            throw new FlowValidationException($"{source}: reliability.batchRecords must be between 1 and 100000.");
+            throw new FlowValidationException($"{source}: {paths.Shared("reliability.batchRecords")} must be between 1 and 100000.");
         }
 
         if (flow.Reliability.FanOut is < 0 or > FlowReliability.MaxFanOut)
         {
-            throw new FlowValidationException($"{source}: reliability.fanOut must be between 0 and {FlowReliability.MaxFanOut}.");
+            throw new FlowValidationException($"{source}: {paths.Shared("reliability.fanOut")} must be between 0 and {FlowReliability.MaxFanOut}.");
         }
 
         if (flow.Reliability.FanOutMinRecords < 1)
         {
-            throw new FlowValidationException($"{source}: reliability.fanOutMinRecords must be at least 1.");
+            throw new FlowValidationException($"{source}: {paths.Shared("reliability.fanOutMinRecords")} must be at least 1.");
         }
 
         if (flow.Reliability.FanOut > 0 && flow.Source.Record.PrimaryKey is null)
         {
             throw new FlowValidationException(
-                $"{source}: reliability.fanOut spreads a submission over ranges of the record table's identity primary key, and source.record.primaryKey names none. "
-                + "Name the column (the ingestion flow creates it with target.identityColumn, for example RecId), or set reliability.fanOut to 0.");
+                $"{source}: {paths.Shared("reliability.fanOut")} spreads a submission over ranges of the record table's identity primary key, and {paths.Record}.primaryKey names none. "
+                + $"Name the column (the ingestion flow creates it with target.identityColumn, for example RecId), or set {paths.Shared("reliability.fanOut")} to 0.");
         }
 
         if (flow.Reliability.RenderParallelism is < 0 or > 256)
         {
-            throw new FlowValidationException($"{source}: reliability.renderParallelism must be between 0 and 256.");
+            throw new FlowValidationException($"{source}: {paths.Shared("reliability.renderParallelism")} must be between 0 and 256.");
         }
 
         // Every OSDU service makes data-partition-id a required header (openapi storage v2, file v2, search v2,
@@ -628,7 +1190,7 @@ internal static partial class FlowMapper
 
         if (flow.Target.ProtocolOptions.BatchSize is < 1 or > ProtocolOptions.MaxBatchSize)
         {
-            throw new FlowValidationException($"{source}: target.protocolOptions.batchSize must be between 1 and {ProtocolOptions.MaxBatchSize}.");
+            throw new FlowValidationException($"{source}: {paths.Shared("target.protocolOptions.batchSize")} must be between 1 and {ProtocolOptions.MaxBatchSize}.");
         }
 
         if (flow.Target.ProtocolOptions.DdmsRoot is { } ddmsRoot)
@@ -636,13 +1198,13 @@ internal static partial class FlowMapper
             if (flow.Target.Protocol != DeliveryProtocol.OsduWellLog)
             {
                 throw new FlowValidationException(
-                    $"{source}: target.protocolOptions.ddmsRoot only applies to the osduWellLog protocol; {flow.Target.Protocol} reaches its services under the endpoint already.");
+                    $"{source}: {paths.Shared("target.protocolOptions.ddmsRoot")} only applies to the osduWellLog protocol; {flow.Target.Protocol} reaches its services under the endpoint already.");
             }
 
             if (ddmsRoot.Length == 0 || ddmsRoot[0] != '/' || ddmsRoot.Contains("://", StringComparison.Ordinal) || ddmsRoot.Any(char.IsWhiteSpace))
             {
                 throw new FlowValidationException(
-                    $"{source}: target.protocolOptions.ddmsRoot '{ddmsRoot}' must be a path under the endpoint starting with '/', such as /api/os-wellbore-ddms.");
+                    $"{source}: {paths.Shared("target.protocolOptions.ddmsRoot")} '{ddmsRoot}' must be a path under the endpoint starting with '/', such as /api/os-wellbore-ddms.");
             }
         }
 
@@ -651,7 +1213,7 @@ internal static partial class FlowMapper
             && !(Uri.TryCreate(legalPath, UriKind.Absolute, out var legalUrl) && legalUrl.Scheme is "http" or "https"))
         {
             throw new FlowValidationException(
-                $"{source}: target.protocolOptions.legalValidatePath '{legalPath}' must be a path under the endpoint starting with '/', or an absolute http(s) URL.");
+                $"{source}: {paths.Shared("target.protocolOptions.legalValidatePath")} '{legalPath}' must be a path under the endpoint starting with '/', or an absolute http(s) URL.");
         }
 
         // The bulk endpoint replaces the whole bulk, so at most one chunk can go to it; more than one is a session.
@@ -659,28 +1221,28 @@ internal static partial class FlowMapper
         if (flow.Target.ProtocolOptions.SessionThresholdChunks is < 0 or > 1)
         {
             throw new FlowValidationException(
-                $"{source}: target.protocolOptions.sessionThresholdChunks must be 1 (a single chunk goes straight to the bulk endpoint, more open a session) or 0 (always open a session). "
+                $"{source}: {paths.Shared("target.protocolOptions.sessionThresholdChunks")} must be 1 (a single chunk goes straight to the bulk endpoint, more open a session) or 0 (always open a session). "
                 + "The bulk endpoint replaces the whole bulk on every write, so several chunks sent to it would overwrite each other.");
         }
 
         if (flow.Target.ProtocolOptions.MaxChunkValues < 0 || flow.Target.ProtocolOptions.MaxChunkColumns < 0)
         {
-            throw new FlowValidationException($"{source}: target.protocolOptions.maxChunkValues and maxChunkColumns must not be negative (0 does not check the chunk shape).");
+            throw new FlowValidationException($"{source}: {paths.Shared("target.protocolOptions.maxChunkValues")} and maxChunkColumns must not be negative (0 does not check the chunk shape).");
         }
 
         if (flow.Target.ProtocolOptions.WorkflowPollSeconds < 1 || flow.Target.ProtocolOptions.WorkflowTimeoutMinutes < 1)
         {
-            throw new FlowValidationException($"{source}: target.protocolOptions.workflowPollSeconds and workflowTimeoutMinutes must be at least 1.");
+            throw new FlowValidationException($"{source}: {paths.Shared("target.protocolOptions.workflowPollSeconds")} and workflowTimeoutMinutes must be at least 1.");
         }
 
         if (flow.Target.ProtocolOptions.DatasetIndexWaitSeconds < 0)
         {
-            throw new FlowValidationException($"{source}: target.protocolOptions.datasetIndexWaitSeconds must not be negative (0 does not wait).");
+            throw new FlowValidationException($"{source}: {paths.Shared("target.protocolOptions.datasetIndexWaitSeconds")} must not be negative (0 does not wait).");
         }
 
         if (flow.Target.ProtocolOptions.UploadUrlExpiry is { } expiry && !ValidExpiry(expiry))
         {
-            throw new FlowValidationException($"{source}: target.protocolOptions.uploadUrlExpiry '{expiry}' must be a whole number of minutes, hours or days, such as 30M, 12H or 2D.");
+            throw new FlowValidationException($"{source}: {paths.Shared("target.protocolOptions.uploadUrlExpiry")} '{expiry}' must be a whole number of minutes, hours or days, such as 30M, 12H or 2D.");
         }
 
         // Both are written onto records the target stores (a dataset record per file, the manifest the workflow
@@ -690,18 +1252,18 @@ internal static partial class FlowMapper
         {
             if (!IsRecordKind(value))
             {
-                throw new FlowValidationException($"{source}: target.protocolOptions.{key} '{value}' must be 'authority:source:entityType:major.minor.patch'.");
+                throw new FlowValidationException($"{source}: {paths.Shared("target.protocolOptions." + key)} '{value}' must be 'authority:source:entityType:major.minor.patch'.");
             }
         }
 
         if (flow.Target.ProtocolOptions.ManifestSection is { } section && !ProtocolOptions.ManifestSections.Contains(section, StringComparer.Ordinal))
         {
-            throw new FlowValidationException($"{source}: target.protocolOptions.manifestSection '{section}' is not one of {string.Join(", ", ProtocolOptions.ManifestSections)}.");
+            throw new FlowValidationException($"{source}: {paths.Shared("target.protocolOptions.manifestSection")} '{section}' is not one of {string.Join(", ", ProtocolOptions.ManifestSections)}.");
         }
 
         if (string.IsNullOrWhiteSpace(flow.Target.ProtocolOptions.WorkflowAppKey))
         {
-            throw new FlowValidationException($"{source}: target.protocolOptions.workflowAppKey must not be empty.");
+            throw new FlowValidationException($"{source}: {paths.Shared("target.protocolOptions.workflowAppKey")} must not be empty.");
         }
 
         if (flow.Target.Auth.Type == TargetAuthType.OAuth2ClientCredentials && flow.Target.Auth.Token is null)
@@ -802,7 +1364,18 @@ internal static partial class FlowMapper
         };
     }
 
+    /// <summary>The reliability block of a retrieval or cache flow, which runs no interfaces.</summary>
     internal static FlowReliability MapReliability(FlowReliabilityYaml? r, string source)
+    {
+        if (r?.ParallelInterfaces is not null)
+        {
+            throw new FlowValidationException($"{source}: reliability.parallelInterfaces says how many interfaces of a delivery flow run at once; this flow declares none.");
+        }
+
+        return MapReliability(r, source, KeyPaths.Single);
+    }
+
+    private static FlowReliability MapReliability(FlowReliabilityYaml? r, string source, KeyPaths paths)
     {
         var defaults = new FlowReliability();
         if (r is null)
@@ -817,7 +1390,7 @@ internal static partial class FlowMapper
             Retry = r.Retry is null ? retryDefaults : new FlowRetry
             {
                 Attempts = r.Retry.Attempts ?? retryDefaults.Attempts,
-                Backoff = ParseEnum(r.Retry.Backoff, BackoffKind.Exponential, "reliability.retry.backoff", source),
+                Backoff = ParseEnum(r.Retry.Backoff, BackoffKind.Exponential, paths.Shared("reliability.retry.backoff"), source),
                 BaseDelayMs = r.Retry.BaseDelayMs ?? retryDefaults.BaseDelayMs,
                 MaxDelayMs = r.Retry.MaxDelayMs ?? retryDefaults.MaxDelayMs,
                 HonorRetryAfter = r.Retry.HonorRetryAfter ?? retryDefaults.HonorRetryAfter,

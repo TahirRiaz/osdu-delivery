@@ -68,6 +68,10 @@ the GUI builds and lints clean, the documentation describes what shipped, and th
 Done when every service in section 2 has a pinned contract and a brief, and the harness validates the existing four
 protocols' requests against the core specifications.
 
+Status: the harness is built, the core specifications are copied into `osdu/specs/core` with their provenance, and
+every request the four protocols send is checked against them. The per-service integration briefs and the pinned copy
+of the Reservoir Management DDMS's generated contract remain.
+
 ### Stage 2: source documents and interfaces
 
 - The document model: `interfaces`, the shared defaults and per-interface overrides, `ledger:` adoption, the single
@@ -81,6 +85,12 @@ protocols' requests against the core specifications.
 Done when every existing flow loads unchanged with the same ledger identity, a source file with several interfaces
 loads with the right identities and routes, and every refusal is covered by a test.
 
+Status: done. The route is resolved from what an interface declares (`files`, `bulk`, `route:`), and the run's
+preflight checks it against the kind the mapping renders. Choosing a route from the template's relationships and the
+DDMS registry belongs to stages 4 and 5; an interface declaring both `files` and `bulk`, and `manifest` with `bulk`,
+are refused until stage 6 builds the composed routes. The read model is `osdu.Interface` (module version 1.6.0), and
+every lookup of a pipeline by ledger identity goes through it.
+
 ### Stage 3: the source runtime
 
 - A run of a source: interface selection (`interfaces` run parameter, a member's interface, a record's interface),
@@ -93,6 +103,11 @@ loads with the right identities and routes, and every refusal is covered by a te
 
 Done when a source with several interfaces runs end to end on SQL Server, a failing interface stops its dependents
 and not the others, a re-run does only what was left, and a single-interface run's outcome is unchanged.
+
+Status: done. Interfaces are selected by the run payload (`interfaces`, and `interface` for one), and a stopped run
+closes its submission as failed, so the next run sends what it left. The SQL Server chain suite runs a source of
+wellbores and the well logs waiting for them through the document executor, each interface fanned out over member runs
+under its own ledger.
 
 ### Stage 4: order from the schemas
 

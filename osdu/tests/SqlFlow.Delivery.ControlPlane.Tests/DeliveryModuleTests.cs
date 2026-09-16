@@ -198,12 +198,13 @@ public sealed class DeliveryModuleTests
         var flowName = "recall-wellbore";
         var flowId = FlowId.Of(flowName);
         var pipelineId = Guid.NewGuid();
+        var repoId = Guid.NewGuid();
         await using (var db = catalog.CreateDbContext())
         {
             db.Pipelines.Add(new CatalogPipeline
             {
                 Id = pipelineId,
-                RepoId = Guid.NewGuid(),
+                RepoId = repoId,
                 Name = flowName,
                 Kind = FlowDefinition.FlowTypeName,
                 RelativePath = "flows/recall-wellbore.yaml",
@@ -216,6 +217,26 @@ public sealed class DeliveryModuleTests
                 LastSeenUtc = DateTime.UtcNow,
             });
             await db.SaveChangesAsync();
+        }
+
+        // The read model of sources and interfaces is what leads a ledger identity to its pipeline.
+        await using (var osdu = sqlite.CreateDbContext())
+        {
+            osdu.DeliveryInterfaces.Add(new DeliveryInterface
+            {
+                Id = Guid.NewGuid(),
+                RepoId = repoId,
+                FlowName = flowName,
+                LedgerFlowId = flowId,
+                LedgerName = flowName,
+                Route = "storage",
+                MappingReference = SampleEstate.WellboreMapping + "@1.0.0",
+                RecordObject = "[Recall].[ing].[Wellbore]",
+                RelativePath = "flows/recall-wellbore.yaml",
+                FirstSeenUtc = DateTime.UtcNow,
+                LastSeenUtc = DateTime.UtcNow,
+            });
+            await osdu.SaveChangesAsync();
         }
 
         var key = new DeliveryKey(Guid.NewGuid());
@@ -236,7 +257,8 @@ public sealed class DeliveryModuleTests
         ]);
 
         await using var context = catalog.CreateDbContext();
-        var contributor = new RecordSearchContributor(ledger, context);
+        await using var module = sqlite.CreateDbContext();
+        var contributor = new RecordSearchContributor(ledger, context, module);
         var contribution = await contributor.SearchAsync(
             new SearchContributionRequest("OSDU-DEV-1", ["OSDU-DEV-1"], 1, 5, new ClaimsPrincipal()), CancellationToken.None);
 

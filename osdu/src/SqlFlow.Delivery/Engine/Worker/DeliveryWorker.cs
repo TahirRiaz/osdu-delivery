@@ -70,6 +70,13 @@ public sealed class DeliveryWorker
     /// </summary>
     public TimeSpan? MaxWait { get; init; } = DefaultMaxWait;
 
+    /// <summary>
+    /// What judges the outcomes of this worker's records for the interface as a whole (docs/interfaces-design.md section
+    /// 8.2), or null when nothing does. The worker reports every settled or retried record to it; stopping the work when it
+    /// trips is up to whoever cancels the token the worker was handed.
+    /// </summary>
+    public FailureGuard? Guard { get; init; }
+
     /// <summary>How often a lease is renewed and checkpointed while the worker delivers: half the lease unless set (tests shorten it).</summary>
     internal TimeSpan? KeepInterval { get; init; }
 
@@ -244,7 +251,8 @@ public sealed class DeliveryWorker
         {
             AtUtc = completed,
             FlowId = _flow.Id,
-            FlowName = _flow.Name,
+            FlowName = _flow.Label,
+            Interface = _flow.Interface,
             Kind = "batch.completed",
             SubmissionId = batch.SubmissionId,
             Worker = _workerId,
@@ -372,7 +380,8 @@ public sealed class DeliveryWorker
         {
             AtUtc = now,
             FlowId = _flow.Id,
-            FlowName = _flow.Name,
+            FlowName = _flow.Label,
+            Interface = _flow.Interface,
             Kind = "batch.progress",
             SubmissionId = batch?.SubmissionId ?? lease.SubmissionId,
             Worker = _workerId,
@@ -414,11 +423,12 @@ public sealed class DeliveryWorker
         var results = new WorkerSummary[loaded.Count];
         var failuresLogged = 0;
 
-        async Task RecordAsync(int index, RecordCompletion completion, DeliveryEvent evt, WorkerSummary summary)
+        async Task RecordAsync(int index, RecordCompletion completion, DeliveryEvent evt, WorkerSummary summary, Exception? failure)
         {
             // Written whatever happens to the run meanwhile: the try happened, and the ledger says so.
             await journal.OutcomeAsync(completion, evt).ConfigureAwait(false);
             results[index] = summary;
+            Observe(completion.Status, evt.Detail, failure);
             if (summary.Held > 0 || summary.Failed > 0 || summary.Retried > 0)
             {
                 if (Interlocked.Increment(ref failuresLogged) <= FailuresLoggedPerBatch)
@@ -432,19 +442,33 @@ public sealed class DeliveryWorker
         using var gate = new SemaphoreSlim(Math.Max(1, _flow.Reliability.Concurrency));
         var tasks = groups.Select(async group =>
         {
-            try
-            {
-                await gate.WaitAsync(ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            void NeverStarted()
             {
                 // Claimed but never started: closing the lease hands them back.
                 foreach (var (index, _, _) in group)
                 {
                     results[index] = WorkerSummary.Empty;
                 }
+            }
 
+            try
+            {
+                await gate.WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                NeverStarted();
                 throw;
+            }
+
+            // A slot the delivery before gave up can be handed to this group just as that delivery stops the work (a failure
+            // guard tripping, the run being cancelled): the semaphore then reports the slot taken although the stop came
+            // first. The stop wins, so nothing is sent after it.
+            if (ct.IsCancellationRequested)
+            {
+                gate.Release();
+                NeverStarted();
+                ct.ThrowIfCancellationRequested();
             }
 
             try
@@ -501,7 +525,7 @@ public sealed class DeliveryWorker
         List<(int Index, RecordState Record, WorkItem? Item)> group,
         WorkBatchState? batch,
         LeaseJournal journal,
-        Func<int, RecordCompletion, DeliveryEvent, WorkerSummary, Task> record,
+        Func<int, RecordCompletion, DeliveryEvent, WorkerSummary, Exception?, Task> record,
         CancellationToken ct)
     {
         var started = _time.GetUtcNow().UtcDateTime;
@@ -515,7 +539,7 @@ public sealed class DeliveryWorker
                 var (completion, evt, summary) = Settle(
                     state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null,
                     "no pending document on the record; release or redeliver it to plan it again", null, null);
-                await record(index, completion, evt, summary).ConfigureAwait(false);
+                await record(index, completion, evt, summary, null).ConfigureAwait(false);
                 continue;
             }
 
@@ -527,7 +551,7 @@ public sealed class DeliveryWorker
                     state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null,
                     $"the record's OSDU id {state.TargetId} is not claimed by this flow (claimed: {state.ClaimedTargetId ?? "none"}), so nothing was sent; redeliver it to plan it again",
                     null, null);
-                await record(index, completion, evt, summary).ConfigureAwait(false);
+                await record(index, completion, evt, summary, null).ConfigureAwait(false);
                 continue;
             }
 
@@ -539,7 +563,7 @@ public sealed class DeliveryWorker
                 var held = $"the final hash check found OSDU already holding this version (metadata hash {state.PendingMetadataHash ?? "none"}"
                     + (state.PendingPayload ? $", payload hash {state.PendingPayloadHash ?? "none"}" : string.Empty) + "); nothing was sent";
                 var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Delivered, AttemptOutcome.Skipped, AttemptPhases.Unchanged, null, held, null, null, null, promote: true, nothingSent: true);
-                await record(index, completion, evt, summary).ConfigureAwait(false);
+                await record(index, completion, evt, summary, null).ConfigureAwait(false);
                 continue;
             }
 
@@ -551,7 +575,7 @@ public sealed class DeliveryWorker
             catch (JsonException ex)
             {
                 var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, $"the pending document is not valid JSON: {ex.Message}", null, null);
-                await record(index, completion, evt, summary).ConfigureAwait(false);
+                await record(index, completion, evt, summary, null).ConfigureAwait(false);
                 continue;
             }
 
@@ -605,7 +629,29 @@ public sealed class DeliveryWorker
             var (index, state, work) = works[i];
             var latestSteps = reportedSteps.TryGetValue(state.DeliveryKey.Value, out var reported) ? reported : state.PendingStepJson;
             var (completion, evt, summary) = Classify(state, batch, started, work, outcomes[i], latestSteps, correlation.Id);
-            await record(index, completion, evt, summary).ConfigureAwait(false);
+            await record(index, completion, evt, summary, outcomes[i].Failure).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Reports a record's outcome to the guard: a delivery ends every run of failures, a failure counts in its class.</summary>
+    private void Observe(RecordStatus status, string? detail, Exception? failure)
+    {
+        if (Guard is not { } guard)
+        {
+            return;
+        }
+
+        switch (status)
+        {
+            case RecordStatus.Delivered:
+                guard.Succeeded();
+                break;
+            case RecordStatus.Pending:
+                guard.Failed(FailureGuard.Classify(failure), settled: false, detail);
+                break;
+            default:
+                guard.Failed(FailureGuard.Classify(failure), settled: true, detail);
+                break;
         }
     }
 
@@ -748,7 +794,8 @@ public sealed class DeliveryWorker
         {
             AtUtc = completed,
             FlowId = _flow.Id,
-            FlowName = _flow.Name,
+            FlowName = _flow.Label,
+            Interface = _flow.Interface,
             Kind = status switch
             {
                 RecordStatus.Delivered when nothingSent => "record.unchanged",

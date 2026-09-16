@@ -10,6 +10,11 @@ implemented in code and parameterised by the flow, not an authorable step langua
 | `osduFile` | file, storage | Signed upload URL per file, streamed upload, dataset registration, then the record with its dataset list. | the record write, up to `batchSize` |
 | `osduManifest` | file, workflow, storage | Uploads, one manifest per batch handed to the ingestion workflow, the run polled, the records read back. | one workflow run per batch of up to `batchSize` |
 
+A flow in the single form names its protocol with `target.protocol`. An interface of a source is given one by its
+route, which follows from what the interface declares ([documents.md](documents.md#routes)): `storage` is
+`osduRecord`, `file` is `osduFile`, `manifest` is `osduManifest`, and `ddms` is `osduWellLog`, whose files are the
+interface's `bulk`.
+
 The core is protocol independent: identity, rendering, change detection, the ledger, idempotency and the
 preflight gate never change. A protocol implements the delivery, and the read-back, verify, probe and delete
 operations the interventions use:

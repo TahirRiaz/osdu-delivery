@@ -1,16 +1,17 @@
-using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
-using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Ledger;
-using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
-/// <summary>One delivery record a search found: where it belongs, how it is identified, and its custody state.</summary>
+/// <summary>
+/// One delivery record a search found: where it belongs (the flow's pipeline and, for a source, the interface), how it is
+/// identified, and its custody state.
+/// </summary>
 public sealed record DeliveryRecordHitDto(
     Guid DeliveryKey, Guid FlowId, string? FlowName, Guid? PipelineId, string SourceKey, string? Label, string? TargetId,
-    string Status, DateTime? LastDeliveredUtc, DateTime UpdatedUtc);
+    string Status, DateTime? LastDeliveredUtc, DateTime UpdatedUtc, string? Interface = null);
 
 /// <summary>
 /// The <c>records</c> category the module adds to the control plane's search: a delivery key lands on one record, and an
@@ -25,13 +26,16 @@ public sealed class RecordSearchContributor : ISearchContributor
 
     private readonly ILedger _ledger;
     private readonly CatalogDbContext _catalog;
+    private readonly OsduDbContext _osdu;
 
-    public RecordSearchContributor(ILedger ledger, CatalogDbContext catalog)
+    public RecordSearchContributor(ILedger ledger, CatalogDbContext catalog, OsduDbContext osdu)
     {
         ArgumentNullException.ThrowIfNull(ledger);
         ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(osdu);
         _ledger = ledger;
         _catalog = catalog;
+        _osdu = osdu;
     }
 
     public string Key => CategoryKey;
@@ -60,46 +64,30 @@ public sealed class RecordSearchContributor : ISearchContributor
             ? new BoundedCount(found.Count, Exact: true)
             : await _ledger.CountLookupAsync(request.Phrase, RecordListing.LookupCandidateLimit, ct).ConfigureAwait(false);
 
-        var pipelines = await PipelinesAsync(page, ct).ConfigureAwait(false);
+        var pipelines = await DeliveryPipelines.ForLedgersAsync(_catalog, _osdu, page.Select(r => r.FlowId).ToList(), ct).ConfigureAwait(false);
         var items = page
             .Select(record =>
             {
-                var known = pipelines.TryGetValue(record.FlowId, out var pipeline);
+                var known = pipelines.TryGetValue(record.FlowId, out var found);
+                var name = known ? Named(found!) : null;
                 // A record is its flow and its key: the same row read by two flows is two hits, each with its own page.
                 var path = DeliveryRecordRoutes.Path(record.FlowId, record.DeliveryKey.Value);
                 return new SearchHitDto(
                     path,
                     record.Label ?? record.SourceKey,
-                    known ? pipeline.Name : null,
+                    name,
                     "/delivery/records/" + path,
                     new DeliveryRecordHitDto(
-                        record.DeliveryKey.Value, record.FlowId, known ? pipeline.Name : null, known ? pipeline.Id : null, record.SourceKey,
-                        record.Label, record.TargetId, record.Status.ToString().ToLowerInvariant(), record.LastDeliveredUtc, record.UpdatedUtc));
+                        record.DeliveryKey.Value, record.FlowId, known ? found!.Pipeline.Name : null, known ? found!.Pipeline.Id : null, record.SourceKey,
+                        record.Label, record.TargetId, record.Status.ToString().ToLowerInvariant(), record.LastDeliveredUtc, record.UpdatedUtc,
+                        known && found!.Interface.Length > 0 ? found.Interface : null));
             })
             .ToList();
 
         return new SearchContribution(items, total.Count, !total.Exact);
     }
 
-    /// <summary>The delivery pipeline behind each hit's flow id, so a hit links to the flow it belongs to.</summary>
-    private async Task<Dictionary<Guid, (Guid Id, string Name)>> PipelinesAsync(IReadOnlyList<RecordState> records, CancellationToken ct)
-    {
-        var byFlowId = new Dictionary<Guid, (Guid Id, string Name)>();
-        if (records.Count == 0)
-        {
-            return byFlowId;
-        }
-
-        var pipelines = await _catalog.Pipelines.AsNoTracking()
-            .Where(p => p.Kind == FlowDefinition.FlowTypeName)
-            .Select(p => new { p.Id, p.Name, p.Active })
-            .ToListAsync(ct).ConfigureAwait(false);
-        foreach (var group in pipelines.GroupBy(p => FlowId.Of(p.Name)))
-        {
-            var pipeline = group.OrderByDescending(p => p.Active).First();
-            byFlowId[group.Key] = (pipeline.Id, pipeline.Name);
-        }
-
-        return byFlowId;
-    }
+    /// <summary>How a hit names where it belongs: the pipeline, and the interface of a source.</summary>
+    private static string Named(LedgerPipeline found)
+        => found.Interface.Length == 0 ? found.Pipeline.Name : $"{found.Pipeline.Name}/{found.Interface}";
 }

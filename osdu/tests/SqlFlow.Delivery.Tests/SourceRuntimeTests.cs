@@ -1,0 +1,541 @@
+using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Engine.Protocols;
+using SqlFlow.Delivery.Http;
+using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Source;
+using SqlFlow.Execution;
+using SqlFlow.Orchestration;
+using Xunit;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>Hands each interface of a source a fake target of its own, so a test sees what each one sent.</summary>
+public sealed class InterfaceProtocols : IProtocolFactory
+{
+    private readonly Dictionary<string, FakeProtocol> _protocols = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _gate = new();
+
+    /// <summary>The fake target of <paramref name="interfaceName"/> (<c>""</c> for a flow in the single form).</summary>
+    public FakeProtocol this[string interfaceName]
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (!_protocols.TryGetValue(interfaceName, out var protocol))
+                {
+                    protocol = new FakeProtocol();
+                    _protocols[interfaceName] = protocol;
+                }
+
+                return protocol;
+            }
+        }
+    }
+
+    /// <summary>Every flow a protocol was built for, in order.</summary>
+    public List<string> Built { get; } = [];
+
+    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            Built.Add(flow.Label);
+        }
+
+        return Task.FromResult<IDeliveryProtocol>(this[flow.Interface ?? string.Empty]);
+    }
+}
+
+/// <summary>The ingestion tables of a source in memory: one set of tables per record table the interfaces read.</summary>
+public sealed class MemoryEstate : IIngestionSourceFactory
+{
+    private readonly Dictionary<string, MemoryIngestionTables> _tables = new(StringComparer.OrdinalIgnoreCase);
+
+    public MemoryIngestionTables this[string recordObject] => _tables[recordObject];
+
+    public MemoryEstate Add(string recordObject, MemoryIngestionTables tables)
+    {
+        _tables[recordObject] = tables;
+        return this;
+    }
+
+    public IIngestionSource Open(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        return _tables.TryGetValue(flow.Source.Record.Object, out var tables)
+            ? tables.Open(flow, values)
+            : throw new DeliveryException($"Flow '{flow.Label}': the table {flow.Source.Record.Object} was not found on the source database.");
+    }
+}
+
+/// <summary>
+/// A run of a source (docs/interfaces-design.md sections 4, 6, 8 and 10) through the executor the platform calls: every
+/// interface planned and delivered in the waves of its dependencies under a ledger of its own, the preflight that stops a run
+/// before anything is sent, an interface that stops taking only the interfaces waiting for it along, a selection of
+/// interfaces, a run of one interface, a fan-out member told which interface it plans, and a flow in the single form
+/// stopped by an outage.
+/// </summary>
+public sealed class SourceRuntimeTests : IDisposable
+{
+    private const string WellboreTable = "OsduSample.ing.Wellbore";
+    private const string ArchiveTable = "OsduSample.ing.WellboreArchive";
+    private const string WellLogTable = "OsduSample.ing.WellLog";
+
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    private readonly SqliteOsdu _db = new();
+    private readonly TestClock _clock = new(new DateTimeOffset(2026, 9, 1, 7, 0, 0, TimeSpan.Zero));
+    private readonly string _root = Samples.NewTempDirectory();
+    private readonly InterfaceProtocols _protocols = new();
+    private readonly RecordingListener _events = new();
+
+    public void Dispose()
+    {
+        _db.Dispose();
+        try
+        {
+            Directory.Delete(_root, recursive: true);
+        }
+        catch (IOException)
+        {
+            // A file still open by a finished run is the temporary folder's to clean up.
+        }
+    }
+
+    /// <summary>
+    /// The recall source: its wellbores, the well logs waiting for them, and optionally an archive of wellbores read from a
+    /// table of its own and waiting for nothing. <paramref name="wellbores"/> is a YAML fragment the wellbores interface adds.
+    /// </summary>
+    private string SourceYaml(bool archive = false, string wellbores = "", string welllogMapping = "WellLog@1.4.0")
+    {
+        var root = _root.Replace('\\', '/');
+        var mappings = Samples.Mappings.Replace('\\', '/');
+        var archiveInterface = archive
+            ? $$"""
+                archive:
+                  record: { object: {{ArchiveTable}}, key: [facility_name], primaryKey: RecId }
+                  datasets:
+                    aliases: { object: OsduSample.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
+                  mapping: Wellbore@1.0.0
+              """
+            : string.Empty;
+        return ($$"""
+            flowType: delivery
+            name: recall
+            parameters:
+              logSource: { required: true }
+            source:
+              connection: ${env:OSDU_SAMPLE_DB}
+              lastModified: update_date
+              work: '{{root}}/work/{logSource}'
+            render:
+              mappings: '{{mappings}}'
+              parameters:
+                dataPartition: opendes
+            target:
+              endpoint: http://localhost:9/petrodb
+              headers:
+                data-partition-id: {{Samples.SampleCacheScope}}
+              protocolOptions:
+                ddmsRoot: /api/os-wellbore-ddms
+            reliability:
+              concurrency: 1
+              renderParallelism: 1
+              parallelInterfaces: 1
+              retry: { attempts: 3, recordBaseDelayMinutes: 1 }
+            interfaces:
+              wellbores:
+                record: { object: {{WellboreTable}}, key: [facility_name], primaryKey: RecId }
+                datasets:
+                  aliases: { object: OsduSample.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
+                mapping: Wellbore@1.0.0
+                {{wellbores}}
+              welllogs:
+                record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_name: logSource } }
+                datasets:
+                  curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+                bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
+                mapping: {{welllogMapping}}
+                after: [wellbores]
+            {{archiveInterface}}
+            """).ReplaceLineEndings("\n");
+    }
+
+    /// <summary>The source, loaded from a file under the test's root, as a node reads it.</summary>
+    private SourceDefinition Load(string yaml)
+    {
+        var path = Path.Combine(_root, "flows", "recall.yaml");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, yaml);
+        return new DeliveryDocumentLoader().LoadSource(path);
+    }
+
+    /// <summary>The wellbores of the sample estate as rows of a wellbore table.</summary>
+    private MemoryIngestionTables Wellbores(string prefix = "")
+    {
+        var tables = new MemoryIngestionTables(_clock);
+        var rowNumber = 0L;
+        foreach (var wellbore in SampleWellLogs.Wellbores)
+        {
+            rowNumber++;
+            var record = new MemoryRecord
+            {
+                Row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["RecId"] = rowNumber,
+                    ["facility_name"] = prefix + wellbore.FacilityName,
+                    ["facility_description"] = wellbore.Description,
+                    ["facility_id"] = wellbore.FacilityId,
+                    ["update_date"] = wellbore.UpdateDateUtc,
+                },
+                UpdatedUtc = _clock.GetUtcNow().UtcDateTime,
+                FileName = "wellbore_20260901.csv",
+                RowNumber = rowNumber,
+            };
+
+            foreach (var alias in wellbore.Aliases)
+            {
+                record.AddChild("aliases", new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["facility_name"] = prefix + wellbore.FacilityName,
+                    ["alias_name"] = alias,
+                });
+            }
+
+            record.DatasetUpdatedUtc["aliases"] = _clock.GetUtcNow().UtcDateTime;
+            tables.Add(record);
+        }
+
+        return tables;
+    }
+
+    private async Task<MemoryEstate> EstateAsync(bool archive = false)
+    {
+        var estate = new MemoryEstate()
+            .Add(WellboreTable, Wellbores())
+            .Add(WellLogTable, await SampleEstate.BuildAsync(_root, _clock.GetUtcNow().UtcDateTime, time: _clock));
+        return archive ? estate.Add(ArchiveTable, Wellbores("ARCHIVE-")) : estate;
+    }
+
+    private EngineContext Engine(IIngestionSourceFactory sources)
+        => Samples.Engine(_db.Ledger(_clock), _clock, protocols: _protocols, sources: sources) with { Listener = _events };
+
+    private static async Task<DocumentExecutionResult> RunAsync(
+        EngineContext engine, SourceDefinition source, string operation = DeliveryOperations.Deliver, DeliveryRunPayload? payload = null,
+        IRunFanOut? fanOut = null)
+    {
+        using var provider = new ServiceCollection().AddSingleton(engine).BuildServiceProvider();
+        return await new DeliveryExecutor(provider).ExecuteAsync(
+            new DeliveryFlowDocument { Source = source },
+            source.SourcePath!,
+            new DocumentExecutionOptions
+            {
+                RunId = Guid.CreateVersion7(),
+                Actor = "test",
+                FanOut = fanOut,
+                Parameters = new RunParameters
+                {
+                    Operation = operation,
+                    Values = new Dictionary<string, string>(SampleEstate.Values, StringComparer.Ordinal),
+                    Payload = payload?.ToJson(),
+                },
+            },
+            CancellationToken.None);
+    }
+
+    private static SourceRunOutcome Outcome(DocumentExecutionResult result)
+        => Assert.IsType<SourceRunOutcome>(result.Result);
+
+    [Fact]
+    public async Task A_source_delivers_every_interface_in_the_waves_of_its_dependencies_under_a_ledger_each()
+    {
+        var source = Load(SourceYaml());
+        var engine = Engine(await EstateAsync());
+
+        var result = await RunAsync(engine, source);
+
+        Assert.True(result.Success, result.Error);
+        var outcome = Outcome(result);
+        Assert.Equal("recall", outcome.Source);
+        Assert.Equal(2, outcome.Completed);
+        Assert.Equal(0, outcome.Stopped + outcome.Skipped);
+        Assert.Equal(5, outcome.Delivered);
+        Assert.Equal(5, outcome.RowsLoaded);
+        var wellbores = outcome.Interfaces[0];
+        var welllogs = outcome.Interfaces[1];
+        Assert.Equal(("wellbores", 1, "storage", InterfaceStates.Completed), (wellbores.Interface, wellbores.Wave, wellbores.Route, wellbores.State));
+        Assert.Equal(("welllogs", 2, "ddms", InterfaceStates.Completed), (welllogs.Interface, welllogs.Wave, welllogs.Route, welllogs.State));
+        Assert.Equal(["wellbores"], welllogs.WaitsFor);
+        Assert.Equal(FlowId.Of("recall/welllogs"), welllogs.FlowId);
+        Assert.Equal(3, Assert.IsType<DeliverOutcome>(welllogs.Result).Delivered);
+        Assert.Equal(2, Assert.IsType<DeliverOutcome>(wellbores.Result).Delivered);
+
+        // Each interface sent its own records to its own target, the wellbores first.
+        Assert.Equal(2, _protocols["wellbores"].Deliveries.Count);
+        Assert.Equal(3, _protocols["welllogs"].Deliveries.Count);
+        var trace = _events.Events.Where(e => e.Kind.StartsWith("interface.", StringComparison.Ordinal)).Select(e => $"{e.Kind} {e.Interface}").ToList();
+        Assert.Equal(["interface.started wellbores", "interface.completed wellbores", "interface.started welllogs", "interface.completed welllogs"], trace);
+        Assert.All(_events.Events.Where(e => e.Kind.StartsWith("record.", StringComparison.Ordinal)), e => Assert.Equal($"recall/{e.Interface}", e.FlowName));
+
+        // The ledger keeps each interface apart, with the flow and interface as the name its rows carry.
+        var ledger = engine.Ledger!;
+        Assert.Equal(2, (await ledger.StatsAsync(FlowId.Of("recall/wellbores"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+        Assert.Equal(3, (await ledger.StatsAsync(FlowId.Of("recall/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+        var submissions = await ledger.ListSubmissionsAsync(FlowId.Of("recall/welllogs"), 10);
+        Assert.Equal("recall/welllogs", Assert.Single(submissions).FlowName);
+        var activities = await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = FlowId.Of("recall/wellbores"), Max = 10 });
+        Assert.All(activities, a => Assert.Equal("recall/wellbores", a.FlowName));
+
+        // The run's artifact says what each interface did.
+        var artifact = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(result.RunDirectory!, "run.json"))).RootElement;
+        var interfaces = artifact.GetProperty("result").GetProperty("interfaces");
+        Assert.Equal(2, interfaces.GetArrayLength());
+        Assert.Equal("welllogs", interfaces[1].GetProperty("interface").GetString());
+        Assert.Equal(3, interfaces[1].GetProperty("result").GetProperty("delivered").GetInt64());
+        Assert.Equal(5, artifact.GetProperty("result").GetProperty("rowsLoaded").GetInt64());
+
+        // A second run finds nothing changed and sends nothing.
+        var again = await RunAsync(engine, source);
+        Assert.True(again.Success, again.Error);
+        Assert.Equal(0, Outcome(again).Delivered);
+        Assert.Equal(5, _protocols["wellbores"].Deliveries.Count + _protocols["welllogs"].Deliveries.Count);
+    }
+
+    [Fact]
+    public async Task The_preflight_names_every_problem_at_once_and_nothing_is_planned_or_sent()
+    {
+        var source = Load(SourceYaml(welllogMapping: "WellLog@9.9.9"));
+        var estate = await EstateAsync();
+        estate[WellboreTable].ShapeProblem = "the table OsduSample.ing.Wellbore, declared under interfaces.wellbores.record.object, was not found";
+        _protocols["wellbores"].Reachable = false;
+        var engine = Engine(estate);
+
+        var result = await RunAsync(engine, source);
+
+        Assert.False(result.Success);
+        Assert.IsType<OperationFailure>(result.Result);
+        Assert.Contains("The preflight of 'recall' found 3 problem(s), so nothing was planned or sent", result.Error, StringComparison.Ordinal);
+        Assert.Contains("interface 'welllogs':", result.Error, StringComparison.Ordinal);
+        Assert.Contains("WellLog@9.9.9", result.Error, StringComparison.Ordinal);
+        Assert.Contains("interface 'wellbores': Flow 'recall/wellbores': the table OsduSample.ing.Wellbore", result.Error, StringComparison.Ordinal);
+        Assert.Contains("interface 'wellbores': the storage route's service is failing (HTTP 503) at /about", result.Error, StringComparison.Ordinal);
+        Assert.Empty(_protocols["wellbores"].Deliveries);
+        Assert.Empty(_protocols["welllogs"].Deliveries);
+        Assert.Empty(await engine.Ledger!.ListSubmissionsAsync(FlowId.Of("recall/wellbores"), 10));
+        Assert.DoesNotContain(_events.Events, e => e.Kind.StartsWith("interface.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task An_interface_that_stops_takes_only_the_interfaces_waiting_for_it_and_the_next_run_does_the_rest()
+    {
+        var source = Load(SourceYaml(archive: true, wellbores: "failWhen: { outageFailures: 2 }"));
+        var engine = Engine(await EstateAsync(archive: true));
+        _protocols["wellbores"].FailWith = _ => new OsduStatusException(503, "HTTP 503 Service Unavailable from PUT /records");
+
+        var result = await RunAsync(engine, source);
+
+        Assert.False(result.Success);
+        var outcome = Outcome(result);
+        Assert.Equal(
+            [("wellbores", InterfaceStates.Stopped), ("welllogs", InterfaceStates.Skipped), ("archive", InterfaceStates.Completed)],
+            outcome.Interfaces.Select(i => (i.Interface, i.State)).ToArray());
+        Assert.Contains("an outage: 2 records in a row could not reach the service", outcome.Interfaces[0].Reason, StringComparison.Ordinal);
+        Assert.Equal("it waits for wellbores, which did not complete", outcome.Interfaces[1].Reason);
+        Assert.Null(outcome.Interfaces[1].StartedUtc);
+        Assert.Contains("1 of 3 interface(s) completed", result.Error, StringComparison.Ordinal);
+        Assert.Contains("stopped: wellbores (an outage", result.Error, StringComparison.Ordinal);
+        Assert.Contains("skipped: welllogs (it waits for wellbores, which did not complete)", result.Error, StringComparison.Ordinal);
+        Assert.Contains("What completed is in the ledger, and the next run does what is left.", result.Error, StringComparison.Ordinal);
+        Assert.Equal(2, _protocols["archive"].Deliveries.Count);
+        Assert.Empty(_protocols["welllogs"].Deliveries);
+        Assert.Contains(_events.Events, e => e.Kind == "interface.stopped" && e.Interface == "wellbores");
+        Assert.Contains(_events.Events, e => e.Kind == "interface.skipped" && e.Interface == "welllogs");
+
+        // The tries that failed are the records' own; nothing was held or failed for good.
+        var wellbores = await engine.Ledger!.ListAsync(FlowId.Of("recall/wellbores"), new RecordQuery { Max = 10 });
+        Assert.All(wellbores, r => Assert.Equal(RecordStatus.Pending, r.Status));
+
+        // Once the service is back and the retries are due, the next run finishes the wellbores and then the well logs.
+        _protocols["wellbores"].FailWith = null;
+        _clock.Advance(TimeSpan.FromMinutes(10));
+        var again = await RunAsync(engine, source);
+        Assert.True(again.Success, again.Error);
+        Assert.All(Outcome(again).Interfaces, i => Assert.Equal(InterfaceStates.Completed, i.State));
+        Assert.Equal(2, (await engine.Ledger.StatsAsync(FlowId.Of("recall/wellbores"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+        Assert.Equal(3, _protocols["welllogs"].Deliveries.Count);
+        Assert.Equal(2, _protocols["archive"].Deliveries.Count);
+    }
+
+    [Fact]
+    public async Task A_run_selects_interfaces_and_does_not_wait_for_the_ones_it_leaves_out()
+    {
+        var source = Load(SourceYaml(archive: true));
+        var engine = Engine(await EstateAsync(archive: true));
+
+        var result = await RunAsync(engine, source, payload: new DeliveryRunPayload { Interfaces = ["welllogs", "archive"] });
+
+        Assert.True(result.Success, result.Error);
+        var outcome = Outcome(result);
+        Assert.Equal(["welllogs", "archive"], outcome.Interfaces.Select(i => i.Interface));
+        Assert.All(outcome.Interfaces, i => Assert.Equal(1, i.Wave));
+        Assert.Empty(outcome.Interfaces[0].WaitsFor);
+        Assert.Empty(_protocols["wellbores"].Deliveries);
+        Assert.Equal(3, _protocols["welllogs"].Deliveries.Count);
+
+        var unknown = await RunAsync(engine, source, payload: new DeliveryRunPayload { Interfaces = ["cores"] });
+        Assert.False(unknown.Success);
+        Assert.Contains("Flow 'recall' has no interface 'cores'; it declares wellbores, welllogs, archive.", unknown.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_run_of_one_interface_answers_as_a_run_of_that_flow_alone()
+    {
+        var source = Load(SourceYaml());
+        var engine = Engine(await EstateAsync());
+
+        var wellbores = await RunAsync(engine, source, payload: new DeliveryRunPayload { Interface = "wellbores" });
+        Assert.True(wellbores.Success, wellbores.Error);
+        var delivered = Assert.IsType<DeliverOutcome>(wellbores.Result);
+        Assert.Equal(2, delivered.Delivered);
+        Assert.Empty(_protocols["welllogs"].Deliveries);
+
+        // A plan of the whole source reports each interface's plan.
+        var plan = await RunAsync(engine, source, DeliveryOperations.Plan);
+        Assert.True(plan.Success, plan.Error);
+        var planned = Outcome(plan);
+        Assert.Equal(0, Assert.IsType<PlanOutcome>(planned.Interfaces[0].Result).Deliveries);
+        Assert.Equal(3, Assert.IsType<PlanOutcome>(planned.Interfaces[1].Result).Deliveries);
+
+        // Records belong to one interface: a run on them without its name is refused, with it they are redelivered.
+        var key = SampleEstate.Key(0);
+        var nameless = await RunAsync(engine, source, payload: new DeliveryRunPayload { RecordKeys = [key.Value] });
+        Assert.False(nameless.Success);
+        Assert.Contains("a run on records or slices names the interface they belong to with 'interface' in its payload", nameless.Error, StringComparison.Ordinal);
+
+        var logs = await RunAsync(engine, source, payload: new DeliveryRunPayload { Interface = "welllogs" });
+        Assert.True(logs.Success, logs.Error);
+        var redelivered = await RunAsync(engine, source, payload: new DeliveryRunPayload { Interface = "welllogs", RecordKeys = [key.Value], Redeliver = RedeliverScopes.Metadata });
+        Assert.True(redelivered.Success, redelivered.Error);
+        Assert.Equal(1, Assert.IsType<DeliverOutcome>(redelivered.Result).Delivered);
+
+        // A submission names its interface by the ledger it belongs to.
+        var submission = Assert.IsType<DeliverOutcome>(logs.Result).SubmissionId;
+        var verify = await RunAsync(engine, source, DeliveryOperations.Drain, new DeliveryRunPayload { SubmissionId = submission });
+        Assert.True(verify.Success, verify.Error);
+        Assert.IsType<DrainOutcome>(verify.Result);
+
+        var elsewhere = await RunAsync(
+            engine, source, DeliveryOperations.Drain, new DeliveryRunPayload { SubmissionId = submission, Interface = "wellbores" });
+        Assert.False(elsewhere.Success);
+        Assert.Contains($"Submission {submission:D} belongs to flow 'recall/welllogs', not 'recall/wellbores'.", elsewhere.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_fan_out_member_is_told_which_interface_it_works_on()
+    {
+        var yaml = SourceYaml().Replace("  parallelInterfaces: 1\n", "  parallelInterfaces: 1\n  fanOut: 1\n  fanOutMinRecords: 1\n  batchRecords: 1\n", StringComparison.Ordinal);
+        var source = Load(yaml);
+        var estate = await EstateAsync();
+        var engine = Engine(estate);
+        var members = new MemberRuns(engine, source);
+
+        var result = await RunAsync(engine, source, payload: new DeliveryRunPayload { Interfaces = ["welllogs"] }, fanOut: members);
+
+        Assert.True(result.Success, result.Error);
+        Assert.NotEmpty(members.Enqueued);
+        Assert.All(members.Enqueued, member => Assert.Equal("welllogs", member.Payload.Interface));
+        Assert.Contains(members.Enqueued, member => member.Operation == DeliveryOperations.Intake);
+        Assert.Contains(members.Enqueued, member => member.Operation == DeliveryOperations.Drain);
+        Assert.Equal(3, (await engine.Ledger!.StatsAsync(FlowId.Of("recall/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+    }
+
+    [Fact]
+    public async Task A_flow_in_the_single_form_stops_on_an_outage_and_hands_the_rest_of_its_work_back()
+    {
+        var local = Samples.LocalFlow(_root);
+        var flow = local with { FailWhen = new FlowFailWhen { OutageFailures = 2 } };
+        var tables = await SampleEstate.BuildAsync(_root, _clock.GetUtcNow().UtcDateTime, time: _clock);
+        var engine = Engine(tables);
+        _protocols[string.Empty].FailWith = _ => new DeliveryException("HTTP transport failure calling PUT /records: connection refused", new HttpRequestException("refused"));
+
+        var result = await RunAsync(engine, SourceDefinition.Of(Samples.InFolder(flow, _root)));
+
+        Assert.False(result.Success);
+        Assert.IsType<OperationFailure>(result.Result);
+        Assert.Contains("'recall-welllog' stopped: an outage: 2 records in a row could not reach the service", result.Error, StringComparison.Ordinal);
+        Assert.Contains("the next run carries on from there", result.Error, StringComparison.Ordinal);
+
+        // The two tries that failed are charged; the record the stop reached before it was sent is handed back untried.
+        var records = await engine.Ledger!.ListAsync(flow.Id, new RecordQuery { Max = 10 });
+        Assert.Equal(3, records.Count);
+        Assert.All(records, r => Assert.Equal(RecordStatus.Pending, r.Status));
+        Assert.Equal(2, records.Count(r => r.AttemptCount == 1));
+        Assert.Equal(1, records.Count(r => r.AttemptCount == 0));
+        Assert.Equal(2, _protocols[string.Empty].Deliveries.Count);
+    }
+
+    [Fact]
+    public async Task Nothing_is_sent_after_a_stop_however_the_freed_slot_is_handed_on()
+    {
+        // The slot a stopping delivery frees can be handed to the next record at the moment the stop is signalled; the
+        // stop wins every time, so the record behind it is handed back untried.
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            using var db = new SqliteOsdu();
+            var root = Path.Combine(_root, "attempt-" + attempt.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            var protocols = new InterfaceProtocols();
+            protocols[string.Empty].FailWith = _ => new DeliveryException("HTTP transport failure", new HttpRequestException("refused"));
+            var tables = await SampleEstate.BuildAsync(root, _clock.GetUtcNow().UtcDateTime, time: _clock);
+            var engine = Samples.Engine(db.Ledger(_clock), _clock, protocols: protocols, sources: tables);
+            var flow = Samples.InFolder(Samples.LocalFlow(root) with { FailWhen = new FlowFailWhen { OutageFailures = 2 } }, root);
+
+            var result = await RunAsync(engine, SourceDefinition.Of(flow));
+
+            Assert.False(result.Success);
+            Assert.Equal(2, protocols[string.Empty].Deliveries.Count);
+            Assert.Equal(1, protocols[string.Empty].MaxInFlight);
+        }
+    }
+
+    /// <summary>Member runs executed inline through the executor, as another node would run them.</summary>
+    private sealed class MemberRuns(EngineContext engine, SourceDefinition source) : IRunFanOut
+    {
+        private readonly Dictionary<Guid, RunFanOutMember> _members = [];
+
+        public List<(string Operation, DeliveryRunPayload Payload)> Enqueued { get; } = [];
+
+        public async Task<RunFanOutHandle> EnqueueAsync(IReadOnlyList<RunParameters> members, CancellationToken ct)
+        {
+            var ids = new List<Guid>();
+            foreach (var member in members)
+            {
+                Enqueued.Add((DeliveryOperations.Of(member), DeliveryRunPayload.Parse(member)));
+                using var provider = new ServiceCollection().AddSingleton(engine).BuildServiceProvider();
+                var runId = Guid.CreateVersion7();
+                var result = await new DeliveryExecutor(provider).ExecuteAsync(
+                    new DeliveryFlowDocument { Source = source },
+                    source.SourcePath!,
+                    new DocumentExecutionOptions { RunId = runId, Actor = "member", Parameters = member },
+                    ct);
+                ids.Add(runId);
+                _members[runId] = new RunFanOutMember(
+                    runId, ids.Count, result.Success ? "succeeded" : "failed", result.Error, JsonSerializer.Serialize(result.Result, result.Result.GetType(), Json));
+            }
+
+            return new RunFanOutHandle(Guid.NewGuid(), ids);
+        }
+
+        public Task<IReadOnlyList<RunFanOutMember>> MembersAsync(RunFanOutHandle handle, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<RunFanOutMember>>(handle.RunIds.Select(id => _members[id]).ToList());
+
+        public Task CancelAsync(RunFanOutHandle handle, CancellationToken ct) => Task.CompletedTask;
+    }
+}

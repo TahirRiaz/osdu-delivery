@@ -805,10 +805,11 @@ public sealed class DeliveryRunBoundaryTests : IDisposable
         var tables = await SampleEstate.BuildAsync(root, new DateTime(2026, 9, 1, 6, 30, 0, DateTimeKind.Utc));
         var engine = Samples.Engine(_db.Ledger(), protocols: new UnbuildableProtocolFactory(), sources: tables);
         using var provider = new ServiceCollection().AddSingleton(engine).BuildServiceProvider();
+        var flow = Samples.InFolder(Samples.LocalFlow(root), root);
 
         var result = await new DeliveryExecutor(provider).ExecuteAsync(
-            new DeliveryFlowDocument { Flow = Samples.LocalFlow(root) },
-            Samples.Flow,
+            new DeliveryFlowDocument { Source = SourceDefinition.Of(flow) },
+            flow.SourcePath!,
             new DocumentExecutionOptions { Parameters = new RunParameters { Values = new Dictionary<string, string>(SampleEstate.Values, StringComparer.Ordinal) } },
             CancellationToken.None);
 

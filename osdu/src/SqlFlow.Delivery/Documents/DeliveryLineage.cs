@@ -37,13 +37,30 @@ public static class DeliveryLineage
         return objects;
     }
 
-    /// <summary>Everything the flow contributes, in a stable order.</summary>
+    /// <summary>
+    /// Everything a source contributes: what each of its interfaces reads and writes, in document order, each declaration
+    /// once however many interfaces make it.
+    /// </summary>
+    public static RegisteredFlowLineage Describe(SourceDefinition source, RegisteredLineageContext context, DeliveryDocumentLoader documents)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var described = source.Interfaces.Select(i => Describe(i, context, documents)).ToList();
+        return new RegisteredFlowLineage
+        {
+            Objects = described.SelectMany(d => d.Objects).Distinct().ToList(),
+            Files = described.SelectMany(d => d.Files).Distinct().ToList(),
+            Datasets = described.SelectMany(d => d.Datasets).Distinct().ToList(),
+            Warnings = described.SelectMany(d => d.Warnings).Distinct(StringComparer.Ordinal).ToList(),
+        };
+    }
+
+    /// <summary>Everything one flow (an interface of its source) contributes, in a stable order.</summary>
     public static RegisteredFlowLineage Describe(FlowDefinition flow, RegisteredLineageContext context, DeliveryDocumentLoader documents)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(documents);
-        var who = $"delivery flow '{flow.Name}'";
+        var who = $"delivery flow '{flow.Label}'";
         var warnings = new List<string>();
 
         var files = new List<DeclaredFileLocation>();

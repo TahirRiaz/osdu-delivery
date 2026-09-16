@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -21,6 +22,7 @@ using SqlFlow.Delivery.Templates;
 using SqlFlow.Execution;
 using SqlFlow.Lineage.Collection;
 using SqlFlow.Lineage.Graph;
+using SqlFlow.Orchestration;
 using SqlFlow.Yaml;
 using Xunit;
 using Xunit.Abstractions;
@@ -508,6 +510,206 @@ public class SqlServerChainTests
     }
 
     /// <summary>
+    /// Case 11: one source document delivers the wellbores its chain loaded and the well logs that wait for them
+    /// (docs/interfaces-design.md sections 4 and 8). The run goes through the platform's document executor with a fan-out,
+    /// as a node runs it: each interface plans and sends across member runs that the same executor runs beside it, each
+    /// member told which interface it works on, and each interface keeps a ledger of its own.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_source_fans_each_interface_out_over_nodes_in_the_order_its_interfaces_wait_for_each_other()
+    {
+        const int Wellbores = 60;
+        const int Logs = 120;
+        const int Nodes = 2;
+        await using var estate = await SqlServerIngestionFixture.StartAsync(wellboreChain: true);
+        var template = SampleWellLogs.Logs()[0];
+        await estate.WritePayloadsAsync([template]);
+        await estate.WriteRowsAsync("welllog", LogFile, SampleWellLogs.LogColumns, GeneratedLogs(template, Logs));
+        await estate.WriteRowsAsync("curves-meta", CurveFile, SampleWellLogs.CurveColumns, GeneratedCurves(template, Logs));
+        await estate.WriteWellboreFilesAsync(GeneratedWellbores(Wellbores), GeneratedAliases(Wellbores));
+        await estate.RunWellboreChainAsync();
+        await estate.RunIngestionChainAsync();
+        Assert.Equal(Wellbores, await estate.CountAsync(estate.IngSchema, "Wellbore"));
+        Assert.Equal(2 * Wellbores, await estate.CountAsync(estate.IngSchema, "WellboreAlias"));
+        Assert.Equal(Logs, await estate.CountAsync(estate.IngSchema, "WellLog"));
+
+        var name = estate.FlowPrefix + "-source";
+        var file = Path.Combine(estate.FlowsDirectory, name + ".yaml");
+        await File.WriteAllTextAsync(file, SourceDocument(estate, name, Nodes));
+        var ledgers = new Dictionary<string, Guid>(StringComparer.Ordinal)
+        {
+            ["wellbores"] = Identity.FlowId.Of(name + "/wellbores"),
+            ["welllogs"] = Identity.FlowId.Of(name + "/welllogs"),
+        };
+
+        // A coordinating run holds its own sends until a node of the same interface has started sending, so every
+        // interface's drain is shared with its nodes however quickly the coordinator reaches its first batch.
+        var nodeSent = new ConcurrentDictionary<string, TaskCompletionSource>(StringComparer.Ordinal);
+        TaskCompletionSource NodeSent(string kind) => nodeSent.GetOrAdd(kind, _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+        estate.Protocol.Before = async (work, ct) =>
+        {
+            var kind = work.Document["kind"]!.GetValue<string>();
+            if (FakeProtocol.CurrentNode.Value is null)
+            {
+                await Task.WhenAny(NodeSent(kind).Task, Task.Delay(TimeSpan.FromSeconds(30), ct));
+            }
+            else
+            {
+                NodeSent(kind).TrySetResult();
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(5), ct);
+        };
+
+        try
+        {
+            var nodes = new NodePool(estate, file, _output.WriteLine);
+            var outcome = await estate.Documents.RunAsync(
+                file,
+                new DocumentExecutionOptions
+                {
+                    RunId = Guid.NewGuid(),
+                    Actor = "chain tests",
+                    FanOut = nodes,
+                    Parameters = new RunParameters { Operation = DeliveryOperations.Deliver, Values = SampleEstate.Values },
+                }).WaitAsync(TimeSpan.FromMinutes(5));
+
+            Assert.True(outcome.Success, $"{outcome.FlowName}: {outcome.Error}");
+            Assert.Empty(nodes.Failures);
+
+            // The wellbores went in the first wave and the well logs, which wait for them, in the second; each planned and
+            // sent across its nodes.
+            var artifact = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(outcome.RunDirectory!, "run.json"))).RootElement;
+            var interfaces = artifact.GetProperty("result").GetProperty("interfaces").EnumerateArray().ToList();
+            Assert.Equal(
+                [("wellbores", 1, "storage", InterfaceStates.Completed), ("welllogs", 2, "ddms", InterfaceStates.Completed)],
+                interfaces.Select(i => (i.GetProperty("interface").GetString(), i.GetProperty("wave").GetInt32(), i.GetProperty("route").GetString(), i.GetProperty("state").GetString())).ToArray());
+            Assert.Equal(Wellbores + Logs, artifact.GetProperty("result").GetProperty("rowsLoaded").GetInt64());
+            foreach (var item in interfaces)
+            {
+                var result = item.GetProperty("result");
+                Assert.Equal((Nodes, Nodes), (result.GetProperty("intakeMembers").GetInt32(), result.GetProperty("drainMembers").GetInt32()));
+            }
+
+            // Every member was told the interface it works on, and each interface had both kinds of member.
+            foreach (var iface in ledgers.Keys)
+            {
+                var members = nodes.Enqueued.Where(m => m.Payload.Interface == iface).ToList();
+                Assert.Equal(Nodes, members.Count(m => m.Operation == DeliveryOperations.Intake));
+                Assert.Equal(Nodes, members.Count(m => m.Operation == DeliveryOperations.Drain));
+            }
+
+            Assert.Equal(4 * Nodes, nodes.Enqueued.Count);
+
+            // Every record was sent once, every wellbore before the first well log.
+            var sent = estate.Protocol.Deliveries.Select(d => d.Document["kind"]!.GetValue<string>()).ToList();
+            Assert.Equal(Wellbores, sent.Count(k => k == Samples.WellboreKind));
+            Assert.Equal(Logs, sent.Count(k => k == Samples.WellLogKind));
+            Assert.True(
+                sent.LastIndexOf(Samples.WellboreKind) < sent.IndexOf(Samples.WellLogKind),
+                "a well log was sent before the last wellbore, although the well logs wait for the wellbores.");
+            Assert.Equal(Wellbores + Logs, estate.Protocol.Deliveries.Select(d => d.TargetId).Distinct(StringComparer.Ordinal).Count());
+
+            // Each interface's ledger holds exactly its own records, sent by more than one run.
+            await using var db = estate.Context();
+            foreach (var (iface, flowId, count) in new[] { ("wellbores", ledgers["wellbores"], Wellbores), ("welllogs", ledgers["welllogs"], Logs) })
+            {
+                Assert.Equal(count, (await estate.Ledger.StatsAsync(flowId, DateTime.UtcNow)).Delivered);
+                Assert.Equal(count, await db.DeliveryAttempts.CountAsync(a => a.FlowId == flowId && a.Outcome == "delivered"));
+                var submission = Assert.Single(await estate.Ledger.ListSubmissionsAsync(flowId, 10));
+                Assert.Equal((name + "/" + iface, SubmissionStatus.Completed, (long)count), (submission.FlowName, submission.Status, submission.Delivered));
+                var batches = await estate.Ledger.ListWorkBatchesAsync(submission.SubmissionId, 1000, 0);
+                Assert.All(batches, b => Assert.Equal(WorkBatchStatus.Done, b.Status));
+                Assert.True(batches.Select(b => b.RunId).Distinct().Count() >= 2, $"{iface}: every batch was drained by one run.");
+                Assert.Single(await db.DeliverySourceWatermarks.Where(w => w.FlowId == flowId).ToListAsync());
+            }
+        }
+        finally
+        {
+            foreach (var flowId in ledgers.Values)
+            {
+                await estate.ForgetFlowAsync(flowId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The source document of case 11: the fixture's wellbore and well log tables as two interfaces of one source, the
+    /// well logs waiting for the wellbores and both fanned out over <paramref name="nodes"/> member runs.
+    /// </summary>
+    private static string SourceDocument(SqlServerIngestionFixture estate, string name, int nodes)
+    {
+        string Table(string table) => $"\"[{estate.DatabaseName}].[{estate.IngSchema}].[{table}]\"";
+        return $$"""
+            flowType: delivery
+            name: {{name}}
+            parameters:
+              logSource: { required: true }
+            source:
+              connection: ${env:{{estate.ConnectionVariable}}}
+              lastModified: update_date
+              work: ../.work/{{name}}/{logSource}
+            render:
+              parameters:
+                dataPartition: opendes
+            target:
+              endpoint: http://localhost:9/petrodb
+              auth:
+                type: none
+              headers:
+                data-partition-id: {{Samples.SampleCacheScope}}
+              protocolOptions:
+                ddmsRoot: /api/os-wellbore-ddms
+            reliability:
+              concurrency: 8
+              batchSize: 50
+              batchRecords: 20
+              fanOut: {{nodes.ToString(CultureInfo.InvariantCulture)}}
+              fanOutMinRecords: 1
+              parallelInterfaces: 2
+            interfaces:
+              wellbores:
+                record: { object: {{Table("Wellbore")}}, key: [facility_name], primaryKey: RecId }
+                datasets:
+                  aliases: { object: {{Table("WellboreAlias")}}, join: { facility_name: facility_name }, orderBy: [alias_name] }
+                mapping: Wellbore@1.0.0
+              welllogs:
+                record: { object: {{Table("WellLog")}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_name: logSource } }
+                datasets:
+                  curves: { object: {{Table("WellLogCurve")}}, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+                bulk: { root: ../data/curves, locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
+                protocolOptions: { sessionThresholdChunks: 1, preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties] }
+                mapping: WellLog@1.4.0
+                after: [wellbores]
+            """.ReplaceLineEndings("\n");
+    }
+
+    /// <summary>The wellbore rows of a generated estate, one per wellbore.</summary>
+    private static IReadOnlyList<IReadOnlyDictionary<string, string?>> GeneratedWellbores(int count)
+    {
+        var updated = SampleWellLogs.UpdatedUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+        return Enumerable.Range(0, count)
+            .Select(i => (IReadOnlyDictionary<string, string?>)new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["facility_name"] = string.Create(CultureInfo.InvariantCulture, $"WB-{i:D5}"),
+                ["facility_description"] = string.Create(CultureInfo.InvariantCulture, $"Generated wellbore {i}"),
+                ["facility_id"] = string.Create(CultureInfo.InvariantCulture, $"srn:master-data/Wellbore:G{i}"),
+                ["update_date"] = updated,
+            })
+            .ToList();
+    }
+
+    /// <summary>Two alternative names per generated wellbore.</summary>
+    private static IReadOnlyList<IReadOnlyDictionary<string, string?>> GeneratedAliases(int count)
+        => Enumerable.Range(0, count)
+            .SelectMany(i => new[] { "A", "B" }.Select(alias => (IReadOnlyDictionary<string, string?>)new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["facility_name"] = string.Create(CultureInfo.InvariantCulture, $"WB-{i:D5}"),
+                ["alias_name"] = string.Create(CultureInfo.InvariantCulture, $"{alias}-{i:D5}"),
+            }))
+            .ToList();
+
+    /// <summary>
     /// Loads the sample rows and plans them into one batch of the delivery flow, sent one record at a time, without
     /// delivering anything.
     /// </summary>
@@ -915,6 +1117,129 @@ public class SqlServerChainTests
             target.RunId = runId;
             var drained = await target.WorkAsync(once: false, payload.SubmissionId, ct);
             return (operation, payload, JsonSerializer.Serialize(DrainOutcome.From(drained, payload.SubmissionId), Json));
+        }
+    }
+
+    /// <summary>
+    /// The fan-out the platform hands a run, with nodes that run each member as a node runs a claimed run: through the
+    /// document executor, on the same document, with the member's parameters, all members at once. What a member returns
+    /// to its coordinator is what a node journals on its run row, the <c>result</c> of its <c>run.json</c>. A member's
+    /// pushes are counted under a node name that carries its interface. Reading the members waits for them to finish, which
+    /// a coordinator does by polling.
+    /// </summary>
+    private sealed class NodePool : IRunFanOut
+    {
+        private readonly SqlServerIngestionFixture _estate;
+        private readonly string _file;
+        private readonly Action<string> _log;
+        private readonly object _gate = new();
+        private readonly Dictionary<Guid, (int Slot, Task<RunFanOutMember> Run)> _members = [];
+        private readonly List<(string Operation, DeliveryRunPayload Payload)> _enqueued = [];
+        private readonly List<string> _failures = [];
+        private int _nodes;
+
+        public NodePool(SqlServerIngestionFixture estate, string file, Action<string> log)
+        {
+            _estate = estate;
+            _file = file;
+            _log = log;
+        }
+
+        /// <summary>Every member enqueued, with the operation and payload it was given.</summary>
+        public IReadOnlyList<(string Operation, DeliveryRunPayload Payload)> Enqueued
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _enqueued];
+                }
+            }
+        }
+
+        /// <summary>The members that failed, each with its node and error.</summary>
+        public IReadOnlyList<string> Failures
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _failures];
+                }
+            }
+        }
+
+        public Task<RunFanOutHandle> EnqueueAsync(IReadOnlyList<RunParameters> members, CancellationToken ct)
+        {
+            ArgumentNullException.ThrowIfNull(members);
+            var ids = new List<Guid>();
+            lock (_gate)
+            {
+                foreach (var member in members)
+                {
+                    var payload = DeliveryRunPayload.Parse(member);
+                    var runId = Guid.NewGuid();
+                    var node = $"{payload.Interface ?? "source"}/node-{++_nodes}";
+                    _enqueued.Add((DeliveryOperations.Of(member), payload));
+                    ids.Add(runId);
+                    var slot = ids.Count;
+                    _members[runId] = (slot, Task.Run(() => RunAsync(member, runId, slot, node, ct), CancellationToken.None));
+                }
+            }
+
+            return Task.FromResult(new RunFanOutHandle(Guid.NewGuid(), ids));
+        }
+
+        public async Task<IReadOnlyList<RunFanOutMember>> MembersAsync(RunFanOutHandle handle, CancellationToken ct)
+        {
+            ArgumentNullException.ThrowIfNull(handle);
+            List<Task<RunFanOutMember>> runs;
+            lock (_gate)
+            {
+                runs = handle.RunIds.Select(id => _members[id].Run).ToList();
+            }
+
+            return await Task.WhenAll(runs).WaitAsync(ct);
+        }
+
+        public Task CancelAsync(RunFanOutHandle handle, CancellationToken ct) => Task.CompletedTask;
+
+        private async Task<RunFanOutMember> RunAsync(RunParameters member, Guid runId, int slot, string node, CancellationToken ct)
+        {
+            FakeProtocol.CurrentNode.Value = node;
+            try
+            {
+                var outcome = await _estate.Documents.RunAsync(
+                    _file, new DocumentExecutionOptions { RunId = runId, Actor = node, Parameters = member }, ct);
+                string? result = null;
+                if (outcome.RunDirectory is { } directory)
+                {
+                    using var artifact = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(directory, "run.json"), ct));
+                    result = CatalogProjection.RunResultJson(artifact.RootElement);
+                }
+
+                if (!outcome.Success)
+                {
+                    Fail(node, outcome.Error ?? "no error recorded");
+                }
+
+                return new RunFanOutMember(runId, slot, outcome.Success ? "succeeded" : "failed", outcome.Error, result);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Fail(node, ex.ToString());
+                return new RunFanOutMember(runId, slot, "failed", ex.Message, null);
+            }
+        }
+
+        private void Fail(string node, string error)
+        {
+            lock (_gate)
+            {
+                _failures.Add($"{node}: {error}");
+            }
+
+            _log($"{node} failed: {error}");
         }
     }
 

@@ -1,6 +1,12 @@
 # Interfaces design: one flow per source, every OSDU type through one generic pipeline
 
-Status: proposal for review. Nothing here is built yet.
+Status: accepted, and built stage by stage ([osdu-coverage-plan.md](osdu-coverage-plan.md)). Built so far: the
+document model with both forms, the ledger identity per interface and `ledger:` adoption, the read model of sources
+and interfaces, route resolution from what an interface declares with its refusals, `after:` and the waves, the source
+runtime with its preflight, stop rules and outcome, and the API and CLI selection of interfaces (sections 3, 4, 8 and
+10, and the routes of section 5.2 that the four existing protocols deliver). The rest of this document is the design
+the later stages build. What shipped is documented in [../osdu/docs/documents.md](../osdu/docs/documents.md#a-source-with-interfaces)
+and [../osdu/docs/operations.md](../osdu/docs/operations.md#running-a-source).
 
 ## 1. Why
 
@@ -84,7 +90,7 @@ interfaces:
   seismic:
     record: { object: Petrel.ing.Seismic, key: [survey, line], primaryKey: RecId }
     files: { root: ../data/seismic, locationColumn: segy_folder, pattern: "*.segy" }
-    batch: manifest
+    route: manifest
     mapping: SeismicTraceData@1.3.0
 ```
 
@@ -97,8 +103,7 @@ An interface states **what** it is:
 | `mapping` | The pinned mapping. Its template fixes the interface's kind. |
 | `files` | Files the record carries as datasets, uploaded and registered before the record. |
 | `bulk` | Tabular bulk data a DDMS stores for the record, written after the record. |
-| `batch` | `record` (default) or `manifest`: send the interface's records through the ingestion workflow in batches. |
-| `route` | Optional override of the route the system chooses (section 5). |
+| `route` | Optional: the route, instead of the one the system chooses (section 5). `manifest` sends the interface's records through the ingestion workflow in batches. |
 | `after` | Optional list of interfaces this one waits for, beside the ones the schemas imply (section 6). |
 | `failWhen` | Optional thresholds that turn record failures into an interface failure (section 8). |
 | `render`, `change`, `reliability` | Optional overrides of the source's defaults. |
@@ -145,8 +150,8 @@ The shared blocks are written once. The existing top-level `source.record`, `sou
 | `files` naming a collection kind | | `datasetCollection`: the files stored and registered as one dataset (Dataset service), then the record |
 | `bulk` | a DDMS serves the entity type | `ddms`: the record through that DDMS, then the bulk data |
 | `files` and `bulk` | both of the above | `fileAndDdms`: files registered, the record written through the DDMS referring to them, then the bulk data |
-| `batch: manifest` | any of the above but `ddms` | `manifest`: files registered first, then the records in manifests through the ingestion workflow |
-| `batch: manifest` and `bulk` | | `manifestAndDdms`: files registered, the records by manifest, the run polled, then the bulk data through the DDMS |
+| `route: manifest` | any of the above but `ddms` | `manifest`: files registered first, then the records in manifests through the ingestion workflow |
+| `route: manifest` and `bulk` | | `manifestAndDdms`: files registered, the records by manifest, the run polled, then the bulk data through the DDMS |
 
 `route:` overrides the choice. A route that cannot deliver what the interface declares is refused when the flow is
 read (files on `storage`, bulk data without a DDMS). What needs no network is checked when the flow is read; the
@@ -260,8 +265,8 @@ A failed run is never redone from the start. What finished is in the ledger, and
 | A lease a stopped worker held | Recovered with what the worker had written, and the rest sent. |
 | An interface that stopped, and the ones skipped after it | Planned again from their own watermark, and delivered. |
 
-`--set interfaces=...` (or the run page's "run the stopped interfaces") runs only the interfaces that did not
-complete. A record can be redelivered or released on its own, as today.
+A run whose payload names `interfaces` (or the run page's "run the stopped interfaces") runs only the interfaces
+that did not complete. A record can be redelivered or released on its own, as today.
 
 ## 9. Keeping a source manageable
 
@@ -279,9 +284,9 @@ complete. A record can be redelivered or released on its own, as today.
 
 ## 10. Running part of a source
 
-- `sqlflow run <flow> --set interfaces=wells,wellbores` plans and delivers only those, and the interfaces they depend
-  on are not run: their records are read from the ledger as they are.
-- A record-scoped run (redeliver, release) names the interface with the record key.
+- `sqlflow run <flow> --payload '{"interfaces":["wells","wellbores"]}'` plans and delivers only those, and the
+  interfaces they depend on are not run: their records are read from the ledger as they are.
+- A record-scoped run (redeliver, release) names the interface in its payload (`interface`) beside the record keys.
 - A redelivery can name the part to send again: `record`, `files`, `bulk`, or `all`. Only that part is sent; the
   others keep what OSDU holds (the record keeps its dataset references and its DDMS bulk link, and a bulk resend
   writes a new bulk version on the same record).
@@ -295,8 +300,8 @@ complete. A record can be redelivered or released on its own, as today.
   existing ledgers, OSDU id claims and history carry on unchanged.
 - The sample estate becomes one source file, `recall.yaml`, whose `wellbores` and `welllogs` interfaces adopt the
   ledgers of `recall-wellbore` and `recall-welllog` with `ledger:`.
-- `target.protocol` keeps working as a route override: `osduRecord` is `storage`, `osduFile` is `file`,
-  `osduManifest` is `batch: manifest`, `osduWellLog` is `ddms` with the well log collection.
+- `target.protocol` keeps working in the single form: `osduRecord` is `storage`, `osduFile` is `file`,
+  `osduManifest` is `manifest`, `osduWellLog` is `ddms` with the well log collection.
 - The GUI, API and CLI gain the interface as a filter and the source as a roll-up; the record routes keep their
   ledger identity in the path.
 
@@ -329,12 +334,12 @@ complete. A record can be redelivered or released on its own, as today.
 
 ## 14. Open questions
 
-1. **Which DDMSs are in scope?** Each needs its OpenAPI specification beside the existing ones before its route
-   type is built.
+1. **Which DDMSs are in scope?** Answered: every DDMS. Each has its contract pinned in `osdu/specs` before its route
+   type is built ([osdu-coverage-plan.md](osdu-coverage-plan.md)).
 2. **Is the Register service's DDMS registry filled in your deployments?** If not, `target.ddms` is the way DDMSs
    are declared.
 3. **References to records outside the ledger:** trust them (the default here) or check them in storage before
    sending?
 4. **Manifests too large to send inline:** OSDU documents a manifest stored as a dataset and the workflow started
    with its record id. It needs its specification before it is designed.
-5. **The name `interfaces`:** keep it, or use another word for an entry of a source file.
+5. **The name `interfaces`:** kept.

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -29,11 +30,24 @@ using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
-/// <summary>A delivery flow's record counts by state, drift, throughput, and its last submission: the flow's dashboard card.</summary>
+/// <summary>
+/// A delivery flow's record counts by state, drift, throughput, and its last submission: the flow's dashboard card. For one
+/// interface it carries the interface and its ledger identity; for a source as a whole it adds its interfaces up, carries
+/// no single ledger identity (<see cref="Guid.Empty"/>) and no interface.
+/// </summary>
 public sealed record DeliveryFlowStatsDto(
     Guid PipelineId, string FlowName, Guid FlowId, long Total, long Pending, long Delivering, long Delivered, long Held, long Failed,
     long Deleted, long Drifted, long DeliveredLast24h, DateTime? LastDeliveredUtc, DateTime? LastVerifiedUtc, long Submissions,
-    DeliverySubmissionDto? LastSubmission);
+    DeliverySubmissionDto? LastSubmission, string? Interface = null, int Interfaces = 1);
+
+/// <summary>
+/// One interface of a delivery flow (docs/interfaces-design.md): its ledger identity, how it is delivered and why, the
+/// mapping and kind it delivers, the record table it reads, what it waits for, and its record counts. A flow in the single
+/// form lists one, with no name.
+/// </summary>
+public sealed record DeliveryInterfaceDto(
+    string? Interface, Guid FlowId, string Ledger, string Route, string? RouteReason, string Mapping, string? Kind, string RecordObject,
+    IReadOnlyList<string> After, DeliveryFlowStatsDto Stats);
 
 /// <summary>
 /// One plan of a flow over its ingestion tables as the ledger received it, and what became of it: which selection it
@@ -72,10 +86,10 @@ public sealed record DeliveryRecordDto(
     string? PendingSourceFileName, long? PendingSourceRowNumber, DateTime? PendingSourceUpdatedUtc,
     string? SourceKeyJson, DateTime? PlanRequestedUtc);
 
-/// <summary>A record with the pipeline it belongs to. The pending document itself lives in the submission's work batches on
-/// storage, which the nodes read; its reference and batch are on the record.</summary>
+/// <summary>A record with the pipeline (and, for a source, the interface) it belongs to. The pending document itself lives in
+/// the submission's work batches on storage, which the nodes read; its reference and batch are on the record.</summary>
 public sealed record DeliveryRecordDetailDto(
-    DeliveryRecordDto Record, Guid? PipelineId, Guid? RepoId, string? FlowName);
+    DeliveryRecordDto Record, Guid? PipelineId, Guid? RepoId, string? FlowName, string? Interface = null);
 
 /// <summary>One delivery try, as the append-only history holds it: its outcome, and every step with what the target returned.</summary>
 public sealed record DeliveryAttemptDto(
@@ -88,9 +102,9 @@ public sealed record DeliveryActivityDto(
     long ActivityId, Guid FlowId, string FlowName, string Kind, string Actor, DateTime StartedUtc, DateTime? CompletedUtc,
     string Outcome, string? ParametersJson, Guid? SubmissionId, Guid? DeliveryKey, Guid? RunId, string? Summary, string? Log);
 
-/// <summary>A submission with the attempts it produced and the runs that carried it.</summary>
+/// <summary>A submission with the pipeline and interface that planned it, and the runs that carried it.</summary>
 public sealed record DeliverySubmissionDetailDto(
-    DeliverySubmissionDto Submission, Guid? PipelineId, IReadOnlyList<Guid> RunIds);
+    DeliverySubmissionDto Submission, Guid? PipelineId, IReadOnlyList<Guid> RunIds, string? Interface = null);
 
 /// <summary>A mapping document as the sync found it in a repository.</summary>
 public sealed record DeliveryMappingDto(
@@ -209,7 +223,7 @@ public sealed record DeliveryRedeliverResult(int Marked, Guid? RunId);
 /// </summary>
 public sealed record DeliveryTargetDto(
     Guid PipelineId, string FlowName, string Endpoint, string? DataPartition, string Protocol, string AuthType,
-    string RecordPath, string HistoryPath, string EverythingPath);
+    string RecordPath, string HistoryPath, string EverythingPath, string? Interface = null);
 
 /// <summary>The listing a removal is aimed at, the same filter the records list is built from.</summary>
 public sealed record DeliveryRecordFilterDto(
@@ -268,6 +282,7 @@ public static class DeliveryEndpoints
         ArgumentNullException.ThrowIfNull(group);
         var delivery = group.MapGroup("/delivery").WithTags("Delivery");
         delivery.MapGet("/flows/{pipelineId:guid}/stats", GetStatsAsync).WithName("GetDeliveryFlowStats");
+        delivery.MapGet("/flows/{pipelineId:guid}/interfaces", ListInterfacesAsync).WithName("ListDeliveryInterfaces");
         delivery.MapGet("/flows/{pipelineId:guid}/records", ListRecordsAsync).WithName("ListDeliveryRecords");
         delivery.MapGet("/flows/{pipelineId:guid}/target", GetTargetAsync).WithName("GetDeliveryTarget");
         delivery.MapGet("/flows/{pipelineId:guid}/submissions", ListSubmissionsAsync).WithName("ListDeliverySubmissions");
@@ -314,27 +329,87 @@ public static class DeliveryEndpoints
 
     // ---- Reads ---------------------------------------------------------------------------------------------------
 
+    /// <summary>
+    /// A flow's dashboard card: one interface's counts when the request names it (or the flow has one), and the sum of
+    /// every interface's otherwise, which is what a source as a whole holds.
+    /// </summary>
     private static async Task<Results<Ok<DeliveryFlowStatsDto>, ProblemHttpResult>> GetStatsAsync(
-        Guid pipelineId, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, TimeProvider clock, CancellationToken ct)
+        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, TimeProvider clock, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
-        if (flow is null)
+        var (source, problem) = await ResolveSourceAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        if (source is null)
         {
             return problem!;
         }
 
-        var stats = await ledger.StatsAsync(flow.FlowId, clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-        return TypedResults.Ok(new DeliveryFlowStatsDto(
-            flow.Pipeline.Id, flow.Pipeline.Name, flow.FlowId, stats.Total, stats.Pending, stats.Delivering, stats.Delivered, stats.Held,
-            stats.Failed, stats.Deleted, stats.Drifted, stats.DeliveredLast24h, stats.LastDeliveredUtc, stats.LastVerifiedUtc, stats.Submissions,
-            stats.LastSubmission is null ? null : ToDto(stats.LastSubmission)));
+        IReadOnlyList<FlowDefinition> flows;
+        if (interfaceName is null)
+        {
+            flows = source.Source.Interfaces;
+        }
+        else if (Pick(source.Source, interfaceName, out var named) is { } unknown)
+        {
+            return unknown;
+        }
+        else
+        {
+            flows = [named!];
+        }
+
+        var now = clock.GetUtcNow().UtcDateTime;
+        var stats = new List<(FlowDefinition Flow, FlowStats Stats)>(flows.Count);
+        foreach (var flow in flows)
+        {
+            stats.Add((flow, await ledger.StatsAsync(flow.Id, now, ct).ConfigureAwait(false)));
+        }
+
+        return TypedResults.Ok(StatsDto(source.Pipeline, stats));
+    }
+
+    /// <summary>A flow's interfaces in document order, each with how it is delivered, what it waits for and its counts.</summary>
+    private static async Task<Results<Ok<IReadOnlyList<DeliveryInterfaceDto>>, ProblemHttpResult>> ListInterfacesAsync(
+        Guid pipelineId, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, TimeProvider clock, CancellationToken ct)
+    {
+        var (source, problem) = await ResolveSourceAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        if (source is null)
+        {
+            return problem!;
+        }
+
+        // The kind each mapping fills is what the repository sync read; a mapping it could not read has none yet.
+        var described = await DeliveryInterfaceCatalog.OfFlowAsync(osdu, source.Pipeline.RepoId, source.Pipeline.Name, ct).ConfigureAwait(false);
+        var now = clock.GetUtcNow().UtcDateTime;
+        var result = new List<DeliveryInterfaceDto>(source.Source.Interfaces.Count);
+        foreach (var flow in source.Source.Interfaces)
+        {
+            var stats = await ledger.StatsAsync(flow.Id, now, ct).ConfigureAwait(false);
+            var kind = described.FirstOrDefault(d => d.LedgerFlowId == flow.Id)?.Kind;
+            result.Add(new DeliveryInterfaceDto(
+                flow.Interface, flow.Id, flow.LedgerName, RouteChecks.Name(flow.Target.Protocol), flow.RouteReason, flow.Render.Mapping,
+                string.IsNullOrEmpty(kind) ? null : kind, flow.Source.Record.Object, flow.After, StatsDto(source.Pipeline, [(flow, stats)])));
+        }
+
+        return TypedResults.Ok<IReadOnlyList<DeliveryInterfaceDto>>(result);
+    }
+
+    /// <summary>The dashboard card of one interface, or of several added up.</summary>
+    private static DeliveryFlowStatsDto StatsDto(CatalogPipeline pipeline, IReadOnlyList<(FlowDefinition Flow, FlowStats Stats)> stats)
+    {
+        var one = stats.Count == 1 ? stats[0].Flow : null;
+        var last = stats.Select(s => s.Stats.LastSubmission).OfType<SubmissionState>().OrderByDescending(s => s.ReceivedUtc).FirstOrDefault();
+        return new DeliveryFlowStatsDto(
+            pipeline.Id, pipeline.Name, one?.Id ?? Guid.Empty,
+            stats.Sum(s => s.Stats.Total), stats.Sum(s => s.Stats.Pending), stats.Sum(s => s.Stats.Delivering), stats.Sum(s => s.Stats.Delivered),
+            stats.Sum(s => s.Stats.Held), stats.Sum(s => s.Stats.Failed), stats.Sum(s => s.Stats.Deleted), stats.Sum(s => s.Stats.Drifted),
+            stats.Sum(s => s.Stats.DeliveredLast24h), stats.Max(s => s.Stats.LastDeliveredUtc), stats.Max(s => s.Stats.LastVerifiedUtc),
+            stats.Sum(s => s.Stats.Submissions), last is null ? null : ToDto(last), one?.Interface, stats.Count);
     }
 
     private static async Task<Results<Ok<PagedResult<DeliveryRecordDto>>, ProblemHttpResult>> ListRecordsAsync(
-        Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, Guid? runId, bool? drifted, int? page, int? pageSize,
+        Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, Guid? runId, bool? drifted, int? page, int? pageSize, [FromQuery(Name = "interface")] string? interfaceName,
         CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -397,16 +472,16 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryTargetDto>, ProblemHttpResult>> GetTargetAsync(
-        Guid pipelineId, CatalogDbContext db, DeliveryDocumentLoader documents, CancellationToken ct)
+        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
         return flow is null ? problem! : TypedResults.Ok(ToTargetDto(flow));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliverySubmissionDto>>, ProblemHttpResult>> ListSubmissionsAsync(
-        Guid pipelineId, int? max, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        Guid pipelineId, int? max, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -440,7 +515,7 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryRecordDetailDto>, ProblemHttpResult>> GetRecordAsync(
-        Guid flowId, Guid key, CatalogDbContext db, ILedger ledger, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
     {
         var record = await ledger.GetRecordAsync(flowId, new DeliveryKey(key), ct).ConfigureAwait(false);
         if (record is null)
@@ -448,8 +523,9 @@ public static class DeliveryEndpoints
             return RecordNotFound(flowId, key);
         }
 
-        var pipeline = await FindPipelineAsync(db, record.FlowId, ct).ConfigureAwait(false);
-        return TypedResults.Ok(new DeliveryRecordDetailDto(ToDto(record), pipeline?.Id, pipeline?.RepoId, pipeline?.Name));
+        var found = await DeliveryPipelines.ForLedgerAsync(db, osdu, record.FlowId, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new DeliveryRecordDetailDto(
+            ToDto(record), found?.Pipeline.Id, found?.Pipeline.RepoId, found?.Pipeline.Name, NamedInterface(found)));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliveryAttemptDto>>, ProblemHttpResult>> ListRecordAttemptsAsync(
@@ -480,7 +556,7 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<DeliverySubmissionDetailDto>, ProblemHttpResult>> GetSubmissionAsync(
-        Guid submissionId, CatalogDbContext db, ILedger ledger, CancellationToken ct)
+        Guid submissionId, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
     {
         var submission = await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false);
         if (submission is null)
@@ -488,9 +564,9 @@ public static class DeliveryEndpoints
             return NotFound("submission", submissionId);
         }
 
-        var pipeline = await FindPipelineAsync(db, submission.FlowId, ct).ConfigureAwait(false);
-        var runIds = await SubmissionRunsAsync(db, submissionId, submission.RunId, pipeline?.Id, ct).ConfigureAwait(false);
-        return TypedResults.Ok(new DeliverySubmissionDetailDto(ToDto(submission), pipeline?.Id, runIds));
+        var found = await DeliveryPipelines.ForLedgerAsync(db, osdu, submission.FlowId, ct).ConfigureAwait(false);
+        var runIds = await SubmissionRunsAsync(db, submissionId, submission.RunId, found?.Pipeline.Id, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new DeliverySubmissionDetailDto(ToDto(submission), found?.Pipeline.Id, runIds, NamedInterface(found)));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliveryAttemptDto>>, ProblemHttpResult>> ListSubmissionAttemptsAsync(
@@ -541,12 +617,12 @@ public static class DeliveryEndpoints
 
     private static async Task<Results<Ok<PagedResult<DeliveryActivityDto>>, ProblemHttpResult>> ListActivitiesAsync(
         Guid? pipelineId, Guid? submissionId, Guid? runId, string? kind, string? actor, string? outcome, DateTime? since, DateTime? until,
-        int? page, int? pageSize, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        int? page, int? pageSize, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
     {
         Guid? flowId = null;
         if (pipelineId is { } pid)
         {
-            var (flow, problem) = await ResolveAsync(db, documents, pid, ct).ConfigureAwait(false);
+            var (flow, problem) = await ResolveAsync(db, documents, pid, interfaceName, ct).ConfigureAwait(false);
             if (flow is null)
             {
                 return problem!;
@@ -948,10 +1024,10 @@ public static class DeliveryEndpoints
     // ---- Interventions -------------------------------------------------------------------------------------------
 
     private static async Task<Results<Ok<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseFlowAsync(
-        Guid pipelineId, DeliveryReleaseRequest? request, CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine,
+        Guid pipelineId, DeliveryReleaseRequest? request, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine,
         ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -965,9 +1041,9 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseRecordAsync(
-        Guid flowId, Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger, ClaimsPrincipal user, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
         if (flow is null || record is null)
         {
             return problem!;
@@ -980,10 +1056,10 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryRedeliverResult>, Accepted<DeliveryRedeliverResult>, ProblemHttpResult>> RedeliverAsync(
-        Guid flowId, Guid key, DeliveryRedeliverRequest? request, CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger,
+        Guid flowId, Guid key, DeliveryRedeliverRequest? request, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger,
         IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
         if (flow is null || record is null)
         {
             return problem!;
@@ -1006,7 +1082,7 @@ public static class DeliveryEndpoints
             {
                 Operation = DeliveryOperations.Deliver,
                 Values = SubmissionValues(last?.ParametersJson),
-                Payload = new DeliveryRunPayload { RecordKeys = [key], Redeliver = scope.ToString().ToLowerInvariant() }.ToJson(),
+                Payload = new DeliveryRunPayload { RecordKeys = [key], Redeliver = scope.ToString().ToLowerInvariant(), Interface = flow.Flow.Interface }.ToJson(),
             };
             var runId = await EnqueueRunAsync(db, dispatcher, flow, parameters, request?.Pool, user, ct).ConfigureAwait(false);
             return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryRedeliverResult(1, runId));
@@ -1025,9 +1101,9 @@ public static class DeliveryEndpoints
     /// system columns, its child datasets and the origin file and row the ingestion tables record.
     /// </summary>
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadSourceAsync(
-        Guid flowId, Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
         if (flow is null || record is null)
         {
             return problem!;
@@ -1064,9 +1140,9 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Accepted<DeliveryRunAccepted>, ProblemHttpResult>> VerifyRecordAsync(
-        Guid flowId, Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
         if (flow is null || record is null)
         {
             return problem!;
@@ -1075,16 +1151,16 @@ public static class DeliveryEndpoints
         var parameters = new RunParameters
         {
             Operation = DeliveryOperations.Verify,
-            Payload = new DeliveryRunPayload { RecordKeys = [key], Force = true }.ToJson(),
+            Payload = new DeliveryRunPayload { RecordKeys = [key], Force = true, Interface = flow.Flow.Interface }.ToJson(),
         };
         var runId = await EnqueueRunAsync(db, dispatcher, flow, parameters, null, user, ct).ConfigureAwait(false);
         return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryRunAccepted(runId, RunStatuses.Queued));
     }
 
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadRecordAsync(
-        Guid flowId, Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
         if (flow is null || record is null)
         {
             return problem!;
@@ -1099,10 +1175,10 @@ public static class DeliveryEndpoints
     /// delete are the same operation, the same ledger writes and the same result shape.
     /// </summary>
     private static async Task<Results<Accepted<DeliveryRemovalAccepted>, ProblemHttpResult>> DeleteRecordAsync(
-        Guid flowId, Guid key, DeliveryRemovalRequest? request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher,
+        Guid flowId, Guid key, DeliveryRemovalRequest? request, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher,
         ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
         if (flow is null || record is null)
         {
             return problem!;
@@ -1123,10 +1199,10 @@ public static class DeliveryEndpoints
     /// of quietly widening it.
     /// </summary>
     private static async Task<Results<Accepted<DeliveryRemovalAccepted>, ProblemHttpResult>> RemoveRecordsAsync(
-        Guid pipelineId, DeliveryRemovalRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger,
+        Guid pipelineId, DeliveryRemovalRequest request, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger,
         IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -1206,9 +1282,9 @@ public static class DeliveryEndpoints
 
     /// <summary>What a removal would take away, and from where: the confirmation's contents, computed not guessed.</summary>
     private static async Task<Results<Ok<DeliveryRemovalPreview>, ProblemHttpResult>> PreviewRemovalAsync(
-        Guid pipelineId, DeliveryRemovalRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        Guid pipelineId, DeliveryRemovalRequest request, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -1304,13 +1380,13 @@ public static class DeliveryEndpoints
         var paths = RemovalEndpoints.Of(target);
         return new DeliveryTargetDto(
             flow.Pipeline.Id, flow.Pipeline.Name, target.Endpoint, partition, target.Protocol.ToString(),
-            target.Auth.Type.ToString(), paths.Record, paths.History, paths.Everything);
+            target.Auth.Type.ToString(), paths.Record, paths.History, paths.Everything, flow.Flow.Interface);
     }
 
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ProbeAsync(
-        Guid pipelineId, CatalogDbContext db, DeliveryDocumentLoader documents, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -1333,13 +1409,28 @@ public static class DeliveryEndpoints
 
     // ---- Plumbing ------------------------------------------------------------------------------------------------
 
-    internal sealed record FlowContext(CatalogPipeline Pipeline, FlowDefinition Flow)
+    /// <summary>A delivery pipeline, the source its catalog copy declares, and the interface of it a request acts on.</summary>
+    internal sealed record FlowContext(CatalogPipeline Pipeline, SourceDefinition Source, FlowDefinition Flow)
     {
         public Guid FlowId => Flow.Id;
     }
 
-    /// <summary>The delivery pipeline and its parsed flow, or the problem to answer with.</summary>
+    /// <summary>A delivery pipeline and the source its catalog copy declares.</summary>
+    internal sealed record SourceContext(CatalogPipeline Pipeline, SourceDefinition Source);
+
+    /// <summary>
+    /// The delivery pipeline, and the interface of it the request names, or the problem to answer with. A flow in the single
+    /// form, and a source of one interface, need no name; a source of several has to be told which.
+    /// </summary>
     internal static async Task<(FlowContext? Flow, ProblemHttpResult? Problem)> ResolveAsync(
+        CatalogDbContext db, DeliveryDocumentLoader documents, Guid pipelineId, string? interfaceName, CancellationToken ct)
+    {
+        var (source, problem) = await ResolveSourceAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
+        return source is null ? (null, problem) : Select(source, interfaceName);
+    }
+
+    /// <summary>The delivery pipeline and its parsed source, or the problem to answer with.</summary>
+    internal static async Task<(SourceContext? Source, ProblemHttpResult? Problem)> ResolveSourceAsync(
         CatalogDbContext db, DeliveryDocumentLoader documents, Guid pipelineId, CancellationToken ct)
     {
         var pipeline = await db.Pipelines.AsNoTracking().FirstOrDefaultAsync(p => p.Id == pipelineId, ct).ConfigureAwait(false);
@@ -1351,7 +1442,7 @@ public static class DeliveryEndpoints
         return Parse(documents, pipeline);
     }
 
-    internal static (FlowContext? Flow, ProblemHttpResult? Problem) Parse(DeliveryDocumentLoader documents, CatalogPipeline pipeline)
+    internal static (SourceContext? Source, ProblemHttpResult? Problem) Parse(DeliveryDocumentLoader documents, CatalogPipeline pipeline)
     {
         if (!string.Equals(pipeline.Kind, FlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
         {
@@ -1362,7 +1453,7 @@ public static class DeliveryEndpoints
 
         try
         {
-            return (new FlowContext(pipeline, documents.ParseFlow(pipeline.Yaml, pipeline.RelativePath)), null);
+            return (new SourceContext(pipeline, documents.ParseSource(pipeline.Yaml, pipeline.RelativePath)), null);
         }
         catch (FlowValidationException ex)
         {
@@ -1372,12 +1463,46 @@ public static class DeliveryEndpoints
         }
     }
 
+    /// <summary>The interface of a source a request names, as a flow context, or the problem to answer with.</summary>
+    internal static (FlowContext? Flow, ProblemHttpResult? Problem) Select(SourceContext source, string? interfaceName)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (interfaceName is null && source.Source.Interfaces.Count > 1)
+        {
+            return (null, TypedResults.Problem(
+                detail: $"Pipeline '{source.Pipeline.Name}' delivers {source.Source.Interfaces.Count} interfaces ({string.Join(", ", source.Source.Names)}); name the one this request is about with ?interface=.",
+                statusCode: StatusCodes.Status400BadRequest, title: "Interface required"));
+        }
+
+        return Pick(source.Source, interfaceName, out var flow) is { } problem
+            ? (null, problem)
+            : (new FlowContext(source.Pipeline, source.Source, flow!), null);
+    }
+
+    /// <summary>The interface <paramref name="interfaceName"/> names (the only one when it names none), or the problem to answer with.</summary>
+    private static ProblemHttpResult? Pick(SourceDefinition source, string? interfaceName, out FlowDefinition? flow)
+    {
+        try
+        {
+            flow = source.Interface(interfaceName);
+            return null;
+        }
+        catch (DeliveryException ex)
+        {
+            flow = null;
+            return TypedResults.Problem(detail: ex.Message, statusCode: StatusCodes.Status404NotFound, title: "No such interface");
+        }
+    }
+
+    /// <summary>The interface a ledger identity's pipeline names, or null for a flow in the single form.</summary>
+    private static string? NamedInterface(LedgerPipeline? found) => found is { Interface.Length: > 0 } ? found.Interface : null;
+
     /// <summary>
     /// One flow's record and the pipeline behind it: the delivery flow whose name yields the flow id. An intervention acts
     /// on that flow's record only, never on another flow's record of the same source row.
     /// </summary>
     private static async Task<(FlowContext? Flow, RecordState? Record, ProblemHttpResult? Problem)> ResolveForRecordAsync(
-        CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, Guid flowId, Guid key, CancellationToken ct)
+        CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, Guid flowId, Guid key, CancellationToken ct)
     {
         var record = await ledger.GetRecordAsync(flowId, new DeliveryKey(key), ct).ConfigureAwait(false);
         if (record is null)
@@ -1385,16 +1510,22 @@ public static class DeliveryEndpoints
             return (null, null, RecordNotFound(flowId, key));
         }
 
-        var pipeline = await FindPipelineAsync(db, record.FlowId, ct).ConfigureAwait(false);
-        if (pipeline is null)
+        var found = await DeliveryPipelines.ForLedgerAsync(db, osdu, record.FlowId, ct).ConfigureAwait(false);
+        if (found is null)
         {
             return (null, null, TypedResults.Problem(
                 detail: "The record's flow is no longer in any synced repository, so nothing can act on it. Restore the flow document and sync.",
                 statusCode: StatusCodes.Status409Conflict, title: "Flow not in catalog"));
         }
 
-        var (flow, problem) = Parse(documents, pipeline);
-        return flow is null ? (null, null, problem) : (flow, record, null);
+        var (source, problem) = Parse(documents, found.Pipeline);
+        if (source is null)
+        {
+            return (null, null, problem);
+        }
+
+        var (flow, missing) = Select(source, found.Interface.Length == 0 ? null : found.Interface);
+        return flow is null ? (null, null, missing) : (flow, record, null);
     }
 
     /// <summary>
@@ -1415,17 +1546,6 @@ public static class DeliveryEndpoints
             .Select(r => r.RunId)
             .Take(MaxSubmissionRuns)
             .ToListAsync(ct).ConfigureAwait(false);
-    }
-
-    /// <summary>The active delivery pipeline whose flow name yields <paramref name="flowId"/>; the ledger keys flows by name.</summary>
-    private static async Task<CatalogPipeline?> FindPipelineAsync(CatalogDbContext db, Guid flowId, CancellationToken ct)
-    {
-        var candidates = await db.Pipelines.AsNoTracking()
-            .Where(p => p.Kind == FlowDefinition.FlowTypeName)
-            .Select(p => new { p.Id, p.Name, p.Active })
-            .ToListAsync(ct).ConfigureAwait(false);
-        var match = candidates.Where(c => FlowId.Of(c.Name) == flowId).OrderByDescending(c => c.Active).FirstOrDefault();
-        return match is null ? null : await db.Pipelines.AsNoTracking().FirstOrDefaultAsync(p => p.Id == match.Id, ct).ConfigureAwait(false);
     }
 
     private static Task<Guid> EnqueueRunAsync(
@@ -1454,18 +1574,28 @@ public static class DeliveryEndpoints
                 statusCode: StatusCodes.Status409Conflict, title: "Repository not materialized");
         }
 
+        var taskArguments = new Dictionary<string, string>(arguments, StringComparer.Ordinal)
+        {
+            ["repoRoot"] = rootPath,
+            ["relativePath"] = flow.Pipeline.RelativePath,
+            ["actor"] = RequestActor.Label(user),
+        };
+        if (flow.Flow.Interface is { } interfaceName)
+        {
+            // The node acts through this interface of the source, and through no other.
+            taskArguments["interface"] = interfaceName;
+        }
+
         var payload = new ComputeTaskPayload
         {
             Operation = operation,
             SourceRef = flow.Pipeline.Name,
-            Arguments = new Dictionary<string, string>(arguments, StringComparer.Ordinal)
-            {
-                ["repoRoot"] = rootPath,
-                ["relativePath"] = flow.Pipeline.RelativePath,
-                ["actor"] = RequestActor.Label(user),
-            },
+            Arguments = taskArguments,
         };
-        payload.Validate();
+
+        // The operation is one of the module's own (the node registers it beside the platform's), so the payload is
+        // checked as a registered operation's: the platform's own list of operations does not name it.
+        payload.Validate([operation]);
         var taskId = await dispatcher.EnqueueComputeTaskAsync(
             db,
             new ComputeTaskEnqueueRequest(operation, flow.Pipeline.Name, FlowDefinition.FlowTypeName, payload.ToJson(), RequestedBy: RequestActor.Of(user)),

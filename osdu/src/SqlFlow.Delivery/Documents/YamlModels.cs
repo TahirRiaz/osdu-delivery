@@ -41,6 +41,73 @@ internal sealed class FlowYaml
     public FlowReliabilityYaml? Reliability { get; set; }
 
     public FlowVerifyYaml? Verify { get; set; }
+
+    public FailWhenYaml? FailWhen { get; set; }
+
+    /// <summary>The source's interfaces, by name, in document order; null for the single form.</summary>
+    public OrderedDictionary<string, InterfaceYaml?>? Interfaces { get; set; }
+}
+
+/// <summary>
+/// One interface of a source: its record table, its mapping and what its records carry, and the overrides of the
+/// source's shared blocks. Everything else (the connection, the work location, the target) is the source's.
+/// </summary>
+internal sealed class InterfaceYaml
+{
+    public string? Description { get; set; }
+
+    public string? Ledger { get; set; }
+
+    public FlowSourceTableYaml? Record { get; set; }
+
+    public Dictionary<string, FlowSourceDatasetYaml>? Datasets { get; set; }
+
+    public FlowPayloadYaml? Files { get; set; }
+
+    public FlowPayloadYaml? Bulk { get; set; }
+
+    public string? LastModified { get; set; }
+
+    public FlowSystemColumnsYaml? SystemColumns { get; set; }
+
+    public FlowIncrementalYaml? Incremental { get; set; }
+
+    public string? Mapping { get; set; }
+
+    public string? Route { get; set; }
+
+    public ProtocolOptionsYaml? ProtocolOptions { get; set; }
+
+    public List<string>? After { get; set; }
+
+    public FailWhenYaml? FailWhen { get; set; }
+
+    public InterfaceRenderYaml? Render { get; set; }
+
+    public FlowChangeYaml? Change { get; set; }
+
+    public FlowReliabilityYaml? Reliability { get; set; }
+
+    public FlowVerifyYaml? Verify { get; set; }
+}
+
+/// <summary>What an interface may override of the source's render block: the mapping is the interface's own key.</summary>
+internal sealed class InterfaceRenderYaml
+{
+    public string? CacheVersion { get; set; }
+
+    public Dictionary<string, string>? Parameters { get; set; }
+}
+
+internal sealed class FailWhenYaml
+{
+    public double? FailedPercent { get; set; }
+
+    public int? MinRecords { get; set; }
+
+    public int? ConsecutiveFailures { get; set; }
+
+    public int? OutageFailures { get; set; }
 }
 
 internal sealed class FlowParameterYaml
@@ -367,6 +434,9 @@ internal sealed class FlowReliabilityYaml
     public int? FanOutMinRecords { get; set; }
 
     public int? RenderParallelism { get; set; }
+
+    /// <summary>A source's setting only: how many of its interfaces run at once.</summary>
+    public int? ParallelInterfaces { get; set; }
 }
 
 internal sealed class FlowRetryYaml

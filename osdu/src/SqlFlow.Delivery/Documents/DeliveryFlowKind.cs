@@ -6,39 +6,41 @@ using SqlFlow.Yaml;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// A delivery flow as the platform sees it: the parsed <see cref="FlowDefinition"/> behind the headers every catalog
-/// consumer reads (name, batch, the record table as the source reference, the source connection reference, the OSDU
+/// A delivery flow as the platform sees it: the parsed <see cref="SourceDefinition"/> behind the headers every catalog
+/// consumer reads (name, batch, the record tables as the source reference, the source connection reference, the OSDU
 /// endpoint as the target reference, the credential references the hygiene check inspects), and its lineage: the
-/// ingestion tables, payload files and cache types it reads and the OSDU types it writes (<see cref="DeliveryLineage"/>).
-/// A delivery flow always needs its repository tree: its mappings live next to it.
+/// ingestion tables, payload files and cache types each interface reads and the OSDU types it writes
+/// (<see cref="DeliveryLineage"/>). A delivery flow always needs its repository tree: its mappings live next to it.
 /// </summary>
 public sealed record DeliveryFlowDocument : RegisteredFlowDocument
 {
-    /// <summary>What lineage reads the flow's mapping with. The loader holds no state, so one serves every document.</summary>
+    /// <summary>What lineage reads the flows' mappings with. The loader holds no state, so one serves every document.</summary>
     private static readonly DeliveryDocumentLoader MappingDocuments = new();
 
-    public required FlowDefinition Flow { get; init; }
+    public required SourceDefinition Source { get; init; }
 
-    public override string Name => Flow.Name;
+    public override string Name => Source.Name;
 
     public override string Kind => FlowDefinition.FlowTypeName;
 
-    public override string? Batch => Flow.Batch;
+    public override string? Batch => Source.Batch;
 
-    public override string? SourceConnectionReference => Flow.Source.Connection;
+    public override string? SourceConnectionReference => Source.Connection;
 
-    public override string? SourceReference => Flow.Source.Record.Object;
+    /// <summary>The record tables the interfaces read, in document order.</summary>
+    public override string? SourceReference => string.Join(", ", Source.Interfaces.Select(i => i.Source.Record.Object).Distinct(StringComparer.OrdinalIgnoreCase));
 
-    public override string? TargetReference => Flow.Target.Endpoint;
+    public override string? TargetReference => Source.Endpoint;
 
-    public override IEnumerable<KeyValuePair<string, string>> CredentialReferences => Flow.CredentialReferences();
+    public override IEnumerable<KeyValuePair<string, string>> CredentialReferences => Source.CredentialReferences();
 
     public override bool RequiresRepoTree => true;
 
-    public override IReadOnlyList<DeclaredDataObject> DeclaredObjects => DeliveryLineage.DeclaredObjects(Flow);
+    public override IReadOnlyList<DeclaredDataObject> DeclaredObjects
+        => Source.Interfaces.SelectMany(DeliveryLineage.DeclaredObjects).Distinct().ToList();
 
     public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
-        => DeliveryLineage.Describe(Flow, context, MappingDocuments);
+        => DeliveryLineage.Describe(Source, context, MappingDocuments);
 }
 
 /// <summary>The <c>flowType: delivery</c> document kind, registered in every host next to its executor; it also owns
@@ -83,7 +85,7 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
     public RegisteredFlowDocument Parse(string yaml, string source)
     {
         ArgumentNullException.ThrowIfNull(yaml);
-        return new DeliveryFlowDocument { Flow = _loader.ParseFlow(yaml, source) };
+        return new DeliveryFlowDocument { Source = _loader.ParseSource(yaml, source) };
     }
 
     public void ValidateParameters(RunParameters parameters)

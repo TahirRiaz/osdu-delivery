@@ -26,15 +26,18 @@ public sealed class DeliveryCliModule : ICliModule
         new CliVerb(
             "check",
             [
-                "sqlflow check    <flow.yaml> [--set k=v] [--connect]",
+                "sqlflow check    <flow.yaml> [--interface <name>] [--set k=v] [--connect]",
                 "                                   The delivery preflight: the flow's documents, its mapping against the",
                 "                                   pinned template, and the version of the cache it reads (needs --db:",
                 "                                   templates and caches live in the module's database). With --connect it",
                 "                                   also opens the flow's ingestion tables and reports what it would read.",
+                "                                   A flow that declares interfaces is checked one interface at a time, each",
+                "                                   with its route, its ledger and what it waits for; --interface checks one.",
             ],
             DeliveryVerbs.CheckAsync)
         {
             Flags = ["--connect"],
+            ValueOptions = ["--interface"],
         },
         new CliVerb(
             "cache",

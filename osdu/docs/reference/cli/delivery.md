@@ -3,7 +3,7 @@
 ## check
 
 ```bash
-sqlflow check <flow.yaml> [--set name=value]... [--db <ref>] [--json]
+sqlflow check <flow.yaml> [--interface <name>] [--connect] [--set name=value]... [--db <ref>] [--json]
 ```
 
 Everything checkable without OSDU: the flow and the pinned mapping parse, the template the mapping pins loads from
@@ -22,6 +22,14 @@ Templates and caches live in the catalog, so `check` needs the catalog connectio
 `--set` supplies the flow's own parameters (`logSource=STAT_COMP`). `--json` prints the resolved facts (flow id,
 mapping reference, the template's kind and version, render context, layout, and the cache read with its
 `partition`, `version` and `types` count, null when the mapping reads no cache).
+
+A flow that declares interfaces ([documents.md](../../documents.md#a-source-with-interfaces)) is checked one
+interface at a time, the same checks for each, plus whether its route can deliver the kind its mapping renders. The
+text output starts with a line giving the order the interfaces run in (`recall: 2 of 2 interface(s) checked, in
+the order they run: wellbores then welllogs`), and each interface's block adds its ledger, its route with the reason,
+and what it waits for. `--interface <name>` checks that interface alone. With `--json` the answer is the flow's name
+and an `interfaces` array holding one object per interface, each with its `interface`, `ledger`, `route` (`name` and
+`reason`) and `after` beside the facts above.
 
 ## cache
 
@@ -114,17 +122,29 @@ scoping the run to particular record keys, and choosing what of a scoped record 
 the payload at every trust boundary, so a payload no engine path could honor is refused before anything is queued
 rather than half-applied.
 
+| Field | Meaning | Operations |
+| --- | --- | --- |
+| `force` | `true` lifts the whole-run gates (the tier 0 skip and an already completed submission); each record's own hashes still decide what is sent. | all but `drain` |
+| `submissionId` | The submission the run works on: a re-run, or a fan-out member's share. | all but `verify` and `replan` |
+| `recordKeys` | The delivery keys (UUIDs) the run is scoped to, at most 1,000, each once. Not with `submissionId`. | `deliver`, `plan`, `intake`, `verify` |
+| `redeliver` | What a run scoped to `recordKeys` sends again: `all` (the default), `metadata` or `payload`. | `deliver` |
+| `slices` | The key slices of `submissionId` a fan-out intake member plans (indexes 0 to 1023, each once). | `intake` |
+| `interface` | The one interface of a source the run works on. A run on records or slices of a source with several interfaces has to name it. | all |
+| `interfaces` | The interfaces a run of a source runs, each once; every interface when left out. Not with `interface`, `submissionId`, `recordKeys` or `slices`. | all |
+
 ```bash
 # plan one log source, forcing past the change gates
 sqlflow run flows/recall-welllog.yaml --operation plan --set logSource=STAT_COMP --payload '{"force":true}'
 
 # drain the pending batches of one submission
 sqlflow trigger --repo recall --flow recall-welllog --operation drain --payload @submission.json
-```
 
-> The payload's field names are settled when the module is wired onto the platform's run parameters in stage 2 of
-> [../../../../docs/plan.md](../../../../docs/plan.md). Until then, read them from the kind's own validation in
-> `osdu/src/SqlFlow.Delivery` rather than from this page.
+# deliver two interfaces of a source, and nothing else of it
+sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interfaces":["wellbores","welllogs"]}'
+
+# send the curves of one well log again
+sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interface":"welllogs","recordKeys":["<key>"],"redeliver":"payload"}'
+```
 
 ### The result
 

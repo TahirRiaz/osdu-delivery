@@ -65,7 +65,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         }
 
         // The file the node materialized is where the repository layout (mappings, snapshots) is resolved from.
-        var flow = delivery.Flow with { SourcePath = Path.GetFullPath(flowFile) };
+        var source = delivery.Source.WithSourcePath(Path.GetFullPath(flowFile));
         var parameters = options.Parameters;
         parameters.Validate();
         var operation = DeliveryOperations.Of(parameters);
@@ -74,8 +74,8 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
         var runId = options.RunId ?? Guid.CreateVersion7();
         var actor = string.IsNullOrWhiteSpace(options.Actor) ? "unknown" : options.Actor.Trim();
-        var (runLogger, events, _) = RunArtifacts.BuildEventPlumbing(options, flow.Name);
-        var loggers = new RunLogLoggerFactory(runLogger, events, runId, flow.Name);
+        var (runLogger, events, _) = RunArtifacts.BuildEventPlumbing(options, source.Name);
+        var loggers = new RunLogLoggerFactory(runLogger, events, runId, source.Name);
         var log = loggers.CreateLogger("run");
         var context = _provider.GetRequiredService<EngineContext>()
             .WithLoggers(loggers)
@@ -85,16 +85,23 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         object result;
         string? error = null;
         var success = false;
-        LogStart(log, flow.Name, operation, parameters.Describe(), actor, runId);
+        LogStart(log, source.Name, operation, parameters.Describe(), actor, runId);
         try
         {
-            result = await ExecuteOperationAsync(context, flow, operation, parameters, payload, runId, actor, runLogger, log, ct).ConfigureAwait(false);
+            result = await ExecuteOperationAsync(context, source, operation, parameters, payload, runId, actor, runLogger, log, ct).ConfigureAwait(false);
             success = true;
             LogDone(log, operation, stopwatch.Elapsed.TotalSeconds);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
+        }
+        catch (SourceRunIncompleteException incomplete)
+        {
+            // A source whose interfaces did not all complete ends failed, and its outcome still says what each one did.
+            error = RunFailure.Describe(incomplete);
+            LogFailed(log, operation, error, null);
+            result = incomplete.Outcome;
         }
         catch (Exception ex)
         {
@@ -106,11 +113,11 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         }
 
         stopwatch.Stop();
-        var artifact = RunArtifacts.Artifact(FlowDefinition.FlowTypeName, flow.Name, runId, success, error, result, events.Records);
-        var directory = RunArtifacts.Write(flowFile, flow.Name, runId, artifact, runLogger.Render(), null, options.Echo);
+        var artifact = RunArtifacts.Artifact(FlowDefinition.FlowTypeName, source.Name, runId, success, error, result, events.Records);
+        var directory = RunArtifacts.Write(flowFile, source.Name, runId, artifact, runLogger.Render(), null, options.Echo);
         return new DocumentExecutionResult
         {
-            FlowName = flow.Name,
+            FlowName = source.Name,
             FlowKind = FlowDefinition.FlowTypeName,
             Success = success,
             Error = error,
@@ -121,43 +128,154 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         };
     }
 
+    /// <summary>True for the operations that read the ingestion tables and render.</summary>
+    internal static bool ReadsSource(string operation)
+        => operation is DeliveryOperations.Deliver or DeliveryOperations.Plan or DeliveryOperations.Intake or DeliveryOperations.Replan;
+
+    /// <summary>True for the operations that deliver records, which a failure guard watches.</summary>
+    internal static bool Delivers(string operation)
+        => operation is DeliveryOperations.Deliver or DeliveryOperations.Replan or DeliveryOperations.Drain;
+
+    /// <summary>
+    /// A run works on one interface when the flow is in the single form, when it names one, or when what it works on
+    /// belongs to one (a submission, records, slices); otherwise it runs the source's interfaces through a
+    /// <see cref="SourceRuntime"/>.
+    /// </summary>
     private static async Task<object> ExecuteOperationAsync(
-        EngineContext context, FlowDefinition flow, string operation, RunParameters parameters, DeliveryRunPayload payload,
+        EngineContext context, SourceDefinition source, string operation, RunParameters parameters, DeliveryRunPayload payload,
         Guid runId, string actor, RunLogger runLogger, ILogger log, CancellationToken ct)
     {
-        var values = parameters.Values;
+        var (flow, submission) = await TargetInterfaceAsync(context, source, operation, payload, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            var sources = new SourceRuntime(context, source)
+            {
+                Actor = actor,
+                RunId = runId,
+                ActivityLog = runLogger.Render,
+                Values = parameters.Values,
+            };
+            return await sources.ExecuteAsync(operation, payload, ct).ConfigureAwait(false);
+        }
 
         // A run that names a submission works on that submission's records with the parameter values it was registered
         // with, plus any override the trigger carried. A drain works on the submission's batches and reads no source.
-        SubmissionState? submission = null;
-        if (payload.SubmissionId is { } submissionId && operation != DeliveryOperations.Drain)
+        var values = parameters.Values;
+        if (submission is not null)
         {
-            var ledger = context.Ledger ?? throw new DeliveryException(DeliveryServices.NoLedgerMessage);
-            submission = await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false)
-                ?? throw new DeliveryException($"Submission {submissionId:D} is not in the ledger.");
-            if (submission.FlowId != flow.Id)
-            {
-                throw new DeliveryException($"Submission {submissionId:D} belongs to flow '{submission.FlowName}', not '{flow.Name}'.");
-            }
-
             values = Merge(ParseValues(submission.ParametersJson), parameters.Values);
-            LogSubmission(log, submissionId, submission.SourceObject);
+            LogSubmission(log, submission.SubmissionId, submission.SourceObject);
         }
-
-        var readsSource = operation is DeliveryOperations.Deliver or DeliveryOperations.Plan or DeliveryOperations.Intake or DeliveryOperations.Replan;
 
         // Deliver, plan, intake and replan read the ingestion tables and render; verify and drain only touch the target
         // and the ledger, so they need neither the flow's parameters nor its render inputs.
-        using var runtime = readsSource
-            ? await FlowRuntime.CreateAsync(context, flow, values, ct).ConfigureAwait(false)
-            : FlowRuntime.ForTarget(context, flow);
+        var interfaceContext = flow.Interface is null ? context : context.ForInterface(flow.Interface);
+        using var runtime = ReadsSource(operation)
+            ? await FlowRuntime.CreateAsync(interfaceContext, flow, values, ct).ConfigureAwait(false)
+            : FlowRuntime.ForTarget(interfaceContext, flow);
         runtime.Actor = actor;
         runtime.RunId = runId;
         runtime.ActivityLog = runLogger.Render;
+        if (runtime.ReadsSource)
+        {
+            RouteChecks.Check(flow, runtime.Mapping.Mapping.Kind);
+        }
 
+        return await GuardedAsync(runtime, operation, token => ExecuteInterfaceAsync(runtime, operation, payload, submission, log, token), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The interface a run works on, and the submission it names, or no interface for a run of the whole source. A
+    /// submission belongs to the interface whose ledger identity registered it, and a run naming records or slices has to
+    /// name the interface they belong to when the source has several.
+    /// </summary>
+    private static async Task<(FlowDefinition? Flow, SubmissionState? Submission)> TargetInterfaceAsync(
+        EngineContext context, SourceDefinition source, string operation, DeliveryRunPayload payload, CancellationToken ct)
+    {
+        var named = payload.Interface is { } name ? source.Interface(name) : null;
+        SubmissionState? submission = null;
+        if (payload.SubmissionId is { } submissionId)
+        {
+            // Read even for a drain, which needs nothing else of it: a submission is only ever worked on by the interface
+            // whose ledger registered it.
+            var ledger = context.Ledger ?? throw new DeliveryException(DeliveryServices.NoLedgerMessage);
+            submission = await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false)
+                ?? throw new DeliveryException($"Submission {submissionId:D} is not in the ledger.");
+        }
+
+        var flow = named
+            ?? (source.DeclaresInterfaces ? null : source.First)
+            ?? (submission is null ? null : source.ByFlowId(submission.FlowId)
+                ?? throw new DeliveryException($"Submission {submission.SubmissionId:D} belongs to flow '{submission.FlowName}', which is not an interface of '{source.Name}'."));
+
+        if (flow is null)
+        {
+            if (payload.RecordKeys.Count > 0 || payload.Slices.Count > 0)
+            {
+                throw new DeliveryException(
+                    $"Flow '{source.Name}' delivers {source.Interfaces.Count} interface(s) ({string.Join(", ", source.Names)}); a run on records or slices names the interface they belong to with 'interface' in its payload.");
+            }
+
+            source.Select(payload.Interfaces);
+            return (null, null);
+        }
+
+        if (payload.Interfaces.Count > 0)
+        {
+            // The single form has no interfaces to select; this says so by name.
+            source.Select(payload.Interfaces);
+        }
+
+        if (submission is not null && submission.FlowId != flow.Id)
+        {
+            throw new DeliveryException($"Submission {submission.SubmissionId:D} belongs to flow '{submission.FlowName}', not '{flow.Label}'.");
+        }
+
+        return (flow, operation == DeliveryOperations.Drain ? null : submission);
+    }
+
+    /// <summary>
+    /// Runs one interface's operation under its failure guard when the operation delivers: the guard watches every
+    /// record, and when it trips the work stops, hands its leases back and the interface ends stopped with the reason.
+    /// </summary>
+    internal static async Task<T> GuardedAsync<T>(FlowRuntime runtime, string operation, Func<CancellationToken, Task<T>> work, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(runtime);
+        ArgumentNullException.ThrowIfNull(work);
+        if (!Delivers(operation))
+        {
+            return await work(ct).ConfigureAwait(false);
+        }
+
+        using var guard = new FailureGuard(runtime.Flow.FailWhen);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, guard.Token);
+        runtime.Guard = guard;
+        try
+        {
+            return await work(linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (guard.Tripped && !ct.IsCancellationRequested)
+        {
+            throw new InterfaceStoppedException(runtime.Flow, guard.Reason!);
+        }
+        finally
+        {
+            runtime.Guard = null;
+        }
+    }
+
+    /// <summary>One interface's operation on a runtime opened for it, as a run of that interface alone performs it.</summary>
+    internal static async Task<object> ExecuteInterfaceAsync(
+        FlowRuntime runtime, string operation, DeliveryRunPayload payload, SubmissionState? submission, ILogger log, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(runtime);
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(log);
+        var context = runtime.Context;
+        var flow = runtime.Flow;
         var keys = payload.RecordKeys.Select(k => new DeliveryKey(k)).ToList();
         var selection = SourceSelection.Incremental(null);
-        if (readsSource)
+        if (ReadsSource(operation))
         {
             runtime.SubmissionId = payload.SubmissionId;
             runtime.Slices = payload.Slices.Count > 0 ? payload.Slices : null;

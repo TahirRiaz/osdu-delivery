@@ -39,7 +39,7 @@ public sealed class RenderResolver
     public async Task<ResolvedMapping> ResolveAsync(FlowDefinition flow, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        var where = flow.SourcePath ?? flow.Name;
+        var where = KeyPaths.Where(flow);
         var mapping = _mappings.Load(flow.Render.Mapping);
 
         if (_templates is null)

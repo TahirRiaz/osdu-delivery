@@ -377,6 +377,7 @@ public sealed class DeliveryTemplateApiTests
             await using (var osdu = SampleEstate.Context(cs))
             {
                 await osdu.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
+                await osdu.DeliveryInterfaces.Where(i => i.RepoId == repoId).ExecuteDeleteAsync();
             }
 
             await using (var db = CatalogDatabase.Create(cs))
@@ -613,6 +614,7 @@ public sealed class DeliveryTemplateApiTests
         await using (var osdu = SampleEstate.Context(cs))
         {
             await osdu.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
+            await osdu.DeliveryInterfaces.Where(i => i.RepoId == repoId).ExecuteDeleteAsync();
         }
 
         await using var db = CatalogDatabase.Create(cs);

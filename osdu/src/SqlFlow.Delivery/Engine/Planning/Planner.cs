@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Protocols;
@@ -262,7 +263,7 @@ public sealed class Planner
         ArgumentNullException.ThrowIfNull(resolved);
         ArgumentNullException.ThrowIfNull(parameters);
         ArgumentNullException.ThrowIfNull(selection);
-        var where = flow.SourcePath ?? flow.Name;
+        var where = KeyPaths.Where(flow);
         var source = await _source.OpenAsync(selection, stored, ct).ConfigureAwait(false);
 
         var issues = Preflight.Check(resolved.Mapping, resolved.Schema, resolved.References, resolved.Context, source.Columns);

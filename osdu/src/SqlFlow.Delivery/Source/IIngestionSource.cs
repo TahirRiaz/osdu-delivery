@@ -196,6 +196,13 @@ public interface IIngestionSourceFactory
 public interface IIngestionSource
 {
     /// <summary>
+    /// Checks the tables without reading a record: that they are there and shaped as the flow declares (every column it
+    /// names, the record key and its types, the identity primary key). A source's preflight asks it of every interface
+    /// before any of them plans; a problem is a <see cref="DeliveryException"/> naming the table and the column.
+    /// </summary>
+    Task VerifyAsync(CancellationToken ct = default);
+
+    /// <summary>
     /// Fixes the window and reads the tables' shape. <paramref name="stored"/> is the window a submission already recorded,
     /// which a member run or a drain reuses so every run of one submission reads the same rows.
     /// </summary>

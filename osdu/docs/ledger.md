@@ -165,6 +165,31 @@ that disagrees with another flow's declaration of the same type for the partitio
 back the GUI's Mappings and OSDU cache pages, and the templates listing counts each template version's pins from
 `osdu.Mapping`; nothing writes them but the sync.
 
+### `osdu.Interface`: the sources and interfaces the repositories declare
+
+A read model the repository sync writes: one row for every interface of every delivery flow, and one row, with an
+empty interface name, for a flow in the single form ([documents.md](documents.md#a-source-with-interfaces)). It is how
+the API and the GUI find the pipeline behind a ledger identity, and the interfaces of a pipeline, without parsing a
+document.
+
+| Column | Purpose |
+| --- | --- |
+| `Id` | Primary key, derived from the repository, the flow's name and the interface's name. |
+| `RepoId`, `FlowName`, `Interface`, `Ordinal` | The pipeline, the interface's name (empty for the single form) and its place in the document. Unique on `(RepoId, FlowName, Interface)`. |
+| `LedgerFlowId`, `LedgerName` | The ledger identity every ledger row of the interface carries, and the name it is derived from: the flow's name, `<flow>/<interface>`, or the ledger the interface adopts. Indexed on `LedgerFlowId`. |
+| `Route`, `RouteReason` | `storage`, `file`, `manifest` or `ddms`, and why (null for the single form, whose document names its protocol). |
+| `MappingReference`, `Kind`, `RecordObject` | The mapping it pins, the kind that mapping fills when the repository holds a valid mapping of that reference (empty otherwise), and the record table it reads. |
+| `AfterJson` | The interfaces it waits for, as a JSON array of names. |
+| `RelativePath`, `Active`, `FirstSeenUtc`, `LastSeenUtc` | The document it is declared in, whether the repository still declares it, and when the sync first and last found it. |
+
+The row of an interface the repository no longer declares is kept with `Active` false, so the records it delivered
+still lead to their flow, while the flow's own listing of interfaces leaves it out. A document that does not parse
+describes nothing: the rows of its interfaces turn inactive until it parses again, and the sync counts it as invalid. The
+sync warns when two flows keep one ledger (an
+interface that adopted the ledger of a flow the repository still holds, or two repositories declaring one flow). The
+control plane describes, once when it starts, every repository whose delivery pipelines were synced before this table
+existed, from the catalog's copies of their documents, so their records' pages work before their next sync.
+
 ### `osdu.CacheVersion`, `osdu.CacheItem` and `osdu.CacheMember`: one cache per partition
 
 What a cache holds lives here and nowhere else ([design.md](design.md) section 6.2): nothing about it is written to a
@@ -299,6 +324,12 @@ An ingestion table can feed several OSDU flows, each rendering the rows with its
   and the GUI's record page is `/delivery/records/{flowId}/{deliveryKey}`. The flow id is the ledger's (derived from the
   flow's name), not the pipeline's, so a record's history stays reachable after its flow leaves the repository. The
   search box, given a delivery key, lists one record per flow that reads the row.
+- **Every interface of a source is a flow here.** An interface keeps the ledger identity derived from
+  `<flow>/<interface>` (or the one its `ledger:` adopts), so everything above holds for it: its records, submissions,
+  watermark, claims and statistics are its own, and a source's counts are its interfaces' added up. The name its rows
+  carry (`FlowName` on a submission, an activity and an event) is that ledger name. `osdu.Interface` leads a ledger
+  identity back to its pipeline and interface, and an adopted ledger carries on under the interface with its whole
+  history.
 - **One OSDU record, one flow.** The OSDU id is `{partition}:{entityType}:{deliveryKey}`, so flows delivering to
   different entity types or partitions write different records. Staging claims a record's OSDU id the first time the
   record queues a document (`ClaimedTargetId`, unique across the ledger). Work whose id another flow's record has
@@ -525,6 +556,11 @@ them. It then drops the expiry columns of `osdu.Record` and `osdu.WorkBatch` wit
 lease sweep, and rebuilds the claim's two covering indexes in place without the expiry. Going back down is refused
 while `osdu.RecordEvent` holds an event no lease has applied; a revert puts each lease's expiry back on its batch and
 its records. The rebuilds are index builds over the record table, sized by its row count, and run while no host is up.
+
+`DeliveryInterfaces` (module version 1.6.0) creates `osdu.Interface`, the read model of sources and interfaces (see
+[`osdu.Interface`](#osduinterface-the-sources-and-interfaces-the-repositories-declare)). It adds a table and changes
+nothing that exists: the ledger identities of existing flows are unchanged, because a flow in the single form keeps the
+id of its own name. The rows are written by the next repository sync, and by the control plane once when it starts.
 
 From 1.5.0 the ledger reads under snapshot isolation ([Many nodes, one table](#many-nodes-one-table)), so the database
 that holds the `osdu` schema must allow it. Allow it once:

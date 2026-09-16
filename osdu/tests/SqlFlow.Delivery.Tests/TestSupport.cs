@@ -632,6 +632,25 @@ public static class Samples
         return Localize(flow, root);
     }
 
+    /// <summary>
+    /// <paramref name="flow"/> as if its document sat in <paramref name="root"/>, still rendering with the sample mappings. A
+    /// run through the executor writes its history next to the flow's document, and the sample estate's folder is shared
+    /// by every test of the process (the lineage tests copy it whole while others run), so a test that runs the executor
+    /// runs a flow whose document is in a folder of its own.
+    /// </summary>
+    public static FlowDefinition InFolder(FlowDefinition flow, string root)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        var folder = Path.Combine(root, "flows");
+        Directory.CreateDirectory(folder);
+        return flow with
+        {
+            SourcePath = Path.Combine(folder, Path.GetFileName(flow.SourcePath ?? Flow)),
+            Render = flow.Render with { MappingsDirectory = Mappings },
+        };
+    }
+
     /// <summary>The sample wellbore flow, localized the same way; it streams no payload.</summary>
     public static FlowDefinition LocalWellboreFlow(string root)
     {

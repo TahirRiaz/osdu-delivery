@@ -14,9 +14,9 @@ namespace SqlFlow.Delivery.Catalog;
 
 /// <summary>
 /// The delivery kind's document families in the repository sync: every mapping document (<c>documentType: mapping</c>,
-/// anywhere in the tree) and what every cache flow (<c>flowType: cache</c>) declares it caches become rows of the
-/// <c>osdu</c> schema, so the GUI lists what a flow renders with, and what each cache holds, without opening the
-/// repository. Rows are keyed by repository and reference; a document that disappears from the tree loses its row. The
+/// anywhere in the tree), what every cache flow (<c>flowType: cache</c>) declares it caches, and the interfaces of every
+/// delivery flow (<c>flowType: delivery</c>) become rows of the <c>osdu</c> schema, so the GUI lists what a flow renders
+/// with, what each cache holds and which pipeline keeps a ledger, without opening the repository. Rows are keyed by repository and reference; a document that disappears from the tree loses its row. The
 /// sync only reads the repository: the versions of a cache are written by the runs of its cache flow, never by the sync.
 /// The rows commit with the sync: the <c>osdu</c> context opens on the catalog context's connection and joins its transaction.
 /// </summary>
@@ -153,7 +153,8 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
         var mappings = await SyncMappingsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
         var caches = await SyncCacheDefinitionsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
-        return mappings.Add(caches);
+        var interfaces = await SyncInterfacesAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
+        return mappings.Add(caches).Add(interfaces);
     }
 
     private async Task<CatalogSyncExtensionResult> SyncMappingsAsync(
@@ -450,6 +451,62 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         }
 
         return new CatalogSyncExtensionResult(added, updated, unchanged, removed, invalid);
+    }
+
+    /// <summary>
+    /// The interfaces of the repository's delivery flows (docs/interfaces-design.md section 4), each with the ledger identity
+    /// it keeps and the kind its mapping fills, as the mapping rows this sync just wrote name it. A flow document that does
+    /// not parse describes no interface; the platform's own sync reports it.
+    /// </summary>
+    private async Task<CatalogSyncExtensionResult> SyncInterfacesAsync(
+        OsduDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
+    {
+        var sources = new List<RepositorySource>();
+        var invalid = 0;
+        foreach (var file in EnumerateYaml(root))
+        {
+            ct.ThrowIfCancellationRequested();
+            string yaml;
+            try
+            {
+                yaml = await File.ReadAllTextAsync(file, ct).ConfigureAwait(false);
+            }
+            catch (IOException)
+            {
+                // The mapping pass reports an unreadable file; one warning per file is enough.
+                continue;
+            }
+
+            if (!DeclaresFlowType(yaml, FlowDefinition.FlowTypeName))
+            {
+                continue;
+            }
+
+            var relative = Relative(root, file);
+            try
+            {
+                sources.Add(new RepositorySource(relative, _documents.ParseSource(yaml, relative)));
+            }
+            catch (FlowValidationException)
+            {
+                invalid++;
+            }
+        }
+
+        var kinds = await MappingKindsAsync(context, repoId, ct).ConfigureAwait(false);
+        var counts = await DeliveryInterfaceCatalog.ReconcileAsync(context, repoId, sources, kinds, nowUtc, warnings, ct).ConfigureAwait(false);
+        return new CatalogSyncExtensionResult(counts.Added, counts.Updated, counts.Unchanged, counts.Removed, invalid);
+    }
+
+    /// <summary>The OSDU kind of every valid mapping the repository's rows hold, by reference.</summary>
+    public static async Task<IReadOnlyDictionary<string, string>> MappingKindsAsync(OsduDbContext context, Guid repoId, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var rows = await context.DeliveryMappings.AsNoTracking()
+            .Where(m => m.RepoId == repoId && m.Status == "valid")
+            .Select(m => new { m.Reference, m.Kind })
+            .ToListAsync(ct).ConfigureAwait(false);
+        return rows.ToDictionary(m => m.Reference, m => m.Kind, StringComparer.Ordinal);
     }
 
     private static object Summarize(MappingDefinition mapping) => new

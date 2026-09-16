@@ -3,17 +3,22 @@ using SqlFlow.Core;
 namespace SqlFlow.Delivery.Model;
 
 /// <summary>
-/// The operational half of the document model (design.md section 9.2): which ingestion tables the records come from, which pinned mapping
-/// renders them, where they go and how reliably. Only <see cref="Render"/> affects what a document is; everything
-/// else changes only how it gets there and stays out of the content hash (section 9.3).
+/// The operational half of the document model (design.md section 9.2) for one interface of a source: which ingestion
+/// tables the records come from, which pinned mapping renders them, where they go and how reliably. Only
+/// <see cref="Render"/> affects what a document is; everything else changes only how it gets there and stays out of the
+/// content hash (section 9.3). A document in the single form is one such definition with no <see cref="Interface"/>.
 /// </summary>
 public sealed record FlowDefinition
 {
     public const string FlowTypeName = "delivery";
 
+    /// <summary>The longest name a ledger identity is derived from: the width the ledger keeps a flow's name in.</summary>
+    public const int MaxLedgerNameLength = 200;
+
     /// <summary>Path of the file the flow was loaded from, for error messages. Null for inline documents.</summary>
     public string? SourcePath { get; init; }
 
+    /// <summary>The flow's name: the source's pipeline, shared by every interface of the document.</summary>
     public required string Name { get; init; }
 
     public string? Description { get; init; }
@@ -21,8 +26,35 @@ public sealed record FlowDefinition
     /// <summary>The platform batch the flow belongs to (grouping in listings and batch runs), from the envelope.</summary>
     public string? Batch { get; init; }
 
-    /// <summary>Stable id derived from <see cref="Name"/> (see <see cref="Identity.FlowId"/>).</summary>
-    public Guid Id => Identity.FlowId.Of(Name);
+    /// <summary>The interface of its source this definition delivers, or null for a document in the single form.</summary>
+    public string? Interface { get; init; }
+
+    /// <summary>The name of an existing ledger the interface adopts (<c>ledger:</c>), or null when it keeps its own.</summary>
+    public string? AdoptedLedger { get; init; }
+
+    /// <summary>
+    /// What the ledger identity is derived from: the adopted ledger, the flow's name for the single form, and
+    /// <c>flow/interface</c> for an interface of a source. It is also the name the ledger records the flow under.
+    /// </summary>
+    public string LedgerName => AdoptedLedger ?? Label;
+
+    /// <summary>How the definition is named in logs, traces and messages: the flow, and its interface when it has one.</summary>
+    public string Label => Interface is null ? Name : $"{Name}/{Interface}";
+
+    /// <summary>Stable id derived from <see cref="LedgerName"/> (see <see cref="Identity.FlowId"/>): the ledger identity.</summary>
+    public Guid Id => Identity.FlowId.Of(LedgerName);
+
+    /// <summary>The interfaces of the same source this one waits for (<c>after:</c>), beside those its mapping implies.</summary>
+    public IReadOnlyList<string> After { get; init; } = [];
+
+    /// <summary>When record failures stop the interface (<c>failWhen:</c>).</summary>
+    public FlowFailWhen FailWhen { get; init; } = new();
+
+    /// <summary>
+    /// Why the interface goes by the route <see cref="FlowTarget.Protocol"/> names: what it declared that decided it. Null for
+    /// the single form, whose document names its protocol itself.
+    /// </summary>
+    public string? RouteReason { get; init; }
 
     public IReadOnlyDictionary<string, FlowParameter> Parameters { get; init; } = new Dictionary<string, FlowParameter>(StringComparer.Ordinal);
 
