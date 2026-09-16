@@ -1048,7 +1048,10 @@ public static class DeliveryModel
         modelBuilder.Entity<DeliveryCacheVersion>(e =>
         {
             e.ToTable("CacheVersion", SchemaName);
-            e.HasKey(v => v.Id);
+            // Stored in partition order (the clustered index below), so everything a refresh reads or writes of its
+            // partition's versions is a range seek of that partition, and refreshes of different partitions never touch,
+            // and so never wait on, each other's rows.
+            e.HasKey(v => v.Id).IsClustered(false);
             e.Property(v => v.Scope).HasMaxLength(200).IsRequired();
             e.Property(v => v.FlowName).HasMaxLength(200).IsRequired();
             e.Property(v => v.Version).HasMaxLength(64).IsRequired();
@@ -1059,15 +1062,18 @@ public static class DeliveryModel
             e.Property(v => v.TypesJson).IsRequired();
             e.HasIndex(v => new { v.Scope, v.Version }).IsUnique();
             // The sequence is what a concurrent second write of the same partition collides on, so two captures can never
-            // both claim the next version.
-            e.HasIndex(v => new { v.Scope, v.Sequence }).IsUnique();
+            // both claim the next version. It is the table's clustered key: a partition's versions in order.
+            e.HasIndex(v => new { v.Scope, v.Sequence }).IsUnique().IsClustered();
             e.HasIndex(v => v.RunId);
         });
 
         modelBuilder.Entity<DeliveryCacheItem>(e =>
         {
             e.ToTable("CacheItem", SchemaName);
-            e.HasKey(i => i.ItemId);
+            // Stored in partition order (the clustered index below) for the same reason as the versions: a refresh reads
+            // and closes only its own partition's rows, whatever plan the table's size leads to.
+            e.HasKey(i => i.ItemId).IsClustered(false);
+            e.HasIndex(i => new { i.Scope, i.ItemId }).IsUnique().IsClustered();
             e.Property(i => i.Scope).HasMaxLength(200).IsRequired();
             e.Property(i => i.TypeName).HasMaxLength(200).IsRequired();
             e.Property(i => i.EntityType).HasMaxLength(200).IsRequired();

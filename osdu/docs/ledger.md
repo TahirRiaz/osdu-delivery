@@ -164,6 +164,13 @@ as a run of consecutive versions held them: from the version at `FromSequence` u
 partition however many cache flows capture it, and a merge writes rows only for the records that changed, arrived or
 left, so keeping every version costs rows in proportion to what moved.
 
+Both tables are stored in partition order: `osdu.CacheVersion` is clustered on `(Scope, Sequence)` and
+`osdu.CacheItem` on `(Scope, ItemId)`, with their ids as nonclustered primary keys, and `osdu.CacheMember`'s key starts
+with the partition too. Whatever a refresh reads or writes of its partition is then a range seek of that partition,
+however small the tables are, so refreshes of different partitions never lock each other's rows. Clustered on their
+ids, two partitions refreshing at once each waited on the other's new version row, and the database ended one of them as
+a deadlock victim.
+
 `osdu.CacheMember` is current state, not history: one row per partition, type, record and cache flow (`Scope`,
 `TypeName`, `RecordId`, `FlowName`, which together are the key) saying that the flow's last capture of the type held
 the record. It is what lets several cache flows share one partition's cache. A merge replaces the capturing flow's rows

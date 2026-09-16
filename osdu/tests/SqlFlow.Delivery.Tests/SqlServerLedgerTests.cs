@@ -115,6 +115,47 @@ public class SqlServerLedgerTests
     }
 
     [SkippableFact]
+    public async Task Refreshes_of_different_partitions_at_the_same_time_neither_block_nor_deadlock_each_other_on_sql_server()
+    {
+        // Every partition's refresh writes its own version rows, and two partitions refreshing together must each touch only
+        // their own: a statement that reads past its partition waits on the other refresh's new rows while that refresh
+        // waits on its own, and the database ends it as a deadlock victim.
+        var store = await CachesAsync();
+        var scopes = Enumerable.Range(0, 4).Select(i => $"parallel-{i}-" + Guid.NewGuid().ToString("N")).ToList();
+        static IReadOnlyList<ReferenceType> Units(string name) =>
+        [
+            new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
+            [
+                ReferenceItem.FromText("test:reference-data--UnitOfMeasure:m", new Dictionary<string, string> { ["Code"] = "m", ["Name"] = name }),
+            ]),
+        ];
+
+        try
+        {
+            for (var round = 0; round < 8; round++)
+            {
+                var name = "metre-" + round.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                await Task.WhenAll(scopes.Select(scope => Task.Run(() => store.MergeAsync(
+                    scope, "tests-cache", Units(name), new CacheCapture(null, "tests", "parallel"), DateTimeOffset.UtcNow))));
+            }
+
+            await using var db = Database();
+            foreach (var scope in scopes)
+            {
+                Assert.Equal(8, await db.DeliveryCacheVersions.CountAsync(v => v.Scope == scope));
+                Assert.Equal(1, await db.DeliveryCacheVersions.CountAsync(v => v.Scope == scope && v.Current));
+            }
+        }
+        finally
+        {
+            foreach (var scope in scopes)
+            {
+                await CleanupCacheAsync(scope);
+            }
+        }
+    }
+
+    [SkippableFact]
     public async Task A_cache_version_writes_and_reads_its_ranges_on_sql_server()
     {
         // The store's transaction, its range updates and the binary comparison of stored values, on the real server.
