@@ -473,6 +473,13 @@ public sealed record DeliverOutcome(
     SubmissionTotals Submission)
 {
     /// <summary>
+    /// The run's headline count as the platform reads it from the run artifact (<c>result.rowsLoaded</c>), which the
+    /// catalog projects onto the run row: the records this run actually delivered. Without it a delivery run would show
+    /// no rows at all in the run lists, and a run that delivered thousands would be indistinguishable from an empty one.
+    /// </summary>
+    public long RowsLoaded => Delivered;
+
+    /// <summary>
     /// A run's counts are its own work: a run re-sending two records of a delivered submission reports two, and one that
     /// found the submission already completed reports none. A fan-out root is the exception, because its members'
     /// deliveries are summed only in the submission, so it reports the submission it covers.
@@ -576,6 +583,9 @@ public sealed record IntakeOutcome(
 /// <summary>The <c>result</c> of a drain run.</summary>
 public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Processed, long Delivered, long Unchanged, long Retried, long Held, long Failed, int Batches)
 {
+    /// <summary>The run's headline count on the run row (<c>result.rowsLoaded</c>): the records this drain delivered.</summary>
+    public long RowsLoaded => Delivered;
+
     public static DrainOutcome From(WorkerSummary summary, Guid? submissionId)
     {
         ArgumentNullException.ThrowIfNull(summary);
