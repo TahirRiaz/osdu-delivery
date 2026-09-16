@@ -1,0 +1,85 @@
+using Microsoft.Extensions.DependencyInjection;
+using SqlFlow.Cli.Hosting;
+using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Hosting;
+
+namespace SqlFlow.Delivery.Cli;
+
+/// <summary>
+/// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval and cache flow kinds (so SQLFlow's own
+/// <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
+/// module's database, and the module's own verbs: <c>check</c>, <c>cache</c> and <c>template</c>.
+/// </summary>
+/// <remarks>
+/// A command's database is the catalog the command line names (<c>--db</c>, else <c>${env:SQLFLOW_CATALOG_DB}</c>) unless
+/// the module has a connection of its own in <c>SQLFLOW_OSDU_DB</c>. A worker node opens no catalog connection at all, so
+/// there the module always reads its database through that reference, and says so when it is unset.
+/// </remarks>
+public sealed class DeliveryCliModule : ICliModule
+{
+    /// <summary>The module's name: what the CLI calls it in errors, and the name its database is registered under.</summary>
+    public string Name => OsduSchema.Module;
+
+    public IReadOnlyList<CliVerb> Verbs =>
+    [
+        new CliVerb(
+            "check",
+            [
+                "sqlflow check    <flow.yaml> [--set k=v] [--connect]",
+                "                                   The delivery preflight: the flow's documents, its mapping against the",
+                "                                   pinned template, and the version of the cache it reads (needs --db:",
+                "                                   templates and caches live in the module's database). With --connect it",
+                "                                   also opens the flow's ingestion tables and reports what it would read.",
+            ],
+            DeliveryVerbs.CheckAsync)
+        {
+            Flags = ["--connect"],
+        },
+        new CliVerb(
+            "cache",
+            [
+                "sqlflow cache list <partition | cache.yaml>",
+                "                                   The versions of a partition's cache: when each was captured, by which",
+                "                                   run, and what it holds (needs --db)",
+                "sqlflow cache import <cache.yaml> --from-dir <dir>",
+                "                                   Write type files as a version of the cache, for offline work (needs --db).",
+                "                                   A cache is captured from OSDU by running its cache flow: sqlflow run <cache.yaml>",
+            ],
+            DeliveryVerbs.CacheAsync)
+        {
+            Subcommands = ["list", "import"],
+            ValueOptions = ["--from-dir"],
+        },
+        new CliVerb(
+            "template",
+            [
+                "sqlflow template capture --kind <kind> [--release <tag>]",
+                "                                   Save a kind's schema from the OSDU data definitions (newest release by default)",
+                "sqlflow template import <schema.json> --kind <kind> [--release <tag>] | import --from-dir <dir> --kind <kind>",
+                "sqlflow template list | show --kind <kind> [--version <v>] | delete --kind <kind> --version <v>",
+                "                                   The templates in the module's database: the OSDU schemas mappings pin (needs --db)",
+            ],
+            DeliveryVerbs.TemplateAsync)
+        {
+            Subcommands = ["capture", "import", "list", "show", "delete"],
+            ValueOptions = ["--release", "--version", "--from-dir"],
+        },
+    ];
+
+    public void ConfigureServices(CliModuleServices services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        // A node has no catalog connection, so its module database is always the module's own reference; a command uses
+        // the catalog the command line names unless the environment gives the module a database of its own.
+        services.AddDatabase(OsduModuleDatabase.Create(
+            services.Scope == CliServiceScope.Worker
+                ? OsduModuleDatabase.EnvironmentReference
+                : OsduModuleDatabase.ResolveReference(null, Environment.GetEnvironmentVariable)));
+
+        services.Services.AddDeliveryKind();
+        services.Services.AddDeliveryLedger();
+        services.Services.AddScoped(provider => provider.GetRequiredService<Microsoft.EntityFrameworkCore.IDbContextFactory<OsduDbContext>>().CreateDbContext());
+    }
+}
