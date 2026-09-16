@@ -1,3 +1,4 @@
+import type { Locator } from "@playwright/test";
 import { expect, test } from "./helpers";
 
 // The manual submission page: every flow that takes records through the API, the reason a flow takes none, and the
@@ -11,9 +12,12 @@ const TAKES_RECORDS = "recall-wellbore";
 /** The flow that declares nowhere for records to land. */
 const TAKES_NONE = "wellbore-no-submissions";
 
-/** The row for exactly this flow: the estate holds its pre and ingestion flows too, whose names start with the same text. */
-function exactly(flow: string): RegExp {
-  return new RegExp(`${flow}(?![\\w-])`);
+/**
+ * The rows for exactly this flow: the estate holds its pre and ingestion flows too, whose names start with the same text.
+ * A row's text runs its cells together, so the match is on a cell holding the name and nothing else.
+ */
+function exactly(rows: Locator, flow: string): Locator {
+  return rows.filter({ has: rows.page().getByText(flow, { exact: true }) });
 }
 
 test.describe.serial("manual submission", () => {
@@ -22,7 +26,7 @@ test.describe.serial("manual submission", () => {
     await expect(adminPage.getByTestId("page-manual-submission")).toBeVisible();
 
     const rows = adminPage.getByTestId("manual-submission-flows").getByTestId("table-row");
-    const wellbore = rows.filter({ hasText: exactly(TAKES_RECORDS) });
+    const wellbore = exactly(rows, TAKES_RECORDS);
     await expect(wellbore).toHaveCount(1, { timeout: 30_000 });
     // A flow that declares nowhere for records to land is not on the list at all.
     await expect(rows.filter({ hasText: TAKES_NONE })).toHaveCount(0);
@@ -45,6 +49,8 @@ test.describe.serial("manual submission", () => {
   });
 
   test("the filter narrows the list and the page submits to the flow chosen", async ({ adminPage }) => {
+    // The chain lands the file, loads it and plans it, which is longer than a page test is given by default.
+    test.setTimeout(360_000);
     await adminPage.getByTestId("nav-delivery-submit").click();
     await expect(adminPage.getByTestId("page-manual-submission")).toBeVisible();
 

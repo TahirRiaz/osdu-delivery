@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E } from "../playwright.config";
-import { LOADING_FLOWS } from "./global-setup";
+import { connectionParts, connectionValue, LOADING_FLOWS } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
 // Seeds the estate THROUGH the product: saves the templates the sample mappings pin, imports the sample references as the
@@ -16,6 +16,47 @@ const moduleRoot = join(import.meta.dirname, "..", "..");
 function fixtureMeta(): { repoDir: string; headSha: string; sampleDb: string } {
   const metaPath = join(import.meta.dirname, ".fixtures", "meta.json");
   return JSON.parse(readFileSync(metaPath, "utf8")) as { repoDir: string; headSha: string; sampleDb: string };
+}
+
+/**
+ * Lets the sample database serve snapshot reads. A delivery flow reads a record and its child rows as one moment, which
+ * is snapshot isolation unless the flow says otherwise, and a database the suite has just created does not allow it. The
+ * setting is idempotent, so a rerun against the same database changes nothing. sqlcmd is used because the suite already
+ * needs a local SQL Server; the password, when the connection string carries one, travels in SQLCMDPASSWORD so it never
+ * appears on a command line.
+ */
+function allowSnapshotIsolation(connectionString: string): void {
+  const parts = connectionParts(connectionString);
+  const pick = (...keys: string[]) => connectionValue(parts, ...keys);
+  const server = pick("server", "data source", "address", "addr");
+  const database = pick("database", "initial catalog");
+  if (!server || !database) {
+    throw new Error("The sample database connection string names no server or no database, so snapshot isolation cannot be enabled on it.");
+  }
+
+  const args = ["-S", server, "-d", database, "-b", "-I", "-Q", "ALTER DATABASE CURRENT SET ALLOW_SNAPSHOT_ISOLATION ON;"];
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  const user = pick("user id", "uid", "user");
+  if (user) {
+    args.push("-U", user);
+    env.SQLCMDPASSWORD = pick("password", "pwd") ?? "";
+  } else {
+    args.push("-E");
+  }
+
+  if (/^(true|yes)$/i.test(pick("trustservercertificate") ?? "")) {
+    args.push("-C");
+  }
+
+  try {
+    execFileSync("sqlcmd", args, { encoding: "utf8", stdio: "pipe", timeout: 60_000, env });
+  } catch (error) {
+    const failure = error as { stdout?: string; stderr?: string; message: string };
+    throw new Error(
+      `Could not allow snapshot isolation on ${database} at ${server}: ${(failure.stdout || failure.stderr || failure.message).trim()}`,
+      { cause: error },
+    );
+  }
 }
 
 test.describe.serial("seed the estate via repo source sync", () => {
@@ -69,6 +110,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
   test("load the sample ingestion tables by running the chain", () => {
     test.setTimeout(900_000);
     const meta = fixtureMeta();
+    allowSnapshotIsolation(meta.sampleDb);
     for (const flow of LOADING_FLOWS) {
       const output = execFileSync(
         "dotnet",

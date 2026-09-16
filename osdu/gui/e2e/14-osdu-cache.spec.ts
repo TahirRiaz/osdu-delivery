@@ -73,6 +73,11 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("delivery-cache-files").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
     await expect(adminPage.getByTestId("filter-kind")).toHaveText(/cache/);
+    // One repo fills the partition, so the link scopes to it too, and a single repo lists its project folders collapsed.
+    const folder = adminPage.getByTestId("repo-project").filter({ hasText: "caches" });
+    await expect(folder).toHaveCount(1, { timeout: 30_000 });
+    await expect(adminPage.getByTestId("repo-project")).toHaveCount(1);
+    await folder.getByText("caches", { exact: true }).click();
     const cacheRow = adminPage.getByTestId("table-row").filter({ hasText: CACHE });
     await expect(cacheRow.first()).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" })).toHaveCount(0);

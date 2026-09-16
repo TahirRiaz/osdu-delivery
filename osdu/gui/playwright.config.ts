@@ -1,5 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Run through `npm run e2e`, which passes `--tsconfig tsconfig.node.json`. Without it Playwright applies tsconfig.json,
+// whose catch-all `paths` entry (there so the vendored GUI sources resolve this package's node_modules) maps
+// "@playwright/test" to its directory; that resolves to the CommonJS entry, and every named import from it fails.
+//
 // The e2e suite spins up EVERYTHING itself:
 //  1. the OSDU Delivery control plane host (dotnet), pointed at a dedicated local test catalog database; bootstrap
 //     provisioning applies SQLFlow's and the OSDU module's migrations, seeds roles, and creates the e2e admin the tests

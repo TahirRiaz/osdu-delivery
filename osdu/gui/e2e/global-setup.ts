@@ -33,13 +33,16 @@ export default function globalSetup(): void {
     cpSync(join(samplesDir, part), join(repoDir, part), { recursive: true });
   }
 
-  // Every flow of the estate, each without its schedule. A fire would be a real run against the sample's OSDU target
-  // whenever a suite crossed its cron, and the specs expect flows that join no schedule.
+  // Every flow of the estate, each without its schedule and with its tables in the sample database. A fire would be a
+  // real run against the sample's OSDU target whenever a suite crossed its cron, and the specs expect flows that join no
+  // schedule. The ingestion and delivery flows name their tables in OsduSample, while the pre flows write wherever
+  // OSDU_SAMPLE_DB points; unless both name the same database, lineage never links a pre flow to what reads it, and a
+  // submission's chain is refused.
+  const sampleDatabase = databaseOf(E2E.sampleDb);
+  const document = (flow: string, source: string) =>
+    inSampleDatabase(withoutSchedule(readFileSync(join(samplesDir, "flows", `${source}.yaml`), "utf8"), source), flow, sampleDatabase);
   for (const flow of CHAIN) {
-    writeFileSync(
-      join(repoDir, "flows", `${flow}.yaml`),
-      withoutSchedule(readFileSync(join(samplesDir, "flows", `${flow}.yaml`), "utf8"), flow),
-    );
+    writeFileSync(join(repoDir, "flows", `${flow}.yaml`), document(flow, flow));
   }
 
   // The cache flow comes along without its schedule. The suite never refreshes it (that would need an OSDU target): the
@@ -53,7 +56,7 @@ export default function globalSetup(): void {
   // A delivery flow that takes no records through the API, so the specs have a real refusal to show: the wellbore flow
   // with its source.submissions block removed. Everything else about it is the shipped document, so the refusal the GUI
   // renders is the product's own, not a fixture's invention.
-  writeFileSync(join(repoDir, "flows", `${NO_SUBMISSIONS}.yaml`), withoutSubmissions(readFileSync(join(samplesDir, "flows", "recall-wellbore.yaml"), "utf8")));
+  writeFileSync(join(repoDir, "flows", `${NO_SUBMISSIONS}.yaml`), withoutSubmissions(document(NO_SUBMISSIONS, "recall-wellbore")));
 
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: repoDir, stdio: "pipe" }).toString("utf8").trim();
@@ -128,7 +131,7 @@ function withoutSchedule(yaml: string, flow: string): string {
  * fails the setup rather than leaving the suite asserting a refusal that never comes.
  */
 function withoutSubmissions(yaml: string): string {
-  const text = withoutSchedule(yaml, "recall-wellbore").replace(/^name: recall-wellbore$/m, `name: ${NO_SUBMISSIONS}`);
+  const text = yaml.replace(/^name: recall-wellbore$/m, `name: ${NO_SUBMISSIONS}`);
   if (!new RegExp(`^name: ${NO_SUBMISSIONS}$`, "m").test(text)) {
     throw new Error("The wellbore flow no longer declares 'name: recall-wellbore', so the fixture cannot rename it.");
   }
@@ -139,4 +142,56 @@ function withoutSubmissions(yaml: string): string {
   }
 
   return stripped;
+}
+
+/** The database the shipped ingestion and delivery flows name their tables in. */
+const SHIPPED_DATABASE = "OsduSample";
+
+/**
+ * A sample flow whose tables live in the given database rather than the shipped OsduSample: every
+ * `object: OsduSample.<schema>.<table>` becomes the bracketed three-part name in that database. Any other mention of
+ * OsduSample fails the setup, so a shipped document that names it somewhere new cannot leave the estate reading a
+ * database the suite never loaded.
+ */
+function inSampleDatabase(yaml: string, flow: string, database: string): string {
+  const quoted = `[${database.replace(/]/g, "]]")}]`;
+  const rewritten = yaml.replace(
+    /^([ \t]*)object:[ \t]*OsduSample\.(\w+)\.(\w+)[ \t]*$/gm,
+    (_match, indent: string, schema: string, table: string) => `${indent}object: "${quoted}.[${schema}].[${table}]"`,
+  );
+  if (rewritten.includes(`${SHIPPED_DATABASE}.`)) {
+    throw new Error(
+      `The fixture flow '${flow}' still names ${SHIPPED_DATABASE} somewhere other than an object: <database>.<schema>.<table> value, so the e2e estate would read a database the suite never loaded.`,
+    );
+  }
+
+  return rewritten;
+}
+
+/** The keywords of a SQL Server connection string, lower-cased, each with its last value. */
+export function connectionParts(connectionString: string): Map<string, string> {
+  const parts = new Map<string, string>();
+  for (const pair of connectionString.split(";")) {
+    const at = pair.indexOf("=");
+    if (at > 0) {
+      parts.set(pair.slice(0, at).trim().toLowerCase(), pair.slice(at + 1).trim());
+    }
+  }
+
+  return parts;
+}
+
+/** The first non-empty value among the keys given, the synonyms a connection string may use for one setting. */
+export function connectionValue(parts: Map<string, string>, ...keys: string[]): string | undefined {
+  return keys.map((key) => parts.get(key)).find((value) => value !== undefined && value !== "");
+}
+
+/** The database a connection string names; the chain's flows read three-part names, so one is required. */
+function databaseOf(connectionString: string): string {
+  const database = connectionValue(connectionParts(connectionString), "database", "initial catalog");
+  if (!database) {
+    throw new Error("The e2e sample database connection string names no database, and the chain's flows read three-part names. Add Database=<name>.");
+  }
+
+  return database;
 }

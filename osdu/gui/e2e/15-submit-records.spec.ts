@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./helpers";
 
 // Records sent by hand: the Submit records dialog reads the flow's source contract, refuses a flow that declares nowhere
@@ -18,15 +18,18 @@ const WELLBORE = {
   facility_id: "srn:master-data/Wellbore:WB-E2E-1",
 };
 
-/** The row for exactly this flow: the estate holds its pre and ingestion flows too, whose names start with the same text. */
-function exactly(flow: string): RegExp {
-  return new RegExp(`${flow}(?![\\w-])`);
+/**
+ * The rows for exactly this flow: the estate holds its pre and ingestion flows too, whose names start with the same text.
+ * A row's text runs its cells together, so the match is on a cell holding the name and nothing else.
+ */
+function exactly(rows: Locator, flow: string): Locator {
+  return rows.filter({ has: rows.page().getByText(flow, { exact: true }) });
 }
 
 async function openFlow(page: Page, flow: string): Promise<void> {
   await page.getByTestId("nav-pipelines").click();
   await page.getByTestId("filter-name").fill(flow);
-  await page.getByTestId("table-row").filter({ hasText: exactly(flow) }).first().click();
+  await exactly(page.getByTestId("table-row"), flow).first().click();
   await expect(page.getByTestId("page-pipeline-detail")).toBeVisible();
   await expect(page.getByTestId("delivery-stats")).toBeVisible({ timeout: 30_000 });
 }
@@ -84,6 +87,8 @@ test.describe.serial("submit records", () => {
   });
 
   test("a preview of one wellbore lands on a plan run that renders it", async ({ adminPage }) => {
+    // The chain lands the file, loads it and plans it, which is longer than a page test is given by default.
+    test.setTimeout(360_000);
     const dialog = await openDialog(adminPage, TAKES_RECORDS);
     await expect(dialog.getByTestId("submit-records-mapping")).toBeVisible({ timeout: 15_000 });
 
@@ -106,6 +111,7 @@ test.describe.serial("submit records", () => {
   });
 
   test("the JSON tab takes a record with its child rows", async ({ adminPage }) => {
+    test.setTimeout(360_000);
     const dialog = await openDialog(adminPage, TAKES_RECORDS);
     await expect(dialog.getByTestId("submit-records-mapping")).toBeVisible({ timeout: 15_000 });
     await dialog.getByTestId("submit-records-tab-json").click();
