@@ -25,8 +25,9 @@ public sealed record CatalogSyncResult
     public int RunsFailed { get; init; }
     public int ObjectsUpserted { get; init; }
 
-    /// <summary>Database-less twin rows deleted because their object now syncs under a database-qualified
-    /// key and no repo's edges reference the weak key anymore (identity healing).</summary>
+    /// <summary>Rows deleted as residue: database-less twin rows whose object now syncs under a database-qualified
+    /// key (identity healing), and file or dataset nodes no declaration names any more, in both cases once no repo's
+    /// edges reference them.</summary>
     public int ObjectsSuperseded { get; init; }
 
     public int ObjectColumns { get; init; }
@@ -1233,6 +1234,12 @@ public sealed class CatalogSync
     /// dictionary, this repo's edges and flow dependencies, the execution waves, and the identity healing. Runs
     /// inside the sync's transaction and performs only database work; the report itself was computed before the
     /// transaction opened.</summary>
+    /// <summary>The stored kinds of the nodes a flow declaration alone creates, which the endpoint sweep removes once no
+    /// declaration names them.</summary>
+    private const string EndpointFileKind = nameof(Core.Lineage.LineageNodeKind.File);
+
+    private const string EndpointDatasetKind = nameof(Core.Lineage.LineageNodeKind.Dataset);
+
     private static async Task<(int Objects, int Superseded, int Columns, int Edges, int FlowDeps, int Waves, bool Connected, int PreservedDerived)> ApplyLineageAsync(
         CatalogDbContext context, Guid repoId, LineageReport report, bool includeDerived, DateTime nowUtc, CancellationToken ct)
     {
@@ -1425,6 +1432,15 @@ public sealed class CatalogSync
                     || (e.ViaModule != null && e.ViaModule.StartsWith(p, StringComparison.Ordinal))))
                 .ToList();
         }
+
+        // The file and dataset nodes this repository's edges named before this pass, for the endpoint sweep below.
+        var previousEndpoints = await context.LineageEdges.AsNoTracking()
+            .Where(e => e.RepoId == repoId)
+            .Join(
+                context.Objects.AsNoTracking().Where(o => o.Kind == EndpointFileKind || o.Kind == EndpointDatasetKind),
+                e => e.ObjectKey, o => o.Key, (e, o) => o.Key)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
 
         await context.LineageEdges.Where(e => e.RepoId == repoId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
         var objectNames = report.Objects.ToDictionary(o => o.Key, o => o.Name, StringComparer.Ordinal);
@@ -1633,6 +1649,38 @@ public sealed class CatalogSync
                 .Except(edgeReferenced, StringComparer.Ordinal)
                 .Except(relationshipReferenced, StringComparer.Ordinal)
                 .ToList();
+            if (sweepable.Count > 0)
+            {
+                superseded += await ExecuteByKeysAsync(
+                        sweepable, chunk => context.Objects.Where(o => chunk.Contains(o.Key)).ExecuteDeleteAsync(ct))
+                    .ConfigureAwait(false);
+                await ExecuteByKeysAsync(
+                        sweepable, chunk => context.ObjectColumns.Where(c => chunk.Contains(c.ObjectKey)).ExecuteDeleteAsync(ct))
+                    .ConfigureAwait(false);
+            }
+        }
+
+        // The endpoint sweep: a file or dataset node exists only because a flow declares it (a folder a flow reads or
+        // lands, a type a flow reads or writes). One this repository's edges named before, that this pass no longer
+        // produces, and that no repository's edges reference any more, is residue of a declaration that changed (a folder
+        // renamed, a location anchored differently, a mapping that fills another type): delete it, or the explorer keeps
+        // listing a source nothing uses. Only nodes this repository let go of are considered, so a node another sync is
+        // writing concurrently is never touched; an edge this pass preserved keeps its node.
+        var droppedEndpoints = previousEndpoints
+            .Where(key => !objectNames.ContainsKey(key))
+            .Except(preserve.Select(e => e.ObjectKey), StringComparer.Ordinal)
+            .ToList();
+        if (droppedEndpoints.Count > 0)
+        {
+            var stillReferenced = await SelectByKeysAsync(
+                    droppedEndpoints,
+                    chunk => context.LineageEdges
+                        .Where(e => chunk.Contains(e.ObjectKey))
+                        .Select(e => e.ObjectKey)
+                        .Distinct()
+                        .ToListAsync(ct))
+                .ConfigureAwait(false);
+            var sweepable = droppedEndpoints.Except(stillReferenced, StringComparer.Ordinal).ToList();
             if (sweepable.Count > 0)
             {
                 superseded += await ExecuteByKeysAsync(
