@@ -54,14 +54,22 @@ public sealed class CacheChangeTests : IDisposable
     private Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(string prefix, int count, params CacheUsage[] usages) => DeliveredAsync(Scope, prefix, count, usages);
 
     /// <summary>Delivers <paramref name="count"/> records keyed under <paramref name="prefix"/> that all read the same values of the cache of partition <paramref name="scope"/>.</summary>
-    private async Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(string scope, string prefix, int count, params CacheUsage[] usages)
+    private Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(string scope, string prefix, int count, params CacheUsage[] usages)
+        => DeliveredAsync(_flow, "test-flow", "x", scope, prefix, count, usages);
+
+    /// <summary>
+    /// Delivers <paramref name="count"/> records of the flow <paramref name="flowName"/>, keyed under <paramref name="prefix"/>
+    /// and written to OSDU ids of the entity type <paramref name="entityType"/>, that all read the same cached values.
+    /// </summary>
+    private async Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(
+        Guid flow, string flowName, string entityType, string scope, string prefix, int count, params CacheUsage[] usages)
     {
         var submission = Guid.NewGuid();
         await Ledger.RegisterSubmissionAsync(new SubmissionState
         {
             SubmissionId = submission,
-            FlowId = _flow,
-            FlowName = "test-flow",
+            FlowId = flow,
+            FlowName = flowName,
             MappingReference = "Thing@1.0.0",
             RenderContext = "{}",
             RecordCount = count,
@@ -79,10 +87,10 @@ public sealed class CacheChangeTests : IDisposable
             records.Add(new RecordState
             {
                 DeliveryKey = key,
-                FlowId = _flow,
+                FlowId = flow,
                 SourceKey = $"{prefix}-{i}",
                 MappingName = "Thing",
-                TargetId = $"dev:x:{prefix}-{i}",
+                TargetId = $"dev:{entityType}:{prefix}-{i}",
                 LastSubmissionId = submission,
                 PendingDocumentRef = "0:0:10",
                 PendingRenderContext = "{}",
@@ -92,7 +100,7 @@ public sealed class CacheChangeTests : IDisposable
             });
         }
 
-        await Ledger.UpsertPendingAsync(records);
+        await Ledger.UpsertPendingAsync(flow, records);
         return keys;
     }
 
@@ -359,6 +367,40 @@ public sealed class CacheChangeTests : IDisposable
         // Nothing is left to do, and a further pass is a no-op rather than a rescan.
         Assert.Empty(await Ledger.ListRolloutQueueAsync(10));
         Assert.Equal(0, (await Ledger.RollOutTagAsync(tag.TagId, batchSize: 2, Now)).Marked);
+    }
+
+    [Fact]
+    public async Task A_rollout_marks_every_flow_s_record_of_a_shared_row_and_resumes_between_them()
+    {
+        // Two flows read the same rows into different OSDU kinds, and both read the metre's name: each flow's records are
+        // its own, and the rollout reaches all of them, even when a batch ends between two flows' records of one key.
+        var other = FlowId.Of("test-flow-wellbores");
+        var keys = await DeliveredAsync(_flow, "test-flow", "x", Scope, "WELL", 2, Reads("Name", "metre"));
+        var same = await DeliveredAsync(other, "test-flow-wellbores", "y", Scope, "WELL", 2, Reads("Name", "metre"));
+        Assert.Equal(keys, same);
+        await AnalyzeAsync(Units("metre"), Units("meter"), CacheChangeMode.Auto);
+        var tag = Assert.Single(await Ledger.ListRolloutQueueAsync(10));
+        Assert.Equal(4, tag.AffectedRecords);
+
+        var marked = 0L;
+        for (var pass = 0; pass < 4; pass++)
+        {
+            var batch = await Ledger.RollOutTagAsync(tag.TagId, batchSize: 1, Now);
+            Assert.Equal(1, batch.Marked);
+            marked += batch.Marked;
+        }
+
+        Assert.Equal(4, marked);
+        Assert.True((await Ledger.RollOutTagAsync(tag.TagId, batchSize: 1, Now)).Completed);
+        foreach (var flow in new[] { _flow, other })
+        {
+            foreach (var key in keys)
+            {
+                var state = await Ledger.GetRecordAsync(flow, key);
+                Assert.Contains("cache change", state!.LastError!, StringComparison.Ordinal);
+                Assert.NotNull(state.PlanRequestedUtc);
+            }
+        }
     }
 
     [Fact]

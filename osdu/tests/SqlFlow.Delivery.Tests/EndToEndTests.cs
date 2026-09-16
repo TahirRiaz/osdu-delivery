@@ -331,7 +331,7 @@ public class EndToEndTests : IDisposable
                 CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker") { MaxWait = null };
             var later = await worker.DrainAsync(submissionId);
             Assert.Equal(1, later.Delivered);
-            var attempts = await ledger.ListAttemptsAsync(SampleEstate.Key(0), 10);
+            var attempts = await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(0), 10);
             Assert.Equal(2, attempts.Count);
             Assert.Equal(AttemptOutcome.Delivered, attempts[0].Outcome);
             Assert.Equal(AttemptOutcome.Failed, attempts[1].Outcome);
@@ -395,7 +395,7 @@ public class EndToEndTests : IDisposable
             Assert.Equal(RecordStatus.Pending, state!.Status);
             Assert.Null(state.LeaseOwner);
             Assert.Equal(0, state.AttemptCount);
-            Assert.Empty(await ledger.ListAttemptsAsync(interrupted.Key, 10));
+            Assert.Empty(await ledger.ListAttemptsAsync(runtime.Flow.Id, interrupted.Key, 10));
 
             // A fresh worker picks everything up at once; nothing waited for a lease to expire.
             protocol.Before = null;
@@ -404,7 +404,7 @@ public class EndToEndTests : IDisposable
                 CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "next-worker") { MaxWait = null };
             var summary = await resumed.DrainAsync(intake.Submission.SubmissionId);
             Assert.Equal(3, summary.Delivered);
-            Assert.Single(await ledger.ListAttemptsAsync(interrupted.Key, 10));
+            Assert.Single(await ledger.ListAttemptsAsync(runtime.Flow.Id, interrupted.Key, 10));
         }
     }
 
@@ -458,9 +458,173 @@ public class EndToEndTests : IDisposable
             Assert.Empty(protocol.Deliveries);
             var submission = await ledger.GetSubmissionAsync(submissionId);
             Assert.Equal(1, submission!.SkippedStale);
-            var stale = (await ledger.ListAttemptsAsync(SampleEstate.Key(0), 10)).Single(a => a.Phase == AttemptPhases.Stale);
+            var stale = (await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(0), 10)).Single(a => a.Phase == AttemptPhases.Stale);
             Assert.Equal(AttemptOutcome.Skipped, stale.Outcome);
             Assert.Equal(submissionId, stale.SubmissionId);
+        }
+    }
+
+    /// <summary>
+    /// A second mapping over the well log rows, into another OSDU kind: the wellbore each log was run in, keyed like the log
+    /// itself, so its records carry the same delivery keys as the well log flow's.
+    /// </summary>
+    private const string LogWellboreMapping = """
+        documentType: mapping
+        name: LogWellbore
+        version: 1.0.0
+        template:
+          kind: osdu:wks:master-data--Wellbore:1.3.0
+          version: 58d6bdbd9d066a06
+        description: The wellbore each Recall well log was run in, one record per log row.
+        dataset:
+          system: recall
+          key: [dataset.source_project, dataset.log_id]
+          label: "{dataset.wellbore_uwi} ({dataset.log_id})"
+        parameters:
+          dataPartition:
+            required: true
+            description: The OSDU data partition record ids are minted in.
+        mappings:
+          - target: osdu.acl.owners
+            static: [data.default.owners@opendes.dataservices.energy]
+          - target: osdu.acl.viewers
+            static: [data.default.viewers@opendes.dataservices.energy]
+          - target: osdu.legal.legaltags
+            static: [opendes-reference-data-default]
+          - target: osdu.legal.otherRelevantDataCountries
+            static: [NO]
+          - target: osdu.data.FacilityName
+            source: dataset.wellbore_uwi
+        """;
+
+    /// <summary>The sample well log flow turned into a second flow over the same rows, rendering <see cref="LogWellboreMapping"/>.</summary>
+    private FlowDefinition WellboresFlow(FlowDefinition flow)
+    {
+        var mappings = Path.Combine(_root, "wellbore-mappings");
+        Directory.CreateDirectory(mappings);
+        File.WriteAllText(Path.Combine(mappings, "LogWellbore@1.0.0.yaml"), LogWellboreMapping);
+        return flow with
+        {
+            Name = "recall-welllog-wellbores",
+            Render = flow.Render with { Mapping = "LogWellbore@1.0.0", MappingsDirectory = mappings },
+            Target = flow.Target with { Protocol = DeliveryProtocol.OsduRecord },
+        };
+    }
+
+    [Fact]
+    public async Task Two_flows_deliver_the_same_rows_into_different_kinds_and_keep_their_own_ledgers()
+    {
+        var tables = await EstateAsync();
+        var (logs, logProtocol, ledger) = await RuntimeAsync(tables);
+        var (wellbores, wellboreProtocol, _) = await RuntimeAsync(tables, WellboresFlow);
+        using (logs)
+        using (wellbores)
+        {
+            var (logRun, logSubmission) = await RunAsync(logs, logProtocol, ledger);
+            var (wellboreRun, wellboreSubmission) = await RunAsync(wellbores, wellboreProtocol, ledger);
+            Assert.Equal((3, 3), (logRun.Delivered, wellboreRun.Delivered));
+            Assert.All(logProtocol.Deliveries, w => Assert.StartsWith("opendes:work-product-component--WellLog:", w.TargetId, StringComparison.Ordinal));
+            Assert.All(wellboreProtocol.Deliveries, w => Assert.StartsWith("opendes:master-data--Wellbore:", w.TargetId, StringComparison.Ordinal));
+            Assert.All(wellboreProtocol.Deliveries, w => Assert.False(w.DeliverPayload));
+
+            // One row, one key, two records: each names its own mapping, OSDU id, submission and history, and both name the
+            // same ingestion file and row as their origin.
+            for (var i = 0; i < 3; i++)
+            {
+                var key = SampleEstate.Key(i);
+                var log = await ledger.GetRecordAsync(logs.Flow.Id, key);
+                var wellbore = await ledger.GetRecordAsync(wellbores.Flow.Id, key);
+                Assert.Equal(("WellLog", RecordStatus.Delivered, (Guid?)logSubmission), (log!.MappingName, log.Status, log.LastSubmissionId));
+                Assert.Equal(("LogWellbore", RecordStatus.Delivered, (Guid?)wellboreSubmission), (wellbore!.MappingName, wellbore.Status, wellbore.LastSubmissionId));
+                Assert.NotEqual(log.TargetId, wellbore.TargetId);
+                Assert.Equal((SampleEstate.FileName, (long?)(i + 1)), (log.SourceFileName, log.SourceRowNumber));
+                Assert.Equal((SampleEstate.FileName, (long?)(i + 1)), (wellbore.SourceFileName, wellbore.SourceRowNumber));
+                Assert.Equal(logSubmission, Assert.Single(await ledger.ListAttemptsAsync(logs.Flow.Id, key, 10)).SubmissionId);
+                Assert.Equal(wellboreSubmission, Assert.Single(await ledger.ListAttemptsAsync(wellbores.Flow.Id, key, 10)).SubmissionId);
+                Assert.Equal(2, (await ledger.LookupAsync(key.Value.ToString(), 10)).Count);
+            }
+
+            Assert.Equal(logSubmission, Assert.Single(await ledger.ListSubmissionsAsync(logs.Flow.Id, 10)).SubmissionId);
+            Assert.Equal(wellboreSubmission, Assert.Single(await ledger.ListSubmissionsAsync(wellbores.Flow.Id, 10)).SubmissionId);
+            Assert.Equal(3, (await ledger.StatsAsync(logs.Flow.Id, Now)).Delivered);
+            Assert.Equal(3, (await ledger.StatsAsync(wellbores.Flow.Id, Now)).Delivered);
+            Assert.Equal(logSubmission, (await ledger.GetWatermarkAsync(logs.Flow.Id, Planner.ScopeKey(logs.Parameters)))!.SubmissionId);
+            Assert.Equal(wellboreSubmission, (await ledger.GetWatermarkAsync(wellbores.Flow.Id, Planner.ScopeKey(wellbores.Parameters)))!.SubmissionId);
+
+            // A column only the well log reads changes: that flow sends its document again, the other renders its own,
+            // finds it unchanged and sends nothing. Each decides from its own record.
+            logProtocol.Deliveries.Clear();
+            wellboreProtocol.Deliveries.Clear();
+            _clock.Advance(TimeSpan.FromMinutes(10));
+            SampleEstate.Change(tables.Records[0], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc.AddHours(2));
+            Assert.Equal(1, (await RunAsync(logs, logProtocol, ledger, force: true)).Work.Delivered);
+            Assert.Equal(0, (await RunAsync(wellbores, wellboreProtocol, ledger, force: true)).Work.Processed);
+            Assert.Equal(SampleEstate.Key(0), Assert.Single(logProtocol.Deliveries).Key);
+            Assert.Empty(wellboreProtocol.Deliveries);
+            Assert.Equal(2, (await ledger.ListAttemptsAsync(logs.Flow.Id, SampleEstate.Key(0), 10)).Count);
+            Assert.Single(await ledger.ListAttemptsAsync(wellbores.Flow.Id, SampleEstate.Key(0), 10));
+
+            // Removing the wellbores takes the wellbore records out of OSDU and leaves every well log where it is.
+            wellbores.Actor = "gui:tahir";
+            var removed = await wellbores.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalScope.Record);
+            Assert.Equal(1, removed.Removed);
+            Assert.StartsWith("opendes:master-data--Wellbore:", Assert.Single(wellboreProtocol.Deletes).TargetId, StringComparison.Ordinal);
+            Assert.Empty(logProtocol.Deletes);
+            Assert.Equal(RecordStatus.Deleted, (await ledger.GetRecordAsync(wellbores.Flow.Id, SampleEstate.Key(0)))!.Status);
+            Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(logs.Flow.Id, SampleEstate.Key(0)))!.Status);
+            var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = wellbores.Flow.Id, DeliveryKey = SampleEstate.Key(0).Value }));
+            Assert.Equal("delete", activity.Kind);
+            Assert.Empty(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = logs.Flow.Id, DeliveryKey = SampleEstate.Key(0).Value }));
+        }
+    }
+
+    [Fact]
+    public async Task A_second_flow_writing_the_same_osdu_records_is_held_and_never_reaches_them()
+    {
+        var tables = await EstateAsync();
+        var (logs, logProtocol, ledger) = await RuntimeAsync(tables);
+        var (copy, copyProtocol, _) = await RuntimeAsync(tables, flow => flow with { Name = "recall-welllog-copy" });
+        using (logs)
+        using (copy)
+        {
+            Assert.Equal(3, (await RunAsync(logs, logProtocol, ledger)).Work.Delivered);
+
+            // Same mapping, same partition: the copy would write the very records the first flow owns. It sends nothing,
+            // and every record it planned is held with the owner named, so the reason is on the record's own page.
+            var (copied, copySubmission) = await RunAsync(copy, copyProtocol, ledger);
+            Assert.Equal(0, copied.Processed);
+            Assert.Empty(copyProtocol.Deliveries);
+            var submission = await ledger.GetSubmissionAsync(copySubmission);
+            Assert.Equal((0L, 3L), (submission!.Delivered, submission.Held));
+            for (var i = 0; i < 3; i++)
+            {
+                var held = await ledger.GetRecordAsync(copy.Flow.Id, SampleEstate.Key(i));
+                Assert.Equal(RecordStatus.Held, held!.Status);
+                Assert.True(held.Blocked);
+                Assert.Null(held.TargetId);
+                Assert.Contains("already claimed by flow 'recall-welllog'", held.LastError, StringComparison.Ordinal);
+                Assert.Equal(SampleEstate.FileName, held.PendingSourceFileName);
+                var attempt = Assert.Single(await ledger.ListAttemptsAsync(copy.Flow.Id, SampleEstate.Key(i), 10));
+                Assert.Equal((AttemptOutcome.Held, "render"), (attempt.Outcome, attempt.Phase));
+                Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(logs.Flow.Id, SampleEstate.Key(i)))!.Status);
+            }
+
+            // Removing the copy's records never reaches the first flow's OSDU records: the copy wrote nothing.
+            copy.Actor = "gui:tahir";
+            var removal = await copy.RemoveAsync(RemovalSelection.Of([.. Enumerable.Range(0, 3).Select(SampleEstate.Key)]), RemovalScope.Everything);
+            Assert.Equal((3, 0), (removal.Skipped, removal.Removed));
+            Assert.Empty(copyProtocol.Deletes);
+
+            // Released, the copy plans the records again and meets the same owner: held again, still nothing sent.
+            await copy.ReleaseAsync(null);
+            _clock.Advance(TimeSpan.FromMinutes(1));
+            copy.Selection = SourceSelection.Full();
+            var (again, _) = await RunAsync(copy, copyProtocol, ledger, force: true);
+            Assert.Equal(0, again.Processed);
+            Assert.Empty(copyProtocol.Deliveries);
+            Assert.All(
+                await ledger.ListAsync(copy.Flow.Id, new RecordQuery()),
+                r => Assert.Equal((RecordStatus.Held, true), (r.Status, r.Blocked)));
         }
     }
 
@@ -475,7 +639,7 @@ public class EndToEndTests : IDisposable
 
             var sent = protocol.Correlations[protocol.Deliveries.FindIndex(w => w.Key == SampleEstate.Key(0))];
             Assert.True(Guid.TryParse(sent, out _));
-            var attempt = Assert.Single(await ledger.ListAttemptsAsync(SampleEstate.Key(0), 10));
+            var attempt = Assert.Single(await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(0), 10));
             using var result = System.Text.Json.JsonDocument.Parse(attempt.ResultJson!);
             Assert.Equal(sent, result.RootElement.GetProperty("correlationId").GetString());
             Assert.Null(attempt.Error);

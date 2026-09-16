@@ -5,7 +5,7 @@ import { DataTable, type Column } from "@/components/DataTable";
 import { Mono } from "@/components/Mono";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
-import type { DeliveryRecordHit } from "../../api/delivery";
+import { deliveryRecordRoute, type DeliveryRecordHit } from "../../api/delivery";
 
 function isRecordHit(value: unknown): value is DeliveryRecordHit {
   if (value === null || typeof value !== "object") {
@@ -68,8 +68,8 @@ export function RecordSearchHits({ category }: { category: SearchCategory<unknow
       <DataTable
         columns={recordColumns}
         rows={records}
-        rowKey={(row) => row.deliveryKey}
-        onRowClick={(row) => navigate(`/delivery/records/${row.deliveryKey}`)}
+        rowKey={(row) => `${row.flowId}/${row.deliveryKey}`}
+        onRowClick={(row) => navigate(deliveryRecordRoute(row))}
         emptyMessage="No records match."
         data-testid="search-records-table"
       />

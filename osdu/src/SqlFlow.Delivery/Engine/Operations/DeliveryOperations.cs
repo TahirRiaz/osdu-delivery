@@ -161,7 +161,9 @@ public sealed class ReadRecordOperation : DeliveryOperation
             deliveryKey = key.Value;
             var record = await RequireLedger().GetRecordAsync(flow.Id, key, ct).ConfigureAwait(false)
                 ?? throw new SqlFlowException($"Record {key} is not in the ledger for flow '{flow.Name}'.");
-            targetId = record.TargetId ?? throw new SqlFlowException($"Record {key} has no OSDU id yet; nothing to read back.");
+            // What a record's page reads back is what this flow wrote: an id the record never claimed can be another flow's.
+            targetId = record.ClaimedTargetId
+                ?? throw new SqlFlowException($"Record {key} has not queued a document for OSDU in flow '{flow.Name}', so this flow wrote nothing to read back.");
         }
 
         var (http, protocol) = await OpenTargetAsync(flow, ct).ConfigureAwait(false);

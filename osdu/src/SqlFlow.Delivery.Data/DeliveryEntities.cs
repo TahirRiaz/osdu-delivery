@@ -95,12 +95,15 @@ public sealed class DeliverySubmission
     public Guid? RunId { get; set; }
 }
 
-/// <summary>The current state of one deliverable, keyed by its deterministic delivery key.</summary>
+/// <summary>
+/// The current state of one deliverable, keyed by the flow that delivers it and its deterministic delivery key. The same
+/// source row read by two flows is two records, each with its own state and history.
+/// </summary>
 public sealed class DeliveryRecord
 {
-    public Guid DeliveryKey { get; set; }
-
     public Guid FlowId { get; set; }
+
+    public Guid DeliveryKey { get; set; }
 
     public string SourceKey { get; set; } = string.Empty;
 
@@ -136,6 +139,13 @@ public sealed class DeliveryRecord
     public DateTime? PayloadModifiedUtc { get; set; }
 
     public string? TargetId { get; set; }
+
+    /// <summary>
+    /// The OSDU id this record claimed for its flow when it first queued a document, kept for good afterwards. One OSDU
+    /// record belongs to one flow: no other flow's record can claim the same id. A record that was only ever held has
+    /// claimed nothing.
+    /// </summary>
+    public string? ClaimedTargetId { get; set; }
 
     public long? TargetVersion { get; set; }
 
@@ -220,6 +230,9 @@ public sealed class DeliveryRecord
 public sealed class DeliveryAttempt
 {
     public long AttemptId { get; set; }
+
+    /// <summary>The flow of the record the try belongs to; with the delivery key, the record's identity.</summary>
+    public Guid FlowId { get; set; }
 
     public Guid DeliveryKey { get; set; }
 
@@ -706,8 +719,14 @@ public sealed class DeliveryUpdateTag
     /// <summary>How many of them the rollout has marked for redelivery so far.</summary>
     public long Processed { get; set; }
 
-    /// <summary>Where the rollout got to, in delivery-key order, so a pass resumes rather than restarts.</summary>
+    /// <summary>
+    /// Where the rollout got to, in delivery-key order and then flow order, so a pass resumes rather than restarts: the
+    /// delivery key of the last record marked.
+    /// </summary>
     public Guid? Cursor { get; set; }
+
+    /// <summary>The flow of the last record marked; with <see cref="Cursor"/>, where the rollout got to.</summary>
+    public Guid? CursorFlowId { get; set; }
 
     public DateTime DetectedUtc { get; set; }
 
@@ -840,7 +859,9 @@ public static class DeliveryModel
         modelBuilder.Entity<DeliveryRecord>(e =>
         {
             e.ToTable("Record", SchemaName);
-            e.HasKey(r => r.DeliveryKey);
+            // A record is one flow's: two flows reading the same source row keep two records, and a flow's key-ordered
+            // walks (a removal's key list, a key-scoped plan) read the key in order.
+            e.HasKey(r => new { r.FlowId, r.DeliveryKey });
             e.Property(r => r.SourceKey).HasMaxLength(400).IsRequired();
             e.Property(r => r.SourceKeyJson).HasMaxLength(2000);
             e.Property(r => r.Label).HasMaxLength(400);
@@ -850,6 +871,7 @@ public static class DeliveryModel
             e.Property(r => r.MetadataHash).HasMaxLength(64);
             e.Property(r => r.PayloadHash).HasMaxLength(64);
             e.Property(r => r.TargetId).HasMaxLength(500);
+            OptionalOsduId(e.Property(r => r.ClaimedTargetId), sqlServer).HasMaxLength(500);
             e.Property(r => r.Status).HasMaxLength(16).IsRequired();
             e.Property(r => r.LastVerifyOutcome).HasMaxLength(16);
             e.Property(r => r.LeaseOwner).HasMaxLength(200);
@@ -863,8 +885,10 @@ public static class DeliveryModel
 
             // Worker and intake paths.
             e.HasIndex(r => new { r.FlowId, r.Status, r.NextAttemptUtc });
-            // The rollout walks one set's records in key order; the filtered index keeps untagged records out of it.
-            e.HasIndex(r => new { r.CacheSetId, r.DeliveryKey }).HasFilter("[CacheSetId] IS NOT NULL");
+            // The rollout walks one set's records in key order, then flow order; the filtered index keeps untagged records out of it.
+            e.HasIndex(r => new { r.CacheSetId, r.DeliveryKey, r.FlowId }).HasFilter("[CacheSetId] IS NOT NULL");
+            // One OSDU record, one flow: the database refuses a second flow's claim on an id, whatever races the intakes run.
+            e.HasIndex(r => r.ClaimedTargetId).IsUnique().HasFilter("[ClaimedTargetId] IS NOT NULL");
             e.HasIndex(r => new { r.LastSubmissionId, r.WorkBatch });
             e.HasIndex(r => r.LeaseOwner);
             // A submission's records, most recent first, read in index order however many the submission holds.
@@ -881,8 +905,9 @@ public static class DeliveryModel
             e.HasIndex(r => new { r.FlowId, r.LastDeliveredUtc });
             e.HasIndex(r => new { r.FlowId, r.LastVerifyOutcome });
 
-            // The global lookup (the search box): a delivery key is the primary key; an OSDU id, a source key, a label
-            // prefix or an ingestion file name answers from these across every flow.
+            // The global lookup (the search box): a delivery key, an OSDU id, a source key, a label prefix or an
+            // ingestion file name answers from these across every flow.
+            e.HasIndex(r => r.DeliveryKey);
             e.HasIndex(r => r.TargetId);
             e.HasIndex(r => r.SourceKey);
             e.HasIndex(r => r.Label);
@@ -894,9 +919,6 @@ public static class DeliveryModel
             // The records the ledger asked to be planned again, paged by the planner each run: the filter keeps the
             // index as small as the backlog.
             e.HasIndex(r => new { r.FlowId, r.PlanRequestedUtc }).HasFilter("[PlanRequestedUtc] IS NOT NULL");
-
-            // Key-ordered walks of one flow: a removal's key list and a key-scoped plan page through it by key.
-            e.HasIndex(r => new { r.FlowId, r.DeliveryKey });
         });
 
         modelBuilder.Entity<DeliveryAttempt>(e =>
@@ -911,11 +933,14 @@ public static class DeliveryModel
             e.Property(a => a.PayloadHash).HasMaxLength(64);
             e.Property(a => a.Error).HasMaxLength(2000);
             e.Property(a => a.SourceFileName).HasMaxLength(MaxSourceFileNameLength);
-            e.HasIndex(a => new { a.DeliveryKey, a.StartedUtc });
+            // A record's timeline, and the later attempt pruning looks for beside each one it removes.
+            e.HasIndex(a => new { a.FlowId, a.DeliveryKey, a.StartedUtc });
             e.HasIndex(a => a.StartedUtc);
-            e.HasIndex(a => a.SubmissionId);
-            // A run's records: the listing's run filter seeks the run and joins on the key without reading the attempt.
-            e.HasIndex(a => new { a.RunId, a.DeliveryKey });
+            // A submission's attempts, and the records they settled by outcome, counted when the submission closes: the
+            // count reads this index alone, however many attempts a full plan wrote.
+            e.HasIndex(a => new { a.SubmissionId, a.Outcome, a.Phase }).IncludeProperties(a => a.DeliveryKey);
+            // A run's records: the listing's run filter seeks the run and joins on the record without reading the attempt.
+            e.HasIndex(a => new { a.RunId, a.FlowId, a.DeliveryKey });
         });
 
         modelBuilder.Entity<DeliveryRecordCount>(e =>
@@ -960,7 +985,7 @@ public static class DeliveryModel
             e.Property(a => a.Outcome).HasMaxLength(16).IsRequired();
             e.Property(a => a.Summary).HasMaxLength(2000);
             e.HasIndex(a => new { a.FlowId, a.StartedUtc });
-            e.HasIndex(a => new { a.DeliveryKey, a.StartedUtc });
+            e.HasIndex(a => new { a.FlowId, a.DeliveryKey, a.StartedUtc });
             e.HasIndex(a => a.SubmissionId);
             e.HasIndex(a => a.RunId);
             e.HasIndex(a => new { a.Kind, a.StartedUtc });
@@ -1157,6 +1182,16 @@ public static class DeliveryModel
         property.Metadata.SetValueComparer(new ValueComparer<string>(
             (left, right) => string.Equals(left, right, StringComparison.Ordinal),
             value => StringComparer.Ordinal.GetHashCode(value),
+            value => value));
+        return sqlServer ? property.UseCollation(OsduIdCollation) : property;
+    }
+
+    /// <summary>A nullable column keyed on an OSDU record id, compared exactly as <see cref="OsduId"/> compares a required one.</summary>
+    private static PropertyBuilder<string?> OptionalOsduId(PropertyBuilder<string?> property, bool sqlServer)
+    {
+        property.Metadata.SetValueComparer(new ValueComparer<string?>(
+            (left, right) => string.Equals(left, right, StringComparison.Ordinal),
+            value => value == null ? 0 : StringComparer.Ordinal.GetHashCode(value),
             value => value));
         return sqlServer ? property.UseCollation(OsduIdCollation) : property;
     }

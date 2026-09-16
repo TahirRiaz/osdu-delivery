@@ -78,7 +78,7 @@ public class ScaleEngineTests : IDisposable
         Assert.Contains("\"recordId\":\"" + delivered.TargetId, delivered.TargetStateJson, StringComparison.Ordinal);
         Assert.Contains("\"version\"", delivered.TargetStateJson, StringComparison.Ordinal);
 
-        var attempts = await ledger.ListAttemptsAsync(SampleEstate.Key(0), 5);
+        var attempts = await ledger.ListAttemptsAsync(flow.Id, SampleEstate.Key(0), 5);
         var attempt = Assert.Single(attempts);
         Assert.NotNull(attempt.WorkBatch);
         Assert.Equal(SampleEstate.FileName, attempt.SourceFileName);
@@ -131,7 +131,7 @@ public class ScaleEngineTests : IDisposable
         var delivered = await ledger.GetRecordAsync(flow.Id, SampleEstate.Key(0));
         Assert.Equal(RecordStatus.Delivered, delivered!.Status);
         Assert.Null(delivered.PendingStepJson);
-        var attempts = await ledger.ListAttemptsAsync(SampleEstate.Key(0), 5);
+        var attempts = await ledger.ListAttemptsAsync(flow.Id, SampleEstate.Key(0), 5);
         Assert.Equal(2, attempts.Count);
         Assert.Contains("\"resumed\":true", attempts[0].ResultJson, StringComparison.Ordinal);
         Assert.Equal(AttemptOutcome.Failed, attempts[1].Outcome);

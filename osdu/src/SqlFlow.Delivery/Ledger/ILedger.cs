@@ -178,7 +178,10 @@ public static class SubmissionKinds
     public static IReadOnlyList<string> All { get; } = [Incremental, Full, Keys];
 }
 
-/// <summary>The current state of one deliverable (design.md section 7.3).</summary>
+/// <summary>
+/// The current state of one deliverable (design.md section 7.3). A record is one flow's: its identity is the flow and the
+/// delivery key together, so two flows reading the same source row keep two records with separate histories.
+/// </summary>
 public sealed record RecordState
 {
     public required DeliveryKey DeliveryKey { get; init; }
@@ -221,6 +224,12 @@ public sealed record RecordState
     public DateTime? PayloadModifiedUtc { get; init; }
 
     public string? TargetId { get; init; }
+
+    /// <summary>
+    /// The OSDU id the record claimed for its flow when it first queued a document; null for a record that was only ever
+    /// held. Only a claimed id is this flow's to write, read back or remove. Written by the ledger, never by a caller.
+    /// </summary>
+    public string? ClaimedTargetId { get; init; }
 
     public long? TargetVersion { get; init; }
 
@@ -502,7 +511,30 @@ public sealed record SkippedRecord
 /// Records refused because the ledger already holds a newer source version or payload for them, delivered or queued
 /// by a concurrent intake since this one read them. They are stale and are recorded as such.
 /// </param>
-public sealed record PendingStaging(int Staged, IReadOnlyList<DeliveryKey> Refused);
+/// <param name="Conflicts">
+/// Records refused because another flow's record has claimed the OSDU id they would be written to. Nothing was written
+/// for them; the caller holds them with the owner named.
+/// </param>
+public sealed record PendingStaging(int Staged, IReadOnlyList<DeliveryKey> Refused, IReadOnlyList<TargetIdConflict> Conflicts)
+{
+    public static PendingStaging Empty { get; } = new(0, [], []);
+}
+
+/// <summary>A record whose OSDU id another flow has claimed: the id, and the flow that holds it.</summary>
+/// <param name="DeliveryKey">The record that was not staged.</param>
+/// <param name="TargetId">The OSDU id it would have been written to.</param>
+/// <param name="OwnerFlowId">The flow whose record claimed the id.</param>
+/// <param name="OwnerFlowName">That flow's name as its last submission recorded it, when the ledger knows it.</param>
+public sealed record TargetIdConflict(DeliveryKey DeliveryKey, string TargetId, Guid OwnerFlowId, string? OwnerFlowName)
+{
+    /// <summary>What the held record says about the conflict: which id, whose it is, and how to resolve it.</summary>
+    public string Describe()
+    {
+        var owner = OwnerFlowName is null ? $"flow {OwnerFlowId:D}" : $"flow '{OwnerFlowName}' ({OwnerFlowId:D})";
+        return $"OSDU id {TargetId} is already claimed by {owner}, and one OSDU record belongs to one flow. Deliver this flow "
+            + "to another data partition, or give its mapping a dataset.system or key that yields other OSDU ids.";
+    }
+}
 
 /// <summary>
 /// The watermark of one flow scope: the upper bound of the last whole-scope plan that completed, and the submission that
@@ -903,18 +935,16 @@ public interface ILedger
 
     Task<RecordState?> GetRecordAsync(Guid flowId, DeliveryKey key, CancellationToken ct = default);
 
-    /// <summary>Finds a record by key across flows (the key is globally unique).</summary>
-    Task<RecordState?> FindRecordAsync(DeliveryKey key, CancellationToken ct = default);
-
     /// <summary>
-    /// Inserts or updates records with pending work; existing current-state columns are preserved. A record another
-    /// worker is delivering right now keeps its lease and status, and the new work is queued behind the delivery:
+    /// Inserts or updates one flow's records with pending work; existing current-state columns are preserved. A record
+    /// another worker is delivering right now keeps its lease and status, and the new work is queued behind the delivery:
     /// the worker's completion leaves it pending for the next pass. Work carrying a source or payload version older
     /// than the one the record already holds, delivered or queued, is refused, so concurrent intakes can never take
-    /// a record back to an earlier version. Staging writes the record's key tuple and the pending origin, and clears a
-    /// request to plan it again.
+    /// a record back to an earlier version. Work for an OSDU id another flow's record has claimed is refused as a
+    /// conflict, and the first staging of a record claims its id for the flow. Staging writes the record's key tuple and
+    /// the pending origin, and clears a request to plan it again. Every record must carry <paramref name="flowId"/>.
     /// </summary>
-    Task<PendingStaging> UpsertPendingAsync(IReadOnlyList<RecordState> records, CancellationToken ct = default);
+    Task<PendingStaging> UpsertPendingAsync(Guid flowId, IReadOnlyList<RecordState> records, CancellationToken ct = default);
 
     /// <summary>
     /// Records what the intake skipped. A record with no pending work moves to the submission; a record with pending
@@ -925,8 +955,12 @@ public interface ILedger
     /// </summary>
     Task MarkSkippedAsync(Guid flowId, IReadOnlyList<SkippedRecord> records, Guid submissionId, CancellationToken ct = default);
 
-    /// <summary>Marks records held without queueing work (render-time holds), writing the key tuple and the origin they were held at.</summary>
-    Task MarkHeldAsync(IEnumerable<RecordState> records, CancellationToken ct = default);
+    /// <summary>
+    /// Marks one flow's records held without queueing work (render-time holds), writing the key tuple and the origin they
+    /// were held at. A held record claims no OSDU id, and it is given no id another flow's record has claimed. Every
+    /// record must carry <paramref name="flowId"/>.
+    /// </summary>
+    Task MarkHeldAsync(Guid flowId, IEnumerable<RecordState> records, CancellationToken ct = default);
 
     /// <summary>
     /// The records of a flow the ledger asked to be planned again, in delivery-key order after <paramref name="after"/>, at
@@ -943,29 +977,29 @@ public interface ILedger
     /// </summary>
     Task<IReadOnlyList<RecordState>> ClaimAsync(Guid flowId, Guid? submissionId, string owner, int max, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default);
 
-    Task<bool> RenewLeaseAsync(DeliveryKey key, string owner, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default);
+    Task<bool> RenewLeaseAsync(Guid flowId, DeliveryKey key, string owner, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
     /// Hands a leased record back to <c>pending</c> without writing an attempt: the worker is stopping, not failing.
     /// With <paramref name="countAttempt"/> false the interrupted try is not charged to the record's retry budget.
     /// </summary>
-    Task<bool> ReleaseLeaseAsync(DeliveryKey key, string owner, bool countAttempt, DateTime nowUtc, CancellationToken ct = default);
+    Task<bool> ReleaseLeaseAsync(Guid flowId, DeliveryKey key, string owner, bool countAttempt, DateTime nowUtc, CancellationToken ct = default);
 
-    /// <summary>Writes the attempt and the resulting record state, releasing the lease.</summary>
-    Task CompleteAsync(RecordCompletion completion, CancellationToken ct = default);
+    /// <summary>Writes the attempt and the resulting state of one of the flow's records, releasing the lease.</summary>
+    Task CompleteAsync(Guid flowId, RecordCompletion completion, CancellationToken ct = default);
 
     /// <summary>
-    /// Writes many completions in one round trip (a drained batch); each is the same write as <see cref="CompleteAsync"/>.
-    /// A promoting completion copies the origin of the version it delivered onto the record.
+    /// Writes many completions of one flow's records in one round trip (a drained batch); each is the same write as
+    /// <see cref="CompleteAsync"/>. A promoting completion copies the origin of the version it delivered onto the record.
     /// </summary>
-    Task CompleteManyAsync(IReadOnlyList<RecordCompletion> completions, CancellationToken ct = default);
+    Task CompleteManyAsync(Guid flowId, IReadOnlyList<RecordCompletion> completions, CancellationToken ct = default);
 
     /// <summary>
     /// Keeps a delivery's step progress on the record mid-try, so a crash after an upload never repeats it. Written
     /// only while the record still holds the document the try is delivering: the steps of a superseded document
     /// must never let the newer one skip an upload it has not made.
     /// </summary>
-    Task SaveStepAsync(DeliveryKey key, Guid? submissionId, string documentRef, string stepJson, CancellationToken ct = default);
+    Task SaveStepAsync(Guid flowId, DeliveryKey key, Guid? submissionId, string documentRef, string stepJson, CancellationToken ct = default);
 
     /// <summary>How many distinct records a submission's attempts settled with the given outcome (and phase, when given).</summary>
     Task<long> CountAttemptsAsync(Guid submissionId, AttemptOutcome outcome, string? phase = null, CancellationToken ct = default);
@@ -1026,7 +1060,8 @@ public interface ILedger
 
     Task<FlowStats> StatsAsync(Guid flowId, DateTime nowUtc, CancellationToken ct = default);
 
-    Task<IReadOnlyList<AttemptRecord>> ListAttemptsAsync(DeliveryKey key, int max, CancellationToken ct = default);
+    /// <summary>One of the flow's records' attempts, newest first: the record's history, and nothing of another flow's record with the same key.</summary>
+    Task<IReadOnlyList<AttemptRecord>> ListAttemptsAsync(Guid flowId, DeliveryKey key, int max, CancellationToken ct = default);
 
     /// <summary>The attempts a submission produced, newest first: the submission view.</summary>
     Task<IReadOnlyList<AttemptRecord>> ListAttemptsForSubmissionAsync(Guid submissionId, int max, CancellationToken ct = default);
@@ -1037,9 +1072,10 @@ public interface ILedger
     /// </summary>
     Task<BoundedCount> CountAsync(Guid flowId, RecordQuery query, int limit, CancellationToken ct = default);
 
-    /// <summary>Records matching a lookup across every flow: an exact delivery key, or a prefix over the OSDU id, the
-    /// source key, the label and the origin file name. At most <see cref="RecordListing.LookupCandidateLimit"/> candidates
-    /// are read from each identity index, and the most recently updated of them are returned.</summary>
+    /// <summary>Records matching a lookup across every flow: an exact delivery key (one record per flow that reads the
+    /// row), or a prefix over the OSDU id, the source key, the label and the origin file name. At most
+    /// <see cref="RecordListing.LookupCandidateLimit"/> candidates are read from each identity index, and the most recently
+    /// updated of them are returned.</summary>
     Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, CancellationToken ct = default);
 
     /// <summary>How many records a lookup matches, counting no further than <paramref name="limit"/>.</summary>
@@ -1048,7 +1084,7 @@ public interface ILedger
     /// <summary>Delivered records due for the drift pass, oldest verification first.</summary>
     Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default);
 
-    Task RecordVerifyAsync(DeliveryKey key, VerifyOutcome outcome, long? observedVersion, DateTime nowUtc, bool requeue, CancellationToken ct = default);
+    Task RecordVerifyAsync(Guid flowId, DeliveryKey key, VerifyOutcome outcome, long? observedVersion, DateTime nowUtc, bool requeue, CancellationToken ct = default);
 
     /// <summary>
     /// Releases held, failed or deleted records: those with a pending document go back to pending for the worker,
@@ -1063,13 +1099,13 @@ public interface ILedger
     Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
-    /// Records what a removal did to a set of records, in one round trip. <see cref="RemovalScope.Record"/> and
+    /// Records what a removal did to a set of the flow's records, in one round trip. <see cref="RemovalScope.Record"/> and
     /// <see cref="RemovalScope.Everything"/> take the record out of OSDU, so the ledger marks it deleted and
     /// blocked and forgets the hashes; <see cref="RemovalScope.History"/> leaves the record live, so its custody
     /// state is untouched and only the attempt is written. Either way every record gets its own attempt, saying
     /// which scope ran and who asked for it, because that attempt is how the removal is audited afterwards.
     /// </summary>
-    Task MarkRemovedAsync(IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default);
+    Task MarkRemovedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default);
 
     /// <summary>
     /// The keys of every record a listing matches, in key order, up to <paramref name="max"/>. Key order is what
@@ -1121,9 +1157,9 @@ public interface ILedger
     Task<int> DecideTagsAsync(IReadOnlyList<long> tagIds, bool approve, string actor, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
-    /// Carries one batch of an approved tag: marks up to <paramref name="batchSize"/> of its records for
-    /// redelivery in key order from the tag's cursor (asking the flow's next run to plan them again), advances the cursor
-    /// and reports what is left. A change over millions of records is drained a batch at a time by a caller that decides
+    /// Carries one batch of an approved tag: marks up to <paramref name="batchSize"/> of its records, of every flow, for
+    /// redelivery in key and then flow order from the tag's cursor (asking each flow's next run to plan them again),
+    /// advances the cursor and reports what is left. A change over millions of records is drained a batch at a time by a caller that decides
     /// the pace.
     /// </summary>
     Task<UpdateRolloutBatch> RollOutTagAsync(long tagId, int batchSize, DateTime nowUtc, CancellationToken ct = default);
@@ -1137,7 +1173,7 @@ public interface ILedger
     /// <summary>Writes the watermark of one flow scope; a watermark never moves back to an earlier bound.</summary>
     Task SetWatermarkAsync(SourceWatermark watermark, CancellationToken ct = default);
 
-    /// <summary>Removes attempts older than the cut-off, keeping the latest attempt per record.</summary>
+    /// <summary>Removes attempts older than the cut-off, keeping the latest attempt of every flow's record.</summary>
     Task<int> PruneAttemptsAsync(DateTime olderThanUtc, CancellationToken ct = default);
 
     /// <summary>Opens the row of a retrieval run and returns it with its id.</summary>

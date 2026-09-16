@@ -148,7 +148,7 @@ mappings:
 | `name`, `version` | The mapping's reference, `Name@version`, which a flow pins under `render.mapping`. The file name must agree. |
 | `template.kind`, `template.version` | The saved template version this mapping fills. A run refuses to render against any other. |
 | `description` | Free text. |
-| `dataset.system` | The source system. It enters the delivery key. |
+| `dataset.system` | The source system. It enters the delivery key, and so the OSDU id: two mappings that deliver the same rows into the same entity type and partition need different systems or keys (the OSDU id carries the entity type, not the kind's version), because one OSDU record belongs to one flow ([ledger.md](ledger.md#one-source-several-flows)). |
 | `dataset.key` | The dataset columns that identify a record, in order. The delivery key, and so the OSDU id, is derived from them. |
 | `dataset.label` | Optional display text for the ledger and the GUI, with `{dataset.column}` tokens. It never enters the record. |
 | `parameters` | Values the flow supplies under `render.parameters`. `dataPartition` is always declared. |

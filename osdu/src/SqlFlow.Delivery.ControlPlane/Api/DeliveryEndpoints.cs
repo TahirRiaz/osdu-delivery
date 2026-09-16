@@ -233,6 +233,17 @@ public sealed record DeliveryRemovalPreview(
 
 public sealed record DeliveryPruneRequest(int OlderThanDays);
 
+/// <summary>
+/// How a record is addressed in the API and the GUI: the ledger's flow id and the delivery key, together. A delivery key
+/// alone names one record per flow that reads the row, and the flow id (not the pipeline) is what outlives a flow's
+/// removal from its repository, so a record's history stays reachable.
+/// </summary>
+public static class DeliveryRecordRoutes
+{
+    /// <summary>The record's path segment: <c>{flowId}/{deliveryKey}</c>.</summary>
+    public static string Path(Guid flowId, Guid deliveryKey) => $"{flowId:D}/{deliveryKey:D}";
+}
+
 public sealed record DeliveryPruneResult(int AttemptsPruned);
 
 /// <summary>
@@ -261,9 +272,9 @@ public static class DeliveryEndpoints
         delivery.MapGet("/flows/{pipelineId:guid}/target", GetTargetAsync).WithName("GetDeliveryTarget");
         delivery.MapGet("/flows/{pipelineId:guid}/submissions", ListSubmissionsAsync).WithName("ListDeliverySubmissions");
         delivery.MapGet("/flows/{pipelineId:guid}/retrievals", ListRetrievalsAsync).WithName("ListDeliveryRetrievals");
-        delivery.MapGet("/records/{key:guid}", GetRecordAsync).WithName("GetDeliveryRecord");
-        delivery.MapGet("/records/{key:guid}/attempts", ListRecordAttemptsAsync).WithName("ListDeliveryRecordAttempts");
-        delivery.MapGet("/records/{key:guid}/activities", ListRecordActivitiesAsync).WithName("ListDeliveryRecordActivities");
+        delivery.MapGet("/records/{flowId:guid}/{key:guid}", GetRecordAsync).WithName("GetDeliveryRecord");
+        delivery.MapGet("/records/{flowId:guid}/{key:guid}/attempts", ListRecordAttemptsAsync).WithName("ListDeliveryRecordAttempts");
+        delivery.MapGet("/records/{flowId:guid}/{key:guid}/activities", ListRecordActivitiesAsync).WithName("ListDeliveryRecordActivities");
         delivery.MapGet("/submissions/{submissionId:guid}", GetSubmissionAsync).WithName("GetDeliverySubmission");
         delivery.MapGet("/submissions/{submissionId:guid}/attempts", ListSubmissionAttemptsAsync).WithName("ListDeliverySubmissionAttempts");
         delivery.MapGet("/submissions/{submissionId:guid}/batches", ListSubmissionBatchesAsync).WithName("ListDeliverySubmissionBatches");
@@ -277,7 +288,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/cache/diff", CompareCacheVersionsAsync).WithName("CompareDeliveryCacheVersions");
         delivery.MapGet("/cache/history", ListCacheHistoryAsync).WithName("ListDeliveryCacheHistory");
         delivery.MapGet("/cache/tags", ListUpdateTagsAsync).WithName("ListDeliveryUpdateTags");
-        delivery.MapGet("/records/{key:guid}/cache", ListRecordCacheUsesAsync).WithName("ListDeliveryRecordCacheUses");
+        delivery.MapGet("/records/{flowId:guid}/{key:guid}/cache", ListRecordCacheUsesAsync).WithName("ListDeliveryRecordCacheUses");
         return group;
     }
 
@@ -289,12 +300,12 @@ public static class DeliveryEndpoints
         delivery.MapPost("/flows/{pipelineId:guid}/release", ReleaseFlowAsync).WithName("ReleaseDeliveryFlowRecords");
         delivery.MapPost("/flows/{pipelineId:guid}/probe", ProbeAsync).WithName("ProbeDeliveryTarget");
         delivery.MapPost("/cache/tags/decide", DecideUpdateTagsAsync).WithName("DecideDeliveryUpdateTags");
-        delivery.MapPost("/records/{key:guid}/release", ReleaseRecordAsync).WithName("ReleaseDeliveryRecord");
-        delivery.MapPost("/records/{key:guid}/redeliver", RedeliverAsync).WithName("RedeliverDeliveryRecord");
-        delivery.MapPost("/records/{key:guid}/verify", VerifyRecordAsync).WithName("VerifyDeliveryRecord");
-        delivery.MapPost("/records/{key:guid}/read", ReadRecordAsync).WithName("ReadDeliveryRecordBack");
-        delivery.MapPost("/records/{key:guid}/source", ReadSourceAsync).WithName("ReadDeliveryRecordSource");
-        delivery.MapPost("/records/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
+        delivery.MapPost("/records/{flowId:guid}/{key:guid}/release", ReleaseRecordAsync).WithName("ReleaseDeliveryRecord");
+        delivery.MapPost("/records/{flowId:guid}/{key:guid}/redeliver", RedeliverAsync).WithName("RedeliverDeliveryRecord");
+        delivery.MapPost("/records/{flowId:guid}/{key:guid}/verify", VerifyRecordAsync).WithName("VerifyDeliveryRecord");
+        delivery.MapPost("/records/{flowId:guid}/{key:guid}/read", ReadRecordAsync).WithName("ReadDeliveryRecordBack");
+        delivery.MapPost("/records/{flowId:guid}/{key:guid}/source", ReadSourceAsync).WithName("ReadDeliveryRecordSource");
+        delivery.MapPost("/records/{flowId:guid}/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove", RemoveRecordsAsync).WithName("RemoveDeliveryRecords");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove/preview", PreviewRemovalAsync).WithName("PreviewDeliveryRemoval");
         delivery.MapPost("/ledger/prune", PruneAsync).WithName("PruneDeliveryLedger").RequireAuthorization(ControlPlanePolicies.Admin);
@@ -429,12 +440,12 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryRecordDetailDto>, ProblemHttpResult>> GetRecordAsync(
-        Guid key, CatalogDbContext db, ILedger ledger, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, ILedger ledger, CancellationToken ct)
     {
-        var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
+        var record = await ledger.GetRecordAsync(flowId, new DeliveryKey(key), ct).ConfigureAwait(false);
         if (record is null)
         {
-            return NotFound("record", key);
+            return RecordNotFound(flowId, key);
         }
 
         var pipeline = await FindPipelineAsync(db, record.FlowId, ct).ConfigureAwait(false);
@@ -442,28 +453,29 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliveryAttemptDto>>, ProblemHttpResult>> ListRecordAttemptsAsync(
-        Guid key, int? max, ILedger ledger, CancellationToken ct)
+        Guid flowId, Guid key, int? max, ILedger ledger, CancellationToken ct)
     {
-        var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
+        var record = await ledger.GetRecordAsync(flowId, new DeliveryKey(key), ct).ConfigureAwait(false);
         if (record is null)
         {
-            return NotFound("record", key);
+            return RecordNotFound(flowId, key);
         }
 
-        var attempts = await ledger.ListAttemptsAsync(new DeliveryKey(key), Math.Clamp(max ?? 100, 1, MaxAttempts), ct).ConfigureAwait(false);
+        var attempts = await ledger.ListAttemptsAsync(flowId, record.DeliveryKey, Math.Clamp(max ?? 100, 1, MaxAttempts), ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryAttemptDto>>(attempts.Select(ToDto).ToList());
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliveryActivityDto>>, ProblemHttpResult>> ListRecordActivitiesAsync(
-        Guid key, int? max, ILedger ledger, CancellationToken ct)
+        Guid flowId, Guid key, int? max, ILedger ledger, CancellationToken ct)
     {
-        var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
+        var record = await ledger.GetRecordAsync(flowId, new DeliveryKey(key), ct).ConfigureAwait(false);
         if (record is null)
         {
-            return NotFound("record", key);
+            return RecordNotFound(flowId, key);
         }
 
-        var activities = await ledger.ListActivitiesAsync(new ActivityQuery { DeliveryKey = key, Max = Math.Clamp(max ?? 100, 1, MaxAttempts) }, ct).ConfigureAwait(false);
+        var activities = await ledger.ListActivitiesAsync(
+            new ActivityQuery { FlowId = flowId, DeliveryKey = key, Max = Math.Clamp(max ?? 100, 1, MaxAttempts) }, ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryActivityDto>>(activities.Select(ToDto).ToList());
     }
 
@@ -914,12 +926,12 @@ public static class DeliveryEndpoints
 
     /// <summary>What one record read out of the cache when it was rendered, through the set it shares.</summary>
     private static async Task<Results<Ok<IReadOnlyList<DeliveryCacheUseDto>>, ProblemHttpResult>> ListRecordCacheUsesAsync(
-        Guid key, ILedger ledger, CancellationToken ct)
+        Guid flowId, Guid key, ILedger ledger, CancellationToken ct)
     {
-        var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
+        var record = await ledger.GetRecordAsync(flowId, new DeliveryKey(key), ct).ConfigureAwait(false);
         if (record is null)
         {
-            return NotFound("record", key);
+            return RecordNotFound(flowId, key);
         }
 
         if (record.CacheSetId is not { } setId)
@@ -953,26 +965,26 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseRecordAsync(
-        Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger, ClaimsPrincipal user, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveForRecordAsync(db, documents, ledger, key, ct).ConfigureAwait(false);
-        if (flow is null)
+        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        if (flow is null || record is null)
         {
             return problem!;
         }
 
         using var runtime = FlowRuntime.ForTarget(engine, flow.Flow);
         runtime.Actor = RequestActor.Label(user);
-        var released = await runtime.ReleaseAsync([new DeliveryKey(key)], ct).ConfigureAwait(false);
+        var released = await runtime.ReleaseAsync([record.DeliveryKey], ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryReleaseResult(released));
     }
 
     private static async Task<Results<Ok<DeliveryRedeliverResult>, Accepted<DeliveryRedeliverResult>, ProblemHttpResult>> RedeliverAsync(
-        Guid key, DeliveryRedeliverRequest? request, CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger,
+        Guid flowId, Guid key, DeliveryRedeliverRequest? request, CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger,
         IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveForRecordAsync(db, documents, ledger, key, ct).ConfigureAwait(false);
-        if (flow is null)
+        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        if (flow is null || record is null)
         {
             return problem!;
         }
@@ -989,8 +1001,7 @@ public static class DeliveryEndpoints
         // flow whose scope is a parameter reads the row in the record's own scope rather than in the flow's defaults.
         if (request?.Run ?? true)
         {
-            var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
-            var last = record?.LastSubmissionId is { } lastId ? await ledger.GetSubmissionAsync(lastId, ct).ConfigureAwait(false) : null;
+            var last = record.LastSubmissionId is { } lastId ? await ledger.GetSubmissionAsync(lastId, ct).ConfigureAwait(false) : null;
             var parameters = new RunParameters
             {
                 Operation = DeliveryOperations.Deliver,
@@ -1003,7 +1014,7 @@ public static class DeliveryEndpoints
 
         using var runtime = FlowRuntime.ForTarget(engine, flow.Flow);
         runtime.Actor = RequestActor.Label(user);
-        var marked = await runtime.RedeliverAsync([new DeliveryKey(key)], scope, ct).ConfigureAwait(false);
+        var marked = await runtime.RedeliverAsync([record.DeliveryKey], scope, ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryRedeliverResult(marked, null));
     }
 
@@ -1014,17 +1025,16 @@ public static class DeliveryEndpoints
     /// system columns, its child datasets and the origin file and row the ingestion tables record.
     /// </summary>
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadSourceAsync(
-        Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveForRecordAsync(db, documents, ledger, key, ct).ConfigureAwait(false);
-        if (flow is null)
+        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        if (flow is null || record is null)
         {
             return problem!;
         }
 
         var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["deliveryKey"] = key.ToString("D") };
-        var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
-        if (record?.LastSubmissionId is { } lastId
+        if (record.LastSubmissionId is { } lastId
             && await ledger.GetSubmissionAsync(lastId, ct).ConfigureAwait(false) is { ParametersJson.Length: > 2 } last)
         {
             // The scope predicate of the read is the one the record was planned under, so a flow whose scope is a
@@ -1054,10 +1064,10 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Accepted<DeliveryRunAccepted>, ProblemHttpResult>> VerifyRecordAsync(
-        Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveForRecordAsync(db, documents, ledger, key, ct).ConfigureAwait(false);
-        if (flow is null)
+        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        if (flow is null || record is null)
         {
             return problem!;
         }
@@ -1072,10 +1082,10 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadRecordAsync(
-        Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveForRecordAsync(db, documents, ledger, key, ct).ConfigureAwait(false);
-        if (flow is null)
+        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        if (flow is null || record is null)
         {
             return problem!;
         }
@@ -1089,11 +1099,11 @@ public static class DeliveryEndpoints
     /// delete are the same operation, the same ledger writes and the same result shape.
     /// </summary>
     private static async Task<Results<Accepted<DeliveryRemovalAccepted>, ProblemHttpResult>> DeleteRecordAsync(
-        Guid key, DeliveryRemovalRequest? request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher,
+        Guid flowId, Guid key, DeliveryRemovalRequest? request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher,
         ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveForRecordAsync(db, documents, ledger, key, ct).ConfigureAwait(false);
-        if (flow is null)
+        var (flow, record, problem) = await ResolveForRecordAsync(db, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        if (flow is null || record is null)
         {
             return problem!;
         }
@@ -1362,25 +1372,29 @@ public static class DeliveryEndpoints
         }
     }
 
-    /// <summary>The pipeline behind a ledger record: the delivery flow whose name yields the record's flow id.</summary>
-    private static async Task<(FlowContext? Flow, ProblemHttpResult? Problem)> ResolveForRecordAsync(
-        CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, Guid key, CancellationToken ct)
+    /// <summary>
+    /// One flow's record and the pipeline behind it: the delivery flow whose name yields the flow id. An intervention acts
+    /// on that flow's record only, never on another flow's record of the same source row.
+    /// </summary>
+    private static async Task<(FlowContext? Flow, RecordState? Record, ProblemHttpResult? Problem)> ResolveForRecordAsync(
+        CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, Guid flowId, Guid key, CancellationToken ct)
     {
-        var record = await ledger.FindRecordAsync(new DeliveryKey(key), ct).ConfigureAwait(false);
+        var record = await ledger.GetRecordAsync(flowId, new DeliveryKey(key), ct).ConfigureAwait(false);
         if (record is null)
         {
-            return (null, NotFound("record", key));
+            return (null, null, RecordNotFound(flowId, key));
         }
 
         var pipeline = await FindPipelineAsync(db, record.FlowId, ct).ConfigureAwait(false);
         if (pipeline is null)
         {
-            return (null, TypedResults.Problem(
+            return (null, null, TypedResults.Problem(
                 detail: "The record's flow is no longer in any synced repository, so nothing can act on it. Restore the flow document and sync.",
                 statusCode: StatusCodes.Status409Conflict, title: "Flow not in catalog"));
         }
 
-        return Parse(documents, pipeline);
+        var (flow, problem) = Parse(documents, pipeline);
+        return flow is null ? (null, null, problem) : (flow, record, null);
     }
 
     /// <summary>
@@ -1461,6 +1475,9 @@ public static class DeliveryEndpoints
 
     private static ProblemHttpResult NotFound(string resource, Guid id)
         => TypedResults.Problem(detail: $"No {resource} '{id}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
+
+    private static ProblemHttpResult RecordNotFound(Guid flowId, Guid key)
+        => TypedResults.Problem(detail: $"No record '{key}' in the ledger of flow '{flowId}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
 
     private static DeliverySubmissionDto ToDto(SubmissionState s) => new(
         s.SubmissionId, s.FlowId, s.FlowName, s.MappingReference, s.RenderContext, s.ParametersJson, s.RecordCount,

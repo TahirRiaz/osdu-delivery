@@ -220,6 +220,7 @@ public sealed class DeliveryModuleTests
 
         var key = new DeliveryKey(Guid.NewGuid());
         await ledger.UpsertPendingAsync(
+            flowId,
         [
             new RecordState
             {
@@ -244,10 +245,11 @@ public sealed class DeliveryModuleTests
         Assert.Equal(1, contribution.Total);
         Assert.False(contribution.TotalCapped);
         var hit = Assert.Single(contribution.Items);
-        Assert.Equal(key.Value.ToString("D"), hit.Id);
+        // A key names one record per flow that reads the row, so the hit and the page it opens name the flow as well.
+        Assert.Equal($"{flowId:D}/{key.Value:D}", hit.Id);
         Assert.Equal("OSDU-DEV-1-A", hit.Title);
         Assert.Equal(flowName, hit.Subtitle);
-        Assert.Equal("/delivery/records/" + key.Value.ToString("D"), hit.Route);
+        Assert.Equal($"/delivery/records/{flowId:D}/{key.Value:D}", hit.Route);
         var record = Assert.IsType<DeliveryRecordHitDto>(hit.Data);
         Assert.Equal(key.Value, record.DeliveryKey);
         Assert.Equal(flowId, record.FlowId);

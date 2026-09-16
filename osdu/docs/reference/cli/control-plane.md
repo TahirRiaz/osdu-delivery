@@ -71,7 +71,7 @@ Two things are worth knowing here for OSDU flows:
 - **A drift pass is a schedule of its own.** `--operation` is carried by every fire of a schedule, so the nightly
   `verify` sits next to the hourly `deliver` as a second schedule over the same flow rather than as a flag
   somebody has to remember.
-- **Search answers from the ledger too.** A delivery key lands on the record; an OSDU id, a source key or a label
+- **Search answers from the ledger too.** A delivery key lands on each flow's record of that row; an OSDU id, a source key or a label
   prefix lists the records that start with it, across every flow, from indexed columns.
 
 ## See also

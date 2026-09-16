@@ -27,7 +27,7 @@ groups so a delivery route is authorized exactly like a platform route.
 | Endpoints | Purpose |
 | --- | --- |
 | `GET /delivery/flows/{pipelineId}/...` | A flow's statistics, its records, its submissions, and its retrievals for a retrieval flow. Every count is derived from the ledger, never held separately. |
-| `GET /delivery/records/...`, `GET /delivery/submissions/...` | One record with its attempts and activities; one submission with its attempts and its work batches. |
+| `GET /delivery/records/{flowId}/{key}/...`, `GET /delivery/submissions/...` | One flow's record with its attempts and activities; one submission with its attempts and its work batches. |
 | `GET /delivery/activity` | The audit trail of interventions: who did what, when, and in which run. |
 | `GET /delivery/mappings`, `GET /delivery/caches`, `/cache/items`, `/cache/versions`, `/cache/history`, `/cache/diff`, `/cache/tags` | The mapping documents the repositories hold, every data partition's cache with the cache flows filling it, and one partition's cached records, versions, history, comparison and the changes awaiting a decision. |
 | `GET /delivery/templates`, `/templates/detail`, `/templates/schema`, `/templates/osdu/...`, `POST /delivery/templates/preview` | The saved templates, one laid out variable by variable, and the OSDU data definitions releases, kinds and schemas read from the Open Group's public repository. |
@@ -38,7 +38,7 @@ groups so a delivery route is authorized exactly like a platform route.
 | Endpoints | Purpose |
 | --- | --- |
 | `POST /delivery/flows/{pipelineId}/release`, `/probe` | Release held records for a flow; probe the flow's OSDU target. |
-| `POST /delivery/records/{key}/release`, `/redeliver`, `/verify`, `/read`, `/delete` | The per-record interventions. Release, redeliver and verify act on the ledger under the caller's name or queue a run; probe, read-back and delete queue a compute task for a node that can reach the target. |
+| `POST /delivery/records/{flowId}/{key}/release`, `/redeliver`, `/verify`, `/read`, `/delete` | The per-record interventions. Release, redeliver and verify act on the ledger under the caller's name or queue a run; probe, read-back and delete queue a compute task for a node that can reach the target. |
 | `POST /delivery/flows/{pipelineId}/records/remove`, `/remove/preview` | Bulk removal by explicit keys or by the listing filter, with the scope named explicitly. |
 
 **Author group**: `POST /delivery/templates` and `DELETE /delivery/templates` save a bundled schema as a template

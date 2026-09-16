@@ -46,6 +46,7 @@ public sealed class DeliveryRecordOriginApiTests
             // A record whose current document came from one file and row, with newer work waiting from another: the two
             // origins are what tell an operator which file a delivered record is from and which file will replace it.
             await ledger.UpsertPendingAsync(
+                flowId,
             [
                 new RecordState
                 {
@@ -68,7 +69,7 @@ public sealed class DeliveryRecordOriginApiTests
             ]);
 
             // One try, which keeps the origin it sent even after the record moves on.
-            await ledger.CompleteAsync(new RecordCompletion
+            await ledger.CompleteAsync(flowId, new RecordCompletion
             {
                 DeliveryKey = key,
                 Status = RecordStatus.Delivered,
@@ -93,8 +94,14 @@ public sealed class DeliveryRecordOriginApiTests
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
-            using var recordResponse = await GetAsync(client, token, $"/api/v1/delivery/records/{key.Value:D}");
+            using var recordResponse = await GetAsync(client, token, $"/api/v1/delivery/records/{flowId:D}/{key.Value:D}");
             Assert.Equal(HttpStatusCode.OK, recordResponse.StatusCode);
+
+            // A record is its flow's: the same key under another flow is a record that flow does not hold.
+            using var elsewhere = await GetAsync(client, token, $"/api/v1/delivery/records/{FlowId.Of(FlowName + "-elsewhere"):D}/{key.Value:D}");
+            Assert.Equal(HttpStatusCode.NotFound, elsewhere.StatusCode);
+            using var elsewhereAttempts = await GetAsync(client, token, $"/api/v1/delivery/records/{FlowId.Of(FlowName + "-elsewhere"):D}/{key.Value:D}/attempts");
+            Assert.Equal(HttpStatusCode.NotFound, elsewhereAttempts.StatusCode);
             using var recordJson = JsonDocument.Parse(await recordResponse.Content.ReadAsStringAsync());
             var record = recordJson.RootElement.GetProperty("record");
 
@@ -111,7 +118,7 @@ public sealed class DeliveryRecordOriginApiTests
 
             // The attempt keeps the origin it actually sent, which is what makes a past try reconstructible from the
             // ledger alone after the record has moved on to a newer row.
-            using var attemptsResponse = await GetAsync(client, token, $"/api/v1/delivery/records/{key.Value:D}/attempts");
+            using var attemptsResponse = await GetAsync(client, token, $"/api/v1/delivery/records/{flowId:D}/{key.Value:D}/attempts");
             Assert.Equal(HttpStatusCode.OK, attemptsResponse.StatusCode);
             using var attemptsJson = JsonDocument.Parse(await attemptsResponse.Content.ReadAsStringAsync());
             var attempt = Assert.Single(attemptsJson.RootElement.EnumerateArray().ToList());
@@ -126,8 +133,8 @@ public sealed class DeliveryRecordOriginApiTests
         finally
         {
             await using var osdu = SampleEstate.Context(cs);
-            await osdu.DeliveryAttempts.Where(a => a.DeliveryKey == key.Value).ExecuteDeleteAsync();
-            await osdu.DeliveryRecords.Where(r => r.DeliveryKey == key.Value).ExecuteDeleteAsync();
+            await osdu.DeliveryAttempts.Where(a => a.FlowId == flowId && a.DeliveryKey == key.Value).ExecuteDeleteAsync();
+            await osdu.DeliveryRecords.Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value).ExecuteDeleteAsync();
         }
     }
 

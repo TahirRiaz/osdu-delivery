@@ -378,6 +378,14 @@ public sealed class FlowRuntime : IDisposable
                     {
                         results.Add(RemovalRecordResult.Skipped(key, record.SourceKey, record.Label, null, "the record has no OSDU id: it was never delivered", record.LastSubmissionId));
                     }
+                    else if (!string.Equals(record.ClaimedTargetId, record.TargetId, StringComparison.Ordinal))
+                    {
+                        // Only an id the flow claimed is the flow's to remove: a record that was only ever held never
+                        // wrote to OSDU, and the id it names can be another flow's record.
+                        results.Add(RemovalRecordResult.Skipped(
+                            key, record.SourceKey, record.Label, null,
+                            "the record never queued a document, so this flow wrote nothing to OSDU to remove", record.LastSubmissionId));
+                    }
                     else
                     {
                         removals.Add(new RecordRemoval(key, record.TargetId, JsonMerge.ToValues(record.TargetStateJson)));
@@ -398,7 +406,7 @@ public sealed class FlowRuntime : IDisposable
                 // answered for: a record whose call failed keeps the state it had, so a retry of the removal is
                 // still the removal of a record that is still there.
                 var settled = outcomes.Where(o => o.Succeeded).Select(o => o.Removal.Key).ToList();
-                await ledger.MarkRemovedAsync(settled, scope, Actor, _context.Time.GetUtcNow().UtcDateTime, correlation.Id, ct).ConfigureAwait(false);
+                await ledger.MarkRemovedAsync(Flow.Id, settled, scope, Actor, _context.Time.GetUtcNow().UtcDateTime, correlation.Id, ct).ConfigureAwait(false);
                 foreach (var outcome in outcomes)
                 {
                     results.Add(await AnnounceRemovalAsync(outcome, scope, records[outcome.Removal.Key], ct).ConfigureAwait(false));

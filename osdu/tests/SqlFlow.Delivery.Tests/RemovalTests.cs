@@ -260,7 +260,7 @@ public class RemovalLedgerTests : IDisposable
     public async Task Removing_the_record_marks_it_deleted_and_blocked_and_forgets_the_hashes()
     {
         var key = await DeliveredAsync("a", Guid.NewGuid());
-        await Ledger.MarkRemovedAsync([key], RemovalScope.Record, "gui:tahir", Now);
+        await Ledger.MarkRemovedAsync(_flow, [key], RemovalScope.Record, "gui:tahir", Now);
 
         var record = await Ledger.GetRecordAsync(_flow, key);
         Assert.Equal(RecordStatus.Deleted, record!.Status);
@@ -268,7 +268,7 @@ public class RemovalLedgerTests : IDisposable
         Assert.Null(record.MetadataHash);
         Assert.Null(record.TargetVersion);
 
-        var attempt = Assert.Single(await Ledger.ListAttemptsAsync(key, 10), a => a.Phase == "delete");
+        var attempt = Assert.Single(await Ledger.ListAttemptsAsync(_flow, key, 10), a => a.Phase == "delete");
         Assert.Equal(AttemptOutcome.Deleted, attempt.Outcome);
         Assert.Null(attempt.Error);
         Assert.Contains("gui:tahir", attempt.ResultJson!, StringComparison.Ordinal);
@@ -281,9 +281,9 @@ public class RemovalLedgerTests : IDisposable
         // A removed record's page went blank in the GUI: this attempt's result was the record's target state, not the
         // steps-shaped result every other attempt carries.
         var key = await DeliveredAsync("a", Guid.NewGuid());
-        await Ledger.MarkRemovedAsync([key], RemovalScope.Record, "gui:tahir", Now, "corr-1");
+        await Ledger.MarkRemovedAsync(_flow, [key], RemovalScope.Record, "gui:tahir", Now, "corr-1");
 
-        var attempt = Assert.Single(await Ledger.ListAttemptsAsync(key, 10), a => a.Phase == "delete");
+        var attempt = Assert.Single(await Ledger.ListAttemptsAsync(_flow, key, 10), a => a.Phase == "delete");
         using var result = System.Text.Json.JsonDocument.Parse(attempt.ResultJson!);
         Assert.Equal("corr-1", result.RootElement.GetProperty("correlationId").GetString());
         Assert.Equal(System.Text.Json.JsonValueKind.Array, result.RootElement.GetProperty("steps").ValueKind);
@@ -294,10 +294,10 @@ public class RemovalLedgerTests : IDisposable
     public async Task Purging_everything_is_recorded_as_the_permanent_removal_it_is()
     {
         var key = await DeliveredAsync("a", Guid.NewGuid());
-        await Ledger.MarkRemovedAsync([key], RemovalScope.Everything, "gui:tahir", Now);
+        await Ledger.MarkRemovedAsync(_flow, [key], RemovalScope.Everything, "gui:tahir", Now);
 
         Assert.Equal(RecordStatus.Deleted, (await Ledger.GetRecordAsync(_flow, key))!.Status);
-        var attempt = Assert.Single(await Ledger.ListAttemptsAsync(key, 10), a => a.Phase == "delete");
+        var attempt = Assert.Single(await Ledger.ListAttemptsAsync(_flow, key, 10), a => a.Phase == "delete");
         Assert.Null(attempt.Error);
         Assert.Contains("every version", attempt.ResultJson!, StringComparison.Ordinal);
     }
@@ -306,7 +306,7 @@ public class RemovalLedgerTests : IDisposable
     public async Task Purging_the_history_leaves_the_record_delivered_because_OSDU_still_holds_it()
     {
         var key = await DeliveredAsync("a", Guid.NewGuid());
-        await Ledger.MarkRemovedAsync([key], RemovalScope.History, "gui:tahir", Now);
+        await Ledger.MarkRemovedAsync(_flow, [key], RemovalScope.History, "gui:tahir", Now);
 
         var record = await Ledger.GetRecordAsync(_flow, key);
         Assert.Equal(RecordStatus.Delivered, record!.Status);
@@ -314,7 +314,7 @@ public class RemovalLedgerTests : IDisposable
         Assert.Equal(42, record.TargetVersion);
         Assert.Equal("mh", record.MetadataHash);
 
-        var attempt = Assert.Single(await Ledger.ListAttemptsAsync(key, 10), a => a.Phase == "purge-history");
+        var attempt = Assert.Single(await Ledger.ListAttemptsAsync(_flow, key, 10), a => a.Phase == "purge-history");
         Assert.Equal(AttemptOutcome.HistoryPurged, attempt.Outcome);
         Assert.Equal(42, attempt.TargetVersion);
     }
@@ -355,7 +355,7 @@ public class RemovalLedgerTests : IDisposable
     [Fact]
     public async Task A_record_with_no_OSDU_id_at_all_is_skipped_because_there_is_nothing_to_ask_for()
     {
-        await Ledger.UpsertPendingAsync([new RecordState
+        await Ledger.UpsertPendingAsync(_flow, [new RecordState
         {
             DeliveryKey = DeliveryKey.Derive("test", ["no-id"]),
             FlowId = _flow,
@@ -376,7 +376,7 @@ public class RemovalLedgerTests : IDisposable
     private async Task<DeliveryKey> DeliveredAsync(string sourceKey, Guid submission, Guid? runId = null)
     {
         var key = DeliveryKey.Derive("test", [sourceKey]);
-        await Ledger.UpsertPendingAsync([new RecordState
+        await Ledger.UpsertPendingAsync(_flow, [new RecordState
         {
             DeliveryKey = key,
             FlowId = _flow,
@@ -392,7 +392,7 @@ public class RemovalLedgerTests : IDisposable
         }]);
         var claimed = await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now);
         var record = claimed.Single(r => r.DeliveryKey == key);
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = key,
             Status = RecordStatus.Delivered,

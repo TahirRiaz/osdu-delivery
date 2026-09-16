@@ -338,6 +338,7 @@ public sealed class SubmissionIntake
         var blocked = new List<DeliveryKey>(Planner.RenderBatch);
         var context = header.Mapping.Context.Canonical();
         long refused = 0;
+        long conflicted = 0;
         var held = new List<RecordState>();
         var untrackedLogged = 0;
         var lastProgress = _time.GetUtcNow();
@@ -412,6 +413,7 @@ public sealed class SubmissionIntake
                             var closed = await CloseBatchAsync(flow, submission, writer, pending, skipped, ct).ConfigureAwait(false);
                             staged += closed.Staged;
                             refused += closed.Refused.Count;
+                            conflicted += closed.Conflicts.Count;
                             writer = null;
                             batches++;
                             nextBatch++;
@@ -433,6 +435,7 @@ public sealed class SubmissionIntake
                 var closed = await CloseBatchAsync(flow, submission, writer, pending, skipped, ct).ConfigureAwait(false);
                 staged += closed.Staged;
                 refused += closed.Refused.Count;
+                conflicted += closed.Conflicts.Count;
                 writer = null;
                 batches++;
             }
@@ -462,7 +465,7 @@ public sealed class SubmissionIntake
             await FlushHeldAsync(flow, submission, held, ct).ConfigureAwait(false);
         }
 
-        return new IntakeCounts(summary.Records, staged, summary.Skips, summary.Holds, summary.Blocked, summary.Untracked, batches, summary.Stale + refused, summary.AwaitingApproval);
+        return new IntakeCounts(summary.Records, staged, summary.Skips, summary.Holds + conflicted, summary.Blocked, summary.Untracked, batches, summary.Stale + refused, summary.AwaitingApproval);
     }
 
     /// <summary>What the ledger is told about one skipped plan entry.</summary>
@@ -488,13 +491,26 @@ public sealed class SubmissionIntake
     /// <summary>
     /// Commits the batch file, stages its records in the ledger and registers the batch. Records the ledger refuses
     /// because a newer version landed or was queued since they were planned go to <paramref name="stale"/>, to be
-    /// recorded like any other stale skip.
+    /// recorded like any other stale skip. Records whose OSDU id another flow has claimed are held here, each naming the
+    /// flow that owns the id, so the conflict is on the record's page and in its history rather than only in a log.
     /// </summary>
     private async Task<PendingStaging> CloseBatchAsync(
         FlowDefinition flow, SubmissionState submission, WorkBatchWriter writer, List<RecordState> pending, List<SkippedRecord> stale, CancellationToken ct)
     {
         await writer.DisposeAsync().ConfigureAwait(false);
-        var staging = await _ledger.UpsertPendingAsync(pending, ct).ConfigureAwait(false);
+        var staging = await _ledger.UpsertPendingAsync(flow.Id, pending, ct).ConfigureAwait(false);
+        if (staging.Conflicts.Count > 0)
+        {
+            var byKey = pending.GroupBy(p => p.DeliveryKey).ToDictionary(g => g.Key, g => g.Last());
+            var held = staging.Conflicts
+                .Select(conflict => ConflictState(byKey[conflict.DeliveryKey], conflict))
+                .ToList();
+            _logger.LogWarning(
+                "Batch {Batch}: {Conflicts} record(s) were held because another flow has claimed their OSDU ids; the first: {Detail}",
+                writer.Batch, staging.Conflicts.Count, staging.Conflicts[0].Describe());
+            await FlushHeldAsync(flow, submission, held, ct).ConfigureAwait(false);
+        }
+
         if (staging.Refused.Count > 0)
         {
             var refused = staging.Refused.ToHashSet();
@@ -535,9 +551,27 @@ public sealed class SubmissionIntake
         return staging;
     }
 
+    /// <summary>
+    /// A record staging refused because another flow claimed its OSDU id, as a hold: the origin and version the work was
+    /// built from, no OSDU id (the one it names is not this flow's), and the conflict as its reason.
+    /// </summary>
+    private static RecordState ConflictState(RecordState refused, TargetIdConflict conflict) => refused with
+    {
+        TargetId = null,
+        PendingDocumentRef = null,
+        WorkBatch = null,
+        PendingMetadataHash = null,
+        PendingPayloadHash = null,
+        PendingPayloadLocation = null,
+        PendingMetadata = false,
+        PendingPayload = false,
+        CacheSetId = null,
+        LastError = conflict.Describe(),
+    };
+
     private async Task FlushHeldAsync(FlowDefinition flow, SubmissionState submission, List<RecordState> held, CancellationToken ct)
     {
-        await _ledger.MarkHeldAsync(held, ct).ConfigureAwait(false);
+        await _ledger.MarkHeldAsync(flow.Id, held, ct).ConfigureAwait(false);
         var now = _time.GetUtcNow().UtcDateTime;
         foreach (var record in held)
         {

@@ -168,55 +168,62 @@ public sealed class OsduLedger : ILedger
         return row is null ? null : ToState(row);
     }
 
-    public async Task<RecordState?> FindRecordAsync(DeliveryKey key, CancellationToken ct = default)
-    {
-        await using var db = Open();
-        var row = await db.DeliveryRecords.AsNoTracking().FirstOrDefaultAsync(r => r.DeliveryKey == key.Value, ct).ConfigureAwait(false);
-        return row is null ? null : ToState(row);
-    }
-
-    public async Task<PendingStaging> UpsertPendingAsync(IReadOnlyList<RecordState> records, CancellationToken ct = default)
+    public async Task<PendingStaging> UpsertPendingAsync(Guid flowId, IReadOnlyList<RecordState> records, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(records);
+        RequireFlow(flowId, records.Select(r => (r.FlowId, r.DeliveryKey)));
         if (records.Count == 0)
         {
-            return new PendingStaging(0, []);
+            return PendingStaging.Empty;
         }
 
         var now = Now;
         await using var db = Open();
         if (SqlServerLedgerBulk.Applies(db))
         {
-            return await SqlServerLedgerBulk.UpsertPendingAsync(db, records, now, ct).ConfigureAwait(false);
+            return await SqlServerLedgerBulk.UpsertPendingAsync(db, flowId, records, now, ct).ConfigureAwait(false);
         }
 
         var delivering = StatusText.Of(RecordStatus.Delivering);
         var staged = 0;
         var refused = new List<DeliveryKey>();
+        var conflicts = new List<TargetIdConflict>();
         foreach (var chunk in records.Chunk(ChunkSize))
         {
             var keys = chunk.Select(r => r.DeliveryKey.Value).ToArray();
-            var existing = await db.DeliveryRecords.Where(r => keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
+            var existing = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
+            var claims = await ClaimsOfOtherFlowsAsync(
+                db, flowId, chunk.Select(r => existing.GetValueOrDefault(r.DeliveryKey.Value)?.TargetId ?? r.TargetId), ct).ConfigureAwait(false);
             foreach (var record in chunk)
             {
                 var inFlight = false;
-                if (!existing.TryGetValue(record.DeliveryKey.Value, out var entity))
+                existing.TryGetValue(record.DeliveryKey.Value, out var entity);
+                if (entity is not null && HoldsNewerThan(entity, record))
+                {
+                    refused.Add(record.DeliveryKey);
+                    continue;
+                }
+
+                // The id the record is delivered to: the one it already carries, or the one this work was rendered with.
+                var targetId = entity?.TargetId ?? record.TargetId;
+                if (targetId is not null && claims.TryGetValue(targetId, out var owner))
+                {
+                    conflicts.Add(new TargetIdConflict(record.DeliveryKey, targetId, owner.FlowId, owner.FlowName));
+                    continue;
+                }
+
+                if (entity is null)
                 {
                     entity = new DeliveryRecord
                     {
                         DeliveryKey = record.DeliveryKey.Value,
-                        FlowId = record.FlowId,
+                        FlowId = flowId,
                         SourceKey = record.SourceKey,
                         MappingName = record.MappingName,
                         CreatedUtc = now,
                     };
                     db.DeliveryRecords.Add(entity);
                     existing[entity.DeliveryKey] = entity;
-                }
-                else if (HoldsNewerThan(entity, record))
-                {
-                    refused.Add(record.DeliveryKey);
-                    continue;
                 }
                 else
                 {
@@ -230,6 +237,8 @@ public sealed class OsduLedger : ILedger
                 entity.Label = Truncate(record.Label, 400);
                 entity.MappingName = record.MappingName;
                 entity.TargetId ??= record.TargetId;
+                // Queueing a document is what claims the id for the flow; the claim stays with the record from then on.
+                entity.ClaimedTargetId ??= entity.TargetId;
                 entity.LastSubmissionId = record.LastSubmissionId;
                 entity.NextAttemptUtc = null;
                 if (!inFlight)
@@ -267,7 +276,51 @@ public sealed class OsduLedger : ILedger
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
 
-        return new PendingStaging(staged, refused);
+        return new PendingStaging(staged, refused, conflicts);
+    }
+
+    /// <summary>Refuses records of another flow than the one a flow-scoped write was called for, naming the first.</summary>
+    private static void RequireFlow(Guid flowId, IEnumerable<(Guid FlowId, DeliveryKey Key)> records)
+    {
+        foreach (var (recordFlow, key) in records)
+        {
+            if (recordFlow != flowId)
+            {
+                throw new ArgumentException(
+                    $"Record {key} belongs to flow {recordFlow:D}, and this write is for flow {flowId:D}: a flow writes only its own records.",
+                    nameof(records));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Which of <paramref name="targetIds"/> another flow's record has claimed, with the owning flow and its name as its
+    /// last submission recorded it. Ids compare exactly, as OSDU compares them.
+    /// </summary>
+    private static async Task<Dictionary<string, (Guid FlowId, string? FlowName)>> ClaimsOfOtherFlowsAsync(
+        OsduDbContext db, Guid flowId, IEnumerable<string?> targetIds, CancellationToken ct)
+    {
+        var claims = new Dictionary<string, (Guid FlowId, string? FlowName)>(StringComparer.Ordinal);
+        var ids = targetIds.OfType<string>().Distinct(StringComparer.Ordinal).ToList();
+        foreach (var chunk in ids.Chunk(LookupChunk))
+        {
+            var wanted = chunk.ToList();
+            var owners = await db.DeliveryRecords.AsNoTracking()
+                .Where(r => r.FlowId != flowId && r.ClaimedTargetId != null && wanted.Contains(r.ClaimedTargetId))
+                .Select(r => new
+                {
+                    ClaimedTargetId = r.ClaimedTargetId!,
+                    r.FlowId,
+                    FlowName = db.DeliverySubmissions.Where(s => s.SubmissionId == r.LastSubmissionId).Select(s => s.FlowName).FirstOrDefault(),
+                })
+                .ToListAsync(ct).ConfigureAwait(false);
+            foreach (var owner in owners.Where(o => wanted.Contains(o.ClaimedTargetId, StringComparer.Ordinal)))
+            {
+                claims[owner.ClaimedTargetId] = (owner.FlowId, owner.FlowName);
+            }
+        }
+
+        return claims;
     }
 
     /// <summary>
@@ -345,6 +398,7 @@ public sealed class OsduLedger : ILedger
                     // version and origin the source carried and which version stands.
                     db.DeliveryAttempts.Add(new DeliveryAttempt
                     {
+                        FlowId = flowId,
                         DeliveryKey = entity.DeliveryKey,
                         SubmissionId = submissionId,
                         RunId = skip.RunId,
@@ -395,15 +449,21 @@ public sealed class OsduLedger : ILedger
     private static DateTime? Latest(DateTime? a, DateTime? b)
         => a is null ? b : b is null ? a : a > b ? a : b;
 
-    public async Task MarkHeldAsync(IEnumerable<RecordState> records, CancellationToken ct = default)
+    public async Task MarkHeldAsync(Guid flowId, IEnumerable<RecordState> records, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(records);
+        var list = records as IReadOnlyList<RecordState> ?? records.ToList();
+        RequireFlow(flowId, list.Select(r => (r.FlowId, r.DeliveryKey)));
         var now = Now;
         await using var db = Open();
-        foreach (var chunk in records.Chunk(ChunkSize))
+        foreach (var chunk in list.Chunk(ChunkSize))
         {
             var keys = chunk.Select(r => r.DeliveryKey.Value).ToArray();
-            var existing = await db.DeliveryRecords.Where(r => keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
+            var existing = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
+            // A held record claims nothing, and it is not given an id another flow's record holds: nothing this flow
+            // does to it (a removal, a read back) may reach that flow's OSDU record.
+            var claims = await ClaimsOfOtherFlowsAsync(
+                db, flowId, chunk.Where(r => existing.GetValueOrDefault(r.DeliveryKey.Value)?.TargetId is null).Select(r => r.TargetId), ct).ConfigureAwait(false);
             foreach (var record in chunk)
             {
                 if (!existing.TryGetValue(record.DeliveryKey.Value, out var entity))
@@ -411,16 +471,20 @@ public sealed class OsduLedger : ILedger
                     entity = new DeliveryRecord
                     {
                         DeliveryKey = record.DeliveryKey.Value,
-                        FlowId = record.FlowId,
+                        FlowId = flowId,
                         SourceKey = Truncate(record.SourceKey, 400)!,
                         MappingName = record.MappingName,
                         CreatedUtc = now,
                     };
                     db.DeliveryRecords.Add(entity);
+                    existing[entity.DeliveryKey] = entity;
                 }
 
                 entity.Label = Truncate(record.Label, 400) ?? entity.Label;
-                entity.TargetId ??= record.TargetId;
+                if (record.TargetId is { } targetId && !claims.ContainsKey(targetId))
+                {
+                    entity.TargetId ??= targetId;
+                }
                 entity.Status = StatusText.Of(RecordStatus.Held);
                 entity.LastError = Truncate(record.LastError, 2000);
                 entity.LastSubmissionId = record.LastSubmissionId;
@@ -442,6 +506,7 @@ public sealed class OsduLedger : ILedger
                 entity.UpdatedUtc = now;
                 db.DeliveryAttempts.Add(new DeliveryAttempt
                 {
+                    FlowId = flowId,
                     DeliveryKey = record.DeliveryKey.Value,
                     SubmissionId = record.LastSubmissionId,
                     RunId = record.RunId,
@@ -488,7 +553,8 @@ public sealed class OsduLedger : ILedger
         }
 
         var claimed = await db.DeliveryRecords
-            .Where(r => candidates.Contains(r.DeliveryKey)
+            .Where(r => r.FlowId == flowId
+                && candidates.Contains(r.DeliveryKey)
                 && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
                     || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc)))
             .ExecuteUpdateAsync(s => s
@@ -508,25 +574,25 @@ public sealed class OsduLedger : ILedger
         return rows.Select(ToState).ToList();
     }
 
-    public async Task<bool> RenewLeaseAsync(DeliveryKey key, string owner, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default)
+    public async Task<bool> RenewLeaseAsync(Guid flowId, DeliveryKey key, string owner, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default)
     {
         await using var db = Open();
         var expires = nowUtc + lease;
         var affected = await db.DeliveryRecords
-            .Where(r => r.DeliveryKey == key.Value && r.LeaseOwner == owner)
+            .Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value && r.LeaseOwner == owner)
             .ExecuteUpdateAsync(s => s.SetProperty(r => r.LeaseExpiresUtc, expires), ct)
             .ConfigureAwait(false);
         return affected > 0;
     }
 
-    public async Task<bool> ReleaseLeaseAsync(DeliveryKey key, string owner, bool countAttempt, DateTime nowUtc, CancellationToken ct = default)
+    public async Task<bool> ReleaseLeaseAsync(Guid flowId, DeliveryKey key, string owner, bool countAttempt, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(owner);
         await using var db = Open();
         var delivering = StatusText.Of(RecordStatus.Delivering);
         var pending = StatusText.Of(RecordStatus.Pending);
         var affected = await db.DeliveryRecords
-            .Where(r => r.DeliveryKey == key.Value && r.LeaseOwner == owner && r.Status == delivering)
+            .Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value && r.LeaseOwner == owner && r.Status == delivering)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, pending)
                 .SetProperty(r => r.LeaseOwner, (string?)null)
@@ -538,15 +604,25 @@ public sealed class OsduLedger : ILedger
         return affected > 0;
     }
 
-    public Task CompleteAsync(RecordCompletion completion, CancellationToken ct = default)
+    public Task CompleteAsync(Guid flowId, RecordCompletion completion, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(completion);
-        return CompleteManyAsync([completion], ct);
+        return CompleteManyAsync(flowId, [completion], ct);
     }
 
-    public async Task CompleteManyAsync(IReadOnlyList<RecordCompletion> completions, CancellationToken ct = default)
+    public async Task CompleteManyAsync(Guid flowId, IReadOnlyList<RecordCompletion> completions, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(completions);
+        foreach (var completion in completions)
+        {
+            if (completion.Attempt.DeliveryKey != completion.DeliveryKey)
+            {
+                throw new ArgumentException(
+                    $"The completion of record {completion.DeliveryKey} carries an attempt of record {completion.Attempt.DeliveryKey}; an attempt belongs to the record it completes.",
+                    nameof(completions));
+            }
+        }
+
         if (completions.Count == 0)
         {
             return;
@@ -556,22 +632,22 @@ public sealed class OsduLedger : ILedger
         await using var db = Open();
         if (SqlServerLedgerBulk.Applies(db) && completions.Count > 1)
         {
-            await SqlServerLedgerBulk.CompleteManyAsync(db, completions, now, ct).ConfigureAwait(false);
+            await SqlServerLedgerBulk.CompleteManyAsync(db, flowId, completions, now, ct).ConfigureAwait(false);
             return;
         }
 
         foreach (var chunk in completions.Chunk(ChunkSize))
         {
             var keys = chunk.Select(c => c.DeliveryKey.Value).ToArray();
-            var entities = await db.DeliveryRecords.Where(r => keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
+            var entities = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
             foreach (var completion in chunk)
             {
                 if (!entities.TryGetValue(completion.DeliveryKey.Value, out var entity))
                 {
-                    throw new DeliveryException($"Record {completion.DeliveryKey} is not in the ledger.");
+                    throw new DeliveryException($"Record {completion.DeliveryKey} is not in the ledger of flow {flowId:D}.");
                 }
 
-                db.DeliveryAttempts.Add(ToEntity(completion.Attempt));
+                db.DeliveryAttempts.Add(ToEntity(flowId, completion.Attempt));
                 ApplyCompletion(entity, completion, now);
             }
 
@@ -696,12 +772,12 @@ public sealed class OsduLedger : ILedger
         => entity.PendingDocumentRef is not null
             && (!string.Equals(entity.PendingDocumentRef, claimed.DocumentRef, StringComparison.Ordinal) || entity.LastSubmissionId != claimed.SubmissionId);
 
-    public async Task SaveStepAsync(DeliveryKey key, Guid? submissionId, string documentRef, string stepJson, CancellationToken ct = default)
+    public async Task SaveStepAsync(Guid flowId, DeliveryKey key, Guid? submissionId, string documentRef, string stepJson, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(documentRef);
         await using var db = Open();
         await db.DeliveryRecords
-            .Where(r => r.DeliveryKey == key.Value && r.PendingDocumentRef == documentRef && r.LastSubmissionId == submissionId)
+            .Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value && r.PendingDocumentRef == documentRef && r.LastSubmissionId == submissionId)
             .ExecuteUpdateAsync(s => s.SetProperty(r => r.PendingStepJson, stepJson), ct)
             .ConfigureAwait(false);
     }
@@ -883,7 +959,7 @@ public sealed class OsduLedger : ILedger
             var pending = StatusText.Of(RecordStatus.Pending);
             var delivering = StatusText.Of(RecordStatus.Delivering);
             await db.DeliveryRecords
-                .Where(r => r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index
+                .Where(r => r.FlowId == flowId && r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index
                     && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
                         || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc)))
                 .ExecuteUpdateAsync(s => s
@@ -1082,8 +1158,11 @@ public sealed class OsduLedger : ILedger
     }
 
     /// <summary>
-    /// A UUID is a delivery key; anything else is a prefix over the three identity columns across every flow, at most
-    /// <paramref name="candidates"/> from each column's own index.
+    /// A UUID is a delivery key, which every flow reading the row holds a record under (a seek of the key index); anything
+    /// else is a prefix over the identity columns across every flow, at most <paramref name="candidates"/> from each
+    /// column's own index. A candidate is a record, flow and key together, so a match in one flow never brings in another
+    /// flow's record of the same row, and the records are read by joining from the few candidates to the primary key, so
+    /// the read stays the size of the candidates however many records the ledger holds.
     /// </summary>
     private static IQueryable<DeliveryRecord> LookupFilter(OsduDbContext db, string term, int candidates)
     {
@@ -1094,8 +1173,9 @@ public sealed class OsduLedger : ILedger
             return rows.Where(r => r.DeliveryKey == key);
         }
 
-        var matches = PrefixCandidates(rows, t, candidates);
-        return rows.Where(r => matches.Contains(r.DeliveryKey));
+        return PrefixRecordCandidates(rows, t, candidates)
+            .Distinct()
+            .Join(rows, m => new { m.FlowId, m.DeliveryKey }, r => new { r.FlowId, r.DeliveryKey }, (_, r) => r);
     }
 
     /// <summary>
@@ -1108,7 +1188,7 @@ public sealed class OsduLedger : ILedger
     private async Task<IQueryable<DeliveryRecord>> MatchingAsync(OsduDbContext db, Guid flowId, RecordQuery query, int candidates, CancellationToken ct)
     {
         var flow = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId);
-        var rows = Narrow(db, flow, query);
+        var rows = Narrow(db, flowId, flow, query);
         if (string.IsNullOrWhiteSpace(query.Search))
         {
             return rows;
@@ -1137,8 +1217,8 @@ public sealed class OsduLedger : ILedger
         return rows.Where(r => r.SourceKey.Contains(term) || (r.Label != null && r.Label.Contains(term)) || (r.TargetId != null && r.TargetId.Contains(term)));
     }
 
-    /// <summary>The listing's filters other than its search; each one seeks an index.</summary>
-    private static IQueryable<DeliveryRecord> Narrow(OsduDbContext db, IQueryable<DeliveryRecord> rows, RecordQuery query)
+    /// <summary>The listing's filters other than its search, over one flow's records; each one seeks an index.</summary>
+    private static IQueryable<DeliveryRecord> Narrow(OsduDbContext db, Guid flowId, IQueryable<DeliveryRecord> rows, RecordQuery query)
     {
         if (query.Status is { } status)
         {
@@ -1153,8 +1233,8 @@ public sealed class OsduLedger : ILedger
 
         if (query.RunId is { } runId)
         {
-            // The attempt table is indexed on (RunId, DeliveryKey), so this is a semi-join over that index rather than a scan.
-            var touched = db.DeliveryAttempts.AsNoTracking().Where(a => a.RunId == runId).Select(a => a.DeliveryKey);
+            // The attempt table is indexed on (RunId, FlowId, DeliveryKey), so this is a semi-join over that index rather than a scan.
+            var touched = db.DeliveryAttempts.AsNoTracking().Where(a => a.RunId == runId && a.FlowId == flowId).Select(a => a.DeliveryKey);
             rows = rows.Where(r => touched.Contains(r.DeliveryKey));
         }
 
@@ -1182,15 +1262,34 @@ public sealed class OsduLedger : ILedger
             : query.Search.Trim();
 
     /// <summary>
-    /// The delivery keys whose source key, label, OSDU id or origin file name starts with <paramref name="term"/>: at most
-    /// <paramref name="limit"/> from each column, each read in the order of its own index so the read stops there. A
-    /// record matching on two columns appears twice, which a membership test does not mind.
+    /// The delivery keys of one flow's records whose source key, label, OSDU id or origin file name starts with
+    /// <paramref name="term"/>: at most <paramref name="limit"/> from each column, each read in the order of its own index
+    /// so the read stops there. A record matching on two columns appears twice, which a membership test does not mind.
+    /// Keys identify records only inside one flow, so <paramref name="scope"/> is one flow's records.
     /// </summary>
     private static IQueryable<Guid> PrefixCandidates(IQueryable<DeliveryRecord> scope, string term, int limit)
         => scope.Where(r => r.SourceKey.StartsWith(term)).OrderBy(r => r.SourceKey).Select(r => r.DeliveryKey).Take(limit)
             .Concat(scope.Where(r => r.Label != null && r.Label.StartsWith(term)).OrderBy(r => r.Label).Select(r => r.DeliveryKey).Take(limit))
             .Concat(scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).OrderBy(r => r.TargetId).Select(r => r.DeliveryKey).Take(limit))
             .Concat(scope.Where(r => r.SourceFileName != null && r.SourceFileName.StartsWith(term)).OrderBy(r => r.SourceFileName).Select(r => r.DeliveryKey).Take(limit));
+
+    /// <summary>
+    /// The records, of any flow, whose source key, label, OSDU id or origin file name starts with <paramref name="term"/>,
+    /// as flow and key pairs: at most <paramref name="limit"/> from each column, read in the order of its own index.
+    /// </summary>
+    private static IQueryable<RecordIdentity> PrefixRecordCandidates(IQueryable<DeliveryRecord> scope, string term, int limit)
+        => scope.Where(r => r.SourceKey.StartsWith(term)).OrderBy(r => r.SourceKey).Select(r => new RecordIdentity { FlowId = r.FlowId, DeliveryKey = r.DeliveryKey }).Take(limit)
+            .Concat(scope.Where(r => r.Label != null && r.Label.StartsWith(term)).OrderBy(r => r.Label).Select(r => new RecordIdentity { FlowId = r.FlowId, DeliveryKey = r.DeliveryKey }).Take(limit))
+            .Concat(scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).OrderBy(r => r.TargetId).Select(r => new RecordIdentity { FlowId = r.FlowId, DeliveryKey = r.DeliveryKey }).Take(limit))
+            .Concat(scope.Where(r => r.SourceFileName != null && r.SourceFileName.StartsWith(term)).OrderBy(r => r.SourceFileName).Select(r => new RecordIdentity { FlowId = r.FlowId, DeliveryKey = r.DeliveryKey }).Take(limit));
+
+    /// <summary>A record's identity in a query: its flow and its delivery key.</summary>
+    private sealed class RecordIdentity
+    {
+        public Guid FlowId { get; init; }
+
+        public Guid DeliveryKey { get; init; }
+    }
 
     /// <summary>Whether any identity column has at least <paramref name="limit"/> prefix matches, so candidates were left out.</summary>
     private static async Task<bool> PrefixCandidatesTruncatedAsync(IQueryable<DeliveryRecord> scope, string term, int limit, CancellationToken ct)
@@ -1286,11 +1385,11 @@ public sealed class OsduLedger : ILedger
         return (byStatus, drifted, deliveredSince);
     }
 
-    public async Task<IReadOnlyList<AttemptRecord>> ListAttemptsAsync(DeliveryKey key, int max, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AttemptRecord>> ListAttemptsAsync(Guid flowId, DeliveryKey key, int max, CancellationToken ct = default)
     {
         await using var db = Open();
         var rows = await db.DeliveryAttempts.AsNoTracking()
-            .Where(a => a.DeliveryKey == key.Value)
+            .Where(a => a.FlowId == flowId && a.DeliveryKey == key.Value)
             .OrderByDescending(a => a.StartedUtc)
             .ThenByDescending(a => a.AttemptId)
             .Take(Math.Clamp(max, 1, 1000))
@@ -1326,11 +1425,11 @@ public sealed class OsduLedger : ILedger
         return rows.Select(ToState).ToList();
     }
 
-    public async Task RecordVerifyAsync(DeliveryKey key, VerifyOutcome outcome, long? observedVersion, DateTime nowUtc, bool requeue, CancellationToken ct = default)
+    public async Task RecordVerifyAsync(Guid flowId, DeliveryKey key, VerifyOutcome outcome, long? observedVersion, DateTime nowUtc, bool requeue, CancellationToken ct = default)
     {
         await using var db = Open();
-        var entity = await db.DeliveryRecords.FirstOrDefaultAsync(r => r.DeliveryKey == key.Value, ct).ConfigureAwait(false)
-            ?? throw new DeliveryException($"Record {key} is not in the ledger.");
+        var entity = await db.DeliveryRecords.FirstOrDefaultAsync(r => r.FlowId == flowId && r.DeliveryKey == key.Value, ct).ConfigureAwait(false)
+            ?? throw new DeliveryException($"Record {key} is not in the ledger of flow {flowId:D}.");
         entity.LastVerifiedUtc = nowUtc;
         entity.LastVerifyOutcome = StatusText.Of(outcome);
         entity.UpdatedUtc = nowUtc;
@@ -1416,7 +1515,7 @@ public sealed class OsduLedger : ILedger
         };
     }
 
-    public async Task MarkRemovedAsync(IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default)
+    public async Task MarkRemovedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(keys);
         ArgumentException.ThrowIfNullOrWhiteSpace(worker);
@@ -1438,12 +1537,12 @@ public sealed class OsduLedger : ILedger
         foreach (var chunk in keys.Chunk(ChunkSize))
         {
             await using var db = Open();
-            var ids = chunk.Select(k => k.Value).ToList();
-            var entities = await db.DeliveryRecords.Where(r => ids.Contains(r.DeliveryKey)).ToListAsync(ct).ConfigureAwait(false);
-            if (entities.Count != chunk.Length)
+            var ids = chunk.Select(k => k.Value).Distinct().ToList();
+            var entities = await db.DeliveryRecords.Where(r => r.FlowId == flowId && ids.Contains(r.DeliveryKey)).ToListAsync(ct).ConfigureAwait(false);
+            if (entities.Count != ids.Count)
             {
                 var missing = ids.Except(entities.Select(e => e.DeliveryKey)).First();
-                throw new DeliveryException($"Record {missing} is not in the ledger.");
+                throw new DeliveryException($"Record {missing} is not in the ledger of flow {flowId:D}.");
             }
 
             foreach (var entity in entities)
@@ -1459,6 +1558,7 @@ public sealed class OsduLedger : ILedger
     {
         db.DeliveryAttempts.Add(new DeliveryAttempt
         {
+            FlowId = entity.FlowId,
             DeliveryKey = entity.DeliveryKey,
             SubmissionId = entity.LastSubmissionId,
             Worker = worker,
@@ -1770,45 +1870,71 @@ public sealed class OsduLedger : ILedger
             return new UpdateRolloutBatch(tagId, 0, tag.Processed, tag.AffectedRecords, true);
         }
 
-        // One bounded page of records, in key order from where the last pass stopped: a change over millions of
-        // records never becomes one statement, and a pass that is interrupted resumes instead of starting over.
-        var cursor = tag.Cursor;
-        var keys = await db.DeliveryRecords.AsNoTracking()
-            .Where(r => r.CacheSetId != null && sets.Contains(r.CacheSetId!.Value) && (cursor == null || r.DeliveryKey.CompareTo(cursor!.Value) > 0))
+        // One bounded page of records, in key and then flow order from where the last pass stopped: a change over millions
+        // of records never becomes one statement, and a pass that is interrupted resumes instead of starting over. The
+        // same row read by several flows is one record per flow, and each is marked in its own flow.
+        var records = SetRecords(db, sets, tag.Cursor, tag.CursorFlowId);
+        var page = await records
             .OrderBy(r => r.DeliveryKey)
-            .Select(r => r.DeliveryKey)
+            .ThenBy(r => r.FlowId)
+            .Select(r => new { r.FlowId, r.DeliveryKey })
             .Take(size)
             .ToListAsync(ct).ConfigureAwait(false);
 
-        if (keys.Count > 0)
+        if (page.Count > 0)
         {
             // A cache change rewrites the manifest row, never the payload: forgetting the metadata hash and the
             // fingerprint is what makes the next plan render and send the document again, and the curves that
             // were uploaded with it stay where they are. This is the same marking a metadata redelivery makes.
             var note = $"redelivery of metadata requested by cache change {tag.TagId}";
-            await db.DeliveryRecords.Where(r => keys.Contains(r.DeliveryKey))
-                .ExecuteUpdateAsync(
-                    u => u.SetProperty(r => r.MetadataHash, (string?)null)
-                          .SetProperty(r => r.SourceFingerprint, (string?)null)
-                          .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
-                          .SetProperty(r => r.PlanRequestedUtc, nowUtc)
-                          .SetProperty(r => r.LastError, note)
-                          .SetProperty(r => r.UpdatedUtc, nowUtc),
-                    ct)
-                .ConfigureAwait(false);
-            tag.Cursor = keys[^1];
-            tag.Processed += keys.Count;
+            foreach (var flow in page.GroupBy(r => r.FlowId))
+            {
+                var flowId = flow.Key;
+                var keys = flow.Select(r => r.DeliveryKey).ToList();
+                await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey))
+                    .ExecuteUpdateAsync(
+                        u => u.SetProperty(r => r.MetadataHash, (string?)null)
+                              .SetProperty(r => r.SourceFingerprint, (string?)null)
+                              .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
+                              .SetProperty(r => r.PlanRequestedUtc, nowUtc)
+                              .SetProperty(r => r.LastError, note)
+                              .SetProperty(r => r.UpdatedUtc, nowUtc),
+                        ct)
+                    .ConfigureAwait(false);
+            }
+
+            tag.Cursor = page[^1].DeliveryKey;
+            tag.CursorFlowId = page[^1].FlowId;
+            tag.Processed += page.Count;
         }
 
         tag.StartedUtc ??= nowUtc;
-        tag.Status = keys.Count < size ? "applied" : "rolling";
+        tag.Status = page.Count < size ? "applied" : "rolling";
         if (tag.Status == "applied")
         {
             tag.CompletedUtc = nowUtc;
         }
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return new UpdateRolloutBatch(tagId, keys.Count, tag.Processed, tag.AffectedRecords, tag.Status == "applied");
+        return new UpdateRolloutBatch(tagId, page.Count, tag.Processed, tag.AffectedRecords, tag.Status == "applied");
+    }
+
+    /// <summary>
+    /// The records built from any of <paramref name="sets"/> that come after the rollout cursor in key and then flow order.
+    /// A cursor without a flow is past every record of its key. The key's lower bound is stated on its own, so each set's
+    /// page is a range seek of the rollout index from the cursor on, however many records the sets hold.
+    /// </summary>
+    private static IQueryable<DeliveryRecord> SetRecords(OsduDbContext db, IReadOnlyList<long> sets, Guid? cursor, Guid? cursorFlow)
+    {
+        var rows = db.DeliveryRecords.AsNoTracking().Where(r => r.CacheSetId != null && sets.Contains(r.CacheSetId!.Value));
+        if (cursor is not { } key)
+        {
+            return rows;
+        }
+
+        return cursorFlow is { } flow
+            ? rows.Where(r => r.DeliveryKey.CompareTo(key) >= 0 && (r.DeliveryKey != key || r.FlowId.CompareTo(flow) > 0))
+            : rows.Where(r => r.DeliveryKey.CompareTo(key) > 0);
     }
 
     public async Task<IReadOnlyList<UpdateTag>> ListRolloutQueueAsync(int max, CancellationToken ct = default)
@@ -1974,15 +2100,37 @@ public sealed class OsduLedger : ILedger
     private static SourceWatermark ToWatermark(DeliverySourceWatermark w)
         => new(w.FlowId, w.Scope, DateTime.SpecifyKind(w.UpdatedThroughUtc, DateTimeKind.Utc), w.SubmissionId, DateTime.SpecifyKind(w.RecordedUtc, DateTimeKind.Utc), w.ContextHash);
 
+    /// <summary>
+    /// The most attempts one prune statement removes (10,000; tests lower it). Each statement is its own short transaction,
+    /// so pruning an estate's history never holds a long lock on the attempt table, which every drain appends to, or writes
+    /// one huge log record.
+    /// </summary>
+    internal int PruneBatch { get; init; } = 10_000;
+
     public async Task<int> PruneAttemptsAsync(DateTime olderThanUtc, CancellationToken ct = default)
     {
-        await using var db = Open();
-        // Keep the latest attempt per record so a record's last outcome is always explainable.
-        var latest = db.DeliveryAttempts.GroupBy(a => a.DeliveryKey).Select(g => g.Max(a => a.AttemptId));
-        return await db.DeliveryAttempts
-            .Where(a => a.StartedUtc < olderThanUtc && !latest.Contains(a.AttemptId))
-            .ExecuteDeleteAsync(ct)
-            .ConfigureAwait(false);
+        ArgumentOutOfRangeException.ThrowIfLessThan(PruneBatch, 1);
+        var pruned = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            await using var db = Open();
+            // An attempt goes only when a later attempt of the same flow's record exists, so a record's last outcome is
+            // always explainable. The old attempts are read in start order from the start index, and the later one is a
+            // seek of the record's own timeline.
+            var deleted = await db.DeliveryAttempts
+                .Where(a => a.StartedUtc < olderThanUtc
+                    && db.DeliveryAttempts.Any(b => b.FlowId == a.FlowId && b.DeliveryKey == a.DeliveryKey && b.AttemptId > a.AttemptId))
+                .OrderBy(a => a.StartedUtc)
+                .Take(PruneBatch)
+                .ExecuteDeleteAsync(ct)
+                .ConfigureAwait(false);
+            pruned += deleted;
+            if (deleted < PruneBatch)
+            {
+                return pruned;
+            }
+        }
     }
 
     // ---- Retrievals ----------------------------------------------------------------------------------------------
@@ -2215,8 +2363,9 @@ public sealed class OsduLedger : ILedger
     internal static string? Truncate(string? text, int max)
         => text is null ? null : text.Length <= max ? text : text[..max];
 
-    private static DeliveryAttempt ToEntity(AttemptRecord attempt) => new()
+    private static DeliveryAttempt ToEntity(Guid flowId, AttemptRecord attempt) => new()
     {
+        FlowId = flowId,
         DeliveryKey = attempt.DeliveryKey.Value,
         SubmissionId = attempt.SubmissionId,
         RunId = attempt.RunId,
@@ -2389,6 +2538,7 @@ public sealed class OsduLedger : ILedger
         PayloadHash = r.PayloadHash,
         PayloadModifiedUtc = r.PayloadModifiedUtc,
         TargetId = r.TargetId,
+        ClaimedTargetId = r.ClaimedTargetId,
         TargetVersion = r.TargetVersion,
         Status = StatusText.ToRecordStatus(r.Status),
         LastDeliveredUtc = r.LastDeliveredUtc,

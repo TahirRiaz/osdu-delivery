@@ -4,9 +4,10 @@ using System.Text;
 namespace SqlFlow.Delivery.Identity;
 
 /// <summary>
-/// The deterministic surrogate for one deliverable (design.md section 5.2). Computed from the source key, never
-/// assigned by a run. The storage path, the ledger primary key, the idempotency token and the OSDU id all derive
-/// from this one value.
+/// The deterministic surrogate for one source row (design.md section 5.2). Computed from the source key, never
+/// assigned by a run. The idempotency token and the OSDU id derive from this one value, and the ledger keys a record by
+/// it together with the flow that delivers it, so the same row read by several flows is one record per flow
+/// (design.md section 5.4).
 /// </summary>
 public readonly record struct DeliveryKey(Guid Value)
 {

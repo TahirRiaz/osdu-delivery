@@ -985,6 +985,22 @@ export interface DeliveryMappingShapeResult {
   issues: MappingDraftIssue[];
 }
 
+/**
+ * Where one record lives: its flow's ledger id and its delivery key. A key alone names one record per flow that reads
+ * the row, so every record address carries both, in the API and in the GUI.
+ */
+export interface DeliveryRecordRef {
+  flowId: string;
+  deliveryKey: string;
+}
+
+const recordApiPath = ({ flowId, deliveryKey }: DeliveryRecordRef) =>
+  `/api/v1/delivery/records/${encodeURIComponent(flowId)}/${encodeURIComponent(deliveryKey)}`;
+
+/** The GUI page of one record. */
+export const deliveryRecordRoute = ({ flowId, deliveryKey }: DeliveryRecordRef) =>
+  `/delivery/records/${encodeURIComponent(flowId)}/${encodeURIComponent(deliveryKey)}`;
+
 export const deliveryApi = {
   stats: (pipelineId: string) => get<DeliveryFlowStats>(`/api/v1/delivery/flows/${pipelineId}/stats`),
   records: (pipelineId: string, query: DeliveryRecordListQuery = {}) =>
@@ -994,11 +1010,11 @@ export const deliveryApi = {
     get<DeliverySubmission[]>(`/api/v1/delivery/flows/${pipelineId}/submissions`, max ? { max } : {}),
   retrievals: (pipelineId: string, max?: number) =>
     get<DeliveryRetrieval[]>(`/api/v1/delivery/flows/${pipelineId}/retrievals`, max ? { max } : {}),
-  record: (key: string) => get<DeliveryRecordDetail>(`/api/v1/delivery/records/${key}`),
-  attempts: (key: string, max?: number) =>
-    get<DeliveryAttempt[]>(`/api/v1/delivery/records/${key}/attempts`, max ? { max } : {}),
-  recordActivities: (key: string, max?: number) =>
-    get<DeliveryActivity[]>(`/api/v1/delivery/records/${key}/activities`, max ? { max } : {}),
+  record: (record: DeliveryRecordRef) => get<DeliveryRecordDetail>(recordApiPath(record)),
+  attempts: (record: DeliveryRecordRef, max?: number) =>
+    get<DeliveryAttempt[]>(`${recordApiPath(record)}/attempts`, max ? { max } : {}),
+  recordActivities: (record: DeliveryRecordRef, max?: number) =>
+    get<DeliveryActivity[]>(`${recordApiPath(record)}/activities`, max ? { max } : {}),
   submission: (submissionId: string) => get<DeliverySubmissionDetail>(`/api/v1/delivery/submissions/${submissionId}`),
   submissionAttempts: (submissionId: string, max?: number) =>
     get<DeliveryAttempt[]>(`/api/v1/delivery/submissions/${submissionId}/attempts`, max ? { max } : {}),
@@ -1090,25 +1106,25 @@ export const deliveryApi = {
   decideTags: (tagIds: number[], approve: boolean) =>
     post<{ decided: number; approved: boolean }>("/api/v1/delivery/cache/tags/decide", { tagIds, approve }),
   /** What one record read out of the cache when it was rendered. */
-  recordCacheUses: (key: string) => get<DeliveryCacheUse[]>(`/api/v1/delivery/records/${key}/cache`),
+  recordCacheUses: (record: DeliveryRecordRef) => get<DeliveryCacheUse[]>(`${recordApiPath(record)}/cache`),
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */
   releaseFlow: (pipelineId: string, keys?: string[]) =>
     post<DeliveryReleaseResult>(`/api/v1/delivery/flows/${pipelineId}/release`, { keys: keys ?? null }),
   /** Queues a target probe on a node: is OSDU reachable with the flow's credentials? */
   probe: (pipelineId: string) => post<ComputeTaskAccepted>(`/api/v1/delivery/flows/${pipelineId}/probe`),
-  release: (key: string) => post<DeliveryReleaseResult>(`/api/v1/delivery/records/${key}/release`),
+  release: (record: DeliveryRecordRef) => post<DeliveryReleaseResult>(`${recordApiPath(record)}/release`),
   /** Marks the record for redelivery and (with run) queues the deliver run that sends it. */
-  redeliver: (key: string, scope: "all" | "metadata" | "payload" = "all", run = true) =>
-    post<DeliveryRedeliverResult>(`/api/v1/delivery/records/${key}/redeliver`, { scope, run }),
+  redeliver: (record: DeliveryRecordRef, scope: "all" | "metadata" | "payload" = "all", run = true) =>
+    post<DeliveryRedeliverResult>(`${recordApiPath(record)}/redeliver`, { scope, run }),
   /** Queues a verify run scoped to this record. */
-  verify: (key: string) => post<DeliveryRunAccepted>(`/api/v1/delivery/records/${key}/verify`),
-  /** Queues a read-back of the record as OSDU holds it; poll the task for the document. */
-  read: (key: string) => post<ComputeTaskAccepted>(`/api/v1/delivery/records/${key}/read`),
+  verify: (record: DeliveryRecordRef) => post<DeliveryRunAccepted>(`${recordApiPath(record)}/verify`),
+  /** Queues a read-back of the record as its flow wrote it to OSDU; poll the task for the document. */
+  read: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/read`),
   /**
    * Queues a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its
    * system columns, its child datasets, and the origin file and row the ingestion tables record. Poll the task.
    */
-  readSource: (key: string) => post<ComputeTaskAccepted>(`/api/v1/delivery/records/${key}/source`),
+  readSource: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/source`),
   /** Where the flow's records live, and which call each removal scope makes against them. */
   target: (pipelineId: string) => get<DeliveryTarget>(`/api/v1/delivery/flows/${pipelineId}/target`),
   /** What a removal would act on, without removing anything: the confirmation's contents. */

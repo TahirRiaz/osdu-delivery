@@ -38,8 +38,8 @@ the runs that carried it.
 
 | Column | Purpose |
 | --- | --- |
-| `DeliveryKey` | Primary key. Deterministic, derived from source data. |
-| `FlowId`, `SourceKey`, `Label`, `MappingName` | Provenance. `Label` is the mapping's `dataset.label` rendered for the row (a wellbore name, a log name), for search and display only. |
+| `FlowId`, `DeliveryKey` | Primary key. The flow, and the deterministic key derived from source data. The same row read by several flows is one record per flow ([One source, several flows](#one-source-several-flows)). |
+| `SourceKey`, `Label`, `MappingName` | Provenance. `Label` is the mapping's `dataset.label` rendered for the row (a wellbore name, a log name), for search and display only. |
 | `RenderContext`, `SourceFingerprint`, `MetadataHash`, `PayloadHash` | What OSDU holds: the gates for tiers 1 and 2. `SourceFingerprint` is the ingestion fingerprint, computed over the record row's `UpdatedDate_DW` and, per child dataset, its row count and newest `UpdatedDate_DW`. |
 | `SourceModifiedUtc`, `PayloadModifiedUtc` | The last-modified moment of the source row, and the newest modified time of the payload files, that OSDU's document and payload were built from: the watermarks an incremental run is ordered against. |
 | `SourceKeyJson` | The record's key tuple as a JSON array, in `source.record.key` order: what a key-scoped read of the ingestion tables uses. |
@@ -47,6 +47,7 @@ the runs that carried it.
 | `PendingSourceFileName`, `PendingSourceRowNumber`, `PendingSourceUpdatedUtc` | The same for the queued version, or for the state a held, failed or deleted record was left in. |
 | `PlanRequestedUtc` | Set when the ledger asks for the record to be planned again (a redeliver, a release with no pending document, a cache rollout); the next run pages these records and plans them as a keys selection, and planning clears it. |
 | `TargetId`, `TargetVersion` | The OSDU id and the last known version (the drift handle). |
+| `ClaimedTargetId` | The OSDU id the record claimed for its flow when it first queued a document, kept for good. Unique across the ledger: one OSDU record belongs to one flow. Null for a record that was only ever held. |
 | `Status` | `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`. |
 | `Blocked` | Set when the record was held, failed or deleted and not released since. |
 | `LastDeliveredUtc`, `LastVerifiedUtc`, `LastVerifyOutcome` | Custody timestamps. |
@@ -59,7 +60,7 @@ the runs that carried it.
 
 ### `osdu.Attempt`: append-only, one row per delivery try
 
-Worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`), the
+The record it belongs to (`FlowId`, `DeliveryKey`), worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`), the
 phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `none`), the hashes
 established, the version returned,
 the redacted error (for a held or failed try only: a try that did not fail keeps its note, chunks sent or why nothing
@@ -251,6 +252,33 @@ at the version the ledger already holds. Its custody state is therefore still tr
 purge is written as a `purge-history` attempt and nothing else changes. Every removal, at every depth, names the
 scope and the operator on the attempt and in the activity trail.
 
+## One source, several flows
+
+An ingestion table can feed several OSDU flows, each rendering the rows with its own mapping into its own OSDU kind
+([design.md](design.md) section 5.4). The rows are loaded once; each flow keeps its own ledger over them.
+
+- **A record is one flow's.** Its key is the flow and the delivery key together, so a row read by two flows is two
+  records, each with its own state, attempts, activities, submissions and watermark. Every write the engine makes
+  (staging, holds, claims, leases, completions, step progress, verify outcomes, removals) names the flow, and none of
+  them reaches another flow's record of the same row. Statistics are counted per flow.
+- **A record is addressed by both parts.** The API's record routes are `/api/v1/delivery/records/{flowId}/{deliveryKey}`
+  and the GUI's record page is `/delivery/records/{flowId}/{deliveryKey}`. The flow id is the ledger's (derived from the
+  flow's name), not the pipeline's, so a record's history stays reachable after its flow leaves the repository. The
+  search box, given a delivery key, lists one record per flow that reads the row.
+- **One OSDU record, one flow.** The OSDU id is `{partition}:{entityType}:{deliveryKey}`, so flows delivering to
+  different entity types or partitions write different records. Staging claims a record's OSDU id the first time the
+  record queues a document (`ClaimedTargetId`, unique across the ledger). Work whose id another flow's record has
+  claimed is not staged: the record is held, with the owning flow named in its error, and nothing is sent. A release
+  plans it again and meets the same conflict. To resolve it, deliver the second flow to another partition, or give its
+  mapping a `dataset.system` or key that yields other ids. A new mapping has delivered nothing, so changing its
+  identity re-keys nothing.
+- **A flow acts only on ids it claimed.** The worker sends only a claimed id. A read back reads the claimed id, and a
+  removal skips a record that claimed nothing, so a record that was only ever held can never reach another flow's
+  OSDU record. A held record is not given an id another flow has claimed.
+- **Races settle in the database.** Two flows' intakes staging the same new id at once are serialized by the unique
+  index: the loser's staging is refused whole, runs again, and then holds its record naming the winner. A staging the
+  database ends as a deadlock victim is run again the same way.
+
 ## Leasing
 
 ```text
@@ -294,16 +322,21 @@ Listings are index-backed so the GUI answers in milliseconds at any estate size:
 | `Retrieval (FlowId, StartedUtc)`, `(FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval flow's runs, the watermark chain (the last done run), the run's row |
 | `Record (FlowId, Label)`, `(FlowId, SourceKey)`, `(FlowId, TargetId)` | prefix search (`LIKE 'term%'`) on the three identity columns |
 | `Record (FlowId, UpdatedUtc)`, `(FlowId, LastDeliveredUtc)`, `(FlowId, LastVerifyOutcome)` | recency listings, the last delivery and the part-hour of the 24-hour count, drift |
-| `Record (FlowId, DeliveryKey)` | key-ordered walks of one flow: a removal's key list, a keys selection's pages |
+| `Record` primary key `(FlowId, DeliveryKey)` | one flow's record, and key-ordered walks of one flow: a removal's key list, a keys selection's pages |
+| `Record (DeliveryKey)` | the lookup across every flow by delivery key: one record per flow that reads the row |
+| `Record (ClaimedTargetId) WHERE ClaimedTargetId IS NOT NULL`, unique, binary collation | one flow per OSDU id: the claim check staging runs, and the database's refusal of a second claim |
+| `Record (CacheSetId, DeliveryKey, FlowId) WHERE CacheSetId IS NOT NULL` | a cache change's rollout, in key and then flow order from its cursor |
 | `Record (FlowId, SourceFileName, SourceRowNumber)`, global `(SourceFileName)` | "which records came from this file", inside one flow and across the estate |
 | `Record (FlowId, PlanRequestedUtc) WHERE PlanRequestedUtc IS NOT NULL` | the records the planner pages each run, so it stays as small as the backlog |
 | `RecordCount` indexed view `(FlowId, Status, LastVerifyOutcome, DeliveredHour)` | flow statistics, read from a few rows per flow (see [Statistics](#statistics)) |
-| `Attempt (DeliveryKey, StartedUtc)`, `(SubmissionId)`, `(RunId, DeliveryKey)`, `(StartedUtc)` | record timeline, submission view, a run's records, pruning |
-| `Activity (FlowId, StartedUtc)`, `(DeliveryKey, StartedUtc)`, `(Kind, StartedUtc)`, `(Actor, StartedUtc)`, `(SubmissionId)`, `(RunId)` | the audit views and their filters |
+| `Attempt (FlowId, DeliveryKey, StartedUtc)`, `(SubmissionId, Outcome, Phase) INCLUDE (DeliveryKey)`, `(RunId, FlowId, DeliveryKey)`, `(StartedUtc)` | record timeline and the later attempt pruning looks for, the submission view and the counts a closing submission reads from the index alone, a run's records, pruning in start order |
+| `Activity (FlowId, StartedUtc)`, `(FlowId, DeliveryKey, StartedUtc)`, `(Kind, StartedUtc)`, `(Actor, StartedUtc)`, `(SubmissionId)`, `(RunId)` | the audit views and their filters, and one record's interventions |
 | `Run (SubmissionId)`, `Run (ResultSubmissionId)`, `Run (PipelineId, Operation)` | a submission's runs, a flow's runs by operation |
 
-A search term that parses as a UUID matches the delivery key exactly; anything else is a prefix over label,
-source key and target id. A slower "contains" mode exists for the rare case, and the API names it explicitly.
+A search term that parses as a UUID matches the delivery key exactly (in a flow's listing, that flow's record; in the
+lookup across every flow, each flow's record of the row); anything else is a prefix over label, source key and target
+id, and a lookup across flows matches each record on its own values. A slower "contains" mode exists for the rare
+case, and the API names it explicitly.
 `SourceKey` is capped at 400 characters so it fits an index key.
 
 ### Bounds
@@ -331,13 +364,17 @@ records by status, last verify outcome and the hour of their last delivery. SQL 
 transaction of every record write, so the counts are derived from the ledger, exact, and cost a few rows per flow at
 any volume. The deliveries of the last 24 hours add the view's whole hours inside the window to an index count of the
 part-hour the window opens in, which is exact to the tick and reads under an hour of deliveries. EF cannot declare an
-indexed view, so the module's initial migration creates it alongside the tables. The SQLite database the tests use
-has no indexed views and counts the records directly.
+indexed view, so the module's migrations create it with SQL: the initial migration alongside the tables, and a later
+migration that changes the record table's key drops it first and creates it again after. The SQLite database the
+tests use has no indexed views and counts the records directly.
 
 ## Retention
 
 Attempts grow per delivery try. `POST /api/v1/delivery/ledger/prune` (admin scope) with `olderThanDays`
-deletes older attempts while keeping the latest per record, so a record's last outcome is always explainable.
+deletes older attempts while keeping the latest of every flow's record, so a record's last outcome is always explainable.
+It deletes 10,000 attempts per statement, oldest first, each statement its own short transaction, so a prune of years of
+history never holds a long lock on the table every drain appends to; an attempt goes only when a later attempt of the
+same record exists, which is one seek of the record's timeline.
 Activities are small and kept; partition either table by time in the model if volume demands it (see
 [decisions/0005-ledger-retention.md](decisions/0005-ledger-retention.md)).
 
@@ -352,7 +389,23 @@ its EF migration, with its own history table (`[osdu].[__EFMigrationsHistory]`) 
 (`[osdu].[SchemaVersion]`, which also records the minimum SQLFlow catalog migration it requires), so the ledger is
 upgraded in place without touching SQLFlow's catalog.
 
-The indexed view `[osdu].[RecordCount]` is created by the same migration as the tables it counts.
+The indexed view `[osdu].[RecordCount]` is created by the same migration as the tables it counts, and rebuilt by
+any migration that changes the record table's key.
+
+`LedgerPerFlow` (module version 1.2.0) keyed the record table by flow and delivery key. It gives every existing
+attempt the flow of its record (or of its submission, when the record is missing), claims the OSDU id of every record
+that queued or delivered a document, and completes an interrupted rollout's cursor with its record's flow. It stops,
+naming the count and how to find them, when an attempt belongs to no record and no submission or when two records hold
+one OSDU id; a failed migration leaves the ledger as it was. Going back down is refused while any delivery key has
+records in more than one flow.
+
+It is ordered for a ledger of hundreds of millions of records: the backfills run while the record table is still keyed
+by delivery key and before the table is rebuilt, the record table's nonclustered indexes are dropped before its
+clustered key changes and built once after (rather than rebuilt by the key drop and again by the key build), and the
+attempt table's two ever-increasing indexes are set to `OPTIMIZE_FOR_SEQUENTIAL_KEY` where the server has it (SQL
+Server 2019 and later, Azure SQL), because every drain appends to them at once. It still rewrites the record table and
+updates every attempt in one transaction, so on a large ledger it needs log space for both and runs while no host is
+up (the hosts refuse to start against a pending migration anyway).
 
 The control plane applies pending migrations on start, and `sqlflow db migrate --db <ref>` does it by hand. Both
 hosts and `sqlflow db status` refuse to run against pending migrations, a database newer than the code, or a catalog

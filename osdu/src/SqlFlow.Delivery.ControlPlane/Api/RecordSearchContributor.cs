@@ -65,11 +65,13 @@ public sealed class RecordSearchContributor : ISearchContributor
             .Select(record =>
             {
                 var known = pipelines.TryGetValue(record.FlowId, out var pipeline);
+                // A record is its flow and its key: the same row read by two flows is two hits, each with its own page.
+                var path = DeliveryRecordRoutes.Path(record.FlowId, record.DeliveryKey.Value);
                 return new SearchHitDto(
-                    record.DeliveryKey.Value.ToString("D"),
+                    path,
                     record.Label ?? record.SourceKey,
                     known ? pipeline.Name : null,
-                    "/delivery/records/" + record.DeliveryKey.Value.ToString("D"),
+                    "/delivery/records/" + path,
                     new DeliveryRecordHitDto(
                         record.DeliveryKey.Value, record.FlowId, known ? pipeline.Name : null, known ? pipeline.Id : null, record.SourceKey,
                         record.Label, record.TargetId, record.Status.ToString().ToLowerInvariant(), record.LastDeliveredUtc, record.UpdatedUtc));

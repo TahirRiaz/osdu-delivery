@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { isApiError } from "@/api/client";
 import {
-  DELIVERY_RECORD_STATUSES, deliveryApi,
+  DELIVERY_RECORD_STATUSES, deliveryApi, deliveryRecordRoute,
   type DeliveryRecord, type DeliveryRecordFilter, type DeliveryRecordStatus, type DeliverySubmission,
 } from "../../api/delivery";
 import { CodeView } from "@/components/CodeView";
@@ -259,7 +259,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             fetchPage={(page, pageSize) => deliveryApi.records(pipelineId, { page, pageSize, ...filter })}
             columns={recordColumns}
             rowKey={(row) => row.deliveryKey}
-            onRowClick={(row) => navigate(`/delivery/records/${row.deliveryKey}`)}
+            onRowClick={(row) => navigate(deliveryRecordRoute(row))}
             pollMs={selected.size > 0 || allMatching ? undefined : 10000}
             onPageLoaded={onPageLoaded}
             selection={{ selected, onChange: (next) => { setSelected(next); setAllMatching(false); } }}

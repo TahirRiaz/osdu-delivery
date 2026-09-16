@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
-import { deliveryApi, type DeliveryActivity } from "../../api/delivery";
+import { deliveryApi, deliveryRecordRoute, type DeliveryActivity } from "../../api/delivery";
 import { CodeView } from "@/components/CodeView";
 import { FilterBar } from "@/components/FilterBar";
 import { Page } from "@/components/Page";
@@ -55,11 +55,14 @@ export default function DeliveryActivityPage() {
     {
       id: "target",
       header: "Target",
-      render: (row) => (
+      render: (row) => {
+        // A record is its flow's: the activity names both, and the page it opens is that flow's record.
+        const record = row.deliveryKey === null ? null : { route: deliveryRecordRoute({ flowId: row.flowId, deliveryKey: row.deliveryKey }), key: row.deliveryKey };
+        return (
         <span className="inline-flex gap-2">
-          {row.deliveryKey && (
-            <button type="button" className="font-mono text-[12px] text-primary hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/delivery/records/${row.deliveryKey}`); }}>
-              record {row.deliveryKey.slice(0, 8)}
+          {record && (
+            <button type="button" className="font-mono text-[12px] text-primary hover:underline" onClick={(event) => { event.stopPropagation(); navigate(record.route); }}>
+              record {record.key.slice(0, 8)}
             </button>
           )}
           {row.submissionId && (
@@ -73,7 +76,8 @@ export default function DeliveryActivityPage() {
             </button>
           )}
         </span>
-      ),
+        );
+      },
     },
     { id: "summary", header: "Summary", render: (row) => <TruncatedText text={row.summary} maxWidth={480} /> },
   ];

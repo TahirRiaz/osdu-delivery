@@ -373,12 +373,8 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     private async Task ClearLedgerAsync()
     {
         await using var db = Context();
-        var keys = await db.DeliveryRecords.Where(r => r.FlowId == FlowId).Select(r => r.DeliveryKey).ToListAsync().ConfigureAwait(false);
-        if (keys.Count > 0)
-        {
-            await db.DeliveryAttempts.Where(a => keys.Contains(a.DeliveryKey)).ExecuteDeleteAsync().ConfigureAwait(false);
-        }
-
+        // The sample rows give every fixture the same delivery keys; the flow is what makes these attempts and records this fixture's.
+        await db.DeliveryAttempts.Where(a => a.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
         await db.DeliveryRecords.Where(r => r.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
         await db.DeliveryWorkBatches.Where(b => b.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
         await db.DeliverySourceWatermarks.Where(w => w.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);

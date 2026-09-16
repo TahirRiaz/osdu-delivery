@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookOpenCheck, CircleAlert, Database, RotateCcw, ShieldCheck, Trash2, Unlock } from "lucide-react";
@@ -15,6 +15,7 @@ import {
   type DeliveryActivity,
   type DeliveryAttempt,
   type DeliveryAttemptResult,
+  type DeliveryRecordRef,
 } from "../../api/delivery";
 import { AttemptDetail } from "./AttemptDetail";
 import { CodeView } from "@/components/CodeView";
@@ -125,38 +126,40 @@ function Hash({ value }: { value: string | null }) {
 /** Everything the ledger knows about one record: its custody state, every delivery try, every intervention, the
  * document waiting to go, and the buttons that act on it (verify, redeliver, read back, release, delete). */
 export default function DeliveryRecordPage() {
-  const { key } = useParams<{ key: string }>();
-  if (!key) {
+  const { flowId, key } = useParams<{ flowId: string; key: string }>();
+  if (!flowId || !key) {
     return <Navigate to="/delivery" replace />;
   }
 
-  return <DeliveryRecordContent deliveryKey={key} />;
+  return <DeliveryRecordContent flowId={flowId} deliveryKey={key} />;
 }
 
-function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
+/** One flow's record: the same source row read by another flow is that flow's record, with a page of its own. */
+function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [confirm, setConfirm] = useState<"redeliver" | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskLabel, setTaskLabel] = useState("");
+  const ref = useMemo<DeliveryRecordRef>(() => ({ flowId, deliveryKey }), [flowId, deliveryKey]);
 
   const query = useQuery({
-    queryKey: ["delivery", "record", deliveryKey],
-    queryFn: () => deliveryApi.record(deliveryKey),
+    queryKey: ["delivery", "record", flowId, deliveryKey],
+    queryFn: () => deliveryApi.record(ref),
     refetchInterval: (q) => {
       const status = q.state.data?.record.status;
       return status === "pending" || status === "delivering" ? 3000 : 15000;
     },
   });
   const attempts = useQuery({
-    queryKey: ["delivery", "record", deliveryKey, "attempts"],
-    queryFn: () => deliveryApi.attempts(deliveryKey, 200),
+    queryKey: ["delivery", "record", flowId, deliveryKey, "attempts"],
+    queryFn: () => deliveryApi.attempts(ref, 200),
     refetchInterval: 10000,
   });
   const activities = useQuery({
-    queryKey: ["delivery", "record", deliveryKey, "activities"],
-    queryFn: () => deliveryApi.recordActivities(deliveryKey, 200),
+    queryKey: ["delivery", "record", flowId, deliveryKey, "activities"],
+    queryFn: () => deliveryApi.recordActivities(ref, 200),
     refetchInterval: 10000,
   });
   const task = useComputeTask(taskId);
@@ -175,12 +178,12 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
   const fail = (error: unknown) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
 
   const verify = useMutation({
-    mutationFn: () => deliveryApi.verify(deliveryKey),
+    mutationFn: () => deliveryApi.verify(ref),
     onSuccess: (accepted) => { toast.success("Verify run queued."); navigate(`/runs/${accepted.runId}`); },
     onError: fail,
   });
   const redeliver = useMutation({
-    mutationFn: () => deliveryApi.redeliver(deliveryKey, "all", true),
+    mutationFn: () => deliveryApi.redeliver(ref, "all", true),
     onSuccess: (result) => {
       setConfirm(null);
       toast.success("Redelivery run queued.");
@@ -191,19 +194,19 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
     onError: (error) => { setConfirm(null); fail(error); },
   });
   const release = useMutation({
-    mutationFn: () => deliveryApi.release(deliveryKey),
+    mutationFn: () => deliveryApi.release(ref),
     onSuccess: (result) => { toast.success(result.released > 0 ? "Record released." : "Nothing to release."); refresh(); },
     onError: fail,
   });
   const readBack = useMutation({
-    mutationFn: () => deliveryApi.read(deliveryKey),
+    mutationFn: () => deliveryApi.read(ref),
     onSuccess: (accepted) => { setTaskLabel("Read back from OSDU"); setTaskId(accepted.taskId); },
     onError: fail,
   });
   // Where the record came from: its rows as the ingestion tables hold them now, read on a node with the flow's own
   // connection, with the origin file and row the ledger records against every delivered version.
   const readSource = useMutation({
-    mutationFn: () => deliveryApi.readSource(deliveryKey),
+    mutationFn: () => deliveryApi.readSource(ref),
     onSuccess: (accepted) => { setTaskLabel("The record in the ingestion tables"); setTaskId(accepted.taskId); },
     onError: fail,
   });

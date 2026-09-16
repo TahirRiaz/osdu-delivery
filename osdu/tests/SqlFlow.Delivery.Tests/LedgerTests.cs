@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Tests;
 using Xunit;
 
@@ -68,14 +69,23 @@ public class SqlLedgerTests : IDisposable
     {
         var submission = Guid.NewGuid();
         var otherFlow = FlowId.Of("other-flow");
-        await Ledger.UpsertPendingAsync([
+        await Ledger.UpsertPendingAsync(_flow, [
             Pending("WELL-1", submission),
             Pending("WELL-2", submission),
-            Pending("OTHER-1", submission) with { FlowId = otherFlow, Label = "Other one" },
         ]);
+        await Ledger.UpsertPendingAsync(otherFlow, [Pending("OTHER-1", submission) with { FlowId = otherFlow, Label = "Other one" }]);
 
         var byKey = await Ledger.LookupAsync(DeliveryKey.Derive("test", ["WELL-1"]).Value.ToString(), 10);
         Assert.Equal("WELL-1", Assert.Single(byKey).SourceKey);
+
+        // The same row read by another flow is that flow's record too: the key finds both, and a prefix that only one of
+        // them matches finds only that one, even though the two share a key.
+        await Ledger.UpsertPendingAsync(otherFlow, [Pending("WELL-1", submission) with { FlowId = otherFlow, TargetId = "dev:y:WELL-1", Label = "Seen elsewhere" }]);
+        var bothFlows = await Ledger.LookupAsync(DeliveryKey.Derive("test", ["WELL-1"]).Value.ToString(), 10);
+        Assert.Equal(new[] { _flow, otherFlow }.Order(), bothFlows.Select(r => r.FlowId).Order());
+        Assert.Equal(new BoundedCount(2, Exact: true), await Ledger.CountLookupAsync(DeliveryKey.Derive("test", ["WELL-1"]).Value.ToString(), 10));
+        Assert.Equal(otherFlow, Assert.Single(await Ledger.LookupAsync("Seen", 10)).FlowId);
+        Assert.Equal(_flow, Assert.Single(await Ledger.LookupAsync("dev:x:WELL-1", 10)).FlowId);
 
         var byTargetId = await Ledger.LookupAsync("dev:x:WELL", 10);
         Assert.Equal(2, byTargetId.Count);
@@ -97,7 +107,7 @@ public class SqlLedgerTests : IDisposable
         var s1 = Guid.NewGuid();
 
         // Twelve records under one update time, as a bulk write stamps a batch: the pages must still partition them.
-        await Ledger.UpsertPendingAsync(Enumerable.Range(0, 12).Select(i => Pending($"WELL-{i:D2}", s1)).ToList());
+        await Ledger.UpsertPendingAsync(_flow, Enumerable.Range(0, 12).Select(i => Pending($"WELL-{i:D2}", s1)).ToList());
         var all = new RecordQuery();
         Assert.Equal(new BoundedCount(12, Exact: true), await Ledger.CountAsync(_flow, all, 13));
         Assert.Equal(new BoundedCount(5, Exact: false), await Ledger.CountAsync(_flow, all, 5));
@@ -115,7 +125,7 @@ public class SqlLedgerTests : IDisposable
         foreach (var name in new[] { "WELL-10", "WELL-11" })
         {
             var key = DeliveryKey.Derive("test", [name]);
-            await Ledger.CompleteAsync(new RecordCompletion
+            await Ledger.CompleteAsync(_flow, new RecordCompletion
             {
                 DeliveryKey = key,
                 Status = RecordStatus.Held,
@@ -142,7 +152,7 @@ public class SqlLedgerTests : IDisposable
     public async Task Claim_leases_pending_records_once_and_complete_promotes_pending_state()
     {
         var submission = Guid.NewGuid();
-        await Ledger.UpsertPendingAsync([Pending("a", submission), Pending("b", submission)]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", submission), Pending("b", submission)]);
 
         var claimed = await Ledger.ClaimAsync(_flow, submission, "w1", 10, TimeSpan.FromMinutes(5), Now);
         Assert.Equal(2, claimed.Count);
@@ -150,11 +160,11 @@ public class SqlLedgerTests : IDisposable
         Assert.All(claimed, r => Assert.Equal(1, r.AttemptCount));
         Assert.All(claimed, r => Assert.StartsWith("w1/", r.LeaseOwner!, StringComparison.Ordinal));
         Assert.Empty(await Ledger.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(5), Now));
-        Assert.True(await Ledger.RenewLeaseAsync(claimed[0].DeliveryKey, claimed[0].LeaseOwner!, TimeSpan.FromMinutes(5), Now));
-        Assert.False(await Ledger.RenewLeaseAsync(claimed[0].DeliveryKey, "someone-else", TimeSpan.FromMinutes(5), Now));
+        Assert.True(await Ledger.RenewLeaseAsync(_flow, claimed[0].DeliveryKey, claimed[0].LeaseOwner!, TimeSpan.FromMinutes(5), Now));
+        Assert.False(await Ledger.RenewLeaseAsync(_flow, claimed[0].DeliveryKey, "someone-else", TimeSpan.FromMinutes(5), Now));
 
         var record = claimed[0];
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = record.DeliveryKey,
             Status = RecordStatus.Delivered,
@@ -173,7 +183,7 @@ public class SqlLedgerTests : IDisposable
         Assert.Null(delivered.PendingDocumentRef);
         Assert.Null(delivered.LeaseOwner);
         Assert.Equal(0, delivered.AttemptCount);
-        Assert.Single(await Ledger.ListAttemptsAsync(record.DeliveryKey, 10));
+        Assert.Single(await Ledger.ListAttemptsAsync(_flow, record.DeliveryKey, 10));
         Assert.Equal(1, await Ledger.CountAsync(_flow, submission, RecordStatus.Delivered));
         Assert.True(await Ledger.HasPendingAsync(_flow, submission, Now));
     }
@@ -182,7 +192,7 @@ public class SqlLedgerTests : IDisposable
     public async Task Expired_leases_are_reclaimed_and_backoff_is_honoured()
     {
         var submission = Guid.NewGuid();
-        await Ledger.UpsertPendingAsync([Pending("a", submission)]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", submission)]);
         var first = await Ledger.ClaimAsync(_flow, null, "w1", 10, TimeSpan.FromMinutes(5), Now);
         Assert.Single(first);
 
@@ -198,7 +208,7 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal(2, second[0].AttemptCount);
 
         // Retry later: the record goes back to pending with a next-attempt time and is not claimable until then.
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = second[0].DeliveryKey,
             Status = RecordStatus.Pending,
@@ -219,14 +229,14 @@ public class SqlLedgerTests : IDisposable
     public async Task Releasing_a_lease_on_shutdown_does_not_charge_the_attempt()
     {
         var submission = Guid.NewGuid();
-        await Ledger.UpsertPendingAsync([Pending("a", submission)]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", submission)]);
         var claimed = await Ledger.ClaimAsync(_flow, submission, "w1", 10, TimeSpan.FromMinutes(5), Now);
         var record = claimed.Single();
         Assert.Equal(1, record.AttemptCount);
 
-        Assert.False(await Ledger.ReleaseLeaseAsync(record.DeliveryKey, "someone-else", countAttempt: false, Now));
-        Assert.True(await Ledger.ReleaseLeaseAsync(record.DeliveryKey, record.LeaseOwner!, countAttempt: false, Now));
-        Assert.False(await Ledger.ReleaseLeaseAsync(record.DeliveryKey, record.LeaseOwner!, countAttempt: false, Now));
+        Assert.False(await Ledger.ReleaseLeaseAsync(_flow, record.DeliveryKey, "someone-else", countAttempt: false, Now));
+        Assert.True(await Ledger.ReleaseLeaseAsync(_flow, record.DeliveryKey, record.LeaseOwner!, countAttempt: false, Now));
+        Assert.False(await Ledger.ReleaseLeaseAsync(_flow, record.DeliveryKey, record.LeaseOwner!, countAttempt: false, Now));
 
         var released = await Ledger.GetRecordAsync(_flow, record.DeliveryKey);
         Assert.Equal(RecordStatus.Pending, released!.Status);
@@ -234,13 +244,13 @@ public class SqlLedgerTests : IDisposable
         Assert.Null(released.LeaseOwner);
         Assert.Null(released.LeaseExpiresUtc);
         Assert.Contains("stopped mid-attempt", released.LastError, StringComparison.Ordinal);
-        Assert.Empty(await Ledger.ListAttemptsAsync(record.DeliveryKey, 10));
+        Assert.Empty(await Ledger.ListAttemptsAsync(_flow, record.DeliveryKey, 10));
 
         // Immediately claimable again, and the retry budget starts from the first attempt.
         var again = await Ledger.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(5), Now);
         Assert.Equal(1, again.Single().AttemptCount);
 
-        Assert.True(await Ledger.ReleaseLeaseAsync(record.DeliveryKey, again[0].LeaseOwner!, countAttempt: true, Now));
+        Assert.True(await Ledger.ReleaseLeaseAsync(_flow, record.DeliveryKey, again[0].LeaseOwner!, countAttempt: true, Now));
         Assert.Equal(1, (await Ledger.GetRecordAsync(_flow, record.DeliveryKey))!.AttemptCount);
     }
 
@@ -248,9 +258,9 @@ public class SqlLedgerTests : IDisposable
     public async Task Upsert_pending_preserves_current_state_and_held_records_can_be_released()
     {
         var s1 = Guid.NewGuid();
-        await Ledger.UpsertPendingAsync([Pending("a", s1)]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1)]);
         var claimed = await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(1), Now);
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = claimed[0].DeliveryKey,
             Status = RecordStatus.Delivered,
@@ -260,7 +270,7 @@ public class SqlLedgerTests : IDisposable
         });
 
         var s2 = Guid.NewGuid();
-        await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingMetadataHash = "mh2", PendingPayload = false, PendingPayloadHash = null }]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", s2) with { PendingMetadataHash = "mh2", PendingPayload = false, PendingPayloadHash = null }]);
         var state = await Ledger.GetRecordAsync(_flow, claimed[0].DeliveryKey);
         Assert.Equal(RecordStatus.Pending, state!.Status);
         Assert.Equal("mh", state.MetadataHash);
@@ -271,7 +281,7 @@ public class SqlLedgerTests : IDisposable
 
         await Ledger.MarkSkippedAsync(_flow, [new SkippedRecord { DeliveryKey = claimed[0].DeliveryKey, Kind = SkipKind.Unchanged, Reason = "unchanged" }], s2);
         var held = Pending("b", s2) with { LastError = "no wellbore" };
-        await Ledger.MarkHeldAsync([held]);
+        await Ledger.MarkHeldAsync(_flow, [held]);
         var heldState = await Ledger.GetRecordAsync(_flow, held.DeliveryKey);
         Assert.Equal(RecordStatus.Held, heldState!.Status);
         Assert.Equal("no wellbore", heldState.LastError);
@@ -285,10 +295,10 @@ public class SqlLedgerTests : IDisposable
         Assert.False(unblocked.Blocked);
         Assert.Contains("released", unblocked.LastError, StringComparison.Ordinal);
 
-        await Ledger.UpsertPendingAsync([Pending("c", s2)]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("c", s2)]);
         var c = await Ledger.ClaimAsync(_flow, s2, "w", 10, TimeSpan.FromMinutes(1), Now);
         var cRecord = c.Single(r => r.SourceKey == "c");
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = cRecord.DeliveryKey,
             Status = RecordStatus.Held,
@@ -304,7 +314,7 @@ public class SqlLedgerTests : IDisposable
     {
         var submission = Guid.NewGuid();
         await Ledger.RegisterSubmissionAsync(Submission(submission));
-        await Ledger.UpsertPendingAsync([
+        await Ledger.UpsertPendingAsync(_flow, [
             Pending("a", submission) with { WorkBatch = 3, PendingDocumentRef = "3:0:10" },
             Pending("b", submission) with { WorkBatch = 3, PendingDocumentRef = "3:11:10" },
             Pending("c", submission) with { WorkBatch = 4, PendingDocumentRef = "4:0:10" },
@@ -327,7 +337,7 @@ public class SqlLedgerTests : IDisposable
         Assert.True(await Ledger.RenewWorkBatchLeaseAsync(submission, 3, claimed.Batch.LeaseOwner!, TimeSpan.FromMinutes(5), Now));
         Assert.False(await Ledger.RenewWorkBatchLeaseAsync(submission, 3, "someone-else", TimeSpan.FromMinutes(5), Now));
 
-        await Ledger.CompleteManyAsync(claimed.Records.Select(r => new RecordCompletion
+        await Ledger.CompleteManyAsync(_flow, claimed.Records.Select(r => new RecordCompletion
         {
             DeliveryKey = r.DeliveryKey,
             Status = RecordStatus.Delivered,
@@ -349,7 +359,7 @@ public class SqlLedgerTests : IDisposable
         Assert.Null(a.PendingDocumentRef);
         Assert.Null(a.WorkBatch);
         Assert.Equal("{\"recordId\":\"x\"}", a.TargetStateJson);
-        var attempts = await Ledger.ListAttemptsAsync(a.DeliveryKey, 5);
+        var attempts = await Ledger.ListAttemptsAsync(_flow, a.DeliveryKey, 5);
         Assert.Equal(3, attempts[0].WorkBatch);
         Assert.Equal("{\"steps\":[]}", attempts[0].ResultJson);
 
@@ -375,14 +385,14 @@ public class SqlLedgerTests : IDisposable
     public async Task Step_progress_and_next_due_are_tracked_on_the_record()
     {
         var submission = Guid.NewGuid();
-        await Ledger.UpsertPendingAsync([Pending("s", submission)]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("s", submission)]);
         var claimed = await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now);
         var key = claimed[0].DeliveryKey;
-        await Ledger.SaveStepAsync(key, submission, "0:0:10", "{\"metadata\":{\"version\":\"3\"}}");
+        await Ledger.SaveStepAsync(_flow, key, submission, "0:0:10", "{\"metadata\":{\"version\":\"3\"}}");
         Assert.Equal("{\"metadata\":{\"version\":\"3\"}}", (await Ledger.GetRecordAsync(_flow, key))!.PendingStepJson);
 
         var next = Now + TimeSpan.FromMinutes(10);
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = key,
             Status = RecordStatus.Pending,
@@ -399,7 +409,7 @@ public class SqlLedgerTests : IDisposable
         _clock.Advance(TimeSpan.FromMinutes(11));
         var again = await Ledger.ClaimAsync(_flow, submission, "w", 10, TimeSpan.FromMinutes(5), Now);
         Assert.Single(again);
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = key,
             Status = RecordStatus.Delivered,
@@ -419,10 +429,10 @@ public class SqlLedgerTests : IDisposable
     public async Task Verify_reconcile_the_scope_watermark_the_records_waiting_to_be_planned_and_prune()
     {
         var s = Guid.NewGuid();
-        await Ledger.UpsertPendingAsync([Pending("a", s)]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", s)]);
         var claimed = await Ledger.ClaimAsync(_flow, s, "w", 10, TimeSpan.FromMinutes(1), Now);
         var key = claimed[0].DeliveryKey;
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = key,
             Status = RecordStatus.Delivered,
@@ -433,7 +443,7 @@ public class SqlLedgerTests : IDisposable
 
         var due = await Ledger.ListForVerifyAsync(_flow, null, 10);
         Assert.Single(due);
-        await Ledger.RecordVerifyAsync(key, VerifyOutcome.Drifted, 9, Now, requeue: true);
+        await Ledger.RecordVerifyAsync(_flow, key, VerifyOutcome.Drifted, 9, Now, requeue: true);
         var state = await Ledger.GetRecordAsync(_flow, key);
         Assert.Equal(VerifyOutcome.Drifted, state!.LastVerifyOutcome);
         Assert.Null(state.MetadataHash);
@@ -460,7 +470,7 @@ public class SqlLedgerTests : IDisposable
 
         for (var i = 0; i < 3; i++)
         {
-            await Ledger.CompleteAsync(new RecordCompletion
+            await Ledger.CompleteAsync(_flow, new RecordCompletion
             {
                 DeliveryKey = key,
                 Status = RecordStatus.Delivered,
@@ -470,7 +480,7 @@ public class SqlLedgerTests : IDisposable
 
         var pruned = await Ledger.PruneAttemptsAsync(Now - TimeSpan.FromDays(30));
         Assert.Equal(2, pruned);
-        Assert.Equal(2, (await Ledger.ListAttemptsAsync(key, 10)).Count);
+        Assert.Equal(2, (await Ledger.ListAttemptsAsync(_flow, key, 10)).Count);
     }
 
     [Fact]
@@ -487,12 +497,12 @@ public class SqlLedgerTests : IDisposable
             ("part-hour-inside", TimeSpan.FromHours(24) - TimeSpan.FromMinutes(10)),
             ("recent", TimeSpan.FromHours(1)),
         ];
-        await Ledger.UpsertPendingAsync(deliveries.Select(d => Pending(d.Name, s1)).ToList());
+        await Ledger.UpsertPendingAsync(_flow, deliveries.Select(d => Pending(d.Name, s1)).ToList());
         foreach (var (name, before) in deliveries)
         {
             _clock.Advance(now - before - Now);
             var key = DeliveryKey.Derive("test", [name]);
-            await Ledger.CompleteAsync(new RecordCompletion
+            await Ledger.CompleteAsync(_flow, new RecordCompletion
             {
                 DeliveryKey = key,
                 Status = RecordStatus.Delivered,
@@ -502,8 +512,8 @@ public class SqlLedgerTests : IDisposable
         }
 
         _clock.Advance(now - Now);
-        await Ledger.RecordVerifyAsync(DeliveryKey.Derive("test", ["recent"]), VerifyOutcome.Drifted, 2, Now, requeue: false);
-        await Ledger.UpsertPendingAsync([Pending("waiting", s1)]);
+        await Ledger.RecordVerifyAsync(_flow, DeliveryKey.Derive("test", ["recent"]), VerifyOutcome.Drifted, 2, Now, requeue: false);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("waiting", s1)]);
 
         var stats = await Ledger.StatsAsync(_flow, Now);
         Assert.Equal(5, stats.Total);
@@ -518,11 +528,11 @@ public class SqlLedgerTests : IDisposable
     public async Task Work_for_a_record_in_flight_queues_behind_the_delivery_and_its_completion_leaves_it_pending()
     {
         var s1 = Guid.NewGuid();
-        await Ledger.UpsertPendingAsync([Pending("a", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
         var claimed = (await Ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now)).Single();
 
         var s2 = Guid.NewGuid();
-        var staging = await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingDocumentRef = "7:0:10", WorkBatch = 7, PendingMetadataHash = "mh2", PendingSourceModifiedUtc = Now.AddDays(-1) }]);
+        var staging = await Ledger.UpsertPendingAsync(_flow, [Pending("a", s2) with { PendingDocumentRef = "7:0:10", WorkBatch = 7, PendingMetadataHash = "mh2", PendingSourceModifiedUtc = Now.AddDays(-1) }]);
         Assert.Equal(1, staging.Staged);
         Assert.Empty(staging.Refused);
         var queued = await Ledger.GetRecordAsync(_flow, claimed.DeliveryKey);
@@ -532,10 +542,10 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal("7:0:10", queued.PendingDocumentRef);
 
         // The in-flight try's step progress belongs to its own document and never reaches the newer work.
-        await Ledger.SaveStepAsync(claimed.DeliveryKey, s1, "0:0:10", "{\"metadata\":{\"version\":\"1\"}}");
+        await Ledger.SaveStepAsync(_flow, claimed.DeliveryKey, s1, "0:0:10", "{\"metadata\":{\"version\":\"1\"}}");
         Assert.Null((await Ledger.GetRecordAsync(_flow, claimed.DeliveryKey))!.PendingStepJson);
 
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = claimed.DeliveryKey,
             Status = RecordStatus.Delivered,
@@ -564,9 +574,9 @@ public class SqlLedgerTests : IDisposable
     {
         var s1 = Guid.NewGuid();
         var delivered = Now.AddDays(-1);
-        await Ledger.UpsertPendingAsync([Pending("a", s1) with { PendingSourceModifiedUtc = delivered, PendingPayloadModifiedUtc = delivered }]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1) with { PendingSourceModifiedUtc = delivered, PendingPayloadModifiedUtc = delivered }]);
         var claimed = (await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(5), Now)).Single();
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = claimed.DeliveryKey,
             Status = RecordStatus.Delivered,
@@ -579,22 +589,22 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal(delivered, (await Ledger.GetRecordAsync(_flow, key))!.PayloadModifiedUtc);
 
         var s2 = Guid.NewGuid();
-        var olderSource = await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(-1) }]);
+        var olderSource = await Ledger.UpsertPendingAsync(_flow, [Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(-1) }]);
         Assert.Equal(0, olderSource.Staged);
         Assert.Equal(key, Assert.Single(olderSource.Refused));
-        var olderPayload = await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(1), PendingPayloadModifiedUtc = delivered.AddHours(-1) }]);
+        var olderPayload = await Ledger.UpsertPendingAsync(_flow, [Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(1), PendingPayloadModifiedUtc = delivered.AddHours(-1) }]);
         Assert.Equal(key, Assert.Single(olderPayload.Refused));
         var untouched = await Ledger.GetRecordAsync(_flow, key);
         Assert.Equal(RecordStatus.Delivered, untouched!.Status);
         Assert.Equal(s1, untouched.LastSubmissionId);
 
         // Newer work is staged, and then stands against anything older than itself; work carrying no moment is never refused.
-        Assert.Equal(1, (await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(2) }])).Staged);
-        Assert.Single((await Ledger.UpsertPendingAsync([Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(1) }])).Refused);
-        Assert.Equal(1, (await Ledger.UpsertPendingAsync([Pending("a", s2)])).Staged);
+        Assert.Equal(1, (await Ledger.UpsertPendingAsync(_flow, [Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(2) }])).Staged);
+        Assert.Single((await Ledger.UpsertPendingAsync(_flow, [Pending("a", s2) with { PendingSourceModifiedUtc = delivered.AddHours(1) }])).Refused);
+        Assert.Equal(1, (await Ledger.UpsertPendingAsync(_flow, [Pending("a", s2)])).Staged);
 
         await Ledger.MarkSkippedAsync(_flow, [new SkippedRecord { DeliveryKey = key, Kind = SkipKind.Stale, Reason = "the drop carries an older version", SourceModifiedUtc = delivered.AddHours(-1) }], s2);
-        var stale = (await Ledger.ListAttemptsAsync(key, 10)).Single(a => a.Phase == AttemptPhases.Stale);
+        var stale = (await Ledger.ListAttemptsAsync(_flow, key, 10)).Single(a => a.Phase == AttemptPhases.Stale);
         Assert.Equal(AttemptOutcome.Skipped, stale.Outcome);
         Assert.Equal(s2, stale.SubmissionId);
         Assert.Null(stale.Error);
@@ -606,9 +616,9 @@ public class SqlLedgerTests : IDisposable
     public async Task A_rendered_skip_advances_a_delivered_record_and_leaves_queued_work_with_its_submission()
     {
         var s1 = Guid.NewGuid();
-        await Ledger.UpsertPendingAsync([Pending("a", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
         var claimed = (await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(5), Now)).Single();
-        await Ledger.CompleteAsync(new RecordCompletion
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
         {
             DeliveryKey = claimed.DeliveryKey,
             Status = RecordStatus.Delivered,
@@ -617,7 +627,7 @@ public class SqlLedgerTests : IDisposable
             Claimed = ClaimedWork.Of(claimed),
             Attempt = new AttemptRecord { DeliveryKey = claimed.DeliveryKey, SubmissionId = s1, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata+payload" },
         });
-        await Ledger.UpsertPendingAsync([Pending("b", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("b", s1) with { PendingSourceModifiedUtc = Now.AddDays(-2) }]);
         var a = claimed.DeliveryKey;
         var b = DeliveryKey.Derive("test", ["b"]);
 
@@ -639,6 +649,175 @@ public class SqlLedgerTests : IDisposable
         Assert.Equal(s1, queued!.LastSubmissionId);
         Assert.Equal(Now, queued.PendingSourceModifiedUtc);
         Assert.Equal(RecordStatus.Pending, queued.Status);
+    }
+
+    [Fact]
+    public async Task Two_flows_reading_the_same_row_keep_separate_records_and_histories()
+    {
+        // One ingestion row, two flows: the well log flow writes a WellLog, the other flow a Wellbore. The delivery key is
+        // the same for both, and each flow's record is its own.
+        var other = FlowId.Of("test-flow-wellbores");
+        var s1 = Guid.NewGuid();
+        var s2 = Guid.NewGuid();
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1)]);
+        await Ledger.UpsertPendingAsync(other, [Pending("a", s2) with { FlowId = other, MappingName = "Wellbore", TargetId = "dev:y:a", PendingMetadataHash = "mh-b" }]);
+        var key = DeliveryKey.Derive("test", ["a"]);
+
+        var mine = await Ledger.GetRecordAsync(_flow, key);
+        var theirs = await Ledger.GetRecordAsync(other, key);
+        Assert.Equal(("dev:x:a", "Thing", (Guid?)s1), (mine!.TargetId, mine.MappingName, mine.LastSubmissionId));
+        Assert.Equal(("dev:y:a", "Wellbore", (Guid?)s2), (theirs!.TargetId, theirs.MappingName, theirs.LastSubmissionId));
+        Assert.Equal("dev:x:a", mine.ClaimedTargetId);
+        Assert.Equal("dev:y:a", theirs.ClaimedTargetId);
+
+        // A claim, a lease and a completion in one flow leave the other flow's record exactly as it was.
+        var claimed = Assert.Single(await Ledger.ClaimAsync(_flow, null, "w1", 10, TimeSpan.FromMinutes(5), Now));
+        Assert.Equal(_flow, claimed.FlowId);
+        Assert.False(await Ledger.RenewLeaseAsync(other, key, claimed.LeaseOwner!, TimeSpan.FromMinutes(5), Now));
+        Assert.True(await Ledger.RenewLeaseAsync(_flow, key, claimed.LeaseOwner!, TimeSpan.FromMinutes(5), Now));
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
+        {
+            DeliveryKey = key,
+            Status = RecordStatus.Delivered,
+            Promote = true,
+            TargetVersion = 3,
+            TargetId = claimed.TargetId,
+            Claimed = ClaimedWork.Of(claimed),
+            Attempt = new AttemptRecord { DeliveryKey = key, SubmissionId = s1, Worker = "w1", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata+payload" },
+        });
+
+        Assert.Equal(RecordStatus.Delivered, (await Ledger.GetRecordAsync(_flow, key))!.Status);
+        var untouched = await Ledger.GetRecordAsync(other, key);
+        Assert.Equal(RecordStatus.Pending, untouched!.Status);
+        Assert.Null(untouched.MetadataHash);
+        Assert.Equal("mh-b", untouched.PendingMetadataHash);
+
+        // Each record's history is its own flow's attempts.
+        Assert.Equal(s1, Assert.Single(await Ledger.ListAttemptsAsync(_flow, key, 10)).SubmissionId);
+        Assert.Empty(await Ledger.ListAttemptsAsync(other, key, 10));
+        await Ledger.MarkRemovedAsync(other, [key], RemovalScope.Record, "gui:tahir", Now);
+        Assert.Equal("delete", Assert.Single(await Ledger.ListAttemptsAsync(other, key, 10)).Phase);
+        Assert.Single(await Ledger.ListAttemptsAsync(_flow, key, 10));
+        Assert.Equal(RecordStatus.Delivered, (await Ledger.GetRecordAsync(_flow, key))!.Status);
+        Assert.Equal(RecordStatus.Deleted, (await Ledger.GetRecordAsync(other, key))!.Status);
+
+        // Interventions, verify outcomes and statistics stay inside their flow.
+        Assert.Equal(1, await Ledger.ForceRedeliverAsync(_flow, [key], RedeliverScope.All, Now));
+        Assert.Empty(await Ledger.ListPlanRequestedAsync(other, null, 10));
+        await Ledger.RecordVerifyAsync(_flow, key, VerifyOutcome.Missing, null, Now, requeue: false);
+        Assert.Null((await Ledger.GetRecordAsync(other, key))!.LastVerifyOutcome);
+        Assert.Equal(1, (await Ledger.StatsAsync(_flow, Now)).Delivered);
+        Assert.Equal(1, (await Ledger.StatsAsync(other, Now)).Deleted);
+        Assert.Equal(key, Assert.Single(await Ledger.ListAsync(other, new RecordQuery())).DeliveryKey);
+
+        // Pruning keeps the latest attempt of each flow's record, not one attempt per key.
+        _clock.Advance(TimeSpan.FromDays(60));
+        Assert.Equal(0, await Ledger.PruneAttemptsAsync(Now));
+        Assert.Single(await Ledger.ListAttemptsAsync(_flow, key, 10));
+        Assert.Single(await Ledger.ListAttemptsAsync(other, key, 10));
+    }
+
+    [Fact]
+    public async Task Pruning_works_through_the_history_in_bounded_statements_and_keeps_each_record_s_last_attempt()
+    {
+        var submission = Guid.NewGuid();
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", submission), Pending("b", submission)]);
+        foreach (var name in new[] { "a", "b" })
+        {
+            var key = DeliveryKey.Derive("test", [name]);
+            for (var i = 0; i < 3; i++)
+            {
+                await Ledger.CompleteAsync(_flow, new RecordCompletion
+                {
+                    DeliveryKey = key,
+                    Status = RecordStatus.Pending,
+                    Attempt = new AttemptRecord { DeliveryKey = key, Worker = "w", StartedUtc = Now.AddDays(-90 + i), CompletedUtc = Now, Outcome = AttemptOutcome.Failed, Phase = "none" },
+                });
+            }
+        }
+
+        // Two at a time, four old attempts go in three statements; each record keeps its latest, however old it is.
+        var bounded = new OsduLedger(_db.CreateDbContext, _clock) { PruneBatch = 2 };
+        Assert.Equal(4, await bounded.PruneAttemptsAsync(Now));
+        foreach (var name in new[] { "a", "b" })
+        {
+            var kept = Assert.Single(await Ledger.ListAttemptsAsync(_flow, DeliveryKey.Derive("test", [name]), 10));
+            Assert.Equal(Now.AddDays(-88), kept.StartedUtc);
+        }
+
+        Assert.Equal(0, await bounded.PruneAttemptsAsync(Now));
+    }
+
+    [Fact]
+    public async Task A_flow_writes_only_its_own_records()
+    {
+        var other = FlowId.Of("test-flow-wellbores");
+        var submission = Guid.NewGuid();
+        var foreign = Pending("a", submission) with { FlowId = other };
+        var staged = await Assert.ThrowsAsync<ArgumentException>(() => Ledger.UpsertPendingAsync(_flow, [foreign]));
+        Assert.Contains("a flow writes only its own records", staged.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<ArgumentException>(() => Ledger.MarkHeldAsync(_flow, [foreign]));
+
+        // A completion names its record twice; the two must agree, or the attempt would land in another record's history.
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", submission), Pending("b", submission)]);
+        var a = DeliveryKey.Derive("test", ["a"]);
+        var b = DeliveryKey.Derive("test", ["b"]);
+        await Assert.ThrowsAsync<ArgumentException>(() => Ledger.CompleteAsync(_flow, new RecordCompletion
+        {
+            DeliveryKey = a,
+            Status = RecordStatus.Delivered,
+            Attempt = new AttemptRecord { DeliveryKey = b, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata" },
+        }));
+
+        // A record another flow never staged is not in that flow's ledger.
+        var missing = await Assert.ThrowsAsync<DeliveryException>(() => Ledger.CompleteAsync(other, new RecordCompletion
+        {
+            DeliveryKey = a,
+            Status = RecordStatus.Delivered,
+            Attempt = new AttemptRecord { DeliveryKey = a, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata" },
+        }));
+        Assert.Contains(other.ToString("D"), missing.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<DeliveryException>(() => Ledger.MarkRemovedAsync(other, [a], RemovalScope.Record, "gui:tahir", Now));
+        Assert.Empty(await Ledger.ListAttemptsAsync(_flow, a, 10));
+    }
+
+    [Fact]
+    public async Task An_osdu_id_belongs_to_the_flow_that_first_queued_a_document_for_it()
+    {
+        var other = FlowId.Of("test-flow-copy");
+        var s1 = Guid.NewGuid();
+        await Ledger.RegisterSubmissionAsync(Submission(s1));
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1)]);
+
+        // A second flow rendering the same OSDU id is refused and told whose it is; nothing is written for it.
+        var s2 = Guid.NewGuid();
+        var refused = await Ledger.UpsertPendingAsync(other, [Pending("a", s2) with { FlowId = other }]);
+        Assert.Equal(0, refused.Staged);
+        var conflict = Assert.Single(refused.Conflicts);
+        Assert.Equal((DeliveryKey.Derive("test", ["a"]), "dev:x:a", _flow, "test-flow"), (conflict.DeliveryKey, conflict.TargetId, conflict.OwnerFlowId, conflict.OwnerFlowName));
+        Assert.Contains("already claimed by flow 'test-flow'", conflict.Describe(), StringComparison.Ordinal);
+        Assert.Null(await Ledger.GetRecordAsync(other, conflict.DeliveryKey));
+
+        // Held with the conflict as its reason, the other flow's record carries no id: nothing it does reaches the owner's record.
+        await Ledger.MarkHeldAsync(other, [Pending("a", s2) with { FlowId = other, LastError = conflict.Describe() }]);
+        var held = await Ledger.GetRecordAsync(other, conflict.DeliveryKey);
+        Assert.Equal(RecordStatus.Held, held!.Status);
+        Assert.Null(held.TargetId);
+        Assert.Null(held.ClaimedTargetId);
+
+        // The owner restages its own id freely, and an id differing only by case is another OSDU record.
+        Assert.Equal(1, (await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1)])).Staged);
+        var cased = await Ledger.UpsertPendingAsync(other, [Pending("b", s2) with { FlowId = other, TargetId = "dev:x:A" }]);
+        Assert.Equal((1, 0), (cased.Staged, cased.Conflicts.Count));
+
+        // A record that was only ever held claims nothing, so the id it names can still be claimed by the flow that
+        // queues a document for it first; the held record then meets the conflict when its own work is staged.
+        await Ledger.MarkHeldAsync(other, [Pending("c", s2) with { FlowId = other, LastError = "no wellbore" }]);
+        Assert.Null((await Ledger.GetRecordAsync(other, DeliveryKey.Derive("test", ["c"])))!.ClaimedTargetId);
+        Assert.Equal(1, (await Ledger.UpsertPendingAsync(_flow, [Pending("c", s1)])).Staged);
+        var late = await Ledger.UpsertPendingAsync(other, [Pending("c", s2) with { FlowId = other }]);
+        Assert.Equal(_flow, Assert.Single(late.Conflicts).OwnerFlowId);
+        Assert.Equal("dev:x:c", (await Ledger.GetRecordAsync(_flow, DeliveryKey.Derive("test", ["c"])))!.ClaimedTargetId);
     }
 
     public void Dispose()

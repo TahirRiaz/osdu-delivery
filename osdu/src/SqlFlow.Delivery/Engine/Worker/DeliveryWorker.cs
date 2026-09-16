@@ -371,7 +371,7 @@ public sealed class DeliveryWorker
 
     private async Task FlushAsync(List<RecordCompletion> completions, List<DeliveryEvent> events)
     {
-        await _ledger.CompleteManyAsync(completions, CancellationToken.None).ConfigureAwait(false);
+        await _ledger.CompleteManyAsync(_flow.Id, completions, CancellationToken.None).ConfigureAwait(false);
         // The completion callback: everything a listener needs to trace each try, after the ledger rows are written.
         foreach (var evt in events)
         {
@@ -427,6 +427,18 @@ public sealed class DeliveryWorker
                 var (completion, evt, summary) = Settle(
                     state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null,
                     "no pending document on the record; release or redeliver it to plan it again", null, null);
+                await record(index, completion, evt, summary).ConfigureAwait(false);
+                continue;
+            }
+
+            // A flow writes only the OSDU ids its records claimed when their documents were queued; staging claims them,
+            // so an unclaimed id here means the record's state was changed outside the ledger, and nothing is sent.
+            if (!string.Equals(state.ClaimedTargetId, state.TargetId, StringComparison.Ordinal))
+            {
+                var (completion, evt, summary) = Settle(
+                    state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null,
+                    $"the record's OSDU id {state.TargetId} is not claimed by this flow (claimed: {state.ClaimedTargetId ?? "none"}), so nothing was sent; redeliver it to plan it again",
+                    null, null);
                 await record(index, completion, evt, summary).ConfigureAwait(false);
                 continue;
             }
@@ -820,7 +832,7 @@ public sealed class DeliveryWorker
         node[step] = ToNode(returned);
         var json = node.ToJsonString();
         reported[key.Value] = json;
-        await _ledger.SaveStepAsync(key, claimed.LastSubmissionId, reference, json, ct).ConfigureAwait(false);
+        await _ledger.SaveStepAsync(_flow.Id, key, claimed.LastSubmissionId, reference, json, ct).ConfigureAwait(false);
     }
 
     private async Task<WorkItem?> LoadItemAsync(RecordState record, CancellationToken ct)
@@ -869,7 +881,7 @@ public sealed class DeliveryWorker
     {
         try
         {
-            var released = await _ledger.ReleaseLeaseAsync(record.DeliveryKey, owner, countAttempt: false, _time.GetUtcNow().UtcDateTime, CancellationToken.None).ConfigureAwait(false);
+            var released = await _ledger.ReleaseLeaseAsync(_flow.Id, record.DeliveryKey, owner, countAttempt: false, _time.GetUtcNow().UtcDateTime, CancellationToken.None).ConfigureAwait(false);
             if (released)
             {
                 await _listener.OnEventAsync(new DeliveryEvent
@@ -932,7 +944,7 @@ public sealed class DeliveryWorker
             await Task.Delay(interval, _time, ct).ConfigureAwait(false);
             foreach (var key in keys)
             {
-                await _ledger.RenewLeaseAsync(key, owner, lease, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+                await _ledger.RenewLeaseAsync(_flow.Id, key, owner, lease, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
             }
         }
     }

@@ -232,20 +232,20 @@ public class SqlServerLedgerTests
             ("part-hour-inside", TimeSpan.FromHours(24) - TimeSpan.FromMinutes(10)),
             ("recent", TimeSpan.FromHours(1)),
         ];
-        await ledger.UpsertPendingAsync(deliveries.Select((d, i) => Work(d.Name, s1, $"0:{i * 10}:10", "mh", now.AddDays(-3))).ToList());
+        await ledger.UpsertPendingAsync(_flow, deliveries.Select((d, i) => Work(d.Name, s1, $"0:{i * 10}:10", "mh", now.AddDays(-3))).ToList());
         _clock.Advance(-TimeSpan.FromHours(26));
         var claimed = await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromDays(2), Now);
         Assert.Equal(4, claimed.Count);
         foreach (var (name, before) in deliveries)
         {
             _clock.Advance(now - before - Now);
-            await ledger.CompleteAsync(Completion(claimed.Single(r => r.SourceKey.EndsWith("/" + name, StringComparison.Ordinal)), s1, Now));
+            await ledger.CompleteAsync(_flow, Completion(claimed.Single(r => r.SourceKey.EndsWith("/" + name, StringComparison.Ordinal)), s1, Now));
         }
 
         _clock.Advance(now - Now);
         var recent = claimed.Single(r => r.SourceKey.EndsWith("/recent", StringComparison.Ordinal)).DeliveryKey;
-        await ledger.RecordVerifyAsync(recent, VerifyOutcome.Drifted, 2, Now, requeue: false);
-        await ledger.UpsertPendingAsync([Work("waiting", s1, "0:40:10", "mh", now.AddDays(-3))]);
+        await ledger.RecordVerifyAsync(_flow, recent, VerifyOutcome.Drifted, 2, Now, requeue: false);
+        await ledger.UpsertPendingAsync(_flow, [Work("waiting", s1, "0:40:10", "mh", now.AddDays(-3))]);
 
         var stats = await ledger.StatsAsync(_flow, Now);
         Assert.Equal(5, stats.Total);
@@ -271,7 +271,7 @@ public class SqlServerLedgerTests
         // The bounded shapes (a TOP per identity index under UNION ALL, a TOP inside a count) as SQL Server runs them.
         var ledger = await LedgerAsync(_clock);
         var s1 = Guid.NewGuid();
-        await ledger.UpsertPendingAsync(Enumerable.Range(0, 12).Select(i => Work($"well-{i:D2}", s1, $"0:{i * 10}:10", "mh", Now.AddDays(-1))).ToList());
+        await ledger.UpsertPendingAsync(_flow, Enumerable.Range(0, 12).Select(i => Work($"well-{i:D2}", s1, $"0:{i * 10}:10", "mh", Now.AddDays(-1))).ToList());
 
         var prefix = new RecordQuery { Search = _run + "/well-0" };
         Assert.Equal(new BoundedCount(10, Exact: true), await ledger.CountAsync(_flow, prefix, 11));
@@ -293,7 +293,7 @@ public class SqlServerLedgerTests
         // record within reach of the search: a queued version carries its file name, and is found once it is delivered.
         var staged = await ledger.ListAsync(_flow, new RecordQuery { Max = 20 });
         Assert.Empty(await ledger.ListAsync(_flow, new RecordQuery { Search = "welllog_2026", Max = 20 }));
-        await ledger.CompleteManyAsync(staged.Select(r => Completion(r, s1, Now)).ToList());
+        await ledger.CompleteManyAsync(_flow, staged.Select(r => Completion(r, s1, Now)).ToList());
         Assert.Equal(12, (await ledger.ListAsync(_flow, new RecordQuery { Search = "welllog_2026", Max = 20 })).Count);
     }
 
@@ -302,7 +302,7 @@ public class SqlServerLedgerTests
     {
         var ledger = await LedgerAsync(_clock);
         var s1 = Guid.NewGuid();
-        var first = await ledger.UpsertPendingAsync([Work("a", s1, "0:0:10", "mh-a1", Now.AddDays(-3)), Work("b", s1, "0:10:10", "mh-b1", Now.AddDays(-3))]);
+        var first = await ledger.UpsertPendingAsync(_flow, [Work("a", s1, "0:0:10", "mh-a1", Now.AddDays(-3)), Work("b", s1, "0:10:10", "mh-b1", Now.AddDays(-3))]);
         Assert.Equal(2, first.Staged);
         Assert.Empty(first.Refused);
         var claimed = await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now);
@@ -312,7 +312,7 @@ public class SqlServerLedgerTests
 
         // One call carries newer work for a record in flight and older work for another: the first queues, the second is named.
         var s2 = Guid.NewGuid();
-        var second = await ledger.UpsertPendingAsync([Work("a", s2, "0:0:12", "mh-a2", Now.AddDays(-1)), Work("b", s2, "0:12:10", "mh-b0", Now.AddDays(-4))]);
+        var second = await ledger.UpsertPendingAsync(_flow, [Work("a", s2, "0:0:12", "mh-a2", Now.AddDays(-1)), Work("b", s2, "0:12:10", "mh-b0", Now.AddDays(-4))]);
         Assert.Equal(1, second.Staged);
         Assert.Equal(b.DeliveryKey, Assert.Single(second.Refused));
         var queued = await ledger.GetRecordAsync(_flow, a.DeliveryKey);
@@ -324,11 +324,11 @@ public class SqlServerLedgerTests
         Assert.Equal(s1, (await ledger.GetRecordAsync(_flow, b.DeliveryKey))!.LastSubmissionId);
 
         // The in-flight try's steps never reach the newer work.
-        await ledger.SaveStepAsync(a.DeliveryKey, s1, "0:0:10", "{\"metadata\":{\"version\":\"1\"}}");
+        await ledger.SaveStepAsync(_flow, a.DeliveryKey, s1, "0:0:10", "{\"metadata\":{\"version\":\"1\"}}");
         Assert.Null((await ledger.GetRecordAsync(_flow, a.DeliveryKey))!.PendingStepJson);
 
         // Two completions take the set-based statement: a was superseded while in flight, b was not.
-        await ledger.CompleteManyAsync([Completion(a, s1, Now), Completion(b, s1, Now)]);
+        await ledger.CompleteManyAsync(_flow, [Completion(a, s1, Now), Completion(b, s1, Now)]);
         var settledA = await ledger.GetRecordAsync(_flow, a.DeliveryKey);
         Assert.Equal(RecordStatus.Pending, settledA!.Status);
         Assert.Null(settledA.LeaseOwner);
@@ -341,7 +341,7 @@ public class SqlServerLedgerTests
         Assert.Equal("0:0:12", settledA.PendingDocumentRef);
         // The delivered version's origin is the row the document was built from, and the attempt names it too.
         Assert.Equal("welllog_20260901.csv", settledA.SourceFileName);
-        Assert.Equal("welllog_20260901.csv", (await ledger.ListAttemptsAsync(a.DeliveryKey, 5))[0].SourceFileName);
+        Assert.Equal("welllog_20260901.csv", (await ledger.ListAttemptsAsync(_flow, a.DeliveryKey, 5))[0].SourceFileName);
         var settledB = await ledger.GetRecordAsync(_flow, b.DeliveryKey);
         Assert.Equal(RecordStatus.Delivered, settledB!.Status);
         Assert.Equal("mh-b1", settledB.MetadataHash);
@@ -351,13 +351,13 @@ public class SqlServerLedgerTests
 
         // The queued work lands without anything sent (the final check found it held): promoted, delivery time untouched.
         var delivered = Now;
-        await ledger.UpsertPendingAsync([Work("c", s2, "0:22:10", "mh-c1", Now)]);
+        await ledger.UpsertPendingAsync(_flow, [Work("c", s2, "0:22:10", "mh-c1", Now)]);
         _clock.Advance(TimeSpan.FromMinutes(1));
         var next = await ledger.ClaimAsync(_flow, s2, "w2", 10, TimeSpan.FromMinutes(5), Now);
         Assert.Equal(2, next.Count);
         var a2 = next.Single(r => r.SourceKey.EndsWith("/a", StringComparison.Ordinal));
         var c = next.Single(r => r.SourceKey.EndsWith("/c", StringComparison.Ordinal));
-        await ledger.CompleteManyAsync([Completion(a2, s2, Now, nothingSent: true), Completion(c, s2, Now)]);
+        await ledger.CompleteManyAsync(_flow, [Completion(a2, s2, Now, nothingSent: true), Completion(c, s2, Now)]);
 
         var landedA = await ledger.GetRecordAsync(_flow, a.DeliveryKey);
         Assert.Equal(RecordStatus.Delivered, landedA!.Status);
@@ -372,12 +372,137 @@ public class SqlServerLedgerTests
     }
 
     [SkippableFact]
+    public async Task Two_flows_stage_and_complete_the_same_row_apart_and_an_osdu_id_keeps_one_owner_on_sql_server()
+    {
+        var ledger = await LedgerAsync(_clock);
+        var other = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+        var s1 = Guid.NewGuid();
+        var s2 = Guid.NewGuid();
+        await ledger.RegisterSubmissionAsync(new SubmissionState
+        {
+            SubmissionId = s1, FlowId = _flow, FlowName = "welllog-" + _run, MappingReference = "Thing@1.0.0", RenderContext = "{}",
+        });
+
+        // The same two rows in two flows, rendered to different kinds: four records, staged and completed by the bulk path.
+        var mine = await ledger.UpsertPendingAsync(_flow, [Work("a", s1, "0:0:10", "mh-a", Now.AddDays(-1)), Work("b", s1, "0:10:10", "mh-b", Now.AddDays(-1))]);
+        var theirs = await ledger.UpsertPendingAsync(other, [
+            Work("a", s2, "0:0:10", "mh-a-other", Now.AddDays(-1)) with { FlowId = other, TargetId = "dev:y:" + _run + "a" },
+            Work("b", s2, "0:10:10", "mh-b-other", Now.AddDays(-1)) with { FlowId = other, TargetId = "dev:y:" + _run + "b" },
+        ]);
+        Assert.Equal((2, 2), (mine.Staged, theirs.Staged));
+        Assert.Empty(theirs.Conflicts);
+
+        var claimed = await ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now);
+        Assert.Equal(2, claimed.Count);
+        await ledger.CompleteManyAsync(_flow, claimed.Select(r => Completion(r, s1, Now)).ToList());
+        foreach (var record in claimed)
+        {
+            Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(_flow, record.DeliveryKey))!.Status);
+            var untouched = await ledger.GetRecordAsync(other, record.DeliveryKey);
+            Assert.Equal((RecordStatus.Pending, (string?)null), (untouched!.Status, untouched.MetadataHash));
+            Assert.Single(await ledger.ListAttemptsAsync(_flow, record.DeliveryKey, 5));
+            Assert.Empty(await ledger.ListAttemptsAsync(other, record.DeliveryKey, 5));
+            Assert.Equal(2, (await ledger.LookupAsync(record.DeliveryKey.Value.ToString(), 10)).Count);
+        }
+
+        // A third flow rendering the first flow's ids is refused, record by record, with the owner named; a flow restaging
+        // its own ids is not, and neither is the second flow, whose records keep the ids they were first given.
+        var third = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+        var refused = await ledger.UpsertPendingAsync(third, [
+            Work("a", s2, "0:0:10", "mh", Now) with { FlowId = third },
+            Work("c", s2, "0:10:10", "mh", Now) with { FlowId = third, TargetId = "dev:z:" + _run + "c" },
+        ]);
+        Assert.Equal(1, refused.Staged);
+        var conflict = Assert.Single(refused.Conflicts);
+        Assert.Equal(("dev:x:" + _run + "a", _flow, "welllog-" + _run), (conflict.TargetId, conflict.OwnerFlowId, conflict.OwnerFlowName));
+        Assert.Null(await ledger.GetRecordAsync(third, conflict.DeliveryKey));
+        Assert.Equal(2, (await ledger.UpsertPendingAsync(_flow, [Work("a", s1, "0:0:10", "mh-a", Now), Work("b", s1, "0:10:10", "mh-b", Now)])).Staged);
+        var again = await ledger.UpsertPendingAsync(other, [Work("a", s2, "0:0:10", "mh-a-other", Now) with { FlowId = other }]);
+        Assert.Equal((1, 0), (again.Staged, again.Conflicts.Count));
+        Assert.Equal("dev:y:" + _run + "a", (await ledger.GetRecordAsync(other, conflict.DeliveryKey))!.ClaimedTargetId);
+
+        // An id that differs only by case is another OSDU record, and the database holds a claim to one owner outright.
+        var cased = await ledger.UpsertPendingAsync(third, [Work("d", s2, "0:0:10", "mh", Now) with { FlowId = third, TargetId = "DEV:X:" + _run + "a" }]);
+        Assert.Equal((1, 0), (cased.Staged, cased.Conflicts.Count));
+        await using var db = Database();
+        var claimedKey = DeliveryKey.Derive("sqlserver-ledger-test", [_run, "c"]).Value;
+        await Assert.ThrowsAsync<DbUpdateException>(async () =>
+        {
+            var copy = await db.DeliveryRecords.AsNoTracking().SingleAsync(r => r.FlowId == third && r.DeliveryKey == claimedKey);
+            db.DeliveryRecords.Add(new DeliveryRecord
+            {
+                FlowId = Guid.NewGuid(), DeliveryKey = copy.DeliveryKey, SourceKey = copy.SourceKey, MappingName = copy.MappingName,
+                Status = "pending", TargetId = copy.TargetId, ClaimedTargetId = copy.ClaimedTargetId, CreatedUtc = Now, UpdatedUtc = Now,
+            });
+            await db.SaveChangesAsync();
+        });
+    }
+
+    [SkippableFact]
+    public async Task Pruning_deletes_in_bounded_statements_and_keeps_each_flow_s_last_attempt_on_sql_server()
+    {
+        // The attempts are dated before anything else the shared database holds, so the prune reaches this test's alone.
+        var ledger = await LedgerAsync(_clock);
+        var other = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+        var s1 = Guid.NewGuid();
+        await ledger.UpsertPendingAsync(_flow, [Work("old", s1, "0:0:10", "mh", Now)]);
+        await ledger.UpsertPendingAsync(other, [Work("old", s1, "0:0:10", "mh", Now) with { FlowId = other, TargetId = "dev:y:" + _run + "old" }]);
+        var key = DeliveryKey.Derive("sqlserver-ledger-test", [_run, "old"]);
+        var ancient = new DateTime(1990, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        foreach (var flow in new[] { _flow, other })
+        {
+            for (var i = 0; i < 3; i++)
+            {
+                await ledger.CompleteAsync(flow, new RecordCompletion
+                {
+                    DeliveryKey = key,
+                    Status = RecordStatus.Pending,
+                    Attempt = new AttemptRecord { DeliveryKey = key, Worker = "w", StartedUtc = ancient.AddDays(i), CompletedUtc = ancient.AddDays(i), Outcome = AttemptOutcome.Failed, Phase = "none" },
+                });
+            }
+        }
+
+        var bounded = new OsduLedger(Database, _clock) { PruneBatch = 3 };
+        Assert.Equal(4, await bounded.PruneAttemptsAsync(ancient.AddYears(1)));
+        Assert.Equal(ancient.AddDays(2), Assert.Single(await ledger.ListAttemptsAsync(_flow, key, 10)).StartedUtc);
+        Assert.Equal(ancient.AddDays(2), Assert.Single(await ledger.ListAttemptsAsync(other, key, 10)).StartedUtc);
+    }
+
+    [SkippableFact]
+    public async Task Flows_racing_for_one_osdu_id_leave_one_owner_and_name_it_to_the_other_on_sql_server()
+    {
+        // Two intakes of different flows stage the same new ids at the same moment. Whichever order the database puts them
+        // in, one flow owns each id, the other is told whose it is, and neither intake fails.
+        var ledger = await LedgerAsync(_clock);
+        var names = Enumerable.Range(0, 40).Select(i => $"race-{i:D2}").ToList();
+        for (var round = 0; round < 5; round++)
+        {
+            var flows = new[] { FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N")), FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N")) };
+            var prefix = $"{round}-";
+            var results = await Task.WhenAll(flows.Select(flow => Task.Run(() => ledger.UpsertPendingAsync(
+                flow,
+                names.Select((n, i) => Work(prefix + n, Guid.NewGuid(), $"0:{i * 10}:10", "mh", Now) with { FlowId = flow }).ToList()))));
+
+            Assert.Equal(names.Count, results.Sum(r => r.Staged));
+            Assert.Equal(names.Count, results.Sum(r => r.Conflicts.Count));
+            foreach (var (result, index) in results.Select((r, i) => (r, i)))
+            {
+                Assert.All(result.Conflicts, c => Assert.Equal(flows[1 - index], c.OwnerFlowId));
+            }
+
+            await using var db = Database();
+            var ids = names.Select(n => "dev:x:" + _run + prefix + n).ToList();
+            Assert.Equal(names.Count, await db.DeliveryRecords.CountAsync(r => r.ClaimedTargetId != null && ids.Contains(r.ClaimedTargetId)));
+        }
+    }
+
+    [SkippableFact]
     public async Task The_scope_watermark_and_the_records_waiting_to_be_planned_round_trip_on_sql_server()
     {
         var ledger = await LedgerAsync(_clock);
         var scope = "logSource=" + _run;
         var submission = Guid.NewGuid();
-        await ledger.UpsertPendingAsync([Work("w1", submission, "0:0:10", "mh", Now.AddDays(-1))]);
+        await ledger.UpsertPendingAsync(_flow, [Work("w1", submission, "0:0:10", "mh", Now.AddDays(-1))]);
         var key = DeliveryKey.Derive("sqlserver-ledger-test", [_run, "w1"]);
 
         await ledger.SetWatermarkAsync(new SourceWatermark(_flow, scope, Now, submission, Now, "ctx-1"));

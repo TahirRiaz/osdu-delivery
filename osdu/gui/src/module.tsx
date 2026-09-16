@@ -139,7 +139,7 @@ export const osduDeliveryModule: GuiModule = {
   id: "osdu-delivery",
   routes: [
     { path: "/delivery", component: DeliveryOverviewPage },
-    { path: "/delivery/records/:key", component: DeliveryRecordPage },
+    { path: "/delivery/records/:flowId/:key", component: DeliveryRecordPage },
     { path: "/delivery/submissions/:submissionId", component: DeliverySubmissionPage },
     { path: "/delivery/activity", component: DeliveryActivityPage },
     { path: "/delivery/documents", component: DeliveryDocumentsPage },

@@ -136,7 +136,7 @@ public sealed class Verifier
 
             if (result.Outcome != VerifyOutcome.Error)
             {
-                await _ledger.RecordVerifyAsync(record.DeliveryKey, result.Outcome, result.ObservedVersion, _time.GetUtcNow().UtcDateTime, reconciling, CancellationToken.None).ConfigureAwait(false);
+                await _ledger.RecordVerifyAsync(_flow.Id, record.DeliveryKey, result.Outcome, result.ObservedVersion, _time.GetUtcNow().UtcDateTime, reconciling, CancellationToken.None).ConfigureAwait(false);
             }
 
             if (result.Outcome is VerifyOutcome.Drifted or VerifyOutcome.Missing)

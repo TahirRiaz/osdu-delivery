@@ -12,7 +12,8 @@ namespace SqlFlow.Delivery.Ledger;
 /// drained batch with their attempts), done as one bulk copy into a staging table plus set-based statements when the
 /// module database is SQL Server (design.md section 16.2). Every other provider takes the entity path in
 /// <see cref="OsduLedger"/>, which is the same write row by row. Both run under the context's retrying execution
-/// strategy inside one transaction, so a batch is staged whole or not at all.
+/// strategy inside one transaction, so a batch is staged whole or not at all. Both write one flow's records: a record is
+/// its flow and its delivery key together, and every statement matches on both.
 /// </summary>
 internal static class SqlServerLedgerBulk
 {
@@ -22,12 +23,18 @@ internal static class SqlServerLedgerBulk
 
     private const int BulkTimeoutSeconds = 600;
 
+    /// <summary>The unique index through which the database refuses a second flow's claim on an OSDU id.</summary>
+    private const string ClaimIndex = "IX_Record_ClaimedTargetId";
+
+    /// <summary>How many times staging is tried when a concurrent intake of another flow got there first.</summary>
+    private const int ClaimRaceAttempts = 3;
+
     public static bool Applies(OsduDbContext db) => string.Equals(db.Database.ProviderName, ProviderName, StringComparison.Ordinal);
 
     private const string PendingStageSql = """
         CREATE TABLE #PendingStage (
-            [DeliveryKey] uniqueidentifier NOT NULL PRIMARY KEY,
             [FlowId] uniqueidentifier NOT NULL,
+            [DeliveryKey] uniqueidentifier NOT NULL,
             [SourceKey] nvarchar(400) NOT NULL,
             [SourceKeyJson] nvarchar(2000) NULL,
             [Label] nvarchar(400) NULL,
@@ -48,7 +55,8 @@ internal static class SqlServerLedgerBulk
             [PendingPayloadLocation] nvarchar(2000) NULL,
             [PendingMetadata] bit NOT NULL,
             [PendingPayload] bit NOT NULL,
-            [CacheSetId] bigint NULL);
+            [CacheSetId] bigint NULL,
+            PRIMARY KEY ([FlowId], [DeliveryKey]));
         """;
 
     // Work older than what the record already holds, delivered or queued, is taken out of the stage and named before
@@ -58,7 +66,7 @@ internal static class SqlServerLedgerBulk
         DELETE s
         OUTPUT deleted.[DeliveryKey]
         FROM #PendingStage AS s
-        INNER JOIN [osdu].[Record] AS t WITH (UPDLOCK, HOLDLOCK) ON t.[DeliveryKey] = s.[DeliveryKey]
+        INNER JOIN [osdu].[Record] AS t WITH (UPDLOCK, HOLDLOCK) ON t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
         CROSS APPLY (SELECT CASE WHEN t.[PendingDocumentRef] IS NOT NULL AND t.[Status] IN (N'pending', N'delivering') THEN 1 ELSE 0 END AS [Queued]) AS q
         WHERE (s.[PendingSourceModifiedUtc] IS NOT NULL
                 AND (s.[PendingSourceModifiedUtc] < t.[SourceModifiedUtc]
@@ -68,16 +76,46 @@ internal static class SqlServerLedgerBulk
                      OR (q.[Queued] = 1 AND t.[PendingPayload] = 1 AND s.[PendingPayloadModifiedUtc] < t.[PendingPayloadModifiedUtc])));
         """;
 
+    // A record keeps the OSDU id it was first given, so that id, not the one this work was rendered with, is the one the
+    // work is delivered to and the one the claim check below compares.
+    private const string CarriedTargetSql = """
+        UPDATE s SET [TargetId] = t.[TargetId]
+        FROM #PendingStage AS s
+        INNER JOIN [osdu].[Record] AS t ON t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
+        WHERE t.[TargetId] IS NOT NULL;
+        """;
+
+    // Work for an OSDU id another flow's record has claimed is taken out of the stage and named, with the owning flow
+    // and its name as its last submission recorded it. Ids compare exactly (the claim column's binary collation), and
+    // each stage row is one seek of the filtered claim index, whose predicate the query repeats so the index always
+    // applies. The unique index on the claim is what settles a race between two flows' intakes; this read names the owner.
+    private const string RefuseClaimedSql = """
+        DELETE s
+        OUTPUT deleted.[DeliveryKey], deleted.[TargetId], o.[FlowId], o.[FlowName]
+        FROM #PendingStage AS s
+        CROSS APPLY (
+            SELECT TOP (1) t.[FlowId], sub.[FlowName]
+            FROM [osdu].[Record] AS t
+            LEFT JOIN [osdu].[Submission] AS sub ON sub.[SubmissionId] = t.[LastSubmissionId]
+            WHERE t.[ClaimedTargetId] IS NOT NULL
+              AND t.[ClaimedTargetId] = s.[TargetId] COLLATE Latin1_General_100_BIN2
+              AND t.[FlowId] <> s.[FlowId]) AS o
+        WHERE s.[TargetId] IS NOT NULL;
+        """;
+
     // A record being delivered right now keeps its status, lease, retry count and last error: the new work queues
     // behind the delivery, whose completion leaves it pending. Every right-hand side reads the row as it was. Staging
-    // answers a request to plan the record again, so the request is cleared.
+    // answers a request to plan the record again, so the request is cleared, and claims the record's OSDU id for its
+    // flow the first time it queues a document.
     private const string PendingMergeSql = """
         MERGE [osdu].[Record] WITH (HOLDLOCK) AS t
-        USING #PendingStage AS s ON t.[DeliveryKey] = s.[DeliveryKey]
+        USING #PendingStage AS s ON t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
         WHEN MATCHED THEN
             UPDATE SET
                 [SourceKey] = s.[SourceKey], [SourceKeyJson] = COALESCE(s.[SourceKeyJson], t.[SourceKeyJson]), [Label] = s.[Label], [MappingName] = s.[MappingName],
-                [TargetId] = COALESCE(t.[TargetId], s.[TargetId]), [LastSubmissionId] = s.[LastSubmissionId], [NextAttemptUtc] = NULL,
+                [TargetId] = COALESCE(t.[TargetId], s.[TargetId]),
+                [ClaimedTargetId] = COALESCE(t.[ClaimedTargetId], s.[TargetId] COLLATE Latin1_General_100_BIN2),
+                [LastSubmissionId] = s.[LastSubmissionId], [NextAttemptUtc] = NULL,
                 [Status] = CASE WHEN t.[Status] = N'delivering' AND t.[LeaseExpiresUtc] > @now THEN t.[Status] ELSE N'pending' END,
                 [AttemptCount] = CASE WHEN t.[Status] = N'delivering' AND t.[LeaseExpiresUtc] > @now THEN t.[AttemptCount] ELSE 0 END,
                 [LastError] = CASE WHEN t.[Status] = N'delivering' AND t.[LeaseExpiresUtc] > @now THEN t.[LastError] ELSE NULL END,
@@ -93,12 +131,12 @@ internal static class SqlServerLedgerBulk
                 [PendingPayloadLocation] = s.[PendingPayloadLocation], [PendingMetadata] = s.[PendingMetadata], [PendingPayload] = s.[PendingPayload],
                 [CacheSetId] = s.[CacheSetId], [Blocked] = 0, [PlanRequestedUtc] = NULL, [UpdatedUtc] = @now
         WHEN NOT MATCHED BY TARGET THEN
-            INSERT ([DeliveryKey], [FlowId], [SourceKey], [SourceKeyJson], [Label], [MappingName], [TargetId], [Status], [LastSubmissionId], [AttemptCount],
+            INSERT ([DeliveryKey], [FlowId], [SourceKey], [SourceKeyJson], [Label], [MappingName], [TargetId], [ClaimedTargetId], [Status], [LastSubmissionId], [AttemptCount],
                     [PendingDocumentRef], [WorkBatch], [PendingRenderContext], [PendingSourceFingerprint], [PendingSourceModifiedUtc],
                     [PendingSourceFileName], [PendingSourceRowNumber], [PendingSourceUpdatedUtc],
                     [PendingMetadataHash], [PendingPayloadHash], [PendingPayloadModifiedUtc],
                     [PendingPayloadLocation], [PendingMetadata], [PendingPayload], [CacheSetId], [Blocked], [CreatedUtc], [UpdatedUtc])
-            VALUES (s.[DeliveryKey], s.[FlowId], s.[SourceKey], s.[SourceKeyJson], s.[Label], s.[MappingName], s.[TargetId], N'pending', s.[LastSubmissionId], 0,
+            VALUES (s.[DeliveryKey], s.[FlowId], s.[SourceKey], s.[SourceKeyJson], s.[Label], s.[MappingName], s.[TargetId], s.[TargetId] COLLATE Latin1_General_100_BIN2, N'pending', s.[LastSubmissionId], 0,
                     s.[PendingDocumentRef], s.[WorkBatch], s.[PendingRenderContext], s.[PendingSourceFingerprint], s.[PendingSourceModifiedUtc],
                     s.[PendingSourceFileName], s.[PendingSourceRowNumber], s.[PendingSourceUpdatedUtc],
                     s.[PendingMetadataHash], s.[PendingPayloadHash], s.[PendingPayloadModifiedUtc],
@@ -191,7 +229,7 @@ internal static class SqlServerLedgerBulk
             [PendingPayloadLocation] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN NULL ELSE r.[PendingPayloadLocation] END,
             [AttemptCount] = CASE WHEN s.[Promote] = 1 OR x.[Superseded] = 1 THEN 0 ELSE r.[AttemptCount] END
         FROM [osdu].[Record] AS r
-        INNER JOIN #CompletionStage AS s ON r.[DeliveryKey] = s.[DeliveryKey]
+        INNER JOIN #CompletionStage AS s ON r.[FlowId] = @flowId AND r.[DeliveryKey] = s.[DeliveryKey]
         CROSS APPLY (SELECT CASE
             WHEN s.[HasClaim] = 1 AND r.[PendingDocumentRef] IS NOT NULL
                  AND (r.[PendingDocumentRef] <> s.[ClaimDocumentRef]
@@ -201,24 +239,54 @@ internal static class SqlServerLedgerBulk
             THEN 1 ELSE 0 END AS [Superseded]) AS x;
         """;
 
-    public static Task<PendingStaging> UpsertPendingAsync(OsduDbContext db, IReadOnlyList<RecordState> records, DateTime now, CancellationToken ct)
-        => InTransactionAsync(db, async (connection, transaction) =>
+    /// <summary>
+    /// Stages one flow's pending work. When another flow's intake claims one of the same OSDU ids between this staging's
+    /// claim check and its write, the database refuses the write through the claim's unique index and nothing is kept;
+    /// the staging is then run again, and its check now names the id as the other flow's. A staging the database chose
+    /// as a deadlock victim while intakes of several flows contended is rolled back whole, and is run again the same way.
+    /// </summary>
+    public static async Task<PendingStaging> UpsertPendingAsync(OsduDbContext db, Guid flowId, IReadOnlyList<RecordState> records, DateTime now, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
         {
-            await ExecuteAsync(connection, transaction, PendingStageSql, ct).ConfigureAwait(false);
-            using (var table = PendingTable(records))
+            try
             {
-                await BulkCopyAsync(connection, transaction, "#PendingStage", table, ct).ConfigureAwait(false);
+                return await InTransactionAsync(db, (connection, transaction) => StagePendingAsync(connection, transaction, flowId, records, now, ct), ct).ConfigureAwait(false);
             }
+            catch (SqlException ex) when (IsContention(ex) && attempt < ClaimRaceAttempts)
+            {
+                // Another flow's staging committed first; the next try reads what it left.
+            }
+        }
+    }
 
-            var refused = await KeysAsync(connection, transaction, RefuseOlderSql, ct).ConfigureAwait(false);
-            var staged = await ScalarAsync(connection, transaction, PendingMergeSql, now, ct).ConfigureAwait(false);
-            return new PendingStaging(staged, refused);
-        }, ct);
+    private static async Task<PendingStaging> StagePendingAsync(
+        SqlConnection connection, SqlTransaction transaction, Guid flowId, IReadOnlyList<RecordState> records, DateTime now, CancellationToken ct)
+    {
+        await ExecuteAsync(connection, transaction, PendingStageSql, ct).ConfigureAwait(false);
+        using (var table = PendingTable(flowId, records))
+        {
+            await BulkCopyAsync(connection, transaction, "#PendingStage", table, ct).ConfigureAwait(false);
+        }
 
-    public static Task<int> CompleteManyAsync(OsduDbContext db, IReadOnlyList<RecordCompletion> completions, DateTime now, CancellationToken ct)
+        var refused = await KeysAsync(connection, transaction, RefuseOlderSql, ct).ConfigureAwait(false);
+        await ExecuteAsync(connection, transaction, CarriedTargetSql, ct).ConfigureAwait(false);
+        var conflicts = await ConflictsAsync(connection, transaction, ct).ConfigureAwait(false);
+        var staged = await ScalarAsync(connection, transaction, PendingMergeSql, now, flowId, ct).ConfigureAwait(false);
+        return new PendingStaging(staged, refused, conflicts);
+    }
+
+    /// <summary>
+    /// Whether a staging failed only because another intake got there first: the claim's unique index refused an id
+    /// another flow's record claimed meanwhile (2601, 2627), or the database ended a deadlock by rolling this one back (1205).
+    /// </summary>
+    private static bool IsContention(SqlException ex)
+        => ex.Errors.Cast<SqlError>().Any(e => e.Number == 1205 || (e.Number is 2601 or 2627 && e.Message.Contains(ClaimIndex, StringComparison.Ordinal)));
+
+    public static Task<int> CompleteManyAsync(OsduDbContext db, Guid flowId, IReadOnlyList<RecordCompletion> completions, DateTime now, CancellationToken ct)
         => InTransactionAsync(db, async (connection, transaction) =>
         {
-            using (var attempts = AttemptTable(completions))
+            using (var attempts = AttemptTable(flowId, completions))
             {
                 await BulkCopyAsync(connection, transaction, "[osdu].[Attempt]", attempts, ct).ConfigureAwait(false);
             }
@@ -229,7 +297,7 @@ internal static class SqlServerLedgerBulk
                 await BulkCopyAsync(connection, transaction, "#CompletionStage", stage, ct).ConfigureAwait(false);
             }
 
-            return await ScalarAsync(connection, transaction, CompletionUpdateSql + "SELECT @@ROWCOUNT;", now, ct).ConfigureAwait(false);
+            return await ScalarAsync(connection, transaction, CompletionUpdateSql + "SELECT @@ROWCOUNT;", now, flowId, ct).ConfigureAwait(false);
         }, ct);
 
     private static async Task<T> InTransactionAsync<T>(OsduDbContext db, Func<SqlConnection, SqlTransaction, Task<T>> work, CancellationToken ct)
@@ -280,15 +348,37 @@ internal static class SqlServerLedgerBulk
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    private static async Task<int> ScalarAsync(SqlConnection connection, SqlTransaction transaction, string sql, DateTime now, CancellationToken ct)
+    private static async Task<int> ScalarAsync(SqlConnection connection, SqlTransaction transaction, string sql, DateTime now, Guid flowId, CancellationToken ct)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = sql;
         command.CommandTimeout = BulkTimeoutSeconds;
         command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
+        command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
         var result = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
         return result is int i ? i : Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>Runs the claim check and reads back the records it took out of the stage, with the flow that owns each id.</summary>
+    private static async Task<IReadOnlyList<TargetIdConflict>> ConflictsAsync(SqlConnection connection, SqlTransaction transaction, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = RefuseClaimedSql;
+        command.CommandTimeout = BulkTimeoutSeconds;
+        var conflicts = new List<TargetIdConflict>();
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            conflicts.Add(new TargetIdConflict(
+                new DeliveryKey(reader.GetGuid(0)),
+                reader.GetString(1),
+                reader.GetGuid(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3)));
+        }
+
+        return conflicts;
     }
 
     /// <summary>Runs a statement whose result set is one delivery key per row, and reads the keys back.</summary>
@@ -308,7 +398,7 @@ internal static class SqlServerLedgerBulk
         return keys;
     }
 
-    private static DataTable PendingTable(IReadOnlyList<RecordState> records)
+    private static DataTable PendingTable(Guid flowId, IReadOnlyList<RecordState> records)
     {
         var table = new DataTable();
         table.Columns.Add("DeliveryKey", typeof(Guid));
@@ -337,7 +427,7 @@ internal static class SqlServerLedgerBulk
         foreach (var r in records)
         {
             table.Rows.Add(
-                r.DeliveryKey.Value, r.FlowId, Truncate(r.SourceKey, 400), Value(Truncate(r.SourceKeyJson, 2000)), Value(Truncate(r.Label, 400)), r.MappingName, Value(r.TargetId),
+                r.DeliveryKey.Value, flowId, Truncate(r.SourceKey, 400), Value(Truncate(r.SourceKeyJson, 2000)), Value(Truncate(r.Label, 400)), r.MappingName, Value(r.TargetId),
                 Value(r.LastSubmissionId), Value(r.PendingDocumentRef), Value(r.WorkBatch), Value(r.PendingRenderContext),
                 Value(r.PendingSourceFingerprint), Value(r.PendingSourceModifiedUtc),
                 Value(Truncate(r.PendingSourceFileName, DeliveryModel.MaxSourceFileNameLength)), Value(r.PendingSourceRowNumber), Value(r.PendingSourceUpdatedUtc),
@@ -348,9 +438,10 @@ internal static class SqlServerLedgerBulk
         return table;
     }
 
-    private static DataTable AttemptTable(IReadOnlyList<RecordCompletion> completions)
+    private static DataTable AttemptTable(Guid flowId, IReadOnlyList<RecordCompletion> completions)
     {
         var table = new DataTable();
+        table.Columns.Add("FlowId", typeof(Guid));
         table.Columns.Add("DeliveryKey", typeof(Guid));
         table.Columns.Add("SubmissionId", typeof(Guid));
         table.Columns.Add("RunId", typeof(Guid));
@@ -372,7 +463,7 @@ internal static class SqlServerLedgerBulk
         {
             var a = c.Attempt;
             table.Rows.Add(
-                a.DeliveryKey.Value, Value(a.SubmissionId), Value(a.RunId), Truncate(a.Worker, 200), a.StartedUtc, a.CompletedUtc,
+                flowId, a.DeliveryKey.Value, Value(a.SubmissionId), Value(a.RunId), Truncate(a.Worker, 200), a.StartedUtc, a.CompletedUtc,
                 StatusText.Of(a.Outcome), Truncate(a.Phase, 32), Value(a.MetadataHash), Value(a.PayloadHash), Value(a.TargetVersion),
                 Value(Truncate(a.Error, 2000)), Value(a.ResultJson), Value(a.WorkBatch),
                 Value(Truncate(a.SourceFileName, DeliveryModel.MaxSourceFileNameLength)), Value(a.SourceRowNumber), Value(a.SourceUpdatedUtc));

@@ -207,8 +207,12 @@ source system, source project and log id.
 
 The essential property is that it is **computed from the data, never assigned by a run**.
 Databricks and the delivery service derive the same key independently, a re-run produces
-the same key, and the storage path, the ledger primary key, the idempotency token and the
-OSDU id are all the same value. Nothing needs coordinating between the two halves.
+the same key, and the ledger's record key, the idempotency token and the OSDU id are all
+derived from the same value. Nothing needs coordinating between the two halves.
+
+The key identifies a source row, not a delivery. The ledger keys a record by the flow and
+the delivery key together (section 5.4), so the same row read by several flows is one
+record per flow.
 
 ### 5.3 Target id: deterministic and client-supplied
 
@@ -226,6 +230,36 @@ This is the highest-leverage decision in the design. With it:
 
 The current design lets OSDU assign the id, which is precisely why so much state exists
 to remember it.
+
+### 5.4 One source, several flows
+
+Data is loaded once. An ingestion table can feed any number of OSDU flows, each with its
+own mapping, so the same well log rows can be delivered as `WellLog` records by one flow
+and as another kind by a second flow without copying the data.
+
+Each flow keeps its own ledger over those rows. A record is the flow and the delivery key
+together, so each flow has its own records, attempts, activities, submissions, watermark
+and statistics. A delivery, a retry, a release, a redelivery, a verify or a removal in one
+flow never touches another flow's record of the same row. The API and the GUI address a
+record by both parts (`/delivery/records/{flowId}/{deliveryKey}`). A search for a delivery
+key finds one record per flow that reads the row.
+
+The OSDU id is `{partition}:{entityType}:{key}`. Two flows that deliver to different
+entity types or different partitions therefore write different OSDU records. Two flows
+that would write the **same** OSDU record (same partition, same entity type, same
+`dataset.system` and key) would fight over it while each believed it owned it. The ledger
+refuses this:
+
+- A record **claims** its OSDU id when it first queues a document, and keeps the claim.
+  A unique index allows one claim per id, so the first flow to queue a document owns
+  that OSDU record.
+- A later flow whose render names a claimed id sends nothing for that record. The record
+  is held, the hold names the owning flow, and a release meets the same conflict until
+  the configuration changes. The fix is to deliver the second flow to another partition,
+  or to give its mapping a `dataset.system` or key that yields other ids.
+- A flow writes, reads back and removes only ids its own records claimed. A record that
+  was only ever held claims nothing, so removing it never reaches another flow's OSDU
+  record.
 
 ## 6. Change detection
 
@@ -494,7 +528,7 @@ SQLFlow's catalog.
 
 ```
 submission   one plan of a flow over its ingestion tables
-  record     one deliverable, keyed by delivery key
+  record     one deliverable, keyed by flow and delivery key
     attempt  one delivery try, append-only
 ```
 
@@ -514,12 +548,13 @@ row, and `attempt_count` counting state writes rather than attempts.
 
 | Column | Purpose |
 |---|---|
-| `deliveryKey` | Primary key. Deterministic, derived from source data. |
+| `flowId`, `deliveryKey` | Primary key. The flow, and the deterministic key derived from source data (section 5.4). |
 | `sourceKey` | Provenance, carried verbatim. |
 | `mappingName`, `renderContext` | What produced the current state. |
 | `sourceFingerprint` | Tier 1 gate. |
 | `metadataHash`, `payloadHash` | Tier 2 gates, decided independently. |
 | `targetId` | The OSDU record id. Deterministic, so this is a convenience not a dependency. |
+| `claimedTargetId` | The OSDU id the record claimed for its flow when it first queued a document (section 5.4). |
 | `targetVersion` | Last known OSDU version. The handle for drift detection. |
 | `status` | See below. |
 | `lastDeliveredUtc`, `lastVerifiedUtc` | Custody timestamps. |
@@ -824,7 +859,7 @@ The delivery domain runs on the platform's verbs and API; there is no separate d
 | `refresh` | a run on a cache flow (its default, and what its schedule fires); `plan` on the same flow counts what each type's search matches | Captures every type the cache flow declares, merges it into the cache of the flow's partition, and writes a new version into the catalog when the cached content moved, then tags the changes that reach delivered records (section 6.2). |
 | `cache` | CLI: `sqlflow cache list`, `sqlflow cache import` | Lists the versions of a partition's cache; merges type files into the flow's partition as that flow's capture, for work without OSDU. |
 | `template` | CLI: `sqlflow template capture`, `import`, `list`, `show`, `delete`; the GUI's Templates page | Saves an OSDU schema as an immutable template version in the catalog, from the OSDU data definitions (the Open Group's public repository, or a local checkout of it) or from a bundled schema file. |
-| release, redeliver, delete, read back, probe | the GUI record and flow pages; `POST /api/v1/delivery/records/{key}/...` | Interventions, recorded in the ledger's activity trail under the user who asked. The ones that touch OSDU (delete, read back, probe) run on a node as compute tasks. |
+| release, redeliver, delete, read back, probe | the GUI record and flow pages; `POST /api/v1/delivery/records/{flowId}/{key}/...` | Interventions, recorded in the ledger's activity trail under the user who asked. The ones that touch OSDU (delete, read back, probe) run on a node as compute tasks. |
 
 `plan` working without OSDU is a direct consequence of reading the reference data as a cache
 version and the schemas as templates, both from the catalog. It is also the single most valuable operational feature

@@ -122,7 +122,7 @@ public class SqlServerChainTests
             Assert.Equal(LogFile, record.SourceFileName);
             Assert.Equal(i + 1, record.SourceRowNumber);
             Assert.NotNull(record.TargetVersion);
-            var attempt = Assert.Single(await estate.Ledger.ListAttemptsAsync(logs[i].Key, 5));
+            var attempt = Assert.Single(await estate.Ledger.ListAttemptsAsync(estate.FlowId, logs[i].Key, 5));
             Assert.Equal(AttemptOutcome.Delivered, attempt.Outcome);
             Assert.Equal(LogFile, attempt.SourceFileName);
         }
@@ -543,7 +543,7 @@ public class SqlServerChainTests
         var total = 0;
         foreach (var log in logs)
         {
-            total += (await estate.Ledger.ListAttemptsAsync(log.Key, 50)).Count;
+            total += (await estate.Ledger.ListAttemptsAsync(estate.FlowId, log.Key, 50)).Count;
         }
 
         return total;

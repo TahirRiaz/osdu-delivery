@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "@/api/client";
 import {
   deliveryApi,
+  deliveryRecordRoute,
   type DeliveryAttempt,
   type DeliveryWorkBatch,
 } from "../../api/delivery";
@@ -213,7 +214,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
             columns={attemptColumns}
             rows={attempts.data}
             rowKey={(row) => row.attemptId}
-            onRowClick={(row) => navigate(`/delivery/records/${row.deliveryKey}`)}
+            onRowClick={(row) => navigate(deliveryRecordRoute({ flowId: s.flowId, deliveryKey: row.deliveryKey }))}
             emptyMessage="No delivery attempts were made for this submission (everything was unchanged, or it has not run yet)."
             data-testid="submission-attempts"
           />

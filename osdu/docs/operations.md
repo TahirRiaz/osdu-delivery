@@ -75,7 +75,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, and the path each removal scope calls. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
-| `GET /records/{key}`, `/attempts`, `/activities` | read | One record, its delivery history, its interventions. |
+| `GET /records/{flowId}/{key}`, `/attempts`, `/activities` | read | One flow's record, its delivery history, its interventions. A record is addressed by the ledger's flow id and the delivery key together, because the same row read by several flows is one record per flow. |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
@@ -103,13 +103,13 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /cache/diff` | read | What changed in one partition's cache (`scope`) between two versions: `from` (required) and `to` (the current version when omitted), counts per type, and a page of the records that changed, were added or were removed, with the captured values on each side. Narrowed by `type`, `search`, and `change` (the items only). 404 for a version the cache does not hold. |
 | `GET /cache/tags` | read | The cache changes delivered records were built from, paged, by `status` (pending, approved, rolling, rejected, applied), each naming the partition whose cache the refresh found it in, with what it reaches and how far the rollout has carried it; `scope` narrows the list to one partition. |
 | `POST /cache/tags/decide` | operate | Approves or rejects changes (`tagIds`, `approve`). Approving hands the change to the batched rollout; rejecting leaves OSDU as it is. |
-| `GET /records/{key}/cache` | read | What one record read out of the cache when it was rendered: the partition, the cached item, the path and the value. |
+| `GET /records/{flowId}/{key}/cache` | read | What one record read out of the cache when it was rendered: the partition, the cached item, the path and the value. |
 | `POST /flows/{pipelineId}/release` | operate | Release the flow's blocked records (all, or `keys`). |
 | `POST /flows/{pipelineId}/probe` | operate | Queue a target probe on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
-| `POST /records/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope` all, metadata or payload; `run` true queues a deliver run scoped to the record, which reads it from the ingestion tables by key under its last submission's parameter values, marks it with that scope and sends it); queue a verify run scoped to it. |
-| `POST /records/{key}/source` | operate | Queue a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its system columns, its child datasets, and the origin file and row. Nothing is planned or delivered; poll `GET /api/v1/compute/tasks/{taskId}`. |
-| `POST /records/{key}/read` | operate | Queue a read-back of the record as OSDU holds it, on a node. |
-| `POST /records/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
+| `POST /records/{flowId}/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope` all, metadata or payload; `run` true queues a deliver run scoped to the record, which reads it from the ingestion tables by key under its last submission's parameter values, marks it with that scope and sends it); queue a verify run scoped to it. |
+| `POST /records/{flowId}/{key}/source` | operate | Queue a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its system columns, its child datasets, and the origin file and row. Nothing is planned or delivered; poll `GET /api/v1/compute/tasks/{taskId}`. |
+| `POST /records/{flowId}/{key}/read` | operate | Queue a read-back, on a node, of the OSDU record the flow's record claimed; a record that never queued a document has none to read. |
+| `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
 | `POST /ledger/prune` | admin | Age out attempts older than `olderThanDays`, keeping the latest per record. |
@@ -144,7 +144,10 @@ so "every record this run delivered" travels as the filter rather than as tens o
 records no page ever rendered. One removal takes at most 25,000 records; a larger one is several removals.
 Records are removed in chunks of 500, batched into a single request where the protocol and the scope allow it
 (only the reversible scope has a bulk endpoint), and each record gets its own ledger attempt. A record OSDU has
-already lost is reported as already gone, not as a failure, and a record with no OSDU id at all is skipped.
+already lost is reported as already gone, not as a failure, and a record with no OSDU id at all is skipped. A
+removal acts on one flow's records and only on the OSDU ids they claimed: a record that never queued a document (one
+held at render, or held because another flow owns its OSDU id) is skipped, so a removal in one flow never reaches
+another flow's OSDU record ([ledger.md](ledger.md#one-source-several-flows)).
 
 The `record` and `everything` scopes mark the record deleted and blocked here; `history` leaves it delivered,
 because OSDU still holds it at the version the ledger knows. The task result carries the counts and up to 200
