@@ -106,7 +106,7 @@ Preferred (Airflow 3):
 pip install 'osdu-airflow[AF3]~=0.30.0' --extra-index-url=https://community.opengroup.org/api/v4/projects/668/packages/pypi/simple
 ```
 
-Deprecated (Airflow 2: security issues in Airflow 2; prefer `[AF3]`):
+Deprecated (Airflow 2 - security issues in Airflow 2; prefer `[AF3]`):
 
 ```shell
 pip install 'osdu-airflow[AF2]~=0.30.0' --extra-index-url=https://community.opengroup.org/api/v4/projects/668/packages/pypi/simple

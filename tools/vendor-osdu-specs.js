@@ -43,7 +43,8 @@ function asRepositoryText(name, bytes) {
   }
 
   const text = bytes.toString('utf8');
-  return text.includes(EmDash) ? Buffer.from(text.split(' ' + EmDash + ' ').join(': ').split(EmDash).join(', '), 'utf8') : bytes;
+  // A spaced hyphen keeps a YAML plain scalar a scalar, where a colon would start a mapping.
+  return text.includes(EmDash) ? Buffer.from(text.split(' ' + EmDash + ' ').join(' - ').split(EmDash).join('-'), 'utf8') : bytes;
 }
 
 async function json(url) {
@@ -72,7 +73,10 @@ async function main() {
     }
   }
 
-  fs.writeFileSync(path.join(root, 'sources.json'), JSON.stringify(rows, null, 2) + '\n');
+  // The core specifications are copied from the local specification set, not downloaded here; their rows are kept.
+  const listed = path.join(root, 'sources.json');
+  const core = fs.existsSync(listed) ? JSON.parse(fs.readFileSync(listed, 'utf8')).filter((row) => row.file.startsWith('core/')) : [];
+  fs.writeFileSync(listed, JSON.stringify([...rows, ...core], null, 2) + '\n');
 }
 
 main().catch((error) => { console.error(error); process.exit(1); });
