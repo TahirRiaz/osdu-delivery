@@ -580,7 +580,7 @@ public static class DeliveryEndpoints
         }
 
         var pipeline = await FindPipelineAsync(db, submission.FlowId, ct).ConfigureAwait(false);
-        var runIds = await SubmissionRunsAsync(db, submissionId, submission.RunId, submission.GroupId, ct).ConfigureAwait(false);
+        var runIds = await SubmissionRunsAsync(db, submissionId, submission.RunId, submission.GroupId, pipeline?.Id, ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliverySubmissionDetailDto(ToDto(submission), pipeline?.Id, runIds));
     }
 
@@ -1550,7 +1550,7 @@ public static class DeliveryEndpoints
 
         var pipeline = await FindPipelineAsync(db, inline.FlowId, ct).ConfigureAwait(false);
         var landings = await ledger.GetLandingsAsync(submissionId, ct).ConfigureAwait(false);
-        var runIds = await SubmissionRunsAsync(db, submissionId, inline.OsduRunId, inline.GroupId, ct).ConfigureAwait(false);
+        var runIds = await SubmissionRunsAsync(db, submissionId, inline.OsduRunId, inline.GroupId, pipeline?.Id, ct).ConfigureAwait(false);
         using var records = JsonDocument.Parse(inline.RecordsJson);
         return TypedResults.Ok(new DeliveryInlineSubmissionDto(
             inline.SubmissionId, inline.FlowId, inline.FlowName, pipeline?.Id, inline.MappingReference, inline.Operation, inline.Force, inline.ParametersJson,
@@ -2062,16 +2062,19 @@ public static class DeliveryEndpoints
     /// <summary>
     /// The runs that worked on one submission, newest first: the run that registered it, every member of the chain group
     /// that carried it, and every run whose kind arguments name it (a re-run, a drain, a fan-out member). A run carries
-    /// the submission in its payload rather than in a column of its own, so the payload is what the listing matches.
+    /// the submission in its payload rather than in a column of its own, so the payload is what finds the last group.
+    /// That match is scoped to the submission's own flow, which is the only flow those runs belong to: the chain's other
+    /// members are runs of the pre and ingestion flows and are found by their group. Without the scope the search reads
+    /// every run the estate has ever recorded to answer one submission's page.
     /// </summary>
     private static async Task<IReadOnlyList<Guid>> SubmissionRunsAsync(
-        CatalogDbContext db, Guid submissionId, Guid? runId, Guid? groupId, CancellationToken ct)
+        CatalogDbContext db, Guid submissionId, Guid? runId, Guid? groupId, Guid? pipelineId, CancellationToken ct)
     {
         var named = submissionId.ToString("D");
         return await db.Runs.AsNoTracking()
             .Where(r => (runId != null && r.RunId == runId)
                 || (groupId != null && r.GroupId == groupId)
-                || (r.Payload != null && r.Payload.Contains(named)))
+                || (pipelineId != null && r.PipelineId == pipelineId && r.Payload != null && r.Payload.Contains(named)))
             .OrderByDescending(r => r.EnqueuedUtc)
             .Select(r => r.RunId)
             .Take(MaxSubmissionRuns)
