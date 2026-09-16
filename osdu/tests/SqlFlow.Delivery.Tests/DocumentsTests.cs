@@ -47,8 +47,10 @@ public class YamlDocumentLoaderTests
           retry: { attempts: 5, backoff: fixed }
         """;
 
-    /// <summary>Where a submission's rows land for the pre flows that read them, and where its files may sit.</summary>
-    private const string Submissions = """
+    /// <summary>Where a submission's rows land for the pre flows that read them, and where its files may sit. Newlines are
+    /// normalized because the cases below replace passages that span lines, which a raw literal writes with this file's
+    /// endings.</summary>
+    private static readonly string Submissions = """
           submissions:
             record:
               preFlow: demo-pre
@@ -60,7 +62,7 @@ public class YamlDocumentLoaderTests
             fileRoots:
               - abfss://lake@acct.dfs.core.windows.net/recall
               - archive/curves
-        """;
+        """.ReplaceLineEndings("\n");
 
     private static string WithSubmissions(string replacing) =>
         Flow.ReplaceLineEndings("\n").Replace("  lastModified: update_date", replacing + "\n  lastModified: update_date", StringComparison.Ordinal);
