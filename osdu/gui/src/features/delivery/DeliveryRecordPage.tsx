@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpenCheck, CircleAlert, RotateCcw, ShieldCheck, Trash2, Unlock } from "lucide-react";
+import { BookOpenCheck, CircleAlert, Database, RotateCcw, ShieldCheck, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -200,6 +200,13 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
     onSuccess: (accepted) => { setTaskLabel("Read back from OSDU"); setTaskId(accepted.taskId); },
     onError: fail,
   });
+  // Where the record came from: its rows as the ingestion tables hold them now, read on a node with the flow's own
+  // connection, with the origin file and row the ledger records against every delivered version.
+  const readSource = useMutation({
+    mutationFn: () => deliveryApi.readSource(deliveryKey),
+    onSuccess: (accepted) => { setTaskLabel("The record in the ingestion tables"); setTaskId(accepted.taskId); },
+    onError: fail,
+  });
   if (query.isError) {
     return (
       <Page data-testid="page-delivery-record">
@@ -219,7 +226,7 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
   }
 
   const record = detail.record;
-  const busy = verify.isPending || redeliver.isPending || release.isPending || readBack.isPending;
+  const busy = verify.isPending || redeliver.isPending || release.isPending || readBack.isPending || readSource.isPending;
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
   const taskState = task.data;
   const taskJson = isTerminalTask(taskState) ? taskResultJson(taskState) : null;
@@ -259,6 +266,10 @@ function DeliveryRecordContent({ deliveryKey }: { deliveryKey: string }) {
             <Button variant="outline" size="sm" onClick={() => readBack.mutate()} disabled={busy || !canActOnTarget} data-testid="record-read">
               <BookOpenCheck />
               Read back
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => readSource.mutate()} disabled={busy || detail.pipelineId === null} data-testid="record-read-source">
+              <Database />
+              Source row
             </Button>
             {record.blocked && (
               <Button variant="outline" size="sm" onClick={() => release.mutate()} disabled={busy} data-testid="record-release">

@@ -17,7 +17,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { prettyJson } from "./prettyJson";
 
 const ALL = "all";
-const KINDS = ["deliver", "submit", "work", "verify", "release", "redeliver", "delete"];
+const KINDS = ["deliver", "intake", "drain", "verify", "submit", "release", "redeliver", "delete"];
 const OUTCOMES = ["running", "completed", "failed", "cancelled"];
 
 function OutcomeBadge({ outcome }: { outcome: DeliveryActivity["outcome"] }) {

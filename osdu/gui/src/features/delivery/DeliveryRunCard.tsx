@@ -41,7 +41,7 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
                 <Badge variant="secondary" className="bg-info/12 text-info" data-testid="run-operation">{run.operation}</Badge>
               )}
               {request.force && <Badge variant="secondary" className="bg-warning/15 text-warning">forced</Badge>}
-              {request.replan && <Badge variant="secondary" data-testid="run-replan">full re-plan</Badge>}
+              {request.reland && <Badge variant="secondary" data-testid="run-reland">landing files written again</Badge>}
               {request.submissionId !== null && (
                 <Badge variant="secondary" className="font-mono">submission {request.submissionId}</Badge>
               )}
@@ -53,9 +53,9 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
               {request.redeliver !== null && (
                 <Badge variant="secondary">redeliver {REDELIVER_LABELS[request.redeliver] ?? request.redeliver}</Badge>
               )}
-              {request.partitions.length > 0 && (
-                <Badge variant="secondary" className="font-mono" data-testid="run-partitions">
-                  {`${request.partitions.length === 1 ? "partition" : "partitions"} ${request.partitions.join(", ")}`}
+              {request.slices.length > 0 && (
+                <Badge variant="secondary" className="font-mono" data-testid="run-slices">
+                  {`${request.slices.length === 1 ? "slice" : "slices"} ${request.slices.join(", ")}`}
                 </Badge>
               )}
               {values.map(([name, value]) => (

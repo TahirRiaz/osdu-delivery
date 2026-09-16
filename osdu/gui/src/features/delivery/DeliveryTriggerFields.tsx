@@ -25,7 +25,7 @@ const REDELIVER_SCOPES: readonly { value: RedeliverScope; label: string }[] = [
 ];
 
 /** The payload keys these fields own; anything else the run being repeated carried goes with it unchanged. */
-const OWNED_KEYS = new Set(["force", "submissionId", "recordKeys", "redeliver", "replan"]);
+const OWNED_KEYS = new Set(["force", "submissionId", "recordKeys", "redeliver"]);
 
 const FORCE_HINTS: Record<string, string> = {
   delivery: "Push past the change gates: plan every record even when no source table advanced, re-plan a completed submission, verify records verified recently.",
@@ -60,9 +60,10 @@ function parseValues(text: string): { values: Record<string, string>; error: str
 
 /**
  * The trigger dialog's fields for delivery, retrieval and cache flows: force, the flow's parameter values, and for a
- * delivery flow the submission to work on, the records to scope the run to, the part of them to send again, and a full
- * re-plan. Which fields apply follows the operation picked; a run being repeated opens with what it was given, and keeps
- * any other part of its payload (the partitions a fan-out member took) as it was.
+ * delivery flow the submission to work on, the records to scope the run to, and the part of them to send again. Which
+ * fields apply follows the operation picked; reading every row of the scope again is the flow kind's own `replan`
+ * operation rather than a field here. A run being repeated opens with what it was given, and keeps any other part of
+ * its payload (the key slices a fan-out member took, a relanded submission) as it was.
  */
 export function DeliveryTriggerFields({ flowKind, operation, initialValues, initialPayload, onChange }: TriggerFieldsProps) {
   const idPrefix = useId();
@@ -81,18 +82,18 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
   const [redeliver, setRedeliver] = useState<RedeliverScope>(
     () => (isRedeliverScope(initialPayload?.redeliver) ? initialPayload.redeliver : "all"),
   );
-  const [replan, setReplan] = useState(() => initialPayload?.replan === true);
   const [carried] = useState<Record<string, unknown>>(
     () => Object.fromEntries(Object.entries(initialPayload ?? {}).filter(([key]) => !OWNED_KEYS.has(key))),
   );
 
   const effectiveOperation = operation ?? DEFAULT_OPERATION[flowKind] ?? null;
   const deliveryKind = flowKind === "delivery";
-  const takesReplan = deliveryKind
-    && (effectiveOperation === "deliver" || effectiveOperation === "plan" || effectiveOperation === "intake");
-  const replanning = takesReplan && replan;
-  const takesValues = !deliveryKind || takesReplan;
-  const takesSubmission = deliveryKind && !replanning
+  // Every operation that reads the ingestion tables is given the flow's parameter values: they fill the record
+  // scope's predicate and the work location, so a run without them reads nothing.
+  const takesValues = !deliveryKind
+    || effectiveOperation === "deliver" || effectiveOperation === "plan"
+    || effectiveOperation === "intake" || effectiveOperation === "replan";
+  const takesSubmission = deliveryKind
     && (effectiveOperation === "deliver" || effectiveOperation === "intake" || effectiveOperation === "drain");
   const takesRecordScope = deliveryKind && (effectiveOperation === "deliver" || effectiveOperation === "verify");
   const recordKeys = useMemo(() => lines(recordKeysText), [recordKeysText]);
@@ -127,17 +128,13 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
       payload.redeliver = redeliver;
     }
 
-    if (replanning) {
-      payload.replan = true;
-    }
-
     return {
       values: Object.keys(parsed.values).length > 0 ? parsed.values : undefined,
       payload: Object.keys(payload).length > 0 ? payload : undefined,
       error,
     };
   }, [
-    carried, force, recordKeys, redeliver, replanning, submissionId, takesRecordScope, takesRedeliver, takesSubmission,
+    carried, force, recordKeys, redeliver, submissionId, takesRecordScope, takesRedeliver, takesSubmission,
     takesValues, valuesText,
   ]);
 
@@ -156,18 +153,6 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
           {FORCE_HINTS[flowKind] ?? "Run past the change gates that would otherwise skip work."}
         </p>
       </div>
-      {takesReplan && (
-        <div className="flex flex-col gap-1">
-          <Label className="flex items-center gap-2 text-[13px] font-normal">
-            <Switch checked={replan} onCheckedChange={setReplan} data-testid="trigger-replan" />
-            Full re-plan
-          </Label>
-          <p className="pl-10 text-xs text-muted-foreground">
-            Plan every record the flow reads again under the current mapping, template and cache, instead of only what
-            changed since the last run. Scope it with the records below.
-          </p>
-        </div>
-      )}
       {takesValues && (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${idPrefix}-values`}>Flow parameters</Label>

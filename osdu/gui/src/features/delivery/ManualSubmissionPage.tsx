@@ -19,10 +19,11 @@ import { KindText } from "./KindText";
 import { SubmitRecordsDialog } from "./SubmitRecordsDialog";
 
 /**
- * Manual submission: every flow whose document offers it (`source.manualSubmission`), with the mapping that renders
- * what is sent and the parameters a submission carries. Submitting from here makes the same
- * `POST /api/v1/delivery/submissions` a source system makes, so the records take the regular path: change detection,
- * the ledger, the drain and the record history. A flow that offers no manual submission is listed only on request,
+ * Manual submission: every flow whose document declares where its submissions land (`source.submissions`), with the
+ * mapping that renders what is sent and the parameters a submission carries. Submitting from here makes the same
+ * `POST /api/v1/delivery/submissions` a source system makes, so the records take the regular path: the rows land as
+ * files for the flow's pre-ingestion flows, the chain of pre, ingestion and OSDU runs delivers them, and change
+ * detection, the ledger and the record history all apply. A flow that takes no records is listed only on request,
  * with the reason, so it is clear why it cannot be picked.
  */
 export default function ManualSubmissionPage() {
@@ -78,7 +79,9 @@ export default function ManualSubmissionPage() {
       render: (row) => (
         <div className="flex flex-col items-start gap-0.5">
           <span className="font-mono text-[12px]">{row.protocol}</span>
-          {row.payloadName !== null && <Badge variant="secondary" className="font-mono text-[11px]">{row.payloadName}</Badge>}
+          {row.payloads.map((payload) => (
+            <Badge key={payload} variant="secondary" className="font-mono text-[11px]">{payload}</Badge>
+          ))}
         </div>
       ),
     },
@@ -139,7 +142,7 @@ export default function ManualSubmissionPage() {
         <EmptyState
           icon={<FileJson />}
           title="No flow offers manual submission"
-          description="A flow takes records sent from here once its document declares source.manualSubmission. A flow that streams payload files takes them too: its records say where the files already sit, and the node reads them from there."
+          description="A flow takes records sent from here once its document declares source.submissions: the pre-ingestion flow and landing folder each dataset's rows are written to. A flow that streams payload files takes them too: its records say where the files already sit, and the node reads them from there."
           data-testid="manual-submission-empty"
         />
       ) : (

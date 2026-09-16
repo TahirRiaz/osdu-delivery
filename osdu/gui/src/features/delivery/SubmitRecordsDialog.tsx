@@ -28,13 +28,12 @@ const MaxReferenceLength = 200;
 
 type Mode = "form" | "json";
 
-/** The columns the form offers: what the mapping reads from the dataset row, then the flow's version columns. */
+/** The columns the form offers: what the mapping reads from the dataset row, then the flow's version column. */
 function formColumns(contract: DeliverySourceContract): string[] {
   const columns = contract.columns.map((column) => column.name);
-  for (const column of [contract.lastModifiedColumn, contract.fingerprintColumn]) {
-    if (column !== null && !columns.some((c) => c.toLowerCase() === column.toLowerCase())) {
-      columns.push(column);
-    }
+  const version = contract.lastModifiedColumn;
+  if (version !== null && !columns.some((c) => c.toLowerCase() === version.toLowerCase())) {
+    columns.push(version);
   }
 
   return columns;
@@ -82,8 +81,12 @@ function describeUses(uses: DeliverySourceColumnUse[]): string {
   return phrases.join("; ");
 }
 
-/** Where the form says the record's payload files are, when the flow streams a payload. */
-type PayloadInput = { name: string; location: string; hash: string } | null;
+/** Where the form says one of the record's payloads already sits. */
+interface PayloadInput {
+  name: string;
+  location: string;
+  hash: string;
+}
 
 /** A starting point for the JSON tab: one record with every column the form offers, and one blank row per child dataset. */
 function recordsTemplate(contract: DeliverySourceContract): string {
@@ -95,25 +98,29 @@ function recordsTemplate(contract: DeliverySourceContract): string {
     );
   }
 
-  if (contract.payloadName !== null) {
-    record.files = { [contract.payloadName]: contract.payloadHashRequired ? { location: "", hash: "" } : "" };
+  if (contract.payloads.length > 0) {
+    record.files = Object.fromEntries(
+      contract.payloads.map((name) => [name, contract.payloadHashRequired ? { location: "", hash: "" } : ""]),
+    );
   }
 
   return JSON.stringify([record], null, 2);
 }
 
 /**
- * The filled-in form as one record; an empty field is left out, which the flow reads as null. The payload is pointed
+ * The filled-in form as one record; an empty field is left out, which the flow reads as null. A payload is pointed
  * at, never uploaded: what goes with the record is where its files already sit, and the hash when the flow needs one.
  */
-function formRecord(fields: Record<string, string>, payload: PayloadInput): DeliveryInlineRecord {
+function formRecord(fields: Record<string, string>, payloads: readonly PayloadInput[]): DeliveryInlineRecord {
   const record: DeliveryInlineRecord = { record: Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== "")) };
-  if (payload !== null && payload.location.trim() !== "") {
-    record.files = {
-      [payload.name]: payload.hash.trim() === ""
+  const files = payloads.filter((payload) => payload.location.trim() !== "");
+  if (files.length > 0) {
+    record.files = Object.fromEntries(files.map((payload) => [
+      payload.name,
+      payload.hash.trim() === ""
         ? payload.location.trim()
         : { location: payload.location.trim(), hash: payload.hash.trim() },
-    };
+    ]));
   }
 
   return record;
@@ -167,8 +174,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
   const [force, setForce] = useState(false);
   const [submissionId, setSubmissionId] = useState("");
   const [reference, setReference] = useState("");
-  const [payloadLocation, setPayloadLocation] = useState("");
-  const [payloadHash, setPayloadHash] = useState("");
+  const [payloadFiles, setPayloadFiles] = useState<Record<string, { location: string; hash: string }>>({});
 
   const contract = useQuery({
     queryKey: ["delivery", "source-contract", pipelineId],
@@ -188,8 +194,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
       setPreview(false);
       setForce(false);
       setSubmissionId("");
-      setPayloadLocation("");
-      setPayloadHash("");
+      setPayloadFiles({});
     }
   }
 
@@ -218,24 +223,28 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
   const columnInfo = new Map((c?.columns ?? []).map((column) => [column.name, column]));
   const json = jsonText ?? (c ? recordsTemplate(c) : "[]");
   const formBlank = Object.values(fields).every((value) => value === "");
-  const payload: PayloadInput = c !== undefined && c.payloadName !== null
-    ? { name: c.payloadName, location: payloadLocation, hash: payloadHash }
-    : null;
+  const payloads: PayloadInput[] = (c?.payloads ?? []).map((name) => ({
+    name,
+    location: payloadFiles[name]?.location ?? "",
+    hash: payloadFiles[name]?.hash ?? "",
+  }));
 
   let records: DeliveryInlineRecord[] = [];
   let error: string | null = null;
   if (c !== undefined) {
     if (mode === "form") {
-      records = [formRecord(fields, payload)];
+      records = [formRecord(fields, payloads)];
       const emptyKey = c.key.find((column) => (fields[column] ?? "") === "");
+      const withoutLocation = payloads.find((payload) => payload.location.trim() === "");
+      const withoutHash = c.payloadHashRequired ? payloads.find((payload) => payload.hash.trim() === "") : undefined;
       if (formBlank) {
         error = "Fill in the record's columns.";
       } else if (emptyKey !== undefined) {
         error = `The key column '${emptyKey}' is empty; the record's OSDU id is derived from it.`;
-      } else if (payload !== null && payload.location.trim() === "") {
-        error = `The flow streams the payload '${payload.name}', so the record says where its files are.`;
-      } else if (payload !== null && c.payloadHashRequired && payload.hash.trim() === "") {
-        error = `The flow decides payload changes by content hash, so the record carries the hash of its '${payload.name}' files.`;
+      } else if (withoutLocation !== undefined) {
+        error = `The flow streams the payload '${withoutLocation.name}', so the record says where its files are.`;
+      } else if (withoutHash !== undefined) {
+        error = `The flow decides payload changes by content hash, so the record carries the hash of its '${withoutHash.name}' files.`;
       }
     } else {
       ({ records, error } = parseRecords(json));
@@ -265,7 +274,7 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
 
   const changeMode = (next: string) => {
     if (next === "json" && jsonText === null && !formBlank) {
-      setJsonText(JSON.stringify([formRecord(fields, payload)], null, 2));
+      setJsonText(JSON.stringify([formRecord(fields, payloads)], null, 2));
     }
 
     setMode(next === "json" ? "json" : "form");
@@ -408,7 +417,6 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                           {c.key.includes(column) && <Badge variant="secondary" className="h-4 px-1 text-[10px]">key</Badge>}
                           {columnInfo.get(column)?.label === true && <Badge variant="secondary" className="h-4 px-1 text-[10px]">label</Badge>}
                           {column === c.lastModifiedColumn && <Badge variant="secondary" className="h-4 px-1 text-[10px]">last modified</Badge>}
-                          {column === c.fingerprintColumn && <Badge variant="secondary" className="h-4 px-1 text-[10px]">fingerprint</Badge>}
                         </Label>
                         <div className="flex gap-1">
                           <Input
@@ -442,24 +450,31 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                     An empty field is sent as absent, which the flow reads as null. A record whose last-modified moment is not
                     later than the version already delivered is skipped, so a change needs a later one.
                   </p>
-                  {c.payloadName !== null && (
-                    <div className="flex flex-col gap-3 rounded-lg border border-border p-3" data-testid="submit-records-payload">
+                  {payloads.map((payload) => (
+                    <div
+                      key={payload.name}
+                      className="flex flex-col gap-3 rounded-lg border border-border p-3"
+                      data-testid={`submit-records-payload-${payload.name}`}
+                    >
                       <div className="flex flex-col gap-1">
-                        <h3 className="text-[13px] font-medium">Payload files: {c.payloadName}</h3>
+                        <h3 className="text-[13px] font-medium">Payload files: {payload.name}</h3>
                         <p className="text-xs text-muted-foreground">
                           Where the files already sit. Nothing is uploaded here: the node opens the location with its own identity
                           when the run delivers, and again on every retry.
                         </p>
                       </div>
                       <div className="flex flex-col gap-1">
-                        <Label htmlFor={`${idPrefix}-payload-location`} className="font-mono text-[12px]">location (required)</Label>
+                        <Label htmlFor={`${idPrefix}-payload-location-${payload.name}`} className="font-mono text-[12px]">location (required)</Label>
                         <Input
-                          id={`${idPrefix}-payload-location`}
+                          id={`${idPrefix}-payload-location-${payload.name}`}
                           className="h-8 font-mono"
                           placeholder={c.payloadRoots[0] ?? "the folder or glob the files are in"}
-                          value={payloadLocation}
-                          onChange={(event) => setPayloadLocation(event.target.value)}
-                          data-testid="submit-records-payload-location"
+                          value={payload.location}
+                          onChange={(event) => {
+                            const location = event.target.value;
+                            setPayloadFiles((current) => ({ ...current, [payload.name]: { location, hash: payload.hash } }));
+                          }}
+                          data-testid={`submit-records-payload-location-${payload.name}`}
                         />
                         {c.payloadRoots.length > 0 && (
                           <p className="text-xs text-muted-foreground">
@@ -468,15 +483,18 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                         )}
                       </div>
                       <div className="flex flex-col gap-1">
-                        <Label htmlFor={`${idPrefix}-payload-hash`} className="font-mono text-[12px]">
+                        <Label htmlFor={`${idPrefix}-payload-hash-${payload.name}`} className="font-mono text-[12px]">
                           hash {c.payloadHashRequired ? "(required)" : "(optional)"}
                         </Label>
                         <Input
-                          id={`${idPrefix}-payload-hash`}
+                          id={`${idPrefix}-payload-hash-${payload.name}`}
                           className="h-8 font-mono"
-                          value={payloadHash}
-                          onChange={(event) => setPayloadHash(event.target.value)}
-                          data-testid="submit-records-payload-hash"
+                          value={payload.hash}
+                          onChange={(event) => {
+                            const hash = event.target.value;
+                            setPayloadFiles((current) => ({ ...current, [payload.name]: { location: payload.location, hash } }));
+                          }}
+                          data-testid={`submit-records-payload-hash-${payload.name}`}
                         />
                         <p className="text-xs text-muted-foreground">
                           {c.payloadHashRequired
@@ -485,14 +503,14 @@ export function SubmitRecordsDialog({ open, onClose, pipelineId, flowName }: Sub
                         </p>
                       </div>
                     </div>
-                  )}
+                  ))}
                 </TabsContent>
                 <TabsContent value="json" className="flex flex-col gap-2 pt-2">
                   <CodeView value={json} language="json" height={360} readOnly={false} onChange={setJsonText} data-testid="submit-records-json" />
                   <p className="text-xs text-muted-foreground">
                     An array of records, each {"{ \"record\": { column: value }, \"datasets\": { childDataset: [ rows ] } }"}: the shape of a
                     mapping fixture. Values are strings, numbers, booleans or null.
-                    {c.payloadName !== null && ` Each record also carries "files": { "${c.payloadName}": "where its files are" }, or { "location": ..., "hash": ... } to send the hash with it.`}
+                    {c.payloads.length > 0 && ` Each record also carries "files", naming ${c.payloads.join(", ")}: "where its files are", or { "location": ..., "hash": ... } to send the hash with it.`}
                   </p>
                 </TabsContent>
               </Tabs>

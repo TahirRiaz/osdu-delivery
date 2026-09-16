@@ -11,6 +11,7 @@ import { isApiError } from "@/api/client";
 import {
   deliveryApi,
   type DeliveryAttempt,
+  type DeliverySubmissionLanding,
   type DeliveryWorkBatch,
 } from "../../api/delivery";
 import { AttemptDetail } from "./AttemptDetail";
@@ -27,6 +28,34 @@ import { useTabTitle } from "@/layout/workbench/TabsContext";
 import { SubmissionStatusBadge } from "./DeliveryBadges";
 import { SubmissionCounts } from "./DeliveryFlowPanel";
 import { prettyJson } from "./prettyJson";
+
+/**
+ * The files an API submission landed for the pre-ingestion flows. The file name is what `FileName_DW` holds on every
+ * ingestion row loaded from it, so it is the link between a delivered record's origin file and this submission.
+ */
+const landingColumns: Column<DeliverySubmissionLanding>[] = [
+  { id: "dataset", header: "Dataset", render: (row) => <span className="font-mono text-[12px] font-medium">{row.dataset}</span> },
+  { id: "preFlow", header: "Pre flow", render: (row) => <span className="font-mono text-[12px]">{row.preFlowName}</span> },
+  { id: "file", header: "File", render: (row) => <TruncatedText text={row.fileName} mono maxWidth={280} /> },
+  { id: "format", header: "Format", render: (row) => <Badge variant="outline" className="font-mono text-[11px]">{row.format}</Badge> },
+  { id: "rows", header: "Rows", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.rowCount.toLocaleString()}</span> },
+  { id: "bytes", header: "Bytes", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.bytes.toLocaleString()}</span> },
+  {
+    id: "written",
+    header: "Written",
+    render: (row) => (row.writtenUtc !== null
+      ? <RelativeTime value={row.writtenUtc} absolute />
+      : <span className="text-muted-foreground">not yet</span>),
+  },
+  {
+    id: "preRun",
+    header: "Pre run",
+    render: (row) => (row.preRunId
+      ? <RouterLink to={`/runs/${row.preRunId}`} className="font-mono text-[12px] text-primary hover:underline">{row.preRunId.slice(0, 8)}</RouterLink>
+      : <span className="text-muted-foreground">-</span>),
+  },
+  { id: "location", header: "Location", render: (row) => <TruncatedText text={row.location} mono maxWidth={320} /> },
+];
 
 /** Everything the ledger holds about one submission: what it was, how it went, every attempt it produced, and the runs
  * that carried it, with a way back to the records it touched. */
@@ -153,6 +182,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
         badges={(
           <>
             <SubmissionStatusBadge status={s.status} />
+            <Badge variant="outline" className="font-mono" data-testid="submission-kind">{s.kind}</Badge>
             <Badge variant="outline" data-testid="submission-mapping">{s.mappingReference}</Badge>
             {inline !== undefined && <Badge variant="secondary" data-testid="submission-inline">records sent by {inline.receivedBy}</Badge>}
           </>
@@ -166,6 +196,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
           <>
             <IdChip label="submission" value={s.submissionId} testId="submission-id" copyTestId="copy-submission-id" />
             {detail.pipelineId && <IdChip label="flow" value={detail.pipelineId} display={s.flowName} to={`/pipelines/${detail.pipelineId}`} testId="submission-pipeline-link" copyTestId="copy-submission-pipeline" />}
+            {s.groupId && <IdChip label="chain" value={s.groupId} testId="submission-group" copyTestId="copy-submission-group" />}
             {detail.runIds.map((runId) => (
               <IdChip key={runId} label="run" value={runId} to={`/runs/${runId}`} testId={`submission-run-${runId}`} copyTestId={`copy-submission-run-${runId}`} />
             ))}
@@ -182,7 +213,25 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
         </DetailPair>
         <DetailPair label="Records"><span className="font-mono tabular-nums">{s.recordCount}</span></DetailPair>
         <DetailPair label="Batches"><span className="font-mono tabular-nums">{s.batchCount}</span></DetailPair>
-        <DetailPair label="Partitions"><span className="font-mono tabular-nums">{s.partitions}</span></DetailPair>
+        <DetailPair label="Key slices"><span className="font-mono tabular-nums">{s.slices}</span></DetailPair>
+        <DetailPair label="Ingestion table">
+          <TruncatedText text={s.sourceObject} mono maxWidth={320} />
+        </DetailPair>
+        <DetailPair label="Connection">
+          <TruncatedText text={s.sourceConnection} mono maxWidth={320} />
+        </DetailPair>
+        <DetailPair label="Change window">
+          {s.windowFromUtc === null && s.windowToUtc === null
+            ? <span className="text-muted-foreground">the whole scope</span>
+            : (
+              <span className="inline-flex flex-wrap items-center gap-1" data-testid="submission-window">
+                <RelativeTime value={s.windowFromUtc} absolute />
+                <span className="text-muted-foreground">to</span>
+                <RelativeTime value={s.windowToUtc} absolute />
+              </span>
+            )}
+        </DetailPair>
+        <DetailPair label="Untracked"><span className="font-mono tabular-nums">{s.untracked}</span></DetailPair>
         <DetailPair label="Work"><TruncatedText text={s.workLocation} mono maxWidth={320} /></DetailPair>
       </DetailHeaderCard>
 
@@ -195,6 +244,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
         <TabsList data-testid="submission-tabs">
           <TabsTrigger value="attempts" data-testid="submission-tab-attempts">Attempts</TabsTrigger>
           <TabsTrigger value="batches" data-testid="submission-tab-batches">Batches</TabsTrigger>
+          {inline !== undefined && <TabsTrigger value="landings" data-testid="submission-tab-landings">Landed files</TabsTrigger>}
           {inline !== undefined && <TabsTrigger value="records" data-testid="submission-tab-records">Records sent</TabsTrigger>}
           <TabsTrigger value="parameters" data-testid="submission-tab-parameters">Parameters</TabsTrigger>
           <TabsTrigger value="context" data-testid="submission-tab-context">Render context</TabsTrigger>
@@ -219,6 +269,22 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
           />
         </TabsContent>
         {inline !== undefined && (
+          <TabsContent value="landings" className="flex flex-col gap-3">
+            <p className="text-[13px] text-muted-foreground">
+              The submission wrote one file per dataset into the landing folder its flow declares, for the pre-ingestion
+              flow named beside it. Those files are what the pre and ingestion runs load, so every record delivered from
+              them carries the file name below as its origin.
+            </p>
+            <DataTable
+              columns={landingColumns}
+              rows={inline.landings}
+              rowKey={(row) => row.dataset}
+              emptyMessage="No files landed yet: the submission was accepted and its files have not been written."
+              data-testid="submission-landings"
+            />
+          </TabsContent>
+        )}
+        {inline !== undefined && (
           <TabsContent value="records" className="flex flex-col gap-3">
             <Card className="gap-2 rounded-lg p-3" data-testid="submission-inline-summary">
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -228,15 +294,26 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
                 <DetailPair label="Records">
                   <span className="font-mono tabular-nums">{inline.recordCount} ({inline.childRowCount} child rows)</span>
                 </DetailPair>
-                <DetailPair label="Written for the flow">
-                  {inline.writtenUtc !== null
-                    ? <RelativeTime value={inline.writtenUtc} absolute />
+                <DetailPair label="How far it got">
+                  <Badge variant="outline" className="font-mono" data-testid="submission-inline-status">{inline.status}</Badge>
+                </DetailPair>
+                <DetailPair label="Landed for the pre flows">
+                  {inline.landedUtc !== null
+                    ? <RelativeTime value={inline.landedUtc} absolute />
                     : <span className="text-muted-foreground">not yet</span>}
+                </DetailPair>
+                <DetailPair label="OSDU run">
+                  {inline.osduRunId
+                    ? <RouterLink to={`/runs/${inline.osduRunId}`} className="font-mono text-[12px] text-primary hover:underline">{inline.osduRunId.slice(0, 8)}</RouterLink>
+                    : <span className="text-muted-foreground">not queued yet</span>}
                 </DetailPair>
                 <DetailPair label="Content hash">
                   <TruncatedText text={inline.contentHash} mono maxWidth={220} copy copyTestId="copy-submission-content-hash" />
                 </DetailPair>
               </div>
+              {inline.error !== null && (
+                <p className="text-[13px] text-destructive" data-testid="submission-inline-error">{inline.error}</p>
+              )}
             </Card>
             <CodeView value={JSON.stringify(inline.records, null, 2)} language="json" height={420} data-testid="submission-inline-records" />
           </TabsContent>

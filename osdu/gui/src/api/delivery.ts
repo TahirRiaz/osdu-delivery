@@ -15,6 +15,13 @@ export const DELIVERY_RECORD_STATUSES: readonly DeliveryRecordStatus[] = [
 
 export type DeliverySubmissionStatus = "received" | "planned" | "running" | "completed" | "failed";
 
+/**
+ * What a submission read from the ingestion tables: the rows changed in a window after the scope's watermark
+ * (`incremental`), every row of the scope (`full`), the keys a record-scoped or replanned run named (`keys`), or the
+ * records an API submission landed (`inline`).
+ */
+export type DeliverySubmissionKind = "incremental" | "full" | "keys" | "inline";
+
 export type DeliveryVerifyOutcome = "match" | "drifted" | "missing" | "error";
 
 /** A delivery flow's record counts by state, drift, throughput, and its last submission. */
@@ -66,10 +73,27 @@ export interface DeliverySubmission {
   /** Where the intake wrote the work batches (the rendered documents the drains read). */
   workLocation: string | null;
   batchCount: number;
-  /** How many partitions the intake planned the submission in. */
-  partitions: number;
+  /** How many key slices the intake cut the submission into for its fan-out members; 0 when it fanned out none. */
+  slices: number;
   /** What the sending system calls this submission in its own records; null when it named none. */
   reference: string | null;
+  /** Which selection the plan read from the ingestion tables. */
+  kind: DeliverySubmissionKind;
+  /** Rows the plan read that carried no complete record key, so nothing could be delivered under them. */
+  untracked: number;
+  /** The connection reference of the ingestion database as the flow declares it; never a resolved secret. */
+  sourceConnection: string;
+  /** The three-part name of the ingestion table the records were read from. */
+  sourceObject: string;
+  /** The change window the plan covered, on the ingestion tables' updated column; null for a plan with no window. */
+  windowFromUtc: string | null;
+  windowToUtc: string | null;
+  /** What else bounded the read: the child dataset objects, the overlap, the scope values, the slice bounds, the key count. */
+  sourceWindow: Record<string, unknown> | null;
+  /** The run that coordinated the submission. */
+  runId: string | null;
+  /** The chain run group that carried it: the pre, ingestion and OSDU runs an API submission queued. */
+  groupId: string | null;
 }
 
 /** One work batch of a submission: a file of rendered documents and how far its drain got. */
@@ -90,6 +114,29 @@ export interface DeliveryWorkBatch {
   failed: number;
   retrying: number;
   error: string | null;
+}
+
+/**
+ * One file an API submission landed for a pre-ingestion flow, and what became of it. The file name is the value
+ * `FileName_DW` takes on every row the ingestion tables load from it, which is what resolves a delivered record's
+ * origin file back to the submission that landed it.
+ */
+export interface DeliverySubmissionLanding {
+  /** `record`, or the name of a child dataset. */
+  dataset: string;
+  /** The pre-ingestion flow that reads the landing folder. */
+  preFlowName: string;
+  location: string;
+  fileName: string;
+  /** csv, ndjson, json or parquet: the format the pre flow declares. */
+  format: string;
+  rowCount: number;
+  bytes: number;
+  contentHash: string;
+  /** When the file was written; null while the submission has been accepted but not landed. */
+  writtenUtc: string | null;
+  /** The pre flow's member run that took the file. */
+  preRunId: string | null;
 }
 
 export interface DeliverySubmissionDetail {
@@ -485,6 +532,12 @@ export interface DeliveryInlineRecord {
 export type DeliverySubmissionOperation = "deliver" | "plan";
 
 /**
+ * How far an API submission got: stored (`accepted`), written as files for the pre-ingestion flows (`landed`), its
+ * chain of pre, ingestion and OSDU runs enqueued (`queued`), and then `completed` or `failed`.
+ */
+export type DeliveryInlineSubmissionStatus = "accepted" | "landed" | "queued" | "completed" | "failed";
+
+/**
  * A submission of records to a flow. `operation` is deliver (the default) or plan; `submissionId` is the idempotency key
  * of the records.
  */
@@ -504,6 +557,11 @@ export interface DeliverySubmissionRequest {
    * is refused.
    */
   reference?: string | null;
+  /**
+   * Writes the landing files again from what the ledger stored before the chain is queued, for a submission whose
+   * files were removed from the landing folders.
+   */
+  reland?: boolean;
 }
 
 export interface DeliverySubmissionAccepted {
@@ -515,6 +573,8 @@ export interface DeliverySubmissionAccepted {
   submissionId: string | null;
   /** True when this answered a repeat of a request already accepted: the run is the one that request started. */
   replayed: boolean;
+  /** The chain run group the submission queued: the pre, ingestion and OSDU runs that deliver it. */
+  groupId: string | null;
 }
 
 /** A parameter a flow declares. */
@@ -588,14 +648,17 @@ export interface DeliverySourceContract {
   /** The child datasets, each with the columns of its rows. */
   datasets: DeliverySourceDataset[];
   lastModifiedColumn: string | null;
-  fingerprintColumn: string | null;
+  /** The three-part name of the ingestion table the flow reads its records from. */
+  sourceObject: string;
+  /** The ingestion system column the flow windows its incremental reads on, usually `UpdatedDate_DW`. */
+  updatedColumn: string;
   /** Why the columns are unknown, when the catalog cannot read the flow's pinned mapping. */
   mappingProblem: string | null;
   maxRecords: number;
   maxChildRows: number;
   maxContentBytes: number;
-  /** The payload the flow streams, which every record then points at under `files`; null when it streams none. */
-  payloadName: string | null;
+  /** The payloads the flow streams, which every record then points at under `files`; empty when it streams none. */
+  payloads: string[];
   /** True when each record has to carry the payload's content hash: the flow decides payload changes by hash. */
   payloadHashRequired: boolean;
   /** Where a record's payload files may sit: the roots the flow allows. */
@@ -614,8 +677,8 @@ export interface DeliveryManualFlow {
   /** Why the flow takes no records; null when it does. */
   recordsRefusal: string | null;
   parameters: DeliveryFlowParameter[];
-  /** The payload its records point at; null when the flow streams no files. */
-  payloadName: string | null;
+  /** The payloads its records point at; empty when the flow streams no files. */
+  payloads: string[];
   /** The template kind the flow's mapping fills; null when the mapping is not synced or is invalid. */
   templateKind: string | null;
   /** The template version the flow's mapping pins; null when the mapping is not synced or is invalid. */
@@ -638,10 +701,22 @@ export interface DeliveryInlineSubmission {
   contentHash: string;
   receivedUtc: string;
   receivedBy: string;
-  /** When a run wrote the records where the flow reads them; null until then. */
-  writtenUtc: string | null;
+  /** How far the submission got: accepted, landed as files, its chain queued, and then completed or failed. */
+  status: DeliveryInlineSubmissionStatus;
+  /** When the landing files were written for the pre-ingestion flows; null until then. */
+  landedUtc: string | null;
+  /** The chain run group of pre, ingestion and OSDU runs the submission queued. */
+  groupId: string | null;
+  /** The OSDU flow's own run in that group. */
+  osduRunId: string | null;
+  /** Why it failed, redacted; null while it has not. */
+  error: string | null;
+  /** The file landed for each dataset, and the pre run that took it. */
+  landings: DeliverySubmissionLanding[];
   runIds: string[];
   records: DeliveryInlineRecord[];
+  /** What the sending system calls this submission in its own records; null when it named none. */
+  reference: string | null;
 }
 
 export interface DeliveryRunAccepted {
@@ -1259,6 +1334,11 @@ export const deliveryApi = {
   verify: (key: string) => post<DeliveryRunAccepted>(`/api/v1/delivery/records/${key}/verify`),
   /** Queues a read-back of the record as OSDU holds it; poll the task for the document. */
   read: (key: string) => post<ComputeTaskAccepted>(`/api/v1/delivery/records/${key}/read`),
+  /**
+   * Queues a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its
+   * system columns, its child datasets, and the origin file and row the ingestion tables record. Poll the task.
+   */
+  readSource: (key: string) => post<ComputeTaskAccepted>(`/api/v1/delivery/records/${key}/source`),
   /** Where the flow's records live, and which call each removal scope makes against them. */
   target: (pipelineId: string) => get<DeliveryTarget>(`/api/v1/delivery/flows/${pipelineId}/target`),
   /** What a removal would act on, without removing anything: the confirmation's contents. */

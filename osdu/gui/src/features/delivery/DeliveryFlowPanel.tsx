@@ -338,7 +338,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
           rows={submissions.data}
           rowKey={(row) => row.submissionId}
           onRowClick={(row) => navigate(`/delivery/submissions/${row.submissionId}`)}
-          emptyMessage="No submissions yet. A submission is one set of records handed over for delivery."
+          emptyMessage="No submissions yet. A submission is one plan of this flow over its ingestion tables."
           data-testid="delivery-submissions-table"
         />
       )}
@@ -382,6 +382,7 @@ const submissionColumns: Column<DeliverySubmission>[] = [
       </div>
     ),
   },
+  { id: "kind", header: "Read", render: (row) => <Badge variant="outline" className="font-mono text-[11px]">{row.kind}</Badge> },
   { id: "received", header: "Received", render: (row) => <RelativeTime value={row.receivedUtc} /> },
   { id: "records", header: "Records", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.recordCount}</span> },
   { id: "planned", header: "Planned", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.planned}</span> },
