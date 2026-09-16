@@ -883,8 +883,14 @@ public static class DeliveryModel
             e.Property(r => r.PendingPayloadLocation).HasMaxLength(2000);
             e.Property(r => r.PendingDocumentRef).HasMaxLength(64);
 
-            // Worker and intake paths.
-            e.HasIndex(r => new { r.FlowId, r.Status, r.NextAttemptUtc });
+            // Worker and intake paths. The worker's reads (the claim, what is due next, what is still leased, the settled
+            // submissions with due work) are answered from these two alone, for a flow and for one submission of it: a
+            // read that went on from an index to the record would hold its place in the index while waiting for a record
+            // another node is writing, and that node, moving the record in the same index, would wait for it in turn.
+            e.HasIndex(r => new { r.FlowId, r.Status, r.NextAttemptUtc })
+                .IncludeProperties(r => new { r.LastSubmissionId, r.LeaseExpiresUtc, r.UpdatedUtc, r.PendingDocumentRef });
+            e.HasIndex(r => new { r.FlowId, r.LastSubmissionId, r.Status, r.NextAttemptUtc })
+                .IncludeProperties(r => new { r.LeaseExpiresUtc, r.UpdatedUtc });
             // The rollout walks one set's records in key order, then flow order; the filtered index keeps untagged records out of it.
             e.HasIndex(r => new { r.CacheSetId, r.DeliveryKey, r.FlowId }).HasFilter("[CacheSetId] IS NOT NULL");
             // One OSDU record, one flow: the database refuses a second flow's claim on an id, whatever races the intakes run.

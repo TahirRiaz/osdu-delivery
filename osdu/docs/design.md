@@ -1135,6 +1135,13 @@ family under the parent: they pass the pipeline gate together, they are cancelle
 their root, and the run page shows the family. A host without a catalog cannot fan out
 and runs the whole submission itself.
 
+Every member writes the same record table, each pushing several records at once. The
+ledger keeps them from waiting on each other: no statement writes more than a thousand
+records, so the database never locks the whole table; staging locks only the records that
+exist, never a range of keys; the worker's reads come from covering indexes; and a
+statement the database ends as a deadlock victim runs again
+([ledger.md](ledger.md#many-nodes-one-table)).
+
 ### 16.5 The trace stays at operation grain
 
 Fifty million rows must not produce fifty million trace events. The run trace carries the

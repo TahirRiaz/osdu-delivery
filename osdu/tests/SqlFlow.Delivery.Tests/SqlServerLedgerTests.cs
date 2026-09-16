@@ -538,6 +538,225 @@ public class SqlServerLedgerTests
     }
 
     [SkippableFact]
+    public async Task A_batch_wider_than_a_slice_is_staged_leased_released_and_redelivered_a_slice_at_a_time_on_sql_server()
+    {
+        var ledger = await LedgerAsync(_clock);
+        var sliced = new OsduLedger(Database, _clock) { WriteSlice = 3 };
+        var owner = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+        await ledger.UpsertPendingAsync(owner, [Work("claimed", Guid.NewGuid(), "0:0:10", "mh", Now) with { FlowId = owner }]);
+        var s1 = Guid.NewGuid();
+        await ledger.UpsertPendingAsync(_flow, [Work("newer-0", s1, "0:0:10", "mh", Now), Work("newer-1", s1, "0:10:10", "mh", Now)]);
+
+        // Ten records, three to a statement, so four slices in key order: two older than the work already queued, one
+        // whose OSDU id another flow owns, and seven new. Every slice's outcome is in the one result.
+        var s2 = Guid.NewGuid();
+        var fresh = Enumerable.Range(0, 7).Select(i => Work($"fresh-{i}", s2, $"0:{i * 10}:10", "mh", Now.AddDays(-1))).ToList();
+        var staging = await sliced.UpsertPendingAsync(_flow, [
+            .. fresh.Take(4),
+            Work("newer-0", s2, "0:0:10", "mh", Now.AddDays(-1)),
+            Work("claimed", s2, "0:0:10", "mh", Now.AddDays(-1)),
+            Work("newer-1", s2, "0:10:10", "mh", Now.AddDays(-1)),
+            .. fresh.Skip(4),
+        ]);
+        Assert.Equal(7, staging.Staged);
+        Assert.Equal(new[] { Key("newer-0"), Key("newer-1") }.Select(k => k.Value).Order(), staging.Refused.Select(k => k.Value).Order());
+        var conflict = Assert.Single(staging.Conflicts);
+        Assert.Equal((Key("claimed"), owner), (conflict.DeliveryKey, conflict.OwnerFlowId));
+        Assert.Equal(s1, (await ledger.GetRecordAsync(_flow, Key("newer-0")))!.LastSubmissionId);
+
+        // The batch's lease reaches all seven, and so do its renewal and its release.
+        await sliced.AddWorkBatchAsync(new WorkBatchState { SubmissionId = s2, FlowId = _flow, Index = 0, Location = "work/" + _run, RecordCount = 7, CreatedUtc = Now });
+        var claimed = await sliced.ClaimWorkBatchAsync(_flow, s2, "w1", TimeSpan.FromMinutes(5), Now);
+        var token = claimed!.Batch.LeaseOwner!;
+        Assert.Equal(fresh.Select(r => r.DeliveryKey.Value).Order(), claimed.Records.Select(r => r.DeliveryKey.Value).Order());
+        Assert.All(claimed.Records, r => Assert.Equal((RecordStatus.Delivering, token, 1), (r.Status, r.LeaseOwner, r.AttemptCount)));
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.True(await sliced.RenewWorkBatchLeaseAsync(s2, 0, token, TimeSpan.FromMinutes(5), Now));
+        foreach (var record in fresh)
+        {
+            Assert.Equal(Now.AddMinutes(5), (await ledger.GetRecordAsync(_flow, record.DeliveryKey))!.LeaseExpiresUtc);
+        }
+
+        await sliced.CompleteWorkBatchAsync(s2, 0, token, WorkBatchStatus.Failed, 0, 0, 0, 0, "the node stopped", Now);
+        Assert.Equal(7, await ledger.CountAsync(_flow, s2, RecordStatus.Pending));
+        foreach (var record in fresh)
+        {
+            var released = await ledger.GetRecordAsync(_flow, record.DeliveryKey);
+            Assert.Equal(((string?)null, 0), (released!.LeaseOwner, released.AttemptCount));
+        }
+
+        // Failed records are released, and then redelivered, a slice at a time.
+        await ledger.CompleteManyAsync(_flow, fresh.Select(r => new RecordCompletion
+        {
+            DeliveryKey = r.DeliveryKey,
+            Status = RecordStatus.Failed,
+            Error = "refused by the target",
+            Attempt = new AttemptRecord { DeliveryKey = r.DeliveryKey, SubmissionId = s2, Worker = "w1", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Failed, Phase = "metadata" },
+        }).ToList());
+        Assert.Equal(7, await ledger.CountAsync(_flow, s2, RecordStatus.Failed));
+        Assert.Equal(7, await sliced.ReleaseAsync(_flow, null, Now));
+        Assert.Equal(7, await ledger.CountAsync(_flow, s2, RecordStatus.Pending));
+        Assert.Equal(7, await sliced.ForceRedeliverAsync(_flow, fresh.Select(r => r.DeliveryKey), RedeliverScope.Metadata, Now));
+        Assert.Equal(7, (await ledger.ListPlanRequestedAsync(_flow, null, 20)).Count);
+    }
+
+    [SkippableFact]
+    public async Task Staging_leasing_and_releasing_thousands_of_records_never_lock_the_whole_record_table_on_sql_server()
+    {
+        // SQL Server turns a statement's row locks into a lock on the whole table once the statement holds 5,000 of them on
+        // one index, and a lock on the whole record table stops every node of every flow. Each write below reaches 6,000
+        // records, so each has to run in slices.
+        var ledger = await LedgerAsync(_clock);
+        const int Records = 6_000;
+        var s1 = Guid.NewGuid();
+        var records = Enumerable.Range(0, Records).Select(i => Work($"bulk-{i:D5}", s1, $"0:{i * 10}:10", "mh", Now.AddDays(-1))).ToList();
+        var before = await LockEscalationsAsync();
+
+        Assert.Equal(Records, (await ledger.UpsertPendingAsync(_flow, records)).Staged);
+        await ledger.AddWorkBatchAsync(new WorkBatchState { SubmissionId = s1, FlowId = _flow, Index = 0, Location = "work/" + _run, RecordCount = Records, CreatedUtc = Now });
+        var claimed = await ledger.ClaimWorkBatchAsync(_flow, s1, "w1", TimeSpan.FromMinutes(5), Now);
+        var token = claimed!.Batch.LeaseOwner!;
+        Assert.Equal(Records, claimed.Records.Count);
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.True(await ledger.RenewWorkBatchLeaseAsync(s1, 0, token, TimeSpan.FromMinutes(5), Now));
+        await using (var db = Database())
+        {
+            Assert.Equal(Records, await db.DeliveryRecords.CountAsync(r => r.FlowId == _flow && r.LeaseOwner == token && r.LeaseExpiresUtc == Now.AddMinutes(5)));
+        }
+
+        await ledger.CompleteWorkBatchAsync(s1, 0, token, WorkBatchStatus.Failed, 0, 0, 0, 0, "the node stopped", Now);
+        Assert.Equal(Records, await ledger.CountAsync(_flow, s1, RecordStatus.Pending));
+        Assert.Equal(Records, await ledger.ForceRedeliverAsync(_flow, records.Select(r => r.DeliveryKey), RedeliverScope.Metadata, Now));
+        Assert.Equal(before, await LockEscalationsAsync());
+
+        // The measure is live: one statement over the same records does lock the whole table, rolled back at once. The
+        // database escalates only while no other session holds a lock on the table, and other suites share it, so the
+        // statement is run until that moment comes.
+        await using var connection = new SqlConnection(ConnectionString.Value);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            BEGIN TRANSACTION;
+            UPDATE [osdu].[Record] SET [UpdatedUtc] = [UpdatedUtc] WHERE [FlowId] = @flow;
+            ROLLBACK TRANSACTION;
+            """;
+        command.Parameters.Add(new SqlParameter("@flow", System.Data.SqlDbType.UniqueIdentifier) { Value = _flow });
+        for (var attempt = 0; attempt < 50 && await LockEscalationsAsync() == before; attempt++)
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
+        Assert.True(await LockEscalationsAsync() > before, "One statement over 6,000 records should have locked the whole record table.");
+    }
+
+    [SkippableFact]
+    public async Task A_record_another_staging_inserts_while_a_slice_runs_is_compared_and_never_overwritten_on_sql_server()
+    {
+        // Staging locks the records that exist, never a range of keys, so another staging can insert a record after a slice
+        // looked for it. The table's key then refuses the slice's insert, and the slice runs again, finds the record and
+        // compares its work with it. The slice is held in its claim check, which reads the submission of the flow owning one
+        // of its OSDU ids, while another session that holds that submission inserts newer work for a record the slice is
+        // about to insert.
+        var ledger = await LedgerAsync(_clock);
+        var owner = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+        var owned = Guid.NewGuid();
+        await ledger.RegisterSubmissionAsync(new SubmissionState
+        {
+            SubmissionId = owned, FlowId = owner, FlowName = "owner-" + _run, MappingReference = "Thing@1.0.0", RenderContext = "{}",
+        });
+        await ledger.UpsertPendingAsync(owner, [Work("claimed", owned, "0:0:10", "mh", Now) with { FlowId = owner }]);
+        var s1 = Guid.NewGuid();
+        var older = Work("late", s1, "0:10:10", "mh-older", Now.AddDays(-2));
+
+        await using var other = new SqlConnection(ConnectionString.Value);
+        await other.OpenAsync();
+        await using var transaction = (SqlTransaction)await other.BeginTransactionAsync();
+        short session;
+        await using (var hold = other.CreateCommand())
+        {
+            hold.Transaction = transaction;
+            hold.CommandText = "SELECT [SubmissionId] FROM [osdu].[Submission] WITH (XLOCK, ROWLOCK) WHERE [SubmissionId] = @id; SELECT @@SPID;";
+            hold.Parameters.Add(new SqlParameter("@id", System.Data.SqlDbType.UniqueIdentifier) { Value = owned });
+            await using var reader = await hold.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.True(await reader.NextResultAsync() && await reader.ReadAsync());
+            session = reader.GetInt16(0);
+        }
+
+        var staging = Task.Run(() => ledger.UpsertPendingAsync(_flow, [older, Work("claimed", s1, "0:0:10", "mh", Now)]));
+        await WaitUntilBlockedAsync(session, staging);
+
+        await using (var db = new OsduDbContext(OsduDbContext.SqlServerOptions(other)))
+        {
+            await db.Database.UseTransactionAsync(transaction);
+            db.DeliveryRecords.Add(new DeliveryRecord
+            {
+                FlowId = _flow, DeliveryKey = older.DeliveryKey.Value, SourceKey = older.SourceKey, MappingName = older.MappingName, Status = "pending",
+                TargetId = older.TargetId, ClaimedTargetId = older.TargetId, LastSubmissionId = Guid.NewGuid(), PendingDocumentRef = "9:0:10",
+                PendingSourceModifiedUtc = Now.AddDays(-1), PendingMetadataHash = "mh-newer", CreatedUtc = Now, UpdatedUtc = Now,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await transaction.CommitAsync();
+        var result = await staging;
+        Assert.Equal(0, result.Staged);
+        Assert.Equal(older.DeliveryKey, Assert.Single(result.Refused));
+        Assert.Equal((Key("claimed"), owner), (Assert.Single(result.Conflicts).DeliveryKey, result.Conflicts[0].OwnerFlowId));
+        var kept = await ledger.GetRecordAsync(_flow, older.DeliveryKey);
+        Assert.Equal(("mh-newer", "9:0:10"), (kept!.PendingMetadataHash, kept.PendingDocumentRef));
+    }
+
+    private DeliveryKey Key(string name) => DeliveryKey.Derive("sqlserver-ledger-test", [_run, name]);
+
+    /// <summary>
+    /// How many times the database has locked the whole record table instead of its rows. It counts an escalation on the
+    /// index whose locks reached the threshold; attempts are counted on every index of a statement that holds many locks in
+    /// all, and say nothing on their own.
+    /// </summary>
+    private static async Task<long> LockEscalationsAsync()
+    {
+        await using var connection = new SqlConnection(ConnectionString.Value);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COALESCE(SUM(s.[index_lock_promotion_count]), 0)
+            FROM sys.dm_db_index_operational_stats(DB_ID(), OBJECT_ID(N'osdu.Record'), NULL, NULL) AS s;
+            """;
+        try
+        {
+            return Convert.ToInt64(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch (SqlException ex) when (ex.Number is 297 or 300)
+        {
+            Skip.If(true, "Counting lock escalations needs VIEW DATABASE PERFORMANCE STATE (or VIEW SERVER STATE) on the test database: " + ex.Message);
+            throw;
+        }
+    }
+
+    /// <summary>Waits until a request of another session is blocked by <paramref name="session"/>, failing if <paramref name="work"/> ends first.</summary>
+    private static async Task WaitUntilBlockedAsync(short session, Task work)
+    {
+        await using var connection = new SqlConnection(ConnectionString.Value);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE [blocking_session_id] = @session;";
+        command.Parameters.Add(new SqlParameter("@session", System.Data.SqlDbType.Int) { Value = (int)session });
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (Convert.ToInt32(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture) == 0)
+        {
+            if (work.IsCompleted)
+            {
+                await work;
+                Assert.Fail("The staging finished without waiting for the session that holds the owner's submission.");
+            }
+
+            Assert.True(DateTime.UtcNow < deadline, "The staging did not reach the claim check within 30 seconds.");
+            await Task.Delay(TimeSpan.FromMilliseconds(20));
+        }
+    }
+
+    [SkippableFact]
     public async Task The_scope_watermark_and_the_records_waiting_to_be_planned_round_trip_on_sql_server()
     {
         var ledger = await LedgerAsync(_clock);

@@ -382,6 +382,57 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task Writes_that_reach_more_records_than_a_slice_reach_every_one_of_them()
+    {
+        // Five records, two to a statement: each write below runs in three slices and must still reach all five.
+        var sliced = new OsduLedger(_db.CreateDbContext, _clock) { WriteSlice = 2 };
+        var submission = Guid.NewGuid();
+        var records = Enumerable.Range(0, 5).Select(i => Pending($"sliced-{i}", submission) with { WorkBatch = 0, PendingDocumentRef = $"0:{i * 10}:10" }).ToList();
+        Assert.Equal(5, (await sliced.UpsertPendingAsync(_flow, records)).Staged);
+        await sliced.AddWorkBatchAsync(new WorkBatchState { SubmissionId = submission, FlowId = _flow, Index = 0, Location = "batch-0", RecordCount = 5, CreatedUtc = Now });
+
+        var claimed = await sliced.ClaimWorkBatchAsync(_flow, submission, "w1", TimeSpan.FromMinutes(5), Now);
+        var token = claimed!.Batch.LeaseOwner!;
+        Assert.Equal(5, claimed.Records.Count);
+        Assert.All(claimed.Records, r => Assert.Equal((RecordStatus.Delivering, token, 1), (r.Status, r.LeaseOwner, r.AttemptCount)));
+
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.True(await sliced.RenewWorkBatchLeaseAsync(submission, 0, token, TimeSpan.FromMinutes(5), Now));
+        foreach (var record in records)
+        {
+            Assert.Equal(Now.AddMinutes(5), (await sliced.GetRecordAsync(_flow, record.DeliveryKey))!.LeaseExpiresUtc);
+        }
+
+        // Closing the batch hands back every record it never reached, without charging the try.
+        await sliced.CompleteWorkBatchAsync(submission, 0, token, WorkBatchStatus.Failed, 0, 0, 0, 0, "the node stopped", Now);
+        foreach (var record in records)
+        {
+            var released = await sliced.GetRecordAsync(_flow, record.DeliveryKey);
+            Assert.Equal((RecordStatus.Pending, (string?)null, 0), (released!.Status, released.LeaseOwner, released.AttemptCount));
+        }
+
+        // An expired lease on every record is reclaimed by the sweep.
+        Assert.Equal(5, (await sliced.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(1), Now)).Count);
+        _clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.Equal(5, await sliced.ReclaimExpiredLeasesAsync(_flow, Now));
+        Assert.Equal(5, await sliced.CountAsync(_flow, submission, RecordStatus.Pending));
+
+        // Failed records are released, and then redelivered, a slice at a time.
+        await sliced.CompleteManyAsync(_flow, records.Select(r => new RecordCompletion
+        {
+            DeliveryKey = r.DeliveryKey,
+            Status = RecordStatus.Failed,
+            Error = "refused by the target",
+            Attempt = new AttemptRecord { DeliveryKey = r.DeliveryKey, SubmissionId = submission, Worker = "w2", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Failed, Phase = "metadata" },
+        }).ToList());
+        Assert.Equal(5, await sliced.CountAsync(_flow, submission, RecordStatus.Failed));
+        Assert.Equal(5, await sliced.ReleaseAsync(_flow, null, Now));
+        Assert.Equal(5, await sliced.CountAsync(_flow, submission, RecordStatus.Pending));
+        Assert.Equal(5, await sliced.ForceRedeliverAsync(_flow, records.Select(r => r.DeliveryKey), RedeliverScope.Metadata, Now));
+        Assert.Equal(5, (await sliced.ListPlanRequestedAsync(_flow, null, 10)).Count);
+    }
+
+    [Fact]
     public async Task Step_progress_and_next_due_are_tracked_on_the_record()
     {
         var submission = Guid.NewGuid();

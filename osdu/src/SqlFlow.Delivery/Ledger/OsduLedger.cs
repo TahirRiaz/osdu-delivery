@@ -37,6 +37,17 @@ public sealed class OsduLedger : ILedger
     /// <summary>The most records a contains search reads (<see cref="RecordListing.ContainsScanLimit"/>); tests lower it.</summary>
     internal int ContainsScanLimit { get; init; } = RecordListing.ContainsScanLimit;
 
+    /// <summary>
+    /// The most records one statement writes when a write can reach more (1,000; tests lower it): a staging slice, a
+    /// batch's lease, a release or redelivery. SQL Server turns the row locks of a statement holding 5,000 of them on one
+    /// index into a lock on the whole table, which would stop every other node and flow writing records while it ran; a
+    /// record's write takes a lock in each index it changes, and at most two there.
+    /// </summary>
+    internal int WriteSlice { get; init; } = 1_000;
+
+    /// <summary>How many times a claim or lease statement runs when the database ends a deadlock by rolling it back.</summary>
+    private const int DeadlockAttempts = 5;
+
     public OsduLedger(Func<OsduDbContext> factory, TimeProvider? time = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
@@ -181,7 +192,7 @@ public sealed class OsduLedger : ILedger
         await using var db = Open();
         if (SqlServerLedgerBulk.Applies(db))
         {
-            return await SqlServerLedgerBulk.UpsertPendingAsync(db, flowId, records, now, ct).ConfigureAwait(false);
+            return await SqlServerLedgerBulk.UpsertPendingAsync(db, flowId, records, WriteSlice, now, ct).ConfigureAwait(false);
         }
 
         var delivering = StatusText.Of(RecordStatus.Delivering);
@@ -535,53 +546,85 @@ public sealed class OsduLedger : ILedger
         var delivering = StatusText.Of(RecordStatus.Delivering);
 
         await using var db = Open();
-        var candidates = await db.DeliveryRecords
-            .Where(r => r.FlowId == flowId
-                && (submissionId == null || r.LastSubmissionId == submissionId)
-                && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
-                    || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc)))
-            .OrderBy(r => r.NextAttemptUtc)
-            .ThenBy(r => r.UpdatedUtc)
-            .Select(r => r.DeliveryKey)
-            .Take(Math.Clamp(max, 1, ChunkSize))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        var candidates = await RetryDeadlockAsync(
+            () => db.DeliveryRecords
+                .Where(r => r.FlowId == flowId
+                    && (submissionId == null || r.LastSubmissionId == submissionId)
+                    && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
+                        || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc)))
+                .OrderBy(r => r.NextAttemptUtc)
+                .ThenBy(r => r.UpdatedUtc)
+                .Select(r => r.DeliveryKey)
+                .Take(Math.Clamp(max, 1, ChunkSize))
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
 
         if (candidates.Count == 0)
         {
             return [];
         }
 
-        var claimed = await db.DeliveryRecords
-            .Where(r => r.FlowId == flowId
-                && candidates.Contains(r.DeliveryKey)
-                && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
-                    || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc)))
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.Status, delivering)
-                .SetProperty(r => r.LeaseOwner, token)
-                .SetProperty(r => r.LeaseExpiresUtc, expires)
-                .SetProperty(r => r.AttemptCount, r => r.AttemptCount + 1)
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct)
-            .ConfigureAwait(false);
+        // The claim is one statement, and a record it leased no longer matches it, so running it again after a deadlock
+        // leases what the first run would have.
+        var claimed = await RetryDeadlockAsync(
+            () => db.DeliveryRecords
+                .Where(r => r.FlowId == flowId
+                    && candidates.Contains(r.DeliveryKey)
+                    && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
+                        || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc)))
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.Status, delivering)
+                    .SetProperty(r => r.LeaseOwner, token)
+                    .SetProperty(r => r.LeaseExpiresUtc, expires)
+                    .SetProperty(r => r.AttemptCount, r => r.AttemptCount + 1)
+                    .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+            ct).ConfigureAwait(false);
 
         if (claimed == 0)
         {
             return [];
         }
 
-        var rows = await db.DeliveryRecords.AsNoTracking().Where(r => r.LeaseOwner == token).ToListAsync(ct).ConfigureAwait(false);
+        return await LeasedAsync(db, token, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The records leased under <paramref name="token"/>.</summary>
+    private static async Task<IReadOnlyList<RecordState>> LeasedAsync(OsduDbContext db, string token, CancellationToken ct)
+    {
+        var rows = await RetryDeadlockAsync(() => db.DeliveryRecords.AsNoTracking().Where(r => r.LeaseOwner == token).ToListAsync(ct), ct).ConfigureAwait(false);
         return rows.Select(ToState).ToList();
+    }
+
+    /// <summary>
+    /// Runs <paramref name="work"/>, and again when the database ended a deadlock by rolling it back. Only for a read, or
+    /// for one statement whose second run does what the first would have: a claim, a lease, a release.
+    /// </summary>
+    private static async Task<T> RetryDeadlockAsync<T>(Func<Task<T>> work, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await work().ConfigureAwait(false);
+            }
+            catch (Exception ex) when (attempt < DeadlockAttempts && SqlServerLedgerBulk.IsDeadlock(ex))
+            {
+                // Waiting a moment, longer each time and never the same for two writers, keeps the two from meeting in
+                // the same way again.
+                await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(10, 50) * attempt), ct).ConfigureAwait(false);
+            }
+        }
     }
 
     public async Task<bool> RenewLeaseAsync(Guid flowId, DeliveryKey key, string owner, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default)
     {
         await using var db = Open();
         var expires = nowUtc + lease;
-        var affected = await db.DeliveryRecords
-            .Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value && r.LeaseOwner == owner)
-            .ExecuteUpdateAsync(s => s.SetProperty(r => r.LeaseExpiresUtc, expires), ct)
-            .ConfigureAwait(false);
+        var affected = await RetryDeadlockAsync(
+            () => db.DeliveryRecords
+                .Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value && r.LeaseOwner == owner)
+                .ExecuteUpdateAsync(s => s.SetProperty(r => r.LeaseExpiresUtc, expires), ct),
+            ct).ConfigureAwait(false);
         return affected > 0;
     }
 
@@ -591,16 +634,17 @@ public sealed class OsduLedger : ILedger
         await using var db = Open();
         var delivering = StatusText.Of(RecordStatus.Delivering);
         var pending = StatusText.Of(RecordStatus.Pending);
-        var affected = await db.DeliveryRecords
-            .Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value && r.LeaseOwner == owner && r.Status == delivering)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.Status, pending)
-                .SetProperty(r => r.LeaseOwner, (string?)null)
-                .SetProperty(r => r.LeaseExpiresUtc, (DateTime?)null)
-                .SetProperty(r => r.AttemptCount, r => countAttempt ? r.AttemptCount : (r.AttemptCount > 0 ? r.AttemptCount - 1 : 0))
-                .SetProperty(r => r.LastError, "the worker stopped mid-attempt and released the record for the next pass")
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct)
-            .ConfigureAwait(false);
+        var affected = await RetryDeadlockAsync(
+            () => db.DeliveryRecords
+                .Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value && r.LeaseOwner == owner && r.Status == delivering)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.Status, pending)
+                    .SetProperty(r => r.LeaseOwner, (string?)null)
+                    .SetProperty(r => r.LeaseExpiresUtc, (DateTime?)null)
+                    .SetProperty(r => r.AttemptCount, r => countAttempt ? r.AttemptCount : (r.AttemptCount > 0 ? r.AttemptCount - 1 : 0))
+                    .SetProperty(r => r.LastError, "the worker stopped mid-attempt and released the record for the next pass")
+                    .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+            ct).ConfigureAwait(false);
         return affected > 0;
     }
 
@@ -632,7 +676,8 @@ public sealed class OsduLedger : ILedger
         await using var db = Open();
         if (SqlServerLedgerBulk.Applies(db) && completions.Count > 1)
         {
-            await SqlServerLedgerBulk.CompleteManyAsync(db, flowId, completions, now, ct).ConfigureAwait(false);
+            // A deadlock rolls the whole completion back, attempts included, and the statement reads each record afresh.
+            await RetryDeadlockAsync(() => SqlServerLedgerBulk.CompleteManyAsync(db, flowId, completions, now, ct), ct).ConfigureAwait(false);
             return;
         }
 
@@ -802,28 +847,31 @@ public sealed class OsduLedger : ILedger
         var pending = StatusText.Of(RecordStatus.Pending);
         var running = StatusText.Of(WorkBatchStatus.Running);
         var queued = StatusText.Of(WorkBatchStatus.Queued);
-        await db.DeliveryWorkBatches
-            .Where(b => b.FlowId == flowId && b.Status == running && b.LeaseExpiresUtc != null && b.LeaseExpiresUtc < beforeUtc)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, queued)
-                .SetProperty(b => b.LeaseOwner, (string?)null)
-                .SetProperty(b => b.LeaseExpiresUtc, (DateTime?)null), ct)
-            .ConfigureAwait(false);
-        return await db.DeliveryRecords
-            .Where(r => r.FlowId == flowId && r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < beforeUtc)
-            .ExecuteUpdateAsync(s => s
+        await RetryDeadlockAsync(
+            () => db.DeliveryWorkBatches
+                .Where(b => b.FlowId == flowId && b.Status == running && b.LeaseExpiresUtc != null && b.LeaseExpiresUtc < beforeUtc)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(b => b.Status, queued)
+                    .SetProperty(b => b.LeaseOwner, (string?)null)
+                    .SetProperty(b => b.LeaseExpiresUtc, (DateTime?)null), ct),
+            ct).ConfigureAwait(false);
+        return await WriteEachAsync(
+            db.DeliveryRecords.Where(r => r.FlowId == flowId && r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < beforeUtc),
+            slice => slice.ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, pending)
                 .SetProperty(r => r.LeaseOwner, (string?)null)
                 .SetProperty(r => r.LeaseExpiresUtc, (DateTime?)null)
-                .SetProperty(r => r.LastError, "the lease expired mid-attempt (the worker stopped) and the record was requeued"), ct)
-            .ConfigureAwait(false);
+                .SetProperty(r => r.LastError, "the lease expired mid-attempt (the worker stopped) and the record was requeued"), ct),
+            ct).ConfigureAwait(false);
     }
 
     public async Task<long> CountAsync(Guid flowId, Guid? submissionId, RecordStatus status, CancellationToken ct = default)
     {
         await using var db = Open();
         var text = StatusText.Of(status);
-        return await db.DeliveryRecords.LongCountAsync(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == text, ct).ConfigureAwait(false);
+        return await RetryDeadlockAsync(
+            () => db.DeliveryRecords.LongCountAsync(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == text, ct),
+            ct).ConfigureAwait(false);
     }
 
     public async Task<bool> HasPendingAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
@@ -831,29 +879,33 @@ public sealed class OsduLedger : ILedger
         await using var db = Open();
         var pending = StatusText.Of(RecordStatus.Pending);
         var delivering = StatusText.Of(RecordStatus.Delivering);
-        return await db.DeliveryRecords.AnyAsync(r => r.FlowId == flowId
-            && (submissionId == null || r.LastSubmissionId == submissionId)
-            && (r.Status == pending || r.Status == delivering), ct).ConfigureAwait(false);
+        return await RetryDeadlockAsync(
+            () => db.DeliveryRecords.AnyAsync(r => r.FlowId == flowId
+                && (submissionId == null || r.LastSubmissionId == submissionId)
+                && (r.Status == pending || r.Status == delivering), ct),
+            ct).ConfigureAwait(false);
     }
 
     public async Task<DateTime?> NextDueAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
     {
         await using var db = Open();
         var pending = StatusText.Of(RecordStatus.Pending);
-        return await db.DeliveryRecords
-            .Where(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == pending && r.NextAttemptUtc != null && r.NextAttemptUtc > nowUtc)
-            .MinAsync(r => r.NextAttemptUtc, ct)
-            .ConfigureAwait(false);
+        return await RetryDeadlockAsync(
+            () => db.DeliveryRecords
+                .Where(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == pending && r.NextAttemptUtc != null && r.NextAttemptUtc > nowUtc)
+                .MinAsync(r => r.NextAttemptUtc, ct),
+            ct).ConfigureAwait(false);
     }
 
     public async Task<DateTime?> NextLeaseExpiryAsync(Guid flowId, Guid? submissionId, CancellationToken ct = default)
     {
         await using var db = Open();
         var delivering = StatusText.Of(RecordStatus.Delivering);
-        return await db.DeliveryRecords
-            .Where(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == delivering && r.LeaseExpiresUtc != null)
-            .MinAsync(r => r.LeaseExpiresUtc, ct)
-            .ConfigureAwait(false);
+        return await RetryDeadlockAsync(
+            () => db.DeliveryRecords
+                .Where(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == delivering && r.LeaseExpiresUtc != null)
+                .MinAsync(r => r.LeaseExpiresUtc, ct),
+            ct).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, Guid? except, DateTime nowUtc, int max, CancellationToken ct = default)
@@ -924,55 +976,61 @@ public sealed class OsduLedger : ILedger
         // Losing the race for a candidate is ordinary; the next candidate is tried a few times before answering "nothing now".
         for (var attempt = 0; attempt < 3; attempt++)
         {
-            var candidate = await db.DeliveryWorkBatches.AsNoTracking()
-                .Where(b => b.FlowId == flowId
-                    && (submissionId == null || b.SubmissionId == submissionId)
-                    && (b.Status == queued || (b.Status == running && b.LeaseExpiresUtc != null && b.LeaseExpiresUtc < nowUtc)))
-                .OrderBy(b => b.CreatedUtc)
-                .ThenBy(b => b.Index)
-                .Select(b => new { b.SubmissionId, b.Index })
-                .FirstOrDefaultAsync(ct)
-                .ConfigureAwait(false);
+            var candidate = await RetryDeadlockAsync(
+                () => db.DeliveryWorkBatches.AsNoTracking()
+                    .Where(b => b.FlowId == flowId
+                        && (submissionId == null || b.SubmissionId == submissionId)
+                        && (b.Status == queued || (b.Status == running && b.LeaseExpiresUtc != null && b.LeaseExpiresUtc < nowUtc)))
+                    .OrderBy(b => b.CreatedUtc)
+                    .ThenBy(b => b.Index)
+                    .Select(b => new { b.SubmissionId, b.Index })
+                    .FirstOrDefaultAsync(ct),
+                ct).ConfigureAwait(false);
             if (candidate is null)
             {
                 return null;
             }
 
             var token = owner + "/" + Guid.NewGuid().ToString("N");
-            var won = await db.DeliveryWorkBatches
-                .Where(b => b.SubmissionId == candidate.SubmissionId && b.Index == candidate.Index
-                    && (b.Status == queued || (b.Status == running && b.LeaseExpiresUtc != null && b.LeaseExpiresUtc < nowUtc)))
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(b => b.Status, running)
-                    .SetProperty(b => b.LeaseOwner, token)
-                    .SetProperty(b => b.LeaseExpiresUtc, expires)
-                    .SetProperty(b => b.RunId, b => runId ?? b.RunId)
-                    .SetProperty(b => b.StartedUtc, b => b.StartedUtc ?? nowUtc), ct)
-                .ConfigureAwait(false);
+            var won = await RetryDeadlockAsync(
+                () => db.DeliveryWorkBatches
+                    .Where(b => b.SubmissionId == candidate.SubmissionId && b.Index == candidate.Index
+                        && (b.Status == queued || (b.Status == running && b.LeaseExpiresUtc != null && b.LeaseExpiresUtc < nowUtc)))
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(b => b.Status, running)
+                        .SetProperty(b => b.LeaseOwner, token)
+                        .SetProperty(b => b.LeaseExpiresUtc, expires)
+                        .SetProperty(b => b.RunId, b => runId ?? b.RunId)
+                        .SetProperty(b => b.StartedUtc, b => b.StartedUtc ?? nowUtc), ct),
+                ct).ConfigureAwait(false);
             if (won == 0)
             {
                 continue;
             }
 
             // Lease the batch's records that are due under the same token: the individual claim path then never
-            // sees them, and an expired lease hands them back exactly as for a single record.
+            // sees them, and an expired lease hands them back exactly as for a single record. The lease is a slice of
+            // the batch at a time, however large the batch, and a record claimed elsewhere meanwhile is no longer due.
             var pending = StatusText.Of(RecordStatus.Pending);
             var delivering = StatusText.Of(RecordStatus.Delivering);
-            await db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index
-                    && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
-                        || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc)))
-                .ExecuteUpdateAsync(s => s
+            await WriteEachAsync(
+                db.DeliveryRecords.Where(r => r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index && r.FlowId == flowId),
+                db.DeliveryRecords
+                    .Where(r => r.FlowId == flowId && r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index
+                        && ((r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
+                            || (r.Status == delivering && r.LeaseExpiresUtc != null && r.LeaseExpiresUtc < nowUtc))),
+                slice => slice.ExecuteUpdateAsync(s => s
                     .SetProperty(r => r.Status, delivering)
                     .SetProperty(r => r.LeaseOwner, token)
                     .SetProperty(r => r.LeaseExpiresUtc, expires)
                     .SetProperty(r => r.AttemptCount, r => r.AttemptCount + 1)
-                    .SetProperty(r => r.UpdatedUtc, nowUtc), ct)
-                .ConfigureAwait(false);
+                    .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+                ct).ConfigureAwait(false);
 
-            var batch = await db.DeliveryWorkBatches.AsNoTracking().FirstAsync(b => b.SubmissionId == candidate.SubmissionId && b.Index == candidate.Index, ct).ConfigureAwait(false);
-            var rows = await db.DeliveryRecords.AsNoTracking().Where(r => r.LeaseOwner == token).ToListAsync(ct).ConfigureAwait(false);
-            return new ClaimedWorkBatch(ToState(batch), rows.Select(ToState).ToList());
+            var batch = await RetryDeadlockAsync(
+                () => db.DeliveryWorkBatches.AsNoTracking().FirstAsync(b => b.SubmissionId == candidate.SubmissionId && b.Index == candidate.Index, ct),
+                ct).ConfigureAwait(false);
+            return new ClaimedWorkBatch(ToState(batch), await LeasedAsync(db, token, ct).ConfigureAwait(false));
         }
 
         return null;
@@ -991,10 +1049,10 @@ public sealed class OsduLedger : ILedger
             return false;
         }
 
-        await db.DeliveryRecords
-            .Where(r => r.LeaseOwner == owner)
-            .ExecuteUpdateAsync(s => s.SetProperty(r => r.LeaseExpiresUtc, expires), ct)
-            .ConfigureAwait(false);
+        await WriteEachAsync(
+            db.DeliveryRecords.Where(r => r.LeaseOwner == owner),
+            slice => slice.ExecuteUpdateAsync(s => s.SetProperty(r => r.LeaseExpiresUtc, expires), ct),
+            ct).ConfigureAwait(false);
         return true;
     }
 
@@ -1036,20 +1094,67 @@ public sealed class OsduLedger : ILedger
         return affected > 0;
     }
 
-    private static async Task ReleaseRecordsAsync(OsduDbContext db, string owner, DateTime nowUtc, CancellationToken ct)
+    private async Task ReleaseRecordsAsync(OsduDbContext db, string owner, DateTime nowUtc, CancellationToken ct)
     {
         var delivering = StatusText.Of(RecordStatus.Delivering);
         var pending = StatusText.Of(RecordStatus.Pending);
-        await db.DeliveryRecords
-            .Where(r => r.LeaseOwner == owner && r.Status == delivering)
-            .ExecuteUpdateAsync(s => s
+        await WriteEachAsync(
+            db.DeliveryRecords.Where(r => r.LeaseOwner == owner),
+            db.DeliveryRecords.Where(r => r.LeaseOwner == owner && r.Status == delivering),
+            slice => slice.ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, pending)
                 .SetProperty(r => r.LeaseOwner, (string?)null)
                 .SetProperty(r => r.LeaseExpiresUtc, (DateTime?)null)
                 .SetProperty(r => r.AttemptCount, r => r.AttemptCount > 0 ? r.AttemptCount - 1 : 0)
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct)
-            .ConfigureAwait(false);
+                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+            ct).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Runs <paramref name="write"/> over every record <paramref name="rows"/> matches: the records' keys are read first,
+    /// by a plain read that holds no lock past the row it is on, and then written <see cref="WriteSlice"/> to a statement
+    /// (<see cref="WriteByKeyAsync"/>). The keys take 32 bytes a record.
+    /// </summary>
+    private Task<int> WriteEachAsync(IQueryable<DeliveryRecord> rows, Func<IQueryable<DeliveryRecord>, Task<int>> write, CancellationToken ct)
+        => WriteEachAsync(rows, rows, write, ct);
+
+    /// <summary>
+    /// As <see cref="WriteEachAsync(IQueryable{DeliveryRecord}, Func{IQueryable{DeliveryRecord}, Task{int}}, CancellationToken)"/>,
+    /// with the keys read from <paramref name="find"/>: records that include every one <paramref name="rows"/> matches, and
+    /// that one index answers alone, however many other records the table holds. A found record <paramref name="rows"/>
+    /// does not match is left alone by its write.
+    /// </summary>
+    private async Task<int> WriteEachAsync(IQueryable<DeliveryRecord> find, IQueryable<DeliveryRecord> rows, Func<IQueryable<DeliveryRecord>, Task<int>> write, CancellationToken ct)
+    {
+        var keys = await RetryDeadlockAsync(() => find.Select(r => new RecordKey(r.FlowId, r.DeliveryKey)).ToListAsync(ct), ct).ConfigureAwait(false);
+        return await WriteByKeyAsync(rows, keys, write, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="write"/> over the records of <paramref name="rows"/> that <paramref name="keys"/> names,
+    /// <see cref="WriteSlice"/> to a statement. Each statement names its flow and keys, which every index of the record
+    /// table ends with, so the database finds each record with one seek and reads, and locks, no record it does not write.
+    /// <paramref name="rows"/> still applies, so a record that changed since its key was read is left as it now is.
+    /// </summary>
+    private async Task<int> WriteByKeyAsync(IQueryable<DeliveryRecord> rows, IEnumerable<RecordKey> keys, Func<IQueryable<DeliveryRecord>, Task<int>> write, CancellationToken ct)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(WriteSlice, 1);
+        var written = 0;
+        foreach (var flow in keys.GroupBy(k => k.FlowId))
+        {
+            var flowId = flow.Key;
+            foreach (var slice in flow.Select(k => k.DeliveryKey).Distinct().Chunk(WriteSlice))
+            {
+                ct.ThrowIfCancellationRequested();
+                written += await RetryDeadlockAsync(() => write(rows.Where(r => r.FlowId == flowId && slice.Contains(r.DeliveryKey))), ct).ConfigureAwait(false);
+            }
+        }
+
+        return written;
+    }
+
+    /// <summary>A record's key: its flow and its delivery key.</summary>
+    private readonly record struct RecordKey(Guid FlowId, Guid DeliveryKey);
 
     public async Task<IReadOnlyList<WorkBatchState>> ListWorkBatchesAsync(Guid submissionId, int max, int offset, CancellationToken ct = default)
     {
@@ -1460,21 +1565,28 @@ public sealed class OsduLedger : ILedger
             blocked = blocked.Where(r => ids.Contains(r.DeliveryKey));
         }
 
+        // A release of a whole flow is a slice at a time like any other.
         // Records that still hold their rendered document go straight back to the worker.
-        var requeued = await blocked.Where(r => r.PendingDocumentRef != null).ExecuteUpdateAsync(s => s
-            .SetProperty(r => r.Status, pending)
-            .SetProperty(r => r.Blocked, false)
-            .SetProperty(r => r.AttemptCount, 0)
-            .SetProperty(r => r.NextAttemptUtc, (DateTime?)null)
-            .SetProperty(r => r.LastError, (string?)null)
-            .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false);
+        var requeued = await WriteEachAsync(
+            blocked.Where(r => r.PendingDocumentRef != null),
+            slice => slice.ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.Status, pending)
+                .SetProperty(r => r.Blocked, false)
+                .SetProperty(r => r.AttemptCount, 0)
+                .SetProperty(r => r.NextAttemptUtc, (DateTime?)null)
+                .SetProperty(r => r.LastError, (string?)null)
+                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+            ct).ConfigureAwait(false);
 
         // The others are unblocked and asked to be planned again: the flow's next run reads their rows by key.
-        var unblocked = await blocked.Where(r => r.PendingDocumentRef == null).ExecuteUpdateAsync(s => s
-            .SetProperty(r => r.Blocked, false)
-            .SetProperty(r => r.PlanRequestedUtc, nowUtc)
-            .SetProperty(r => r.LastError, "released; the flow's next run plans it again from its ingestion rows")
-            .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false);
+        var unblocked = await WriteEachAsync(
+            blocked.Where(r => r.PendingDocumentRef == null),
+            slice => slice.ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.Blocked, false)
+                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
+                .SetProperty(r => r.LastError, "released; the flow's next run plans it again from its ingestion rows")
+                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+            ct).ConfigureAwait(false);
 
         return requeued + unblocked;
     }
@@ -1483,37 +1595,38 @@ public sealed class OsduLedger : ILedger
     {
         ArgumentNullException.ThrowIfNull(keys);
         await using var db = Open();
-        var ids = keys.Select(k => k.Value).ToArray();
-        var rows = db.DeliveryRecords.Where(r => r.FlowId == flowId && ids.Contains(r.DeliveryKey));
         var note = $"redelivery of {scope.ToString().ToLowerInvariant()} requested";
-        return scope switch
-        {
-            RedeliverScope.Metadata => await rows.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.MetadataHash, (string?)null)
-                .SetProperty(r => r.SourceFingerprint, (string?)null)
-                .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
-                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
-                .SetProperty(r => r.LastError, note)
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false),
-            RedeliverScope.Payload => await rows.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.PayloadHash, (string?)null)
-                .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
-                .SetProperty(r => r.SourceFingerprint, (string?)null)
-                .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
-                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
-                .SetProperty(r => r.LastError, note)
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false),
-            _ => await rows.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.MetadataHash, (string?)null)
-                .SetProperty(r => r.PayloadHash, (string?)null)
-                .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
-                .SetProperty(r => r.SourceFingerprint, (string?)null)
-                .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
-                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
-                .SetProperty(r => r.LastError, note)
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct).ConfigureAwait(false),
-        };
+        return await WriteByKeyAsync(db.DeliveryRecords, keys.Select(k => new RecordKey(flowId, k.Value)), rows => RedeliverAsync(rows, scope, note, nowUtc, ct), ct).ConfigureAwait(false);
     }
+
+    private static Task<int> RedeliverAsync(IQueryable<DeliveryRecord> rows, RedeliverScope scope, string note, DateTime nowUtc, CancellationToken ct)
+        => scope switch
+        {
+            RedeliverScope.Metadata => rows.ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.MetadataHash, (string?)null)
+                .SetProperty(r => r.SourceFingerprint, (string?)null)
+                .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
+                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
+                .SetProperty(r => r.LastError, note)
+                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+            RedeliverScope.Payload => rows.ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.PayloadHash, (string?)null)
+                .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
+                .SetProperty(r => r.SourceFingerprint, (string?)null)
+                .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
+                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
+                .SetProperty(r => r.LastError, note)
+                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+            _ => rows.ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.MetadataHash, (string?)null)
+                .SetProperty(r => r.PayloadHash, (string?)null)
+                .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
+                .SetProperty(r => r.SourceFingerprint, (string?)null)
+                .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
+                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
+                .SetProperty(r => r.LastError, note)
+                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+        };
 
     public async Task MarkRemovedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default)
     {
@@ -1887,21 +2000,11 @@ public sealed class OsduLedger : ILedger
             // fingerprint is what makes the next plan render and send the document again, and the curves that
             // were uploaded with it stay where they are. This is the same marking a metadata redelivery makes.
             var note = $"redelivery of metadata requested by cache change {tag.TagId}";
-            foreach (var flow in page.GroupBy(r => r.FlowId))
-            {
-                var flowId = flow.Key;
-                var keys = flow.Select(r => r.DeliveryKey).ToList();
-                await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey))
-                    .ExecuteUpdateAsync(
-                        u => u.SetProperty(r => r.MetadataHash, (string?)null)
-                              .SetProperty(r => r.SourceFingerprint, (string?)null)
-                              .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
-                              .SetProperty(r => r.PlanRequestedUtc, nowUtc)
-                              .SetProperty(r => r.LastError, note)
-                              .SetProperty(r => r.UpdatedUtc, nowUtc),
-                        ct)
-                    .ConfigureAwait(false);
-            }
+            await WriteByKeyAsync(
+                db.DeliveryRecords,
+                page.Select(r => new RecordKey(r.FlowId, r.DeliveryKey)),
+                rows => RedeliverAsync(rows, RedeliverScope.Metadata, note, nowUtc, ct),
+                ct).ConfigureAwait(false);
 
             tag.Cursor = page[^1].DeliveryKey;
             tag.CursorFlowId = page[^1].FlowId;
@@ -2101,11 +2204,11 @@ public sealed class OsduLedger : ILedger
         => new(w.FlowId, w.Scope, DateTime.SpecifyKind(w.UpdatedThroughUtc, DateTimeKind.Utc), w.SubmissionId, DateTime.SpecifyKind(w.RecordedUtc, DateTimeKind.Utc), w.ContextHash);
 
     /// <summary>
-    /// The most attempts one prune statement removes (10,000; tests lower it). Each statement is its own short transaction,
+    /// The most attempts one prune statement removes (4,000; tests lower it). Each statement is its own short transaction,
     /// so pruning an estate's history never holds a long lock on the attempt table, which every drain appends to, or writes
-    /// one huge log record.
+    /// one huge log record; and it stays under the 5,000 row locks at which SQL Server would lock the whole table instead.
     /// </summary>
-    internal int PruneBatch { get; init; } = 10_000;
+    internal int PruneBatch { get; init; } = 4_000;
 
     public async Task<int> PruneAttemptsAsync(DateTime olderThanUtc, CancellationToken ct = default)
     {
