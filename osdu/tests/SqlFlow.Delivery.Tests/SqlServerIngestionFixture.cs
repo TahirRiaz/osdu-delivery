@@ -43,8 +43,12 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         "recall-welllog-pre", "recall-welllog-curves-pre", "recall-welllog-ing", "recall-welllog-curves-ing", "recall-welllog",
     ];
 
-    /// <summary>The target block of the shipped delivery flow, which a test replaces with a local placeholder.</summary>
-    private const string ShippedTarget = """
+    /// <summary>
+    /// The target block of the shipped delivery flow, which a test replaces with a local placeholder. Its line endings are
+    /// normalized because this source file's own are whatever the checkout wrote, and the document it is matched against
+    /// is normalized the same way.
+    /// </summary>
+    private static readonly string ShippedTarget = """
           endpoint: ${env:PETRODB_URL}
           auth:
             type: oauth2ClientCredentials
@@ -54,14 +58,17 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
               url: ${env:OSDU_TOKEN_URL}
               body:
                 scope: ${env:OSDU_SCOPE}
-        """;
+        """.ReplaceLineEndings("\n");
 
     /// <summary>What replaces it: tests never call OSDU, and the protocol is a fake one the host is composed with.</summary>
-    private const string LocalTarget = """
+    private static readonly string LocalTarget = """
           endpoint: http://localhost:9/petrodb
           auth:
             type: none
-        """;
+        """.ReplaceLineEndings("\n");
+
+    /// <summary>The database the shipped documents name their ingestion tables in, which every generated one replaces.</summary>
+    private const string SampleDatabase = "OsduSample.";
 
     private static readonly Lazy<string?> ConnectionText = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
 
@@ -499,7 +506,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// Writes this fixture's estate: the shipped mappings, templates, caches and reference records as they are, the five
     /// chain documents rewritten for this database, and the empty data folders the pre flows read.
     /// </summary>
-    private static void GenerateEstate(string root, string databaseName, string suffix, string variable, int fanOut, int batchRecords)
+    internal static void GenerateEstate(string root, string databaseName, string suffix, string variable, int fanOut, int batchRecords)
     {
         foreach (var part in CopiedParts)
         {
@@ -514,7 +521,9 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         Directory.CreateDirectory(Path.Combine(root, "flows"));
         foreach (var name in ChainDocuments)
         {
-            var shipped = File.ReadAllText(Path.Combine(Samples.Root, "flows", name + ".yaml"));
+            // The repository is checked out with whatever line endings the platform writes, so every document is read as
+            // one normalized text; the rewrites below are line based and would otherwise match nothing.
+            var shipped = File.ReadAllText(Path.Combine(Samples.Root, "flows", name + ".yaml")).ReplaceLineEndings("\n");
             var generated = Generate(shipped, name, databaseName, suffix, variable, fanOut, batchRecords);
             File.WriteAllText(Path.Combine(root, "flows", name.Replace("recall-welllog", "rw" + suffix, StringComparison.Ordinal) + ".yaml"), generated);
         }
@@ -526,10 +535,9 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// </summary>
     private static string Generate(string shipped, string name, string databaseName, string suffix, string variable, int fanOut, int batchRecords)
     {
-        var text = Replace(shipped, "${env:OSDU_SAMPLE_DB}", "${env:" + variable + "}", name)
-            .Replace("recall-welllog", "rw" + suffix, StringComparison.Ordinal)
-            .Replace("OsduSample.pre.", $"[{databaseName}].[pre_{suffix}].", StringComparison.Ordinal)
-            .Replace("OsduSample.ing.", $"[{databaseName}].[ing_{suffix}].", StringComparison.Ordinal);
+        var text = Replace(shipped.ReplaceLineEndings("\n"), "${env:OSDU_SAMPLE_DB}", "${env:" + variable + "}", name)
+            .Replace("recall-welllog", "rw" + suffix, StringComparison.Ordinal);
+        text = QualifyObjectNames(text, name, databaseName, suffix);
 
         if (name.EndsWith("-pre", StringComparison.Ordinal))
         {
@@ -559,6 +567,65 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         }
 
         return text;
+    }
+
+    /// <summary>
+    /// Points every ingestion table a document names at this fixture's database and schemas, writing the three-part name
+    /// as a quoted scalar.
+    /// <para>The quotes are the point: a rewritten name begins with '[', and a YAML plain scalar may not, so
+    /// <c>object: [Db].[ing_x].WellLog</c> parses as a flow sequence and the document is refused. The whole value is
+    /// rewritten rather than its prefix, because a prefix substitution cannot put the closing quote on.</para>
+    /// <para>Nothing may still name the sample's own database afterwards: a value this does not understand would
+    /// otherwise leave the generated estate reading tables that belong to the repository's sample, not to this test.</para>
+    /// </summary>
+    private static string QualifyObjectNames(string text, string document, string databaseName, string suffix)
+    {
+        const string Key = "object:";
+        var lines = text.Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var at = line.IndexOf(Key, StringComparison.Ordinal);
+            if (at < 0 || line.AsSpan(0, at).TrimStart().Length > 0)
+            {
+                // Not a key of its own: a word inside a comment or a longer key, which names no table.
+                continue;
+            }
+
+            var value = line[(at + Key.Length)..].Trim();
+            if (!value.StartsWith(SampleDatabase, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var qualified = value[SampleDatabase.Length..];
+            var dot = qualified.IndexOf('.', StringComparison.Ordinal);
+            if (dot <= 0 || dot == qualified.Length - 1)
+            {
+                throw new InvalidOperationException(
+                    $"The sample flow '{document}.yaml' names the table '{value}', which is not [database].[schema].[table]; the chain fixture cannot point it at the test database.");
+            }
+
+            var layer = qualified[..dot];
+            var schema = layer switch
+            {
+                "pre" => "pre_" + suffix,
+                "ing" => "ing_" + suffix,
+                _ => throw new InvalidOperationException(
+                    $"The sample flow '{document}.yaml' names the schema '{layer}', which the chain fixture has no schema of its own for; it creates only a pre and an ing schema."),
+            };
+
+            lines[i] = $"{line[..at]}{Key} \"[{databaseName}].[{schema}].[{qualified[(dot + 1)..]}]\"";
+        }
+
+        var rewritten = string.Join('\n', lines);
+        if (rewritten.Contains(SampleDatabase, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"The sample flow '{document}.yaml' still names {SampleDatabase.TrimEnd('.')} somewhere the chain fixture does not rewrite, so the generated estate would read the repository's own tables. Rewrite that value too.");
+        }
+
+        return rewritten;
     }
 
     /// <summary>

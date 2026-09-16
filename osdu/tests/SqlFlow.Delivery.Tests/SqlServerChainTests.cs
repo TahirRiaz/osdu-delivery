@@ -15,6 +15,7 @@ using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Source;
+using SqlFlow.Execution;
 using SqlFlow.Lineage.Collection;
 using SqlFlow.Lineage.Graph;
 using SqlFlow.Yaml;
@@ -332,6 +333,54 @@ public class SqlServerChainTests
         Assert.True(curvesPre < curvesIng, $"the curve pre flow must run before its ingestion flow; waves: {Describe(waves)}");
         Assert.True(ing < delivery, $"the OSDU flow must run after the ingestion flow that writes its record table; waves: {Describe(waves)}");
         Assert.True(curvesIng < delivery, $"the OSDU flow must run after the ingestion flow that writes its child table; waves: {Describe(waves)}");
+    }
+
+    /// <summary>
+    /// Every generated document is one the platform can read. A three-part name rewritten for the test database begins
+    /// with '[', which a YAML plain scalar may not, so the generator writes it quoted; this is what keeps that true, and
+    /// it needs no database to say so.
+    /// </summary>
+    [Fact]
+    public void The_generated_chain_documents_parse_as_the_platform_reads_them()
+    {
+        const string Database = "OsduDeliveryTest";
+        const string Suffix = "abc123de";
+        var root = Samples.NewTempDirectory();
+        try
+        {
+            SqlServerIngestionFixture.GenerateEstate(root, Database, Suffix, "SQLFLOW_CHAIN_DB_" + Suffix, fanOut: 2, batchRecords: 250);
+
+            // The loader the platform reads a repository with, knowing the module's kinds, so the delivery document is
+            // parsed by the same code a node would parse it with.
+            var documents = YamlDocumentLoader.CreateDefault([new DeliveryFlowKind(new DeliveryDocumentLoader())]);
+            var files = Directory.EnumerateFiles(Path.Combine(root, "flows"), "*.yaml").OrderBy(f => f, StringComparer.Ordinal).ToList();
+            Assert.Equal(5, files.Count);
+            foreach (var file in files)
+            {
+                Assert.NotNull(DocumentLoader.Load(documents, file));
+            }
+
+            // The tables the OSDU flow reads are this database's, and they still parse as three-part names.
+            var flow = new DeliveryDocumentLoader().LoadFlow(Path.Combine(root, "flows", "rw" + Suffix + ".yaml"));
+            var record = SourceObjectName.Parse(flow.Source.Record.Object);
+            Assert.Equal(Database, record.Database);
+            Assert.Equal("ing_" + Suffix, record.Schema);
+            Assert.Equal("WellLog", record.Name);
+            var curves = SourceObjectName.Parse(flow.Source.Datasets["curves"].Object);
+            Assert.Equal("ing_" + Suffix, curves.Schema);
+            Assert.Equal("WellLogCurve", curves.Name);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch (IOException)
+            {
+                // A generated document a reader still holds open is left for the operating system's own cleanup.
+            }
+        }
     }
 
     private static string Describe(IReadOnlyList<LineageWave> waves)
