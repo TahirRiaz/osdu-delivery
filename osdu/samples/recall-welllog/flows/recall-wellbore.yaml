@@ -2,8 +2,7 @@
 #
 # The wellbore master data the well logs reference (docs/stage4-design.md section 1.5). It reads the ingestion tables
 # the wellbore chain loads, renders each row with the Wellbore mapping and delivers the records through the plain
-# storage protocol: no payload files, so nothing is streamed beside the document. The same flow takes records through
-# the API: a submission lands its rows as files for the pre flows named under source.submissions.
+# storage protocol: no payload files, so nothing is streamed beside the document.
 flowType: delivery
 name: recall-wellbore
 batch: recall
@@ -21,14 +20,6 @@ source:
       orderBy: [alias_name]
   lastModified: update_date
   work: ../.work/wellbore
-  submissions:
-    record:
-      preFlow: recall-wellbore-pre
-      landing: ../data/wellbore
-    datasets:
-      aliases:
-        preFlow: recall-wellbore-aliases-pre
-        landing: ../data/wellbore-aliases
 
 render:
   mapping: Wellbore@1.0.0

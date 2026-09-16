@@ -62,81 +62,6 @@ public sealed class OsduLedger : ILedger
         return entity is null ? null : ToState(entity);
     }
 
-    public async Task<InlineSubmissionState?> GetInlineSubmissionAsync(Guid submissionId, CancellationToken ct = default)
-    {
-        await using var db = Open();
-        var entity = await db.DeliveryInlineSubmissions.AsNoTracking().FirstOrDefaultAsync(s => s.SubmissionId == submissionId, ct).ConfigureAwait(false);
-        return entity is null ? null : InlineSubmissionRows.ToState(entity);
-    }
-
-    public async Task MarkInlineStatusAsync(Guid submissionId, string status, Guid? groupId, Guid? osduRunId, string? failure, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(status);
-        if (!InlineStatuses.All.Contains(status, StringComparer.Ordinal))
-        {
-            throw new DeliveryException($"'{status}' is not a status of an API submission; it is one of {string.Join(", ", InlineStatuses.All)}.");
-        }
-
-        await using var db = Open();
-        var entity = await db.DeliveryInlineSubmissions.FirstOrDefaultAsync(s => s.SubmissionId == submissionId, ct).ConfigureAwait(false)
-            ?? throw new DeliveryException($"API submission {submissionId:D} is not in the ledger.");
-        entity.Status = status;
-        entity.GroupId = groupId ?? entity.GroupId;
-        entity.OsduRunId = osduRunId ?? entity.OsduRunId;
-        if (failure is not null)
-        {
-            entity.Error = Truncate(Http.HeaderRedaction.RedactMessage(failure), 4000);
-        }
-
-        if (status == InlineStatuses.Landed && entity.LandedUtc is null)
-        {
-            entity.LandedUtc = Now;
-        }
-
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<LandingState>> GetLandingsAsync(Guid submissionId, CancellationToken ct = default)
-    {
-        await using var db = Open();
-        var rows = await db.DeliverySubmissionLandings.AsNoTracking().Where(l => l.SubmissionId == submissionId).ToListAsync(ct).ConfigureAwait(false);
-        return rows
-            .OrderBy(l => l.Dataset == Source.SourceDatasets.Record ? 0 : 1)
-            .ThenBy(l => l.Dataset, StringComparer.Ordinal)
-            .Select(ToState)
-            .ToList();
-    }
-
-    public async Task MarkLandingWrittenAsync(Guid submissionId, string dataset, long bytes, DateTime writtenUtc, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(dataset);
-        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
-        await using var db = Open();
-        var entity = await db.DeliverySubmissionLandings.FirstOrDefaultAsync(l => l.SubmissionId == submissionId && l.Dataset == dataset, ct).ConfigureAwait(false)
-            ?? throw new DeliveryException($"API submission {submissionId:D} has no landing for dataset '{dataset}'.");
-        entity.Bytes = bytes;
-        entity.WrittenUtc = DateTime.SpecifyKind(writtenUtc, DateTimeKind.Utc);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-    }
-
-    public async Task SetLandingPreRunAsync(Guid submissionId, string dataset, Guid runId, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(dataset);
-        await using var db = Open();
-        var entity = await db.DeliverySubmissionLandings.FirstOrDefaultAsync(l => l.SubmissionId == submissionId && l.Dataset == dataset, ct).ConfigureAwait(false)
-            ?? throw new DeliveryException($"API submission {submissionId:D} has no landing for dataset '{dataset}'.");
-        entity.PreRunId = runId;
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-    }
-
-    public async Task<LandingState?> FindLandingByFileAsync(string fileName, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
-        await using var db = Open();
-        var entity = await db.DeliverySubmissionLandings.AsNoTracking().FirstOrDefaultAsync(l => l.FileName == fileName, ct).ConfigureAwait(false);
-        return entity is null ? null : ToState(entity);
-    }
-
     public async Task<IReadOnlyList<PlanRequestedRecord>> ListPlanRequestedAsync(Guid flowId, DeliveryKey? after, int max, CancellationToken ct = default)
     {
         await using var db = Open();
@@ -206,22 +131,13 @@ public sealed class OsduLedger : ILedger
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, string? reference = null, CancellationToken ct = default)
+    public async Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, CancellationToken ct = default)
     {
         await using var db = Open();
         var query = db.DeliverySubmissions.AsNoTracking();
         if (flowId is { } f)
         {
             query = query.Where(s => s.FlowId == f);
-        }
-
-        if (!string.IsNullOrWhiteSpace(reference))
-        {
-            // Contains rather than equals: a caller searching by a filename finds the submission whose reference embeds
-            // it, and one holding the exact reference still finds it. The flow narrowing above is what bounds the scan,
-            // as it does for every other search over this ledger.
-            var term = reference.Trim();
-            query = query.Where(s => s.Reference != null && s.Reference.Contains(term));
         }
 
         var list = await query.OrderByDescending(s => s.ReceivedUtc).Take(Math.Clamp(max, 1, 1000)).ToListAsync(ct).ConfigureAwait(false);
@@ -2320,21 +2236,6 @@ public sealed class OsduLedger : ILedger
         SourceUpdatedUtc = attempt.SourceUpdatedUtc,
     };
 
-    private static LandingState ToState(DeliverySubmissionLanding l) => new()
-    {
-        SubmissionId = l.SubmissionId,
-        Dataset = l.Dataset,
-        PreFlowName = l.PreFlowName,
-        Location = l.Location,
-        FileName = l.FileName,
-        Format = l.Format,
-        RowCount = l.RowCount,
-        Bytes = l.Bytes,
-        ContentHash = l.ContentHash,
-        WrittenUtc = l.WrittenUtc is { } written ? DateTime.SpecifyKind(written, DateTimeKind.Utc) : null,
-        PreRunId = l.PreRunId,
-    };
-
     private static AttemptRecord ToRecord(DeliveryAttempt a) => new()
     {
         AttemptId = a.AttemptId,
@@ -2407,7 +2308,6 @@ public sealed class OsduLedger : ILedger
         entity.BatchCount = s.BatchCount;
         entity.Slices = s.Slices;
         entity.ParametersJson = s.ParametersJson;
-        entity.Reference = Truncate(s.Reference, DeliveryModel.MaxReferenceLength);
         entity.RecordCount = s.RecordCount;
         entity.Status = StatusText.Of(s.Status);
         entity.ReceivedUtc = s.ReceivedUtc;
@@ -2433,7 +2333,6 @@ public sealed class OsduLedger : ILedger
         entity.WindowToUtc = s.WindowToUtc;
         entity.SourceWindowJson = s.SourceWindowJson;
         entity.RunId = s.RunId;
-        entity.GroupId = s.GroupId;
     }
 
     private static SubmissionState ToState(DeliverySubmission e) => new()
@@ -2447,7 +2346,6 @@ public sealed class OsduLedger : ILedger
         BatchCount = e.BatchCount,
         Slices = e.Slices,
         ParametersJson = e.ParametersJson,
-        Reference = e.Reference,
         RecordCount = e.RecordCount,
         Status = StatusText.ToSubmissionStatus(e.Status),
         ReceivedUtc = e.ReceivedUtc,
@@ -2471,7 +2369,6 @@ public sealed class OsduLedger : ILedger
         WindowToUtc = e.WindowToUtc is { } to ? DateTime.SpecifyKind(to, DateTimeKind.Utc) : null,
         SourceWindowJson = e.SourceWindowJson,
         RunId = e.RunId,
-        GroupId = e.GroupId,
     };
 
     private static RecordState ToState(DeliveryRecord r) => new()

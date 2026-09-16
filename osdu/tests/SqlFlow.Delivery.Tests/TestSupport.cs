@@ -536,18 +536,6 @@ public static class Samples
             p => p.Key,
             p => p.Value with { Root = Path.Combine(root, "curves") },
             StringComparer.Ordinal);
-        var submissions = flow.Source.Submissions is { } declared
-            ? declared with
-            {
-                Record = declared.Record with { Landing = Path.Combine(root, "landing", "record") },
-                Datasets = declared.Datasets.ToDictionary(
-                    d => d.Key,
-                    d => d.Value with { Landing = Path.Combine(root, "landing", d.Key) },
-                    StringComparer.Ordinal),
-                FileRoots = [Path.Combine(root, "curves")],
-            }
-            : null;
-
         return flow with
         {
             Source = flow.Source with
@@ -555,7 +543,6 @@ public static class Samples
                 Connection = MemoryConnection,
                 Work = Path.Combine(root, "work"),
                 Payloads = payloads,
-                Submissions = submissions,
             },
             Target = flow.Target with
             {

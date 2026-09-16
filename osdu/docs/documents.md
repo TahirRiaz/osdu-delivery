@@ -44,16 +44,6 @@ source:
     isolation: snapshot              # snapshot (default) or readCommitted
     commandTimeoutSeconds: 0         # 0 = bounded by cancellation
   work: ../.work/{logSource}         # where the intake writes its work batches (required)
-  submissions:                       # optional: the flow also takes records sent to the API
-    record:
-      preFlow: recall-welllog-pre    # the pre-ingestion flow that reads the landing folder
-      landing: ../data/welllog       # where the record rows land, inside that flow's source.location
-    datasets:
-      curves:
-        preFlow: recall-welllog-curves-pre
-        landing: ../data/curves-meta
-    fileRoots:                       # extra prefixes a submitted record may point payload files inside
-      - ../data/curves
 
 render:                            # the only block that changes what a document is
   mapping: WellLog@1.4.0           # pinned Name@version, never floating
@@ -208,10 +198,9 @@ from a database of its own.
 `source.record.key` must name the same columns as the mapping's `dataset.key`, and they should be the ing flow's
 `load.keyColumns`, because that is what makes one row one deliverable. The loader refuses a two-part object name, a
 dataset join missing a key column, a dataset named `record`, a scope naming an undeclared parameter, a streaming
-protocol without a `locationColumn`, a missing `hashColumn` under `contentHash`, a literal secret in `connection`, a
-submissions dataset that is not among `datasets`, and a `fileRoots` entry with a wildcard. The removed keys
-(`location`, `manifest`, `records`, `scopes`, `fingerprint`, `knownState`, `manualSubmission`, `sql`, `replica`) are
-refused by name.
+protocol without a `locationColumn`, a missing `hashColumn` under `contentHash`, and a literal secret in `connection`.
+The removed keys (`location`, `manifest`, `records`, `scopes`, `fingerprint`, `knownState`, `manualSubmission`,
+`submissions`, `sql`, `replica`) are refused by name.
 
 ### Parameters
 

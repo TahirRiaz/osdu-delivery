@@ -37,7 +37,6 @@ groups so a delivery route is authorized exactly like a platform route.
 
 | Endpoints | Purpose |
 | --- | --- |
-| `POST /delivery/submissions` | Submit records to a flow and queue the run that takes them. |
 | `POST /delivery/flows/{pipelineId}/release`, `/probe` | Release held records for a flow; probe the flow's OSDU target. |
 | `POST /delivery/records/{key}/release`, `/redeliver`, `/verify`, `/read`, `/delete` | The per-record interventions. Release, redeliver and verify act on the ledger under the caller's name or queue a run; probe, read-back and delete queue a compute task for a node that can reach the target. |
 | `POST /delivery/flows/{pipelineId}/records/remove`, `/remove/preview` | Bulk removal by explicit keys or by the listing filter, with the scope named explicitly. |
@@ -72,8 +71,6 @@ point. The values that matter operationally:
 - **No OSDU credential lives here.** The endpoints above read and write the ledger; delivering to OSDU happens on
   a node, which holds the endpoint credential. A probe, a read-back or a delete from the GUI is queued as a
   compute task for that reason, not executed in the API.
-- **Request body ceiling.** `ControlPlane:MaxRequestBodyMegabytes` (default 64) bounds a submission that carries
-  its records in the request.
 
 ## See also
 

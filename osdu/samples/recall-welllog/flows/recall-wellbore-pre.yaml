@@ -1,7 +1,7 @@
 # Pre-ingestion: the wellbore master data files into the pre layer.
 #
-# The master data the well logs hang off (docs/stage4-design.md section 1.5). Records submitted through the API land
-# here as a file, which is why a submitted wellbore and a dropped file end up as the same row.
+# The master data the well logs hang off (docs/stage4-design.md section 1.5). A wellbore file placed in ../data/wellbore
+# by hand lands exactly as any other.
 name: recall-wellbore-pre
 batch: recall
 

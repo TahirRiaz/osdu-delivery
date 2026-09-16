@@ -6,9 +6,9 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// The guard against the drop era coming back (docs/stage4-design.md section 6). A flow's records come from its
-/// ingestion tables: there is no drop, no drop manifest, no replica of the metadata rows, no published known state and
-/// no inline drop. Those names are gone from the module, and this suite is what keeps them gone: a reintroduction is a
-/// failing test here rather than a second way to deliver a record.
+/// ingestion tables: there is no drop, no drop manifest, no replica of the metadata rows, no published known state, no
+/// inline drop and no records sent through an API of the module's own. Those names are gone from the module, and this
+/// suite is what keeps them gone: a reintroduction is a failing test here rather than a second way to deliver a record.
 /// </summary>
 public class ArchitectureTests
 {
@@ -17,10 +17,15 @@ public class ArchitectureTests
     {
         { "Drop", "a run reads the flow's ingestion tables (source.record and source.datasets)" },
         { "DropManifest", "a submission records its own selection, window and slices" },
-        { "DropOff", "records sent through the API land as files for the pre flows (source.submissions)" },
+        { "DropOff", "source files are placed where a pre flow reads them, and the flow chain loads them" },
         { "Replica", "the ingestion tables are the flow's own copy of the metadata rows" },
         { "KnownState", "the ledger is what the delivered state is read from" },
-        { "InlineDrop", "SubmissionLanding writes an API submission's rows" },
+        { "InlineDrop", "records reach the ingestion tables through the pre and ingestion flows" },
+        { "InlineSubmission", "records reach the ingestion tables through the pre and ingestion flows" },
+        { "InlineRecord", "a record is a row of the flow's ingestion tables" },
+        { "SubmissionLanding", "a pre flow reads the files placed where its source.location points" },
+        { "SubmissionChain", "lineage orders the pre, ingestion and delivery flows like any other flows" },
+        { "Reland", "a pre flow reads the files placed where its source.location points" },
         { "PayloadChunk", "PayloadFile names one file of a record's payload" },
     };
 

@@ -47,62 +47,23 @@ public class YamlDocumentLoaderTests
           retry: { attempts: 5, backoff: fixed }
         """;
 
-    /// <summary>Where a submission's rows land for the pre flows that read them, and where its files may sit. Newlines are
-    /// normalized because the cases below replace passages that span lines, which a raw literal writes with this file's
-    /// endings.</summary>
-    private static readonly string Submissions = """
-          submissions:
-            record:
-              preFlow: demo-pre
-              landing: landing/record
-            datasets:
-              curves:
-                preFlow: demo-curves-pre
-                landing: landing/curves
-            fileRoots:
-              - abfss://lake@acct.dfs.core.windows.net/recall
-              - archive/curves
-        """.ReplaceLineEndings("\n");
-
-    private static string WithSubmissions(string replacing) =>
-        Flow.ReplaceLineEndings("\n").Replace("  lastModified: update_date", replacing + "\n  lastModified: update_date", StringComparison.Ordinal);
-
+    /// <summary>
+    /// A flow takes its records from its ingestion tables and nowhere else: records reach them through the pre and
+    /// ingestion flows, so a document still declaring where API-submitted records would land is refused by name.
+    /// </summary>
     [Fact]
-    public void Records_sent_through_the_api_land_for_the_pre_flows_and_their_files_are_bounded()
+    public void A_submissions_block_is_refused_as_a_key_the_flow_does_not_have()
     {
-        var loader = new DeliveryDocumentLoader();
+        var flow = Flow.ReplaceLineEndings("\n");
+        var submissions = flow.Replace(
+            "  lastModified: update_date",
+            "  submissions:\n    record:\n      preFlow: demo-pre\n      landing: landing/record\n  lastModified: update_date",
+            StringComparison.Ordinal);
+        Assert.NotEqual(flow, submissions);
 
-        // Opt-in: a flow that says nothing takes no records sent through the API, because they would have nowhere to land.
-        Assert.Null(loader.ParseFlow(Flow, "inline.yaml").Source.Submissions);
-
-        var submissions = loader.ParseFlow(WithSubmissions(Submissions), "inline.yaml").Source.Submissions!;
-        Assert.Equal("demo-pre", submissions.Record.PreFlow);
-        Assert.Equal("landing/record", submissions.Record.Landing);
-        Assert.Equal(LandingFormats.Csv, submissions.Record.Format);
-        Assert.Equal("demo-curves-pre", submissions.Datasets["curves"].PreFlow);
-        Assert.Equal(["abfss://lake@acct.dfs.core.windows.net/recall", "archive/curves"], submissions.FileRoots);
-
-        // A landing may take another form, but only one a pre flow reads.
-        var ndjson = loader.ParseFlow(WithSubmissions(Submissions.Replace("landing: landing/record", "landing: landing/record\n      format: ndjson", StringComparison.Ordinal)), "inline.yaml");
-        Assert.Equal(LandingFormats.Ndjson, ndjson.Source.Submissions!.Record.Format);
-        var badFormat = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
-            WithSubmissions(Submissions.Replace("landing: landing/record", "landing: landing/record\n      format: avro", StringComparison.Ordinal)), "inline.yaml"));
-        Assert.Contains("is not a landing format", badFormat.Message, StringComparison.Ordinal);
-
-        // A dataset the flow does not read cannot be landed: there would be no table for its rows to reach.
-        var unknownDataset = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
-            WithSubmissions(Submissions.Replace("curves:\n        preFlow: demo-curves-pre", "tops:\n        preFlow: demo-tops-pre", StringComparison.Ordinal)), "inline.yaml"));
-        Assert.Contains("source.datasets does not declare", unknownDataset.Message, StringComparison.Ordinal);
-
-        // A root is a prefix, never a pattern: it is resolved against the flow file exactly as the payload roots and the
-        // landing folders are, so a repository-relative root is written the same way they are.
-        var relative = loader.ParseFlow(WithSubmissions(Submissions.Replace("- archive/curves", "- ../shared/curves", StringComparison.Ordinal)), "inline.yaml");
-        Assert.Equal("../shared/curves", relative.Source.Submissions!.FileRoots[1]);
-
-        var refused = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
-            WithSubmissions(Submissions.Replace("- archive/curves", "- archive/*", StringComparison.Ordinal)), "inline.yaml"));
-        Assert.Contains("source.submissions.fileRoots", refused.Message, StringComparison.Ordinal);
-        Assert.Contains("no wildcard", refused.Message, StringComparison.Ordinal);
+        var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseFlow(submissions, "flow.yaml"));
+        Assert.StartsWith("flow.yaml:", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("submissions", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -165,8 +126,6 @@ public class YamlDocumentLoaderTests
         Assert.Equal(["curve_ordinal"], flow.Source.Datasets["curves"].OrderBy);
         Assert.Equal("curve_folder", flow.Source.Payloads["curves"].LocationColumn);
         Assert.Equal("chunk_count", flow.Source.Payloads["curves"].ChunkCountColumn);
-        Assert.Equal("recall-welllog-pre", flow.Source.Submissions!.Record.PreFlow);
-        Assert.Equal("recall-welllog-curves-pre", flow.Source.Submissions.Datasets["curves"].PreFlow);
 
         var mapping = new MappingCatalog(Samples.Mappings, loader).Load("WellLog@1.4.0");
         Assert.Equal(new TemplateReference("osdu:wks:work-product-component--WellLog:1.4.0", "26a3c3441882db4f"), mapping.Template);

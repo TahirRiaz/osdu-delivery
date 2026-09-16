@@ -20,7 +20,6 @@ using SqlFlow.Delivery.Hosting;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
-using SqlFlow.Delivery.Submissions;
 using SqlFlow.Delivery.Tests;
 using SqlFlow.Execution;
 using SqlFlow.Yaml;
@@ -82,27 +81,6 @@ public sealed class DeliveryModuleTests
         Assert.Equal("module 'osdu' (schema 'osdu', catalog connection)", database.Describe());
     }
 
-    /// <summary>
-    /// The request body the host accepts is at least what one submission carries. The module asks for exactly that
-    /// ceiling; the platform keeps the largest value any module asks for, so a platform default that is already larger
-    /// stays where it is rather than being lowered to the module's ask.
-    /// </summary>
-    [Fact]
-    public async Task TheHost_AcceptsABodyAsLargeAsOneSubmission()
-    {
-        await using var factory = Host();
-        using var client = factory.CreateClient();
-
-        var kestrel = factory.Services.GetRequiredService<IOptions<KestrelServerOptions>>().Value;
-        var limits = factory.Services.GetRequiredService<ControlPlaneLimits>();
-
-        Assert.True(
-            kestrel.Limits.MaxRequestBodySize >= InlineRecords.MaxRequestBytes,
-            $"the host accepts {kestrel.Limits.MaxRequestBodySize} bytes, less than one submission's {InlineRecords.MaxRequestBytes}");
-        Assert.Equal(kestrel.Limits.MaxRequestBodySize, limits.MaxRequestBodySize);
-        Assert.True(limits.MaxRequestBodySize >= ControlPlaneLimits.DefaultMaxRequestBodySize);
-    }
-
     [Fact]
     public async Task TheModulesEndpoints_AreMappedOnTheAuthenticatedGroups()
     {
@@ -113,7 +91,6 @@ public sealed class DeliveryModuleTests
         foreach (var path in new[]
         {
             $"/api/v1/delivery/flows/{Guid.NewGuid():D}/stats",
-            "/api/v1/delivery/manual-submission/flows",
             "/api/v1/delivery/templates",
             "/api/v1/delivery/mapping-builder/repos",
         })
@@ -121,9 +98,6 @@ public sealed class DeliveryModuleTests
             using var response = await client.GetAsync(new Uri(path, UriKind.Relative));
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         }
-
-        using var submission = await client.PostAsync(new Uri("/api/v1/delivery/submissions", UriKind.Relative), content: null);
-        Assert.Equal(HttpStatusCode.Unauthorized, submission.StatusCode);
     }
 
     [Fact]
@@ -134,19 +108,16 @@ public sealed class DeliveryModuleTests
             using var client = on.CreateClient();
             var hosted = on.Services.GetServices<IHostedService>().ToList();
             Assert.Contains(hosted, service => service is CacheUpdateRolloutService);
-            Assert.Contains(hosted, service => service is SubmissionLandingService);
             // The data definitions warm-up is off in these tests: it would reach the public schema repository.
             Assert.DoesNotContain(hosted, service => service is DataDefinitionsWarmupService);
         }
 
         await using var off = Host()
-            .WithSetting("Osdu:CacheRollout:Enabled", "false")
-            .WithSetting("Osdu:Submissions:Enabled", "false");
+            .WithSetting("Osdu:CacheRollout:Enabled", "false");
         using var offClient = off.CreateClient();
         var offHosted = off.Services.GetServices<IHostedService>().ToList();
 
         Assert.DoesNotContain(offHosted, service => service is CacheUpdateRolloutService);
-        Assert.DoesNotContain(offHosted, service => service is SubmissionLandingService);
     }
 
     [Fact]

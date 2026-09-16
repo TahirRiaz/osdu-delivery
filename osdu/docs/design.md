@@ -99,51 +99,15 @@ chain triggered together runs pre, then ing, then OSDU.
 A run whose window holds no changed row, and for which no record is waiting to be planned
 again, does nothing at all. That is what makes frequent scheduling free on quiet hours.
 
-### 3.3 Records sent in the request
+### 3.3 Records delivered by hand
 
-A source with a handful of records to deliver, rather than files it writes itself, sends
-them in the submission: `POST /api/v1/delivery/submissions` with `records`, each in the
-shape of a mapping fixture (its dataset row under `record` and its child dataset rows under
-`datasets`, as JSON scalars). It is the same flow, the same mapping and the same path,
-because the submission lands the rows as files for the flow's own pre-ingestion flows, and
-they become the same rows in the same tables.
-
-- The control plane checks the request's shape, the record keys, the payload roots, the
-  declared pre flows and the flow's parameters, then stores the submission, one landing row
-  per dataset and a `submit` activity in one transaction (`osdu.InlineSubmission`,
-  `osdu.SubmissionLanding`). The submission id is the idempotency key: a repeated request
-  answers with the chain it queued, and a different request under the same id is refused.
-- It writes one file per dataset into the landing folder the flow declares, under a
-  temporary name the pre flow's `srcFile` does not match, then promotes it, so a pre run
-  never reads a half-written file. A file already there with the same content hash is left
-  alone, which is what makes landing idempotent.
-- It enqueues the chain in one transaction with the ledger rows describing it: the declared
-  pre flows, the ingestion flows between them and the OSDU flow, and the OSDU flow, in wave
-  order. Each pre flow member reads exactly the file this submission landed, whatever its
-  own watermark says.
-- From there nothing is special: the ingestion upsert, the preflight gate, the per-record
-  change gates, the ledger and the drain. The OSDU run plans the submission's keys against
-  the ingestion table, so a key those tables do not hold is held with a reason naming the
-  landing file and the flows expected to have loaded it.
-
-A flow offers this or it does not: `source.submissions` says where each dataset's rows land
-and which pre flow reads them, and a request to a flow that declares nothing is refused
-naming the key. It is opt-in because a flow fed by files the preparing side writes should
-not also accept hand-written records unless the estate decided it should.
-
-A submission is metadata plus, for a flow that streams payload files, **where those files
-already are**. Nothing is uploaded through the API and nothing is staged: a record carries
-the location of its files, which is written into the landing file's `locationColumn` and
-`hashColumn` exactly as a file from the preparing side would carry it, and the node opens
-that location with its own identity when it delivers, re-opening it on every retry, exactly
-as section 3.1 describes. Because the node's identity can read whatever it has been granted,
-a record may only point inside a declared payload `root` or one of
-`source.submissions.fileRoots`; anything else is refused when the request is accepted.
-[submitting-records.md](submitting-records.md) is the contract for the source side.
-
-Because the link between a delivered record and its submission is the landing file name,
-traceability holds even when a scheduled pre run picked the file up and delivered the record
-before the submission's own chain ran.
+There is no separate way in for records a person or a source system wants delivered now. The
+regular flows cover it: the files go where the flow's pre-ingestion flow reads (its
+`source.location`, a storage account both the person and the nodes can reach), and a run of
+the chain loads and delivers them, triggered from the GUI or the API like any other run, or
+left to the schedule. The rows are then the same rows in the same tables, every record's
+origin is the file it came from, and nothing about change detection, the ledger or the drain
+differs from a scheduled load.
 
 ## 4. The four inputs and the render context
 
@@ -892,7 +856,7 @@ kind (`src/SqlFlow.Delivery`). What the domain takes from the platform, and what
   ran as a run, a run in the history.
 - **File stores, the secret chain and redaction.** Local and Azure Blob reads, `${env:...}`
   and `${keyvault:...}` references, secrets redacted before any log or row. The delivery
-  domain adds only the writers it needs (work batches, a submission's landing files).
+  domain adds only the writers it needs (work batches and retrieval files).
 - **The HTTP reliability stack.** The delivery copies in `src/SqlFlow.Delivery/Http` keep
   their vendored headers because they diverged from the platform's originals: a request
   factory per attempt so a binary payload streams and retries, no charset handling.
@@ -962,8 +926,8 @@ inheriting a default.
 ### 14.1 A deliberately small surface
 
 The source is a SQL Server or Azure SQL database, read through `Microsoft.Data.SqlClient`, and the payload files are
-opaque bytes read from storage. `Parquet.Net` remains for the payload shape checks the well log protocol makes and for
-writing a submission's landing files, and `abfss` is read through `Azure.Storage.Blobs` and `Azure.Identity`. All pure
+opaque bytes read from storage. `Parquet.Net` remains for the payload shape checks the well log protocol makes, and
+`abfss` is read through `Azure.Storage.Blobs` and `Azure.Identity`. All pure
 managed: there is no native code on the delivery path.
 
 The direct dependency set of the solution after the strip:

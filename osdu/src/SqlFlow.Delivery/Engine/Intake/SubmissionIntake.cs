@@ -39,8 +39,8 @@ public sealed record IntakeResult(SubmissionState Submission, PlanHeader? Header
 }
 
 /// <summary>
-/// What an intake works on: which records to read, the submission it belongs to when a run was given one (a re-run, a
-/// fan-out member's share, an API submission), and the key slices a member plans of it.
+/// What an intake works on: which records to read, the submission it belongs to when a run was given one (a re-run, or a
+/// fan-out member's share), and the key slices a member plans of it.
 /// </summary>
 public sealed record IntakeRequest(SourceSelection Selection, Guid? SubmissionId = null, IReadOnlyList<int>? Slices = null);
 
@@ -153,7 +153,7 @@ public sealed class SubmissionIntake
         }
 
         var described = existing is null ? null : SourceWindowDescription.Parse(existing.SourceWindowJson);
-        var selection = described is null ? request.Selection : described.ToSelection(existing!.SubmissionId);
+        var selection = described is null ? request.Selection : described.ToSelection();
         var header = await _planner.OpenAsync(
             flow, resolved, parameters, selection, gate: !force && existing is null, stored: described?.Window(), ct).ConfigureAwait(false);
 
@@ -299,8 +299,8 @@ public sealed class SubmissionIntake
     }
 
     /// <summary>
-    /// Moves the scope's watermark to the window this plan covered. Only a plan of the whole scope may: a key-scoped or
-    /// API submission reads a few records and says nothing about the rows it never looked at.
+    /// Moves the scope's watermark to the window this plan covered. Only a plan of the whole scope may: a key-scoped
+    /// submission reads a few records and says nothing about the rows it never looked at.
     /// </summary>
     private async Task WriteWatermarkAsync(FlowDefinition flow, SubmissionState submission, IReadOnlyDictionary<string, string> parameters, CancellationToken ct)
     {

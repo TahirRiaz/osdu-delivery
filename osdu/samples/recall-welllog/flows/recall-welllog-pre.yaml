@@ -2,8 +2,7 @@
 #
 # The first flow of the chain the OSDU flow reads (docs/stage4-design.md section 1.3). It lands whatever CSV files are
 # under ../data/welllog into [pre].[WellLog] as raw text, then refreshes the typed view [pre].[v_WellLog] that the
-# ingestion flow beside it reads. A file that arrives through the API takes exactly this path: the submission lands its
-# rows as a file here, so a submitted record and a dropped file become the same rows in the same tables.
+# ingestion flow beside it reads. A file placed in that folder by hand takes exactly the same path as any other.
 name: recall-welllog-pre
 batch: recall
 

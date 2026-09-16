@@ -2,15 +2,16 @@
 
 The state of OSDU Delivery's testing against OSDU on 2026-09-12: what has been proven against a live OSDU platform,
 what the automated suites cover without one, which defects the live runs found and how they were fixed, and what is
-still missing. The practical guide for a source system is [submitting-records.md](submitting-records.md); the runbook
-is in [operations.md](operations.md).
+still missing. The runbook is in [operations.md](operations.md).
 
 > **This is a record of runs made on 2026-09-12**, against the implementation as it stood then, when a flow read a
 > prepared drop. It is kept as the evidence of what those runs proved about the protocols, change detection, verify,
 > the interventions and the recovery paths, none of which this change touches. The input is not the same: data now
 > arrives through SQLFlow's pre-ingestion and ingestion flows and the OSDU flow reads the ingestion tables, so the
-> drop, drop-off and known-state mechanics named below no longer exist ([architecture.md](architecture.md)). The live
-> estate has to be driven again on the new path before this page describes the current build.
+> drop, drop-off and known-state mechanics named below no longer exist ([architecture.md](architecture.md)), and
+> neither does manual submission (records sent in the request, sections 2.8 to 2.10): records delivered by hand are files
+> placed where a pre flow reads them ([design.md](design.md) section 3.3). The live estate has to be driven again on the
+> new path before this page describes the current build.
 
 ## 1. How it is tested
 
@@ -130,7 +131,7 @@ id, the runs and nodes pages, and the cache updates tab, with no console errors 
 
 ### 2.8 Records sent in the request
 
-Wellbore master data sent to `e2e-wellbore` as records in the request ([submitting-records.md](submitting-records.md)),
+Wellbore master data sent to `e2e-wellbore` as records in the request,
 driven through `POST /api/v1/delivery/submissions` exactly as a source system would, on 2026-09-12 (markers
 `ODLIVE20260912` and, after the flow attribute landed, `ODLIVE20260912B`):
 

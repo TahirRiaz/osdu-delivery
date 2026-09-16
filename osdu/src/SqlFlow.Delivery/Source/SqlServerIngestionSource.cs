@@ -86,7 +86,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         IReadOnlyList<KeyTuple> missing = [];
         IReadOnlyList<KeyTuple> outOfScope = [];
         long candidates;
-        if (selection.Kind is SourceSelectionKind.Keys or SourceSelectionKind.Inline)
+        if (selection.Kind == SourceSelectionKind.Keys)
         {
             var probe = await ProbeKeysAsync(connection, layout, selection.Keys, ct).ConfigureAwait(false);
             missing = probe.Missing;
@@ -441,7 +441,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
 
     private void Bind(SqlCommand command, IngestionLayout layout, SourceHeader header, IngestionSql.KeyBounds bounds, KeyTuple? after, KeyTuple? to)
     {
-        if (header.Selection.Kind is SourceSelectionKind.Keys or SourceSelectionKind.Inline)
+        if (header.Selection.Kind == SourceSelectionKind.Keys)
         {
             BindKeys(command, header.Selection.Keys);
         }

@@ -136,8 +136,7 @@ public sealed class DeliveryRecordOriginApiTests
             .WithCatalog(cs)
             .WithModules(new DeliveryControlPlaneModule())
             .WithSetting("ControlPlane:Worker:Enabled", "false")
-            .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
-            .WithSetting("Osdu:Submissions:Enabled", "false");
+            .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
 
     private static async Task<string> TokenAsync(HttpClient client)
     {

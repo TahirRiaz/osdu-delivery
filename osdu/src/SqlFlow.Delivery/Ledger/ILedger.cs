@@ -68,7 +68,7 @@ public readonly record struct RecordOrigin(string? FileName, long? RowNumber, Da
 
 /// <summary>
 /// One plan of a flow over its ingestion tables (docs/stage4-design.md section 3.3): an incremental window, a full read,
-/// a set of record keys, or the records an API submission landed. Its id is the idempotency key.
+/// or a set of record keys. Its id is the idempotency key.
 /// </summary>
 public sealed record SubmissionState
 {
@@ -83,12 +83,6 @@ public sealed record SubmissionState
     public required string RenderContext { get; init; }
 
     public string ParametersJson { get; init; } = "{}";
-
-    /// <summary>
-    /// What the sending system calls this submission in its own records (a filename, a ticket, a job id): the handle an
-    /// operator searches by when they know the source's name for the work and not this ledger's id. Null when none was given.
-    /// </summary>
-    public string? Reference { get; init; }
 
     /// <summary>How many candidate records the plan estimated when it opened the source.</summary>
     public long RecordCount { get; init; }
@@ -165,9 +159,6 @@ public sealed record SubmissionState
     /// <summary>The platform run that coordinated the plan.</summary>
     public Guid? RunId { get; init; }
 
-    /// <summary>The run group that carried an API submission through its pre, ing and OSDU flows.</summary>
-    public Guid? GroupId { get; init; }
-
     /// <summary>Whether the plan covered the whole scope, so its completion may move the scope's watermark.</summary>
     public bool CoversScope => Kind is SubmissionKinds.Incremental or SubmissionKinds.Full;
 }
@@ -184,10 +175,7 @@ public static class SubmissionKinds
     /// <summary>Named record keys: a record-scoped run, or the records the ledger asked to plan again.</summary>
     public const string Keys = "keys";
 
-    /// <summary>The records an API submission landed.</summary>
-    public const string Inline = "inline";
-
-    public static IReadOnlyList<string> All { get; } = [Incremental, Full, Keys, Inline];
+    public static IReadOnlyList<string> All { get; } = [Incremental, Full, Keys];
 }
 
 /// <summary>The current state of one deliverable (design.md section 7.3).</summary>
@@ -524,54 +512,6 @@ public sealed record SourceWatermark(Guid FlowId, string Scope, DateTime Updated
 
 /// <summary>A record the ledger asked to be planned again, with the key tuple a key-scoped read finds it by.</summary>
 public sealed record PlanRequestedRecord(DeliveryKey DeliveryKey, string? SourceKeyJson, DateTime RequestedUtc);
-
-/// <summary>One file an API submission landed for a pre flow (the <c>osdu.SubmissionLanding</c> row).</summary>
-public sealed record LandingState
-{
-    public required Guid SubmissionId { get; init; }
-
-    /// <summary><c>record</c>, or a child dataset's name.</summary>
-    public required string Dataset { get; init; }
-
-    public required string PreFlowName { get; init; }
-
-    /// <summary>The full location the file is written to.</summary>
-    public required string Location { get; init; }
-
-    /// <summary>The file name the ingestion table's file column holds for the rows it lands.</summary>
-    public required string FileName { get; init; }
-
-    /// <summary>csv, ndjson, json or parquet.</summary>
-    public required string Format { get; init; }
-
-    public long RowCount { get; init; }
-
-    public long Bytes { get; init; }
-
-    /// <summary>The SHA-256 of the file's content, 64 hexadecimal characters.</summary>
-    public required string ContentHash { get; init; }
-
-    public DateTime? WrittenUtc { get; init; }
-
-    /// <summary>The pre flow member run that took the file.</summary>
-    public Guid? PreRunId { get; init; }
-}
-
-/// <summary>The life of an API submission: accepted, its files landed, its chain queued, and how it ended.</summary>
-public static class InlineStatuses
-{
-    public const string Accepted = "accepted";
-
-    public const string Landed = "landed";
-
-    public const string Queued = "queued";
-
-    public const string Completed = "completed";
-
-    public const string Failed = "failed";
-
-    public static IReadOnlyList<string> All { get; } = [Accepted, Landed, Queued, Completed, Failed];
-}
 
 /// <summary>One stored dependency of a cache set: which cache and cached path it holds, and what it held.</summary>
 public sealed record CacheUse(string Scope, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
@@ -956,33 +896,8 @@ public interface ILedger
 
     Task UpdateSubmissionAsync(SubmissionState submission, CancellationToken ct = default);
 
-    /// <summary>
-    /// A flow's submissions, newest first. <paramref name="reference"/> narrows them to the ones whose caller-supplied
-    /// reference contains it, which is how a source finds what became of work it knows by its own name; null takes them
-    /// all. Whether the match folds case is the database collation's to decide, as it is for every other search here.
-    /// </summary>
-    Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, string? reference = null, CancellationToken ct = default);
-
-    /// <summary>The records a source sent through the API under this submission id; null when the id names none.</summary>
-    Task<InlineSubmissionState?> GetInlineSubmissionAsync(Guid submissionId, CancellationToken ct = default);
-
-    /// <summary>
-    /// Moves an API submission along its life (<see cref="InlineStatuses"/>): the run group and the OSDU member run once its
-    /// chain is queued, and the redacted error when it failed. A value left null keeps what the row holds.
-    /// </summary>
-    Task MarkInlineStatusAsync(Guid submissionId, string status, Guid? groupId, Guid? osduRunId, string? failure, CancellationToken ct = default);
-
-    /// <summary>The files an API submission landed, one per dataset, record first.</summary>
-    Task<IReadOnlyList<LandingState>> GetLandingsAsync(Guid submissionId, CancellationToken ct = default);
-
-    /// <summary>Records that a landing file was written, how many bytes it holds, and when.</summary>
-    Task MarkLandingWrittenAsync(Guid submissionId, string dataset, long bytes, DateTime writtenUtc, CancellationToken ct = default);
-
-    /// <summary>Records the pre flow member run that takes a landing file.</summary>
-    Task SetLandingPreRunAsync(Guid submissionId, string dataset, Guid runId, CancellationToken ct = default);
-
-    /// <summary>The landing whose file name an ingestion table's file column holds, or null: the link from a record's origin to the submission that sent it.</summary>
-    Task<LandingState?> FindLandingByFileAsync(string fileName, CancellationToken ct = default);
+    /// <summary>A flow's submissions, newest first, or every flow's when <paramref name="flowId"/> is null.</summary>
+    Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, CancellationToken ct = default);
 
     Task<IReadOnlyDictionary<DeliveryKey, RecordState>> GetRecordsAsync(Guid flowId, IEnumerable<DeliveryKey> keys, CancellationToken ct = default);
 

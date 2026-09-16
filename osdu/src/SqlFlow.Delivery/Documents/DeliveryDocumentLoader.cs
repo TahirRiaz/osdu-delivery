@@ -313,20 +313,6 @@ internal static partial class FlowMapper
             };
         }
 
-        FlowSubmissions? submissions = null;
-        if (src.Submissions is { } declaredSubmissions)
-        {
-            submissions = new FlowSubmissions
-            {
-                Record = MapSubmissionDataset(declaredSubmissions.Record, "source.submissions.record", source),
-                Datasets = (declaredSubmissions.Datasets ?? []).ToDictionary(
-                    kv => kv.Key.Trim(),
-                    kv => MapSubmissionDataset(kv.Value, $"source.submissions.datasets.{kv.Key}", source),
-                    StringComparer.Ordinal),
-                FileRoots = (declaredSubmissions.FileRoots ?? []).Where(r => !string.IsNullOrWhiteSpace(r)).Select(r => r.Trim()).ToList(),
-            };
-        }
-
         return new FlowSource
         {
             Connection = Require(src.Connection, "source.connection", source),
@@ -348,22 +334,6 @@ internal static partial class FlowMapper
                 CommandTimeoutSeconds = src.Incremental?.CommandTimeoutSeconds ?? 0,
             },
             Work = Require(src.Work, "source.work", source),
-            Submissions = submissions,
-        };
-    }
-
-    private static FlowSubmissionDataset MapSubmissionDataset(FlowSubmissionDatasetYaml? declared, string at, string source)
-    {
-        var dataset = declared ?? throw Missing(at, source);
-        return new FlowSubmissionDataset
-        {
-            PreFlow = Require(dataset.PreFlow, at + ".preFlow", source),
-            Landing = Require(dataset.Landing, at + ".landing", source),
-            Format = Optional(dataset.Format) is { } format
-                ? (LandingFormats.All.Contains(format, StringComparer.Ordinal)
-                    ? format
-                    : throw new FlowValidationException($"{source}: {at}.format '{format}' is not a landing format; it is one of {string.Join(", ", LandingFormats.All)}."))
-                : LandingFormats.Csv,
         };
     }
 
@@ -547,34 +517,6 @@ internal static partial class FlowMapper
         }
 
         CheckTokens(flow, src.Work, "source.work", source);
-
-        if (src.Submissions is { } submissions)
-        {
-            CheckTokens(flow, submissions.Record.Landing, "source.submissions.record.landing", source);
-            foreach (var (name, dataset) in submissions.Datasets)
-            {
-                if (!src.Datasets.ContainsKey(name))
-                {
-                    throw new FlowValidationException($"{source}: source.submissions.datasets names '{name}', which source.datasets does not declare.");
-                }
-
-                CheckTokens(flow, dataset.Landing, $"source.submissions.datasets.{name}.landing", source);
-            }
-
-            foreach (var root in submissions.FileRoots)
-            {
-                // A root is a prefix, never a glob. It is resolved against the flow file exactly as source.payloads.root
-                // and the landing folders are, so a repository-relative root is written the same way they are; what a
-                // submitted record may point at is checked against the resolved root when the submission is read.
-                if (root.Contains('*', StringComparison.Ordinal) || root.Contains('?', StringComparison.Ordinal))
-                {
-                    throw new FlowValidationException(
-                        $"{source}: source.submissions.fileRoots entry '{root}' must be a plain prefix (a container or folder), with no wildcard.");
-                }
-
-                CheckTokens(flow, root, "source.submissions.fileRoots", source);
-            }
-        }
     }
 
     private static void CheckObject(string declared, string key, string source)

@@ -12,7 +12,7 @@ public sealed record SourceSliceBound(int Slice, IReadOnlyList<string>? From, IR
 /// <summary>
 /// What bounded a plan's read, recorded on its submission (<c>Submission.SourceWindowJson</c>) so every later run of that
 /// submission reads exactly the same rows: the selection it was made for, the window it fixed, the key slices it was cut
-/// into for its fan-out, and, for a key-scoped or API submission, the record keys it covers. A member run, a re-run and a
+/// into for its fan-out, and, for a key-scoped submission, the record keys it covers. A member run, a re-run and a
 /// drain all rebuild their read from this rather than deciding a window of their own.
 /// </summary>
 public sealed record SourceWindowDescription
@@ -22,7 +22,7 @@ public sealed record SourceWindowDescription
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    /// <summary>The selection the plan was made for: incremental, full, keys or inline.</summary>
+    /// <summary>The selection the plan was made for: incremental, full or keys.</summary>
     public required string Selection { get; init; }
 
     /// <summary>The window's exclusive lower bound, when it had one.</summary>
@@ -34,7 +34,7 @@ public sealed record SourceWindowDescription
     /// <summary>The key slices the plan was cut into; empty when it ran as one.</summary>
     public IReadOnlyList<SourceSliceBound> Slices { get; init; } = [];
 
-    /// <summary>The record keys a key-scoped or API submission covers, each as its key parts in key order.</summary>
+    /// <summary>The record keys a key-scoped submission covers, each as its key parts in key order.</summary>
     public IReadOnlyList<IReadOnlyList<string>> Keys { get; init; } = [];
 
     /// <summary>The description of one opened read and the slices it was cut into.</summary>
@@ -76,14 +76,13 @@ public sealed record SourceWindowDescription
     public SourceWindow? Window() => UpperUtc is { } upper ? new SourceWindow(LowerUtc, upper) : null;
 
     /// <summary>The selection the plan was made for, rebuilt with the keys it covered.</summary>
-    public SourceSelection ToSelection(Guid submissionId)
+    public SourceSelection ToSelection()
     {
         var keys = Keys.Select(k => new KeyTuple(k)).ToList();
         return Selection switch
         {
             "full" => SourceSelection.Full(),
             "keys" => SourceSelection.ForKeys(keys),
-            "inline" => SourceSelection.ForSubmission(submissionId, keys),
             _ => SourceSelection.Incremental(LowerUtc),
         };
     }
@@ -102,7 +101,6 @@ public sealed record SourceWindowDescription
     {
         SourceSelectionKind.Full => "full",
         SourceSelectionKind.Keys => "keys",
-        SourceSelectionKind.Inline => "inline",
         _ => "incremental",
     };
 }

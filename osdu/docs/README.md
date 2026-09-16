@@ -15,7 +15,6 @@ replica.
 | [design.md](design.md) | The design: the render inputs and the render context, identity, change detection and the cache, the ledger, the delivery protocols, the document model, the preflight gate, streaming, the retrieval kind (section 15), the streaming intake, work batches, returned values and fan-out (section 16). Section numbers are referenced from the code. |
 | [documents.md](documents.md) | The delivery flow, retrieval flow, cache flow and mapping documents key by key. |
 | [mapping-templates.md](mapping-templates.md) | Templates and mappings: the template an OSDU schema becomes and where it is saved, the mapping format entry by entry (sources, `findBy`, modifiers, `appliesWhen`, `required`, fixtures), the checks, and the mapping builder. |
-| [submitting-records.md](submitting-records.md) | The other way in, for a source system: sending records' metadata in the request, which lands them as files for the flow's pre-ingestion flows. What a record looks like, the chain a submission queues, the request and its answers, idempotency, the preview, and what each mistake leads to. |
 | [ledger.md](ledger.md) | The ledger tables, the cache versions, the record lifecycle, leasing, the indexes behind every listing, retention. |
 | [protocols.md](protocols.md) | The named delivery protocols (`osduRecord`, `osduWellLog`, `osduFile`, `osduManifest`), their steps and returned values, and how to add one. |
 | [operations.md](operations.md) | Running it: the API and the GUI surfaces, the CLI verbs, first deployment, the runbook. |

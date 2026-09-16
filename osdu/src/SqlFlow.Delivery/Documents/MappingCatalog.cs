@@ -157,7 +157,7 @@ public static class FlowParameters
     }
 
     /// <summary>
-    /// A location a flow declares (a work root, a payload root, a landing folder), its tokens substituted and resolved: a
+    /// A location a flow declares (a work root or a payload root), its tokens substituted and resolved: a
     /// storage URI as written, a rooted path as it is, a relative path against the flow file's folder. A parameter value that
     /// would climb out of the declared location (a separator or '..') is refused, because these locations bound what a run
     /// may read and write.

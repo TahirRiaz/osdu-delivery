@@ -41,7 +41,6 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
                 <Badge variant="secondary" className="bg-info/12 text-info" data-testid="run-operation">{run.operation}</Badge>
               )}
               {request.force && <Badge variant="secondary" className="bg-warning/15 text-warning">forced</Badge>}
-              {request.reland && <Badge variant="secondary" data-testid="run-reland">landing files written again</Badge>}
               {request.submissionId !== null && (
                 <Badge variant="secondary" className="font-mono">submission {request.submissionId}</Badge>
               )}

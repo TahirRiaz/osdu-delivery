@@ -36,13 +36,12 @@ export default function globalSetup(): void {
   // Every flow of the estate, each without its schedule and with its tables in the sample database. A fire would be a
   // real run against the sample's OSDU target whenever a suite crossed its cron, and the specs expect flows that join no
   // schedule. The ingestion and delivery flows name their tables in OsduSample, while the pre flows write wherever
-  // OSDU_SAMPLE_DB points; unless both name the same database, lineage never links a pre flow to what reads it, and a
-  // submission's chain is refused.
+  // OSDU_SAMPLE_DB points; unless both name the same database, lineage never links a pre flow to what reads it, and the
+  // waves the chain runs in are wrong.
   const sampleDatabase = databaseOf(E2E.sampleDb);
-  const document = (flow: string, source: string) =>
-    inSampleDatabase(withoutSchedule(readFileSync(join(samplesDir, "flows", `${source}.yaml`), "utf8"), source), flow, sampleDatabase);
   for (const flow of CHAIN) {
-    writeFileSync(join(repoDir, "flows", `${flow}.yaml`), document(flow, flow));
+    const shipped = readFileSync(join(samplesDir, "flows", `${flow}.yaml`), "utf8");
+    writeFileSync(join(repoDir, "flows", `${flow}.yaml`), inSampleDatabase(withoutSchedule(shipped, flow), flow, sampleDatabase));
   }
 
   // The cache flow comes along without its schedule. The suite never refreshes it (that would need an OSDU target): the
@@ -52,11 +51,6 @@ export default function globalSetup(): void {
     join(repoDir, "caches", "osdu-reference-cache.yaml"),
     withoutSchedule(readFileSync(join(samplesDir, "caches", "osdu-reference-cache.yaml"), "utf8"), "osdu-reference-cache"),
   );
-
-  // A delivery flow that takes no records through the API, so the specs have a real refusal to show: the wellbore flow
-  // with its source.submissions block removed. Everything else about it is the shipped document, so the refusal the GUI
-  // renders is the product's own, not a fixture's invention.
-  writeFileSync(join(repoDir, "flows", `${NO_SUBMISSIONS}.yaml`), withoutSubmissions(document(NO_SUBMISSIONS, "recall-wellbore")));
 
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: repoDir, stdio: "pipe" }).toString("utf8").trim();
@@ -108,9 +102,6 @@ export const LOADING_FLOWS = [
   "recall-wellbore-aliases-ing",
 ] as const;
 
-/** The fixture's delivery flow that takes no records through the API. */
-export const NO_SUBMISSIONS = "wellbore-no-submissions";
-
 /**
  * A sample flow without its top-level schedule block. The suite triggers every run itself: a fire would be a real run
  * against the sample's OSDU target whenever a suite crossed its cron, and the specs expect flows that join no schedule,
@@ -120,25 +111,6 @@ function withoutSchedule(yaml: string, flow: string): string {
   const stripped = yaml.replace(/^schedule:\r?\n(?:[ \t].*\r?\n)*/m, "");
   if (/^schedule:/m.test(stripped)) {
     throw new Error(`The fixture flow '${flow}' still declares a schedule block; the e2e suite needs flows that join no schedule.`);
-  }
-
-  return stripped;
-}
-
-/**
- * The wellbore flow renamed, with its source.submissions block removed: a delivery flow that reads the same ingestion
- * tables but takes no records through the API. Both edits are checked, so a shipped document that stops carrying either
- * fails the setup rather than leaving the suite asserting a refusal that never comes.
- */
-function withoutSubmissions(yaml: string): string {
-  const text = yaml.replace(/^name: recall-wellbore$/m, `name: ${NO_SUBMISSIONS}`);
-  if (!new RegExp(`^name: ${NO_SUBMISSIONS}$`, "m").test(text)) {
-    throw new Error("The wellbore flow no longer declares 'name: recall-wellbore', so the fixture cannot rename it.");
-  }
-
-  const stripped = text.replace(/^ {2}submissions:\r?\n(?:[ \t]{4,}.*\r?\n)*/m, "");
-  if (/^ {2}submissions:/m.test(stripped) || stripped === text) {
-    throw new Error("The wellbore flow no longer declares a source.submissions block, so the fixture has no flow that refuses records.");
   }
 
   return stripped;

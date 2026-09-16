@@ -4,15 +4,14 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace SqlFlow.Delivery.Data;
 
-// The delivery ledger (docs/delivery/ledger.md), in the osdu schema: submissions and the files an API submission landed
-// for its pre flows, records and append-only attempts, the audit trail of interventions, the source watermarks, and the
-// read model of the mapping and cache documents the sync found in the repositories. Statuses are stored as short strings
+// The delivery ledger (docs/delivery/ledger.md), in the osdu schema: submissions, records and append-only attempts, the
+// audit trail of interventions, the source watermarks, and the read model of the mapping and cache documents the sync found in the repositories. Statuses are stored as short strings
 // so the tables read without a decoder ring. Everything the GUI lists is index-backed. No foreign key or navigation
 // reaches SQLFlow's catalog: a run, a group or a repository is referenced by id only.
 
 /// <summary>
-/// One plan of a flow over its ingestion tables: an incremental window, a full read, a set of record keys, or the
-/// records an API submission landed. Its id is the idempotency key, and every record it planned points back at it.
+/// One plan of a flow over its ingestion tables: an incremental window, a full read, or a set of record keys. Its id is
+/// the idempotency key, and every record it planned points back at it.
 /// </summary>
 public sealed class DeliverySubmission
 {
@@ -27,12 +26,6 @@ public sealed class DeliverySubmission
     public string RenderContext { get; set; } = string.Empty;
 
     public string ParametersJson { get; set; } = "{}";
-
-    /// <summary>
-    /// What the sending system calls this submission in its own records (a filename, a ticket, a job id): the handle an
-    /// operator searches by when they know the source's name for the work and not this ledger's id. Null when none was given.
-    /// </summary>
-    public string? Reference { get; set; }
 
     public long RecordCount { get; set; }
 
@@ -79,8 +72,7 @@ public sealed class DeliverySubmission
 
     public string? Error { get; set; }
 
-    /// <summary>incremental (a window of changed rows), full (every row up to a bound), keys (named record keys) or
-    /// inline (the records an API submission landed).</summary>
+    /// <summary>incremental (a window of changed rows), full (every row up to a bound) or keys (named record keys).</summary>
     public string Kind { get; set; } = "incremental";
 
     /// <summary>The source connection reference as the flow declares it; never a resolved value.</summary>
@@ -96,118 +88,11 @@ public sealed class DeliverySubmission
     public DateTime? WindowToUtc { get; set; }
 
     /// <summary>What else bounded the read, as JSON: dataset objects, overlap, scope values, slice boundaries, key count
-    /// and, for a keys or inline plan, the digest of the keys.</summary>
+    /// and, for a keys plan, the digest of the keys.</summary>
     public string? SourceWindowJson { get; set; }
 
     /// <summary>The platform run that coordinated the plan.</summary>
     public Guid? RunId { get; set; }
-
-    /// <summary>The run group that carried an inline submission through its pre, ing and OSDU flows.</summary>
-    public Guid? GroupId { get; set; }
-}
-
-/// <summary>
-/// The records a source sent in a submission request, kept as the control plane accepted them. The request lands them as
-/// files for the flow's pre flows (<see cref="DeliverySubmissionLanding"/>) and enqueues the chain that ingests and
-/// delivers them; the ledger says exactly what was sent, for which flow, mapping and parameter values, by whom and when.
-/// </summary>
-public sealed class DeliveryInlineSubmission
-{
-    /// <summary>The idempotency key, and the id of the <see cref="DeliverySubmission"/> the OSDU flow registers for it.</summary>
-    public Guid SubmissionId { get; set; }
-
-    public Guid FlowId { get; set; }
-
-    public string FlowName { get; set; } = string.Empty;
-
-    /// <summary>The mapping the flow pinned when the records were accepted.</summary>
-    public string MappingReference { get; set; } = string.Empty;
-
-    /// <summary>deliver or plan.</summary>
-    public string Operation { get; set; } = string.Empty;
-
-    public bool Force { get; set; }
-
-    /// <summary>The flow parameter values, resolved against the flow's declarations.</summary>
-    public string ParametersJson { get; set; } = "{}";
-
-    /// <summary>
-    /// What the sending system calls this submission in its own records: carried onto the <see cref="DeliverySubmission"/>
-    /// the OSDU flow registers, so one search finds both. Null when none was given. Part of the accepted request, so a
-    /// repeat under the same id has to carry the same one.
-    /// </summary>
-    public string? Reference { get; set; }
-
-    /// <summary>The records in canonical form.</summary>
-    public string RecordsJson { get; set; } = "[]";
-
-    public string ContentHash { get; set; } = string.Empty;
-
-    /// <summary>The hash a repeat of the request matches: flow, mapping, operation, force, parameter values and records.</summary>
-    public string RequestHash { get; set; } = string.Empty;
-
-    public int RecordCount { get; set; }
-
-    public long ChildRowCount { get; set; }
-
-    public int ContentBytes { get; set; }
-
-    public DateTime ReceivedUtc { get; set; }
-
-    /// <summary>Who sent the records: the caller's actor label.</summary>
-    public string ReceivedBy { get; set; } = string.Empty;
-
-    /// <summary>accepted, landed, queued, completed or failed.</summary>
-    public string Status { get; set; } = "accepted";
-
-    /// <summary>When every landing file was written; null until then.</summary>
-    public DateTime? LandedUtc { get; set; }
-
-    /// <summary>The run group that carries the submission through its pre, ing and OSDU flows; null until enqueued.</summary>
-    public Guid? GroupId { get; set; }
-
-    /// <summary>The OSDU flow's member run in that group.</summary>
-    public Guid? OsduRunId { get; set; }
-
-    /// <summary>Why the submission failed, redacted; null otherwise.</summary>
-    public string? Error { get; set; }
-}
-
-/// <summary>
-/// One file an API submission landed for a pre flow: which dataset of the records it holds, where it was written, under
-/// which name (the value the ingestion table's file column will hold), its content hash, and the pre flow run that took
-/// it. The unique file name is what resolves a delivered record's origin file back to the submission that sent it.
-/// </summary>
-public sealed class DeliverySubmissionLanding
-{
-    public Guid SubmissionId { get; set; }
-
-    /// <summary><c>record</c>, or the name of a child dataset.</summary>
-    public string Dataset { get; set; } = string.Empty;
-
-    public string PreFlowName { get; set; } = string.Empty;
-
-    /// <summary>The full location the file was written to.</summary>
-    public string Location { get; set; } = string.Empty;
-
-    /// <summary>The file name the ingestion table records as the row's origin.</summary>
-    public string FileName { get; set; } = string.Empty;
-
-    /// <summary>csv, ndjson, json or parquet.</summary>
-    public string Format { get; set; } = string.Empty;
-
-    public long RowCount { get; set; }
-
-    public long Bytes { get; set; }
-
-    /// <summary>The SHA-256 of the file's content, as 64 hexadecimal characters.</summary>
-    public string ContentHash { get; set; } = string.Empty;
-
-    /// <summary>When the file was written; null until it has been.</summary>
-    public DateTime? WrittenUtc { get; set; }
-
-    /// <summary>The pre flow member run that took the file.</summary>
-    public Guid? PreRunId { get; set; }
 }
 
 /// <summary>The current state of one deliverable, keyed by its deterministic delivery key.</summary>
@@ -919,13 +804,6 @@ public static class DeliveryModel
     public const string OsduIdCollation = "Latin1_General_100_BIN2";
 
     /// <summary>
-    /// The longest caller-supplied reference a submission carries. Long enough for a file path or a ticket URL, short
-    /// enough to index and to read in a listing, and the same ceiling the API enforces so a reference that was accepted
-    /// never fails to store.
-    /// </summary>
-    public const int MaxReferenceLength = 200;
-
-    /// <summary>
     /// The longest ingestion file name a record's origin holds. It keeps the (flow, file, row) index key under SQL Server's
     /// 1700-byte limit; a longer file name is refused when the source is opened, naming the file and this limit.
     /// </summary>
@@ -946,7 +824,6 @@ public static class DeliveryModel
             e.Property(s => s.RenderContext).IsRequired();
             e.Property(s => s.WorkLocation).HasMaxLength(2000);
             e.Property(s => s.ParametersJson).IsRequired();
-            e.Property(s => s.Reference).HasMaxLength(MaxReferenceLength);
             e.Property(s => s.Status).HasMaxLength(16).IsRequired();
             e.Property(s => s.Error).HasMaxLength(4000);
             e.Property(s => s.Kind).HasMaxLength(16).IsRequired();
@@ -954,49 +831,10 @@ public static class DeliveryModel
             e.Property(s => s.SourceObject).HasMaxLength(400).IsRequired();
             e.HasIndex(s => new { s.FlowId, s.ReceivedUtc });
             e.HasIndex(s => new { s.FlowId, s.Status });
-            // A source looking its own submission up knows its reference and not this ledger's id, so that lookup is
-            // indexed rather than a scan of every submission the flow ever took.
-            e.HasIndex(s => new { s.FlowId, s.Reference });
             // The flow's submission listing filtered by kind.
             e.HasIndex(s => new { s.FlowId, s.Kind, s.ReceivedUtc });
             // A run page links the run to the plan it coordinated.
             e.HasIndex(s => s.RunId);
-        });
-
-        modelBuilder.Entity<DeliveryInlineSubmission>(e =>
-        {
-            e.ToTable("InlineSubmission", SchemaName);
-            e.HasKey(s => s.SubmissionId);
-            e.Property(s => s.FlowName).HasMaxLength(200).IsRequired();
-            e.Property(s => s.MappingReference).HasMaxLength(200).IsRequired();
-            e.Property(s => s.Operation).HasMaxLength(16).IsRequired();
-            e.Property(s => s.ParametersJson).IsRequired();
-            e.Property(s => s.RecordsJson).IsRequired();
-            e.Property(s => s.ContentHash).HasMaxLength(64).IsRequired();
-            e.Property(s => s.RequestHash).HasMaxLength(64).IsRequired();
-            e.Property(s => s.ReceivedBy).HasMaxLength(200).IsRequired();
-            e.Property(s => s.Reference).HasMaxLength(MaxReferenceLength);
-            e.Property(s => s.Status).HasMaxLength(16).IsRequired();
-            e.Property(s => s.Error).HasMaxLength(4000);
-            e.HasIndex(s => new { s.FlowId, s.ReceivedUtc });
-            // The resume service scans the submissions still on their way; the filter keeps finished ones out of it.
-            e.HasIndex(s => new { s.Status, s.ReceivedUtc }).HasFilter("[Status] IN ('accepted','landed','queued')");
-            // A run group's state is matched back to the submission it carries.
-            e.HasIndex(s => s.GroupId);
-        });
-
-        modelBuilder.Entity<DeliverySubmissionLanding>(e =>
-        {
-            e.ToTable("SubmissionLanding", SchemaName);
-            e.HasKey(l => new { l.SubmissionId, l.Dataset });
-            e.Property(l => l.Dataset).HasMaxLength(128);
-            e.Property(l => l.PreFlowName).HasMaxLength(200).IsRequired();
-            e.Property(l => l.Location).HasMaxLength(2000).IsRequired();
-            e.Property(l => l.FileName).HasMaxLength(MaxSourceFileNameLength).IsRequired();
-            e.Property(l => l.Format).HasMaxLength(16).IsRequired();
-            e.Property(l => l.ContentHash).HasMaxLength(64).IsFixedLength().IsUnicode(false).IsRequired();
-            // A record's origin file resolves to the submission that landed it: the traceability link.
-            e.HasIndex(l => l.FileName).IsUnique();
         });
 
         modelBuilder.Entity<DeliveryRecord>(e =>

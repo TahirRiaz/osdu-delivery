@@ -127,7 +127,7 @@ public sealed class FlowRuntime : IDisposable
     /// <summary>Supplies the captured log for the activity being completed (the executor sets it).</summary>
     public Func<string?>? ActivityLog { get; set; }
 
-    /// <summary>The submission the run works on, when it names one: a re-run, a fan-out member's, or an API submission's.</summary>
+    /// <summary>The submission the run works on, when it names one: a re-run, or a fan-out member's.</summary>
     public Guid? SubmissionId { get; set; }
 
     /// <summary>The key slices a fan-out member plans of its coordinating run's submission; null plans the whole read.</summary>

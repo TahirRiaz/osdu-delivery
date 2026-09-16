@@ -1,5 +1,5 @@
 import {
-  DatabaseZap, FileCode2, FileJson, GitCompare, LayoutTemplate, PackageCheck, PencilRuler, ScrollText, ShieldCheck, Workflow,
+  DatabaseZap, FileCode2, GitCompare, LayoutTemplate, PackageCheck, PencilRuler, ScrollText, ShieldCheck, Workflow,
 } from "lucide-react";
 import type { RunSummary } from "@/api/types";
 import type { Column } from "@/components/DataTable";
@@ -15,7 +15,6 @@ import { DeliveryTriggerFields } from "./features/delivery/DeliveryTriggerFields
 // pages, the panels, anything with the code editor) loads with the surface that shows it.
 
 const DeliveryOverviewPage = lazyRoute("DeliveryOverviewPage", () => import("./features/delivery/DeliveryOverviewPage"));
-const ManualSubmissionPage = lazyRoute("ManualSubmissionPage", () => import("./features/delivery/ManualSubmissionPage"));
 const DeliveryRecordPage = lazyRoute("DeliveryRecordPage", () => import("./features/delivery/DeliveryRecordPage"));
 const DeliverySubmissionPage = lazyRoute("DeliverySubmissionPage", () => import("./features/delivery/DeliverySubmissionPage"));
 const DeliveryActivityPage = lazyRoute("DeliveryActivityPage", () => import("./features/delivery/DeliveryActivityPage"));
@@ -140,7 +139,6 @@ export const osduDeliveryModule: GuiModule = {
   id: "osdu-delivery",
   routes: [
     { path: "/delivery", component: DeliveryOverviewPage },
-    { path: "/delivery/submit", component: ManualSubmissionPage },
     { path: "/delivery/records/:key", component: DeliveryRecordPage },
     { path: "/delivery/submissions/:submissionId", component: DeliverySubmissionPage },
     { path: "/delivery/activity", component: DeliveryActivityPage },
@@ -151,7 +149,6 @@ export const osduDeliveryModule: GuiModule = {
   ],
   navItems: [
     { group: "operate", label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery", after: "/" },
-    { group: "operate", label: "Manual submission", to: "/delivery/submit", icon: FileJson, testId: "nav-delivery-submit", after: "/delivery" },
     { group: "operate", label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity", after: "/runs" },
     { group: "workspace", label: "Mappings", to: "/delivery/documents", icon: FileCode2, testId: "nav-delivery-documents", after: "/pipelines" },
     { group: "workspace", label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates", after: "/delivery/documents" },

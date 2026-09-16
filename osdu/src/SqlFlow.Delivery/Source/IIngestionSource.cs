@@ -15,14 +15,11 @@ public enum SourceSelectionKind
 
     /// <summary>Named records only, whenever they last changed: a redelivery, a release, a cache rollout or <c>--set recordKeys</c>.</summary>
     Keys,
-
-    /// <summary>The records of one API submission, by the keys the submission landed.</summary>
-    Inline,
 }
 
 /// <summary>
 /// What a run asks the source for. Incremental carries the lower bound the watermark gives (null when there is none, which
-/// reads as a full pass); Keys and Inline carry the record keys, in the flow's key order.
+/// reads as a full pass); Keys carries the record keys, in the flow's key order.
 /// </summary>
 public sealed record SourceSelection
 {
@@ -35,11 +32,8 @@ public sealed record SourceSelection
     /// <summary>The exclusive lower bound of an incremental window, or null when the flow has no watermark yet.</summary>
     public DateTime? LowerUtc { get; init; }
 
-    /// <summary>The records a <see cref="SourceSelectionKind.Keys"/> or <see cref="SourceSelectionKind.Inline"/> read is limited to.</summary>
+    /// <summary>The records a <see cref="SourceSelectionKind.Keys"/> read is limited to.</summary>
     public IReadOnlyList<KeyTuple> Keys { get; init; } = [];
-
-    /// <summary>The submission whose landed records an <see cref="SourceSelectionKind.Inline"/> read covers.</summary>
-    public Guid? SubmissionId { get; init; }
 
     /// <summary>True when the selection covers the whole scope, which is what may move the flow's watermark.</summary>
     public bool CoversScope => Kind is SourceSelectionKind.Incremental or SourceSelectionKind.Full;
@@ -55,19 +49,12 @@ public sealed record SourceSelection
         return new SourceSelection { Kind = SourceSelectionKind.Keys, Keys = [.. keys] };
     }
 
-    public static SourceSelection ForSubmission(Guid submissionId, IReadOnlyList<KeyTuple> keys)
-    {
-        ArgumentNullException.ThrowIfNull(keys);
-        return new SourceSelection { Kind = SourceSelectionKind.Inline, SubmissionId = submissionId, Keys = [.. keys] };
-    }
-
     /// <summary>One line for a log or a run outcome: what this read covers.</summary>
     public string Describe() => Kind switch
     {
         SourceSelectionKind.Incremental => LowerUtc is { } lower ? $"incremental since {lower:yyyy-MM-ddTHH:mm:ssZ}" : "incremental (no watermark yet)",
         SourceSelectionKind.Full => "full",
-        SourceSelectionKind.Keys => $"{Keys.Count} record key(s)",
-        _ => $"submission {SubmissionId:D} ({Keys.Count} record(s))",
+        _ => $"{Keys.Count} record key(s)",
     };
 }
 

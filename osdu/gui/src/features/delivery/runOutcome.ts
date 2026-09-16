@@ -75,8 +75,6 @@ export interface RunRequest {
   submissionId: string | null;
   recordKeys: string[];
   redeliver: string | null;
-  /** The submission's landing files were written again before this run, so its rows are read as they now stand. */
-  reland: boolean;
   /** The key slices of the submission a fan-out intake member plans. */
   slices: number[];
 }
@@ -90,7 +88,6 @@ export function runRequest(run: RunDetail): RunRequest {
       ? payload.recordKeys.filter((key): key is string => typeof key === "string")
       : [],
     redeliver: typeof payload.redeliver === "string" ? payload.redeliver : null,
-    reland: payload.reland === true,
     slices: Array.isArray(payload.slices)
       ? payload.slices.filter((slice): slice is number => typeof slice === "number" && Number.isInteger(slice))
       : [],

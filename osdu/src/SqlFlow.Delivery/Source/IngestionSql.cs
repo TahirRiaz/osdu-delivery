@@ -222,7 +222,7 @@ public static class IngestionSql
     internal static string CandidateSet(IngestionLayout layout, SourceSelectionKind kind, bool hasLower, KeyBounds bounds)
     {
         ArgumentNullException.ThrowIfNull(layout);
-        if (kind is SourceSelectionKind.Keys or SourceSelectionKind.Inline)
+        if (kind == SourceSelectionKind.Keys)
         {
             return $"""
                 SELECT DISTINCT {KeyList(layout, "r")}

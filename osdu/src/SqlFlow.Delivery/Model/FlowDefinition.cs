@@ -132,9 +132,6 @@ public sealed record FlowSource
     /// prefix the nodes can write, relative to the flow file when it is a relative path. Supports {parameter} tokens.
     /// </summary>
     public required string Work { get; init; }
-
-    /// <summary>Where records submitted through the API land for the pre flows that read them; null when the flow takes none.</summary>
-    public FlowSubmissions? Submissions { get; init; }
 }
 
 /// <summary>The record table of a flow's source.</summary>
@@ -183,7 +180,7 @@ public sealed record FlowPayload
 
     /// <summary>
     /// The folder or storage prefix the payload files must sit under: relative to the flow file when it is a relative
-    /// path, with {parameter} tokens. A record's location that falls outside it (or outside <see cref="FlowSubmissions.FileRoots"/>) holds the record.
+    /// path, with {parameter} tokens. A record's location that falls outside it holds the record.
     /// </summary>
     public required string Root { get; init; }
 
@@ -258,59 +255,6 @@ public enum SourceIsolation
 
     /// <summary>Each result set reads what is committed when it runs.</summary>
     ReadCommitted,
-}
-
-/// <summary>Where records submitted through the API land, per dataset, for the pre flows that read them.</summary>
-public sealed record FlowSubmissions
-{
-    /// <summary>Where the record rows land.</summary>
-    public required FlowSubmissionDataset Record { get; init; }
-
-    /// <summary>Where each child dataset's rows land, by dataset name.</summary>
-    public IReadOnlyDictionary<string, FlowSubmissionDataset> Datasets { get; init; } = new Dictionary<string, FlowSubmissionDataset>(StringComparer.Ordinal);
-
-    /// <summary>Prefixes, beside every payload root, a submitted record may point its payload files inside.</summary>
-    public IReadOnlyList<string> FileRoots { get; init; } = [];
-}
-
-/// <summary>The pre flow a submitted dataset lands for, the folder it lands in, and the form the file takes.</summary>
-public sealed record FlowSubmissionDataset
-{
-    /// <summary>The pre-ingestion flow that reads the landed file.</summary>
-    public required string PreFlow { get; init; }
-
-    /// <summary>The folder the file is written to: relative to the flow file when relative, with {parameter} tokens.</summary>
-    public required string Landing { get; init; }
-
-    /// <summary>The form the landed file takes, which is the form its pre flow reads: one of <see cref="LandingFormats"/>.</summary>
-    public string Format { get; init; } = LandingFormats.Csv;
-}
-
-/// <summary>The forms an API submission's landing file can take, which are the forms a pre-ingestion flow reads.</summary>
-public static class LandingFormats
-{
-    /// <summary>A header row and one row per record, the form SQLFlow's file flows read by default.</summary>
-    public const string Csv = "csv";
-
-    /// <summary>One JSON object per line.</summary>
-    public const string Ndjson = "ndjson";
-
-    /// <summary>One JSON array of objects.</summary>
-    public const string Json = "json";
-
-    /// <summary>A single-row-group parquet file, typed from the columns the mapping reads.</summary>
-    public const string Parquet = "parquet";
-
-    public static IReadOnlyList<string> All { get; } = [Csv, Ndjson, Json, Parquet];
-
-    /// <summary>The file extension a landed file of this form carries.</summary>
-    public static string Extension(string format)
-    {
-        ArgumentNullException.ThrowIfNull(format);
-        return All.Contains(format, StringComparer.Ordinal)
-            ? "." + format
-            : throw new DeliveryException($"'{format}' is not a landing format; it is one of {string.Join(", ", All)}.");
-    }
 }
 
 public sealed record FlowRender

@@ -317,23 +317,6 @@ The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I w
 
 An existing mapping opens in the builder with its entries filled in.
 
-## Manual submission
-
-Records sent by hand, or by a source system through `POST /api/v1/delivery/submissions`, follow the same standard
-(docs/delivery/submitting-records.md):
-
-- **A record is a fixture's input.** `record` holds the dataset row the mapping reads as `dataset.<column>`, and
-  `datasets` holds the rows of each child dataset it reads as `dataset.<child>.<column>`. Each child dataset is the
-  flow's `source.datasets` entry of the same name, and a submission lands its rows as a file of their own.
-- **The source contract speaks in template terms.** `GET /api/v1/delivery/flows/{pipelineId}/source-contract` names the
-  template version the flow's mapping pins and whether the catalog holds it, the dataset's system, key and label, every
-  column with the template variables it fills (as the value, to find a cached record, or to decide whether an entry
-  applies), and every child dataset with the lists its rows fill.
-- **A mapping that pins an unsaved template** still lists its columns, and the contract says no run can render the
-  records until that version is saved.
-- **The manual submission list** names the template kind each flow's mapping fills, and the Submit records dialog shows
-  under every field what the column fills.
-
 ## What is removed
 
 - The property list format: `source`/`identity`/`envelope`/`properties`/`definitions` blocks, per-property
@@ -341,6 +324,9 @@ Records sent by hand, or by a source system through `POST /api/v1/delivery/submi
   `replace`, `equals`, `split`, `date` and cache sources cover what the sample estate used.
 - Schema snapshots in the repository's snapshot store, and the `sqlflow snapshot <flow> schema` verb. Templates
   replace them.
+- Manual submission: the API that took records in a request, the page and dialog that sent them, and the source contract
+  that described a flow's columns to a sender. Records delivered by hand go through the flow's pre and ingestion flows
+  like any other ([design.md](design.md) section 3.3).
 
 Rendering now needs the catalog, because templates live there. A CLI run without a catalog can still validate
 documents. The reference snapshots, which this change left in the repository, have since gone the same way: what is cached is
@@ -357,9 +343,7 @@ defined by cache flows, and the versions of each partition's cache live in the c
    `appliesWhen`, `required` and fixtures, each parsed with errors that name the file and the entry.
 4. **Engine.** Rewrite the renderer's walk over entries, keeping type coercion, cache resolution, cache usage
    tracking and hashing as they are. Rewrite the preflight with the checks above. Resolve templates from the catalog
-   in the render resolver. Adapt the planner, the legal tag check and the catalog sync summary, and move manual
-   submission onto the standard: records carry `datasets`, and the source contract describes each column by the
-   template variables it fills.
+   in the render resolver. Adapt the planner, the legal tag check and the catalog sync summary.
 5. **Browse, fetch and save.** Read the OSDU data definitions' releases, a release's index of record kinds, and one
    kind's schema bundled with the files it refers to, a save path that stores a fetched or imported schema, and CLI
    verbs `sqlflow template capture | import | list | show`.

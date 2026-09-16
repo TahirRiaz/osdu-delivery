@@ -20,11 +20,11 @@ no catalog connection at all, reaches it through a connection reference of its o
 | `FlowId`, `FlowName`, `MappingReference`, `RenderContext` | What produced the run. |
 | `ParametersJson`, `RecordCount` | The parameter values the plan read with, and how many records it covered. |
 | `WorkLocation`, `BatchCount`, `Slices` | Where the intake wrote its work batches, how many, and how many key slices it cut the work into for its fan-out members. |
-| `Kind` | Which selection was read: `incremental` (the rows changed in a window after the scope's watermark), `full` (every row of the scope), `keys` (named record keys: a record-scoped run, or the records the ledger asked to plan again) or `inline` (the records an API submission landed). |
+| `Kind` | Which selection was read: `incremental` (the rows changed in a window after the scope's watermark), `full` (every row of the scope), or `keys` (named record keys: a record-scoped run, or the records the ledger asked to plan again). |
 | `SourceConnection`, `SourceObject` | The ingestion database's connection reference exactly as the flow declares it (never a resolved secret), and the three-part name of the record table read. |
-| `WindowFromUtc`, `WindowToUtc` | The `UpdatedDate_DW` window the plan covered. Both null for a keys or inline plan with no window; a full plan records its upper bound. |
-| `SourceWindowJson` | What else bounded the read: the child dataset objects, the overlap seconds, the scope values, the slice boundaries, the key count, and for a keys or inline plan the key digest. |
-| `RunId`, `GroupId` | The run that coordinated the submission, and, for one an API submission queued, the chain run group of pre, ingestion and OSDU runs. |
+| `WindowFromUtc`, `WindowToUtc` | The `UpdatedDate_DW` window the plan covered. Both null for a keys plan with no window; a full plan records its upper bound. |
+| `SourceWindowJson` | What else bounded the read: the child dataset objects, the overlap seconds, the scope values, the slice boundaries, the key count, and for a keys plan the key digest. |
+| `RunId` | The run that coordinated the submission. |
 | `Untracked` | Rows the plan read that carried no complete record key, so nothing could be delivered under them. |
 | `Status` | `received`, `planned`, `running`, `completed`, `failed`. |
 | `Planned`, `SkippedUnchanged`, `AwaitingApproval`, `SkippedStale`, `UnchangedAtPush`, `Blocked`, `Delivered`, `Held`, `Failed` | Counts scoped to the records this submission touched. `AwaitingApproval` counts the records a cache change waiting for a decision held back: rendered and ready, and not unchanged, so a run says how many wait on an approval instead of hiding them among the records it had no reason to send. `Planned`, `SkippedUnchanged`, `SkippedStale` and `Blocked` describe its latest planning pass: a re-run of the submission plans it again and replaces them. `Delivered` and `UnchangedAtPush` count the distinct records the submission's attempts delivered, or found OSDU already holding at the final hash check, across every pass. `Held` and `Failed` count the records whose last submission this is and that are held or failed now. A re-run that re-sends one record of three already delivered therefore shows 1 planned and 3 delivered; what that run itself did is on the run (`recordsPlanned`, `recordsDelivered`). `SkippedStale` counts rows older than the version delivered or queued. |
@@ -33,42 +33,6 @@ no catalog connection at all, reaches it through a connection reference of its o
 The platform's run row carries the submission too: `Run.SubmissionId` when a run was asked to re-run one, and
 `Run.ResultSubmissionId` for the submission a deliver run registered or completed, so a submission page lists
 the runs that carried it.
-
-### `osdu.InlineSubmission`: the records a source sent in the request
-
-The submissions whose records came in the request ([submitting-records.md](submitting-records.md)). The row is written
-by the control plane, which then lands the records as files for the flow's declared pre-ingestion flows and enqueues
-the chain of pre, ingestion and OSDU runs that delivers them. The `osdu.Submission` row of the same id is registered
-by the OSDU run's intake, as for any other plan.
-
-| Column | Purpose |
-| --- | --- |
-| `SubmissionId` | Primary key and idempotency key, the id the caller chose or the one minted for it. |
-| `FlowId`, `FlowName`, `MappingReference` | The flow, and the mapping it pinned when the records were accepted: a flow promoted since refuses them. |
-| `Operation`, `Force` | What the submission asked for: `deliver` or `plan`, and whether it forces past the change gates. |
-| `ParametersJson` | The flow parameter values, resolved against the flow's declarations. |
-| `RecordsJson`, `ContentHash`, `RecordCount`, `ChildRowCount`, `ContentBytes` | The records in canonical form and their size: what was sent, and what a repeat is compared against. |
-| `RequestHash` | The hash a repeat of the request matches: flow, mapping, operation, force, parameter values and records. A different request under the same id is refused. |
-| `ReceivedUtc`, `ReceivedBy` | When the records arrived and who sent them. |
-| `Status`, `LandedUtc` | How far it got: `accepted` (stored), `landed` (its files written), `queued` (its chain enqueued), then `completed` or `failed`; and when the files were written. |
-| `GroupId`, `OsduRunId` | The chain run group the submission queued, and the OSDU flow's own run in it. |
-| `Error` | Why it failed, redacted. |
-
-### `osdu.SubmissionLanding`: the file each dataset was landed as
-
-One row per dataset of an API submission (`record`, or a child dataset's name), keyed by `(SubmissionId, Dataset)`.
-It is what makes a submitted record traceable through the pre and ingestion flows.
-
-| Column | Purpose |
-| --- | --- |
-| `PreFlowName` | The pre-ingestion flow that reads the landing folder. |
-| `Location`, `FileName`, `Format` | The full location written, the file name itself, and the format the pre flow declares (`csv`, `ndjson`, `json` or `parquet`). |
-| `RowCount`, `Bytes`, `ContentHash` | What was written; the hash is what makes a repeated landing a no-op rather than a second file. |
-| `WrittenUtc`, `PreRunId` | When the file was written, and which pre flow member run took it. |
-
-`FileName` is unique across the ledger, and it is the value `FileName_DW` takes on every ingestion row loaded from
-that file. That is the traceability link: a delivered record's origin file resolves back to the submission that
-landed it, even when a scheduled pre run picked the file up before the submission's own chain ran.
 
 ### `osdu.Record`: the current state of one deliverable
 
@@ -333,7 +297,6 @@ Listings are index-backed so the GUI answers in milliseconds at any estate size:
 | `Record (FlowId, DeliveryKey)` | key-ordered walks of one flow: a removal's key list, a keys selection's pages |
 | `Record (FlowId, SourceFileName, SourceRowNumber)`, global `(SourceFileName)` | "which records came from this file", inside one flow and across the estate |
 | `Record (FlowId, PlanRequestedUtc) WHERE PlanRequestedUtc IS NOT NULL` | the records the planner pages each run, so it stays as small as the backlog |
-| `SubmissionLanding (FileName)` unique | a record's origin file back to the submission that landed it |
 | `RecordCount` indexed view `(FlowId, Status, LastVerifyOutcome, DeliveredHour)` | flow statistics, read from a few rows per flow (see [Statistics](#statistics)) |
 | `Attempt (DeliveryKey, StartedUtc)`, `(SubmissionId)`, `(RunId, DeliveryKey)`, `(StartedUtc)` | record timeline, submission view, a run's records, pruning |
 | `Activity (FlowId, StartedUtc)`, `(DeliveryKey, StartedUtc)`, `(Kind, StartedUtc)`, `(Actor, StartedUtc)`, `(SubmissionId)`, `(RunId)` | the audit views and their filters |

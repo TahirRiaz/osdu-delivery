@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileJson, Radar, Trash2, Unlock } from "lucide-react";
+import { Radar, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,7 +27,6 @@ import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { BlockedBadge, RecordStatusBadge, SubmissionStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
-import { SubmitRecordsDialog } from "./SubmitRecordsDialog";
 import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
 
 const ALL = "all";
@@ -74,7 +73,6 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const [status, setStatus] = useState<string>(ALL);
   const [drifted, setDrifted] = useState(false);
   const [contains, setContains] = useState(false);
-  const [recordsOpen, setRecordsOpen] = useState(false);
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [probeTaskId, setProbeTaskId] = useState<string | null>(null);
   // Ticked rows survive paging and filter changes because the page owns them, not the table. `allMatching` is the
@@ -172,10 +170,6 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
       {section === "overview" && (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={() => setRecordsOpen(true)} data-testid="delivery-submit-records">
-              <FileJson />
-              Submit records
-            </Button>
             <Button variant="outline" size="sm" onClick={() => probeTarget.mutate()} disabled={probeTarget.isPending} data-testid="delivery-probe">
               <Radar />
               Probe target
@@ -343,7 +337,6 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
         />
       )}
 
-      <SubmitRecordsDialog open={recordsOpen} onClose={() => setRecordsOpen(false)} pipelineId={pipelineId} flowName={flowName} />
       <ConfirmDialog
         open={releaseOpen}
         title="Release blocked records"
@@ -377,7 +370,6 @@ const submissionColumns: Column<DeliverySubmission>[] = [
     // filename or a ticket recognises; the id stays, because it is what every other page is keyed by.
     render: (row) => (
       <div className="flex min-w-0 flex-col">
-        {row.reference !== null && <TruncatedText text={row.reference} maxWidth={280} />}
         <span className="font-mono text-[12px] text-muted-foreground">{row.submissionId}</span>
       </div>
     ),

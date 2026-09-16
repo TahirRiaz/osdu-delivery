@@ -4,6 +4,13 @@ This is the working design for stage 4 of `docs/plan.md`: data reaches OSDU thro
 ingestion flows, and the OSDU flow reads the keyed ingestion tables they load. There is no drop manifest, no drop reader,
 no replica and no SQL-source extraction.
 
+> **Manual submission was removed after this stage.** Section 4 designed a way to send records in an API request, land
+> them as files for the pre flows and queue the chain that delivered them. It was built, then taken out: records delivered
+> by hand are files placed where a pre flow reads them, and the regular chain loads and delivers them. The migration
+> `RemoveManualSubmission` drops `osdu.InlineSubmission`, `osdu.SubmissionLanding` and the `Reference` and `GroupId`
+> columns of `osdu.Submission`. The sections below that describe the flow document are current; the change lists,
+> tests and ordering in sections 3 and 5 to 7 still name the submission pieces as they were built at the time.
+
 ## Decisions
 
 - **Nodes reach the ledger through the module database.** SQLFlow nodes speak only the node protocol and open no
@@ -54,7 +61,7 @@ no replica and no SQL-source extraction.
 | `datasets.<name>.orderBy` | Child row order within a record. |
 | `datasets.<name>.maxRowsPerRecord` | Ceiling on child rows per record (default 100000). |
 | `payloads.<name>.root` | Folder or prefix payload files must sit under; `{parameter}` tokens; relative to the flow file. |
-| `payloads.<name>.locationColumn` | Record column with the payload folder, relative to `root` or absolute under `root` or `submissions.fileRoots`. |
+| `payloads.<name>.locationColumn` | Record column with the payload folder, relative to `root` or absolute under `root`. |
 | `payloads.<name>.pattern` | Glob under the folder (default `*`). |
 | `payloads.<name>.hashColumn` | Column with the payload content hash (unless `change.payloadDetect: lastModified`). |
 | `payloads.<name>.chunkCountColumn` | Column with the chunk count. |
@@ -65,12 +72,10 @@ no replica and no SQL-source extraction.
 | `incremental.isolation` | `snapshot` (default) or `readCommitted`. |
 | `incremental.commandTimeoutSeconds` | Default 0 (bounded by cancellation). |
 | `work` | Where the intake writes work batches (required). |
-| `submissions.record.preFlow/.landing` | Pre flow and folder API-submitted record rows land in. |
-| `submissions.datasets.<name>.preFlow/.landing` | The same per child dataset. |
-| `submissions.fileRoots` | Extra prefixes a submitted record may point payload files inside. |
 
 Removed: `location`, `manifest`, `records`, `scopes`, path-template `payloads`, `fingerprint`, `knownState`,
-`manualSubmission`, `manualSubmissionFileRoots`, `sql`, `replica`. Mappings are unchanged.
+`manualSubmission`, `manualSubmissionFileRoots`, `sql`, `replica`, and (since the removal above) `submissions`.
+Mappings are unchanged.
 
 ### 1.2 `osdu/samples/recall-welllog/flows/recall-welllog.yaml`
 
@@ -109,16 +114,6 @@ source:
   incremental:
     overlapSeconds: 900
   work: ../.work/{logSource}
-  submissions:
-    record:
-      preFlow: recall-welllog-pre
-      landing: ../data/welllog
-    datasets:
-      curves:
-        preFlow: recall-welllog-curves-pre
-        landing: ../data/curves-meta
-    fileRoots:
-      - ../data/curves
 ```
 
 `render`, `change`, `target` (endpoint, auth, headers, protocol, options), `reliability`, `schedule` and `verify` stay as
@@ -153,8 +148,7 @@ in the current sample, with the schedule carrying `values: { logSource: STAT_COM
 
 `recall-wellbore-pre`, `recall-wellbore-aliases-pre`, `recall-wellbore-ing` (`keyColumns: [facility_name]`),
 `recall-wellbore-aliases-ing` (`[facility_name, alias_name]`) and `recall-wellbore` (record `OsduSample.ing.Wellbore`,
-dataset `aliases` joined on `facility_name`, `protocol: osduRecord`, submissions landing into `../data/wellbore` and
-`../data/wellbore-aliases`).
+dataset `aliases` joined on `facility_name`, `protocol: osduRecord`).
 
 ## 2. Planning over the ingestion tables
 
@@ -395,80 +389,17 @@ Removed entirely: the entity, its configuration and its three indexes. The drop-
 
 ---
 
-## 4. API-submitted records ("inline submissions")
+## 4. API-submitted records (removed)
 
-### 4.1 Where the records land
+This section designed records sent in an API request: stored in `osdu.InlineSubmission`, written as one landing file
+per dataset into a folder the delivery flow declared under `source.submissions`, and delivered by a run group of the
+pre, ingestion and delivery flows, with `osdu.SubmissionLanding` linking each landing file to its submission.
 
-- **Target.** Each dataset of a submission is written as one file into the `landing` folder the OSDU flow declares under `source.submissions`: the record rows for `record`, and one file per child dataset. The folder is read by the named pre flow.
-- **File name:** `osdu-{submissionId:N}-{dataset}.{ext}`. It is deterministic, so a retry writes the same name.
-- **Format** follows the pre flow's `source.type`, read from the pre pipeline's YAML in the catalog with `YamlFlowLoader`:
-  - `parquet`: typed columns `string`, `long`, `double`, `boolean` from `InlineColumnTypes`, written with `ParquetFiles.WriteAsync`.
-  - `ndjson`: one object per line.
-  - `json`: one array.
-  - `csv`: UTF-8, header row, comma, double-quote escaping, and only when the pre flow declares default CSV options.
-  - Any other type or CSV option set is refused with the reason named.
-- **Record file columns:** every column any record sent; every column the mapping reads (`MappingColumns.Read`), null-filled; and the declared `payloads.<name>.locationColumn` and `hashColumn` filled from each record's `files`.
-- **Child file columns:** the join columns, copied from the parent record's values (a child row that sends a join column must send the same value, or the request is refused), then the child columns sent and the child columns the mapping reads.
-- **Row order** is the order sent, so `RowNumber_DW` is the record index plus 1, or the child row's position within its file.
-- **Writing** (`Submissions/LandingFileWriter.cs`).
-  - The file is first written under a temporary name that does not match the pre flow's `srcFile` (`.osdu-pending` appended), then promoted.
-  - On Azure Blob storage the promotion is the single blob commit of the final name, since nothing is visible before commit. On local storage it is `File.Move` within the same folder.
-  - If the final file already exists with the same `ContentHash`, it is left untouched. A different hash fails the submission with a message naming both hashes and the location.
-
-### 4.2 Request to delivery
-
-1. **Validate** (`SubmitRecordsAsync`, before anything is stored):
-   - The pipeline is a `delivery` flow and declares `source.submissions`.
-   - `InlineRecords.Parse` succeeds.
-   - Every record carries non-empty values for every `source.record.key` column.
-   - `SubmissionLanding.FilesRefusal`: every record points its payload files under `payloads.<name>.root` or `submissions.fileRoots`, with a hash when `payloadDetect` is `contentHash`.
-   - `SubmissionLanding.Refusal`, for each declared pre flow: the pipeline exists and is active; `landing` lies under its `source.location`; the generated file name matches its `srcFile` glob; its format is supported.
-   - The parameter values resolve against the flow (`FlowParameters.Resolve`).
-2. **Store.** One transaction, `OsduDbContext` enlisted on the catalog connection:
-   - Insert `InlineSubmission` with `Status = accepted`.
-   - Insert one `SubmissionLanding` row per dataset, with the planned location, file name, format, row count and content hash computed from the canonical records.
-   - Insert an `Activity` of kind `submit` with the actor.
-   - **Idempotency.**
-     - The submission id is the key; the caller's id is used, or `Guid.CreateVersion7()`.
-     - Same id and same `RequestHash`: no insert; the stored state is returned with `Replayed: true`, including `GroupId` and `OsduRunId` once they exist.
-     - Same id with any difference: 409 listing `InlineSubmissionState.Differences`.
-     - An id that already names a non-inline `Submission` is a 409.
-     - A concurrent insert that loses is retried as today (`MaxAcceptAttempts`).
-3. **Land.** After commit, the request writes every landing file (4.1), calls `MarkLandingWrittenAsync` per dataset, then `MarkInlineStatusAsync(landed)`.
-4. **Enqueue the chain.**
-   - **Members**, computed by `Api/SubmissionChain.cs` from `CatalogFlowDependency` and `CatalogPipeline`:
-     - the declared pre flows;
-     - every flow that is both a descendant of those pre flows and an ancestor of the OSDU flow (the ing flows);
-     - the OSDU flow.
-
-     Ordered by `CatalogPipeline.Wave`. Any declared pre flow that does not reach the OSDU flow through lineage refuses the submission, naming the flow, before anything is enqueued.
-   - **Member parameters** (`RunGroupEnqueueRequest.MemberParameters`):
-     - each pre flow: `FullLoad = true`, `FilePattern = <its landing file name>`. It reads exactly that file whatever the watermark, and a bounded run never resets the landing table.
-     - each ing flow: default parameters.
-     - the OSDU flow: `Operation` = the submission's `deliver` or `plan`; `Values` = the accepted parameter values; `Payload = {"submissionId":"<id>"}`.
-   - **Transaction.** One catalog transaction, through the group enqueue extension with companion rows: `RunQueueStore.EnqueueGroupAsync`, plus `MarkInlineStatusAsync(queued, groupId, osduRunId)` and `SetLandingPreRunAsync` per landing.
-   - **Response:** 202 with the submission id, group id and OSDU run id.
-5. **Plan and deliver** (OSDU executor on a node, ledger through the configured `osdu` connection):
-   - Loads the `InlineSubmission` and registers a `Submission` with the same id, `Kind = inline`, `Reference` from the request, `SourceObject`, `GroupId`.
-   - Derives the key tuples from `RecordsJson` and plans an `Inline` selection (a `Keys` read, section 2.2).
-   - A key the ingestion table does not hold is held, with a reason naming the landing file and the pre and ing flows expected to have loaded it.
-   - A key whose row carries a different `FileName_DW` is planned as it stands. Its entry reason says the ingestion table already held identical content from that file, since the ingestion checksum left the row untouched. The record's origin then names that file, not the landing file.
-   - On completion, `SubmissionIntake.CompleteAsync` settles the submission and the executor sets the inline status to `completed` or `failed`.
-6. **Resume and failure** (`Background/SubmissionLandingService.cs`, a control plane hosted service registered through the host module):
-   - `accepted` or `landed` older than a grace period with no `GroupId`: repeat steps 3 and 4. Both are idempotent: existing files with the same hash are left alone, and the enqueue checks `GroupId` inside its transaction.
-   - `queued` whose group is terminal with the OSDU member skipped, failed or cancelled: `failed`, with the first failed member's run id, flow name and redacted error.
-   - Replay after the group's run rows were removed by retention: step 4 runs again, recorded as a new `GroupId`. The previous one stays in the submission's activity trail.
-7. **Re-run.**
-   - The submission page's re-run enqueues the OSDU flow alone, with `Payload = {"submissionId":"<id>","force":true}`.
-   - `reland: true` enqueues the whole chain again (step 4), using the files already landed.
-
-### 4.3 What the ledger records
-
-- **`InlineSubmission`:** exactly what was sent (canonical records, content and request hashes), for which flow, mapping and parameter values, the operation, who sent it and when, its status, chain group and OSDU run, and the error when it failed.
-- **`SubmissionLanding`:** per dataset, which file was written where, in which format, with how many rows and bytes, its hash, when, and which pre run took it.
-- **`Submission`** (`Kind = inline`): the plan and delivery counts, render context, work batches, reference.
-- **`Record` and `Attempt`:** the origin file and row of each delivered version. A landing file name resolves back to the submission, even when a scheduled chain picked up the file and delivered the record before the submission's own group ran.
-- **`Activity`:** `submit` for the request, and the OSDU run's `deliver` or `plan` with the run id.
+It was removed. The control plane resolved a relative landing folder against its own working directory while the node's
+pre flow read its own checkout of the repository, so a landed file never reached the flow that should load it; and the
+regular flows already cover the case. Records delivered by hand are now files placed where the pre flow's
+`source.location` points, a location both the person placing them and the nodes can reach, and a run of the chain (from
+the GUI, the API or the schedule) loads and delivers them with the same traceability as any other file.
 
 ## 5. File-by-file change list
 

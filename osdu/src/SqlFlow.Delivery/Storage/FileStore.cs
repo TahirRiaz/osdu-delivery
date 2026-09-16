@@ -10,10 +10,10 @@ using SqlFlow.Sources;
 namespace SqlFlow.Delivery.Storage;
 
 /// <summary>
-/// Writes a file (create or overwrite), opens a location for streamed writing, and answers whether a location
-/// exists, for the locations one file store family handles. The platform's <see cref="IFileStore"/> is read-only
-/// by design (the engine only ever reads sources); the intake's work batches, retrieval files and an API submission's
-/// landing files are what the delivery domain writes, so the write side lives here, next to the reads it pairs with.
+/// Writes a file (create or overwrite) and opens a location for streamed writing, for the locations one file store
+/// family handles. The platform's <see cref="IFileStore"/> is read-only by design (the engine only ever reads sources);
+/// the intake's work batches and retrieval files are what the delivery domain writes, so the write side lives here,
+/// next to the reads it pairs with.
 /// </summary>
 public interface IFileWriter
 {
@@ -26,15 +26,6 @@ public interface IFileWriter
     /// never sits in memory. The content becomes visible (and complete) when the stream is disposed.
     /// </summary>
     Task<Stream> OpenWriteAsync(string location, CancellationToken ct = default);
-
-    Task<bool> ExistsAsync(string location, CancellationToken ct = default);
-
-    /// <summary>
-    /// Removes a location and everything under it (a file, or a folder and its contents). A location that is not
-    /// there is not an error: the caller asked for it to be gone, and it is. Used to take back the temporary copy of a
-    /// landing file whose write failed, which is the only thing the delivery side deletes from storage.
-    /// </summary>
-    Task DeleteAsync(string location, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -54,7 +45,7 @@ public interface IFileReader
 /// <summary>
 /// Picks the store (and the writer and reader) for a location: the platform's local and Azure blob stores for
 /// listings and forward reads, the matching writers and readers for the few writes and the seekable and range
-/// reads. One registry per host, shared by the payload files, the work batches, the retrievals and the landing files.
+/// reads. One registry per host, shared by the payload files, the work batches and the retrievals.
 /// </summary>
 public sealed class FileStoreRegistry
 {
@@ -97,12 +88,6 @@ public sealed class FileStoreRegistry
 
     public Task<Stream> OpenWriteAsync(string location, CancellationToken ct = default)
         => Writer(location).OpenWriteAsync(location, ct);
-
-    public Task<bool> ExistsAsync(string location, CancellationToken ct = default)
-        => Writer(location).ExistsAsync(location, ct);
-
-    public Task DeleteAsync(string location, CancellationToken ct = default)
-        => Writer(location).DeleteAsync(location, ct);
 
     /// <summary>
     /// A seekable stream over a file: the reader's own when one is registered for the location, otherwise the
@@ -291,24 +276,6 @@ public sealed class LocalFileWriter : IFileWriter
         return Task.FromResult<Stream>(new MoveOnDisposeStream(stream, temp, location));
     }
 
-    public Task<bool> ExistsAsync(string location, CancellationToken ct = default)
-        => Task.FromResult(File.Exists(location) || Directory.Exists(location));
-
-    public Task DeleteAsync(string location, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(location);
-        if (Directory.Exists(location))
-        {
-            Directory.Delete(location, recursive: true);
-        }
-        else if (File.Exists(location))
-        {
-            File.Delete(location);
-        }
-
-        return Task.CompletedTask;
-    }
-
     /// <summary>The temp file becomes the target when the stream closes, so a reader never sees a half-written file.</summary>
     private sealed class MoveOnDisposeStream : Stream
     {
@@ -437,40 +404,6 @@ public sealed class AzureBlobFileWriter : IFileWriter
         catch (RequestFailedException ex)
         {
             throw new DeliveryException($"Could not open '{location}' for writing (status {ex.Status}): {ex.Message}", ex);
-        }
-    }
-
-    public async Task<bool> ExistsAsync(string location, CancellationToken ct = default)
-    {
-        try
-        {
-            return await Blob(_credentials, location).ExistsAsync(ct).ConfigureAwait(false);
-        }
-        catch (RequestFailedException ex)
-        {
-            throw new DeliveryException($"Could not check '{location}' (status {ex.Status}): {ex.Message}", ex);
-        }
-    }
-
-    /// <summary>
-    /// Removes the blob at the location and every blob under it as a prefix, so a drop-off folder goes in one call.
-    /// A blob that is not there is not an error.
-    /// </summary>
-    public async Task DeleteAsync(string location, CancellationToken ct = default)
-    {
-        var parsed = AzureBlobLocation.Parse(location);
-        var container = new BlobServiceClient(parsed.BlobServiceEndpoint, _credentials.Create()).GetBlobContainerClient(parsed.Container);
-        try
-        {
-            await container.GetBlobClient(parsed.BlobPath).DeleteIfExistsAsync(DeleteSnapshotsOption.IncludeSnapshots, cancellationToken: ct).ConfigureAwait(false);
-            await foreach (var blob in container.GetBlobsAsync(BlobTraits.None, BlobStates.None, parsed.BlobPath.TrimEnd('/') + "/", ct).ConfigureAwait(false))
-            {
-                await container.GetBlobClient(blob.Name).DeleteIfExistsAsync(DeleteSnapshotsOption.IncludeSnapshots, cancellationToken: ct).ConfigureAwait(false);
-            }
-        }
-        catch (RequestFailedException ex)
-        {
-            throw new DeliveryException($"Could not delete '{location}' (status {ex.Status}): {ex.Message}", ex);
         }
     }
 

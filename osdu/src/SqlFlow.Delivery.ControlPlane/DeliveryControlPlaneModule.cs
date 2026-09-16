@@ -8,7 +8,6 @@ using SqlFlow.Delivery.ControlPlane.Configuration;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Hosting;
-using SqlFlow.Delivery.Submissions;
 using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.ControlPlane;
@@ -17,8 +16,8 @@ namespace SqlFlow.Delivery.ControlPlane;
 /// The OSDU module as a control plane composes it: the delivery, retrieval and cache flow kinds with their executors and
 /// compute operations, the ledger over the module's own database (schema <c>osdu</c>), the mapping and cache documents the
 /// repository sync reconciles beside the flows, the OSDU data definitions the Templates page browses, the background work
-/// that carries approved cache changes out and finishes interrupted submissions, the delivery search category, and every
-/// delivery endpoint on the control plane's own authenticated route groups.
+/// that carries approved cache changes out, the delivery search category, and every delivery endpoint on the control
+/// plane's own authenticated route groups.
 /// </summary>
 /// <remarks>
 /// A host passes this to <c>ControlPlaneHost.RunAsync</c>; nothing else about the control plane changes. Every service
@@ -36,7 +35,6 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         var database = services.AddOptions<OsduDatabaseOptions>(OsduDatabaseOptions.SectionName);
         var rollout = services.AddOptions<CacheRolloutOptions>(CacheRolloutOptions.SectionName, options => options.Validate());
         var repository = services.AddOptions<SchemaRepositoryOptions>(SchemaRepositoryOptions.SectionName, options => options.Validate());
-        var submissions = services.AddOptions<SubmissionResumeOptions>(SubmissionResumeOptions.SectionName, options => options.Validate());
 
         // The module's database: the osdu schema in the catalog's own database unless the deployment gives it one of its
         // own. Bootstrap migrates it after the catalog, and readiness stays red until it verifies against this build.
@@ -77,15 +75,6 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         {
             services.AddHostedService<CacheUpdateRolloutService>();
         }
-
-        if (submissions.Enabled)
-        {
-            services.AddHostedService<SubmissionLandingService>();
-        }
-
-        // The records of one API submission ride in the request body, so the control plane reads a body that large and
-        // no larger; the route itself refuses anything above the same bound.
-        services.RaiseMaxRequestBodySize(InlineRecords.MaxRequestBytes);
     }
 
     public void MapEndpoints(ControlPlaneModuleEndpoints endpoints)
@@ -93,7 +82,7 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         ArgumentNullException.ThrowIfNull(endpoints);
 
         // Reading the ledger, the mappings, the caches and the templates is any signed-in user's; running something
-        // (a submission, a redelivery, a removal, a data definitions sync) is an operate action; saving or deleting a
+        // (a redelivery, a removal, a data definitions sync) is an operate action; saving or deleting a
         // template changes what mappings can pin, so it is an author action, as SQLFlow's own proposals are.
         endpoints.Read
             .MapDeliveryReadEndpoints()

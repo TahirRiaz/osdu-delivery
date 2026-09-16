@@ -54,7 +54,7 @@ public enum ParquetRowIndexSource
 /// <summary>
 /// The parquet files the delivery domain touches without parsing their rows: a payload chunk's footer, measured against
 /// the target's bulk ceilings and the other chunks of its session, a forward-only stream made seekable, the values a
-/// parquet column type reads as, and the writers the sample estate, the tests and an API submission's landing files use.
+/// parquet column type reads as, and the writers the sample estate and the tests use.
 /// </summary>
 public static class ParquetFiles
 {
@@ -167,7 +167,7 @@ public static class ParquetFiles
         _ => value.ToString(),
     };
 
-    /// <summary>Writes rows as one row group, for the sample estate, the tests and an API submission's landing files.</summary>
+    /// <summary>Writes rows as one row group, for the sample estate and the tests.</summary>
     public static Task WriteAsync(Stream target, IReadOnlyList<(string Name, Type ClrType)> columns, IReadOnlyList<IReadOnlyDictionary<string, object?>> rows, CancellationToken ct = default)
         => WriteAsync(target, columns, rows, null, ct);
 

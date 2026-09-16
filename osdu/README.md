@@ -15,9 +15,9 @@ the committed tree (no build output, no local files).
 | `src/SqlFlow.Delivery.ControlPlane/` | `src/SqlFlow.ControlPlane/Api/DeliveryEndpoints.cs`, `DeliveryTemplateEndpoints.cs`, `Background/CacheUpdateRolloutService.cs`, `Background/DataDefinitionsWarmupService.cs` |
 | `src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs` | `src/SqlFlow.Cli/DeliveryVerbs.cs`: the `check`, `cache` and `template` verbs |
 | `gui/src/features/delivery/`, `gui/src/api/delivery.ts` | The OSDU GUI pages and their API client |
-| `gui/e2e/` | The OSDU specs (cache, submitted records, manual submission, templates and mapping builder) with the e2e setup and helpers |
+| `gui/e2e/` | The OSDU specs (seed, runs, pipelines, cache, templates and mapping builder) with the e2e setup and helpers |
 | `tests/SqlFlow.Delivery.Tests/` | The delivery domain suites |
-| `tests/SqlFlow.Delivery.ControlPlane.Tests/` | The delivery submission and template API suites, and the sample estate they use |
+| `tests/SqlFlow.Delivery.ControlPlane.Tests/` | The module, plan run, record origin and template API suites, and the sample estate they use |
 | `docs/` | `docs/delivery/` and `docs/reference/cli/delivery.md` |
 | `samples/recall-welllog/` | The sample estate: flows, mappings, the cache flow, bundled templates, reference records |
 
@@ -25,8 +25,7 @@ the committed tree (no build output, no local files).
 
 SQLFlow's own pre-ingestion and ingestion flows replace the way data used to arrive, so these were not copied:
 
-- the drop manifest, its file encodings and the drop reader, and the disk-backed join of drop scopes (the parser of records
-  submitted through the API, `Drops/InlineRecords.cs`, was kept);
+- the drop manifest, its file encodings and the drop reader, and the disk-backed join of drop scopes;
 - the CSV and JSON scope readers (`Formats/`), which SQLFlow's file flow provides;
 - the replica (`Replica/`), whose typing, schema evolution and upsert SQLFlow's pre-ingestion and ingestion flows provide;
 - the SQL Server source extraction into drops (`Engine/SqlSource/`), which an ingestion flow provides;

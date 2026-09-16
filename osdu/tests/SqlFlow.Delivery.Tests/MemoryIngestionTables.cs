@@ -120,7 +120,7 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
             IReadOnlyList<KeyTuple> missing = [];
             IReadOnlyList<KeyTuple> outOfScope = [];
             long candidates;
-            if (selection.Kind is SourceSelectionKind.Keys or SourceSelectionKind.Inline)
+            if (selection.Kind == SourceSelectionKind.Keys)
             {
                 var all = _tables.Records.ToDictionary(KeyOf, r => r);
                 missing = selection.Keys.Where(k => !all.ContainsKey(k)).ToList();
@@ -226,7 +226,7 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
 
         private IEnumerable<MemoryRecord> Candidates(SourceHeader header)
         {
-            if (header.Selection.Kind is SourceSelectionKind.Keys or SourceSelectionKind.Inline)
+            if (header.Selection.Kind == SourceSelectionKind.Keys)
             {
                 var wanted = header.Selection.Keys.ToHashSet();
                 return _tables.Records.Where(r => InScope(r) && wanted.Contains(KeyOf(r)));

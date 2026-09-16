@@ -69,8 +69,6 @@ internal sealed class FlowSourceYaml
     public FlowIncrementalYaml? Incremental { get; set; }
 
     public string? Work { get; set; }
-
-    public FlowSubmissionsYaml? Submissions { get; set; }
 }
 
 internal sealed class FlowSourceTableYaml
@@ -176,24 +174,6 @@ internal sealed class FlowIncrementalYaml
     public string? Isolation { get; set; }
 
     public int? CommandTimeoutSeconds { get; set; }
-}
-
-internal sealed class FlowSubmissionsYaml
-{
-    public FlowSubmissionDatasetYaml? Record { get; set; }
-
-    public Dictionary<string, FlowSubmissionDatasetYaml>? Datasets { get; set; }
-
-    public List<string>? FileRoots { get; set; }
-}
-
-internal sealed class FlowSubmissionDatasetYaml
-{
-    public string? PreFlow { get; set; }
-
-    public string? Landing { get; set; }
-
-    public string? Format { get; set; }
 }
 
 internal sealed class FlowRenderYaml

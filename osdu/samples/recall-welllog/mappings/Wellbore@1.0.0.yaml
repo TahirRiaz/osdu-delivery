@@ -1,9 +1,7 @@
 # Mapping: a source system's wellbores into the Wellbore 1.3.0 template (docs/delivery/mapping-templates.md).
 #
-# The master data the well logs hang off, and the shape a source sends when it submits records through the API rather
-# than preparing a drop (docs/delivery/submitting-records.md): what a source system holds about a wellbore, plus its
-# alternative names as the child dataset "aliases". Nothing here streams payload files, so a flow that renders with this
-# mapping takes records inline as well as from a drop.
+# The master data the well logs hang off: what a source system holds about a wellbore, plus its alternative names as
+# the child dataset "aliases". Nothing here streams payload files.
 documentType: mapping
 name: Wellbore
 version: 1.0.0

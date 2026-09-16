@@ -117,7 +117,8 @@ host.
   record's origin, stored in the ledger).
 - Planning reads the tables in pages, incrementally by `UpdatedDate_DW`; a full re-plan reads them all; fan-out slices by key.
 - The flow's lineage contribution declares the ingestion tables it reads, so SQLFlow orders pre, ing and OSDU flows in waves.
-- Records submitted through the API land where a pre-ingestion flow reads them.
+- Records delivered by hand are files placed where a pre-ingestion flow reads them; the module takes no records through an
+  API of its own.
 - The sample estate becomes a pre flow, an ing flow and an OSDU flow per dataset (well logs, curves), with source files.
 - The engine suites that used sample drops are re-fixtured on ingestion tables; the SQL Server end-to-end suite runs the whole
   chain: files, pre, ing, OSDU flow with a fake protocol.
@@ -144,6 +145,7 @@ code.
 | Delivery and template endpoints, CLI verbs, OSDU GUI pages | Copied; registered through the host and GUI module extension points |
 | Ledger entities | Copied; become `OsduDbContext` in the `osdu` schema, delivered by migration |
 | Drop manifest and reader, scope file readers, replica, SQL source extraction, inline drops, drop-off area, known-state publishing | Left behind; SQLFlow's pre and ing flows replace them |
+| Manual submission (records sent in a request, their landing files and chain, the submission page and dialog) | Copied, then removed: the pre and ing flows cover records delivered by hand |
 | The previous implementation's platform changes (kind registry, executor and compute registries, run parameters, fan-out, sync extension) | Not copied; redone as stage 1's generic extension points in `sqlflow/` |
 
 ## Adopting SQLFlow updates

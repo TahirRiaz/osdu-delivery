@@ -14,7 +14,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// <summary>
 /// The sample delivery estate (<c>osdu/samples/recall-welllog</c>) copied to a temp repository, for the API tests that
 /// need a real flow: the two OSDU flows with the pre and ing chains that feed them, the mappings they render with, and
-/// the data folders a submission lands into. What the flows render with lives in the module's database (the templates
+/// the data folders the pre flows read. What the flows render with lives in the module's database (the templates
 /// and the partition cache), so a test saves those rather than inventing a second estate that would drift from the real
 /// one. This mirrors what the engine suite and the GUI e2e fixture do, for the same reason.
 /// </summary>
@@ -26,18 +26,8 @@ internal static class SampleEstate
     /// <summary>The well log flow of the sample estate, which streams payload files beside its documents.</summary>
     public const string FlowName = "recall-welllog";
 
-    /// <summary>The wellbore master data flow: the chain that takes records through the API, with no payload files.</summary>
+    /// <summary>The wellbore master data flow, which streams no payload files.</summary>
     public const string WellboreFlowName = "recall-wellbore";
-
-    /// <summary>The pre-ingestion flows the wellbore flow lands its submissions for.</summary>
-    public const string WellborePreFlow = "recall-wellbore-pre";
-
-    public const string WellboreAliasesPreFlow = "recall-wellbore-aliases-pre";
-
-    /// <summary>The ingestion flows between those pre flows and the wellbore flow.</summary>
-    public const string WellboreIngFlow = "recall-wellbore-ing";
-
-    public const string WellboreAliasesIngFlow = "recall-wellbore-aliases-ing";
 
     /// <summary>The mapping the wellbore flow pins, and the template version it fills.</summary>
     public const string WellboreMapping = "Wellbore@1.0.0";
@@ -58,8 +48,8 @@ internal static class SampleEstate
 
     /// <summary>
     /// Copies the estate into <paramref name="destination"/> and returns it. Nothing about the flows is rewritten: what
-    /// executes is the sample flow as shipped, reading the ingestion tables its document declares and landing its
-    /// submissions in the copied data folders, which is exactly what makes the copy safe to write into.
+    /// executes is the sample flow as shipped, reading the ingestion tables its document declares, and the copy is a
+    /// disposable place for its run logs and work batches.
     /// </summary>
     public static string CopyTo(string destination)
     {

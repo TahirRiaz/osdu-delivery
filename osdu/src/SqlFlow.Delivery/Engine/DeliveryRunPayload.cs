@@ -100,8 +100,8 @@ public static class RedeliverScopes
 
 /// <summary>
 /// The kind-owned arguments of a delivery run (<see cref="RunParameters.Payload"/>): whether it forces a re-plan, the
-/// submission it works on, the records it is scoped to and what of them it redelivers, the key slices a fan-out member
-/// plans, and whether a submission's landing files were landed again. Parsed strictly: an unknown property, a wrong type
+/// submission it works on, the records it is scoped to and what of them it redelivers, and the key slices a fan-out
+/// member plans. Parsed strictly: an unknown property, a wrong type
 /// or a value out of range is refused with a message naming it, at every trust boundary the platform validates a run at.
 /// </summary>
 public sealed record DeliveryRunPayload
@@ -119,16 +119,14 @@ public sealed record DeliveryRunPayload
 
     public const string SlicesProperty = "slices";
 
-    public const string RelandProperty = "reland";
-
-    private static readonly string[] Properties = [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty, RelandProperty];
+    private static readonly string[] Properties = [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty];
 
     public static DeliveryRunPayload None { get; } = new();
 
     /// <summary>Lift the whole-run gates: tier 0 and an already completed submission. Each record's own hashes still decide.</summary>
     public bool Force { get; init; }
 
-    /// <summary>The submission the run works on: a re-run, a fan-out member's share, or an API submission's plan.</summary>
+    /// <summary>The submission the run works on: a re-run, or a fan-out member's share.</summary>
     public Guid? SubmissionId { get; init; }
 
     /// <summary>The delivery keys the run is scoped to.</summary>
@@ -140,12 +138,9 @@ public sealed record DeliveryRunPayload
     /// <summary>The key slices of <see cref="SubmissionId"/> an intake member plans.</summary>
     public IReadOnlyList<int> Slices { get; init; } = [];
 
-    /// <summary>The submission's landing files were landed again before this run, so its rows are read as they now stand.</summary>
-    public bool Reland { get; init; }
-
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty
-        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && !Reland;
+        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0;
 
     /// <summary>The payload of a run's parameters; none when it carries none.</summary>
     public static DeliveryRunPayload Parse(RunParameters parameters)
@@ -187,7 +182,6 @@ public sealed record DeliveryRunPayload
             RecordKeys = Keys(root[RecordKeysProperty]),
             Redeliver = root[RedeliverProperty] is null ? null : Text(root[RedeliverProperty], RedeliverProperty),
             Slices = SliceList(root[SlicesProperty]),
-            Reland = Boolean(root, RelandProperty),
         };
     }
 
@@ -243,16 +237,13 @@ public sealed record DeliveryRunPayload
             case DeliveryOperations.Deliver:
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 Refuse(Redeliver is not null && RecordKeys.Count == 0, RedeliverProperty, operation, "it says what of the records named by recordKeys is sent again");
-                Refuse(Reland && SubmissionId is null, RelandProperty, operation, "it describes the submission the run re-runs, which submissionId names");
                 break;
             case DeliveryOperations.Plan:
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "a plan sends nothing");
-                Refuse(Reland && SubmissionId is null, RelandProperty, operation, "it describes the submission the run re-plans, which submissionId names");
                 break;
             case DeliveryOperations.Intake:
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "an intake sends nothing");
-                Refuse(Reland, RelandProperty, operation, "an intake plans what its coordinating run registered");
                 Refuse(Slices.Count > 0 && SubmissionId is null, SlicesProperty, operation, "slices are cut from the submission their coordinating run registered, which submissionId names");
                 break;
             case DeliveryOperations.Drain:
@@ -260,20 +251,17 @@ public sealed record DeliveryRunPayload
                 Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "a drain delivers the batches a submission planned");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "a drain delivers what was planned");
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
-                Refuse(Reland, RelandProperty, operation, "a drain reads no source rows");
                 break;
             case DeliveryOperations.Verify:
                 Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a verify reads the ledger's delivered records, not a submission");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "a verify sends nothing");
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
-                Refuse(Reland, RelandProperty, operation, "a verify reads no source rows");
                 break;
             case DeliveryOperations.Replan:
                 Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a replan reads every row of the scope under a submission of its own");
                 Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "a replan reads every row of the scope; scope a deliver run to records instead");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "a replan decides by each record's hashes");
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
-                Refuse(Reland, RelandProperty, operation, "a replan reads the tables as they stand");
                 break;
             default:
                 throw new SqlFlowException($"'{operation}' is not an operation of a delivery flow.");
@@ -312,11 +300,6 @@ public sealed record DeliveryRunPayload
         if (Slices.Count > 0)
         {
             root[SlicesProperty] = new JsonArray(Slices.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray());
-        }
-
-        if (Reland)
-        {
-            root[RelandProperty] = true;
         }
 
         return root.ToJsonString();

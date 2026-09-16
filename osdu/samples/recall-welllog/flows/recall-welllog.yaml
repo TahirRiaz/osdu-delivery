@@ -48,18 +48,6 @@ source:
     overlapSeconds: 900
   # Where the intake writes the rendered documents a drain reads back.
   work: ../.work/{logSource}
-  # Records sent through the API land here as files for the pre flows, so an API submission and a file drop become the
-  # same rows in the same tables.
-  submissions:
-    record:
-      preFlow: recall-welllog-pre
-      landing: ../data/welllog
-    datasets:
-      curves:
-        preFlow: recall-welllog-curves-pre
-        landing: ../data/curves-meta
-    fileRoots:
-      - ../data/curves
 
 render:
   mapping: WellLog@1.4.0

@@ -6,9 +6,8 @@ namespace SqlFlow.Delivery.Validation;
 /// <summary>
 /// Where a flow's payload files may sit (docs/stage4-design.md section 2.5). A record names its payload folder in a column
 /// rather than carrying bytes, and the node opens that folder with its own identity when the run delivers. That identity
-/// can read whatever it has been granted, so an unguarded location would let a row, or a record submitted through the API,
-/// have any readable file shipped to OSDU. The roots a flow allows are each payload's declared <c>root</c> and the prefixes
-/// under <c>source.submissions.fileRoots</c>, with the run's parameter values substituted.
+/// can read whatever it has been granted, so an unguarded location would let a row have any readable file shipped to OSDU.
+/// The roots a flow allows are each payload's declared <c>root</c>, with the run's parameter values substituted.
 /// </summary>
 public static class PayloadRoots
 {
@@ -21,11 +20,6 @@ public static class PayloadRoots
         foreach (var (name, payload) in flow.Source.Payloads)
         {
             Add(roots, FlowParameters.ResolvePath(flow, payload.Root, values, $"source.payloads.{name}.root"));
-        }
-
-        foreach (var root in flow.Source.Submissions?.FileRoots ?? [])
-        {
-            Add(roots, FlowParameters.ResolvePath(flow, root, values, "source.submissions.fileRoots"));
         }
 
         return roots;
@@ -52,7 +46,7 @@ public static class PayloadRoots
         var roots = Of(flow, values);
         if (roots.Count == 0)
         {
-            return $"flow '{flow.Name}' declares no payload root and no source.submissions.fileRoots, so there is nowhere its payload files may sit.";
+            return $"flow '{flow.Name}' declares no payload root, so there is nowhere its payload files may sit.";
         }
 
         var candidate = Normalize(location);

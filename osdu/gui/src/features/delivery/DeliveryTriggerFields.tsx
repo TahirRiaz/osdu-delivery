@@ -63,7 +63,7 @@ function parseValues(text: string): { values: Record<string, string>; error: str
  * delivery flow the submission to work on, the records to scope the run to, and the part of them to send again. Which
  * fields apply follows the operation picked; reading every row of the scope again is the flow kind's own `replan`
  * operation rather than a field here. A run being repeated opens with what it was given, and keeps any other part of
- * its payload (the key slices a fan-out member took, a relanded submission) as it was.
+ * its payload (the key slices a fan-out member took) as it was.
  */
 export function DeliveryTriggerFields({ flowKind, operation, initialValues, initialPayload, onChange }: TriggerFieldsProps) {
   const idPrefix = useId();

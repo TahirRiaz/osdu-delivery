@@ -16,7 +16,6 @@ using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Source;
-using SqlFlow.Delivery.Submissions;
 using SqlFlow.Execution;
 using SqlFlow.Orchestration;
 using SqlFlow.Yaml;
@@ -131,30 +130,18 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         // A run that names a submission works on that submission's records with the parameter values it was registered
         // with, plus any override the trigger carried. A drain works on the submission's batches and reads no source.
         SubmissionState? submission = null;
-        InlineSubmissionState? inline = null;
         if (payload.SubmissionId is { } submissionId && operation != DeliveryOperations.Drain)
         {
             var ledger = context.Ledger ?? throw new DeliveryException(DeliveryServices.NoLedgerMessage);
-            submission = await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false);
-            inline = await ledger.GetInlineSubmissionAsync(submissionId, ct).ConfigureAwait(false);
-            var (ownerId, ownerName) = submission is not null ? (submission.FlowId, submission.FlowName)
-                : inline is not null ? (inline.FlowId, inline.FlowName)
-                : throw new DeliveryException($"Submission {submissionId:D} is not in the ledger.");
-            if (ownerId != flow.Id)
+            submission = await ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false)
+                ?? throw new DeliveryException($"Submission {submissionId:D} is not in the ledger.");
+            if (submission.FlowId != flow.Id)
             {
-                throw new DeliveryException($"Submission {submissionId:D} belongs to flow '{ownerName}', not '{flow.Name}'.");
+                throw new DeliveryException($"Submission {submissionId:D} belongs to flow '{submission.FlowName}', not '{flow.Name}'.");
             }
 
-            if (inline is not null)
-            {
-                values = Merge(inline.Parameters(), parameters.Values);
-                LogInlineSubmission(log, submissionId, inline.RecordCount, inline.ReceivedBy);
-            }
-            else
-            {
-                values = Merge(ParseValues(submission!.ParametersJson), parameters.Values);
-                LogSubmission(log, submissionId, submission.SourceObject);
-            }
+            values = Merge(ParseValues(submission.ParametersJson), parameters.Values);
+            LogSubmission(log, submissionId, submission.SourceObject);
         }
 
         var readsSource = operation is DeliveryOperations.Deliver or DeliveryOperations.Plan or DeliveryOperations.Intake or DeliveryOperations.Replan;
@@ -174,12 +161,12 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         {
             runtime.SubmissionId = payload.SubmissionId;
             runtime.Slices = payload.Slices.Count > 0 ? payload.Slices : null;
-            selection = await SelectionAsync(context, flow, runtime.Parameters, operation, submission, inline, keys, log, ct).ConfigureAwait(false);
+            selection = await SelectionAsync(context, flow, runtime.Parameters, operation, submission, keys, log, ct).ConfigureAwait(false);
             runtime.Selection = selection;
         }
 
         var source = flow.Source.Record.Object;
-        var force = ForcesReplan(payload, submission is not null || inline is not null) || operation == DeliveryOperations.Replan;
+        var force = ForcesReplan(payload, submission is not null) || operation == DeliveryOperations.Replan;
 
         switch (operation)
         {
@@ -226,33 +213,18 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
     }
 
     /// <summary>
-    /// Which records this run reads. A run on a submission reads the rows that submission recorded, an API submission's
-    /// run reads the records it sent, a record-scoped run reads those records by their stored key tuples, a replan reads
-    /// the whole scope, and an ordinary run reads what changed since the scope's watermark, less the flow's overlap.
+    /// Which records this run reads. A run on a submission reads the rows that submission recorded, a record-scoped run
+    /// reads those records by their stored key tuples, a replan reads the whole scope, and an ordinary run reads what
+    /// changed since the scope's watermark, less the flow's overlap.
     /// </summary>
     private static async Task<SourceSelection> SelectionAsync(
         EngineContext context, FlowDefinition flow, IReadOnlyDictionary<string, string> values, string operation,
-        SubmissionState? submission, InlineSubmissionState? inline, IReadOnlyList<DeliveryKey> keys, ILogger log, CancellationToken ct)
+        SubmissionState? submission, IReadOnlyList<DeliveryKey> keys, ILogger log, CancellationToken ct)
     {
         if (submission is not null)
         {
-            return SourceWindowDescription.Parse(submission.SourceWindowJson)?.ToSelection(submission.SubmissionId)
+            return SourceWindowDescription.Parse(submission.SourceWindowJson)?.ToSelection()
                 ?? SourceSelection.Incremental(submission.WindowFromUtc);
-        }
-
-        if (inline is not null)
-        {
-            var records = InlineRecords.Parse(inline.RecordsJson);
-            var keyColumns = flow.Source.Record.Key;
-            var tuples = records.Records
-                .Select(record => new KeyTuple(keyColumns
-                    .Select(column => SourceRow.Stringify(record.Row.TryGetValue(column, out var value) ? value : null)
-                        ?? throw new DeliveryException(
-                            $"Submission {inline.SubmissionId:D} sent a record whose key column '{column}' is empty; every key column names the record."))
-                    .ToList()))
-                .ToList();
-            log.LogInformation("Reading the {Count} record(s) of submission {SubmissionId} from {Object}.", tuples.Count, inline.SubmissionId, flow.Source.Record.Object);
-            return SourceSelection.ForSubmission(inline.SubmissionId, tuples);
         }
 
         if (keys.Count > 0)
@@ -424,9 +396,6 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
     private static void LogSubmission(ILogger log, Guid submissionId, string source)
         => log.LogInformation("working on submission {SubmissionId} of {Source}", submissionId, source);
-
-    private static void LogInlineSubmission(ILogger log, Guid submissionId, int records, string receivedBy)
-        => log.LogInformation("working on submission {SubmissionId}: {Records} record(s) sent by {ReceivedBy}", submissionId, records, receivedBy);
 
     private static void LogRedeliver(ILogger log, int marked, int requested)
         => log.LogInformation("marked {Marked} of {Requested} record(s) for redelivery", marked, requested);

@@ -14,7 +14,6 @@ test.describe.serial("pipelines", () => {
     const tabs = adminPage.getByTestId("pipeline-tabs");
     // A delivery flow opens on its Delivery tab: the stats strip and the flow-level actions.
     await expect(adminPage.getByTestId("delivery-stats")).toBeVisible({ timeout: 30_000 });
-    await expect(adminPage.getByTestId("delivery-submit-records")).toBeVisible();
     await expect(adminPage.getByTestId("delivery-probe")).toBeVisible();
 
     await tabs.getByRole("tab", { name: /records/i }).click();

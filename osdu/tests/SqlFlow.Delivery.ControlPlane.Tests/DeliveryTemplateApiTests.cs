@@ -640,8 +640,7 @@ public sealed class DeliveryTemplateApiTests
             .WithCatalog(cs)
             .WithModules(new DeliveryControlPlaneModule())
             .WithSetting("ControlPlane:Worker:Enabled", "false")
-            .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
-            .WithSetting("Osdu:Submissions:Enabled", "false");
+            .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
 
     /// <summary>Provisions the catalog and the module's schema: what a control plane's bootstrap does before it serves.</summary>
     private static async Task ProvisionAsync(string cs)
