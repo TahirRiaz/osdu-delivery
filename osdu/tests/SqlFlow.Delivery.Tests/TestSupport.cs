@@ -185,12 +185,61 @@ public sealed class FixedCacheStore : ICacheStore
         => throw new InvalidOperationException("The fixed sample cache is read-only; write versions through the module's cache store.");
 }
 
-/// <summary>Records every delivery and replays configured outcomes.</summary>
+/// <summary>
+/// Records every delivery and replays configured outcomes. Safe to call from many workers at once: the recordings are
+/// written under a lock, and the store keeps how many deliveries were in flight at once, overall and per node, where a
+/// node is whatever <see cref="CurrentNode"/> names on the calling flow of control (a fan-out member, say).
+/// </summary>
 public sealed class FakeProtocol : IDeliveryProtocol
 {
+    private readonly object _gate = new();
+    private readonly Dictionary<string, int> _inFlightByNode = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _maxInFlightByNode = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _deliveriesByNode = new(StringComparer.Ordinal);
     private long _version = 1000;
+    private int _inFlight;
+    private int _maxInFlight;
+
+    /// <summary>The node a delivery made on this flow of control is counted under; unset is <c>local</c>.</summary>
+    public static AsyncLocal<string?> CurrentNode { get; } = new();
 
     public List<DeliveryWork> Deliveries { get; } = [];
+
+    /// <summary>The most deliveries that were in flight at the same moment.</summary>
+    public int MaxInFlight
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _maxInFlight;
+            }
+        }
+    }
+
+    /// <summary>Per node, the most deliveries it had in flight at the same moment.</summary>
+    public IReadOnlyDictionary<string, int> MaxInFlightByNode
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return new Dictionary<string, int>(_maxInFlightByNode, StringComparer.Ordinal);
+            }
+        }
+    }
+
+    /// <summary>Per node, how many deliveries it made.</summary>
+    public IReadOnlyDictionary<string, int> DeliveriesByNode
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return new Dictionary<string, int>(_deliveriesByNode, StringComparer.Ordinal);
+            }
+        }
+    }
 
     /// <summary>The correlation id in effect when each delivery was made, in the order of <see cref="Deliveries"/>.</summary>
     public List<string?> Correlations { get; } = [];
@@ -209,8 +258,33 @@ public sealed class FakeProtocol : IDeliveryProtocol
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(work);
-        Deliveries.Add(work);
-        Correlations.Add(OsduCorrelation.Current);
+        var node = CurrentNode.Value ?? "local";
+        lock (_gate)
+        {
+            Deliveries.Add(work);
+            Correlations.Add(OsduCorrelation.Current);
+            _deliveriesByNode[node] = _deliveriesByNode.GetValueOrDefault(node) + 1;
+            _maxInFlight = Math.Max(_maxInFlight, ++_inFlight);
+            var here = _inFlightByNode[node] = _inFlightByNode.GetValueOrDefault(node) + 1;
+            _maxInFlightByNode[node] = Math.Max(_maxInFlightByNode.GetValueOrDefault(node), here);
+        }
+
+        try
+        {
+            return await DeliverInFlightAsync(work, ct);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                _inFlight--;
+                _inFlightByNode[node]--;
+            }
+        }
+    }
+
+    private async Task<DeliveryOutcome> DeliverInFlightAsync(DeliveryWork work, CancellationToken ct)
+    {
         if (Before is { } before)
         {
             await before(work, ct);
@@ -259,7 +333,11 @@ public sealed class FakeProtocol : IDeliveryProtocol
 
     public Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default)
     {
-        Verifies.Add((targetId, expectedVersion));
+        lock (_gate)
+        {
+            Verifies.Add((targetId, expectedVersion));
+        }
+
         return Task.FromResult(VerifyWith?.Invoke(targetId) ?? new VerifyResult(VerifyOutcome.Match, expectedVersion, null));
     }
 
@@ -270,7 +348,11 @@ public sealed class FakeProtocol : IDeliveryProtocol
 
     public Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
     {
-        Deletes.Add((targetId, scope));
+        lock (_gate)
+        {
+            Deletes.Add((targetId, scope));
+        }
+
         return Task.FromResult(Gone.Contains(targetId)
             ? new DeleteOutcome(false, true, "record not found in OSDU")
             : new DeleteOutcome(true, false, scope.ToString().ToLowerInvariant()));

@@ -1,7 +1,5 @@
 using System.Text.Json.Nodes;
-using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
-using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Engine.Worker;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -24,15 +22,6 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class SchemaVersionPipelinesTests : IDisposable
 {
-    private const string CurrentKind = "osdu:wks:work-product-component--WellLog:1.4.0";
-
-    private const string NextKind = "osdu:wks:work-product-component--WellLog:1.5.0";
-
-    /// <summary>The content version of the WellLog 1.5.0 fixture, as <c>sqlflow template capture</c> saved it.</summary>
-    private const string NextTemplateVersion = "2f8a99cb38d32480";
-
-    private const string NextOrigin = "OSDU data definitions v0.30.0 (99f8fc88d8ad) Generated/work-product-component/WellLog.1.5.0.json";
-
     /// <summary>The partition the WellLog 1.5.0 pipeline delivers to, beside the sample partition the 1.4.0 pipeline uses.</summary>
     private const string NextPartition = "opendes-next";
 
@@ -65,7 +54,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
             var key = SampleEstate.Key(i);
             var sentCurrent = Assert.Single(current.Protocol.Deliveries, w => w.Key == key);
             var sentNext = Assert.Single(next.Protocol.Deliveries, w => w.Key == key);
-            Assert.Equal((CurrentKind, NextKind), (Text(sentCurrent.Document, "kind"), Text(sentNext.Document, "kind")));
+            Assert.Equal((WellLogVersions.CurrentKind, WellLogVersions.NextKind), (Text(sentCurrent.Document, "kind"), Text(sentNext.Document, "kind")));
             Assert.Equal(TargetId.Compose(Samples.SampleCacheScope, "work-product-component--WellLog", key), sentCurrent.TargetId);
             Assert.Equal(TargetId.Compose(NextPartition, "work-product-component--WellLog", key), sentNext.TargetId);
             Assert.StartsWith(Samples.SampleCacheScope + ":master-data--Wellbore:", Text(sentCurrent.Document["data"], "WellboreID"), StringComparison.Ordinal);
@@ -78,8 +67,8 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
             var currentRecord = await estate.Ledger.GetRecordAsync(current.Runtime.Flow.Id, key);
             var nextRecord = await estate.Ledger.GetRecordAsync(next.Runtime.Flow.Id, key);
             Assert.Equal((RecordStatus.Delivered, RecordStatus.Delivered), (currentRecord!.Status, nextRecord!.Status));
-            Assert.Equal(("WellLog@1.4.0", Samples.SampleTemplate(CurrentKind).Version, Samples.SampleCacheScope), Rendered(currentRecord));
-            Assert.Equal(("WellLog@1.5.0", NextTemplateVersion, NextPartition), Rendered(nextRecord));
+            Assert.Equal(("WellLog@1.4.0", Samples.SampleTemplate(WellLogVersions.CurrentKind).Version, Samples.SampleCacheScope), Rendered(currentRecord));
+            Assert.Equal(("WellLog@1.5.0", WellLogVersions.NextTemplateVersion, NextPartition), Rendered(nextRecord));
             Assert.Equal((sentCurrent.TargetId, sentNext.TargetId), (currentRecord.ClaimedTargetId, nextRecord.ClaimedTargetId));
             Assert.Equal((SampleEstate.FileName, (long?)(i + 1)), (currentRecord.SourceFileName, currentRecord.SourceRowNumber));
             Assert.Equal((SampleEstate.FileName, (long?)(i + 1)), (nextRecord.SourceFileName, nextRecord.SourceRowNumber));
@@ -155,7 +144,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
         foreach (var sent in after.Protocol.Deliveries)
         {
             var earlier = Assert.Single(before.Protocol.Deliveries, w => w.Key == sent.Key);
-            Assert.Equal((NextKind, earlier.TargetId), (Text(sent.Document, "kind"), sent.TargetId));
+            Assert.Equal((WellLogVersions.NextKind, earlier.TargetId), (Text(sent.Document, "kind"), sent.TargetId));
             Assert.True(sent.DeliverMetadata);
             Assert.False(sent.DeliverPayload);
             Assert.NotNull(sent.ExistingVersion);
@@ -166,7 +155,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
         {
             var key = SampleEstate.Key(i);
             var record = await estate.Ledger.GetRecordAsync(after.Runtime.Flow.Id, key);
-            Assert.Equal(("WellLog@1.5.0", NextTemplateVersion, Samples.SampleCacheScope), Rendered(record!));
+            Assert.Equal(("WellLog@1.5.0", WellLogVersions.NextTemplateVersion, Samples.SampleCacheScope), Rendered(record!));
             var attempts = await estate.Ledger.ListAttemptsAsync(after.Runtime.Flow.Id, key, 10);
             Assert.Equal([secondSubmission, firstSubmission], attempts.Select(a => a.SubmissionId!.Value));
             Assert.Equal("metadata", attempts[0].Phase);
@@ -187,44 +176,13 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
     private async Task<Estate> EstateAsync()
     {
         var tables = await SampleEstate.BuildAsync(_root, Now.AddMinutes(-5), time: _clock);
-
         var templates = _db.Templates(_clock);
         await Samples.ImportSampleTemplatesAsync(templates);
-        var next = Path.Combine(AppContext.BaseDirectory, "Fixtures", "templates", NextKind.Replace(':', '_') + ".json");
-        var saved = await templates.SaveAsync(
-            TemplateSources.FromBundledJson(File.ReadAllText(next), NextKind, new DateTimeOffset(2026, 9, 16, 12, 21, 35, TimeSpan.Zero), next),
-            NextOrigin,
-            "tests");
-        Assert.Equal(NextTemplateVersion, saved.Template.Version);
-
+        await WellLogVersions.SaveNextTemplateAsync(templates);
         var caches = _db.Caches();
-        var cacheFlow = new DeliveryDocumentLoader().LoadCache(Samples.CacheFlow);
-        await ImportCacheAsync(caches, cacheFlow, Samples.SampleCacheScope, Samples.References);
-        await ImportCacheAsync(caches, cacheFlow, NextPartition, PartitionReferences(NextPartition));
+        await Samples.ImportSampleCacheAsync(caches);
+        await WellLogVersions.ImportPartitionCacheAsync(caches, NextPartition, Samples.SampleCacheFlowName, _root);
         return new Estate(tables, templates, caches, _db.Ledger(_clock));
-    }
-
-    /// <summary>Declares the sample cache flow's types for <paramref name="scope"/> and imports its records as that partition's cache.</summary>
-    private async Task ImportCacheAsync(ICacheStore caches, CacheDefinition flow, string scope, string directory)
-    {
-        await _db.DeclareCacheAsync(scope, flow.Name, [.. flow.Types]);
-        var builder = new SnapshotBuilder(caches, scope, flow.Name, new TestClock(Samples.SampleCacheCaptured), Samples.Logger<SnapshotBuilder>());
-        await builder.ImportDirectoryAsync(directory, flow.Types, new CacheCapture(null, "tests", "sample files for " + scope));
-    }
-
-    /// <summary>The sample cache records as another partition holds them: the same records under that partition's ids.</summary>
-    private string PartitionReferences(string partition)
-    {
-        var directory = Path.Combine(_root, "references-" + partition);
-        Directory.CreateDirectory(directory);
-        foreach (var file in Directory.EnumerateFiles(Samples.References, "*.json"))
-        {
-            var text = File.ReadAllText(file);
-            Assert.Contains(Samples.SampleCacheScope + ":", text, StringComparison.Ordinal);
-            File.WriteAllText(Path.Combine(directory, Path.GetFileName(file)), text.Replace(Samples.SampleCacheScope + ":", partition + ":", StringComparison.Ordinal));
-        }
-
-        return directory;
     }
 
     /// <summary>
@@ -233,60 +191,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
     /// same entries from the same rows.
     /// </summary>
     private FlowDefinition NextFlow(string name, string partition)
-    {
-        var mappings = Path.Combine(_root, "next-mappings-" + partition);
-        Directory.CreateDirectory(mappings);
-        File.WriteAllText(Path.Combine(mappings, "WellLog@1.5.0.yaml"), NextMapping(partition));
-        var flow = Samples.LocalFlow(_root);
-        return flow with
-        {
-            Name = name,
-            Render = flow.Render with
-            {
-                Mapping = "WellLog@1.5.0",
-                MappingsDirectory = mappings,
-                Parameters = new Dictionary<string, string>(flow.Render.Parameters, StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = partition },
-            },
-            Target = flow.Target with
-            {
-                Headers = new Dictionary<string, string>(flow.Target.Headers, StringComparer.OrdinalIgnoreCase) { [CacheScope.PartitionHeader] = partition },
-            },
-        };
-    }
-
-    /// <summary>
-    /// The sample WellLog 1.4.0 mapping pinned to WellLog 1.5.0 instead, with its entries untouched. Its fixtures, the
-    /// regression suite the preflight renders against the partition's cache, are written for <paramref name="partition"/>:
-    /// a render there reads that partition's references. Every edit is checked to have applied.
-    /// </summary>
-    private static string NextMapping(string partition)
-    {
-        var text = File.ReadAllText(Path.Combine(Samples.Mappings, "WellLog@1.4.0.yaml")).ReplaceLineEndings("\n");
-        text = Replace(text, "# Mapping: Recall well logs into the WellLog 1.4.0 template", "# Mapping: Recall well logs into the WellLog 1.5.0 template", 1);
-        text = Replace(text, "\nversion: 1.4.0\n", "\nversion: 1.5.0\n", 1);
-        text = Replace(text, $"  kind: {CurrentKind}\n  version: 26a3c3441882db4f\n", $"  kind: {NextKind}\n  version: {NextTemplateVersion}\n", 1);
-        text = Replace(text, $"\"kind\": \"{CurrentKind}\"", $"\"kind\": \"{NextKind}\"", 2);
-        if (partition == Samples.SampleCacheScope)
-        {
-            return text;
-        }
-
-        var at = text.IndexOf("\nfixtures:\n", StringComparison.Ordinal);
-        Assert.True(at > 0, "The sample WellLog mapping has no fixtures section: the derived 1.5.0 mapping no longer follows it.");
-        var fixtures = Replace(text[at..], $"dataPartition: {Samples.SampleCacheScope} }}", $"dataPartition: {partition} }}", 2);
-        fixtures = Replace(fixtures, $"\"{Samples.SampleCacheScope}:", $"\"{partition}:", expected: null);
-        return text[..at] + fixtures;
-    }
-
-    /// <summary>Replaces <paramref name="from"/>, which must occur <paramref name="expected"/> times, or at least once when that is null.</summary>
-    private static string Replace(string text, string from, string to, int? expected)
-    {
-        var found = text.Split(from).Length - 1;
-        Assert.True(
-            expected is { } count ? found == count : found > 0,
-            $"The sample WellLog mapping holds '{from.ReplaceLineEndings(" ")}' {found} time(s), not {expected?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "at least once"}: the derived 1.5.0 mapping no longer follows it.");
-        return text.Replace(from, to, StringComparison.Ordinal);
-    }
+        => WellLogVersions.OnNextVersion(Samples.LocalFlow(_root), name, partition, _root);
 
     private async Task<Pipeline> PipelineAsync(Estate estate, FlowDefinition flow)
     {

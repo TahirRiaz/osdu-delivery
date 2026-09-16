@@ -6,6 +6,7 @@ using SqlFlow.Catalog;
 using SqlFlow.Core.Identity;
 using SqlFlow.Core.Lineage;
 using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.FanOut;
@@ -15,11 +16,13 @@ using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Source;
+using SqlFlow.Delivery.Templates;
 using SqlFlow.Execution;
 using SqlFlow.Lineage.Collection;
 using SqlFlow.Lineage.Graph;
 using SqlFlow.Yaml;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace SqlFlow.Delivery.Tests;
 
@@ -33,6 +36,13 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public class SqlServerChainTests
 {
+    private readonly ITestOutputHelper _output;
+
+    public SqlServerChainTests(ITestOutputHelper output)
+    {
+        _output = output;
+    }
+
     /// <summary>The file the first batch of record rows lands from, which every record's origin then names.</summary>
     private const string LogFile = "welllog_20260901.csv";
 
@@ -315,6 +325,98 @@ public class SqlServerChainTests
         var watermarks = await db.DeliverySourceWatermarks.Where(w => w.FlowId == estate.FlowId).ToListAsync();
         var watermark = Assert.Single(watermarks);
         Assert.Equal(result.Submission.SubmissionId, watermark.SubmissionId);
+    }
+
+    /// <summary>
+    /// Case 8: one input, two OSDU pipelines on two versions of the WellLog schema, both running at once, each fanned out
+    /// over several nodes that push rows concurrently, and each keeping its own ledger.
+    /// </summary>
+    [SkippableFact]
+    public async Task One_input_fans_out_to_two_pipelines_on_two_schema_versions_whose_nodes_push_concurrently()
+    {
+        const int Records = 400;
+        const int Nodes = 3;
+        await using var estate = await SqlServerIngestionFixture.StartAsync(fanOut: Nodes, batchRecords: 40);
+        var template = SampleWellLogs.Logs()[0];
+        await estate.WritePayloadsAsync([template]);
+        await estate.WriteRowsAsync("welllog", LogFile, SampleWellLogs.LogColumns, GeneratedLogs(template, Records));
+        await estate.WriteRowsAsync("curves-meta", CurveFile, SampleWellLogs.CurveColumns, GeneratedCurves(template, Records));
+        await estate.RunIngestionChainAsync();
+        Assert.Equal(Records, await estate.CountAsync(estate.IngSchema, "WellLog"));
+
+        // The shipped flow delivers WellLog 1.4.0 to the sample partition; the second pipeline renders the same rows with
+        // the same mapping entries as WellLog 1.5.0, into a partition of its own.
+        var partition = "next-" + estate.Suffix;
+        var current = estate.DeliveryFlow();
+        var next = WellLogVersions.OnNextVersion(current, estate.DeliveryFlowName + "-next", partition, estate.Root);
+        try
+        {
+            await WellLogVersions.SaveNextTemplateAsync(new OsduTemplateStore(estate.Context, TimeProvider.System));
+            await WellLogVersions.ImportPartitionCacheAsync(new OsduCacheStore(estate.Context), partition, estate.DeliveryFlowName + "-cache", estate.Root);
+
+            // Each push takes a moment, so the pushes a node makes at once overlap.
+            estate.Protocol.Before = (_, ct) => Task.Delay(TimeSpan.FromMilliseconds(15), ct);
+            var runs = await Task.WhenAll(RunOnNodesAsync(estate, current), RunOnNodesAsync(estate, next));
+
+            await using var db = estate.Context();
+            foreach (var (run, flow, kind, target) in new[]
+            {
+                (runs[0], current, WellLogVersions.CurrentKind, Samples.SampleCacheScope),
+                (runs[1], next, WellLogVersions.NextKind, partition),
+            })
+            {
+                // Planned by the coordinator and its intake nodes, sent by the drain nodes and the coordinator: every row once.
+                Assert.Empty(run.Nodes.Failures);
+                Assert.Equal((Nodes, Nodes), (run.Result.IntakeMembers, run.Result.DrainMembers));
+                Assert.Equal(SubmissionStatus.Completed, run.Result.Submission.Status);
+                Assert.Equal((Records, Records), (run.Result.Submission.Planned, run.Result.Submission.Delivered));
+                var sent = estate.Protocol.Deliveries.Where(d => d.Document["kind"]!.GetValue<string>() == kind).ToList();
+                Assert.Equal(Records, sent.Count);
+                Assert.Equal(Records, sent.Select(d => d.Key).Distinct().Count());
+                Assert.All(sent, d => Assert.StartsWith(target + ":work-product-component--WellLog:", d.TargetId, StringComparison.Ordinal));
+
+                // The nodes ran at the same time, more than one of them pushed, and a node pushed several rows at once.
+                Assert.True(run.Nodes.MaxRunning >= 2, $"{flow.Name}: at most {run.Nodes.MaxRunning} node(s) ran at once.");
+                var pushed = estate.Protocol.DeliveriesByNode.Where(n => n.Key.StartsWith(flow.Name + "/", StringComparison.Ordinal)).OrderBy(n => n.Key, StringComparer.Ordinal).ToList();
+                var peaks = estate.Protocol.MaxInFlightByNode;
+                _output.WriteLine($"{flow.Name} ({kind}): {run.Nodes.MaxRunning} member node(s) at once; " + string.Join(", ", pushed.Select(n => $"{n.Key} pushed {n.Value}, at most {peaks[n.Key]} at once")));
+                Assert.Equal(Records, pushed.Sum(n => n.Value));
+                Assert.True(pushed.Count >= 2, $"{flow.Name}: only {string.Join(", ", pushed.Select(n => n.Key))} pushed.");
+                var inFlight = estate.Protocol.MaxInFlightByNode.Where(n => n.Key.StartsWith(flow.Name + "/", StringComparison.Ordinal)).Max(n => n.Value);
+                Assert.True(inFlight > 1, $"{flow.Name}: no node pushed more than one row at a time.");
+                var batches = await estate.Ledger.ListWorkBatchesAsync(run.Result.Submission.SubmissionId, 1000, 0);
+                Assert.All(batches, b => Assert.Equal(WorkBatchStatus.Done, b.Status));
+                Assert.True(batches.Select(b => b.RunId).Distinct().Count() >= 2, $"{flow.Name}: every batch was drained by one run.");
+
+                // Each pipeline's ledger holds exactly its own records, claims and attempts, whatever the other did at the same time.
+                var flowId = flow.Id;
+                Assert.Equal(Records, (await estate.Ledger.StatsAsync(flowId, DateTime.UtcNow)).Delivered);
+                Assert.Equal(Records, await db.DeliveryRecords.CountAsync(r => r.FlowId == flowId && r.ClaimedTargetId != null && r.ClaimedTargetId.StartsWith(target + ":")));
+                Assert.Equal(Records, await db.DeliveryAttempts.CountAsync(a => a.FlowId == flowId && a.Outcome == "delivered"));
+                Assert.Single(await db.DeliverySourceWatermarks.Where(w => w.FlowId == flowId).ToListAsync());
+            }
+        }
+        finally
+        {
+            await estate.ForgetFlowAsync(next.Id);
+            await estate.ForgetCacheAsync(partition);
+        }
+    }
+
+    /// <summary>
+    /// Runs the deliver operation of <paramref name="flow"/> as a coordinating run whose members are nodes of their own,
+    /// all running at once. The coordinator's own pushes are counted under its node name.
+    /// </summary>
+    private async Task<(RunResult Result, ConcurrentNodes Nodes)> RunOnNodesAsync(SqlServerIngestionFixture estate, FlowDefinition flow)
+    {
+        var nodes = new ConcurrentNodes(flow, _output.WriteLine);
+        var engine = estate.Engine with { FanOut = nodes };
+        nodes.Engine = engine;
+        FakeProtocol.CurrentNode.Value = flow.Name + "/coordinator";
+        using var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        runtime.RunId = Guid.NewGuid();
+        runtime.Actor = "chain tests";
+        return (await runtime.RunAsync(force: false), nodes);
     }
 
     /// <summary>Case 7: lineage orders the estate's waves pre, then ingestion, then the OSDU flow.</summary>
@@ -636,31 +738,10 @@ public class SqlServerChainTests
             var ids = new List<Guid>();
             foreach (var member in members)
             {
-                var operation = DeliveryOperations.Of(member);
-                var payload = DeliveryRunPayload.Parse(member);
-                payload.Validate(operation);
-                Enqueued.Add((operation, payload));
                 var runId = Guid.NewGuid();
                 ids.Add(runId);
-                string resultJson;
-                if (operation == DeliveryOperations.Intake)
-                {
-                    using var runtime = await FlowRuntime.CreateAsync(Engine!, _flow, member.Values, ct);
-                    runtime.RunId = runId;
-                    runtime.SubmissionId = payload.SubmissionId;
-                    runtime.Slices = payload.Slices;
-                    var intake = await runtime.IntakeAsync(payload.Force, ct);
-                    resultJson = JsonSerializer.Serialize(
-                        IntakeOutcome.From(intake, _flow.Source.Record.Object, runtime.Selection.Describe(), payload.Slices), Json);
-                }
-                else
-                {
-                    using var runtime = FlowRuntime.ForTarget(Engine!, _flow);
-                    runtime.RunId = runId;
-                    var drained = await runtime.WorkAsync(once: false, payload.SubmissionId, ct);
-                    resultJson = JsonSerializer.Serialize(DrainOutcome.From(drained, payload.SubmissionId), Json);
-                }
-
+                var (operation, payload, resultJson) = await RunMemberAsync(Engine!, _flow, member, runId, ct);
+                Enqueued.Add((operation, payload));
                 _members[runId] = new FanOutMemberState(runId, ids.Count, "succeeded", null, resultJson);
             }
 
@@ -675,5 +756,160 @@ public class SqlServerChainTests
         }
 
         public Task CancelAsync(FanOutHandle handle, CancellationToken ct = default) => Task.CompletedTask;
+
+        /// <summary>
+        /// Runs one member as a node runs it: an intake of the slices it was dealt, or a drain of the submission, on a runtime
+        /// of its own over <paramref name="engine"/>. Returns what the node journals as the member's result.
+        /// </summary>
+        public static async Task<(string Operation, DeliveryRunPayload Payload, string ResultJson)> RunMemberAsync(
+            EngineContext engine, FlowDefinition flow, RunParameters member, Guid runId, CancellationToken ct)
+        {
+            var operation = DeliveryOperations.Of(member);
+            var payload = DeliveryRunPayload.Parse(member);
+            payload.Validate(operation);
+            if (operation == DeliveryOperations.Intake)
+            {
+                using var runtime = await FlowRuntime.CreateAsync(engine, flow, member.Values, ct);
+                runtime.RunId = runId;
+                runtime.SubmissionId = payload.SubmissionId;
+                runtime.Slices = payload.Slices;
+                var intake = await runtime.IntakeAsync(payload.Force, ct);
+                return (operation, payload, JsonSerializer.Serialize(
+                    IntakeOutcome.From(intake, flow.Source.Record.Object, runtime.Selection.Describe(), payload.Slices), Json));
+            }
+
+            using var target = FlowRuntime.ForTarget(engine, flow);
+            target.RunId = runId;
+            var drained = await target.WorkAsync(once: false, payload.SubmissionId, ct);
+            return (operation, payload, JsonSerializer.Serialize(DrainOutcome.From(drained, payload.SubmissionId), Json));
+        }
+    }
+
+    /// <summary>
+    /// A fan-out whose members run as nodes of their own, all at once: each member starts on its own flow of control the
+    /// moment it is enqueued, on a runtime of its own over the same engine, while the coordinating run carries on with its
+    /// own work, as the nodes of a pool would. A member's pushes are counted under its node's name
+    /// (<see cref="FakeProtocol.CurrentNode"/>). Reading the state waits for the members to finish, which a coordinator
+    /// does by polling; a member that failed is reported failed, and named in <see cref="Failures"/>.
+    /// </summary>
+    private sealed class ConcurrentNodes : IFanOutDispatcher
+    {
+        private readonly FlowDefinition _flow;
+        private readonly Action<string> _log;
+        private readonly object _gate = new();
+        private readonly Dictionary<Guid, (int Slot, Task<string> Run)> _members = [];
+        private readonly Dictionary<Guid, IReadOnlyList<Guid>> _groups = [];
+        private readonly List<string> _failures = [];
+        private int _nodes;
+        private int _running;
+        private int _maxRunning;
+
+        /// <param name="flow">The flow whose members the nodes run.</param>
+        /// <param name="log">Where a failed member's whole error, with its stack, is written.</param>
+        public ConcurrentNodes(FlowDefinition flow, Action<string> log)
+        {
+            _flow = flow;
+            _log = log;
+        }
+
+        public EngineContext? Engine { get; set; }
+
+        public bool Available => true;
+
+        /// <summary>The most members that were running at the same moment.</summary>
+        public int MaxRunning
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _maxRunning;
+                }
+            }
+        }
+
+        /// <summary>The members that failed, each with its node and error.</summary>
+        public IReadOnlyList<string> Failures
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _failures];
+                }
+            }
+        }
+
+        public Task<FanOutHandle> EnqueueAsync(IReadOnlyList<RunParameters> members, CancellationToken ct = default)
+        {
+            ArgumentNullException.ThrowIfNull(members);
+            var engine = Engine ?? throw new InvalidOperationException("The nodes have no engine to run their members on.");
+            var ids = new List<Guid>();
+            lock (_gate)
+            {
+                foreach (var member in members)
+                {
+                    var runId = Guid.NewGuid();
+                    var node = $"{_flow.Name}/node-{++_nodes}";
+                    ids.Add(runId);
+                    _members[runId] = (ids.Count, Task.Run(() => RunAsync(engine, member, runId, node, ct), CancellationToken.None));
+                }
+
+                var groupId = Guid.NewGuid();
+                _groups[groupId] = ids;
+                return Task.FromResult(new FanOutHandle(groupId, ids));
+            }
+        }
+
+        public async Task<FanOutState> StateAsync(FanOutHandle handle, CancellationToken ct = default)
+        {
+            ArgumentNullException.ThrowIfNull(handle);
+            List<(Guid RunId, int Slot, Task<string> Run)> runs;
+            lock (_gate)
+            {
+                runs = _groups[handle.GroupId].Select(id => (id, _members[id].Slot, _members[id].Run)).ToList();
+            }
+
+            // Every member settles before its state is read; a failed member's error is its state, not this call's.
+            await Task.WhenAll(runs.Select(r => r.Run.ContinueWith(_ => { }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default))).WaitAsync(ct);
+            return new FanOutState(runs
+                .Select(r => r.Run.IsCompletedSuccessfully
+                    ? new FanOutMemberState(r.RunId, r.Slot, "succeeded", null, r.Run.Result)
+                    : new FanOutMemberState(r.RunId, r.Slot, "failed", r.Run.Exception?.GetBaseException().Message ?? "cancelled", null))
+                .ToList());
+        }
+
+        public Task CancelAsync(FanOutHandle handle, CancellationToken ct = default) => Task.CompletedTask;
+
+        private async Task<string> RunAsync(EngineContext engine, RunParameters member, Guid runId, string node, CancellationToken ct)
+        {
+            FakeProtocol.CurrentNode.Value = node;
+            lock (_gate)
+            {
+                _maxRunning = Math.Max(_maxRunning, ++_running);
+            }
+
+            try
+            {
+                return (await InlineDispatcher.RunMemberAsync(engine, _flow, member, runId, ct)).ResultJson;
+            }
+            catch (Exception ex)
+            {
+                lock (_gate)
+                {
+                    _failures.Add($"{node}: {ex.GetType().Name}: {ex.Message}");
+                    _log($"{node} failed: {ex}");
+                }
+
+                throw;
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    _running--;
+                }
+            }
+        }
     }
 }

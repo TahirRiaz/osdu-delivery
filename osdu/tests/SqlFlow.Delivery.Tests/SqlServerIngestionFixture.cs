@@ -370,16 +370,44 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         Delete(Root);
     }
 
-    private async Task ClearLedgerAsync()
+    private Task ClearLedgerAsync() => ForgetFlowAsync(FlowId);
+
+    /// <summary>
+    /// Deletes every ledger row of <paramref name="flowId"/>: its records, attempts, work batches, watermarks, activities and
+    /// submissions. The sample rows give every fixture the same delivery keys; the flow is what makes the rows a flow's.
+    /// A test that delivers through a flow of its own beside the fixture's forgets that flow when it ends.
+    /// </summary>
+    public async Task ForgetFlowAsync(Guid flowId)
     {
         await using var db = Context();
-        // The sample rows give every fixture the same delivery keys; the flow is what makes these attempts and records this fixture's.
-        await db.DeliveryAttempts.Where(a => a.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliveryRecords.Where(r => r.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliveryWorkBatches.Where(b => b.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliverySourceWatermarks.Where(w => w.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliveryActivities.Where(a => a.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
-        await db.DeliverySubmissions.Where(s => s.FlowId == FlowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryAttempts.Where(a => a.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryRecords.Where(r => r.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryWorkBatches.Where(b => b.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliverySourceWatermarks.Where(w => w.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryActivities.Where(a => a.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliverySubmissions.Where(s => s.FlowId == flowId).ExecuteDeleteAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Deletes the cache of a partition a test created for itself, with the dependency sets its renders recorded against
+    /// it. The sample partition's cache is shared by every fixture and is never forgotten.
+    /// </summary>
+    public async Task ForgetCacheAsync(string scope)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        if (scope == Samples.SampleCacheScope)
+        {
+            throw new InvalidOperationException($"The cache of partition '{scope}' is shared by every fixture; a test forgets only a partition of its own.");
+        }
+
+        await using var db = Context();
+        var sets = await db.DeliveryCacheSetEntries.Where(e => e.Scope == scope).Select(e => e.SetId).Distinct().ToListAsync().ConfigureAwait(false);
+        await db.DeliveryCacheSetEntries.Where(e => sets.Contains(e.SetId)).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryCacheSets.Where(s => sets.Contains(s.SetId)).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryUpdateTags.Where(t => t.Scope == scope).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryCacheMembers.Where(m => m.Scope == scope).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryCacheItems.Where(i => i.Scope == scope).ExecuteDeleteAsync().ConfigureAwait(false);
+        await db.DeliveryCacheVersions.Where(v => v.Scope == scope).ExecuteDeleteAsync().ConfigureAwait(false);
     }
 
     /// <summary>
