@@ -128,6 +128,30 @@ public static class IngestionSql
             """;
     }
 
+    /// <summary>
+    /// One record of this run's scope whose key is unknown, or nothing when every key is known. SQLFlow's ingestion
+    /// creates a target's data columns nullable and never tightens them, so a delivery cannot ask its key columns to be
+    /// declared NOT NULL; what it needs is that no row it would deliver actually carries a NULL there. Only the columns
+    /// that can hold one are tested, and only within the run's scope, so another scope's rows never refuse this run.
+    /// </summary>
+    public static string NullKeyProbe(IngestionLayout layout, IReadOnlyList<string> nullableKeys)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(nullableKeys);
+        if (nullableKeys.Count == 0)
+        {
+            throw new ArgumentException("A null-key probe needs at least one column that can hold a null.", nameof(nullableKeys));
+        }
+
+        var scope = ScopePredicate(layout, "r");
+        var unknown = string.Join(" OR ", nullableKeys.Select(k => $"r.{SourceObjectName.Quote(k)} IS NULL"));
+        return $"""
+            SELECT TOP (1) {string.Join(", ", nullableKeys.Select(k => $"CAST(CASE WHEN r.{SourceObjectName.Quote(k)} IS NULL THEN 1 ELSE 0 END AS int) AS {SourceObjectName.Quote(k)}"))}
+            FROM {layout.Record.Quoted} r
+            WHERE {(scope.Length == 0 ? "1 = 1" : scope)} AND ({unknown});
+            """;
+    }
+
     /// <summary>How many records this selection is expected to meet.</summary>
     public static string CandidateCount(IngestionLayout layout, SourceSelectionKind kind, bool hasLower)
         => $"SELECT COUNT_BIG(*) FROM ({CandidateSet(layout, kind, hasLower, KeyBounds.None)}) q;";

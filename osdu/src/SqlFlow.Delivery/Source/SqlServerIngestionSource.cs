@@ -217,13 +217,18 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         _tables[SourceDatasets.Record] = record;
 
         var key = new List<SourceKeyColumn>(source.Record.Key.Count);
+
+        // The key columns whose declaration allows a null. SQLFlow's ingestion creates a target's data columns nullable
+        // and never tightens them, so requiring the declaration to say NOT NULL would refuse every table its own flows
+        // build. What a delivery actually needs is that no record it would deliver carries an unknown key, which is
+        // checked against the rows below once the layout is known.
+        var nullableKeys = new List<string>();
         foreach (var column in source.Record.Key)
         {
             var declared = Column(record, recordName, column, $"{where}: source.record.key names column '{column}'");
             if (declared.Nullable)
             {
-                throw new FlowValidationException(
-                    $"{where}: source.record.key names column '{column}' of {recordName}, which is nullable. A record's key columns have to be NOT NULL, or two records could share an unknown identity.");
+                nullableKeys.Add(declared.Name);
             }
 
             if (!declared.Comparable)
@@ -297,7 +302,46 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             Scope = source.Record.Scope.Select(s => new KeyValuePair<string, string>(s.Key, s.Value)).ToList(),
             Datasets = datasets,
         };
+
+        if (nullableKeys.Count > 0)
+        {
+            await GuardKnownKeysAsync(connection, _layout, recordName, nullableKeys, where, ct).ConfigureAwait(false);
+        }
+
         return _layout;
+    }
+
+    /// <summary>
+    /// Refuses a run whose record table holds a row with an unknown key, naming the column. Two records with a null key
+    /// would share one identity, so a delivery cannot tell them apart or address either of them; the run stops before
+    /// anything is planned rather than delivering one of them under the other's id. Only the columns whose declaration
+    /// allows a null are tested, so a table that already forbids them costs nothing.
+    /// </summary>
+    private async Task GuardKnownKeysAsync(
+        SqlConnection connection, IngestionLayout layout, SourceObjectName recordName, IReadOnlyList<string> nullableKeys,
+        string where, CancellationToken ct)
+    {
+        await using var command = Command(connection, IngestionSql.NullKeyProbe(layout, nullableKeys));
+        BindScope(command, layout);
+        await using var reader = await ExecuteReaderAsync(command, "check the record table's keys for unknown values", ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        var unknown = new List<string>(nullableKeys.Count);
+        for (var i = 0; i < nullableKeys.Count; i++)
+        {
+            if (!reader.IsDBNull(i) && reader.GetInt32(i) == 1)
+            {
+                unknown.Add(nullableKeys[i]);
+            }
+        }
+
+        throw new FlowValidationException(
+            $"{where}: the record table {recordName} holds a row whose key column {(unknown.Count == 1 ? $"'{unknown[0]}' is" : $"{string.Join(" and ", unknown.Select(u => $"'{u}'"))} are")} null, "
+            + "so that row has no identity to deliver under and could not be told apart from another like it. "
+            + "Give every row a key, or narrow source.record.scope to the rows that have one.");
     }
 
     private async Task<IReadOnlyDictionary<string, SourceColumn>> ReadColumnsAsync(SqlConnection connection, SourceObjectName table, string declaredAt, CancellationToken ct)
