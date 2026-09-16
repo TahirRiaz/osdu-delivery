@@ -11,9 +11,10 @@
     Keep this script at the repo root. Do NOT run it while a manual deploy is in
     flight: it wipes .deploy-ctx on start.
 
-    ESTATE: the resource group, registry, subscription and app naming schemes below
-    name an EXISTING estate. Confirm they are the estate you mean before running
-    this; the script targets apps by name and creates nothing.
+    ESTATE: the resource group, registry, subscription and app naming schemes are
+    parameters with no defaults for the estate itself (-ResourceGroup, -Registry,
+    -Subscription, or OSDU_DEPLOY_RG / OSDU_DEPLOY_ACR / OSDU_DEPLOY_SUBSCRIPTION).
+    They name an EXISTING estate: the script targets apps by name and creates nothing.
 
     Change detection (the single interface: run it bare and it deploys what is required):
       * Each app declares the paths its image is built from (its Dockerfile plus the
@@ -43,12 +44,12 @@
         trusted; the run id (printed before any crash) is.
 
     SAFETY (why this script refuses to guess):
-      * Both a new app (sqlflow-<app>) and a retired one (sqlflow-v3-<app>) can exist
-        in the same resource group. `az containerapp update -n <name>` targets by name
-        alone, so a stale name silently deploys to the DEAD environment and still
-        reports success. This script resolves each app across both naming schemes and
-        REFUSES to continue when the choice is ambiguous: pass -Target to say which
-        estate you mean.
+      * An estate can hold the same app under more than one naming scheme (a renamed
+        estate beside the one it replaced). `az containerapp update -n <name>` targets by
+        name alone, so a stale name silently deploys to the DEAD environment and still
+        reports success. This script resolves each app across every -AppPrefix given and
+        REFUSES to continue when the choice is ambiguous: pass -Target with the prefix
+        you mean.
       * Every deploy prints the resolved app, its environment, and the image it is
         replacing, before anything is changed. Use -WhatIf to see that plan and stop.
       * A deploy is not "done" when the API accepts it. Each app is verified to be
@@ -77,8 +78,12 @@
     Resolve the targets and print the plan without building or deploying.
 
 .EXAMPLE
-    .\deploy-prod.ps1 -Target vnet
-    Force the VNet-integrated estate when both naming schemes are present.
+    .\deploy-prod.ps1 -ResourceGroup my-rg -Registry myacr -Subscription 00000000-0000-0000-0000-000000000000
+    Name the estate explicitly instead of through OSDU_DEPLOY_RG, OSDU_DEPLOY_ACR and OSDU_DEPLOY_SUBSCRIPTION.
+
+.EXAMPLE
+    .\deploy-prod.ps1 -AppPrefix osdu-delivery-,osdu- -Target osdu-delivery-
+    Search both naming schemes, and deploy to the osdu-delivery- one where an app exists under both.
 #>
 # PositionalBinding=$false so bare app names only ever bind to -Apps. Without it PowerShell
 # hands the first positional argument to the next declared parameter, and `.\deploy-prod.ps1
@@ -88,10 +93,8 @@ param(
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $Apps,
 
-    # Which estate to deploy to when an app exists under both naming schemes.
-    # vnet   = the VNet-integrated environment (apps named sqlflow-<app>)
-    # legacy = the original environment        (apps named sqlflow-v3-<app>)
-    [ValidateSet('auto', 'vnet', 'legacy')]
+    # Which naming scheme to deploy to when an app exists under more than one of -AppPrefix.
+    # 'auto' searches them in order; anything else must be one of the prefixes given.
     [string] $Target = 'auto',
 
     # Build and deploy even though the image build paths have uncommitted changes.
@@ -101,22 +104,54 @@ param(
     [switch] $WhatIf,
 
     # Leave a failed deploy in place instead of restoring the previous image.
-    [switch] $NoRollback
+    [switch] $NoRollback,
+
+    # The estate. No defaults: naming it is a deliberate act, and a wrong name would deploy these
+    # images over another product's running apps. Pass them, or set OSDU_DEPLOY_RG,
+    # OSDU_DEPLOY_ACR and OSDU_DEPLOY_SUBSCRIPTION.
+    [string] $ResourceGroup = $env:OSDU_DEPLOY_RG,
+
+    [string] $Registry = $env:OSDU_DEPLOY_ACR,
+
+    [string] $Subscription = $env:OSDU_DEPLOY_SUBSCRIPTION,
+
+    # The container app name prefixes to look for, newest first, and the image repository prefix.
+    # An app is resolved across every prefix given, which is how a renamed estate stays reachable.
+    [string[]] $AppPrefix = @('osdu-delivery-'),
+
+    [string] $ImagePrefix = 'osdu-delivery-'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
-$Rg  = 'datawarehouse-west-rg-prod-v2'
-$Acr = 'sqlflowv3acrprod'
-$Sub = '83731164-2cea-4291-b78d-7e2e69eea8a6'
+foreach ($required in @(
+    @{ Name = 'ResourceGroup'; Value = $ResourceGroup; Variable = 'OSDU_DEPLOY_RG'; What = 'the resource group holding the container apps' },
+    @{ Name = 'Registry'; Value = $Registry; Variable = 'OSDU_DEPLOY_ACR'; What = 'the container registry to build the images in' },
+    @{ Name = 'Subscription'; Value = $Subscription; Variable = 'OSDU_DEPLOY_SUBSCRIPTION'; What = 'the subscription that estate lives in' })) {
+    if ([string]::IsNullOrWhiteSpace($required.Value)) {
+        throw "Name the estate before deploying: pass -$($required.Name), or set $($required.Variable), to $($required.What)."
+    }
+}
 
-# The two naming schemes an app can live under, newest first. The ACR repository name is
-# always sqlflow-v3-<app> regardless of what the container app resource is called.
-$NamePrefix = [ordered]@{
-    'vnet'   = 'sqlflow-'
-    'legacy' = 'sqlflow-v3-'
+if ($AppPrefix.Count -eq 0 -or ($AppPrefix | Where-Object { [string]::IsNullOrWhiteSpace($_) })) {
+    throw 'Every -AppPrefix must be a non-blank container app name prefix.'
+}
+
+if ([string]::IsNullOrWhiteSpace($ImagePrefix)) {
+    throw 'Name the image repository prefix with -ImagePrefix.'
+}
+
+$Rg  = $ResourceGroup
+$Acr = $Registry
+$Sub = $Subscription
+
+# The naming schemes an app can live under, in the order they are searched. The ACR repository name
+# is $ImagePrefix<app> regardless of what the container app resource is called.
+$NamePrefix = [ordered]@{}
+for ($i = 0; $i -lt $AppPrefix.Count; $i++) {
+    $NamePrefix["scheme$($i + 1)"] = $AppPrefix[$i]
 }
 
 # app -> the Dockerfile that builds it (repo-relative, as used from inside the context root)
@@ -253,7 +288,7 @@ function Resolve-Target {
 
     $found = @()
     foreach ($scheme in $NamePrefix.Keys) {
-        if ($Target -ne 'auto' -and $scheme -ne $Target) { continue }
+        if ($Target -ne 'auto' -and $NamePrefix[$scheme] -ne $Target) { continue }
         $rec = Get-AppRecord -ResourceName "$($NamePrefix[$scheme])$App"
         if ($rec) {
             $rec | Add-Member -NotePropertyName Scheme -NotePropertyValue $scheme -Force
@@ -264,15 +299,15 @@ function Resolve-Target {
     if ($found.Count -eq 0) {
         $tried = @()
         foreach ($scheme in $NamePrefix.Keys) {
-            if ($Target -ne 'auto' -and $scheme -ne $Target) { continue }
+            if ($Target -ne 'auto' -and $NamePrefix[$scheme] -ne $Target) { continue }
             $tried += "$($NamePrefix[$scheme])$App"
         }
         throw "Container app for '$App' not found in $Rg (looked for: $($tried -join ', ')). Create it first, or check -Target."
     }
 
     if ($found.Count -gt 1) {
-        $detail = ($found | ForEach-Object { "$($_.Name) (env $($_.Environment), scheme $($_.Scheme))" }) -join ' AND '
-        throw "Ambiguous target for '$App': $detail. Re-run with -Target vnet or -Target legacy so this does not deploy to the wrong estate."
+        $detail = ($found | ForEach-Object { "$($_.Name) (env $($_.Environment), prefix $($NamePrefix[$_.Scheme]))" }) -join ' AND '
+        throw "Ambiguous target for '$App': $detail. Re-run with -Target and one of $($AppPrefix -join ', ') so this does not deploy to the wrong estate."
     }
 
     return $found[0]
@@ -291,7 +326,7 @@ function Get-ChangeStatus {
     if (-not $Record.Image) {
         return [pscustomobject]@{ Changed = $true; Reason = 'nothing deployed yet' }
     }
-    if ($Record.Image -notmatch "/sqlflow-v3-$([regex]::Escape($App)):([^:/]+)$") {
+    if ($Record.Image -notmatch "/$([regex]::Escape($ImagePrefix))$([regex]::Escape($App)):([^:/]+)$") {
         return [pscustomobject]@{ Changed = $true; Reason = "serving a foreign image ($($Record.Image))" }
     }
     $baseTag = $Matches[1]
@@ -319,6 +354,8 @@ Write-Host "   tag:  $Tag"
 $mode = if ($ExplicitSelection) { 'forced (named explicitly)' } else { 'candidates (change-filtered below)' }
 Write-Host "   apps: $($Apps -join ', ') [$mode]"
 Write-Host "   rg:   $Rg"
+Write-Host "   acr:  $Acr"
+Write-Host "   name: $($AppPrefix -join ', ')<app>, image $ImagePrefix<app>"
 Write-Host "   target: $Target"
 Write-Host ''
 
@@ -461,12 +498,12 @@ Write-Host "Building $($Apps.Count) image(s) in parallel at $Tag..." -Foreground
 $jobs = foreach ($a in $Apps) {
     $df = $Config[$a].Dockerfile
     Start-Job -Name $a -ScriptBlock {
-        param($Acr, $App, $Tag, $Df, $Ctx)
+        param($Acr, $App, $Tag, $Df, $Ctx, $Prefix)
         $env:PYTHONUTF8 = '1'; $env:PYTHONIOENCODING = 'utf-8'
         # Run from inside the context so az finds the Dockerfile (it resolves --file against the cwd).
         Set-Location -LiteralPath $Ctx
-        az acr build --registry $Acr --image "sqlflow-v3-${App}:$Tag" --file $Df . 2>&1
-    } -ArgumentList $Acr, $a, $Tag, $df, $RepoCtx
+        az acr build --registry $Acr --image "${Prefix}${App}:$Tag" --file $Df . 2>&1
+    } -ArgumentList $Acr, $a, $Tag, $df, $RepoCtx, $ImagePrefix
 }
 $jobs | Wait-Job | Out-Null
 
@@ -499,7 +536,7 @@ Write-Host '=== Deploying container apps ===' -ForegroundColor Cyan
 $failed = @()
 foreach ($a in $Apps) {
     $rec = $targets[$a]
-    $newImage = "$Acr.azurecr.io/sqlflow-v3-${a}:$Tag"
+    $newImage = "$Acr.azurecr.io/${ImagePrefix}${a}:$Tag"
     Write-Host "--- $($rec.Name) -> :$Tag ---"
 
     Set-AppImage -ResourceName $rec.Name -Image $newImage

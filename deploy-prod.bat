@@ -9,9 +9,9 @@ REM  points the container apps at the new tag, waits for the new control-plane
 REM  revision, and prints its startup log. The image tag is the current commit's
 REM  short SHA (what the apps run). KEEP THIS FILE AT THE REPO ROOT.
 REM
-REM  ESTATE: the resource group, registry, subscription and app names below name
-REM  an EXISTING estate. Confirm they are the estate you mean before running this;
-REM  the script targets apps by name and will not create anything.
+REM  ESTATE: the resource group, registry, subscription and app prefix come from the
+REM  environment (see below) and name an EXISTING estate. The script targets apps by
+REM  name and creates nothing, so confirm they are the estate you mean.
 REM
 REM  Fast path (why not plain `az acr build .`):
 REM    * `az acr build .` uploads the whole working tree and ignores .dockerignore
@@ -38,9 +38,21 @@ REM ============================================================================
 
 cd /d "%~dp0"
 
-set "RG=datawarehouse-west-rg-prod-v2"
-set "ACR=sqlflowv3acrprod"
-set "SUB=83731164-2cea-4291-b78d-7e2e69eea8a6"
+REM  The estate comes from the environment and has no default: naming it is a deliberate act, and a
+REM  wrong name would deploy these images over another product's running apps.
+REM    OSDU_DEPLOY_RG           the resource group holding the container apps
+REM    OSDU_DEPLOY_ACR          the container registry the images are built in
+REM    OSDU_DEPLOY_SUBSCRIPTION the subscription both live in
+REM    OSDU_DEPLOY_APP_PREFIX   the app and image name prefix (default osdu-delivery-)
+if not defined OSDU_DEPLOY_RG ( echo ERROR: set OSDU_DEPLOY_RG to the resource group holding the container apps. & exit /b 1 )
+if not defined OSDU_DEPLOY_ACR ( echo ERROR: set OSDU_DEPLOY_ACR to the container registry to build in. & exit /b 1 )
+if not defined OSDU_DEPLOY_SUBSCRIPTION ( echo ERROR: set OSDU_DEPLOY_SUBSCRIPTION to the subscription of that estate. & exit /b 1 )
+if not defined OSDU_DEPLOY_APP_PREFIX set "OSDU_DEPLOY_APP_PREFIX=osdu-delivery-"
+
+set "RG=%OSDU_DEPLOY_RG%"
+set "ACR=%OSDU_DEPLOY_ACR%"
+set "SUB=%OSDU_DEPLOY_SUBSCRIPTION%"
+set "PREFIX=%OSDU_DEPLOY_APP_PREFIX%"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 
@@ -63,6 +75,8 @@ echo === OSDU Delivery deploy ===
 echo    tag:  %TAG%
 echo    apps: %APPS%
 echo    rg:   %RG%
+echo    acr:  %ACR%
+echo    name: %PREFIX%^<app^>
 echo.
 
 call az account set --subscription "%SUB%"
@@ -94,8 +108,8 @@ for %%a in (%APPS%) do call :deploy %%a
 
 REM --- Wait for control-plane, then show its startup log -----------------------
 echo %APPS% | findstr /i "control-plane" >nul && (
-  call :waitrunning sqlflow-v3-control-plane
-  call :showlog sqlflow-v3-control-plane
+  call :waitrunning %PREFIX%control-plane
+  call :showlog %PREFIX%control-plane
 )
 
 echo.
@@ -112,9 +126,9 @@ call :cfg %APP%
 if not defined DF exit /b 0
 set "LOG=%CTX%\%APP%.log"
 echo.
-echo --- Building sqlflow-v3-%APP%:%TAG%   (%DF%) ---
+echo --- Building %PREFIX%%APP%:%TAG%   (%DF%) ---
 pushd "%CTX%\repo"
-call az acr build --registry %ACR% --image sqlflow-v3-%APP%:%TAG% --file %DF% . > "%LOG%" 2>&1
+call az acr build --registry %ACR% --image %PREFIX%%APP%:%TAG% --file %DF% . > "%LOG%" 2>&1
 popd
 REM Pull the ACR run id from the log ("Queued a build with ID: <id>"), robust to the CLI crash.
 set "RUNID="
@@ -152,9 +166,9 @@ goto wr_loop
 
 :deploy
 set "APP=%~1"
-echo --- sqlflow-v3-%APP% -^> :%TAG% ---
-call az containerapp update -n sqlflow-v3-%APP% -g %RG% --image %ACR%.azurecr.io/sqlflow-v3-%APP%:%TAG% --query "properties.template.containers[0].image" -o tsv
-if errorlevel 1 ( echo ERROR: deploy of sqlflow-v3-%APP% failed. & exit /b 1 )
+echo --- %PREFIX%%APP% -^> :%TAG% ---
+call az containerapp update -n %PREFIX%%APP% -g %RG% --image %ACR%.azurecr.io/%PREFIX%%APP%:%TAG% --query "properties.template.containers[0].image" -o tsv
+if errorlevel 1 ( echo ERROR: deploy of %PREFIX%%APP% failed. & exit /b 1 )
 exit /b 0
 
 :waitrunning
