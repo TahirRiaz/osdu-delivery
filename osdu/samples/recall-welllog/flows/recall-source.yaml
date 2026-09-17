@@ -1,0 +1,63 @@
+# Source: recall-source
+#
+# One source document delivering two interfaces (docs/interfaces-design.md): the wellbores the well logs refer to, and
+# the well logs themselves. Each interface has a ledger, a submission history, a watermark and a route of its own, and
+# the well logs run after the wellbores, so a run of the source is two waves. It reads the same ingestion tables the
+# single-form flows beside it read (recall-wellbore, recall-welllog), under ledgers of its own, so it never re-delivers
+# what those flows delivered: it is the shape a source takes, shown beside the shape it replaces.
+flowType: delivery
+name: recall-source
+batch: recall
+
+parameters:
+  logSource:
+    required: true
+    description: The Recall log source the well logs are read from (STAT_COMP, STAT_CPI, STAT_CORE, STAT_ILT, STAT_PLT, STAT_PRESS).
+
+source:
+  connection: ${env:OSDU_SAMPLE_DB}
+  lastModified: update_date
+  work: ../.work/recall-source
+
+render:
+  parameters:
+    dataPartition: opendes
+
+target:
+  endpoint: ${env:PETRODB_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  headers:
+    Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
+    data-partition-id: opendes
+
+reliability:
+  concurrency: 8
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+  leaseSeconds: 300
+  batchSize: 50
+
+interfaces:
+  # The master data the logs point at, delivered through the storage service: no files, so nothing is streamed.
+  wellbores:
+    record:
+      object: OsduSample.ing.Wellbore
+      key: [facility_name]
+      primaryKey: RecId
+    mapping: Wellbore@1.0.0
+
+  # The logs, which refer to the wellbores above; `after` says so outright, and their mapping's reference says it again.
+  welllogs:
+    record:
+      object: OsduSample.ing.WellLog
+      key: [source_project, log_id]
+      primaryKey: RecId
+    mapping: WellLog@1.4.0
+    after: [wellbores]

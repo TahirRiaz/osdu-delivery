@@ -276,6 +276,17 @@ does not hold and holds a record that would write a dangling reference. Module v
 Done when the GUI builds and lints clean, the GUI end-to-end suite covers a multi-interface source, and the API and
 CLI tests cover the filters.
 
+Status: done. Every view of a source is about one of its interfaces, because each has a ledger of its own and their
+counts are never summed: the API already took `?interface=` everywhere and refused a nameless request on a source with
+several, and the GUI now names one. Its pages carry an interface picker whose choice travels in the URL, the Delivery
+tab lists the interfaces in the order a run takes them (route, wave, what each waits for, counts), and the probe, the
+release and every removal act on the interface that is showing; before this, a multi-interface source's Records and
+Submissions tabs could not be opened at all. The trigger dialog names the interfaces a run takes. `sqlflow records list`
+and `sqlflow records show` read the same ledger from a terminal or a node, one interface at a time, the second printing
+a record's every try with its steps and errors, which no verb did before. A source's lineage carries every interface's
+reads and writes, so the estate orders it after everything any of them reads. The end-to-end suite covers a source of
+two interfaces through the GUI and the CLI, against a sample source document beside the single-form flows it mirrors.
+
 ### Stage 10: samples, documentation and verification
 
 - The sample estate as one source file adopting the existing ledgers, plus sample interfaces covering the kinds

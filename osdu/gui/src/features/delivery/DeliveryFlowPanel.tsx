@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { isApiError } from "@/api/client";
 import {
   DELIVERY_RECORD_STATUSES, deliveryApi, deliveryRecordRoute,
-  type DeliveryRecord, type DeliveryRecordFilter, type DeliveryRecordStatus, type DeliverySubmission,
+  type DeliveryInterface, type DeliveryRecord, type DeliveryRecordFilter, type DeliveryRecordStatus, type DeliverySubmission,
 } from "../../api/delivery";
 import { CodeView } from "@/components/CodeView";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -69,6 +69,28 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   // A submission or run page links here scoped to the records it touched; clearing the chip widens the list again.
   const submissionFilter = searchParams.get("submission");
   const runFilter = searchParams.get("run");
+  // Every view of a source is about one of its interfaces: they have separate ledgers, so their records, submissions
+  // and targets are never summed. The choice travels in the URL, so a link to a source's records is a link to one
+  // interface's records.
+  const interfaces = useQuery({
+    queryKey: ["delivery", "interfaces", pipelineId],
+    queryFn: () => deliveryApi.interfaces(pipelineId),
+    staleTime: 30000,
+  });
+  const names = useMemo(
+    () => (interfaces.data ?? []).map((row) => row.interface).filter((name): name is string => name !== null),
+    [interfaces.data]);
+  const many = names.length > 1;
+  const asked = searchParams.get("interface");
+  const interfaceName = many ? (asked !== null && names.includes(asked) ? asked : names[0]) : null;
+  const selectInterface = useCallback((next: string) => setSearchParams((current) => {
+    const params = new URLSearchParams(current);
+    params.set("interface", next);
+    // The chips point at records of the interface that was showing; another interface's records are not those.
+    params.delete("submission");
+    params.delete("run");
+    return params;
+  }), [setSearchParams]);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<string>(ALL);
   const [drifted, setDrifted] = useState(false);
@@ -113,15 +135,19 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   }, []);
   const removal = useComputeTask(removalTaskId);
 
+  // The overview shows the source: its counts are every interface's, with the breakdown below them. The records and
+  // submissions views show one interface, because that is what their ledgers are.
+  const statsOf = section === "overview" ? null : interfaceName;
   const stats = useQuery({
-    queryKey: ["delivery", "stats", pipelineId],
-    queryFn: () => deliveryApi.stats(pipelineId),
+    queryKey: ["delivery", "stats", pipelineId, statsOf],
+    queryFn: () => deliveryApi.stats(pipelineId, statsOf),
+    enabled: section === "overview" || !many || interfaceName !== null,
     refetchInterval: 10000,
   });
   const submissions = useQuery({
-    queryKey: ["delivery", "submissions", pipelineId],
-    queryFn: () => deliveryApi.submissions(pipelineId, 100),
-    enabled: section !== "records",
+    queryKey: ["delivery", "submissions", pipelineId, interfaceName],
+    queryFn: () => deliveryApi.submissions(pipelineId, 100, interfaceName),
+    enabled: section !== "records" && (!many || interfaceName !== null),
     refetchInterval: 10000,
   });
   const probe = useComputeTask(probeTaskId);
@@ -136,12 +162,12 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   }, [finishedRemoval, queryClient]);
 
   const probeTarget = useMutation({
-    mutationFn: () => deliveryApi.probe(pipelineId),
+    mutationFn: () => deliveryApi.probe(pipelineId, interfaceName),
     onSuccess: (accepted) => setProbeTaskId(accepted.taskId),
     onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
   const releaseAll = useMutation({
-    mutationFn: () => deliveryApi.releaseFlow(pipelineId),
+    mutationFn: () => deliveryApi.releaseFlow(pipelineId, undefined, interfaceName),
     onSuccess: (result) => {
       setReleaseOpen(false);
       toast.success(`Released ${result.released} record${result.released === 1 ? "" : "s"}.`);
@@ -167,6 +193,25 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
 
   return (
     <div className="flex flex-col gap-4" data-testid={`delivery-panel-${section}`}>
+      {many && (
+        <div className="flex flex-wrap items-center gap-2" data-testid="delivery-interface-picker">
+          <Label className="text-[13px] text-muted-foreground">Interface</Label>
+          <Select value={interfaceName ?? ""} onValueChange={selectInterface}>
+            <SelectTrigger size="sm" className="h-8 w-56" data-testid="delivery-interface-select">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {names.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <span className="text-[13px] text-muted-foreground">
+            {section === "overview"
+              ? `of ${names.length} interfaces; the counts below are the whole source`
+              : `of ${names.length} interfaces of ${flowName}`}
+          </span>
+        </div>
+      )}
+
       {section === "overview" && (
         <>
           <div className="flex flex-wrap items-center gap-2">
@@ -199,6 +244,29 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
               <KpiCard label="Drifted" value={s.drifted} color={s.drifted > 0 ? "warning" : undefined} caption={s.lastVerifiedUtc ? "since the last verify" : "never verified"} testId="delivery-kpi-drifted" />
               <KpiCard label="Submissions" value={s.submissions} testId="delivery-kpi-submissions" />
             </div>
+          )}
+          {many && (
+            <Card className="gap-2 overflow-hidden rounded-lg p-0" data-testid="delivery-interfaces">
+              <div className="flex flex-wrap items-baseline gap-2 px-3 pt-3 text-[13px]">
+                <span className="font-medium">Interfaces</span>
+                <span className="text-muted-foreground">
+                  in the order a run takes them; every wave runs together, after the waves before it
+                </span>
+                {interfaces.data?.find((row) => row.orderProblem !== null)?.orderProblem && (
+                  <span className="text-warning">
+                    Order from <span className="font-mono">after:</span> alone: {interfaces.data.find((row) => row.orderProblem !== null)!.orderProblem}
+                  </span>
+                )}
+              </div>
+              <DataTable
+                columns={interfaceColumns}
+                rows={interfaces.data}
+                rowKey={(row) => row.interface ?? row.flowId}
+                onRowClick={(row) => row.interface !== null && selectInterface(row.interface)}
+                emptyMessage="This source declares no interfaces."
+                data-testid="delivery-interfaces-table"
+              />
+            </Card>
           )}
           {probeTaskId !== null && (
             <Card className="gap-2 rounded-lg p-3" data-testid="delivery-probe-result">
@@ -262,8 +330,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             )}
           </FilterBar>
           <PagedTable
-            queryKey={["delivery", "records", pipelineId, search, status, drifted, contains, submissionFilter, runFilter]}
-            fetchPage={(page, pageSize) => deliveryApi.records(pipelineId, { page, pageSize, ...filter })}
+            queryKey={["delivery", "records", pipelineId, interfaceName, search, status, drifted, contains, submissionFilter, runFilter]}
+            fetchPage={(page, pageSize) => deliveryApi.records(pipelineId, { page, pageSize, interface: interfaceName ?? undefined, ...filter })}
             columns={recordColumns}
             rowKey={(row) => row.deliveryKey}
             onRowClick={(row) => navigate(deliveryRecordRoute(row))}
@@ -322,7 +390,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             open={removeOpen}
             onClose={() => setRemoveOpen(false)}
             pipelineId={pipelineId}
-            flowName={flowName}
+            interfaceName={interfaceName}
+            flowName={interfaceName === null ? flowName : `${flowName} / ${interfaceName}`}
             selection={selectionFor(allMatching, filter, matched, selected)}
             onQueued={(accepted) => {
               clearSelection();
@@ -367,6 +436,54 @@ function selectionFor(
 ): RemovalSelection {
   return allMatching ? { kind: "filter", filter, expected: matched } : { kind: "keys", keys: [...selected] };
 }
+
+/** One line per interface of a source: where its records go, when it runs, and how its ledger stands. */
+const interfaceColumns: Column<DeliveryInterface>[] = [
+  {
+    id: "interface",
+    header: "Interface",
+    render: (row) => (
+      <div className="flex min-w-0 flex-col">
+        <span className="font-medium">{row.interface ?? "(single)"}</span>
+        <span className="truncate font-mono text-[11px] text-muted-foreground">{row.mapping}</span>
+      </div>
+    ),
+  },
+  { id: "wave", header: "Wave", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.wave}</span> },
+  {
+    id: "route",
+    header: "Route",
+    render: (row) => (
+      <div className="flex min-w-0 flex-col">
+        <Badge variant="outline" className="w-fit font-mono text-[11px]">{row.route}</Badge>
+        {row.routeReason && <TruncatedText text={row.routeReason} maxWidth={260} />}
+      </div>
+    ),
+  },
+  { id: "kind", header: "Kind", render: (row) => <TruncatedText text={row.kind} maxWidth={260} /> },
+  {
+    id: "waits",
+    header: "Waits for",
+    render: (row) => (
+      <span className="text-[13px] text-muted-foreground">
+        {(row.waitsFor ?? []).length === 0 ? "nothing" : (row.waitsFor ?? []).map((wait) => wait.interface).join(", ")}
+      </span>
+    ),
+  },
+  { id: "total", header: "Records", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.stats.total.toLocaleString()}</span> },
+  { id: "delivered", header: "Delivered", align: "right", render: (row) => <span className="font-mono tabular-nums text-success">{row.stats.delivered.toLocaleString()}</span> },
+  { id: "pending", header: "Pending", align: "right", render: (row) => <span className="font-mono tabular-nums">{(row.stats.pending + row.stats.delivering).toLocaleString()}</span> },
+  { id: "waiting", header: "Waiting", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.stats.waiting.toLocaleString()}</span> },
+  {
+    id: "blocked",
+    header: "Blocked",
+    align: "right",
+    render: (row) => {
+      const blocked = row.stats.held + row.stats.failed + row.stats.deleted;
+      return <span className={`font-mono tabular-nums${blocked > 0 ? " text-warning" : ""}`}>{blocked.toLocaleString()}</span>;
+    },
+  },
+];
 
 const submissionColumns: Column<DeliverySubmission>[] = [
   { id: "status", header: "Status", render: (row) => <SubmissionStatusBadge status={row.status} /> },

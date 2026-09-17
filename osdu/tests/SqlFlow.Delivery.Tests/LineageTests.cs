@@ -96,6 +96,28 @@ public sealed class LineageTests : IDisposable
     }
 
     [Fact]
+    public void A_source_declares_every_interface_read_and_every_interface_write()
+    {
+        // One document, two interfaces: the graph has to carry each interface's own table and its own OSDU type, so a
+        // source is ordered after everything any of its interfaces reads, and shows as writing everything they write
+        // (docs/interfaces-design.md section 9).
+        var lineage = Describe("flows/recall-source.yaml");
+
+        Assert.Empty(lineage.Warnings);
+        Assert.Equal(
+            ["OsduSample.ing.Wellbore", "OsduSample.ing.WellLog"],
+            lineage.Objects.Select(o => $"{o.Database}.{o.Schema}.{o.Name}").ToList());
+        Assert.All(lineage.Objects, o => Assert.Equal(LineageRelation.Reads, o.Relation));
+        Assert.Contains(Samples.WellboreKind, Datasets(lineage, LineageRelation.Writes), StringComparison.Ordinal);
+        Assert.Contains(Samples.WellLogKind, Datasets(lineage, LineageRelation.Writes), StringComparison.Ordinal);
+
+        // And the estate orders it after the ingestion flows that fill both of those tables.
+        var (_, report) = Scan();
+        Assert.True(WaveOf(report, "recall-wellbore-ing") < WaveOf(report, "recall-source"));
+        Assert.True(WaveOf(report, "recall-welllog-ing") < WaveOf(report, "recall-source"));
+    }
+
+    [Fact]
     public void A_delivery_flow_reads_its_tables_payload_files_and_cache_types_and_writes_its_mappings_type()
     {
         var lineage = Describe("flows/recall-welllog.yaml");

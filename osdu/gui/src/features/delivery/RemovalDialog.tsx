@@ -40,6 +40,8 @@ interface RemovalDialogProps {
   open: boolean;
   onClose: () => void;
   pipelineId: string;
+  /** The interface of the source whose records these are; null for a flow in the single form. */
+  interfaceName?: string | null;
   flowName: string;
   selection: RemovalSelection;
   /** What the records are called in the dialog's title when there is exactly one of them. */
@@ -113,7 +115,7 @@ function requestFor(selection: RemovalSelection, scope: RemovalScope): DeliveryR
  * not decoration: an operator who is one tab away from another environment needs to see the endpoint and partition
  * they are about to act on, which is also why a permanent scope asks them to type the partition back.
  */
-export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, singleLabel, onQueued }: RemovalDialogProps) {
+export function RemovalDialog({ open, onClose, pipelineId, interfaceName = null, flowName, selection, singleLabel, onQueued }: RemovalDialogProps) {
   const [scope, setScope] = useState<RemovalScope>("record");
   const [typed, setTyped] = useState("");
   const [wasOpen, setWasOpen] = useState(open);
@@ -130,15 +132,15 @@ export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, 
 
   const request = useMemo(() => requestFor(selection, scope), [selection, scope]);
   const preview = useQuery({
-    queryKey: ["delivery", "removal-preview", pipelineId, JSON.stringify(requestFor(selection, "record"))],
-    queryFn: () => deliveryApi.previewRemoval(pipelineId, requestFor(selection, "record")),
+    queryKey: ["delivery", "removal-preview", pipelineId, interfaceName, JSON.stringify(requestFor(selection, "record"))],
+    queryFn: () => deliveryApi.previewRemoval(pipelineId, requestFor(selection, "record"), interfaceName),
     enabled: open,
     staleTime: 0,
     gcTime: 0,
   });
 
   const remove = useMutation({
-    mutationFn: () => deliveryApi.removeRecords(pipelineId, request),
+    mutationFn: () => deliveryApi.removeRecords(pipelineId, request, interfaceName),
     onSuccess: (accepted) => {
       onQueued(accepted);
       onClose();

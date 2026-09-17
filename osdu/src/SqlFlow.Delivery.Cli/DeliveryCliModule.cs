@@ -9,7 +9,7 @@ namespace SqlFlow.Delivery.Cli;
 /// <summary>
 /// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval and cache flow kinds (so SQLFlow's own
 /// <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
-/// module's database, and the module's own verbs: <c>check</c>, <c>cache</c> and <c>template</c>.
+/// module's database, and the module's own verbs: <c>check</c>, <c>records</c>, <c>cache</c> and <c>template</c>.
 /// </summary>
 /// <remarks>
 /// A command's database is the catalog the command line names (<c>--db</c>, else <c>${env:SQLFLOW_CATALOG_DB}</c>) unless
@@ -38,6 +38,23 @@ public sealed class DeliveryCliModule : ICliModule
         {
             Flags = ["--connect"],
             ValueOptions = ["--interface"],
+        },
+        new CliVerb(
+            "records",
+            [
+                "sqlflow records list <flow.yaml> [--interface <name>] [--search <term>] [--contains]",
+                "                     [--status <status>] [--max <n>]",
+                "                                   An interface's records from the ledger: the key, the status, the OSDU id",
+                "                                   and the last error of each (needs --db)",
+                "sqlflow records show <flow.yaml> --key <delivery key | source key> [--interface <name>] [--attempts <n>]",
+                "                                   One record with every try it took: what each sent, what the target",
+                "                                   answered step by step, and why it stopped (needs --db)",
+            ],
+            DeliveryRecordVerbs.RecordsAsync)
+        {
+            Subcommands = ["list", "show"],
+            Flags = ["--contains"],
+            ValueOptions = ["--interface", "--search", "--status", "--max", "--key", "--attempts"],
         },
         new CliVerb(
             "cache",

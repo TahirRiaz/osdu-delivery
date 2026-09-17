@@ -558,6 +558,8 @@ export interface DeliveryPruneResult {
 }
 
 export interface DeliveryRecordListQuery extends PageQuery {
+  /** Which interface of the source the records are of. Required when the source delivers more than one. */
+  interface?: string;
   /** A delivery key (exact), or a prefix over label, source key and target id. */
   search?: string;
   /** "contains" for the slower substring match; prefix by default. */
@@ -594,6 +596,39 @@ export interface DeliveryTarget {
   interface: string | null;
   /** On the ddms route: which collection of which DDMS the records go to, as a sentence; null on the other routes. */
   ddms: string | null;
+}
+
+/** One interface another waits for, or does not wait for, and where that comes from. */
+export interface DeliveryInterfaceWait {
+  interface: string;
+  /** "after" when the document declares it, "schema" when a mapping's reference implies it. */
+  origin: string;
+  why: string;
+}
+
+/**
+ * One interface of a source (docs/interfaces-design.md): its ledger, how it is delivered and why, what it renders,
+ * the order it runs in, and its record counts. A flow in the single form lists one, with no name.
+ */
+export interface DeliveryInterface {
+  /** The interface's name, or null for a flow in the single form. */
+  interface: string | null;
+  /** The ledger identity its records are keyed by. */
+  flowId: string;
+  ledger: string;
+  route: string;
+  routeReason: string | null;
+  mapping: string;
+  kind: string | null;
+  recordObject: string;
+  after: string[];
+  stats: DeliveryFlowStats;
+  /** The wave it runs in: every interface of a wave runs together, after the waves before it. */
+  wave: number;
+  waitsFor: DeliveryInterfaceWait[] | null;
+  notWaitedFor: DeliveryInterfaceWait[] | null;
+  /** Why the order shown is only what `after:` gives (a mapping the catalog does not hold, interfaces that wait for each other). */
+  orderProblem: string | null;
 }
 
 /** The listing a removal is aimed at: the same filter the records list is built from. */
@@ -638,6 +673,8 @@ export interface DeliveryRemovalAccepted {
 
 export interface DeliveryActivityListQuery extends PageQuery {
   pipelineId?: string;
+  /** Which interface of that source; required when it delivers more than one. */
+  interface?: string;
   submissionId?: string;
   runId?: string;
   kind?: string;
@@ -1045,13 +1082,27 @@ const recordApiPath = ({ flowId, deliveryKey }: DeliveryRecordRef) =>
 export const deliveryRecordRoute = ({ flowId, deliveryKey }: DeliveryRecordRef) =>
   `/delivery/records/${encodeURIComponent(flowId)}/${encodeURIComponent(deliveryKey)}`;
 
+/**
+ * A flow-level path with the interface the request is about. A source that delivers several interfaces answers
+ * nothing without one, because its records, submissions, target and counts are per interface, never summed.
+ */
+const flowPath = (pipelineId: string, suffix: string, interfaceName?: string | null) =>
+  `/api/v1/delivery/flows/${pipelineId}${suffix}${interfaceName ? `?interface=${encodeURIComponent(interfaceName)}` : ""}`;
+
 export const deliveryApi = {
-  stats: (pipelineId: string) => get<DeliveryFlowStats>(`/api/v1/delivery/flows/${pipelineId}/stats`),
+  /** The counts of one interface, or of the whole source when it names none. */
+  stats: (pipelineId: string, interfaceName?: string | null) =>
+    get<DeliveryFlowStats>(`/api/v1/delivery/flows/${pipelineId}/stats`, interfaceName ? { interface: interfaceName } : {}),
+  /** Every interface of a source, in the order a run takes them, each with its route and counts. */
+  interfaces: (pipelineId: string) => get<DeliveryInterface[]>(`/api/v1/delivery/flows/${pipelineId}/interfaces`),
   records: (pipelineId: string, query: DeliveryRecordListQuery = {}) =>
     get<PagedResult<DeliveryRecord>>(`/api/v1/delivery/flows/${pipelineId}/records`, query as QueryParams),
   /** A flow's submissions, newest first. */
-  submissions: (pipelineId: string, max?: number) =>
-    get<DeliverySubmission[]>(`/api/v1/delivery/flows/${pipelineId}/submissions`, max ? { max } : {}),
+  submissions: (pipelineId: string, max?: number, interfaceName?: string | null) =>
+    get<DeliverySubmission[]>(`/api/v1/delivery/flows/${pipelineId}/submissions`, {
+      ...(max ? { max } : {}),
+      ...(interfaceName ? { interface: interfaceName } : {}),
+    }),
   retrievals: (pipelineId: string, max?: number) =>
     get<DeliveryRetrieval[]>(`/api/v1/delivery/flows/${pipelineId}/retrievals`, max ? { max } : {}),
   record: (record: DeliveryRecordRef) => get<DeliveryRecordDetail>(recordApiPath(record)),
@@ -1152,10 +1203,11 @@ export const deliveryApi = {
   /** What one record read out of the cache when it was rendered. */
   recordCacheUses: (record: DeliveryRecordRef) => get<DeliveryCacheUse[]>(`${recordApiPath(record)}/cache`),
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */
-  releaseFlow: (pipelineId: string, keys?: string[]) =>
-    post<DeliveryReleaseResult>(`/api/v1/delivery/flows/${pipelineId}/release`, { keys: keys ?? null }),
+  releaseFlow: (pipelineId: string, keys?: string[], interfaceName?: string | null) =>
+    post<DeliveryReleaseResult>(flowPath(pipelineId, "/release", interfaceName), { keys: keys ?? null }),
   /** Queues a target probe on a node: is OSDU reachable with the flow's credentials? */
-  probe: (pipelineId: string) => post<ComputeTaskAccepted>(`/api/v1/delivery/flows/${pipelineId}/probe`),
+  probe: (pipelineId: string, interfaceName?: string | null) =>
+    post<ComputeTaskAccepted>(flowPath(pipelineId, "/probe", interfaceName)),
   release: (record: DeliveryRecordRef) => post<DeliveryReleaseResult>(`${recordApiPath(record)}/release`),
   /** Marks the record for redelivery and (with run) queues the deliver run that sends it. */
   redeliver: (record: DeliveryRecordRef, scope: "all" | "metadata" | "payload" = "all", run = true) =>
@@ -1170,13 +1222,14 @@ export const deliveryApi = {
    */
   readSource: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/source`),
   /** Where the flow's records live, and which call each removal scope makes against them. */
-  target: (pipelineId: string) => get<DeliveryTarget>(`/api/v1/delivery/flows/${pipelineId}/target`),
+  target: (pipelineId: string, interfaceName?: string | null) =>
+    get<DeliveryTarget>(`/api/v1/delivery/flows/${pipelineId}/target`, interfaceName ? { interface: interfaceName } : {}),
   /** What a removal would act on, without removing anything: the confirmation's contents. */
-  previewRemoval: (pipelineId: string, request: DeliveryRemovalRequest) =>
-    post<DeliveryRemovalPreview>(`/api/v1/delivery/flows/${pipelineId}/records/remove/preview`, request),
+  previewRemoval: (pipelineId: string, request: DeliveryRemovalRequest, interfaceName?: string | null) =>
+    post<DeliveryRemovalPreview>(flowPath(pipelineId, "/records/remove/preview", interfaceName), request),
   /** Queues the removal of the selected records, or of every record the filter matches, on a node. */
-  removeRecords: (pipelineId: string, request: DeliveryRemovalRequest) =>
-    post<DeliveryRemovalAccepted>(`/api/v1/delivery/flows/${pipelineId}/records/remove`, request),
+  removeRecords: (pipelineId: string, request: DeliveryRemovalRequest, interfaceName?: string | null) =>
+    post<DeliveryRemovalAccepted>(flowPath(pipelineId, "/records/remove", interfaceName), request),
   prune: (olderThanDays: number) => post<DeliveryPruneResult>("/api/v1/delivery/ledger/prune", { olderThanDays }),
 };
 

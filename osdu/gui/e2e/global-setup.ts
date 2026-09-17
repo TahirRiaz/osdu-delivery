@@ -87,6 +87,9 @@ export const CHAIN = [
   "recall-wellbore-ing",
   "recall-wellbore-aliases-ing",
   "recall-wellbore",
+  // The same estate in the shape a source takes: two interfaces, each with a ledger of its own. It is synced and read,
+  // never run, so it adds a multi-interface source to the catalog without delivering anything twice.
+  "recall-source",
   "osdu-cache-sync",
 ] as const;
 

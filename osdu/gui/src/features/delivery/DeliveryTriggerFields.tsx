@@ -8,6 +8,8 @@ import type { TriggerBodyContribution, TriggerFieldsProps } from "@/modules/regi
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** An interface's name: a letter, then letters, digits, '_' and '-' (SourceDefinition.IsInterfaceName). */
+const INTERFACE_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
 /** The operation a kind's run performs when the dialog could not learn the registered ones. */
 const DEFAULT_OPERATION: Record<string, string> = {
@@ -25,7 +27,7 @@ const REDELIVER_SCOPES: readonly { value: RedeliverScope; label: string }[] = [
 ];
 
 /** The payload keys these fields own; anything else the run being repeated carried goes with it unchanged. */
-const OWNED_KEYS = new Set(["force", "submissionId", "recordKeys", "redeliver"]);
+const OWNED_KEYS = new Set(["force", "submissionId", "recordKeys", "redeliver", "interface", "interfaces"]);
 
 const FORCE_HINTS: Record<string, string> = {
   delivery: "Push past the change gates: plan every record even when no source table advanced, re-plan a completed submission, verify records verified recently.",
@@ -82,6 +84,13 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
   const [redeliver, setRedeliver] = useState<RedeliverScope>(
     () => (isRedeliverScope(initialPayload?.redeliver) ? initialPayload.redeliver : "all"),
   );
+  // A source delivers several interfaces; a run can take some of them, and the ones it leaves out are not run, their
+  // records read from the ledger as they stand. Either payload key the kind accepts opens the field.
+  const [interfacesText, setInterfacesText] = useState(() => (
+    Array.isArray(initialPayload?.interfaces)
+      ? initialPayload.interfaces.filter((name): name is string => typeof name === "string").join("\n")
+      : typeof initialPayload?.interface === "string" ? initialPayload.interface : ""
+  ));
   const [carried] = useState<Record<string, unknown>>(
     () => Object.fromEntries(Object.entries(initialPayload ?? {}).filter(([key]) => !OWNED_KEYS.has(key))),
   );
@@ -98,6 +107,8 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
   const takesRecordScope = deliveryKind && (effectiveOperation === "deliver" || effectiveOperation === "verify");
   const recordKeys = useMemo(() => lines(recordKeysText), [recordKeysText]);
   const takesRedeliver = takesRecordScope && effectiveOperation === "deliver" && recordKeys.length > 0;
+  const takesInterfaces = deliveryKind && effectiveOperation !== null;
+  const interfaceNames = useMemo(() => lines(interfacesText), [interfacesText]);
 
   const body = useMemo<TriggerBodyContribution>(() => {
     const parsed = takesValues ? parseValues(valuesText) : { values: {}, error: null };
@@ -109,7 +120,11 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
         ? "The submission id must be a UUID."
         : takesRecordScope && recordKeys.some((key) => !UUID.test(key))
           ? "Every record key must be a UUID (one per line)."
-          : null);
+          : takesInterfaces && interfaceNames.some((name) => !INTERFACE_NAME.test(name))
+            ? "An interface's name is a letter, then letters, digits, '_' and '-' (one per line)."
+            : takesInterfaces && new Set(interfaceNames).size !== interfaceNames.length
+              ? "The same interface is named twice."
+              : null);
 
     const payload: Record<string, unknown> = { ...carried };
     if (force) {
@@ -128,14 +143,18 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
       payload.redeliver = redeliver;
     }
 
+    if (takesInterfaces && interfaceNames.length > 0) {
+      payload.interfaces = interfaceNames;
+    }
+
     return {
       values: Object.keys(parsed.values).length > 0 ? parsed.values : undefined,
       payload: Object.keys(payload).length > 0 ? payload : undefined,
       error,
     };
   }, [
-    carried, force, recordKeys, redeliver, submissionId, takesRecordScope, takesRedeliver, takesSubmission,
-    takesValues, valuesText,
+    carried, force, interfaceNames, recordKeys, redeliver, submissionId, takesInterfaces, takesRecordScope,
+    takesRedeliver, takesSubmission, takesValues, valuesText,
   ]);
 
   useEffect(() => {
@@ -205,6 +224,23 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
             {effectiveOperation === "verify"
               ? "Delivery keys to check; empty verifies the flow's delivered records."
               : "Delivery keys to send again regardless of what OSDU holds; empty delivers what changed."}
+          </p>
+        </div>
+      )}
+      {takesInterfaces && (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor={`${idPrefix}-interfaces`}>Interfaces</Label>
+          <Textarea
+            id={`${idPrefix}-interfaces`}
+            className="min-h-16 font-mono text-[12px]"
+            placeholder={"wellbores\nwelllogs"}
+            value={interfacesText}
+            onChange={(event) => setInterfacesText(event.target.value)}
+            data-testid="trigger-interfaces"
+          />
+          <p className="text-xs text-muted-foreground">
+            Which interfaces of the source this run takes, one per line; empty runs them all. The ones left out are not
+            run, and the records they deliver are read from the ledger as they stand.
           </p>
         </div>
       )}

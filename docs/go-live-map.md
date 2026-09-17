@@ -80,8 +80,10 @@ Closes coverage plan stages 7 to 10.
 - [x] **BLD-2** Stage 8: records that wait for other records (a reference table and its migration, hold and release).
   What a record refers to is kept beside its document on the record; a claim leaves it waiting, charging nothing, and a
   delivery releases what waited for it. `target.verifyReferences: storage` checks the ids the ledger does not hold.
-- [ ] **BLD-3** Stage 9: interface views in the GUI, API and CLI filters, lineage per interface, and a record's attempt
-  history from the CLI, which the project rules promise: `sqlflow search` finds a record, but no verb lists its attempts.
+- [x] **BLD-3** Stage 9: interface views in the GUI, API and CLI filters, lineage per interface, and a record's attempt
+  history from the CLI. The GUI names the interface every view is about (a multi-interface source's Records and
+  Submissions tabs could not be opened before), lists a source's interfaces in run order, and lets a run name the
+  interfaces it takes; `sqlflow records list|show` reads the ledger and a record's every try from a terminal.
 - [ ] **BLD-4** Stage 10: a sample estate across the kinds matrix (today three mappings: Wellbore, WellLog,
   WellboreTrajectory), the test matrix, the docs.
 
@@ -201,4 +203,5 @@ Each step protects the ones after it. Live runs happen only with an approved tes
 | 2026-09-17 | OPS-1a | `04b3e04` | The engine publishes settled tries per flow, route and outcome, and every HTTP call attempt, on the meter `SqlFlow.Delivery`; a retried attempt releases its connection before the backoff. |
 | 2026-09-17 | CI-2, CI-5a | `c10dee4` | CI runs the GUI end-to-end suite and builds the three images, starting the control plane and GUI images; the changelog covers the work since it was written. |
 | 2026-09-17 | BLD-2 | `2ea0806` | A record whose document refers to a record the ledger has not delivered is left waiting by the claim and goes out when that record lands; `target.verifyReferences: storage` checks the ids the ledger does not hold. Both CI jobs green. |
+| 2026-09-17 | BLD-3 | | Every view of a source is about one interface: the GUI's picker and interface listing, the trigger dialog's interfaces, `sqlflow records list|show`, the activities filter tested, and a source's lineage proven to carry every interface's reads and writes. |
 | 2026-09-17 | BLD-1 | `de40610` | The `etp` route: the module's own ETP 1.2 client (Avro codec from the pinned protocol, framing, session) and the route over it, against a fake ETP server on a real WebSocket. |

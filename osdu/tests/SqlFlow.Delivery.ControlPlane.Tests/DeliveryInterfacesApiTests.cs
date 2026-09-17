@@ -197,6 +197,21 @@ public sealed class DeliveryInterfacesApiTests
                 Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
             }
 
+            // The audit trail of a source is read the same way: one interface at a time, named the same way.
+            using (var namelessActivity = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/activities?pipelineId={pipelineId:D}"))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, namelessActivity.StatusCode);
+                Assert.Contains("name the one this request is about with ?interface=", await namelessActivity.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+
+            using (var unknownActivity = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/activities?pipelineId={pipelineId:D}&interface=cores"))
+            {
+                Assert.Equal(HttpStatusCode.NotFound, unknownActivity.StatusCode);
+            }
+
+            var activities = await JsonAsync(client, token, $"/api/v1/delivery/activities?pipelineId={pipelineId:D}&interface=welllogs");
+            Assert.Equal(0, activities.GetProperty("items").GetArrayLength());
+
             var records = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/records?interface=welllogs");
             Assert.Equal(key.Value, Assert.Single(records.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
             var target = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/target?interface=welllogs");

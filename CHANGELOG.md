@@ -61,6 +61,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   from the ledger.
 - Delivery metrics on the meter `SqlFlow.Delivery`: settled tries per flow, route and outcome, and every HTTP call
   attempt with its result, duration and retries (`osdu/docs/operations.md`).
+- Every view of a source is about one of its interfaces (`osdu/docs/operations.md`): the GUI carries an interface
+  picker whose choice travels in the URL, a source's Delivery tab lists its interfaces in the order a run takes them
+  with each one's route, what it waits for and its counts, and the probe, the release and every removal act on the
+  interface that is showing. A multi-interface source's Records and Submissions tabs could not be opened before this,
+  because the API asks which interface a request is about and the GUI never said. The trigger dialog names the
+  interfaces a run takes.
+- `sqlflow records list` and `sqlflow records show`: an interface's records from the ledger, and one record with every
+  try it took, its steps and its errors, from a terminal or a node with no control plane to reach. The source key finds
+  a record as surely as the delivery key.
 - The `etp` route, which writes Energistics data objects into dataspaces of the Reservoir DDMS over ETP 1.2 on a
   WebSocket instead of through an OSDU service (`osdu/docs/documents.md`, `osdu/docs/protocols.md`). The client is the
   module's own: the messages and data types it uses are C# records written from the pinned protocol, and a test
