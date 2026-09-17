@@ -5,15 +5,15 @@ working checklist for that work: each item has an id, is ticked when it is done,
 the commit that closed it. Every statement rests on the repository, or on the source code of the OSDU services it cites.
 
 As of 17 September 2026, `main` at `de0c6d5`. Coverage plan ([osdu-coverage-plan.md](osdu-coverage-plan.md)): stages 1
-to 6 done, stage 7 in progress, stages 8 to 10 not started.
+to 8 done, stages 9 and 10 not started.
 
 ## Where it stands
 
 | | Count | What it means |
 | --- | --- | --- |
-| Built and contract-tested | 14 of 15 routes and DDMS shapes | 1,457 delivery tests (SQL Server suites included) and 22 control-plane tests passed on 17 September. Every request a route sends is checked against its service's pinned OpenAPI contract. |
+| Built and contract-tested | 15 of 15 routes and DDMS shapes | 1,726 delivery tests (SQL Server suites included) and 22 control-plane tests passed on 17 September. Every request a route sends is checked against its service's pinned OpenAPI contract, and every ETP message against the pinned Avro protocol. |
 | Proven on a live OSDU | 4, all on the previous build | Azure Data Manager for Energy M26, partition `test`, runs up to 12 September ([../osdu/docs/osdu-testing.md](../osdu/docs/osdu-testing.md)): storage, file, manifest (inline), Wellbore DDMS well log bulk data. |
-| Not built | 1 | The Reservoir DDMS route `etp`. |
+| Not built | 0 | Every route and DDMS shape the coverage plan names is built. |
 
 **Nothing from the current build has run against a live OSDU yet.** Proving it live, route by route, is the largest
 step between here and production.
@@ -24,8 +24,8 @@ A live test must remove what it creates at a reversible scope and prove that eve
 `CLAUDE.md`). Where a route cannot, the last column says why, and that route needs a cleanup decision before its live
 test.
 
-Evidence: **L-prev** proven live on the previous build; **C** built and contract-tested only; **N** not built. No route
-is yet proven live on the current build.
+Evidence: **L-prev** proven live on the previous build; **C** built and contract-tested only. No route is yet proven
+live on the current build.
 
 | Route | What it delivers | Evidence | Removal and live cleanup |
 | --- | --- | --- | --- |
@@ -43,7 +43,7 @@ is yet proven live on the current build.
 | `fileAndDdms`, `manifestAndDdms` | Files or a manifest first, then each record's bulk data through its DDMS. | C | As their parts. |
 | EDS checks (storage, manifest, workflow) | Registry entries, data jobs and proxy datasets checked for what External Data Services needs; its run state kept. | C | As the route. Secrets a registry entry names cannot be checked. |
 | `dspdm` (osduDspdm) | Production DDMS business object rows, found again by a unique key before every save. | C | Hard delete only: DSPDM keeps no deleted rows. Relies on DSPDM's shipped update and time zone settings. |
-| `etp` (Reservoir DDMS) | RESQML data objects in dataspaces over ETP 1.2 (WebSocket, Avro). | N | Deleting a dataspace purges a Storage record, which the no-purge rule forbids. |
+| `etp` (Reservoir DDMS) | Energistics data objects in dataspaces over ETP 1.2 (WebSocket, Avro), with the arrays they name. | C | The object is deleted outright: the store keeps no deleted objects. A dataspace is never deleted, since the server purges its Storage record when it is, so a live test leaves its dataspace behind. |
 
 ## Workstreams
 
@@ -73,7 +73,10 @@ Done when every route above reads "proven live on the current build" and the tes
 
 Closes coverage plan stages 7 to 10.
 
-- [ ] **BLD-1** The `etp` route: an ETP 1.2 client over WebSocket with Avro messages, against a fake ETP server.
+- [x] **BLD-1** The `etp` route: an ETP 1.2 client over WebSocket with Avro messages, against a fake ETP server.
+  The messages and data types the route uses are C# records written from the pinned protocol and round-tripped against a
+  codec driven by that same file; the route writes Energistics objects into dataspaces inside one transaction each, with
+  the arrays they name.
 - [x] **BLD-2** Stage 8: records that wait for other records (a reference table and its migration, hold and release).
   What a record refers to is kept beside its document on the record; a claim leaves it waiting, charging nothing, and a
   delivery releases what waited for it. `target.verifyReferences: storage` checks the ids the ledger does not hold.
@@ -197,3 +200,5 @@ Each step protects the ones after it. Live runs happen only with an approved tes
 | 2026-09-17 | CI-1, CI-3, CI-4, OPS-4 | `a7a77ea` | CI runs every suite against its own SQL Server and fails on a warning; a test checks which schemas the migration scripts write; a schema race the chain fixtures had on a new database fixed; the stale pages describe the current build. |
 | 2026-09-17 | OPS-1a | `04b3e04` | The engine publishes settled tries per flow, route and outcome, and every HTTP call attempt, on the meter `SqlFlow.Delivery`; a retried attempt releases its connection before the backoff. |
 | 2026-09-17 | CI-2, CI-5a | `c10dee4` | CI runs the GUI end-to-end suite and builds the three images, starting the control plane and GUI images; the changelog covers the work since it was written. |
+| 2026-09-17 | BLD-2 | `2ea0806` | A record whose document refers to a record the ledger has not delivered is left waiting by the claim and goes out when that record lands; `target.verifyReferences: storage` checks the ids the ledger does not hold. Both CI jobs green. |
+| 2026-09-17 | BLD-1 | | The `etp` route: the module's own ETP 1.2 client (Avro codec from the pinned protocol, framing, session) and the route over it, against a fake ETP server on a real WebSocket. |

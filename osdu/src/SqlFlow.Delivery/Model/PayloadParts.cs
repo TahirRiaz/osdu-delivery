@@ -43,7 +43,7 @@ public static class PayloadParts
 
     /// <summary>True for the routes that send their payload in parts.</summary>
     public static bool Composed(DeliveryProtocol protocol)
-        => protocol is DeliveryProtocol.OsduFileAndDdms or DeliveryProtocol.OsduManifestAndDdms or DeliveryProtocol.OsduWorkflow;
+        => protocol is DeliveryProtocol.OsduFileAndDdms or DeliveryProtocol.OsduManifestAndDdms or DeliveryProtocol.OsduWorkflow or DeliveryProtocol.OsduEtp;
 
     /// <summary>
     /// The payload sets <paramref name="flow"/>'s route sends as parts, in the order it sends them, or null for a route
@@ -60,6 +60,21 @@ public static class PayloadParts
                 return [new PayloadPart(Files, Files), new PayloadPart(Bulk, Bulk)];
             case DeliveryProtocol.OsduManifestAndDdms:
                 return declaresFiles ? [new PayloadPart(Files, Files), new PayloadPart(Bulk, Bulk)] : [new PayloadPart(Bulk, Bulk)];
+            case DeliveryProtocol.OsduEtp:
+                // The object's XML and the values of its arrays, each optional: a mapping may render either into the
+                // document instead (osdu/specs/reservoir-ddms/INTEGRATION.md section 5).
+                var etp = new List<PayloadPart>();
+                if (declaresFiles)
+                {
+                    etp.Add(new PayloadPart(Files, Files, Optional: true));
+                }
+
+                if (flow.Source.Payloads.ContainsKey(Bulk))
+                {
+                    etp.Add(new PayloadPart(Bulk, Bulk, Optional: true));
+                }
+
+                return etp.Count > 0 ? etp : null;
             case DeliveryProtocol.OsduWorkflow:
                 var parts = new List<PayloadPart>();
                 if (declaresFiles)

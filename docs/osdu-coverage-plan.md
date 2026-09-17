@@ -221,7 +221,20 @@ records through Storage, taken into the service's database by its list call unti
 tables below them posted one per call with their keys fed down and recorded, found again after a failed try, replaced
 on redelivery, and never the service's own record write or purging delete), each against a fake of the service (and,
 for Seismic Store, of the three object stores, the S3 one checking every signature with the AWS SDK) with every request
-to an OSDU service checked against its pinned contract, and the ddms route split into one writer per shape. External
+to an OSDU service checked against its pinned contract, and the ddms route split into one writer per shape. The
+Reservoir DDMS is the route type `etp` (`osduEtp`): Energistics data objects in dataspaces of its own store, reached over
+ETP 1.2 on a WebSocket. The client is the module's own, built from the pinned protocol
+(`osdu/specs/reservoir-ddms/etp-1.2.avpr`): the 47 messages and 37 data types the route uses as C# records with an Avro
+binary codec, every one of them round-tripped in a test against a codec driven by that same file, so the checked-in
+records and the schema cannot drift apart. Over it sit the framing (one message per WebSocket message, gzip both ways,
+even ids, replies collected by correlation id until FIN, the per-item error shapes), the session (the upgrade with the
+subprotocol and the flow's headers and credentials, the negotiation, the keep-alive ping, the close) and the route: the
+object's identity read out of its own XML and checked before a session opens, the dataspace created only when it is
+missing with the record's own ACLs and legal tags (its OSDU record's id logged), one transaction per dataspace carrying
+a batch's objects and the arrays that fit, a large array declared and then filled slice by slice, a refused commit rolled
+back, a verify that lists the dataspace once, and a removal that deletes the object but never a dataspace, whose delete
+purges an OSDU record. It is tested against a fake ETP server built from the brief, over a real WebSocket on the loopback
+interface. External
 Data Services takes no pushed data, so it is served by the routes that exist: the records that configure it (registry
 entries, data jobs and proxy datasets) are checked when a plan renders them, with the flow's `target.eds` saying what the
 deployment needs, and held with every rule they break; a data job's run state, which EDS writes after every fetch, is
@@ -234,8 +247,8 @@ business objects, whose templates' kinds have the source `dspdm`, checked agains
 describes, found again by one of its unique constraints before they are saved, inserted and updated in one save with a
 refused save sent again row by row, a save whose answer was lost found again by the marker recorded before it, rows
 another system wrote held unless the flow takes them over, versions from the rows' change dates, and a delete that is for
-good; tested against a fake of DSPDM built from its code, every request checked against its contract. Not built: the
-Reservoir DDMS route type `etp`.
+good; tested against a fake of DSPDM built from its code, every request checked against its contract. Every service of
+the stage is built.
 
 ### Stage 8: records that wait for other records
 

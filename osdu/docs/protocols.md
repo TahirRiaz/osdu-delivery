@@ -15,12 +15,14 @@ code and parameterised by the flow, not an authorable step language.
 | `osduManifestAndDdms` | file, dataset, workflow, search, storage, the DDMS | The batch through the manifest, then each record's bulk data through its DDMS. | as `osduManifest` |
 | `osduWorkflow` | dataset, workflow, search, storage; Airflow's REST API when the flow names it | The record written, its inputs registered, up to four workflow runs in order, what they wrote found and read back. | one record per run |
 | `osduDspdm` | the Production DDMS core service (DSPDM) | A business object row, not an OSDU record: found again by its unique key, then inserted or updated under the primary key DSPDM gave it, and read back, verified and deleted by that key. | up to `batchSize` rows per save (at most 256) |
+| `osduEtp` | the Reservoir DDMS, over ETP 1.2 on a WebSocket | An Energistics data object in a dataspace, not an OSDU record: its XML and the arrays it names, written inside one transaction per dataspace and committed together. | `objectsPerMessage` objects per message (default 100) |
 
 A flow in the single form names its route with `target.protocol`, as a route type or as the protocol it maps onto.
 An interface of a source is given one by its route, which follows from what the interface declares
 ([documents.md](documents.md#routes)): `storage` is `osduRecord`, `file` is `osduFile`, `dataset` is `osduDataset`,
 `manifest` is `osduManifest`, `ddms` is `osduWellLog` (whose payload is the interface's `bulk`), `fileAndDdms` is
-`osduFileAndDdms`, `manifestAndDdms` is `osduManifestAndDdms`, `workflow` is `osduWorkflow`, and `dspdm` is `osduDspdm`.
+`osduFileAndDdms`, `manifestAndDdms` is `osduManifestAndDdms`, `workflow` is `osduWorkflow`, `dspdm` is `osduDspdm`, and
+`etp` is `osduEtp`.
 
 The core is protocol independent: identity, rendering, change detection, the ledger, idempotency and the
 preflight gate never change. A protocol implements the delivery, and the read-back, verify, probe and delete
@@ -746,6 +748,49 @@ and before a row is sent, is in [documents.md](documents.md#the-production-ddms-
 - Probe: `GET {root}/health`, which needs no token, then a read of `BUSINESS OBJECT`, which needs the token, a
   partition DSPDM serves and the entitlement to read.
 
+## `osduEtp`: the etp route
+
+The Reservoir DDMS keeps Energistics data objects in dataspaces of its own store, reached over ETP 1.2 on a WebSocket
+([../specs/reservoir-ddms/INTEGRATION.md](../specs/reservoir-ddms/INTEGRATION.md)). A record is one object, not an OSDU
+record: it has no OSDU id, no version and no soft delete
+([documents.md](documents.md#the-reservoir-ddms)).
+
+- Session: one per operation. The upgrade goes through the flow's own HTTP stack, so the address policy, the TLS setting
+  and the connect timeout are the ones its other calls use, and carries the flow's headers, its credentials resolved
+  afresh, and the subprotocol `etp12.energistics.org`. An endpoint that answers under any other subprotocol is not an ETP
+  endpoint and is refused. The session then negotiates: the protocols the route needs (Core, Discovery, Store, DataArray,
+  Transaction, Dataspace, DataspaceOSDU), `resqml20.` and `eml20.` data objects, gzip, and the message size, which
+  settles on whichever side allows less. A server that does not serve one of those protocols is named before any write.
+- Framing: one ETP message per WebSocket message, the Avro header then the body, gzipped above 256 bytes once both sides
+  offered it. Client message ids are even and rise; every reply is collected by its correlation id until the part
+  carrying FIN, merging the per-item errors of a multi-part reply. An idle session pings, so a transaction held open
+  while the engine reads or renders does not age out.
+- Before a session opens, each record is prepared: its dataspace path, its XML read and checked, its URI composed, and
+  its arrays declared and filled from the document or the record's bulk payload. A record that fails any of this is held,
+  and the rest of the batch goes on.
+- Write, per dataspace of the batch: `GetDataspaceInfo`, `PutDataspaces` when it is missing (outside any transaction,
+  with the record's own ACLs and legal tags), `StartTransaction`, `PutDataObjects` in messages under the negotiated size
+  (an object larger than a message goes alone with its XML in `Chunk` messages), `PutDataArrays` for the arrays that fit
+  and `PutUninitializedDataArrays` for those that do not, then `CommitTransaction`. Each declared array is then filled
+  with `PutDataSubarrays` in a transaction of its own, sliced along the first dimension that fits and into the next when
+  one of its steps is itself too large.
+- A transaction another session holds (`EMAX_TRANSACTIONS_EXCEEDED`) is waited for, six times, 400 ms growing to 2 s. A
+  commit the server refuses rolls the transaction back; a missing array, an orphan array or a dangling reference holds the
+  records, and anything else is retried.
+- Steps: `dataspace`, `transaction`, `objects`, `arrays`, `commit`, `fill`, `lock`.
+- Returned: `etp.uri`, `etp.dataspace`, `etp.objectType`, `etp.uuid`.
+- Verify: the dataspace's resources are listed once for the whole batch (`GetResources`, filtered to the types the batch
+  delivered) and matched by URI. The store's last write is the observed version: an object that is no longer there is
+  missing, and a later write than the delivery recorded is drift. The verify gives the protocol each record's target
+  state (`VerifiesWithTargetState`), since the store knows nothing of the ledger's ids.
+- Read back: `GetDataObjects` for the record's URI, laid out as `uri`, `name`, `storeLastWrite`, `storeCreated`,
+  `lastChanged` and the object's `xml`.
+- Remove: `everything` deletes the object (`DeleteDataObjects`); an object already gone is not an error. The `record` and
+  `history` scopes are refused, since the store keeps no deleted objects and no earlier versions. The route never deletes
+  a dataspace: the server purges the dataspace's OSDU record when it does.
+- Probe: a session is opened and closed, and reports the server's name and version, the session id, the message size the
+  session settled on and whether it compresses.
+
 ## Before a run: legal tags
 
 Every record a mapping renders carries the same legal tags, and storage refuses a record whose tag is unknown or
@@ -818,7 +863,8 @@ beside them. Anything else is kept as a bounded, single-line preview.
 ## Adding a protocol
 
 1. Add the enum value to `DeliveryProtocol` and, when the protocol streams a payload, to
-   `DeliveryProtocols.CarriesPayload`.
+   `DeliveryProtocols.CarriesPayload`; a protocol whose records are not OSDU storage records also goes into
+   `DeliveryProtocols.OutsideStorage`.
 2. Implement `IDeliveryProtocol` in `src/SqlFlow.Delivery/Engine/Protocols`, reusing `OsduHttpClient`,
    `RecordWriter` and `FileUploads`. Report every step that changes the target through
    `DeliveryWork.ReportStepAsync`, skip the steps `DeliveryWork.Completed` says an earlier try finished, and

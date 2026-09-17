@@ -56,6 +56,14 @@ public enum DeliveryProtocol
     /// deleted by that key (osdu/specs/production-dspdm/INTEGRATION.md).
     /// </summary>
     OsduDspdm,
+
+    /// <summary>
+    /// The etp route: Energistics data objects in a dataspace of the Reservoir DDMS, written over ETP 1.2 on a WebSocket
+    /// rather than through an OSDU service. Each record is one object, identified by the uuid and type its own XML
+    /// carries, delivered with the arrays it names inside one transaction per dataspace
+    /// (osdu/specs/reservoir-ddms/INTEGRATION.md).
+    /// </summary>
+    OsduEtp,
 }
 
 public static class DeliveryProtocols
@@ -63,6 +71,10 @@ public static class DeliveryProtocols
     /// <summary>Protocols that stream a payload alongside the record. The workflow route's run counts as its payload.</summary>
     public static bool CarriesPayload(DeliveryProtocol protocol)
         => protocol is not (DeliveryProtocol.OsduRecord or DeliveryProtocol.OsduDspdm);
+
+    /// <summary>Protocols whose records are not OSDU storage records, and so have no OSDU id, version or soft delete.</summary>
+    public static bool OutsideStorage(DeliveryProtocol protocol)
+        => protocol is DeliveryProtocol.OsduDspdm or DeliveryProtocol.OsduEtp;
 
     /// <summary>Protocols that reach a DDMS, and so read the flow's <c>target.ddms</c>.</summary>
     public static bool ReachesDdms(DeliveryProtocol protocol)

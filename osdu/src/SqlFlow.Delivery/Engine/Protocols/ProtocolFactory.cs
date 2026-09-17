@@ -42,6 +42,24 @@ public static class ProtocolFactory
                 flow.Target.Airflow is { } airflow ? new Workflows.AirflowXCom(http, airflow, secrets) : new Workflows.LatestInfoXCom(client),
                 ceiling),
             DeliveryProtocol.OsduDspdm => new OsduDspdmProtocol(client, options, flow.Target.Dspdm, loggers.CreateLogger<OsduDspdmProtocol>()),
+
+            // The etp route speaks ETP 1.2 on a WebSocket rather than HTTP, and opens it through the flow's own stack.
+            DeliveryProtocol.OsduEtp => new OsduEtpProtocol(
+                new Etp.EtpConnection(
+                    http,
+                    Etp.EtpConnection.WebSocketUri(client.Endpoint, flow.Target.Etp.Path),
+                    flow.Target.Auth,
+                    client.Headers,
+                    flow.Reliability.UrlAllowlist,
+                    new Etp.EtpSessionOptions
+                    {
+                        MaxMessageBytes = (int)Math.Min(flow.Target.Etp.MaxMessageBytes, int.MaxValue),
+                        RequestTimeout = TimeSpan.FromSeconds(flow.Reliability.TimeoutSeconds),
+                    },
+                    loggers.CreateLogger<Etp.EtpSession>()),
+                flow.Target.Etp,
+                client.Header("data-partition-id"),
+                loggers.CreateLogger<OsduEtpProtocol>()),
             _ => throw new FlowValidationException($"{flow.SourcePath ?? flow.Name}: target.protocol '{flow.Target.Protocol}' is not a known protocol."),
         };
     }

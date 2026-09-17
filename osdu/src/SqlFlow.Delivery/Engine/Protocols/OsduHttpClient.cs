@@ -39,6 +39,9 @@ public sealed class OsduHttpClient
     /// <summary>A header the flow declares on every request (data-partition-id), or null when it does not.</summary>
     public string? Header(string name) => _headers.TryGetValue(name, out var value) ? value : null;
 
+    /// <summary>Every header the flow declares, resolved. The etp route puts them on its WebSocket upgrade.</summary>
+    public IReadOnlyDictionary<string, string> Headers => _headers;
+
     public Uri Url(string pathTemplate, string? id = null, string? sessionId = null)
     {
         var path = pathTemplate

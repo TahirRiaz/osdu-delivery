@@ -68,9 +68,9 @@ target:
   headers:                         # extra headers on every request
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
     data-partition-id: dev         # required: every OSDU service rejects a request without it, so the loader insists on it; its cache is the one the mapping reads
-  # the route type: storage | file | dataset | manifest | ddms | fileAndDdms | manifestAndDdms | workflow | dspdm, or the protocol
-  # it maps onto: osduRecord | osduFile | osduDataset | osduManifest | osduWellLog | osduFileAndDdms | osduManifestAndDdms |
-  # osduWorkflow | osduDspdm
+  # the route type: storage | file | dataset | manifest | ddms | fileAndDdms | manifestAndDdms | workflow | dspdm | etp,
+  # or the protocol it maps onto: osduRecord | osduFile | osduDataset | osduManifest | osduWellLog | osduFileAndDdms |
+  # osduManifestAndDdms | osduWorkflow | osduDspdm | osduEtp
   protocol: ddms
   ddms:                            # ddms: DDMSs the records go to by entity type, before the Wellbore DDMS under ddmsRoot (see "The DDMSs a flow delivers to")
     wellbore: { root: /api/os-wellbore-ddms }
@@ -90,6 +90,13 @@ target:
     existingRows: hold             # a row that holds a record's key and that the record did not write: hold (default) | update
     businessObjects:               # by the entity type a kind names; a kind not listed is the business object named like its entity
       well_test: { name: WELL TEST, key: [UWI, TEST_NUM] }
+  etp:                             # etp: the Reservoir DDMS the Energistics objects go to (see "The Reservoir DDMS")
+    path: /api/reservoir-ddms-etp/v2/  # where its ETP WebSocket answers under the endpoint
+    dataspace: volve/study         # the dataspace a record goes into when its document names none
+    objectsPerMessage: 100         # objects per message, which is also the batch the route is handed
+    maxMessageBytes: 16000000      # the largest message this side offers; the server narrows it to its own maximum
+    maxArrayBytes: 268435456       # the most bytes of one array a delivery reads into memory
+    lock: false                    # leave the dataspace read-only between deliveries, unlocking it to write
   protocolOptions:
     payload: curves                # which source.payloads entry the protocol streams
     # ddms: every path defaults to the collection serving the record's entity type (/ddms/v3/welllogs for a WellLog);
@@ -511,6 +518,77 @@ them from the version OSDU holds, and a version whose only changes are in them i
 ([protocols.md](protocols.md#osdurecord)). A job is stopped by delivering it with `ActiveIndicator: false`, not by removing
 it.
 
+### The Reservoir DDMS
+
+The Reservoir DDMS keeps RESQML, WITSML and PRODML content as Energistics data objects in dataspaces of its own store,
+reached over ETP 1.2 on a WebSocket rather than through an OSDU service
+([../specs/reservoir-ddms/INTEGRATION.md](../specs/reservoir-ddms/INTEGRATION.md)). The `etp` route writes those objects.
+
+- A mapping of objects fills a template whose kind has the source `etp`: `{authority}:etp:{type}:{version}`
+  (`energistics:etp:obj_Grid2dRepresentation:2.0.1`). The route and the kind go together: the etp route writes only kinds
+  with the source `etp`, and no other route writes them.
+- **The object is its XML.** A record carries it as its `files` payload (one file), or its mapping renders it into
+  `data.Xml`. The store reads the object's identity out of that XML and nothing else, so the route checks it before it
+  opens a session: a root `uuid` and `schemaVersion`, a `Citation` directly under the root, a namespace and version the
+  store files (RESQML 2.0 and 2.2, EML 2.0 and 2.3, WITSML 2.1, PRODML 2.2), and, for the markup languages whose
+  references name their target by content type, the `obj_` spelling those references resolve against. The record's target
+  state keeps the URI the object landed at (`etp.uri`), its dataspace, its type and its uuid.
+- **The dataspace** is the record's `data.Dataspace`, or the flow's `target.etp.dataspace`. It is created only when it is
+  missing, outside any transaction, carrying the record's own ACLs and legal tags, which is what the server registers its
+  `dataset--ETPDataspace` record with; that record's id is logged when the dataspace is created. The route never deletes a
+  dataspace, because the server purges that OSDU record when it does.
+- **The arrays** an object names in its XML (`PathInHdfFile`, `PathInExternalFile`) are declared under `data.Arrays`, each
+  with the path the XML names, its transport type, its shape, and its values: inline (`Values`) or a column of the
+  record's `bulk` payload (`Column`). An array the XML names and the document does not declare, or the other way round,
+  holds the record before anything is sent, because the store refuses the commit of either.
+- **One transaction per dataspace** carries a whole batch: the objects, then the arrays that fit a message. An array too
+  large for one message is declared in that transaction and filled slice by slice afterwards, each fill its own
+  transaction. A commit the store refuses rolls the transaction back and holds the batch with the reason it gave.
+
+```yaml
+target:
+  endpoint: https://osdu.example.com
+  headers: { data-partition-id: opendes }
+  protocol: etp
+  etp:
+    dataspace: volve/study
+    objectsPerMessage: 100
+```
+
+```json
+{
+  "kind": "energistics:etp:obj_Grid2dRepresentation:2.0.1",
+  "acl": { "viewers": ["data.default.viewers@opendes.example.com"], "owners": ["data.default.owners@opendes.example.com"] },
+  "legal": { "legaltags": ["opendes-public-usa-dataset-1"], "otherRelevantDataCountries": ["US"], "status": "compliant" },
+  "data": {
+    "Dataspace": "volve/study",
+    "Arrays": [
+      { "Path": "RESQML/points", "Type": "arrayOfDouble", "Dimensions": [1000, 3], "Column": "points" }
+    ]
+  }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `path` | Where the ETP WebSocket answers under the endpoint. Default `/api/reservoir-ddms-etp/v2/`, where an OSDU deployment serves it. |
+| `dataspace` | The dataspace a record goes into when its document names none. At least three characters of letters, digits and `_ - . /`; two levels (`project/study`) are recommended. |
+| `objectsPerMessage` | Objects per message, which is also the batch the worker hands the route. Default 100, as the Reservoir DDMS's own REST gateway sends. |
+| `maxMessageBytes` | The largest message this side offers to send or accept. The session settles on whichever side allows less. Default 16,000,000, the server's own default. |
+| `maxArrayBytes` | The most bytes of one array a delivery reads into memory before it holds the record instead. Default 268,435,456. |
+| `lock` | Whether a delivery leaves the dataspace locked, which makes it read-only until the next delivery unlocks it. Off by default: a locked dataspace refuses every write, including this flow's next one. |
+
+An array's values come from one place: `Values` in the document, or `Column` of the `bulk` payload, never both. A
+column's parquet values are converted to the declared transport type, and a column whose values that type does not take
+holds the record. `Type` is one of `arrayOfBoolean`, `arrayOfInt`, `arrayOfLong`, `arrayOfFloat`, `arrayOfDouble` and
+`bytes`; `arrayOfString` is written but never read back by the store, so the route does not send one. `Uri` names the
+object an array hangs under when it is not the record's own object (a RESQML 2.0.1 array hangs under the
+`EpcExternalPartReference` its representation names).
+
+A record on this route has no OSDU version: the store keeps only an object's latest content. A verify lists the
+dataspace's resources and compares the store's last write with the one the delivery recorded, and a removal deletes the
+object outright (the everything scope); the record and history scopes are refused, as they are for DSPDM rows.
+
 ### The Production DDMS core service
 
 The Production DDMS core service (DSPDM) keeps production data as rows of business objects in its own database, not as
@@ -698,13 +776,16 @@ What an interface's records carry decides how they are delivered:
 | `route: manifest` and `bulk`, with or without `files` | `manifestAndDdms` | goes through the ingestion workflow in manifests, its files registered first, then its bulk data through its DDMS (`osduManifestAndDdms`). |
 | `workflow` | `workflow` | is written first, its inputs registered, then the workflow runs in stages and what it wrote is read back (`osduWorkflow`). |
 | `route: dspdm` | `dspdm` | is a row of a Production DDMS business object: found again by its unique key, then saved through DSPDM (`osduDspdm`, [The Production DDMS core service](#the-production-ddms-core-service)). |
+| `route: etp`, with or without `files` and `bulk` | `etp` | is an Energistics object in a dataspace of the Reservoir DDMS, written over ETP 1.2 on a WebSocket with the arrays it names (`osduEtp`, [The Reservoir DDMS](#the-reservoir-ddms)). |
 
 `route:` names a route outright. A named route and a part only another route sends make the two routes' composition:
 `file` with `bulk` and `ddms` with `files` are `fileAndDdms`, and `manifest` with `bulk` is `manifestAndDdms`. A route
 that cannot deliver what the interface declares is refused when the document loads: `storage` with `files` or `bulk`,
 `file` or `dataset` without `files`, `dataset` or `workflow` with `bulk`, `dspdm` with `files` or `bulk`, a `workflow`
 block on any other route, and a composed route without both of its parts. A source's `target.dspdm` goes to its `dspdm`
-interfaces, and is refused when no interface takes that route.
+interfaces, and its `target.etp` to its `etp` interfaces; each is refused when no interface takes that route. An `etp`
+interface may declare `files` (the object's XML), `bulk` (the values of its arrays), both or neither, since a mapping
+can render either into the document instead.
 
 A `ddms` interface needs to know where its DDMS is: a DDMS under `target.ddms`, `ddmsRoot` under the source's or its
 own `protocolOptions`, or paths of its own (`recordPath` and the rest). Its records go to the collection serving their

@@ -433,8 +433,33 @@ internal sealed class FlowTargetYaml
     /// <summary>The Production DDMS core service the dspdm route writes business object rows to.</summary>
     public DspdmYaml? Dspdm { get; set; }
 
+    /// <summary>The Reservoir DDMS the etp route writes Energistics objects to.</summary>
+    public EtpYaml? Etp { get; set; }
+
     /// <summary>What a record's references are checked against before it is sent: none (the ledger alone) or storage.</summary>
     public string? VerifyReferences { get; set; }
+}
+
+/// <summary>The Reservoir DDMS behind the target (<c>target.etp</c>).</summary>
+internal sealed class EtpYaml
+{
+    /// <summary>Where the ETP WebSocket answers under the endpoint; the OSDU deployment's path by default.</summary>
+    public string? Path { get; set; }
+
+    /// <summary>The dataspace records go into when their document names none (<c>project/study</c>).</summary>
+    public string? Dataspace { get; set; }
+
+    /// <summary>Objects per message, which is also the batch the worker hands the route. Default 100.</summary>
+    public int? ObjectsPerMessage { get; set; }
+
+    /// <summary>The largest message this side sends or accepts, before the server's own maximum narrows it.</summary>
+    public long? MaxMessageBytes { get; set; }
+
+    /// <summary>The most bytes of one array a delivery reads into memory. Default 256 MiB.</summary>
+    public long? MaxArrayBytes { get; set; }
+
+    /// <summary>Whether a delivery leaves the dataspace locked, unlocking it before it writes. Default false.</summary>
+    public bool? Lock { get; set; }
 }
 
 /// <summary>The Production DDMS core service behind the target (<c>target.dspdm</c>).</summary>

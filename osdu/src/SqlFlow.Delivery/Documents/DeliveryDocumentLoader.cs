@@ -402,6 +402,7 @@ internal static partial class FlowMapper
                 Airflow = MapAirflow(target.Airflow, source),
                 Eds = MapEds(target.Eds, source),
                 Dspdm = MapDspdm(target.Dspdm, protocol, source),
+                Etp = MapEtp(target.Etp, protocol, source),
                 VerifyReferences = MapVerifyReferences(target.VerifyReferences, protocol, source),
             },
             Reliability = MapReliability(y.Reliability, source, paths),
@@ -636,6 +637,9 @@ internal static partial class FlowMapper
                 // The DSPDM the source declares is where its dspdm interfaces go; the other interfaces have no use for it.
                 Dspdm = route.Protocol == DeliveryProtocol.OsduDspdm ? target.Dspdm : null,
 
+                // The Reservoir DDMS the source declares is where its etp interfaces go.
+                Etp = route.Protocol == DeliveryProtocol.OsduEtp ? target.Etp : null,
+
                 // A DSPDM row refers to no storage record, so a dspdm interface has nothing for the storage check to read.
                 VerifyReferences = route.Protocol == DeliveryProtocol.OsduDspdm ? null : target.VerifyReferences,
             },
@@ -830,6 +834,7 @@ internal static partial class FlowMapper
         ManifestAndDdms,
         Workflow,
         Dspdm,
+        Etp,
     }
 
     /// <summary>The protocol that delivers a route type.</summary>
@@ -844,6 +849,7 @@ internal static partial class FlowMapper
         InterfaceRouteName.ManifestAndDdms => DeliveryProtocol.OsduManifestAndDdms,
         InterfaceRouteName.Workflow => DeliveryProtocol.OsduWorkflow,
         InterfaceRouteName.Dspdm => DeliveryProtocol.OsduDspdm,
+        InterfaceRouteName.Etp => DeliveryProtocol.OsduEtp,
         _ => throw new ArgumentOutOfRangeException(nameof(route), route, "not a route type"),
     };
 
@@ -2276,6 +2282,65 @@ internal static partial class FlowMapper
     /// section 7). Whether each business object exists, and which unique constraint its key is, is DSPDM's metadata, which
     /// the run's preflight reads.
     /// </summary>
+    /// <summary>
+    /// The Reservoir DDMS block (<c>target.etp</c>): where its ETP WebSocket answers under the endpoint, the dataspace
+    /// its records go into, and the sizes one delivery works under (osdu/specs/reservoir-ddms/INTEGRATION.md sections
+    /// 1.1, 4.3 and 8.6).
+    /// </summary>
+    private static EtpTarget MapEtp(EtpYaml? declared, DeliveryProtocol protocol, string source)
+    {
+        if (declared is null)
+        {
+            return new EtpTarget();
+        }
+
+        if (protocol != DeliveryProtocol.OsduEtp)
+        {
+            throw new FlowValidationException(
+                $"{source}: target.etp declares the Reservoir DDMS the etp route writes Energistics objects to, and this flow's route is {Engine.RouteChecks.Name(protocol)}. Remove target.etp.");
+        }
+
+        var target = new EtpTarget
+        {
+            Path = string.IsNullOrWhiteSpace(declared.Path) ? EtpTarget.DefaultPath : declared.Path.Trim(),
+            Dataspace = string.IsNullOrWhiteSpace(declared.Dataspace) ? null : declared.Dataspace.Trim(),
+            ObjectsPerMessage = declared.ObjectsPerMessage ?? EtpTarget.DefaultObjectsPerMessage,
+            MaxMessageBytes = declared.MaxMessageBytes ?? EtpTarget.DefaultMaxMessageBytes,
+            MaxArrayBytes = declared.MaxArrayBytes ?? EtpTarget.DefaultMaxArrayBytes,
+            Lock = declared.Lock ?? false,
+        };
+
+        if (target.Dataspace is { } dataspace)
+        {
+            try
+            {
+                Engine.Protocols.Etp.EtpObjectXml.CheckPath(dataspace);
+            }
+            catch (RecordHeldException ex)
+            {
+                throw new FlowValidationException($"{source}: target.etp.dataspace '{dataspace}' is not a dataspace path: {ex.Message}");
+            }
+        }
+
+        if (target.ObjectsPerMessage is < 1 or > 10_000)
+        {
+            throw new FlowValidationException($"{source}: target.etp.objectsPerMessage is {target.ObjectsPerMessage}; it is between 1 and 10000 objects.");
+        }
+
+        if (target.MaxMessageBytes is < 64_000 or > 2_000_000_000)
+        {
+            throw new FlowValidationException(
+                $"{source}: target.etp.maxMessageBytes is {target.MaxMessageBytes}; it is between 64000 and 2000000000 bytes, and the server narrows it to its own maximum.");
+        }
+
+        if (target.MaxArrayBytes < 1024)
+        {
+            throw new FlowValidationException($"{source}: target.etp.maxArrayBytes is {target.MaxArrayBytes}; it is at least 1024 bytes.");
+        }
+
+        return target;
+    }
+
     private static DspdmTarget MapDspdm(DspdmYaml? declared, DeliveryProtocol protocol, string source)
     {
         if (declared is null)

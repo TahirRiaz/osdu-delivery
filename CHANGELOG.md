@@ -61,6 +61,14 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   from the ledger.
 - Delivery metrics on the meter `SqlFlow.Delivery`: settled tries per flow, route and outcome, and every HTTP call
   attempt with its result, duration and retries (`osdu/docs/operations.md`).
+- The `etp` route, which writes Energistics data objects into dataspaces of the Reservoir DDMS over ETP 1.2 on a
+  WebSocket instead of through an OSDU service (`osdu/docs/documents.md`, `osdu/docs/protocols.md`). The client is the
+  module's own: the messages and data types it uses are C# records written from the pinned protocol, and a test
+  round-trips every one of them against a codec driven by that same file. An object's identity is read out of its own
+  XML and checked before a session opens, a dataspace is created only when it is missing and with the record's own ACLs
+  and legal tags, a batch's objects and arrays go inside one transaction per dataspace, an array too large for a message
+  is declared and then filled slice by slice, and a refused commit is rolled back. No dataspace is ever deleted, because
+  the server purges its OSDU record when one is.
 - Records that wait for records: a record whose document refers to a record the ledger holds and has not delivered is
   left waiting by the claim, which charges nothing, and goes out when that record lands. Waits are decided under one
   lock of the ledger and never lead back to the record deciding, so two records never wait for each other; an operator

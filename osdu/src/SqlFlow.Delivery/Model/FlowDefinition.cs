@@ -416,6 +416,13 @@ public sealed record FlowTarget
     public DspdmTarget Dspdm { get; init; } = new();
 
     /// <summary>
+    /// The Reservoir DDMS behind the target (<c>target.etp</c>): where its ETP WebSocket answers, the dataspace its
+    /// records go into, and what bounds one message. Without the block every default applies, and each record names its
+    /// own dataspace.
+    /// </summary>
+    public EtpTarget Etp { get; init; } = new();
+
+    /// <summary>
     /// What a record's references are checked against before it is sent (<c>target.verifyReferences</c>,
     /// docs/interfaces-design.md section 7).
     /// </summary>

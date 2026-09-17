@@ -27,6 +27,7 @@ public static class RouteChecks
         DeliveryProtocol.OsduManifestAndDdms => "manifestAndDdms",
         DeliveryProtocol.OsduWorkflow => "workflow",
         DeliveryProtocol.OsduDspdm => "dspdm",
+        DeliveryProtocol.OsduEtp => "etp",
         _ => throw new ArgumentOutOfRangeException(nameof(protocol), protocol, "not a delivery protocol"),
     };
 
@@ -55,6 +56,17 @@ public static class RouteChecks
                   + $"Deliver it by the dspdm route ({keys.Shared("route")}: dspdm)."
                 : $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, an OSDU record, and the dspdm route writes rows of DSPDM business objects, whose templates' kinds have the source '{DspdmKinds.Source}' "
                   + "(osdu/specs/production-dspdm/INTEGRATION.md section 2).");
+        }
+
+        // An Energistics object is no OSDU record either: the etp route writes objects alone, and no other route writes them.
+        var energistics = EtpKinds.Is(kind);
+        if (energistics != (flow.Target.Protocol == DeliveryProtocol.OsduEtp))
+        {
+            throw new DeliveryException(energistics
+                ? $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, an Energistics object (its template's source is '{EtpKinds.Source}'), which only the etp route writes. "
+                  + $"Deliver it by the etp route ({keys.Shared("route")}: etp)."
+                : $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, an OSDU record, and the etp route writes Energistics objects into a dataspace of the Reservoir DDMS, whose templates' kinds have the source "
+                  + $"'{EtpKinds.Source}' (osdu/specs/reservoir-ddms/INTEGRATION.md section 5.1).");
         }
 
         var dataset = Protocols.DatasetService.IsDatasetType(entityType);

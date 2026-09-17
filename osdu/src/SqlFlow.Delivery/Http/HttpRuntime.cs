@@ -44,6 +44,13 @@ public sealed class HttpRuntime : IDisposable
     /// <summary>The addresses this stack reaches.</summary>
     public NetworkPolicy Network { get; }
 
+    /// <summary>
+    /// The invoker every request of this flow goes through. The ETP route's WebSocket upgrade is sent with it, so a
+    /// <c>wss</c> connection opens under exactly the same address policy, TLS setting and connect timeout as the
+    /// flow's HTTP calls, rather than under a second stack of its own.
+    /// </summary>
+    public HttpMessageInvoker Invoker => _client;
+
     public HttpExecutor Data { get; }
 
     public HttpExecutor Auth { get; }
