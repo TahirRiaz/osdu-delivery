@@ -60,6 +60,13 @@ interfaces:
       object: OsduSample.ing.Wellbore
       key: [facility_name]
       primaryKey: RecId
+    # The mapping repeats the alternative names of a wellbore, which are rows of their own table.
+    datasets:
+      aliases:
+        object: OsduSample.ing.WellboreAlias
+        join:
+          facility_name: facility_name
+        orderBy: [alias_name]
     mapping: Wellbore@1.0.0
 
   # The logs, which refer to the wellbores above; `after` says so outright, and their mapping's reference says it again.
@@ -68,6 +75,14 @@ interfaces:
       object: OsduSample.ing.WellLog
       key: [source_project, log_id]
       primaryKey: RecId
+    # The mapping repeats the curves of a log, which are rows of their own table.
+    datasets:
+      curves:
+        object: OsduSample.ing.WellLogCurve
+        join:
+          source_project: source_project
+          log_id: log_id
+        orderBy: [curve_ordinal]
     mapping: WellLog@1.4.0
     after: [wellbores]
 

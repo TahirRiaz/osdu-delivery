@@ -106,8 +106,9 @@ public sealed class LineageTests : IDisposable
         Assert.Empty(lineage.Warnings);
         Assert.Equal(
             [
-                "OsduSample.ing.Wellbore", "OsduSample.ing.WellLog", "OsduSample.ing.WellboreTrajectory",
-                "OsduSample.ing.WellboreTrajectoryStation", "OsduSample.ing.Document",
+                "OsduSample.ing.Wellbore", "OsduSample.ing.WellboreAlias", "OsduSample.ing.WellLog",
+                "OsduSample.ing.WellLogCurve", "OsduSample.ing.WellboreTrajectory", "OsduSample.ing.WellboreTrajectoryStation",
+                "OsduSample.ing.Document",
             ],
             lineage.Objects.Select(o => $"{o.Database}.{o.Schema}.{o.Name}").ToList());
         Assert.All(lineage.Objects, o => Assert.Equal(LineageRelation.Reads, o.Relation));
