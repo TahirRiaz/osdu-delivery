@@ -25,7 +25,7 @@ public static class InterfaceStates
 /// <param name="Interface">The interface's name.</param>
 /// <param name="FlowId">Its ledger identity.</param>
 /// <param name="Ledger">The name its ledger identity is derived from.</param>
-/// <param name="Route">The route it is delivered by (storage, file, manifest, ddms).</param>
+/// <param name="Route">The route it is delivered by (storage, file, dataset, manifest, ddms, fileAndDdms, manifestAndDdms, workflow).</param>
 /// <param name="RouteReason">Why it goes by that route.</param>
 /// <param name="WaitsFor">The interfaces of this run it waited for.</param>
 /// <param name="WaitReasons">Why it waited for each of them: the <c>after:</c> that names it, or the references its mapping fills.</param>

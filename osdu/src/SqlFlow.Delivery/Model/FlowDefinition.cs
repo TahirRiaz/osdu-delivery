@@ -393,6 +393,15 @@ public sealed record FlowTarget
     /// (the engine's <c>DdmsRouting</c>).
     /// </summary>
     public IReadOnlyList<DdmsService> Ddms { get; init; } = [];
+
+    /// <summary>How the workflow route delivers the interface (<c>workflow:</c>); null for every other route.</summary>
+    public WorkflowRoute? Workflow { get; init; }
+
+    /// <summary>
+    /// The Airflow instance behind the target's Workflow service (<c>target.airflow</c>), for the workflow outputs only
+    /// Airflow's REST API returns; null when the flow reads none.
+    /// </summary>
+    public AirflowAccess? Airflow { get; init; }
 }
 
 public enum TargetAuthType
@@ -503,6 +512,24 @@ public sealed record ProtocolOptions
 
     /// <summary>Media type of the payload chunks.</summary>
     public string PayloadContentType { get; init; } = "application/x-parquet";
+
+    /// <summary>
+    /// The media type a record's files are uploaded with, to the file service's landing zone or the dataset service's
+    /// staging area. Null takes <see cref="PayloadContentType"/> on a route whose payload is its files (file, manifest,
+    /// dataset, workflow), and <see cref="DefaultFilesContentType"/> on a route that also sends bulk data (fileAndDdms,
+    /// manifestAndDdms), whose payload content type is the bulk data's.
+    /// </summary>
+    public string? FilesContentType { get; init; }
+
+    /// <summary>The type a route that also sends bulk data uploads its files as, when the flow names none for them.</summary>
+    public const string DefaultFilesContentType = "application/octet-stream";
+
+    /// <summary>
+    /// These options as an upload of a record's files reads them: <see cref="PayloadContentType"/> is the type the files
+    /// go as (<see cref="FilesContentType"/>). <paramref name="besideBulk"/> says the route also sends bulk data.
+    /// </summary>
+    public ProtocolOptions ForFiles(bool besideBulk)
+        => this with { PayloadContentType = FilesContentType ?? (besideBulk ? DefaultFilesContentType : PayloadContentType) };
 
     /// <summary>The JSON path in the write response holding id:version strings.</summary>
     public string VersionPath { get; init; } = "recordIdVersions[0]";
@@ -644,8 +671,53 @@ public sealed record ProtocolOptions
     /// </summary>
     public string? RegisterPath { get; init; }
 
+    /// <summary>Dataset service: the path that hands out a storage location for a dataset kind (openapi dataset v1, POST storageInstructions).</summary>
+    public string? DatasetInstructionsPath { get; init; }
+
+    /// <summary>Dataset service: the path that registers datasets (openapi dataset v1, PUT registerDataset).</summary>
+    public string? DatasetRegisterPath { get; init; }
+
+    /// <summary>Dataset service: the path that answers where registered datasets can be read (openapi dataset v1, POST retrievalInstructions).</summary>
+    public string? DatasetRetrievalPath { get; init; }
+
+    /// <summary>Dataset service: the reversible removal of a dataset record; {id} is its id (openapi dataset v1, POST metadataRecord/{id}/softDelete).</summary>
+    public string? DatasetSoftDeletePath { get; init; }
+
+    /// <summary>Manifest protocol: when a manifest goes to the ingestion workflow by reference rather than inline.</summary>
+    public ManifestReference ManifestByReference { get; init; } = ManifestReference.Never;
+
+    /// <summary>
+    /// Manifest protocol: the size of a trigger request, in kilobytes, above which <see cref="ManifestReference.Auto"/>
+    /// sends the manifest by reference. Default 12000, the limit External Data Services applies
+    /// (osdu/specs/workflows/INTEGRATION.md section 3.3).
+    /// </summary>
+    public int ManifestInlineLimitKb { get; init; } = DefaultManifestInlineLimitKb;
+
+    public const int DefaultManifestInlineLimitKb = 12_000;
+
+    /// <summary>Manifest protocol: the workflow a manifest by reference is handed to. Default Osdu_ingest_by_reference.</summary>
+    public string ByReferenceWorkflowName { get; init; } = DefaultByReferenceWorkflowName;
+
+    public const string DefaultByReferenceWorkflowName = "Osdu_ingest_by_reference";
+
+    /// <summary>Manifest and workflow protocols: the path that reads a workflow by name; {workflow} is its name (openapi workflow v1, GET workflow/{workflow_name}).</summary>
+    public string? WorkflowPath { get; init; }
+
     /// <summary>The sections of an osdu:wks:Manifest:1.0.0 a record can be placed in.</summary>
     public static readonly IReadOnlyList<string> ManifestSections = ["ReferenceData", "MasterData", "WorkProduct", "WorkProductComponents", "Datasets"];
+}
+
+/// <summary>When the manifest route hands a manifest to the ingestion workflow by reference (osdu/specs/workflows/INTEGRATION.md section 3.3).</summary>
+public enum ManifestReference
+{
+    /// <summary>Every manifest goes inline, in the trigger request.</summary>
+    Never,
+
+    /// <summary>Every manifest is stored as a dataset and handed over by its id.</summary>
+    Always,
+
+    /// <summary>A manifest whose trigger request is above the inline limit goes by reference when the target has the workflow, and is split otherwise.</summary>
+    Auto,
 }
 
 public sealed record FlowReliability

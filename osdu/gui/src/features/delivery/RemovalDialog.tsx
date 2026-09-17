@@ -60,8 +60,11 @@ interface ScopeChoice {
   confirmLabel: string;
 }
 
-/** The ddms route removes a record with a DDMS DELETE; the storage service takes a POST to its :delete path. */
-const DDMS_PROTOCOL = "OsduWellLog";
+/**
+ * The routes that reach a DDMS remove a record with a DDMS DELETE; the storage service takes a POST to its :delete path,
+ * and so does the dataset service's reversible removal.
+ */
+const DDMS_PROTOCOLS: ReadonlySet<string> = new Set(["OsduWellLog", "OsduFileAndDdms", "OsduManifestAndDdms"]);
 
 const SCOPES: ScopeChoice[] = [
   {
@@ -71,7 +74,7 @@ const SCOPES: ScopeChoice[] = [
     ledger: "Marked deleted here and blocked from redelivery until its source changes or it is released.",
     reversible: true,
     path: (target) => target.recordPath,
-    method: (target) => (target.protocol === DDMS_PROTOCOL ? "DELETE" : "POST"),
+    method: (target) => (DDMS_PROTOCOLS.has(target.protocol) ? "DELETE" : "POST"),
     confirmLabel: "Remove from OSDU",
   },
   {

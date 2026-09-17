@@ -33,7 +33,11 @@ document declaring an unknown `flowType` fails naming the kinds the host knows.
 - `name`, `source`, `render`, `render.mapping`, `target`, `target.endpoint` and `target.protocol` are required.
 - `render.mapping` is pinned as `Name@version`; a floating reference is refused, so a run can never silently pick
   up a changed mapping.
-- `target.protocol` is one this version implements: `osduRecord`, `osduWellLog`, `osduFile`, `osduManifest`.
+- `target.protocol` is a route type this version implements (`storage`, `file`, `dataset`, `manifest`, `ddms`,
+  `fileAndDdms`, `manifestAndDdms`, `workflow`) or the protocol it maps onto (`osduRecord`, `osduFile`, `osduDataset`,
+  `osduManifest`, `osduWellLog`, `osduFileAndDdms`, `osduManifestAndDdms`, `osduWorkflow`); the workflow route needs
+  `target.workflow`, and its templates and contexts are checked against the workflows' contracts.
+- `protocolOptions.payloadContentType` and `filesContentType` are media types.
 - `target.auth` is complete for its kind: `oauth2ClientCredentials` needs a `token` block; `bearer`,
   `apiKeyHeader` and `basic` need `secretRef`; `apiKeyHeader` needs `headerName`.
 - Every `{token}` in a value that takes parameter substitution is declared under `parameters`.

@@ -28,7 +28,7 @@ public sealed class OsduFileProtocol : IDeliveryProtocol
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(options);
         _client = client;
-        _options = options;
+        _options = options.ForFiles(besideBulk: false);
         _requestBodyCeiling = requestBodyCeiling;
         _time = time ?? TimeProvider.System;
         _records = new OsduRecordProtocol(client, options, _time);

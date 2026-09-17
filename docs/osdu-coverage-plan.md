@@ -24,9 +24,10 @@ and the order it is built in.
 | --- | --- | --- | --- |
 | Storage records (every kind) | storage v2 | `osduRecord` | none for plain records |
 | File datasets (File service) | file v2 | `osduFile` | none for single files |
-| Dataset service (registry, storage instructions, file collections) | dataset v1 | no | route type `datasetCollection` |
-| Manifest ingestion (`Osdu_ingest`) | workflow v1 | `osduManifest` | manifest by reference for large batches |
-| Other ingestion workflows (CSV parser, Energistics parsers, SEG-Y to VDS, ZGY, MDIO, PDMS CSV) | workflow v1 + DAG sources | no | route type `workflow` |
+| Dataset service (registry, storage instructions, file collections) | dataset v1 | `dataset` (stage 6): single files and file collections, uploaded as Azure, MinIO, S3 and Google Cloud Storage take them | IBM collections: the location names no endpoint for its credentials, so the record is held |
+| Manifest ingestion (`Osdu_ingest`) | workflow v1 | `osduManifest`, by reference when the flow asks or a manifest is above the inline limit (stage 6) | none |
+| Other ingestion workflows (CSV parser, Energistics parsers, SEG-Y to VDS, ZGY, MDIO, External Data Services) | workflow v1 + DAG sources | `workflow` (stage 6): every deliverable workflow the workflows and EDS briefs describe | none |
+| Files and bulk data of one record | file v2, dataset v1, workflow v1, `osdu/specs/wellbore-ddms` | `fileAndDdms` and `manifestAndDdms` (stage 6) | none |
 | Wellbore DDMS, bulk kinds (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) | `osdu/specs/wellbore-ddms` | every bulk collection (`ddms`, stage 5) | none |
 | Wellbore DDMS, record kinds (Well, Wellbore, WellboreMarkerSet, WellboreIntervalSet, WellLogAcquisition) | `osdu/specs/wellbore-ddms` | every record collection (`ddms`, stage 5) | none |
 | Seismic DDMS (Seismic Store) | `osdu/specs/seismic-ddms` | no | route type `seismicStore` |
@@ -48,7 +49,7 @@ And the engine itself:
 | Order between kinds | lineage between separate flows | order between interfaces from schema relationships, cycles, `after:` |
 | Run | one flow | one source: preflight, waves, stop rules, one outcome |
 | Record dependencies | none | a record waits for the record it refers to, and is released when it lands |
-| Partial redelivery | record, files, bulk, metadata, payload, all, per route (stage 5) | none |
+| Partial redelivery | record, files, bulk, metadata, payload, all, per route (stage 5); each part of a composed or workflow route, the workflow run included (stage 6) | none |
 | Catalog lookup of a ledger identity | pipeline name hash | an indexed read model of sources and interfaces |
 | Views | a flow's records and runs | sources, interfaces, filters and roll-ups in the GUI, API and CLI |
 
@@ -158,7 +159,7 @@ cannot carry an entity type with its group, so discovery reads a registration th
 
 ### Stage 6: datasets and workflows
 
-- `datasetCollection` through the Dataset service.
+- The `dataset` route through the Dataset service: single files and file collections, on every provider's staging area.
 - The composed routes: files with DDMS bulk data; manifests followed by DDMS bulk data.
 - Manifest by reference.
 - The generic `workflow` route: files uploaded and registered, a named workflow triggered with a payload built from
@@ -166,6 +167,27 @@ cannot carry an entity type with its group, so discovery reads a registration th
 
 Done when every workflow in `osdu/specs/workflows` has a contract test for its payload and a route test end to end
 against a fake workflow service.
+
+Status: done. The dataset route registers a record of a dataset kind under its own id, its files uploaded where the
+Dataset service says, the way each provider takes them (Azure's Data Lake directory, the POST policies of MinIO and S3,
+Google Cloud Storage's folder token), and any other record refers to one dataset of its files under an id derived from
+its own; an IBM location, whose credentials are for an endpoint it does not name, holds the record. The composed routes
+are `fileAndDdms` (the files through the file service, then the record and its bulk data through its DDMS) and
+`manifestAndDdms` (the manifest, then the bulk data, with the DDMS's bulk link carried into every manifest that rewrites
+a record holding bulk data). Each part of a record's payload goes when its content hash moves or a redelivery names it,
+and the ledger keeps the parts in the payload hash and location it already had, so the module's model is unchanged. A
+manifest goes by reference when the flow asks, or when it is above the inline limit and the partition registers the
+by-reference workflow; without that workflow a batch is split into manifests under the limit. The workflow route writes
+its anchor record, registers its inputs through the Dataset service, runs up to four stages of the workflows the
+catalog describes (every context checked against its workflow's contract before it is sent; the test DAG refused),
+reads each stage's outputs from a template or from XCom (the Workflow service's `latestInfo`, or Airflow's REST API on
+Airflow 2 or 3), and finds what the run wrote by its anchor, ids, artefact, search or manifest. A record's files go as
+`application/octet-stream` beside bulk data unless the flow names their type (`filesContentType`). The route tests run
+every workflow end to end against a fake Workflow service and platform, and the dataset and composed routes on every
+provider; a source delivers well logs with LAS files and curves through the executor, where new curves send only the
+curves and a redelivery of the files sends only the files. Every request keeps to the pinned contracts, the Airflow
+contracts pinned from the releases OSDU deployments run; the one difference the tests let through is the Workflow
+contract's object typing of context values (`osdu/specs/workflows/INTEGRATION.md` section 7).
 
 ### Stage 7: the other DDMSs
 

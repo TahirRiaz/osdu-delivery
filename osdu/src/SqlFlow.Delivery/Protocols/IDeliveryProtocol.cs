@@ -56,6 +56,31 @@ public sealed record DeliveryWork
     /// <summary>The identifiers the target returned for this record in earlier deliveries (dataset ids, a workflow run).</summary>
     public IReadOnlyDictionary<string, string> TargetState { get; init; } = NoValues;
 
+    /// <summary>
+    /// The parts of the record's payload a route that sends parts reads (docs/interfaces-design.md section 5.5), each with
+    /// its files and content hash; empty for a route that sends one payload set (<see cref="Payload"/>) or none.
+    /// </summary>
+    public IReadOnlyList<WorkPayloadPart> Parts { get; init; } = [];
+
+    /// <summary>The parts this delivery sends whatever their hashes say (a redelivery named them, or the record never delivered its payload).</summary>
+    public IReadOnlySet<string> ForcedParts { get; init; } = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Whether this delivery sends <paramref name="part"/>: the payload is due, and the part is forced or its content
+    /// hash differs from the one the record last delivered it with.
+    /// </summary>
+    public bool Sends(WorkPayloadPart part)
+    {
+        ArgumentNullException.ThrowIfNull(part);
+        return DeliverPayload
+            && (ForcedParts.Contains(part.Role)
+                || !TargetState.TryGetValue(Model.PayloadParts.StateKey(part.Payload), out var delivered)
+                || !string.Equals(delivered, part.Hash, StringComparison.Ordinal));
+    }
+
+    /// <summary>Whether this delivery runs a part that has no files of its own (the workflow run) because it is forced.</summary>
+    public bool Forces(string role) => DeliverPayload && ForcedParts.Contains(role);
+
     /// <summary>The values of a completed step, or null when the step has not run for this pending work.</summary>
     public IReadOnlyDictionary<string, string>? Completed(string step)
         => CompletedSteps.TryGetValue(step, out var values) ? values : null;
@@ -64,6 +89,13 @@ public sealed record DeliveryWork
     public Task ReportStepAsync(string step, IReadOnlyDictionary<string, string> returned, CancellationToken ct)
         => StepCompleted is null ? Task.CompletedTask : StepCompleted(step, returned, ct);
 }
+
+/// <summary>One part of a record's payload as a route that sends parts reads it.</summary>
+/// <param name="Role">The part (files, bulk).</param>
+/// <param name="Payload">The payload set it is read from.</param>
+/// <param name="Source">Its files; null for an optional part the record carries none for.</param>
+/// <param name="Hash">Its content hash, which the record's target state keeps once the part is delivered.</param>
+public sealed record WorkPayloadPart(string Role, string Payload, IPayloadSource? Source, string Hash);
 
 /// <summary>One step of a delivery attempt, with its timing, the status the target answered, and what it returned.</summary>
 public sealed record DeliveryStep(

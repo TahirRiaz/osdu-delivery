@@ -331,11 +331,21 @@ internal static class FileUploads
     {
         ArgumentNullException.ThrowIfNull(options);
         var outcome = await RecordWriter.DeleteAsync(client, RemovalPaths.From(options), targetId, scope, ct).ConfigureAwait(false);
-        if (scope != RemovalScope.Everything)
-        {
-            return outcome;
-        }
+        return scope == RemovalScope.Everything
+            ? await WithDatasetsDeletedAsync(client, options, outcome, targetState, ct).ConfigureAwait(false)
+            : outcome;
+    }
 
+    /// <summary>
+    /// The dataset records a record's earlier deliveries registered through the file service, deleted with their files
+    /// (openapi file v2, DELETE files/{id}/metadata), and <paramref name="outcome"/> saying so. A dataset already gone is
+    /// not an error. Only a removal of everything calls this: the others leave a record's datasets where they are.
+    /// </summary>
+    public static async Task<DeleteOutcome> WithDatasetsDeletedAsync(OsduHttpClient client, ProtocolOptions options, DeleteOutcome outcome, IReadOnlyDictionary<string, string>? targetState, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(outcome);
         var deleted = 0;
         foreach (var id in DatasetIds(targetState))
         {
@@ -350,6 +360,27 @@ internal static class FileUploads
         return deleted == 0
             ? outcome
             : outcome with { Deleted = true, Detail = $"{outcome.Detail}; {deleted.ToString(CultureInfo.InvariantCulture)} dataset record(s) and their files deleted" };
+    }
+
+    /// <summary>
+    /// Uploads and registers the files of one payload part through the file service (<see cref="UploadAsync"/>,
+    /// <see cref="RegisterAsync"/>), each a resumable step, and returns the dataset ids and how many files there were.
+    /// </summary>
+    public static async Task<(IReadOnlyList<string> Ids, int Files)> UploadAndRegisterAsync(
+        OsduHttpClient client, ProtocolOptions options, DeliveryWork work, IPayloadSource files, long requestBodyCeiling, DeliverySteps steps, TimeProvider time, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        ArgumentNullException.ThrowIfNull(files);
+        var view = work with { Payload = files };
+        var chunks = await ListChunksAsync(view, requestBodyCeiling, ct).ConfigureAwait(false);
+        var uploaded = await UploadAsync(client, options, view, chunks, steps, ct).ConfigureAwait(false);
+        var ids = new List<string>(uploaded.Count);
+        foreach (var file in uploaded)
+        {
+            ids.Add(await RegisterAsync(client, options, view, file, steps, time, ct).ConfigureAwait(false));
+        }
+
+        return (ids, uploaded.Count);
     }
 
     /// <summary>The header Azure Blob Storage requires on a PUT that creates a blob, and the blob type a file upload is.</summary>

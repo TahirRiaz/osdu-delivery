@@ -18,18 +18,36 @@ public static class ProtocolFactory
         ArgumentNullException.ThrowIfNull(loggers);
 
         var client = await ClientAsync(http, flow.Target.Endpoint, flow.Target.Auth, flow.Target.Headers, secrets, ct).ConfigureAwait(false);
+        var options = flow.Target.ProtocolOptions;
+        var ceiling = flow.Reliability.MaxRequestBodyBytes;
         return flow.Target.Protocol switch
         {
-            DeliveryProtocol.OsduRecord => new OsduRecordProtocol(client, flow.Target.ProtocolOptions),
+            DeliveryProtocol.OsduRecord => new OsduRecordProtocol(client, options),
             // The DDMSs the flow names by registration are read here, so every operation routes by what they registered.
             DeliveryProtocol.OsduWellLog => new OsduWellLogProtocol(
-                client, flow.Target.ProtocolOptions, loggers.CreateLogger<OsduWellLogProtocol>(), flow.Reliability.MaxRequestBodyBytes,
-                routing: DdmsRouting.Of(await DdmsDiscovery.ResolveAsync(flow, client, ct).ConfigureAwait(false))),
-            DeliveryProtocol.OsduFile => new OsduFileProtocol(client, flow.Target.ProtocolOptions, flow.Reliability.MaxRequestBodyBytes),
-            DeliveryProtocol.OsduManifest => new OsduManifestProtocol(client, flow.Target.ProtocolOptions, loggers.CreateLogger<OsduManifestProtocol>(), flow.Reliability.MaxRequestBodyBytes),
+                client, options, loggers.CreateLogger<OsduWellLogProtocol>(), ceiling, routing: await RoutingAsync(flow, client, ct).ConfigureAwait(false)),
+            DeliveryProtocol.OsduFile => new OsduFileProtocol(client, options, ceiling),
+            DeliveryProtocol.OsduDataset => new OsduDatasetProtocol(client, options, loggers.CreateLogger<OsduDatasetProtocol>(), ceiling),
+            DeliveryProtocol.OsduManifest => new OsduManifestProtocol(client, options, loggers.CreateLogger<OsduManifestProtocol>(), ceiling),
+            DeliveryProtocol.OsduFileAndDdms => new OsduFileAndDdmsProtocol(
+                client, options, loggers.CreateLogger<OsduFileAndDdmsProtocol>(), ceiling, routing: await RoutingAsync(flow, client, ct).ConfigureAwait(false)),
+            DeliveryProtocol.OsduManifestAndDdms => new OsduManifestAndDdmsProtocol(
+                client, options, loggers.CreateLogger<OsduManifestAndDdmsProtocol>(), ceiling, routing: await RoutingAsync(flow, client, ct).ConfigureAwait(false)),
+            DeliveryProtocol.OsduWorkflow => new OsduWorkflowProtocol(
+                client,
+                options,
+                flow.Target.Workflow ?? throw new FlowValidationException($"{flow.SourcePath ?? flow.Name}: the workflow route runs the workflow the flow declares, and it declares none."),
+                loggers.CreateLogger<OsduWorkflowProtocol>(),
+                secrets,
+                flow.Target.Airflow is { } airflow ? new Workflows.AirflowXCom(http, airflow, secrets) : new Workflows.LatestInfoXCom(client),
+                ceiling),
             _ => throw new FlowValidationException($"{flow.SourcePath ?? flow.Name}: target.protocol '{flow.Target.Protocol}' is not a known protocol."),
         };
     }
+
+    /// <summary>Where a route that reaches a DDMS sends each record, with the registrations the flow names read.</summary>
+    private static async Task<DdmsRouting> RoutingAsync(FlowDefinition flow, OsduHttpClient client, CancellationToken ct)
+        => DdmsRouting.Of(await DdmsDiscovery.ResolveAsync(flow, client, ct).ConfigureAwait(false));
 
     /// <summary>The OSDU client over a declared endpoint, auth and headers, every secret reference resolved here and nowhere else.</summary>
     public static async Task<OsduHttpClient> ClientAsync(HttpRuntime http, string endpoint, TargetAuth auth, IReadOnlyDictionary<string, string> headers, ISecretResolver secrets, CancellationToken ct = default)

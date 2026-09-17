@@ -39,6 +39,15 @@ source line it rests on.
 | `469` | project 469, `osdu/platform/data-flow/ingestion/segy-to-vds-conversion`, branch `master`, commit `b6277de3d7c295a8bcb2a6bfa02dcbae99863d43` | source |
 | `460` | project 460, `osdu/platform/data-flow/ingestion/segy-to-zgy-conversion`, branch `master`, commit `90fa221d620911e76ee375c6067c1c77ca759d6b` | source |
 | `1551` | project 1551, `osdu/platform/data-flow/ingestion/segy-to-mdio-conversion-dag`, branch `master`, commit `a0b2d1ca835a417355ab2c235a764c568d1c4919` | source |
+| `AF1` | `osdu/specs/workflows/airflow/v1.yaml`: Airflow's stable REST API as released in Airflow 2.11.2 (its `info.version` says 2.10.5), `airflow/api_connexion/openapi/v1.yaml` of `github.com/apache/airflow` at `8bf498965c87d562486a8e9344ccdb84aa351b2d`, the commit the `2.11.2` tag names | pinned contract |
+| `AF2` | `osdu/specs/workflows/airflow/v2-rest-api-generated.yaml`: Airflow 3.3.1's public REST API, `airflow-core/src/airflow/api_fastapi/core_api/openapi/v2-rest-api-generated.yaml` at `3adbbe1c58e4532df1964cb7794805e763816ee8`, the commit the `3.3.1` tag names; its 84 escaped em dashes are written as `-`, which keeps every line where it is | pinned contract |
+| `AFA` | `osdu/specs/workflows/airflow/v2-simple-auth-manager-generated.yaml`: the token endpoint of Airflow 3.3.1's simple auth manager, `airflow-core/src/airflow/api_fastapi/auth/managers/simple/openapi/v2-simple-auth-manager-generated.yaml` at the same commit | pinned contract |
+| `AFS` | `github.com/apache/airflow` source at the two commits above, cited as `AFS 2.11.2 <path>` and `AFS 3.3.1 <path>` | source |
+| `146` | project 146, `osdu/platform/data-flow/ingestion/ingestion-workflow`, branch `master`, commit `1a3e3fa35ebed1093c3498e21c3827a9caf1e01c`, read 2026-09-17; `WF` is identical, line endings aside, to its `docs/api/community/v1/openapi.yaml` at this commit | source |
+| `19`, `44`, `67` | the Search service, Storage and `os-core-common`, at the commits `osdu/specs/core/INTEGRATION.md` names | source |
+| `25` | project 25, the Indexer service, branch `master`, commit `15d4c15054b52e085c610e2d0328a3ee5bef90f1` | source |
+| `91` | project 91, the data definitions, commit `99f8fc88` | source |
+| `OD` | this repository's workflow route: `osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWorkflowProtocol.cs`, `osdu/src/SqlFlow.Delivery/Engine/Workflows/` and `osdu/src/SqlFlow.Delivery/Documents/WorkflowMapper.cs`, cited by file | repository code |
 | `MR` | this repository's `manifest` route: `osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduManifestProtocol.cs` (cited by line) and its options in `osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs` (cited as `MR options`), at `d146f49a86b363a9d04317bca4857095ba32bff7` | repository code |
 
 Each project commit above is the head of its branch on 2026-09-16; for the seven projects with a pinned README it is
@@ -79,6 +88,11 @@ Path abbreviations used inside citations:
 | `1551 dag` | `airflow/dags/segy_to_mdio_conversion_dag.py` |
 | `1551 app/` | `app/osdu_mdio_conversion/` |
 | `1551 E2E <n>` | `e2e/51_CICD_SegyToMdio conversion using Seismicstore v1.0.postman_collection.json`, request by number |
+| `146 W/` | `workflow-core/src/main/java/org/opengroup/osdu/workflow/` |
+| `19 SRC/` | `search-core/src/main/java/org/opengroup/osdu/search/` |
+| `25 IDX/` | `indexer-core/src/main/java/org/opengroup/osdu/indexer/` |
+| `44 SC/` | `storage-core/src/main/java/org/opengroup/osdu/storage/` |
+| `67 CC/` | `src/main/java/org/opengroup/osdu/core/common/` |
 
 What these sources do not cover:
 
@@ -87,8 +101,9 @@ What these sources do not cover:
   Behaviour implemented there (`Context.populate`, the manifest processor, `UpdateStatus.update_workflow_status`,
   `OpenVDSMetadata`, `put_to_dataset_service`, `_find_key_values`) is not verified; where a cited file describes it,
   the statement is attributed to that file.
-- The Workflow service implementation. How it turns a trigger into Airflow's `dag_run.conf`, and whether it reconciles
-  run status with Airflow, is known only from what the DAGs read and what their projects say about it.
+- The Workflow service implementation beyond what section 5.2.1 cites (the trigger, `latestInfo`, the engine versions
+  and their authentication). Whether it reconciles run status with Airflow is known only from what the DAGs read and
+  what their projects say about it.
 - Installed versions. The code was read on the default branches, while deployments install released packages: the
   DAG projects pin `osdu-airflow~=0.30.0` [147 src/osdu_dags/requirements.txt:6-7] and `osdu-airflow==0.28.0`
   [1414 src/osdu_dags/requirements.txt:19-20], and `osdu-airflow-lib` is at 0.31.0 on its default branch
@@ -1032,9 +1047,9 @@ Other differences the parameters carry:
 
 ### 5.1 What the Workflow contract returns
 
-No operation returns what a run produced. The run response carries status and timestamps only [WF:982-1010],
-`latestInfo` answers `type: object` [WF:780-785], and none of the sources reads `latestInfo`. The enyparser DAG says
-the same: "the Workflow service reports a run's *status*, never what it produced" [1697 dag:55-58].
+No operation returns what a run produced. The run response carries status and timestamps only [WF:982-1010], and
+`latestInfo` answers `type: object` [WF:780-785]; what the Workflow service puts there is in section 5.2.1. The enyparser
+DAG says the same: "the Workflow service reports a run's *status*, never what it produced" [1697 dag:55-58].
 
 ### 5.2 Finding the results
 
@@ -1044,7 +1059,7 @@ the same: "the Workflow service reports a run's *status*, never what it produced
 | by artefact | read the work-product components, select the `data.Artefacts[]` entry by `RoleID` `...ArtefactRole:ConvertedContent:` and `ResourceKind`, then read the artefact record (same Storage calls) | VDS [469 QS:228], ZGY [460 testing:155-181], MDIO [1551 E2E 5.3, 5.4] |
 | by search | Search `POST /query` [SE: queryRecords, 112-187] with the required `kind` and a `query` [SE:627-716]; indexing is asynchronous [1697 ENY 90.4] | the Energistics tag search [1414 EP 08]; CSV without natural keys [202 IBM "Search Records For Schema"] |
 | by kind listing | Storage `GET /query/records?kind=` [ST: getAllRecords_1, 670-762], role `service.storage.admin` | [202 IBM "Get all records for a kind"] |
-| by Airflow XCom | Airflow's REST API, outside the Workflow contract | the only way to learn the `Energyml_Converter` manifest id and the `Energyml_Delivery` outputs [1414 EP 06, EP 06b] |
+| by XCom | the Workflow service's `latestInfo`, or Airflow's REST API, outside the Workflow contract (section 5.2.1) | the only way to learn the `Energyml_Converter` manifest id and the `Energyml_Delivery` outputs [1414 EP 06, EP 06b] |
 | dataset content | Dataset `POST /retrievalInstructions` (at most 20 ids) or `GET /retrievalInstructions?id=` (section 2.2.1) | the enyparser manifest [1697 ENY 30.1, 30.2] |
 
 XCom keys the DAGs write [668 op/base_osdu_operator.py:35-38, :83-97; 668 op/update_status.py:189-195]:
@@ -1057,6 +1072,84 @@ XCom keys the DAGs write [668 op/base_osdu_operator.py:35-38, :83-97; 668 op/upd
 | `errors` | any operator task that failed; the final status task (the by-reference one always) [668 op/update_status_by_reference.py:184] | error details |
 | `return_value` | the by-reference validate and integrity tasks (manifest file ids); pod tasks (`/airflow/xcom/return.json`); `epc_h5_delivery` | as in section 3 |
 | `manifest_ref_ids` | `check_payload_type` (by reference) | `[manifest id]` |
+
+`record_ids` is a Python list of Storage record ids without versions [668 op/base_osdu_operator.py:83-84;
+668 op/process_manifest_r3.py:111-158, :231-235], and the Energistics translation operator pushes
+`[manifest_record_id]` [1363 op/energistics_translation.py:244].
+
+Searching by a tag a route writes on the records it starts from:
+
+- The Search service passes the query text to an Elasticsearch `query_string` unchanged [19 SRC/model/QueryNode.java:41-64].
+  The indexer maps a record's Storage `tags` as `flattened`, a mandatory attribute of every kind, kinds without a schema
+  included [25 IDX/util/TypeMapper.java:58; 25 IDX/service/IndexSchemaServiceImpl.java:167, :181, :279-282, :338-346].
+  The documented form is `tags.<key>:<value>` [19 docs/docs/api.md:1005-1011]; field names are case-sensitive, and a
+  value with `:` or `-` is quoted [19 docs/docs/api.md:191, :426-432]. Storage's own documentation notes that tags are
+  indexed as metadata, and that kinds indexed before about February 2021 need a reindex with `force_clean=true`
+  [44 docs/docs/api.md:551].
+- Storage checks nothing about a tag's key or value on `PUT /records`, a merge patch or a JSON patch
+  [67 CC/model/storage/Record.java:101-102; 44 SC/service/IngestionServiceImpl.java:290-293;
+  44 SC/validation/impl/JsonPatchValidator.java:141-160]. The bulk metadata `PATCH` takes a tag as one `key:value`
+  string, splits it at every `:` and keeps the first two parts, so a value holding a `:` is cut short
+  [44 SC/validation/impl/MetadataPatchValidator.java:35, :87-100; 44 SC/util/RecordUtilImpl.java:221-226].
+- The indexer writes its own `normalizedKind` into the same map before it copies the record's tags
+  [25 IDX/service/IndexerServiceImpl.java:107-108, :533-537]. Inference: a record tag of that name wins in the index.
+- Inference: a `flattened` value matches exactly and case-sensitively, and a key of letters, digits and underscores
+  needs no escaping in a field path. The workflow route's anchor tag key is therefore a letter followed by letters,
+  digits or underscores, and its value is quoted: `tags.osduDeliveryAnchor:"osdu-delivery-<24 hex>"` [OD WorkflowMapper.cs].
+- `data.Tags`, which the Energistics translators fill, is an array of strings that the indexer maps as analysed text
+  with a `keyword` subfield of at most 256 characters: query `data.Tags:word`, or `data.Tags.keyword:"exact"`
+  [91 Generated/abstract/AbstractWorkProductComponent.1.1.0.json:24-30; 25 IDX/util/TypeMapper.java:76, :134-138,
+  :233-251, :262-268; 19 docs/docs/api.md:355-373].
+- The CSV parser replaces each stored row's tags with the descriptor's own [202 core/handler/handlers/TagsHandler.java:25-29],
+  so a tag on the descriptor record reaches every row it writes.
+
+#### 5.2.1 Reading XCom: `latestInfo` and the Airflow REST API
+
+Two ways reach what a run's tasks pushed. The workflow route reads the one the flow declares [OD WorkflowXCom.cs].
+
+**The Workflow service's `latestInfo`.** `GET /v1/workflow/{workflow_name}/workflowRun/{runId}/latestInfo` [WF:754-829]
+exists only on an Airflow 2 or Airflow 3 engine [146 W/api/RunDetailsApi.java:39-43, :87-102]. It picks the task with the
+latest `end_date` and returns every XCom entry of that task under `xcom`
+[146 W/.../BaseAirflowWorkflowEngineExtension.java:84-109, :170-191], so an entry another task pushed is not there. On
+Airflow 2 each value is the text Airflow gives, a Python repr for a list or a map, as the service's own fixture shows
+(`"{'process_single_manifest_file_task': [...]}"`) [146 workflow-core/src/test/resources/airflow_responses/expected_resp.json].
+Inference: the extension reads each value with `textValue()` and sends no `stringify`, so on Airflow 3 a list or a map
+comes back null; the Airflow 3 acceptance test checks only `/v1/info`
+[146 W/.../BaseAirflowWorkflowEngineExtension.java:188; WorkflowRunAirflow3IntegrationTests.java:57-92].
+
+**Airflow's REST API.** The Workflow service triggers the DAG with `{conf, dag_run_id: runId}`, so the run id a route
+chooses is the Airflow run id [146 W/service/BaseAirflowWorkflowEngineService.java:49-50;
+W/service/WorkflowRunServiceImpl.java:101-110]. `conf` carries `run_id`, `workflow_name`, `authToken` (the caller's
+Authorization header), `correlation_id` and `execution_context`, to which the engine adds `userId`
+[146 W/service/WorkflowRunServiceImpl.java:248-259; BaseAirflowWorkflowEngineService.java:101-128]. On Azure with
+`osdu.azure.airflow.dagRunAbstractionEnabled=true` (default false) the service starts `_controller_dag` as
+`PARENT_<runId>` and passes `trigger_dag_run_id` in `conf` instead, so the Airflow run is not the trigger's
+[146 provider/workflow-azure/.../WorkflowEngineServiceImpl.java:174-211]. Both Airflow versions take the run id as the
+`dag_run_id` path parameter [AF1:5649-5655, :3322-3335; AF2:6263-6268; AFS 2.11.2 airflow/api_connexion/endpoints/xcom_endpoint.py:110-111].
+
+| | Airflow 2.11.2 | Airflow 3.3.1 |
+| --- | --- | --- |
+| Entry | `GET /api/v1/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances/{task_id}/xcomEntries/{xcom_key}`, `get_xcom_entry`; the server is `/api/v1` [AF1:243-245, :2000-2057] | `GET /api/v2/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances/{task_id}/xcomEntries/{xcom_key}`, `get_xcom_entry`; each path carries `/api/v2` and there is no `servers` entry [AF2:6240-6306]. Airflow 3 has no `/api/v1` [AFS 3.3.1 airflow-core/docs/installation/upgrading_to_airflow3.rst:361] |
+| `stringify` | default `true`: the value is a string, a Python repr for a list or a map [AF1:2030-2044; AFS 2.11.2 airflow/api_connexion/schemas/xcom_schema.py:49-52] | default `false`: the value comes back as the Task SDK stored it, a list as a JSON array [AF2:6275-6296; AFS 3.3.1 routes/public/xcom.py:67-138; task-sdk bases/xcom.py:78-85, :519-532] |
+| `map_index` | no default in the contract; the implementation's is -1 [AF1:2013, :5905-5910; AFS 2.11.2 xcom_endpoint.py:86-131] | minimum -1, default -1 [AF2:6275-6296] |
+| `deserialize` | default false; true is 400 unless `[api] enable_xcom_deserialize_support` is on [AF1:2014-2029; AFS 2.11.2 xcom_endpoint.py:86-131] | default false [AF2:6275-6296] |
+| Value | `XCom.value`: a string, number, integer, boolean, array or object [AF1:4222-4238] | `XComResponseNative.value` untyped, or `XComResponseString.value` a string or null [AF2:16260-16370] |
+| Auth | `Basic`, `GoogleOpenId` or `Kerberos`; the default backend denies every request [AF1:170-184, :6123-6136] | a bearer token: `POST /auth/token` at the server root, not under `/api/v2`, with `{username, password}` as JSON or a form (`LoginBody`, no other properties), answers 201 `{access_token}` [AFA:9-67, :170-194; AF2:16385-16402; AFS 3.3.1 airflow-core/docs/security/api.rst:28-67]; a token lasts 86400 seconds by default [AFS 3.3.1 airflow-core/docs/security/jwt_token_authentication.rst:207-221]. The FAB auth manager's token endpoint takes a free-form body and still requires both fields [AFS 3.3.1 providers/fab/.../fab_auth_manager.py:368-392] |
+
+The Workflow service authenticates to Airflow 2 with Basic, and to Airflow 3 with a token from `POST {url}/auth/token`
+that it caches until `exp` less 5 minutes, retrying once on 401 or 403
+[146 BasicAuthAirflowApiClient.java:51-61; Airflow3TokenClient.java:58-71, :146-192]; GC goes through Composer with
+IAM or IAP [146 GcpComposerAirflowApiClient.java:31-64]. The workflow route does the same: a Basic secret for
+Airflow 2, and for Airflow 3 a token for the user and password references, cached until `exp` less 5 minutes
+[OD WorkflowXCom.cs].
+
+Which engine a deployment runs: `osdu.airflow.version` (`OSDU_AIRFLOW_VERSION`) wins; otherwise
+`osdu.airflow.version2=true` means Airflow 2; otherwise the experimental API. Core-plus and Azure default to
+`airflow2`, GC to `airflow3` [146 W/model/AirflowEngineVersions.java:32-52, :96-111;
+provider/workflow-gc/.../application.properties:70]. A second Airflow 3 host (`osdu.airflow.airflow3.url`, `.username`,
+`.password`) takes new runs while earlier runs keep resolving on Airflow 2
+[146 W/config/WorkflowEngineServiceProvider.java:52-111]. `GET /v1/info` names the internal Airflow and its version
+[146 AirflowResolverImpl.java:54, :70-76], so a route can tell which form an XCom value takes without Airflow access.
 
 ### 5.3 Side effects to capture
 
@@ -1197,14 +1290,15 @@ route already settles each record on its own read-back and sends a record the ru
 ## 8. What is still open
 
 1. Whether the target deployments expose Airflow's REST API to OSDU Delivery. Without it, the `Energyml_Converter`
-   manifest id and the `Energyml_Delivery` outputs cannot be found, and by-reference report files cannot be
-   attributed.
+   manifest id and the `Energyml_Delivery` outputs cannot be found through anything but `latestInfo` (section 5.2.1),
+   and by-reference report files cannot be attributed.
 2. Whether `Osdu_ingest_by_reference` is registered on each target partition. GC deploys it; the Azure and IBM material
    in project 147 does not show it registered. A probe per partition answers it.
-3. What `latestInfo` returns on the target deployments.
+3. What `latestInfo` returns on the target deployments, and whether on Airflow 3 it returns a list or a map value as
+   null (section 5.2.1).
 4. How the Workflow service reconciles run status with Airflow, including Airflow-side timeouts, which decides whether
-   a run can stay `running`; which `dag_run.conf` keys it writes (`run_id`, `runId`, `workflow_name`, `authToken`,
-   `correlation_id`); and whether the `runId` of a trigger is always the Airflow run id.
+   a run can stay `running`. The `dag_run.conf` keys and the run id are answered in section 5.2.1, except on an Azure
+   deployment with the DAG run abstraction on.
 5. Behaviour inside `osdu-ingestion`, `osdu-api`, `commons-parser` and `energyml-delivery`: manifest processing,
    surrogate-key resolution, file checks, `Context.populate`, the HTTP call behind `update_workflow_status`,
    `OpenVDSMetadata`, and the kind, ACL and legal that `put_to_dataset_service` gives the Energistics datasets.

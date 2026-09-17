@@ -89,6 +89,131 @@ internal sealed class InterfaceYaml
     public FlowReliabilityYaml? Reliability { get; set; }
 
     public FlowVerifyYaml? Verify { get; set; }
+
+    /// <summary>How the workflow route delivers the interface.</summary>
+    public WorkflowYaml? Workflow { get; set; }
+}
+
+/// <summary>The workflow route's declaration (<c>interfaces.&lt;name&gt;.workflow</c>, or <c>target.workflow</c> in the single form).</summary>
+internal sealed class WorkflowYaml
+{
+    /// <summary>How the record is written first: dataset (registered with its files) or storage.</summary>
+    public string? Anchor { get; set; }
+
+    public List<WorkflowStageYaml>? Stages { get; set; }
+
+    /// <summary>The payload sets registered as the workflow's inputs, by name, in document order.</summary>
+    public OrderedDictionary<string, WorkflowInputYaml?>? Inputs { get; set; }
+
+    public WorkflowResultsYaml? Results { get; set; }
+
+    /// <summary>changed (the default), created or requested.</summary>
+    public string? RunWhen { get; set; }
+
+    /// <summary>The secrets a context names with {secret:name}, as references.</summary>
+    public Dictionary<string, string>? Secrets { get; set; }
+
+    /// <summary>The tag key the route writes on the record with its anchor tag.</summary>
+    public string? AnchorTag { get; set; }
+}
+
+internal sealed class WorkflowStageYaml
+{
+    public string? Workflow { get; set; }
+
+    public string? Contract { get; set; }
+
+    /// <summary>The execution context: any YAML, with placeholders in its strings.</summary>
+    public Dictionary<string, object?>? Context { get; set; }
+
+    public int? TimeoutMinutes { get; set; }
+
+    public int? PollSeconds { get; set; }
+
+    public OrderedDictionary<string, WorkflowOutputYaml?>? Outputs { get; set; }
+}
+
+internal sealed class WorkflowInputYaml
+{
+    public string? Root { get; set; }
+
+    public string? LocationColumn { get; set; }
+
+    public string? Pattern { get; set; }
+
+    public string? HashColumn { get; set; }
+
+    public string? ChunkCountColumn { get; set; }
+
+    public string? DatasetKind { get; set; }
+
+    public bool? Optional { get; set; }
+}
+
+internal sealed class WorkflowOutputYaml
+{
+    public string? Value { get; set; }
+
+    public WorkflowXComYaml? Xcom { get; set; }
+}
+
+internal sealed class WorkflowXComYaml
+{
+    public string? Task { get; set; }
+
+    public string? Key { get; set; }
+
+    public string? Match { get; set; }
+}
+
+internal sealed class WorkflowResultsYaml
+{
+    /// <summary>True when the run writes the record itself, which is read back.</summary>
+    public bool? Anchor { get; set; }
+
+    public string? Ids { get; set; }
+
+    public WorkflowArtefactYaml? Artefact { get; set; }
+
+    public WorkflowSearchYaml? Search { get; set; }
+
+    public string? Manifest { get; set; }
+
+    public WorkflowXComYaml? Xcom { get; set; }
+
+    public int? Minimum { get; set; }
+
+    public int? WaitSeconds { get; set; }
+
+    public int? Keep { get; set; }
+
+    public bool? Remove { get; set; }
+}
+
+internal sealed class WorkflowArtefactYaml
+{
+    public string? Role { get; set; }
+
+    public string? Kind { get; set; }
+}
+
+internal sealed class WorkflowSearchYaml
+{
+    public string? Kind { get; set; }
+
+    public string? Query { get; set; }
+}
+
+/// <summary>The Airflow instance behind the target's Workflow service (<c>target.airflow</c>).</summary>
+internal sealed class AirflowYaml
+{
+    public string? Endpoint { get; set; }
+
+    public TargetAuthYaml? Auth { get; set; }
+
+    public Dictionary<string, string>? Headers { get; set; }
+
+    public string? ApiVersion { get; set; }
 }
 
 /// <summary>What an interface may override of the source's render block: the mapping is the interface's own key.</summary>
@@ -283,6 +408,11 @@ internal sealed class FlowTargetYaml
 
     /// <summary>The DDMSs the flow delivers to, by the names the flow gives them, in document order.</summary>
     public OrderedDictionary<string, DdmsYaml?>? Ddms { get; set; }
+
+    /// <summary>The workflow route's declaration of a document in the single form.</summary>
+    public WorkflowYaml? Workflow { get; set; }
+
+    public AirflowYaml? Airflow { get; set; }
 }
 
 /// <summary>One DDMS a flow declares under <c>target.ddms</c>.</summary>
@@ -380,6 +510,8 @@ internal sealed class ProtocolOptionsYaml
 
     public string? PayloadContentType { get; set; }
 
+    public string? FilesContentType { get; set; }
+
     public string? VersionPath { get; set; }
 
     public bool? SkipDuplicates { get; set; }
@@ -435,6 +567,22 @@ internal sealed class ProtocolOptionsYaml
     public string? RecordQueryPath { get; set; }
 
     public string? RegisterPath { get; set; }
+
+    public string? DatasetInstructionsPath { get; set; }
+
+    public string? DatasetRegisterPath { get; set; }
+
+    public string? DatasetRetrievalPath { get; set; }
+
+    public string? DatasetSoftDeletePath { get; set; }
+
+    public string? ManifestByReference { get; set; }
+
+    public int? ManifestInlineLimitKb { get; set; }
+
+    public string? ByReferenceWorkflowName { get; set; }
+
+    public string? WorkflowPath { get; set; }
 }
 
 internal sealed class FlowReliabilityYaml

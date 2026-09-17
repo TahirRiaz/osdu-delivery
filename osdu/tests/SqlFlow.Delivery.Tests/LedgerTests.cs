@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Tests;
 using Xunit;
@@ -657,6 +658,42 @@ public class SqlLedgerTests : IDisposable
         var pruned = await Ledger.PruneAttemptsAsync(Now - TimeSpan.FromDays(30));
         Assert.Equal(2, pruned);
         Assert.Equal(2, (await Ledger.ListAttemptsAsync(_flow, key, 10)).Count);
+    }
+
+    [Fact]
+    public async Task A_redelivery_of_payload_parts_names_them_on_the_delivered_payload_hash()
+    {
+        var submission = Guid.NewGuid();
+        await Ledger.UpsertPendingAsync(_flow, [Pending("parts", submission)]);
+        var key = DeliveryKey.Derive("test", ["parts"]);
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
+        {
+            DeliveryKey = key,
+            Status = RecordStatus.Delivered,
+            Promote = true,
+            Attempt = new AttemptRecord { DeliveryKey = key, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata+payload" },
+        });
+        var delivered = (await Ledger.GetRecordAsync(_flow, key))!;
+        Assert.Equal(("mh", "ph"), (delivered.MetadataHash, delivered.PayloadHash));
+
+        // The parts are named on the payload hash the record was delivered with, which the next plan reads and the next
+        // payload delivery replaces; the record half stays as delivered.
+        Assert.Equal(1, await Ledger.ForceRedeliverAsync(_flow, [key], new RedeliverSelection(RedeliverScope.Payload, [PayloadParts.Files, PayloadParts.Bulk]), Now));
+        var marked = (await Ledger.GetRecordAsync(_flow, key))!;
+        Assert.Equal("redeliver:bulk,files", marked.PayloadHash);
+        Assert.True(PayloadParts.RedeliverRoles(marked.PayloadHash)!.SetEquals([PayloadParts.Files, PayloadParts.Bulk]));
+        Assert.Equal("mh", marked.MetadataHash);
+        Assert.Null(marked.PayloadModifiedUtc);
+        Assert.Equal("redelivery of files and bulk requested", marked.LastError);
+        Assert.Equal(key, Assert.Single(await Ledger.ListPlanRequestedAsync(_flow, null, 10)).DeliveryKey);
+
+        // A selection of no parts is the whole payload, which clears the hash as a payload redelivery always has; a part
+        // no route sends is refused before anything is written.
+        await Assert.ThrowsAsync<ArgumentException>(() => Ledger.ForceRedeliverAsync(_flow, [key], new RedeliverSelection(RedeliverScope.Payload, ["record"]), Now));
+        Assert.Equal("redeliver:bulk,files", (await Ledger.GetRecordAsync(_flow, key))!.PayloadHash);
+        Assert.Equal(1, await Ledger.ForceRedeliverAsync(_flow, [key], new RedeliverSelection(RedeliverScope.Payload, []), Now));
+        Assert.Null((await Ledger.GetRecordAsync(_flow, key))!.PayloadHash);
+        Assert.Equal("redelivery of payload requested", (await Ledger.GetRecordAsync(_flow, key))!.LastError);
     }
 
     [Fact]

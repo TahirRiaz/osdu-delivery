@@ -4,6 +4,7 @@ using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 using Xunit;
 
@@ -850,6 +851,31 @@ public class SqlServerLedgerTests
             Assert.True(DateTime.UtcNow < deadline, "The staging did not reach the claim check within 30 seconds.");
             await Task.Delay(TimeSpan.FromMilliseconds(20));
         }
+    }
+
+    [SkippableFact]
+    public async Task A_redelivery_of_payload_parts_names_them_on_the_delivered_payload_hash_on_sql_server()
+    {
+        var ledger = await LedgerAsync(_clock);
+        var submission = Guid.NewGuid();
+        var work = Work("parts", submission, "0:0:10", "mh", Now.AddDays(-1));
+        await ledger.UpsertPendingAsync(_flow, [work]);
+        await ledger.CompleteAsync(_flow, Completion(work, submission, Now));
+        var key = work.DeliveryKey;
+        Assert.Equal("ph", (await ledger.GetRecordAsync(_flow, key))!.PayloadHash);
+
+        // The marker is written in the one set-based update the redelivery is, and fits the payload hash column.
+        var every = new RedeliverSelection(RedeliverScope.Payload, [PayloadParts.Workflow, PayloadParts.Files, PayloadParts.Bulk]);
+        Assert.Equal(1, await ledger.ForceRedeliverAsync(_flow, [key], every, Now));
+        var marked = (await ledger.GetRecordAsync(_flow, key))!;
+        Assert.Equal("redeliver:bulk,files,workflow", marked.PayloadHash);
+        Assert.Equal("mh", marked.MetadataHash);
+        Assert.Null(marked.PayloadModifiedUtc);
+        Assert.Equal("redelivery of workflow and files and bulk requested", marked.LastError);
+        Assert.Equal(key, Assert.Single(await ledger.ListPlanRequestedAsync(_flow, null, 10)).DeliveryKey);
+
+        Assert.Equal(1, await ledger.ForceRedeliverAsync(_flow, [key], RedeliverScope.Payload, Now));
+        Assert.Null((await ledger.GetRecordAsync(_flow, key))!.PayloadHash);
     }
 
     [SkippableFact]

@@ -178,7 +178,7 @@ internal static class DeliveryVerbs
 
         // Where a ddms flow's records go is worked out from what the flow declares; a DDMS it names by registration is
         // read from the Register service when the flow runs, not by a check.
-        var ddms = flow.Target.Protocol == Protocols.DeliveryProtocol.OsduWellLog ? DdmsRouting.Of(flow).Explain(runtime.Mapping.Mapping.Kind) : null;
+        var ddms = Protocols.DeliveryProtocols.ReachesDdms(flow.Target.Protocol) ? DdmsRouting.Of(flow).Explain(runtime.Mapping.Mapping.Kind) : null;
         if (ddms is not null)
         {
             result["ddms"] = ddms;

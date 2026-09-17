@@ -475,6 +475,55 @@ internal static class RecordWriter
             : new VerifyResult(VerifyOutcome.Drifted, observed, $"observed version {observed.Value.ToString(CultureInfo.InvariantCulture)}, ledger holds {request.ExpectedVersion.Value.ToString(CultureInfo.InvariantCulture)}");
     }
 
+    /// <summary>
+    /// Reads records back whole in batched reads (openapi storage v2, <c>POST /query/records</c>, at most
+    /// <see cref="OsduRecordProtocol.MaxVerifyBatch"/> ids per request), keyed by id; a record the service does not
+    /// return is not in the result. <paramref name="attributes"/> projects the data block when it names data paths.
+    /// </summary>
+    public static async Task<IReadOnlyDictionary<string, JsonObject>> ReadManyAsync(
+        OsduHttpClient client, string batchPath, IReadOnlyCollection<string> ids, IReadOnlyList<string>? attributes, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(ids);
+        var found = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        if (ids.Count == 0)
+        {
+            return found;
+        }
+
+        var url = client.Url(batchPath);
+        foreach (var chunk in ids.Distinct(StringComparer.Ordinal).Chunk(OsduRecordProtocol.MaxVerifyBatch))
+        {
+            ct.ThrowIfCancellationRequested();
+            var body = new JsonObject { ["records"] = new JsonArray(chunk.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray()) };
+            if (attributes is { Count: > 0 })
+            {
+                body["attributes"] = new JsonArray(attributes.Select(a => (JsonNode?)JsonValue.Create(a)).ToArray());
+            }
+
+            var result = await client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 404 }, ct, idempotent: true).ConfigureAwait(false);
+            if (result.Body.Length == 0 || (int)result.Status == 404)
+            {
+                continue;
+            }
+
+            if (JsonNode.Parse(result.Body) is not JsonObject root)
+            {
+                throw new DeliveryException($"{url.AbsolutePath} answered with something other than a JSON object.");
+            }
+
+            foreach (var record in root["records"] as JsonArray ?? [])
+            {
+                if (record is JsonObject stored && stored["id"] is JsonValue id && id.TryGetValue<string>(out var text))
+                {
+                    found[text] = (JsonObject)stored.DeepClone();
+                }
+            }
+        }
+
+        return found;
+    }
+
     /// <summary>Reads a record back as the target holds it; null on 404.</summary>
     public static async Task<JsonObject?> ReadAsync(OsduHttpClient client, string verifyPath, string targetId, CancellationToken ct)
     {

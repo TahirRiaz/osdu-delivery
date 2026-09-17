@@ -446,7 +446,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
     /// What a record-scoped deliver run of <paramref name="flow"/> sends again: the part the run's <c>redeliver</c> names,
     /// everything when unset. A part the flow's route does not send is refused.
     /// </summary>
-    public static RedeliverScope RedeliverScopeOf(DeliveryRunPayload payload, FlowDefinition flow)
+    public static RedeliverSelection RedeliverScopeOf(DeliveryRunPayload payload, FlowDefinition flow)
     {
         ArgumentNullException.ThrowIfNull(payload);
         return RedeliverScopes.Of(payload.Redeliver, flow);

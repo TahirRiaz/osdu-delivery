@@ -149,15 +149,20 @@ The shared blocks are written once. The existing top-level `source.record`, `sou
 | --- | --- | --- |
 | no `files`, no `bulk` | | `storage`: the record through the Storage service |
 | `files` | the schema refers to the dataset group | `file`: every file uploaded and registered (File service), then the record referring to its datasets |
-| `files` naming a collection kind | | `datasetCollection`: the files stored and registered as one dataset (Dataset service), then the record |
+| `files` and `route: dataset` | | `dataset`: the files stored and registered through the Dataset service; a record of a dataset kind is that dataset, any other record refers to one dataset holding its files (section 5.6) |
 | `bulk` | a DDMS serves the entity type | `ddms`: the record through that DDMS, then the bulk data |
-| `files` and `bulk` | both of the above | `fileAndDdms`: files registered, the record written through the DDMS referring to them, then the bulk data |
-| `route: manifest` | any of the above but `ddms` | `manifest`: files registered first, then the records in manifests through the ingestion workflow |
-| `route: manifest` and `bulk` | | `manifestAndDdms`: files registered, the records by manifest, the run polled, then the bulk data through the DDMS |
+| `files` and `bulk` | both of the above | `fileAndDdms`: files registered, the record written through the DDMS referring to them, then the bulk data (section 5.7) |
+| `route: manifest` | any of the above but `ddms` | `manifest`: files registered first, then the records in manifests through the ingestion workflow, inline or by reference (section 5.8) |
+| `route: manifest` and `bulk` | | `manifestAndDdms`: files registered, the records by manifest, the run polled, then the bulk data through the DDMS (section 5.7) |
+| `workflow` | | `workflow`: the record written, its inputs registered, a named workflow run in stages and what it created read back (section 5.9) |
 
-`route:` overrides the choice. A route that cannot deliver what the interface declares is refused when the flow is
-read (files on `storage`, bulk data without a DDMS). What needs no network is checked when the flow is read; the
-DDMS lookup happens in the run's preflight, on the node.
+`route:` overrides the choice; it names a route type (`storage`, `file`, `dataset`, `manifest`, `ddms`,
+`fileAndDdms`, `manifestAndDdms`, `workflow`). A named route and a part only another route sends make the composed
+route of the two (`route: manifest` with `bulk`, `route: file` with `bulk`, `route: ddms` with `files`). A route that
+cannot deliver what the interface declares is refused when the flow is read (files on `storage`, bulk data on
+`dataset` or `workflow`, a workflow on any other route). What needs no network is checked when the flow is read; the
+DDMS lookup, the kind a route needs (a dataset kind for a dataset anchor) and the workflow names a partition registers
+are checked in the run's preflight, on the node.
 
 ### 5.3 Finding a DDMS
 
@@ -187,14 +192,152 @@ A route type is one call pattern, written once:
 | `file` | file v2, storage v2 | exists (`osduFile`) |
 | `manifest` | file v2, workflow v1, storage v2 | exists (`osduManifest`) |
 | `ddms` with shape `wellboreDdmsV3` | wellbore DDMS v3: `POST /{collection}`, `/{collection}/{id}/data`, `/{collection}/{id}/sessions` | built (stage 5, `osduWellLog`): every Wellbore DDMS collection, the four that keep bulk data (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) and the five that hold records alone, and any DDMS of the same shape |
-| `datasetCollection` | dataset v1: `storageInstructions`, `registerDataset` | new |
-| `fileAndDdms`, `manifestAndDdms` | the above, composed | new |
+| `dataset` | dataset v1: `storageInstructions`, `registerDataset`, `retrievalInstructions`, `metadataRecord/{id}/softDelete`; storage v2 | built (stage 6, `osduDataset`), section 5.6 |
+| `fileAndDdms`, `manifestAndDdms` | the above, composed | built (stage 6, `osduFileAndDdms`, `osduManifestAndDdms`), section 5.7 |
+| `workflow` | workflow v1, dataset v1, storage v2, search v2; Airflow's REST API (v1 or v2) for the outputs only it returns | built (stage 6, `osduWorkflow`), section 5.9 |
 | other DDMS shapes (seismic, reservoir, ...) | their own specifications | one route type each, once their specifications are added |
 
 The well log specific checks became checks of any tabular bulk upload: the row labels of each chunk read before a
 session, the rows and columns read back after it, and the columns checked against what the record declares for its
 collection (curve ids and widths, or trajectory station properties). The record rules the Wellbore DDMS applies to each
 kind are checked before anything is sent, and a metadata update carries the bulk link the DDMS keeps on the record.
+
+### 5.5 Parts: what a route sends beside the record
+
+A route sends the record and up to three kinds of parts: files (the datasets a record refers to, a dataset record's own
+content, or the inputs a workflow reads), bulk data (a DDMS keeps it for the record), and, on the workflow route, the
+workflow run. A route that sends one payload set keeps the single payload the ledger has always kept: one folder, one
+content hash. The composed routes and the workflow route send several, and the ledger keeps them without a schema
+change:
+
+- The plan resolves every part's folder and content hash from the record's row, as it resolves a single payload's. The
+  record's payload hash is the hash of the parts' hashes, so a change to any part is a payload change, and the pending
+  payload lists each part with its folder and hash.
+- The record's target state keeps the hash each part was last delivered with (`payload.<set>`). A delivery sends a part
+  when its hash differs from that one, so new bulk data does not upload the record's files again.
+- A redelivery by part (`files`, `bulk`, `workflow`) leaves the parts it names on the record's delivered payload hash
+  (`redeliver:files`). The next plan sends those parts whatever their hashes say, and the marker is replaced when the
+  payload lands. `payload` and `all` send every part, as they always have.
+- A workflow input the workflow accepts empty (`optional: true`) may name no folder, and is then a part without files.
+
+### 5.6 The dataset route
+
+The Dataset service (osdu/specs/core/INTEGRATION.md sections 2.5 and 3.3) stores a file, or a collection of files, for
+any dataset kind a DMS serves, and keeps the id its caller gives, where the File service mints one:
+
+- **A record of a dataset kind is the dataset.** Its files go where `storageInstructions` says for its entity type, and
+  the record is registered with `registerDataset` under its own id, with `DatasetProperties` pointing at them:
+  `FileSourceInfo` for a `dataset--File.*` kind, which holds one file, and `FileCollectionPath` with a `FileSourceInfos`
+  entry per file for a `dataset--FileCollection.*` kind. Up to 20 records go in one registration.
+- **Any other record refers to one dataset** of `protocolOptions.datasetKind` holding its files, registered under an id
+  derived from the record's (`{partition}:{datasetEntityType}:{key}-files`), and the record is written through storage
+  with its dataset list naming it. The id is stable, so new files land on the same dataset.
+- **A change to the record alone** is written through storage with the `DatasetProperties` OSDU holds: a registration
+  copies the staging area again, and the staged files may be gone.
+- **Verify** reads storage; the delivery itself checks that `retrievalInstructions` lists every dataset it registered.
+- **Removal:** the reversible scope is the Dataset service's `softDelete` for a dataset record, which its `undelete`
+  restores, and storage's reversible delete for a record that refers to a dataset, which leaves the dataset so OSDU can
+  restore the record whole; the history purge is storage's; everything is storage's purge of the record and of the
+  dataset a record of another kind refers to. The files a registration copied stay in the platform's storage, which no
+  public operation of the Dataset service deletes.
+- **Uploads** go the way the provider that signed the location takes them: a single file with one `PUT` to its signed
+  URL; a collection's files created, appended and flushed under Azure's Data Lake directory, posted with the POST policy
+  of MinIO or S3, or put under Google Cloud Storage's folder with the token scoped to it. A location with temporary
+  credentials for an endpoint it does not name (IBM) holds the record (osdu/specs/core/INTEGRATION.md section 2.5.1).
+  The signed location is never logged or kept, so a retry asks for a new one unless every upload of the earlier try
+  completed.
+
+### 5.7 Composed routes
+
+- **`fileAndDdms`:** each record's files are uploaded and registered through the File service; the record is written
+  through the collection of its DDMS with its dataset list pointing at them; then its bulk data. The DDMS's rules and the
+  bulk data's chunks are checked before the first file is uploaded, and every part resumes on its own.
+- **`manifestAndDdms`:** a batch's records go through the ingestion workflow as the manifest route sends them, the run
+  is settled by reading each record back, and then each written record's bulk data goes through its DDMS. Ingestion
+  writes through storage, past the DDMS, so a record that already holds bulk data carries the DDMS's bulk link into the
+  manifest; without it the record would lose the link to its bulk data. A record whose bulk data alone changed is not
+  sent through the workflow again.
+- **Content types.** The bulk data goes as `payloadContentType`; the files go as `filesContentType`, or
+  `application/octet-stream` when the flow names none, so a LAS or SEG-Y file is not stored as parquet.
+
+### 5.8 Manifests by reference
+
+`Osdu_ingest_by_reference` takes the id of a `dataset--File.Generic` holding the manifest instead of the manifest itself
+(osdu/specs/workflows/INTEGRATION.md section 3.3):
+
+- `protocolOptions.manifestByReference` is `never` (the default), `always`, or `auto`: by reference when the trigger
+  request is above `manifestInlineLimitKb` (12000, the limit External Data Services applies, measured over the whole
+  request).
+- The manifest is stored through the Dataset service as a `dataset--File.Generic` under an id derived from the run id,
+  with the records' `acl` and `legal` at its top level, which the workflow copies onto the files it writes. The workflow
+  (`byReferenceWorkflowName`, probed first, since not every deployment registers it) is triggered with
+  `{Payload, acl, legal, manifest: "<id>"}`, the run polled, and every record read back as for an inline manifest.
+- `auto` on a partition without the workflow splits the batch into manifests under the limit.
+- The manifest file is a transport: it is removed reversibly once the run has settled. The copies and report files the
+  workflow writes itself can be named only from Airflow's task logs, so they are not removed; the run id is on every
+  record's attempt.
+
+### 5.9 The workflow route
+
+One route type drives every ingestion workflow (osdu/specs/workflows/INTEGRATION.md section 3.13):
+
+```yaml
+interfaces:
+  csvWells:
+    record: { object: Src.ing.CsvFile, key: [file_id], primaryKey: RecId }
+    files: { root: ../data/csv, locationColumn: folder, pattern: "*.csv", hashColumn: content_hash }
+    mapping: CsvDescriptor@1.0.0                 # dataset--File.Generic with its FileContentsDetails
+    workflow:
+      anchor: dataset                            # the record is registered with its files through the Dataset service
+      anchorTag: osduDeliveryAnchor              # written into the record's tags, which the parser copies onto every row
+      stages:
+        - workflow: csv_ingestion                # the name this deployment registers it under
+          context:
+            id: "{record:id}"
+            dataPartitionId: "{partition}"
+            data_service_to_use: file
+      results:
+        search: { kind: "{record:data.ExtensionProperties.FileContentsDetails.TargetKind}", query: "tags.osduDeliveryAnchor:\"{anchorTag}\"" }
+        minimum: 1
+```
+
+- **The anchor** is the interface's own record, written first: registered with its files through the Dataset service
+  (`anchor: dataset`, the default when the interface declares files), or written through storage (`anchor: storage`)
+  when the workflow starts from a record, as the SEG-Y conversions do.
+- **Inputs** (`inputs.<name>`, each a payload set with a `datasetKind` and `optional`) are registered through the Dataset
+  service under ids derived from the anchor's, one dataset per file, or one collection.
+- **Stages** run in order; each names the workflow as the deployment registers it, the known workflow whose contract
+  its context follows (`contract:`, when the name is not one of the contract's names), its context, its timeout and its
+  outputs. A workflow that only translates (`Energyml_Converter`, `Enyparser_Translation`) is followed by a stage that
+  ingests its manifest.
+- **Templates.** A context's strings hold placeholders: `{partition}`, `{appKey}`, `{runId}`, `{anchorTag}`,
+  `{record:path}` (a value of the anchor, `data.Parameters[Title=work_product_id].DataObjectParameter` selecting by a
+  property), `{input:name}`, `{dataset:suffix}` (a `dataset--File.Generic` id derived from the anchor's),
+  `{stage:n.output}` and `{secret:name}`; modifiers `|id`, `|ref`, `|list`, `|first`, `|json`. A string that is one
+  placeholder takes the value's shape. `Payload {AppKey, data-partition-id}` is added when the context leaves it out and
+  the workflow reads it.
+- **Contracts.** Every workflow the briefs cover has a payload contract (`WorkflowCatalog`): the keys it reads, their
+  shapes, the ones it requires, the credentials it takes, and its run timeout. The template is checked against it when
+  the flow is read, and the filled context before every trigger; a context the workflow would fail on is never sent.
+  The Workflow service's test DAG (`manifest_ingestion`) is refused as a target.
+- **Outputs** are either known before the run (a template: the manifest id enyparser is told to write) or read from an
+  XCom entry of the run: through the Workflow service's `latestInfo` for the run's latest task, or from Airflow's REST
+  API (`target.airflow`, Airflow 2 or 3) for any task. On Airflow 3, `latestInfo` may give a list or a map as null, so
+  an output that is one is read from Airflow (osdu/specs/workflows/INTEGRATION.md section 5.2.1).
+- **Results** are found one way: `anchor` (the run writes the record), `ids` (a template), `artefact` (the anchor's
+  `data.Artefacts` of a role and kind, as the conversions add them), `search` (a kind and a query), `manifest` (the ids
+  in a manifest dataset) or `xcom`. They are read back from storage; fewer than `minimum` fails the record for the try,
+  and the next try looks again without running the workflow again. The ids are kept on the record (up to `keep`), with
+  their count, and a removal takes them with the anchor (`remove`, default true); a search is repeated to find them all.
+- **When a run starts** (`runWhen`): `changed` (the delivery writes the record or an input), `created` (the record is
+  new), or `requested` (only a redelivery of `workflow` starts one).
+- **Resuming.** A registration lands on the same ids; a run's id is recorded before its trigger is sent, so a retry
+  sends the same id and a 409 says the service already has the run; a finished run's outputs are kept. A failed run
+  fails the record, and the next try triggers a new one.
+- **Credentials** in a context are `{secret:name}` placeholders over `secrets.<name>` references, resolved only for the
+  trigger request; the step, the log and every message keep the context with `***` in their place.
+- **Preflight** asks the Workflow service for every workflow the route runs, so a name the partition does not register
+  stops the run before anything is sent.
 
 ## 6. Order
 
@@ -353,7 +496,7 @@ that did not complete. A record can be redelivered or released on its own, as to
 3. Order from the schemas' relationships, cycles and `after:`.
 4. The generic `ddms` route, the `target.ddms` catalog and Register discovery.
 5. Records that wait: the reference table, its migration, the hold and the release.
-6. `datasetCollection` and the composed routes.
+6. The `dataset` route, the composed routes, manifests by reference and the `workflow` route.
 7. The GUI, API, CLI and lineage views of sources and interfaces.
 8. The sample estate, the documentation and the test matrix.
 
@@ -365,6 +508,6 @@ that did not complete. A record can be redelivered or released on its own, as to
    are declared.
 3. **References to records outside the ledger:** trust them (the default here) or check them in storage before
    sending?
-4. **Manifests too large to send inline:** OSDU documents a manifest stored as a dataset and the workflow started
-   with its record id. It needs its specification before it is designed.
+4. **Manifests too large to send inline:** answered by the manifest route's by-reference mode (section 5.8), built from
+   the ingestion DAGs' and External Data Services' code.
 5. **The name `interfaces`:** kept.

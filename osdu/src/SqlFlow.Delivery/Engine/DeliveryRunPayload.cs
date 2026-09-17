@@ -102,7 +102,7 @@ public static class RedeliverScopes
     /// <summary>The record document alone.</summary>
     public const string Record = "record";
 
-    /// <summary>The files a record carries as datasets (the file and manifest routes): uploaded and registered again, and the record rewritten with them.</summary>
+    /// <summary>The files a record carries (the file, dataset, manifest and composed routes, and a workflow route's own): uploaded and registered again, and the record rewritten with them.</summary>
     public const string Files = "files";
 
     /// <summary>The bulk data a DDMS stores for the record (the ddms route): written again as a new version of the record's bulk data.</summary>
@@ -114,22 +114,35 @@ public static class RedeliverScopes
     /// <summary>The files or the bulk data, whichever the route sends, by the name the single form has always used for them.</summary>
     public const string Payload = "payload";
 
-    public static IReadOnlyList<string> Names { get; } = [All, Record, Files, Bulk, Metadata, Payload];
+    /// <summary>The workflow run of the workflow route: triggered again, without sending anything else again.</summary>
+    public const string Workflow = PayloadParts.Workflow;
 
-    /// <summary>The parts a record delivered by <paramref name="protocol"/> can be sent again by.</summary>
-    public static IReadOnlyList<string> For(DeliveryProtocol protocol) => protocol switch
+    public static IReadOnlyList<string> Names { get; } = [All, Record, Files, Bulk, Workflow, Metadata, Payload];
+
+    /// <summary>The parts a record <paramref name="flow"/> delivers can be sent again by.</summary>
+    public static IReadOnlyList<string> For(FlowDefinition flow)
     {
-        DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest => [All, Record, Files, Metadata, Payload],
-        DeliveryProtocol.OsduWellLog => [All, Record, Bulk, Metadata, Payload],
-        _ => [All, Record, Metadata],
-    };
+        ArgumentNullException.ThrowIfNull(flow);
+        if (PayloadParts.Of(flow) is not null)
+        {
+            return [All, Record, .. PayloadParts.Roles(flow), Metadata, Payload];
+        }
+
+        return flow.Target.Protocol switch
+        {
+            DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest or DeliveryProtocol.OsduDataset => [All, Record, Files, Metadata, Payload],
+            DeliveryProtocol.OsduWellLog => [All, Record, Bulk, Metadata, Payload],
+            _ => [All, Record, Metadata],
+        };
+    }
 
     /// <summary>
     /// What <paramref name="name"/> sends again of a record <paramref name="flow"/> delivers: everything when it names
-    /// nothing. Throws <see cref="DeliveryException"/> for a name that is not a part, or a part the flow's route does not
-    /// send (files on a ddms route, bulk data on a file route, anything but the record on the storage route).
+    /// nothing. A route that sends its payload in parts sends only the part named (files, bulk, workflow). Throws
+    /// <see cref="DeliveryException"/> for a name that is not a part, or a part the flow's route does not send (files on
+    /// a ddms route, bulk data on a file route, anything but the record on the storage route).
     /// </summary>
-    public static RedeliverScope Of(string? name, FlowDefinition flow)
+    public static RedeliverSelection Of(string? name, FlowDefinition flow)
     {
         ArgumentNullException.ThrowIfNull(flow);
         var part = string.IsNullOrWhiteSpace(name) ? All : name.Trim().ToLowerInvariant();
@@ -138,27 +151,43 @@ public static class RedeliverScopes
             throw new DeliveryException($"redeliver '{name}' is not one of {string.Join(", ", Names)}.");
         }
 
-        var protocol = flow.Target.Protocol;
-        if (!For(protocol).Contains(part, StringComparer.Ordinal))
+        var parts = For(flow);
+        if (!parts.Contains(part, StringComparer.Ordinal))
         {
             throw new DeliveryException(
-                $"'{flow.Label}' is delivered by the {RouteChecks.Name(protocol)} route, which sends {Sends(protocol)}, so a redelivery of '{part}' has nothing to send; name one of {string.Join(", ", For(protocol))}.");
+                $"'{flow.Label}' is delivered by the {RouteChecks.Name(flow.Target.Protocol)} route, which sends {Sends(flow)}, so a redelivery of '{part}' has nothing to send; name one of {string.Join(", ", parts)}.");
         }
 
         return part switch
         {
-            All => RedeliverScope.All,
-            Record or Metadata => RedeliverScope.Metadata,
-            _ => RedeliverScope.Payload,
+            All => new RedeliverSelection(RedeliverScope.All, []),
+            Record or Metadata => new RedeliverSelection(RedeliverScope.Metadata, []),
+            Payload => new RedeliverSelection(RedeliverScope.Payload, []),
+            _ when PayloadParts.Of(flow) is not null => new RedeliverSelection(RedeliverScope.Payload, [part]),
+            _ => new RedeliverSelection(RedeliverScope.Payload, []),
         };
     }
 
-    private static string Sends(DeliveryProtocol protocol) => protocol switch
+    private static string Sends(FlowDefinition flow)
     {
-        DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest => "the record and its files",
-        DeliveryProtocol.OsduWellLog => "the record and its bulk data",
-        _ => "the record alone",
-    };
+        if (PayloadParts.Of(flow) is not null)
+        {
+            var roles = PayloadParts.Roles(flow);
+            return "the record" + (roles.Count == 0 ? string.Empty : ", " + string.Join(", ", roles.Select(r => r switch
+            {
+                PayloadParts.Files => "its files",
+                PayloadParts.Bulk => "its bulk data",
+                _ => "its workflow run",
+            })));
+        }
+
+        return flow.Target.Protocol switch
+        {
+            DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest or DeliveryProtocol.OsduDataset => "the record and its files",
+            DeliveryProtocol.OsduWellLog => "the record and its bulk data",
+            _ => "the record alone",
+        };
+    }
 }
 
 /// <summary>

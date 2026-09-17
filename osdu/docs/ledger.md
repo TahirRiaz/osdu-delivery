@@ -58,6 +58,26 @@ the runs that carried it.
 | `PendingStepJson` | The steps an earlier try of the pending work completed, with what the target returned, so the next try resumes after them. |
 | `TargetStateJson` | Every value the target returned across the record's deliveries (record id and version, dataset ids, file sources, a workflow run id): what OSDU holds for the record. |
 
+#### Payloads in parts
+
+A route that sends its payload in parts (the composed routes and the workflow route,
+[protocols.md](protocols.md#payload-parts)) keeps them in the same columns, so the module's model does not change:
+
+- `PayloadHash` and `PendingPayloadHash` are the SHA-256 of one `role:payload=hash` line per part, so a change to any
+  part is a payload change, and a part's folder moving is not.
+- `PendingPayloadLocation` is a JSON object, `{"composite":"1","forced":[...],"parts":[{"role","payload","hash","location"}]}`,
+  of at most 2000 characters; a plan whose parts do not fit holds the record and names the limit. A part without files
+  has no `location` and the hash `none`.
+- `TargetStateJson` keeps the hash each part was last delivered with as `payload.<set>`, which is how a delivery knows
+  which part moved.
+- A redelivery of some parts writes `redeliver:<roles>` (sorted, as in `redeliver:bulk,files`) into `PayloadHash`. The
+  next plan sees a payload change and lists those roles as forced, and the payload hash is replaced when the payload
+  lands. A redelivery of the payload or of everything clears `PayloadHash` as for any record, and every part is sent
+  then, as it is under `change.payloadDetect: always` or `onUnchanged: deliver`, and for a record that never delivered
+  its payload.
+- A pending payload the worker cannot read as parts (one a later version wrote, or one planned for another route)
+  holds the record; a redelivery plans it again.
+
 ### `osdu.Attempt`: append-only, one row per delivery try
 
 The record it belongs to (`FlowId`, `DeliveryKey`), worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`), the
@@ -296,7 +316,9 @@ says OSDU holds at that moment and sends only the halves that differ; when neith
 an attempt (`skipped`, phase `unchanged`) and sends nothing.
 
 **Redeliver** forgets the hashes of what OSDU holds (all of them, or only the record's or only its files' or bulk data's) and stamps the
-record to be planned again, so the next plan that reaches it sends that part again. From the GUI, redeliver also
+record to be planned again, so the next plan that reaches it sends that part again. On a route that sends its payload
+in parts, a redelivery of `files`, `bulk` or `workflow` names that part on the delivered payload hash instead
+([Payloads in parts](#payloads-in-parts)), so the other parts are not sent again. From the GUI, redeliver also
 queues a deliver run scoped to the record, which reads it from the ingestion tables by key, so the redelivery happens
 at once and is recorded under the user who asked. It never bypasses the render: the document sent is always the one
 the pinned mapping produces from the current source rows.

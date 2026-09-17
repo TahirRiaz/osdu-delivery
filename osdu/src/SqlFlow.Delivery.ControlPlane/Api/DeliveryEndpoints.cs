@@ -1147,7 +1147,7 @@ public static class DeliveryEndpoints
 
         // The part to send again, named by what it is on the record's route (record, files, bulk), or all of it.
         var part = string.IsNullOrWhiteSpace(request?.Scope) ? RedeliverScopes.All : request.Scope.Trim().ToLowerInvariant();
-        RedeliverScope scope;
+        RedeliverSelection scope;
         try
         {
             scope = RedeliverScopes.Of(part, flow.Flow);
@@ -1467,7 +1467,7 @@ public static class DeliveryEndpoints
         target.Headers.TryGetValue("data-partition-id", out var partition);
         string? kind = null;
         string? ddms = null;
-        if (target.Protocol == DeliveryProtocol.OsduWellLog)
+        if (DeliveryProtocols.ReachesDdms(target.Protocol))
         {
             var reference = flow.Flow.Render.Mapping;
             kind = await osdu.DeliveryMappings.AsNoTracking()

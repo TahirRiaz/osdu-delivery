@@ -1,5 +1,6 @@
 // Downloads the OSDU API contracts the delivery engine is built against into osdu/specs, pinned to the commit each
-// was read at, and writes the provenance table. Run with node; needs network access to community.opengroup.org.
+// was read at, and writes the provenance table. Run with node; needs network access to community.opengroup.org and
+// github.com.
 const fs = require('fs');
 const path = require('path');
 
@@ -34,8 +35,22 @@ const sources = [
   { dir: 'workflows', project: 407, repo: 'data-flow/ingestion/external-data-sources/core-external-data-workflow', files: [['README.md', 'core-external-data-workflow.md']] },
 ];
 
+// Releases of projects outside OSDU whose REST contracts a route calls: the Airflow instance behind the Workflow service,
+// for the run outputs only its API returns (osdu/specs/workflows/INTEGRATION.md section 5.2). They are pinned to the
+// releases OSDU deployments run (Airflow 2.11 serves /api/v1, Airflow 3 /api/v2), not to a branch head, so the script
+// fetches the tag each row names and moves a row only when its release is changed here.
+const releases = [
+  { dir: 'workflows/airflow', owner: 'apache', name: 'airflow', tag: '2.11.2', files: [['airflow/api_connexion/openapi/v1.yaml', 'v1.yaml']] },
+  { dir: 'workflows/airflow', owner: 'apache', name: 'airflow', tag: '3.3.1', files: [
+    ['airflow-core/src/airflow/api_fastapi/core_api/openapi/v2-rest-api-generated.yaml', 'v2-rest-api-generated.yaml'],
+    ['airflow-core/src/airflow/api_fastapi/auth/managers/simple/openapi/v2-simple-auth-manager-generated.yaml', 'v2-simple-auth-manager-generated.yaml'],
+  ] },
+];
+
 const TextFile = /\.(md|json|ya?ml|avpr)$/i;
 const EmDash = String.fromCharCode(0x2014);
+// A generated contract can write the em dash as a JSON escape, which decodes to the character.
+const EmDashEscape = String.fromCharCode(0x5c) + 'u2014';
 
 function asRepositoryText(name, bytes) {
   if (!TextFile.test(name)) {
@@ -43,8 +58,35 @@ function asRepositoryText(name, bytes) {
   }
 
   const text = bytes.toString('utf8');
+  if (!text.includes(EmDash) && !text.includes(EmDashEscape)) {
+    return bytes;
+  }
+
   // A spaced hyphen keeps a YAML plain scalar a scalar, where a colon would start a mapping.
-  return text.includes(EmDash) ? Buffer.from(text.split(' ' + EmDash + ' ').join(' - ').split(EmDash).join('-'), 'utf8') : bytes;
+  let plain = text;
+  for (const dash of [EmDash, EmDashEscape]) {
+    plain = plain.split(' ' + dash + ' ').join(' - ').split(dash).join('-');
+  }
+
+  return Buffer.from(plain, 'utf8');
+}
+
+async function github(url) {
+  const response = await fetch(url, { headers: { 'User-Agent': 'osdu-delivery-vendor-specs' } });
+  if (!response.ok) throw new Error(`${url}: ${response.status}`);
+  return response;
+}
+
+/** The commit a release tag names, through an annotated tag object when the tag is one. */
+async function releaseCommit(release) {
+  const repo = `https://api.github.com/repos/${release.owner}/${release.name}`;
+  let target = (await (await github(`${repo}/git/refs/tags/${encodeURIComponent(release.tag)}`)).json()).object;
+  while (target.type === 'tag') {
+    target = (await (await github(`${repo}/git/tags/${target.sha}`)).json()).object;
+  }
+
+  const commit = await (await github(`${repo}/commits/${target.sha}`)).json();
+  return { sha: target.sha, date: commit.commit.committer.date.slice(0, 10) };
 }
 
 async function json(url) {
@@ -70,6 +112,18 @@ async function main() {
       fs.writeFileSync(path.join(root, source.dir, to), bytes);
       rows.push({ file: `${source.dir}/${to}`, repo: source.repo, from, commit, date: head.commit.committed_date.slice(0, 10), size: bytes.length });
       console.log(`${source.dir}/${to}  ${bytes.length} bytes  ${commit.slice(0, 12)}`);
+    }
+  }
+
+  for (const release of releases) {
+    const commit = await releaseCommit(release);
+    fs.mkdirSync(path.join(root, release.dir), { recursive: true });
+    for (const [from, to] of release.files) {
+      const response = await github(`https://raw.githubusercontent.com/${release.owner}/${release.name}/${commit.sha}/${from}`);
+      const bytes = asRepositoryText(to, Buffer.from(await response.arrayBuffer()));
+      fs.writeFileSync(path.join(root, release.dir, to), bytes);
+      rows.push({ file: `${release.dir}/${to}`, repo: `github.com/${release.owner}/${release.name} (release ${release.tag})`, from, commit: commit.sha, date: commit.date, size: bytes.length });
+      console.log(`${release.dir}/${to}  ${bytes.length} bytes  ${commit.sha.slice(0, 12)} (${release.tag})`);
     }
   }
 

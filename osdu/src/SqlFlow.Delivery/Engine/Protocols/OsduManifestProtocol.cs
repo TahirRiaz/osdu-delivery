@@ -1,8 +1,11 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
+using SqlFlow.Delivery.Http;
+using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
@@ -27,9 +30,9 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// </summary>
 public sealed class OsduManifestProtocol : IDeliveryProtocol
 {
-    public const string DefaultWorkflowRunPath = "/api/workflow/v1/workflow/{workflow}/workflowRun";
-    public const string DefaultWorkflowStatusPath = "/api/workflow/v1/workflow/{workflow}/workflowRun/{runId}";
-    public const string DefaultProbePath = "/api/workflow/v1/info";
+    public const string DefaultWorkflowRunPath = WorkflowClient.DefaultRunPath;
+    public const string DefaultWorkflowStatusPath = WorkflowClient.DefaultStatusPath;
+    public const string DefaultProbePath = WorkflowClient.DefaultProbePath;
     public const string DefaultRecordQueryPath = "/api/storage/v2/query/records";
 
     public const string ManifestStep = "manifest";
@@ -41,28 +44,24 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     /// <summary>The manifest step value carrying the version storage held of the record before the run was triggered.</summary>
     public const string PriorVersionValue = "priorVersion";
 
+    /// <summary>The manifest step value naming the workflow the run was triggered on (the inline or the by-reference one).</summary>
+    public const string WorkflowValue = "workflow";
+
+    /// <summary>The manifest step value naming the dataset a manifest sent by reference was stored as.</summary>
+    public const string ManifestDatasetValue = "manifestDatasetId";
+
     /// <summary>Dataset ids per search query while waiting for the index to list them.</summary>
     private const int SearchBatch = 50;
 
     /// <summary>Records per storage read-back request (openapi storage v2, MultiRecordIds takes at most 100).</summary>
     public const int QueryBatch = 100;
 
-    /// <summary>
-    /// The terminal run statuses, compared upper case because the workflow service reports them in both cases: the
-    /// run detail schema (openapi workflow v1, WorkflowRunResponse) is upper (SUBMITTED, INPROGRESS, PARTIAL_SUCCESS,
-    /// SUCCESS, FAILED) while the run schema behind the listing (WorkflowRun) is lower (submitted, running, queued,
-    /// finished, success, failed). FINISHED belongs here: it is how the Airflow-backed service reports a run that
-    /// reached its end, and treating it as unknown turned a completed ingestion into a hard failure.
-    /// </summary>
-    private static readonly HashSet<string> Finished = new(StringComparer.Ordinal) { "SUCCESS", "PARTIAL_SUCCESS", "FINISHED", "FAILED" };
-
-    private static readonly HashSet<string> Pending = new(StringComparer.Ordinal) { "SUBMITTED", "INPROGRESS", "IN_PROGRESS", "RUNNING", "QUEUED" };
-
     private readonly OsduHttpClient _client;
     private readonly ProtocolOptions _options;
     private readonly ILogger _logger;
     private readonly long _requestBodyCeiling;
     private readonly TimeProvider _time;
+    private readonly WorkflowClient _workflows;
 
     public OsduManifestProtocol(OsduHttpClient client, ProtocolOptions options, ILogger logger, long requestBodyCeiling = 0, TimeProvider? time = null)
     {
@@ -70,11 +69,18 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         _client = client;
-        _options = options;
+        _options = options.ForFiles(besideBulk: false);
         _logger = logger;
         _requestBodyCeiling = requestBodyCeiling;
         _time = time ?? TimeProvider.System;
+        _workflows = new WorkflowClient(client, logger, _time, options.WorkflowRunPath, options.WorkflowStatusPath, options.WorkflowPath);
+        _datasets = new DatasetService(client, options);
     }
+
+    private readonly DatasetService _datasets;
+
+    /// <summary>Whether the partition registers the by-reference workflow, once asked.</summary>
+    private bool? _byReferenceRegistered;
 
     public DeliveryProtocol Kind => DeliveryProtocol.OsduManifest;
 
@@ -92,7 +98,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         ArgumentNullException.ThrowIfNull(works);
         var outcomes = new DeliveryOutcome[works.Count];
         var fresh = new List<Staged>();
-        var resumed = new Dictionary<string, List<Staged>>(StringComparer.Ordinal);
+        var resumed = new Dictionary<(string RunId, string Workflow, string? Manifest), List<Staged>>();
         for (var i = 0; i < works.Count; i++)
         {
             var work = works[i];
@@ -139,10 +145,11 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                     staged.PriorVersion = earlier.TryGetValue(PriorVersionValue, out var prior) && long.TryParse(prior, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
                         ? parsed
                         : null;
-                    if (!resumed.TryGetValue(runId, out var group))
+                    var runKey = (runId, earlier.GetValueOrDefault(WorkflowValue) ?? _options.WorkflowName, earlier.GetValueOrDefault(ManifestDatasetValue));
+                    if (!resumed.TryGetValue(runKey, out var group))
                     {
                         group = [];
-                        resumed[runId] = group;
+                        resumed[runKey] = group;
                     }
 
                     group.Add(staged);
@@ -160,14 +167,15 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
 
         // Runs an earlier try started: a finished one settles the records it wrote here; the records it failed or
         // left out go into the new manifest with everything else.
-        foreach (var (runId, group) in resumed)
+        foreach (var ((runId, workflow, manifestDataset), group) in resumed)
         {
             try
             {
-                var run = await PollAsync(runId, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-                if (run.Status == "FAILED")
+                var run = await PollAsync(workflow, runId, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+                await RemoveManifestAsync(manifestDataset, ct).ConfigureAwait(false);
+                if (run.HasFailed)
                 {
-                    _logger.LogWarning("Workflow run {RunId} of {Workflow} failed; {Count} record(s) go into a new run.", runId, _options.WorkflowName, group.Count);
+                    _logger.LogWarning("Workflow run {RunId} of {Workflow} failed; {Count} record(s) go into a new run.", runId, workflow, group.Count);
                     foreach (var staged in group)
                     {
                         staged.Steps.Add(WorkflowStep, run.Started, 200, run.Values(), "the run failed; a new run is triggered");
@@ -180,7 +188,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                 var (missing, _) = await SettleAsync(group, run, outcomes, ct).ConfigureAwait(false);
                 if (missing.Count > 0)
                 {
-                    _logger.LogWarning("Workflow run {RunId} of {Workflow} finished {Status} without {Count} of its {Total} record(s); they go into a new run.", runId, _options.WorkflowName, run.Status, missing.Count, group.Count);
+                    _logger.LogWarning("Workflow run {RunId} of {Workflow} finished {Status} without {Count} of its {Total} record(s); they go into a new run.", runId, workflow, run.Status, missing.Count, group.Count);
                     fresh.AddRange(missing);
                 }
             }
@@ -195,31 +203,12 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
 
         if (fresh.Count > 0)
         {
+            List<List<Staged>> runs;
             try
             {
                 await WaitForDatasetsAsync(fresh, ct).ConfigureAwait(false);
                 await ReadPriorVersionsAsync(fresh, ct).ConfigureAwait(false);
-                var triggered = await TriggerAsync(fresh, ct).ConfigureAwait(false);
-                var run = await PollAsync(triggered.RunId, triggered.Started, ct).ConfigureAwait(false);
-                if (run.Status == "FAILED")
-                {
-                    var failure = new DeliveryException($"workflow run {run.RunId} of {_options.WorkflowName} failed; the next try triggers a new run");
-                    foreach (var staged in fresh)
-                    {
-                        staged.Steps.Add(WorkflowStep, run.Started, 200, run.Values(), failure.Message);
-                        outcomes[staged.Index] = DeliveryOutcome.Failed(failure, staged.Steps.Steps);
-                    }
-                }
-                else
-                {
-                    var (missing, notes) = await SettleAsync(fresh, run, outcomes, ct).ConfigureAwait(false);
-                    foreach (var staged in missing)
-                    {
-                        var reason = $"workflow run {run.RunId} of {_options.WorkflowName} finished {run.Status} but {notes[staged.Work.TargetId]}; the workflow did not write it and its run log names why, and the next try triggers a new run";
-                        staged.Steps.Add(RecordsStep, run.Started, null, null, reason);
-                        outcomes[staged.Index] = DeliveryOutcome.Failed(new DeliveryException(reason), staged.Steps.Steps);
-                    }
-                }
+                runs = await PlanRunsAsync(fresh, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException or JsonException)
             {
@@ -227,10 +216,131 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                 {
                     outcomes[staged.Index] = DeliveryOutcome.Failed(ex, staged.Steps.Steps);
                 }
+
+                runs = [];
+            }
+
+            foreach (var group in runs)
+            {
+                await RunAsync(group, outcomes, ct).ConfigureAwait(false);
             }
         }
 
         return outcomes;
+    }
+
+    /// <summary>
+    /// One run for a group: the manifest triggered (inline, or by reference), the run polled and every record settled on
+    /// its own read-back; a record the run did not write fails for this try and goes into a new run on the next.
+    /// </summary>
+    private async Task RunAsync(List<Staged> group, DeliveryOutcome[] outcomes, CancellationToken ct)
+    {
+        try
+        {
+            var triggered = await TriggerAsync(group, ct).ConfigureAwait(false);
+            var run = await PollAsync(triggered.Run.Workflow, triggered.Run.RunId, triggered.Run.Started, ct).ConfigureAwait(false);
+            await RemoveManifestAsync(triggered.ManifestDataset, ct).ConfigureAwait(false);
+            if (run.HasFailed)
+            {
+                var failure = new DeliveryException($"workflow run {run.RunId} of {run.Workflow} failed; the next try triggers a new run");
+                foreach (var staged in group)
+                {
+                    staged.Steps.Add(WorkflowStep, run.Started, 200, run.Values(), failure.Message);
+                    outcomes[staged.Index] = DeliveryOutcome.Failed(failure, staged.Steps.Steps);
+                }
+
+                return;
+            }
+
+            var (missing, notes) = await SettleAsync(group, run, outcomes, ct).ConfigureAwait(false);
+            foreach (var staged in missing)
+            {
+                var reason = $"workflow run {run.RunId} of {run.Workflow} finished {run.Status} but {notes[staged.Work.TargetId]}; the workflow did not write it and its run log names why, and the next try triggers a new run";
+                staged.Steps.Add(RecordsStep, run.Started, null, null, reason);
+                outcomes[staged.Index] = DeliveryOutcome.Failed(new DeliveryException(reason), staged.Steps.Steps);
+            }
+        }
+        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException or JsonException)
+        {
+            foreach (var staged in group)
+            {
+                outcomes[staged.Index] = DeliveryOutcome.Failed(ex, staged.Steps.Steps);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The runs a batch goes in. One, unless the flow sends large manifests by reference when it can
+    /// (<see cref="ManifestReference.Auto"/>) and the partition does not register the by-reference workflow: then the
+    /// batch is split into manifests under the inline limit, as External Data Services splits them
+    /// (osdu/specs/workflows/INTEGRATION.md section 3.3). A record whose manifest alone is above the limit goes on its
+    /// own: the limit is a gateway's, not the Workflow contract's, which states none.
+    /// </summary>
+    private async Task<List<List<Staged>>> PlanRunsAsync(List<Staged> fresh, CancellationToken ct)
+    {
+        if (_options.ManifestByReference != ManifestReference.Auto
+            || RequestKilobytes(BuildContext(fresh, BuildManifest(fresh))) <= _options.ManifestInlineLimitKb
+            || await ByReferenceRegisteredAsync(ct).ConfigureAwait(false))
+        {
+            return [fresh];
+        }
+
+        var runs = new List<List<Staged>>();
+        var current = new List<Staged>();
+        foreach (var staged in fresh)
+        {
+            current.Add(staged);
+            if (current.Count > 1 && RequestKilobytes(BuildContext(current, BuildManifest(current))) > _options.ManifestInlineLimitKb)
+            {
+                current.RemoveAt(current.Count - 1);
+                runs.Add(current);
+                current = [staged];
+            }
+        }
+
+        runs.Add(current);
+        _logger.LogInformation(
+            "The partition registers no {Workflow}, so {Count} record(s) above the inline limit of {Limit} KB go in {Runs} manifests.",
+            _options.ByReferenceWorkflowName, fresh.Count, _options.ManifestInlineLimitKb, runs.Count);
+        return runs;
+    }
+
+    /// <summary>Whether the partition registers the by-reference workflow (openapi workflow v1, GET workflow/{workflow_name}), asked once.</summary>
+    private async Task<bool> ByReferenceRegisteredAsync(CancellationToken ct)
+        => _byReferenceRegistered ??= await _workflows.ExistsAsync(_options.ByReferenceWorkflowName, ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// The size of a trigger request in kilobytes, measured as External Data Services measures it: the whole request as
+    /// JSON indented by four (osdu/specs/workflows/INTEGRATION.md section 3.3).
+    /// </summary>
+    internal static double RequestKilobytes(JsonObject executionContext)
+    {
+        var request = new JsonObject { ["runId"] = Guid.Empty.ToString("D"), ["executionContext"] = executionContext.DeepClone() };
+        return Encoding.UTF8.GetByteCount(request.ToJsonString(Indented)) / 1024d;
+    }
+
+    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true, IndentSize = 4 };
+
+    /// <summary>
+    /// Removes the dataset a manifest by reference was stored as, reversibly, once its run has settled: it is a transport,
+    /// not a delivered record. A failure to remove it is logged and does not fail the records the run wrote.
+    /// </summary>
+    private async Task RemoveManifestAsync(string? datasetId, CancellationToken ct)
+    {
+        if (datasetId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var removed = await _datasets.SoftDeleteAsync(datasetId, ct).ConfigureAwait(false);
+            _logger.LogInformation("The manifest dataset {DatasetId} is removed: {Detail}.", datasetId, removed.Detail);
+        }
+        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
+        {
+            _logger.LogWarning("The manifest dataset {DatasetId} could not be removed after its run settled: {Message}", datasetId, HeaderRedaction.RedactMessage(ex.Message));
+        }
     }
 
     public Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default)
@@ -387,15 +497,9 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         return manifest;
     }
 
-    /// <summary>
-    /// Triggers one run for the group and reports the manifest step, with the run id, on every record before the
-    /// poll starts. The run id is chosen here, so a request the service accepted before a retry resent it answers
-    /// 409 and is polled, not run twice.
-    /// </summary>
-    private async Task<WorkflowRun> TriggerAsync(List<Staged> group, CancellationToken ct)
+    /// <summary>The execution context of an inline manifest: the Payload and the manifest itself.</summary>
+    private JsonObject BuildContext(List<Staged> group, JsonObject manifest)
     {
-        var runId = Guid.NewGuid().ToString("D");
-        var manifest = BuildManifest(group);
         var payload = new JsonObject { ["AppKey"] = _options.WorkflowAppKey };
         if (_client.Header("data-partition-id") is { } partition)
         {
@@ -407,28 +511,50 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
             payload[name] = value;
         }
 
-        var body = new JsonObject
+        return new JsonObject { ["Payload"] = payload, ["manifest"] = manifest };
+    }
+
+    /// <summary>
+    /// Triggers one run for the group and reports the manifest step, with the run id, on every record before the
+    /// poll starts. The run id is chosen here, so a request the service accepted before a retry resent it answers
+    /// 409 and is polled, not run twice. A manifest goes by reference when the flow says so
+    /// (<see cref="ProtocolOptions.ManifestByReference"/>): stored as a dataset, and named by its id.
+    /// </summary>
+    private async Task<(WorkflowRun Run, string? ManifestDataset)> TriggerAsync(List<Staged> group, CancellationToken ct)
+    {
+        var runId = Guid.NewGuid().ToString("D");
+        var manifest = BuildManifest(group);
+        var context = BuildContext(group, manifest);
+        var workflow = _options.WorkflowName;
+        string? manifestDataset = null;
+        var byReference = _options.ManifestByReference switch
         {
-            ["runId"] = runId,
-            ["executionContext"] = new JsonObject { ["Payload"] = payload, ["manifest"] = manifest },
+            ManifestReference.Always => true,
+            ManifestReference.Auto => RequestKilobytes(context) > _options.ManifestInlineLimitKb && await ByReferenceRegisteredAsync(ct).ConfigureAwait(false),
+            _ => false,
         };
-        var url = _client.Url(_options.WorkflowRunPath ?? DefaultWorkflowRunPath, new Dictionary<string, string>(StringComparer.Ordinal) { ["workflow"] = _options.WorkflowName });
-        var started = _time.GetUtcNow().UtcDateTime;
-        var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 409 }, ct, idempotent: true).ConfigureAwait(false);
-        string? workflowId = null;
-        var status = "SUBMITTED";
-        if ((int)result.Status != 409 && result.Body.Length > 0)
+        if (byReference)
         {
-            var root = OsduHttpClient.ParseJson(result, url);
-            workflowId = JsonPathReader.SelectValue(root, "workflowId");
-            status = JsonPathReader.SelectValue(root, "status") ?? status;
-            runId = JsonPathReader.SelectValue(root, "runId") ?? runId;
+            if (_options.ManifestByReference == ManifestReference.Always && !await ByReferenceRegisteredAsync(ct).ConfigureAwait(false))
+            {
+                throw new DeliveryException(
+                    $"the flow sends every manifest by reference, and this partition's Workflow service has no workflow named {_options.ByReferenceWorkflowName}; not every deployment registers it (osdu/specs/workflows/INTEGRATION.md section 3.3)");
+            }
+
+            (manifestDataset, context) = await StoreManifestAsync(group, manifest, context, runId, ct).ConfigureAwait(false);
+            workflow = _options.ByReferenceWorkflowName;
         }
 
-        var run = new WorkflowRun(runId, workflowId, status.ToUpperInvariant(), null, null, started);
+        var run = await _workflows.TriggerAsync(workflow, runId, context, ct).ConfigureAwait(false);
+        var started = run.Started;
         var values = run.Values();
-        values["workflow"] = _options.WorkflowName;
+        values[WorkflowValue] = workflow;
         values["records"] = group.Count.ToString(CultureInfo.InvariantCulture);
+        if (manifestDataset is not null)
+        {
+            values[ManifestDatasetValue] = manifestDataset;
+        }
+
         // The run was triggered for every record of the group, so their steps are reported together, and the worker writes
         // them to the ledger in one go before the run is polled.
         var reports = new List<Task>(group.Count);
@@ -440,48 +566,73 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                 mine[PriorVersionValue] = prior.ToString(CultureInfo.InvariantCulture);
             }
 
-            staged.Steps.Add(ManifestStep, started, (int)result.Status, mine);
+            staged.Steps.Add(ManifestStep, started, run.TriggerStatus, mine);
             reports.Add(staged.Work.ReportStepAsync(ManifestStep, mine, ct));
         }
 
         await Task.WhenAll(reports).ConfigureAwait(false);
-        _logger.LogInformation("Workflow run {RunId} of {Workflow} triggered for {Count} record(s) ({Status}).", runId, _options.WorkflowName, group.Count, run.Status);
-        return run;
+        _logger.LogInformation("Workflow run {RunId} of {Workflow} triggered for {Count} record(s) ({Status}).", run.RunId, workflow, group.Count, run.Status);
+        return (run, manifestDataset);
+    }
+
+    /// <summary>
+    /// Stores a manifest as a <c>dataset--File.Generic</c> through the Dataset service, under an id derived from the run's
+    /// (so a retry of the same run stores it again under the same id), with the group's first access and legal blocks at
+    /// the manifest's top level, which the workflow copies onto the files it writes itself; and returns the context that
+    /// names it (osdu/specs/workflows/INTEGRATION.md section 3.3).
+    /// </summary>
+    private async Task<(string DatasetId, JsonObject Context)> StoreManifestAsync(List<Staged> group, JsonObject manifest, JsonObject inline, string runId, CancellationToken ct)
+    {
+        var first = group[0].Document;
+        var acl = first["acl"]?.DeepClone() ?? throw new DeliveryException("the records have no acl block to give the manifest");
+        var legal = first["legal"]?.DeepClone() ?? throw new DeliveryException("the records have no legal block to give the manifest");
+        var partition = _client.Header("data-partition-id") ?? throw new DeliveryException("the flow names no data-partition-id to store the manifest in");
+        var entityType = TargetId.EntityTypeFromKind(_options.DatasetKind);
+        var datasetId = $"{partition}:{entityType}:osdu-delivery-manifest-{runId}";
+        var file = (JsonObject)manifest.DeepClone();
+        file["acl"] = acl.DeepClone();
+        file["legal"] = legal.DeepClone();
+        var bytes = Encoding.UTF8.GetBytes(file.ToJsonString());
+
+        var storage = await _datasets.StorageAsync(entityType, ct).ConfigureAwait(false);
+        var signed = DatasetUploads.SignedUrl(storage, "signedUrl");
+        var fileSource = storage.Text("fileSource") ?? throw new DeliveryException("the dataset service's storage location names no fileSource for the manifest.");
+        await _client.SendToSignedUrlAsync(
+            HttpMethod.Put, signed, () => new MemoryStream(bytes, writable: false), "application/json", bytes.LongLength,
+            FileUploads.SignedUploadHeaders(signed, _options.UploadHeaders), ct).ConfigureAwait(false);
+
+        var name = $"manifest-{runId}.json";
+        var record = new JsonObject
+        {
+            ["id"] = datasetId,
+            ["kind"] = _options.DatasetKind,
+            ["acl"] = acl.DeepClone(),
+            ["legal"] = legal.DeepClone(),
+            ["data"] = new JsonObject { ["Name"] = name },
+        };
+        DatasetUploads.Point(record, new StagedDataset(fileSource, null, [(name, bytes.LongLength)]));
+        await _datasets.RegisterAsync([record], ct).ConfigureAwait(false);
+        _logger.LogInformation("The manifest of {Count} record(s) is stored as {DatasetId} ({Bytes} bytes) and sent by reference.", group.Count, datasetId, bytes.LongLength);
+
+        var context = new JsonObject
+        {
+            ["Payload"] = inline["Payload"]!.DeepClone(),
+            ["acl"] = acl,
+            ["legal"] = legal,
+            ["manifest"] = datasetId,
+        };
+        return (datasetId, context);
     }
 
     /// <summary>Polls the run until it finishes, or the flow's timeout passes (the next try resumes the same run).</summary>
-    private async Task<WorkflowRun> PollAsync(string runId, DateTime started, CancellationToken ct)
-    {
-        var url = _client.Url(_options.WorkflowStatusPath ?? DefaultWorkflowStatusPath, new Dictionary<string, string>(StringComparer.Ordinal) { ["workflow"] = _options.WorkflowName, ["runId"] = runId });
-        var interval = TimeSpan.FromSeconds(Math.Max(1, _options.WorkflowPollSeconds));
-        var timeout = TimeSpan.FromMinutes(Math.Max(1, _options.WorkflowTimeoutMinutes));
-        var deadline = _time.GetUtcNow() + timeout;
-        var polls = 0;
-        while (true)
-        {
-            var result = await _client.SendJsonAsync(HttpMethod.Get, url, null, null, ct).ConfigureAwait(false);
-            var root = OsduHttpClient.ParseJson(result, url);
-            polls++;
-            var status = (JsonPathReader.SelectValue(root, "status") ?? throw new DeliveryException($"{url.AbsolutePath} did not report the run's status.")).ToUpperInvariant();
-            if (Finished.Contains(status))
-            {
-                _logger.LogInformation("Workflow run {RunId} of {Workflow} finished {Status} after {Polls} poll(s).", runId, _options.WorkflowName, status, polls);
-                return new WorkflowRun(runId, JsonPathReader.SelectValue(root, "workflowId"), status, JsonPathReader.SelectValue(root, "startTimeStamp"), JsonPathReader.SelectValue(root, "endTimeStamp"), started);
-            }
-
-            if (!Pending.Contains(status))
-            {
-                throw new DeliveryException($"workflow run {runId} of {_options.WorkflowName} reported an unknown status '{status}'");
-            }
-
-            if (_time.GetUtcNow() + interval > deadline)
-            {
-                throw new DeliveryException($"workflow run {runId} of {_options.WorkflowName} is still {status} after {timeout.TotalMinutes.ToString(CultureInfo.InvariantCulture)} minute(s); the next try resumes polling it");
-            }
-
-            await Task.Delay(interval, _time, ct).ConfigureAwait(false);
-        }
-    }
+    private Task<WorkflowRun> PollAsync(string workflow, string runId, DateTime started, CancellationToken ct)
+        => _workflows.PollAsync(
+            workflow,
+            runId,
+            started,
+            TimeSpan.FromSeconds(Math.Max(1, _options.WorkflowPollSeconds)),
+            TimeSpan.FromMinutes(Math.Max(1, _options.WorkflowTimeoutMinutes)),
+            ct);
 
     /// <summary>
     /// Reads the group's records back from storage after the run finished. The ones storage holds settle as
@@ -711,27 +862,4 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         public long? PriorVersion { get; set; }
     }
 
-    private sealed record WorkflowRun(string RunId, string? WorkflowId, string Status, string? StartTimeStamp, string? EndTimeStamp, DateTime Started)
-    {
-        public Dictionary<string, string> Values()
-        {
-            var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["runId"] = RunId, ["status"] = Status };
-            if (WorkflowId is not null)
-            {
-                values["workflowId"] = WorkflowId;
-            }
-
-            if (StartTimeStamp is not null)
-            {
-                values["startTimeStamp"] = StartTimeStamp;
-            }
-
-            if (EndTimeStamp is not null)
-            {
-                values["endTimeStamp"] = EndTimeStamp;
-            }
-
-            return values;
-        }
-    }
 }

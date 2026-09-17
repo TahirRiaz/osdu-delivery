@@ -2,9 +2,10 @@
 
 The OSDU core services are the platform services every OSDU Delivery route type goes through: Storage, File, Dataset,
 Schema, Search, Legal, Entitlements, Register, Partition, Unit, CRS Catalog and CRS Conversion, plus the two Workflow
-calls the manifest route makes. The storage, file and manifest routes use them today; the dataset routes to come will
-use the Dataset service and the File service's DMS endpoints behind it. This brief lists every call those routes make
-or need, the rules the services apply to each call, and where the pinned contracts and the upstream code disagree.
+calls the manifest route makes. The storage, file, dataset, manifest, workflow and composed routes use them; the dataset
+and workflow routes reach the File service's DMS endpoints through the Dataset service. This brief lists every call
+those routes make or need, the rules the services apply to each call, and where the pinned contracts and the upstream
+code disagree.
 Every statement cites the contract or the upstream file it rests on.
 
 ## Sources
@@ -39,16 +40,22 @@ Upstream code and documentation, from `https://community.opengroup.org`, each re
 | Key | Project | Commit (commit date) | Path prefixes used in citations |
 | --- | --- | --- | --- |
 | 44 | `osdu/platform/system/storage` | `11d7299591e2372c8b949b2a495f544c080cc350` (2026-09-10) | `SC/` = `storage-core/src/main/java/org/opengroup/osdu/storage/` |
-| 90 | `osdu/platform/system/file` | `d7c25c2d7f5d2f42bed901c68a407098195389bb` (2026-09-11) | `FC/` = `file-core/src/main/java/org/opengroup/osdu/file/`; `FAZ/` = `provider/file-azure/src/main/java/org/opengroup/osdu/file/provider/azure/`; `FCP/` = `file-core-plus/src/main/java/org/opengroup/osdu/file/provider/gcp/provider/` |
+| 90 | `osdu/platform/system/file` | `d7c25c2d7f5d2f42bed901c68a407098195389bb` (2026-09-11) | `FC/` = `file-core/src/main/java/org/opengroup/osdu/file/`; `FAZ/` = `provider/file-azure/src/main/java/org/opengroup/osdu/file/provider/azure/`; `FCP/` = `file-core-plus/src/main/java/org/opengroup/osdu/file/provider/gcp/provider/`; `FIBM/` = `provider/file-ibm/src/main/java/org/opengroup/osdu/file/provider/ibm/` |
 | 118 | `osdu/platform/system/dataset` | `329f3c0b4924aaf2cb50261520108bfcd3826136` (2026-09-14) | `DC/` = `dataset-core/src/main/java/org/opengroup/osdu/dataset/`; `DAZ/` = `provider/dataset-azure/src/main/java/org/opengroup/osdu/dataset/provider/azure/`; `DCP/` = `dataset-core-plus/src/main/java/org/opengroup/osdu/dataset/provider/gcp/` |
 | 26 | `osdu/platform/system/schema-service` | `b099bbca230f4b82cefb6541a677674a80a7b92e` (2026-09-15) | `SCH/` = `schema-core/src/main/java/org/opengroup/osdu/schema/`; `SS/` = `deployments/shared-schemas/osdu/` |
 | 19 | `osdu/platform/system/search-service` | `731e6f5748416003b58b2e96eb018a82d4ddd8c9` (2026-09-16) | `SRC/` = `search-core/src/main/java/org/opengroup/osdu/search/` |
 | 157 | `osdu/platform/system/register` | `326eca619287fc3939619e025b75e17ea622dffc` (2026-09-16) | `RC/` = `register-core/src/main/java/org/opengroup/osdu/register/`; `RAZ/` = `provider/register-azure/src/main/java/org/opengroup/osdu/register/provider/azure/`; `RCP/` = `register-core-plus/src/main/java/org/opengroup/osdu/register/` |
 | 67 | `osdu/platform/system/lib/core/os-core-common` | `b54d3073f21f32db115083f3381fc4a164957cb2` (2026-08-31) | `CC/` = `src/main/java/org/opengroup/osdu/core/common/` |
+| 1441 | `osdu/platform/system/lib/drivers/os-obm` | `c389fbea3de45d24c4f4847107dd3057bc988724` (head of `master`, read 2026-09-17) | `OC/`, `MIN/`, `S3/` = `os-obm-core/src/main/java/org/opengroup/osdu/core/obm/core/`, `os-obm-minio/src/main/java/org/opengroup/osdu/core/obm/drivers/minio/`, `os-obm-s3/src/main/java/org/opengroup/osdu/core/obm/drivers/s3/` |
+| 1475 | `osdu/platform/system/lib/cloud/gcp/gc-obm` | `abb8463cb22db1d1314452d421387a04cafc7407` (head of `main`, read 2026-09-17) | `GS/` = `gc-obm-gs/src/main/java/org/opengroup/osdu/core/obm/drivers/gs/` |
+| 77 | `os-core-lib-azure` | tag `v3.0.0`, the version the File service pins [90 provider/file-azure/pom.xml:39] | files cited by name |
 
 The keys are the GitLab project ids. `os-core-common` (67) is the shared library: Storage, Dataset, File and Search
 take their record, kind, ACL, legal, DMS and search validation from it, and their Storage, Legal and Entitlements
-clients.
+clients. The File service pins `os-obm-core` 0.31.0, and the driver files cited from 1441 are the same at its tag
+`v0.31.0` [90 file-core-plus/pom.xml:66-70]. `SDK` is the Maven Central sources of the Azure Storage File Data Lake
+client 12.27.0, the Azure Storage Blob client 12.34.0 and the MinIO Java client 8.5.2, the versions the File service
+resolves (inference for which Azure BOM wins).
 
 This repository: `OD` is `osdu/src/SqlFlow.Delivery/Engine/Protocols/`, where the protocols make their HTTP calls
 (`osdu/src/SqlFlow.Delivery/Protocols/IDeliveryProtocol.cs` is the contract they implement).
@@ -348,7 +355,7 @@ to be deprecated) [90 FC/api/FileLocationApi.java:65-111; docs/docs/File-Service
 endpoints of section 2.5. The public File contract has no collection route; collections go through the Dataset
 service.
 
-### 2.5 Dataset service (route to come)
+### 2.5 Dataset service
 
 Routes:
 
@@ -469,6 +476,73 @@ Dataset route compared with the File route:
 | Roles | `service.file.editors` | `service.dataset.editors`, plus `service.storage.creator` for registration and the forwarded copy |
 | Collections | Not supported | Supported |
 | Delete | `DELETE /v2/files/{id}/metadata` removes the bytes | `softDelete` keeps the bytes and `undelete` reverses it |
+
+#### 2.5.1 Uploading to a staging location, per provider
+
+`storageInstructions` hands out a location the client uploads to with the provider's own protocol. No OSDU contract
+describes that upload, and OSDU checks nothing about it [118 docs/docs/validations.md:3-7]. What each provider hands
+out, and how its own tests upload to it:
+
+| Provider (`providerKey`) | Single file (`dataset--File.*`) | File collection (`dataset--FileCollection.*`) | Source |
+| --- | --- | --- | --- |
+| Azure (`AZURE`) | `signedUrl` is a Blob SAS (`sr=b`, `sp=cw`) on `<user id>/<epoch millis>-<date>/<32 hex file id>` in the staging container of the partition's regular storage account, which the service creates empty first; the file id is random, not the client's file name. `fileSource` is `/` and that path. Inference: the upload is `PUT <signedUrl>` with `x-ms-blob-type: BlockBlob`. | `signedUrl` is a Data Lake directory SAS (`sr=d`, `sp=racwl`, `sdd=<segments>`, HTTPS only, a user delegation SAS under a managed identity) on `https://<account>.dfs.core.windows.net/<staging file system>/<directory>`, in the partition's hierarchical account; the service creates the directory first, and the directory is one segment, `<user id>-<epoch millis>-<timestamp>-<32 hex>`. `fileCollectionSource` is `/` and the directory. Each file: `PUT <directory>/<name>?resource=file`, `PATCH ...?action=append&position=<n>` with each part, then `PATCH ...?action=flush&position=<length>`, as the File service's own Azure test does it through the Data Lake client. | [90 FAZ/service/StorageServiceImpl.java:79, 101-135, 147-166, 292-309; FC/service/FileDmsServiceImpl.java:60-71; FAZ/service/FileCollectionStorageServiceImpl.java:81, 102-120, 208-238, 292-299; FAZ/repository/DataLakeRepository.java:52-78; testing/file-test-azure/.../Helper/DataLakeHelper.java:15-26; 77 DataLakeStore.java:86-106, 116-155; DataLakeClientFactoryImpl.java:113-134; SDK DataLakeSasImplUtil.java:254-259, 300-309; PathSasPermission.java:311-331] |
+| Core-plus on MinIO (`ANTHOS`) | `signedUrl` is a presigned `PUT` for `<uuid>/<dataset id>` with no signed headers, so the client sends a plain `PUT`; `fileSource` is `/<uuid>/<dataset id>`. | `url` is the unsigned staging bucket URL (`<endpoint>/<bucket>/`, the external endpoint when one is set), `fileCollectionSource` the bare 32 hex directory id, and `signingOptions` a presigned POST policy with a `starts-with` condition on the key: `x-amz-algorithm`, `x-amz-credential`, `x-amz-security-token` (with session credentials only), `x-amz-date`, `policy`, `x-amz-signature`, and no `key`. Each file: `POST <url>` as `multipart/form-data` with every entry, then `key=<directory>/<name>`, then the `file` part last. The expiry is the driver's default: `expiryTime` has no overload to reach it. | [90 FCP/service/ObmStorageService.java:83-118, 167-177; FCP/repository/ObmStorageRepository.java:53-117; FCP/service/ObmCollectionStorageService.java:98-157; FCP/repository/ObmCollectionStorageRepository.java:51-54, 85-87; FC/provider/interfaces/IFileCollectionStorageService.java:49-51; 1441 OC/Driver.java:140-148; MIN/MinioDriver.java:442-464; MIN/MinioUrlProvider.java:39-50; testing/obm-test-minio/.../MinioFullFlowIT.java:64-98; SDK minio PostPolicy.java:185-236] |
+| Core-plus on S3 (`S3`) | As on MinIO. | As on MinIO, with the policy's own field names (`policy`, `X-Amz-Algorithm`, `X-Amz-Credential`, `X-Amz-Date`, `X-Amz-Signature`) and `key=<directory>/`, to which the client appends the file name. Inference: a form field the policy does not name (a `Content-Type`, say) breaks the policy, `X-Amz-Date` is the service's local time with a literal `Z`, and the signing keys come from the service's properties even in partition mode. | [1441 S3/S3PostPolicyGenerator.java:37-86; S3/S3Driver.java:424-443; testing/obm-test-s3/.../S3FullFlowIT.java:73-102] |
+| Core-plus on Google Cloud Storage (`GCP`) | As on MinIO. | `url` is `https://storage.googleapis.com/<bucket>/`; `signingOptions` is `{bucket, filepath, connectionString}`, `connectionString` a downscoped token that allows `storage.objectAdmin` on the objects under the folder. Each file: `POST https://storage.googleapis.com/upload/storage/v1/b/<bucket>/o?uploadType=media&name=<filepath><name>` with `Authorization: Bearer <connectionString>`. | [1475 GS/GcsDriver.java:73-79, 370-394, 489-505; GS/GcsUrlProvider.java:29-48; testing/gc-obm-test-gs/.../GcsFullFlowIT.java:53-61, 93-116] |
+| IBM | Not read. | `{connectionString, credentials, unsignedUrl}`: temporary credentials (`AccessKeyId`, `SecretAccessKey`, `SessionToken`, `Expiration`) that allow `PutObject` and multipart uploads on the key and under it, and `s3://<bucket>/<directory id>`; no signed URL. Inference: the object store endpoint is not returned, so a client has to know it already. | [90 FIBM/service/FileCollectionStorageServiceImpl.java:44, 70-84; FIBM/model/file/TemporaryCredentials.java:20-41; FIBM/service/STSHelper.java:40-41, 166-211] |
+
+Inference: the Azure directory SAS also signs the directory's blob path, so a blob host `PUT` with
+`x-ms-blob-type: BlockBlob` should validate too [SDK DataLakeSasImplUtil.java:338-344]; no OSDU code uploads that way.
+
+What `FileCollectionPath` must be: Azure's `fileCollectionSource` carries its leading `/` and is registered as it is (the
+File service's Azure test sets `FileCollectionPath` to it) [90 testing/file-test-azure/.../apitest/TestFileCollection.java:84-86].
+Core-plus builds the staging location as protocol, bucket and `FileCollectionPath` with no separator, so the path needs
+a leading `/` and, inference, a trailing one: `/<directory id>/` [90 FCP/service/ObmCollectionStorageUtilService.java:49-69;
+1441 OC/ObmPathProvider.java:36-67].
+
+The copy a registration runs [90 FC/service/FileCollectionDmsServiceImpl.java:124-177; FC/service/FileDmsServiceImpl.java:98-120, 145-173]:
+
+- A collection's copy reads only `DatasetProperties.FileCollectionPath` (400 without it), never `FileSourceInfos`.
+- On Azure it renames the whole staging directory into the persistent file system: every file moves and the staging
+  directory is consumed [90 FAZ/service/CloudStorageOperationImpl.java:116-164; 77 DataLakeStore.java:186-193].
+  Inference: registering the same collection again needs its files uploaded again, to a new location.
+- On core-plus it lists the objects under the prefix and copies each to the same key, fails on an empty prefix, and
+  keeps the staging objects [90 FCP/service/ObmCloudStorageOperationImpl.java:97-141]. MinIO lists recursively and
+  Google Cloud Storage pages through every result [1441 MIN/MinioDriver.java:295-301, 497-521;
+  1475 GS/GcsDriver.java:143-155, 426-452]; S3 makes one `listObjects` call [1441 S3/S3Driver.java:503-588].
+  Inference: on S3 only the first 1000 files of a collection are copied.
+- IBM copies by prefix too and keeps the staging objects [90 FIBM/service/IBMCloudStorageOperationImpl.java:58-89].
+- A single file's copy needs `FileSourceInfo.FileSource` (or `PreloadFilePath`) and keeps the staging object, where the
+  File service's own `POST /v2/files/metadata` deletes it after its copy [90 FC/service/FileMetadataService.java:84-158].
+
+`retrievalProperties` per provider [118 DC/api/DatasetDmsApi.java:82-105; 67 CC/dms/model/RetrievalInstructionsResponse.java:29-35]:
+
+| Provider and type | `retrievalProperties` | Source |
+| --- | --- | --- |
+| Azure file | `{signedUrl, fileSource, createdBy, expiryTime}` | [90 FAZ/service/StorageServiceImpl.java:260-290] |
+| Azure collection | `{signedUrl (a read-only dfs SAS), fileNames, fileCount, ...}` | [90 FAZ/service/FileCollectionStorageServiceImpl.java:176-197] |
+| Core-plus file | `{signedUrl, createdBy, fileSource}` | [90 FCP/service/ObmStorageService.java:146-160] |
+| MinIO and S3 collection | `{retrievalPropertiesList: [{signedUrl, fileSource}]}` | [1441 MIN/MinioSignedDirectoryPropertiesResolver.java:44-72] |
+| Google Cloud Storage collection | `{token, fileSource}` | [1475 GS/GcsSignedDirectoryPropertiesResolver.java:38-53] |
+
+An id the File service cannot read is left out of `datasets`: the Dataset service checks only the id's format, tenant
+and entity type, and Storage answers the File service's `POST /query/records` with unknown and soft-deleted ids under
+`invalidRecords`, which the File service ignores [118 DC/service/DatasetDmsServiceImpl.java:155-192;
+90 FC/service/FileDmsServiceImpl.java:73-91; 44 SC/api/QueryApi.java:105-111; SC/service/BatchServiceImpl.java:99-124].
+Inference: a request whose ids are all unreadable answers `200 {"datasets": []}`, so a writer checks that every id it
+registered is listed.
+
+A record the Dataset service registered can be read through the File service too: `GET /v2/files/{id}/metadata` only
+reads Storage, and `GET /v2/files/{id}/downloadURL` reads `FileSourceInfo.FileSource` and `Name` by JSON path with no
+kind check [90 FC/service/FileMetadataService.java:74, 160-208; FC/service/FileDeliveryService.java:44-117].
+Inference: the download works once the registration has copied the file, since the copy keeps the relative key; a
+`.segy` file is served as `application/octet-stream` [90 FC/service/FileDeliveryService.java:119-133].
+
+How OSDU Delivery uploads [OD DatasetUploads.cs, DatasetCollections.cs]: a single file with `PUT <signedUrl>` and the
+flow's upload headers (a blob type on an Azure blob host); a collection by the provider's protocol above, the Data Lake
+appends in parts of at most 100 MiB, each request stating the service version the SAS was signed with; a location with
+temporary credentials and no endpoint (IBM) holds the record and says why. A signed location is never logged, stored or
+returned, so a retry asks for a new one unless every upload of the earlier try completed.
 
 ### 2.6 Manifest route: the core calls around the workflow
 
@@ -698,7 +772,7 @@ The conversion `Point` types `x`, `y`, `z` as strings with format `double` [C-cr
 | W3 | Storage JSON patch | `PATCH /api/storage/v2/records`, `application/json-patch+json`, `{query: {ids[1..100]}, ops[1..100]}` | `/data` and `/meta` ops version every record; metadata-only ops version none; 206 on partial success (2.3). |
 | W4 | Storage metadata bulk patch | `PATCH /api/storage/v2/records`, `application/json`, `{query: {ids[1..500]}, ops[]}` | `acl`, `legal` and `tags` paths only; no new version; 206 on partial success (2.3). |
 | W5 | File (`File.Generic`) | `GET /api/file/v2/files/uploadURL`, `PUT` signed URL, `POST /api/file/v2/files/metadata` | Kind `<any>:wks:dataset--File.Generic:<any>`; a new id on every accepted call; checksum computed by the service; metadata within 24 hours of upload (2.4). |
-| W6 | Dataset (`File.*`, `FileCollection.*`) | `POST /api/dataset/v1/storageInstructions?kindSubType=`, provider upload, `PUT /api/dataset/v1/registerDataset` | Kind group `dataset`; id entity type must match the kind; schema must exist; `FileCollectionPath` required for collections; no checksum computed; `expiryTime` not forwarded (2.5). |
+| W6 | Dataset (`File.*`, `FileCollection.*`) | `POST /api/dataset/v1/storageInstructions?kindSubType=`, provider upload (2.5.1), `PUT /api/dataset/v1/registerDataset` | Kind group `dataset`; id entity type must match the kind; schema must exist; `FileCollectionPath` required for collections; no checksum computed; `expiryTime` not forwarded (2.5). |
 | W7 | DDMS | Discover with `GET /api/register/v1/ddms/{id}` (or `?type=` for alphanumeric types); call what the DDMS declares | One server per interface; one retrieval operation with `x-ddms-retrieve-entity` (2.7). |
 | W8 | Manifest | Section 2.6 and `osdu/specs/workflows/INTEGRATION.md` | |
 
@@ -1032,7 +1106,10 @@ limits Storage enforces without `maxItems` (check them locally), and every role 
 - Cache lifetimes: Storage's legal tag cache and entitlements cache are configured outside the files read (2.2, 2.8).
 - Dataset `expiryTime`: confirm on Azure that a Dataset upload location has the default 1-hour lifetime whatever the
   request says (2.5).
-- Core-plus collections: confirm that `FileCollectionPath` needs a leading `/` for the copy and the retrieval (2.5).
+- Core-plus collections: confirm that `FileCollectionPath` needs a leading `/` for the copy and the retrieval (2.5, 2.5.1).
+- S3 collections: confirm that a collection of more than 1000 files is copied whole (2.5.1).
+- IBM collections: the object store endpoint the temporary credentials are for is not returned (2.5.1); the dataset
+  route holds such a record until a way to name the endpoint is known.
 - Re-registering a Dataset record after the landing-zone clean-up: whether the copy fails once the staging object is
   gone (2.5).
 - Dataset retrieval `fileSource`: confirm that it comes back empty on both providers (2.5).

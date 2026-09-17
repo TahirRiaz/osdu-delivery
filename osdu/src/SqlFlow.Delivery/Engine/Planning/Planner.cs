@@ -90,8 +90,11 @@ public sealed record PlanHeader
 
     public string? SkipReason { get; init; }
 
-    /// <summary>The payload set the protocol streams, or null for record-only protocols.</summary>
+    /// <summary>The payload set the protocol streams, or null for record-only protocols and for routes that send parts.</summary>
     public string? PayloadName { get; init; }
+
+    /// <summary>The payload sets a route that sends parts reads, in the order it sends them; null for every other route.</summary>
+    public IReadOnlyList<PayloadPart>? Parts { get; init; }
 
     /// <summary>How many key slices this plan is cut into; 1 when it runs on one node.</summary>
     public int Slices { get; init; } = 1;
@@ -279,6 +282,7 @@ public sealed class Planner
             Parameters = parameters,
             Issues = issues,
             PayloadName = PayloadName(flow),
+            Parts = PayloadParts.Of(flow),
             GatedCacheSets = gatedSets,
         };
 
@@ -478,11 +482,14 @@ public sealed class Planner
         return string.Join(";", parameters.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + "=" + kv.Value));
     }
 
-    /// <summary>The payload set the flow's protocol streams, or null when it streams none.</summary>
+    /// <summary>
+    /// The payload set the flow's protocol streams, or null when it streams none or sends its payload in parts
+    /// (<see cref="PayloadParts.Of"/>).
+    /// </summary>
     public static string? PayloadName(FlowDefinition flow)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        if (!DeliveryProtocols.CarriesPayload(flow.Target.Protocol))
+        if (!DeliveryProtocols.CarriesPayload(flow.Target.Protocol) || PayloadParts.Composed(flow.Target.Protocol))
         {
             return null;
         }
@@ -496,11 +503,13 @@ public sealed class Planner
         var resolved = header.Mapping;
         var payloadName = header.PayloadName;
         var payload = payloadName is null ? null : flow.Source.Payloads.GetValueOrDefault(payloadName);
+        var parts = header.Parts;
+        var roles = PayloadParts.Roles(flow);
         var renderer = resolved.Renderer;
         var context = resolved.Context.Canonical();
         var gatedSets = header.GatedCacheSets;
         var ordered = flow.Source.LastModified is not null;
-        var fileWatermark = payload is not null && flow.Change.PayloadDetect == ChangeDetection.LastModified;
+        var fileWatermark = (payload is not null || parts is not null) && flow.Change.PayloadDetect == ChangeDetection.LastModified;
         var keyed = new List<(SourceRecord Record, DeliveryKey? Key, string SourceKey, string? Label)>(batch.Count);
         foreach (var record in batch)
         {
@@ -532,7 +541,7 @@ public sealed class Planner
 
             var state = existing.GetValueOrDefault(key.Value);
             var (source, sourceProblem) = ReadSourceVersion(flow, record);
-            var hasPayload = payload is not null;
+            var hasPayload = payload is not null || parts is not null;
 
             // What every entry says about the record and the version the source carries, whatever is decided about it.
             var basis = new PlanEntry
@@ -621,7 +630,22 @@ public sealed class Planner
             DateTime? payloadModified = null;
             PayloadLocation? payloadLocation = null;
             int? chunkCount = null;
-            if (payload is not null)
+            List<ResolvedPart>? resolvedParts = null;
+            string? carriedComposite = null;
+            if (parts is not null)
+            {
+                var resolution = await ResolvePartsAsync(flow, header.Parameters, record.Row, parts, fileWatermark, ct).ConfigureAwait(false);
+                if (resolution.Refusal is { } problem)
+                {
+                    entries.Add(basis with { Reason = problem });
+                    continue;
+                }
+
+                resolvedParts = resolution.Parts;
+                payloadHash = CompositePayload.HashOf(resolution.Parts.Select(r => r.Part));
+                payloadModified = resolution.Parts.Select(r => r.Modified).Where(m => m is not null).Max();
+            }
+            else if (payload is not null)
             {
                 var resolution = PayloadLocations.Resolve(flow, header.Parameters, record.Row, payloadName!);
                 if (resolution.Refusal is { } problem)
@@ -698,7 +722,15 @@ public sealed class Planner
                     carriedPayload = true;
                     payloadHash = state.PendingPayloadHash;
                     payloadModified = state.PendingPayloadModifiedUtc;
-                    payloadLocation = state.PendingPayloadLocation is { } stored ? PayloadLocation.Parse(stored) : payloadLocation;
+                    if (parts is not null)
+                    {
+                        carriedComposite = state.PendingPayloadLocation;
+                    }
+                    else
+                    {
+                        payloadLocation = state.PendingPayloadLocation is { } stored ? PayloadLocation.Parse(stored) : payloadLocation;
+                    }
+
                     chunkCount = null;
                     decision = decision with { Reason = $"{decision.Reason}; {why}, so the newer payload already queued is kept" };
                 }
@@ -732,7 +764,39 @@ public sealed class Planner
                 continue;
             }
 
-            if (decision.DeliverPayload)
+            string? payloadText = payloadLocation?.ToString();
+            if (decision.DeliverPayload && parts is not null)
+            {
+                // Each part's files are counted the way a single payload's are; the parts are listed with the parts the
+                // delivery sends whatever their hashes say, and that list is what the ledger keeps as the payload.
+                string? problem = null;
+                if (carriedComposite is not null)
+                {
+                    payloadText = carriedComposite;
+                }
+                else
+                {
+                    (chunkCount, problem) = await CountPartsAsync(flow, record.Row, resolvedParts!, ct).ConfigureAwait(false);
+                    payloadText = problem is null
+                        ? new CompositePayload(resolvedParts!.Select(r => r.Part).ToList(), PayloadParts.Forced(state?.PayloadHash, flow.Change, roles)).Encode()
+                        : null;
+                    problem ??= CompositePayload.TooLong(payloadText!);
+                }
+
+                if (problem is not null)
+                {
+                    entries.Add(basis with
+                    {
+                        TargetId = render.TargetId,
+                        Reason = problem,
+                        Render = render,
+                        PayloadHash = payloadHash,
+                        PayloadModifiedUtc = payloadModified,
+                    });
+                    continue;
+                }
+            }
+            else if (decision.DeliverPayload)
             {
                 // The record row can declare how many files the payload has, which spares a storage listing per
                 // record here (the drain lists them when it streams them anyway); without it they are listed. A
@@ -767,7 +831,7 @@ public sealed class Planner
                 Render = render,
                 PayloadHash = payloadHash,
                 PayloadModifiedUtc = payloadModified,
-                PayloadLocation = decision.DeliverPayload ? payloadLocation?.ToString() : null,
+                PayloadLocation = decision.DeliverPayload ? payloadText : null,
                 ChunkCount = decision.DeliverPayload ? chunkCount : null,
                 DeliverMetadata = decision.DeliverMetadata,
                 DeliverPayload = decision.DeliverPayload,
@@ -794,6 +858,102 @@ public sealed class Planner
 
     private static string Moment(DateTime utc)
         => Json.CanonicalJson.FormatDateTime(new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc)));
+
+    /// <summary>One part of a record's payload as the plan resolved it, with the modified time of its files when they were listed.</summary>
+    private sealed record ResolvedPart(CompositePayloadPart Part, PayloadPart Declared, DateTime? Modified);
+
+    /// <summary>
+    /// Each part's location and content hash, from the record's row as a single payload's are: the location column under
+    /// the part's root, and the hash column (or, when the flow takes the files' modified times, the files themselves). An
+    /// optional part whose row names no folder, or whose folder holds no files, is kept as a part without files; any other
+    /// part that cannot say where its files are, or what they hold, holds the record.
+    /// </summary>
+    private async Task<(List<ResolvedPart> Parts, string? Refusal)> ResolvePartsAsync(
+        FlowDefinition flow, IReadOnlyDictionary<string, string> parameters, SourceRow row, IReadOnlyList<PayloadPart> parts, bool fileWatermark, CancellationToken ct)
+    {
+        var resolved = new List<ResolvedPart>(parts.Count);
+        foreach (var part in parts)
+        {
+            var declared = flow.Source.Payloads[part.Payload];
+            if (part.Optional && declared.LocationColumn is { } column && string.IsNullOrWhiteSpace(row.GetString(column)))
+            {
+                resolved.Add(new ResolvedPart(new CompositePayloadPart(part.Role, part.Payload, null, CompositePayload.NoFiles), part, null));
+                continue;
+            }
+
+            var resolution = PayloadLocations.Resolve(flow, parameters, row, part.Payload);
+            if (resolution.Refusal is { } refusal)
+            {
+                return (resolved, refusal);
+            }
+
+            var location = resolution.Location!.Value;
+            string? hash;
+            DateTime? modified = null;
+            if (fileWatermark)
+            {
+                var files = PayloadFiles.Of(await _payloads.ListAsync(location.Folder, location.Pattern, ct).ConfigureAwait(false));
+                if (files.Count == 0)
+                {
+                    if (part.Optional)
+                    {
+                        resolved.Add(new ResolvedPart(new CompositePayloadPart(part.Role, part.Payload, null, CompositePayload.NoFiles), part, null));
+                        continue;
+                    }
+
+                    return (resolved, $"no payload files under {location} for payload '{part.Payload}'; the payload's watermark is its files, so there is nothing to compare or send");
+                }
+
+                modified = files.ModifiedUtc;
+                hash = declared.HashColumn is { } hashColumn ? row.GetString(hashColumn) : files.Signature;
+            }
+            else
+            {
+                hash = row.GetString(declared.HashColumn!);
+            }
+
+            if (string.IsNullOrWhiteSpace(hash))
+            {
+                return (resolved, $"payload '{part.Payload}' takes its content hash from column '{declared.HashColumn}', which this row leaves empty");
+            }
+
+            resolved.Add(new ResolvedPart(new CompositePayloadPart(part.Role, part.Payload, location.ToString(), hash), part, modified));
+        }
+
+        return (resolved, null);
+    }
+
+    /// <summary>
+    /// How many files the parts of a record hold together, each counted from its declared count column or listed, and
+    /// why the record is held when a part with a folder holds no file.
+    /// </summary>
+    private async Task<(int? Count, string? Problem)> CountPartsAsync(FlowDefinition flow, SourceRow row, List<ResolvedPart> parts, CancellationToken ct)
+    {
+        var total = 0;
+        foreach (var resolved in parts)
+        {
+            if (resolved.Part.Location is not { } text)
+            {
+                continue;
+            }
+
+            var count = DeclaredChunkCount(flow.Source.Payloads[resolved.Part.Payload], row);
+            if (count is null)
+            {
+                var location = PayloadLocation.Parse(text);
+                count = (await _payloads.ListAsync(location.Folder, location.Pattern, ct).ConfigureAwait(false)).Count;
+            }
+
+            if (count == 0)
+            {
+                return (null, $"payload '{resolved.Part.Payload}' has a content hash but no files under {text}");
+            }
+
+            total += count.Value;
+        }
+
+        return (total, null);
+    }
 
     private static int? DeclaredChunkCount(FlowPayload payload, SourceRow row)
     {

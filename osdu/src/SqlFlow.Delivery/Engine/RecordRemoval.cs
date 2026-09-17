@@ -100,9 +100,24 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
     {
         ArgumentNullException.ThrowIfNull(flow);
         var options = flow.Target.ProtocolOptions;
-        if (flow.Target.Protocol == DeliveryProtocol.OsduWellLog)
+        if (DeliveryProtocols.ReachesDdms(flow.Target.Protocol))
         {
             return OfDdms(flow, kind);
+        }
+
+        // A dataset the route registers itself is removed reversibly through the Dataset service, whose undelete restores it.
+        var registersDataset = flow.Target.Protocol switch
+        {
+            DeliveryProtocol.OsduDataset => !string.IsNullOrWhiteSpace(kind) && OsduKind.EntityType(kind) is { } entityType && Protocols.DatasetService.IsDatasetType(entityType),
+            DeliveryProtocol.OsduWorkflow => flow.Target.Workflow?.Anchor == Model.WorkflowAnchor.Dataset,
+            _ => false,
+        };
+        if (registersDataset)
+        {
+            return new RemovalEndpoints(
+                options.DatasetSoftDeletePath ?? Protocols.DatasetService.DefaultSoftDeletePath,
+                options.PurgeVersionsPath ?? OsduRecordProtocol.DefaultPurgeVersionsPath,
+                options.PurgePath ?? OsduRecordProtocol.DefaultPurgePath);
         }
 
         return new RemovalEndpoints(

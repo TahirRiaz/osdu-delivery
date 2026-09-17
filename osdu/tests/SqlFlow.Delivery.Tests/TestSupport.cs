@@ -411,12 +411,11 @@ public sealed class FakeProtocolFactory : IProtocolFactory
     public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default) => Task.FromResult(_protocol);
 }
 
-/// <summary>A scripted HTTP handler: matches requests by method and path, records bodies, returns canned responses.</summary>
 /// <summary>
 /// Builds the real protocols over one fake OSDU (<paramref name="handler"/>), the way the node's factory builds them over
 /// the network, each over an HTTP runtime of its own that the factory disposes.
 /// </summary>
-public sealed class FakeOsduProtocols(FakeHttpHandler handler) : IProtocolFactory, IDisposable
+public sealed class FakeOsduProtocols(HttpMessageHandler handler) : IProtocolFactory, IDisposable
 {
     private readonly List<HttpRuntime> _runtimes = [];
     private readonly object _gate = new();
@@ -447,6 +446,7 @@ public sealed class FakeOsduProtocols(FakeHttpHandler handler) : IProtocolFactor
     }
 }
 
+/// <summary>A scripted HTTP handler: matches requests by method and path, records bodies, returns canned responses.</summary>
 public sealed class FakeHttpHandler : HttpMessageHandler
 {
     public sealed record Request(HttpMethod Method, Uri Uri, string? Body, string? ContentType, IReadOnlyDictionary<string, string> Headers);

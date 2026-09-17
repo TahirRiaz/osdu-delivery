@@ -184,6 +184,44 @@ public sealed class OsduHttpClient
         }, null, ct: ct);
     }
 
+    /// <summary>
+    /// Sends a file as a multipart form to a location an object store signed with a POST policy: the policy's
+    /// <paramref name="fields"/> in order, then the file, last, as the store requires. Like any signed location it carries
+    /// its own authorisation, so neither the flow's auth nor its headers go with it. The file part states its length, so
+    /// the form has one and is not sent chunked, which a POST policy upload refuses.
+    /// </summary>
+    public Task<HttpFetchResult> SendFormToSignedUrlAsync(
+        Uri url, IReadOnlyList<KeyValuePair<string, string>> fields, string fileField, string fileName, Func<Stream> open, long length, string contentType, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(url);
+        ArgumentNullException.ThrowIfNull(fields);
+        ArgumentNullException.ThrowIfNull(open);
+        return _http.Data.SendAsync(() =>
+        {
+            var form = new MultipartFormDataContent();
+            foreach (var (name, value) in fields)
+            {
+                form.Add(new StringContent(value), name);
+            }
+
+            form.Add(StreamBody(open(), contentType, length), fileField, fileName);
+            return new HttpRequestMessage(HttpMethod.Post, url) { Content = form };
+        }, null, ct: ct);
+    }
+
+    /// <summary>
+    /// Reads a file from a signed URL the service handed out (a dataset's retrieval instructions): the URL carries its own
+    /// authorisation, so neither the flow's auth nor its headers go with it, since some object stores refuse a request
+    /// that also carries a bearer (osdu/specs/workflows/INTEGRATION.md section 2.2.1). The body is capped at the flow's
+    /// response ceiling, as every read is.
+    /// </summary>
+    public async Task<byte[]> GetSignedUrlAsync(Uri signedUrl, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(signedUrl);
+        var result = await _http.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, signedUrl), null, ct: ct).ConfigureAwait(false);
+        return result.Body;
+    }
+
     private static StreamContent StreamBody(Stream stream, string contentType, long? length)
     {
         var content = new StreamContent(stream, 1 << 16);

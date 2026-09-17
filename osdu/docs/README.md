@@ -16,7 +16,7 @@ replica.
 | [documents.md](documents.md) | The delivery flow (a single OSDU type, or a source with interfaces), retrieval flow, cache flow and mapping documents key by key. |
 | [mapping-templates.md](mapping-templates.md) | Templates and mappings: the template an OSDU schema becomes and where it is saved, the mapping format entry by entry (sources, `findBy`, modifiers, `appliesWhen`, `required`, fixtures), the checks, and the mapping builder. |
 | [ledger.md](ledger.md) | The ledger tables, the cache versions, the record lifecycle, leasing, the indexes behind every listing, retention. |
-| [protocols.md](protocols.md) | The named delivery protocols (`osduRecord`, `osduWellLog`, `osduFile`, `osduManifest`), their steps and returned values, and how to add one. |
+| [protocols.md](protocols.md) | The named delivery protocols (`osduRecord`, `osduWellLog`, `osduFile`, `osduDataset`, `osduManifest`, `osduFileAndDdms`, `osduManifestAndDdms`, `osduWorkflow`), their steps and returned values, payload parts, and how to add one. |
 | [operations.md](operations.md) | Running it: the API and the GUI surfaces, running a source, the CLI verbs, first deployment, the runbook. |
 | [osdu-testing.md](osdu-testing.md) | The state of testing against OSDU: how it is tested, what was proven live per protocol and feature, the defects the live runs found and their fixes, and what is still missing. |
 | [architecture.md](architecture.md) | The module on SQLFlow: the three-flow chain, the extension points it registers through, and the `osdu` schema. |
@@ -29,7 +29,7 @@ replica.
 
 | Path | Responsibility |
 | --- | --- |
-| `osdu/src/SqlFlow.Delivery` | The whole domain: model, identity, canonical JSON and hashing, the document loader and the three flow kinds, templates and the mapping builder, the cache store, rendering, planning, the preflight gate, the HTTP runtime, storage (work batch files, writers), the ledger, the engine (intake, worker, verifier, the four protocols, fan-out, the retrieval runner, the cache refresh and its impact analysis), the run executors, the compute operations, and the sync of mappings and cache definitions. |
+| `osdu/src/SqlFlow.Delivery` | The whole domain: model, identity, canonical JSON and hashing, the document loader and the three flow kinds, templates and the mapping builder, the cache store, rendering, planning, the preflight gate, the HTTP runtime, storage (work batch files, writers), the ledger, the engine (intake, worker, verifier, the protocols and the workflow contracts, fan-out, the retrieval runner, the cache refresh and its impact analysis), the run executors, the compute operations, and the sync of mappings and cache definitions. |
 | `osdu/src/SqlFlow.Delivery.Data` | `OsduDbContext`: the `osdu` schema model, its migrations and its schema version. |
 | `osdu/src/SqlFlow.Delivery.ControlPlane` | The delivery and template API under `/api/v1/delivery`, and the cache rollout and data definitions background services. |
 | `osdu/src/SqlFlow.Delivery.Cli` | `sqlflow check`, `sqlflow cache` and `sqlflow template`. |

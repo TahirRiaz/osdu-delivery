@@ -18,16 +18,19 @@ are designed from these files and from the core service specifications in
 | `reservoir-management-ddms` | Reservoir Management DDMS | its Postman collection and README, and the OpenAPI document its app generates at runtime (`openapi.generated.json`, written by `tools/generate-rmddms-openapi.py`) |
 | `eds-dms` | External Data Services DMS | OpenAPI (`openapi.yaml`) |
 | `workflows` | Ingestion workflows (manifest ingestion, CSV parser, Energistics parsers, SEG-Y conversions, external data) | each project's README |
+| `workflows/airflow` | Apache Airflow, whose REST API the workflow route reads XCom entries from | the stable REST API of Airflow 2.11.2 (`v1.yaml`), and the public REST API and the simple auth manager's token endpoint of Airflow 3.3.1, as Airflow generates them |
 
-`sources.json` lists every file with the OSDU project it came from, the path in that project, the commit and its
-date. The files are copied as published, except that an em dash in a text file becomes plain punctuation, because
+`sources.json` lists every file with the project it came from, the path in that project, the commit and its date.
+The OSDU projects are on `community.opengroup.org`; the Airflow contracts come from `github.com/apache/airflow`, at the
+commit of the release tag each row names. The files are copied as published, except that an em dash in a text file becomes plain punctuation, because
 this repository allows none. Each service's `INTEGRATION.md` is the brief its route type is built from: every call
 the route makes, with the contract it comes from.
 
 ## Refreshing
 
-`node tools/vendor-osdu-specs.js` downloads every file again at the head of its project's default branch and
-rewrites `sources.json`, keeping the rows of the core specifications, which are copied by hand from the core
+`node tools/vendor-osdu-specs.js` downloads every file again at the head of its project's default branch (an Airflow
+contract at the release its row names, so moving to a new Airflow release is an edit to the script) and rewrites
+`sources.json`, keeping the rows of the core specifications, which are copied by hand from the core
 specification set when it changes, and of the generated contracts. A generated contract's row names its generator
 (`generatedBy`); when its project has moved on, the script says so, and the generator is run against the new commit
 (its usage is at the top of the script). Review the diff: a changed contract is a change to the route built on it, and

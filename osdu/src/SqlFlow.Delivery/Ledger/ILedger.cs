@@ -796,6 +796,16 @@ public enum RedeliverScope
     Payload,
 }
 
+/// <summary>
+/// What a forced redelivery re-sends: a half of the record, and, for a payload sent in parts, the parts of it (files,
+/// bulk, workflow); no parts means every part.
+/// </summary>
+public sealed record RedeliverSelection(RedeliverScope Scope, IReadOnlyList<string> Parts)
+{
+    public override string ToString()
+        => Parts.Count == 0 ? Scope.ToString().ToLowerInvariant() : string.Join(" and ", Parts);
+}
+
 /// <summary>How a free-text search is applied. Prefix search uses the indexes and answers in milliseconds.</summary>
 public enum SearchMode
 {
@@ -1184,7 +1194,15 @@ public interface ILedger
     /// Forgets what OSDU holds for the records (the whole record, the metadata document or the payload) and asks the
     /// flow's next run to plan them again. Returns how many records were marked.
     /// </summary>
-    Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default);
+    Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default)
+        => ForceRedeliverAsync(flowId, keys, new RedeliverSelection(scope, []), nowUtc, ct);
+
+    /// <summary>
+    /// Marks records so the next plan sends again what <paramref name="selection"/> names. A selection of payload parts
+    /// (docs/interfaces-design.md section 5.5) leaves them on the record's delivered payload hash
+    /// (<see cref="Model.PayloadParts.RedeliverMarker"/>), where the plan reads them and the next payload delivery replaces them.
+    /// </summary>
+    Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverSelection selection, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
     /// Records what a removal did to a set of the flow's records, in one round trip. <see cref="RemovalScope.Record"/> and

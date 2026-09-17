@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.Delivery.Ledger;
@@ -1184,15 +1185,26 @@ public sealed partial class OsduLedger : ILedger
         return requeued + unblocked;
     }
 
-    public async Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default)
+    public Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default)
+        => ForceRedeliverAsync(flowId, keys, new RedeliverSelection(scope, []), nowUtc, ct);
+
+    public async Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverSelection selection, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(keys);
+        ArgumentNullException.ThrowIfNull(selection);
         await using var db = Open();
-        var note = $"redelivery of {scope.ToString().ToLowerInvariant()} requested";
-        return await WriteByKeyAsync(db.DeliveryRecords, keys.Select(k => new RecordKey(flowId, k.Value)), rows => RedeliverAsync(rows, scope, note, nowUtc, ct), ct).ConfigureAwait(false);
+        var note = $"redelivery of {selection} requested";
+
+        // Parts of a payload sent in parts are named on its delivered hash; a selection of every part clears it, as a
+        // whole payload's redelivery always has.
+        var marker = selection is { Scope: RedeliverScope.Payload, Parts.Count: > 0 } ? PayloadParts.RedeliverMarker(selection.Parts) : null;
+        return await WriteByKeyAsync(db.DeliveryRecords, keys.Select(k => new RecordKey(flowId, k.Value)), rows => RedeliverAsync(rows, selection.Scope, marker, note, nowUtc, ct), ct).ConfigureAwait(false);
     }
 
     private static Task<int> RedeliverAsync(IQueryable<DeliveryRecord> rows, RedeliverScope scope, string note, DateTime nowUtc, CancellationToken ct)
+        => RedeliverAsync(rows, scope, null, note, nowUtc, ct);
+
+    private static Task<int> RedeliverAsync(IQueryable<DeliveryRecord> rows, RedeliverScope scope, string? payloadMarker, string note, DateTime nowUtc, CancellationToken ct)
         => scope switch
         {
             RedeliverScope.Metadata => rows.ExecuteUpdateAsync(s => s
@@ -1203,7 +1215,7 @@ public sealed partial class OsduLedger : ILedger
                 .SetProperty(r => r.LastError, note)
                 .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
             RedeliverScope.Payload => rows.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.PayloadHash, (string?)null)
+                .SetProperty(r => r.PayloadHash, payloadMarker)
                 .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
                 .SetProperty(r => r.SourceFingerprint, (string?)null)
                 .SetProperty(r => r.PendingSourceFingerprint, (string?)null)

@@ -708,7 +708,7 @@ public class DeliverRunScopeTests
         var logs = loader.LoadFlow(Samples.Flow);
         var wellbores = loader.LoadFlow(Samples.WellboreFlowFile);
         var files = logs with { Target = logs.Target with { Protocol = DeliveryProtocol.OsduFile } };
-        RedeliverScope Of(FlowDefinition flow, string? part) => DeliveryExecutor.RedeliverScopeOf(new DeliveryRunPayload { RecordKeys = [key], Redeliver = part }, flow);
+        RedeliverScope Of(FlowDefinition flow, string? part) => DeliveryExecutor.RedeliverScopeOf(new DeliveryRunPayload { RecordKeys = [key], Redeliver = part }, flow).Scope;
 
         // The ddms route sends the record and its bulk data.
         Assert.Equal(RedeliverScope.All, Of(logs, null));
@@ -732,7 +732,7 @@ public class DeliverRunScopeTests
             Assert.Throws<DeliveryException>(() => Of(wellbores, RedeliverScopes.Payload)).Message,
             StringComparison.Ordinal);
 
-        Assert.Contains("redeliver 'everything' is not one of all, record, files, bulk, metadata, payload", Assert.Throws<DeliveryException>(() => Of(logs, "everything")).Message, StringComparison.Ordinal);
+        Assert.Contains("redeliver 'everything' is not one of all, record, files, bulk, workflow, metadata, payload", Assert.Throws<DeliveryException>(() => Of(logs, "everything")).Message, StringComparison.Ordinal);
     }
 
     [Fact]

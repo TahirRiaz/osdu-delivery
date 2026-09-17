@@ -225,12 +225,20 @@ public sealed class FlowRuntime : IDisposable
     public async Task CheckRouteAsync(string kind, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
-        if (Flow.Target.Protocol == DeliveryProtocol.OsduWellLog
-            && DdmsDiscovery.Needed(Flow)
-            && await ProtocolAsync(ct).ConfigureAwait(false) is OsduWellLogProtocol ddms)
+        if (DeliveryProtocols.ReachesDdms(Flow.Target.Protocol) && DdmsDiscovery.Needed(Flow))
         {
-            RouteChecks.Check(Flow, kind, ddms.Routing);
-            return;
+            var routing = await ProtocolAsync(ct).ConfigureAwait(false) switch
+            {
+                OsduWellLogProtocol ddms => ddms.Routing,
+                OsduFileAndDdmsProtocol files => files.Routing,
+                OsduManifestAndDdmsProtocol manifests => manifests.Routing,
+                _ => null,
+            };
+            if (routing is not null)
+            {
+                RouteChecks.Check(Flow, kind, routing);
+                return;
+            }
         }
 
         RouteChecks.Check(Flow, kind);
@@ -387,13 +395,18 @@ public sealed class FlowRuntime : IDisposable
     /// the flow's next run to plan them again.
     /// </summary>
     public Task<int> RedeliverAsync(IReadOnlyList<DeliveryKey> keys, RedeliverScope scope, CancellationToken ct = default)
+        => RedeliverAsync(keys, new RedeliverSelection(scope, []), ct);
+
+    /// <summary>Marks records for redelivery of what <paramref name="selection"/> names, parts of a payload sent in parts included.</summary>
+    public Task<int> RedeliverAsync(IReadOnlyList<DeliveryKey> keys, RedeliverSelection selection, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(keys);
-        return TrackAsync("redeliver", new { keys = keys.Select(k => k.ToString()).ToList(), scope = scope.ToString() }, keys.Count == 1 ? keys[0] : null, async () =>
+        ArgumentNullException.ThrowIfNull(selection);
+        return TrackAsync("redeliver", new { keys = keys.Select(k => k.ToString()).ToList(), scope = selection.Scope.ToString(), parts = selection.Parts }, keys.Count == 1 ? keys[0] : null, async () =>
         {
-            var marked = await RequireLedger().ForceRedeliverAsync(Flow.Id, keys, scope, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            await EmitAsync("record.redeliver", keys, $"redelivery of {scope.ToString().ToLowerInvariant()} requested by {Actor}", ct).ConfigureAwait(false);
-            return (marked, $"marked {marked} record(s) for redelivery of {scope.ToString().ToLowerInvariant()}", (Guid?)null);
+            var marked = await RequireLedger().ForceRedeliverAsync(Flow.Id, keys, selection, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            await EmitAsync("record.redeliver", keys, $"redelivery of {selection} requested by {Actor}", ct).ConfigureAwait(false);
+            return (marked, $"marked {marked} record(s) for redelivery of {selection}", (Guid?)null);
         }, ct);
     }
 

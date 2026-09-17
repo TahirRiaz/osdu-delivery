@@ -55,10 +55,20 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(work);
+        var prepared = await PrepareAsync(work, ct).ConfigureAwait(false);
+        return await SendAsync(work, prepared, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Everything the route checks before its first request, for a record and the bulk data it sends
+    /// (<paramref name="work"/>'s <see cref="DeliveryWork.Payload"/>): where the record goes, the rules the DDMS applies
+    /// to it, and the bulk data's chunks against the ceilings, the record's columns and each other. A record that fails
+    /// is held here, so a route that sends something else first (files, a manifest) checks it before that too.
+    /// </summary>
+    public async Task<PreparedDdmsWork> PrepareAsync(DeliveryWork work, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(work);
         var paths = Held(work.TargetId);
-        var steps = new DeliverySteps(_time);
-        var version = work.ExistingVersion;
-        var metadataDelivered = false;
         var writesMetadata = work.DeliverMetadata && work.Completed(MetadataStep) is null;
 
         if (work.DeliverPayload && BulkProblem(work.TargetId, paths) is { } nowhere)
@@ -90,6 +100,23 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             session = chunks.Count > 1 || _options.SessionThresholdChunks < 1;
             shapes = await PreflightAsync(work.Document, paths, payload, chunks, session, ct).ConfigureAwait(false);
         }
+
+        return new PreparedDdmsWork(paths, chunks, shapes, session);
+    }
+
+    /// <summary>
+    /// Writes what <paramref name="prepared"/> checked: the record through its collection when the work delivers it, then
+    /// its bulk data. <paramref name="work"/> may differ from the work that was prepared only in what a composed route
+    /// learned since (its dataset list, the version its manifest wrote).
+    /// </summary>
+    public async Task<DeliveryOutcome> SendAsync(DeliveryWork work, PreparedDdmsWork prepared, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        ArgumentNullException.ThrowIfNull(prepared);
+        var (paths, chunks, shapes, session) = prepared;
+        var steps = new DeliverySteps(_time);
+        var version = work.ExistingVersion;
+        var metadataDelivered = false;
 
         if (work.DeliverMetadata)
         {
@@ -653,3 +680,10 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     internal static Stream OpenSync(IPayloadSource payload, PayloadFile chunk)
         => payload.OpenAsync(chunk).GetAwaiter().GetResult();
 }
+
+/// <summary>What the ddms route checked for one record before its first request, and what its send uses.</summary>
+/// <param name="Paths">Where the record and its bulk data go.</param>
+/// <param name="Chunks">The bulk data's chunk files; empty when no bulk data is sent.</param>
+/// <param name="Shapes">The chunks' shapes read from their footers, when they were read.</param>
+/// <param name="Session">True when the bulk data goes through a session.</param>
+public sealed record PreparedDdmsWork(DdmsRecordPaths Paths, IReadOnlyList<PayloadFile> Chunks, IReadOnlyList<ParquetShape>? Shapes, bool Session);

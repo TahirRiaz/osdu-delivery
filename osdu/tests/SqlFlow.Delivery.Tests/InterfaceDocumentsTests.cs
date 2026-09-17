@@ -283,11 +283,14 @@ public sealed class InterfaceDocumentsTests
     [Theory]
     [InlineData("route: storage\nfiles: { root: ../d, locationColumn: f, hashColumn: h }", "route is storage, which writes the record alone, so interfaces.wells.files would never be sent")]
     [InlineData("route: file", "route is file, which uploads and registers each record's files, and the interface declares none under interfaces.wells.files")]
-    [InlineData("route: file\nfiles: { root: ../d, locationColumn: f, hashColumn: h }\nbulk: { root: ../b, locationColumn: f, hashColumn: h }", "route is file, which does not write DDMS bulk data")]
-    [InlineData("route: manifest\nbulk: { root: ../b, locationColumn: f, hashColumn: h }", "route is manifest, which sends records through the ingestion workflow and writes no DDMS bulk data")]
-    [InlineData("route: ddms\nfiles: { root: ../d, locationColumn: f, hashColumn: h }", "route is ddms, which writes the record and its bulk data through a DDMS and registers no files")]
-    [InlineData("files: { root: ../d, locationColumn: f, hashColumn: h }\nbulk: { root: ../b, locationColumn: f, hashColumn: h }", "declares both files and bulk")]
-    [InlineData("route: teleport", "'interfaces.wells.route' value 'teleport' is not one of storage, file, manifest, ddms")]
+    [InlineData("route: fileAndDdms\nfiles: { root: ../d, locationColumn: f, hashColumn: h }", "route is fileAndDdms, which registers each record's files and writes its bulk data through its DDMS, and the interface declares no interfaces.wells.bulk")]
+    [InlineData("route: manifestAndDdms", "route is manifestAndDdms, which writes each record's bulk data through its DDMS after the manifest, and the interface declares none under interfaces.wells.bulk")]
+    [InlineData("route: dataset", "route is dataset, which stores each record's files and registers them through the dataset service, and the interface declares none under interfaces.wells.files")]
+    [InlineData("route: dataset\nfiles: { root: ../d, locationColumn: f, hashColumn: h }\nbulk: { root: ../b, locationColumn: f, hashColumn: h }", "route is dataset, which writes no DDMS bulk data, so interfaces.wells.bulk would never be sent")]
+    [InlineData("route: workflow", "route is workflow, and the interface declares no workflow under interfaces.wells.workflow")]
+    [InlineData("route: storage\nworkflow: { stages: [{ workflow: eds_scheduler }] }", "interfaces.wells.route is storage, and interfaces.wells.workflow declares a workflow, which only the workflow route runs")]
+    [InlineData("bulk: { root: ../b, locationColumn: f, hashColumn: h }\nworkflow: { stages: [{ workflow: eds_scheduler }] }", "the workflow route writes no DDMS bulk data, so interfaces.wells.bulk would never be sent")]
+    [InlineData("route: teleport", "'interfaces.wells.route' value 'teleport' is not one of storage, file, dataset, manifest, ddms, fileAndDdms, manifestAndDdms, workflow")]
     public void A_route_that_cannot_deliver_what_an_interface_declares_is_refused(string declared, string expected)
     {
         var yaml = Source($$"""

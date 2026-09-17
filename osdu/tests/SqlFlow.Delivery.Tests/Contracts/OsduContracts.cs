@@ -58,6 +58,25 @@ internal static class OsduContracts
 
     public static ApiContract ExternalDataServices => Get("eds-dms", "eds-dms", "openapi.yaml");
 
+    /// <summary>Airflow 2's stable REST API (release 2.11.2), for the XCom entries only Airflow returns.</summary>
+    public static ApiContract AirflowV1 => Get("workflows/airflow-v1", "workflows", "airflow", "v1.yaml");
+
+    /// <summary>Airflow 3's public REST API (release 3.3.1).</summary>
+    public static ApiContract AirflowV2 => Get("workflows/airflow-v2", "workflows", "airflow", "v2-rest-api-generated.yaml");
+
+    /// <summary>Airflow 3's simple auth manager, which issues the tokens the v2 API takes.</summary>
+    public static ApiContract AirflowAuth => Get("workflows/airflow-auth", "workflows", "airflow", "v2-simple-auth-manager-generated.yaml");
+
+    /// <summary>
+    /// The difference the workflows brief records between the Workflow contract and every DAG
+    /// (osdu/specs/workflows/INTEGRATION.md section 7, item 2): the contract types each <c>executionContext</c> value as an
+    /// object, and the DAGs read strings, lists and flags, so a context that follows the workflow's own contract breaks
+    /// that typing and nothing else. The route checks each context against the workflow's contract instead.
+    /// </summary>
+    public static bool ContextValueTyping(string violation)
+        => violation.Contains("POST /v1/workflow/{workflow_name}/workflowRun body.executionContext.", StringComparison.Ordinal)
+           && violation.EndsWith("is not of type object", StringComparison.Ordinal);
+
     /// <summary>The document the Reservoir Management DDMS generates at runtime, as tools/generate-rmddms-openapi.py wrote it.</summary>
     public static ApiContract ReservoirManagementDdms => Get("reservoir-management-ddms", "reservoir-management-ddms", "openapi.generated.json");
 
@@ -67,7 +86,7 @@ internal static class OsduContracts
         Storage, File, Dataset, Workflow, Search, Legal, Schema, Register, Entitlements,
         Partition, UnitV2, UnitV3, CrsCatalog, CrsConversion,
         WellboreDdms, SeismicDdms, RafsDdms, WellDeliveryDdms, ProductionDspdm, ProductionTimeSeriesIngestion, ProductionTimeSeries,
-        ExternalDataServices, ReservoirManagementDdms,
+        ExternalDataServices, ReservoirManagementDdms, AirflowV1, AirflowV2, AirflowAuth,
     ];
 
     /// <summary>
@@ -79,6 +98,15 @@ internal static class OsduContracts
     /// endpoint), which are not checked.
     /// </summary>
     public static IReadOnlySet<string> AssertConform(IEnumerable<FakeHttpHandler.Request> requests, Func<FakeHttpHandler.Request, bool>? outside, params ApiContract[] contracts)
+        => AssertConform(requests, outside, null, contracts);
+
+    /// <summary>
+    /// <see cref="AssertConform(IEnumerable{FakeHttpHandler.Request}, Func{FakeHttpHandler.Request, bool}?, ApiContract[])"/>,
+    /// with the violations <paramref name="documented"/> names let through: differences a brief records between a contract
+    /// and the code the contract describes, which a route follows the code on.
+    /// </summary>
+    public static IReadOnlySet<string> AssertConform(
+        IEnumerable<FakeHttpHandler.Request> requests, Func<FakeHttpHandler.Request, bool>? outside, Func<string, bool>? documented, params ApiContract[] contracts)
     {
         ArgumentNullException.ThrowIfNull(requests);
         ArgumentNullException.ThrowIfNull(contracts);
@@ -105,7 +133,7 @@ internal static class OsduContracts
 
             var operation = matched.Hit!.Value.Operation;
             exercised.Add($"{matched.Contract.Name} {operation.Method} {operation.Template}");
-            failures.AddRange(matched.Contract.Check(request).Select(v => $"[{matched.Contract.Name}] {v}"));
+            failures.AddRange(matched.Contract.Check(request).Where(v => documented?.Invoke(v) != true).Select(v => $"[{matched.Contract.Name}] {v}"));
         }
 
         Assert.True(exercised.Count > 0 || failures.Count > 0, "No request was checked against a contract; the test sent nothing to an OSDU service.");

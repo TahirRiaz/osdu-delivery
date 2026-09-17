@@ -1,19 +1,25 @@
 # Delivery protocols
 
-OSDU has at least four delivery shapes ([design.md](design.md) section 8). They are named protocols
-implemented in code and parameterised by the flow, not an authorable step language. All four are implemented.
+OSDU takes data in a handful of shapes ([design.md](design.md) section 8,
+[../../docs/interfaces-design.md](../../docs/interfaces-design.md) section 5). Each is a named protocol implemented in
+code and parameterised by the flow, not an authorable step language.
 
 | Protocol | Services | Pattern | Batched |
 | --- | --- | --- | --- |
 | `osduRecord` | storage | One JSON document, upsert by client-supplied id, array endpoint. | up to `batchSize` records per request |
 | `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default) | Record, then, on a collection that keeps bulk data, its bulk data, optionally through a session. | one record per request |
 | `osduFile` | file, storage | Signed upload URL per file, streamed upload, dataset registration, then the record with its dataset list. | the record write, up to `batchSize` |
-| `osduManifest` | file, workflow, storage | Uploads, one manifest per batch handed to the ingestion workflow, the run polled, the records read back. | one workflow run per batch of up to `batchSize` |
+| `osduDataset` | dataset, storage | Staging location per record, upload the way its provider takes it, registration under the record's own id (or a dataset the record refers to), retrieval checked. | up to 20 registrations per request |
+| `osduManifest` | file, dataset, workflow, search, storage | Uploads, one manifest per batch handed to the ingestion workflow, inline or by reference, the run polled, the records read back. | one workflow run per batch of up to `batchSize` |
+| `osduFileAndDdms` | file, the DDMS | The record's files as `osduFile` registers them, the record through its DDMS naming them, then its bulk data; each part only when it moved. | one record per request |
+| `osduManifestAndDdms` | file, dataset, workflow, search, storage, the DDMS | The batch through the manifest, then each record's bulk data through its DDMS. | as `osduManifest` |
+| `osduWorkflow` | dataset, workflow, search, storage; Airflow's REST API when the flow names it | The record written, its inputs registered, up to four workflow runs in order, what they wrote found and read back. | one record per run |
 
 A flow in the single form names its route with `target.protocol`, as a route type or as the protocol it maps onto.
 An interface of a source is given one by its route, which follows from what the interface declares
-([documents.md](documents.md#routes)): `storage` is `osduRecord`, `file` is `osduFile`, `manifest` is `osduManifest`,
-and `ddms` is `osduWellLog`, whose files are the interface's `bulk`.
+([documents.md](documents.md#routes)): `storage` is `osduRecord`, `file` is `osduFile`, `dataset` is `osduDataset`,
+`manifest` is `osduManifest`, `ddms` is `osduWellLog` (whose payload is the interface's `bulk`), `fileAndDdms` is
+`osduFileAndDdms`, `manifestAndDdms` is `osduManifestAndDdms`, and `workflow` is `osduWorkflow`.
 
 The core is protocol independent: identity, rendering, change detection, the ledger, idempotency and the
 preflight gate never change. A protocol implements the delivery, and the read-back, verify, probe and delete
@@ -46,6 +52,18 @@ The attempt carries the full step list (`osdu.Attempt.ResultJson`: each step's n
 returned values and whether it was resumed) and the record's target state (`osdu.Record.TargetStateJson`)
 merges the returned values of every delivery: record id and version, dataset ids, file sources, a session id,
 a workflow run id. See [design.md](design.md) section 16.3.
+
+## Payload parts
+
+`osduFileAndDdms`, `osduManifestAndDdms` and `osduWorkflow` send a record's payload in parts: its files, its bulk data,
+a workflow's inputs, and the workflow run. The planner resolves each part's folder and content hash from the record's
+row as it resolves a single payload's, and the ledger keeps the parts in the columns a payload has always had
+([ledger.md](ledger.md#payloads-in-parts)): the payload hash is the hash of the parts' hashes, and the pending payload
+lists each part with its folder and hash. `DeliveryWork.Parts` carries them to the protocol, which sends a part when its
+hash differs from the one the record's target state keeps for it (`payload.<set>`) or when the work forces it
+(`DeliveryWork.ForcedParts`, from a redelivery that names the part or a record that never delivered its payload), and
+returns `payload.<set>` with the hash of each part it sent. An optional workflow input a row names no folder for is a
+part without files.
 
 ## `osduRecord`
 
@@ -231,6 +249,124 @@ deletes the dataset records and their files (`DELETE {fileDeletePath}`, default
 `/api/file/v2/files/{id}/metadata`) with the record; the reversible removal leaves them, so the record can be
 restored whole, and a history purge touches only the record's own earlier versions. Verify and read back go to storage.
 
+The files go as `payloadContentType`, or `filesContentType` when the flow names it.
+
+## `osduDataset`
+
+The files and the record through the Dataset service (openapi dataset v1, storage v2;
+[../specs/core/INTEGRATION.md](../specs/core/INTEGRATION.md) sections 2.5 and 2.5.1). A record of a dataset kind is
+the dataset; any other record refers to one dataset of `datasetKind` holding its files.
+
+1. `POST {datasetInstructionsPath}?kindSubType=<entity type>` (default `/api/dataset/v1/storageInstructions`) hands out
+   a staging location for the record's own entity type, or `datasetKind`'s. A 400 (no DMS serves the type) or 405 (the
+   DMS stores no files) holds the record. No `expiryTime` is sent, because the Dataset service does not pass it on.
+2. The files go where the location says, as `filesContentType` (or `payloadContentType`): a single file with `PUT` to
+   its `signedUrl` and the flow's `uploadHeaders` (the Azure blob type added on an Azure blob host); a collection's
+   files the way the provider that signed the location takes them. On Azure each file is created, appended in parts of
+   at most 100 MiB and flushed under the Data Lake directory, each request stating the SAS's service version; on MinIO
+   and S3 each is posted as a form with the POST policy's fields, its key under the directory and the file last; on
+   Google Cloud Storage each is a media upload under the folder, with the token scoped to it. A location with
+   temporary credentials for an endpoint it does not name (IBM) holds the record. A `dataset--File.*` record carries
+   exactly one file, and a collection two files of one name holds the record. Step `storage-files` returns
+   `fileSource` or `collectionPath`, `files`, `providerKey` and `complete`; a retry reuses it only when every upload of
+   the earlier try completed, and otherwise asks for a new location, since the signed location is a credential that is
+   never logged or kept.
+3. The dataset record: a record of a dataset kind with `data.DatasetProperties.FileSourceInfo` (its one file) or
+   `FileCollectionPath` and a `FileSourceInfos` entry per file, and `data.TotalSize`; for a record of another kind, a
+   dataset of `datasetKind` under `{partition}:{dataset entity type}:{key}-files` with the record's `acl` and `legal`.
+   `PUT {datasetRegisterPath}` (default `/api/dataset/v1/registerDataset`) registers up to 20 per request, and a
+   request refused as a whole is tried record by record. `POST {datasetRetrievalPath}` (default
+   `/api/dataset/v1/retrievalInstructions`) then checks that the service hands out every dataset it registered; one it
+   leaves out fails its record for the try. Step `register` returns `datasetId`, `version` and `retrievable`.
+4. A record of another kind is written through storage as `osduRecord` writes it, its dataset list naming the dataset,
+   when its document changed or it has not named the dataset before. A change to a dataset record alone is written
+   through storage with the `DatasetProperties` storage holds, because a registration would copy the staging area
+   again; a record storage does not hold, or holds without them, fails the try.
+
+A dataset record's reversible removal is `POST {datasetSoftDeletePath}` (default
+`/api/dataset/v1/metadataRecord/{id}/softDelete`), which the Dataset service's undelete restores; any other record's
+is storage's, which leaves its dataset. The history purge is storage's. Removing everything purges the record through
+storage, and for a record of another kind its dataset too; the files a registration copied stay in the platform's
+storage. Verify and read back go to storage.
+
+## `osduFileAndDdms` and `osduManifestAndDdms`
+
+The composed routes send a record's files and its bulk data as parts ([Payload parts](#payload-parts)).
+
+`osduFileAndDdms`:
+
+1. The DDMS's rules for the record and the bulk data's chunks are checked first, as `osduWellLog` checks them, so a
+   record the DDMS would refuse is held before any file is uploaded.
+2. When the files part goes, its files are uploaded and registered as in `osduFile` (steps `upload-{i}` and
+   `register-{i}`), as `filesContentType` (default `application/octet-stream`).
+3. The record goes through its DDMS collection when its document changed or its files moved, its dataset list naming
+   the new datasets or those of its earlier delivery; the bulk link the DDMS holds is carried, from the stored record
+   when the record was delivered before.
+4. When the bulk part goes, the bulk data goes as `osduWellLog` sends it, as `payloadContentType`, and the version is
+   read back.
+
+It returns `datasetIds`, `files`, and `payload.<set>` for each part it sent. Removal is the DDMS's; removing everything
+also deletes the datasets the files were registered as, with their files, through the file service. The probe asks
+the file service and every DDMS the flow reaches.
+
+`osduManifestAndDdms`:
+
+1. Each record's DDMS rules and bulk data chunks are checked first.
+2. A record whose document changed, whose files moved, or which is new and has bulk data goes through the manifest as
+   `osduManifest` sends it (its files registered first, as `filesContentType`). A record that already holds bulk data
+   has the DDMS's bulk link, and the `DDMSDatasets` entries the DDMS wrote, carried into its manifest from one batched
+   storage read (`POST {verifyBatchPath}`, projected to `data.ExtensionProperties` and `data.DDMSDatasets`), since
+   ingestion writes through storage, past the DDMS; a read that fails fails those records for the try.
+3. Once the run has written the record, its bulk data goes through its DDMS from the version the manifest wrote. A
+   failure there leaves the record as the manifest wrote it; the next try resumes the manifest step's run rather than
+   ingesting the record again, and sends the bulk data.
+4. A record whose bulk data alone changed skips the manifest.
+
+Verify and read back go to storage. Removal is the DDMS's, with the files' datasets when everything goes. The probe
+asks the Workflow service and every DDMS.
+
+## `osduWorkflow`
+
+One protocol for every ingestion workflow ([documents.md](documents.md#the-workflow-route);
+[../specs/workflows/INTEGRATION.md](../specs/workflows/INTEGRATION.md)).
+
+1. The anchor tag, when the route declares one, is written into the record's `tags`.
+2. Each input whose hash moved is registered through the Dataset service as in `osduDataset`: one dataset per file under
+   `{partition}:{entity type}:{key}-{input}-{n}`, or one collection under `{key}-{input}`, with the record's `acl` and
+   `legal`. Step `register-{input}` returns the ids; the target state keeps them as `input.<name>`. A storage anchor's
+   own files are registered the same way, as `datasetKind`.
+3. The anchor is written when its document or its files changed: a dataset anchor with new files is staged and
+   registered as `osduDataset` registers a dataset record; any other write goes through storage (a dataset anchor
+   carrying the `DatasetProperties` storage holds, a storage anchor its dataset list). Step `anchor`.
+4. When a run is due (`runWhen`: the anchor or an input was written, the record is new, or a redelivery names
+   `workflow`), each stage in order: the context filled (secrets only in the request), `Payload` added when the
+   workflow reads it and the context leaves it out, the context checked against the workflow's contract (a context
+   it refuses holds the record), step `stage-{n}` marked `triggering` with the run id, `POST {workflowRunPath}`, then
+   polled every `pollSeconds` until it ends or its timeout passes. A retry that finds `triggering` sends the same run
+   id again, and a 409 says the service has the run; one that finds `triggered` polls it. A failed run fails the
+   record, and the next try triggers a new one. A finished run's outputs, read from their templates or from an XCom
+   entry, are kept on the step, and a retry reuses them without running the stage again.
+5. What the runs wrote is found the way the route declares (`anchor`, `ids`, `artefact`, `search` by cursor through
+   `query_with_cursor`, `manifest` read from the retrieval instructions of the manifest dataset, or `xcom`) and read
+   back from storage, repeated every `workflowPollSeconds` until `minimum` records are present or `waitSeconds` pass.
+   Fewer fail the record for the try, and the next try looks again without running the workflows again. Step
+   `results`; the target state keeps `workflow.records`, the first `keep` ids as `workflow.recordIds`, and a search's
+   kind and query.
+6. The anchor's version is read back, since a workflow may have written the anchor itself, and the target state keeps
+   the run ids as `payload.workflow`.
+
+An XCom output is read through the Workflow service's `latestInfo`, which serves the run's latest task only, unless
+`target.airflow` names the Airflow behind the service: then `GET .../dags/{workflow}/dagRuns/{runId}/taskInstances/{task}/xcomEntries/{key}`
+on `/api/v1` (Airflow 2, a string value) or `/api/v2` (Airflow 3, the stored value), with the flow's Airflow
+credentials, which on Airflow 3 are exchanged at `POST /auth/token` for a token kept until shortly before it expires.
+The record ids are taken from the value, parsed as JSON or as the text Airflow 2 renders, each without its version,
+and of the entity type `match` names.
+
+The reversible removal of a dataset anchor goes through the Dataset service's `softDelete`, of a storage anchor through
+storage. The records the runs created are removed at the same scope when the route removes them (`remove`), a search
+repeated to find them all; the registered inputs and files go only when everything goes. The probe asks the Workflow
+service, and whether this partition registers every workflow the stages name.
+
 ## `osduManifest`
 
 OSDU's own bulk path (openapi file v2, workflow v1, storage v2): the batch's files, one manifest, one
@@ -280,6 +416,16 @@ workflow run.
 Verify, read back and removal go to storage, and a purge of everything deletes the datasets and their files through the file
 service, as for `osduFile`.
 
+A manifest goes by reference when `manifestByReference` is `always`, or `auto` and the trigger request (measured as the
+request indented by four) is above `manifestInlineLimitKb`, on a partition that registers `byReferenceWorkflowName`
+(asked once, `GET {workflowPath}`). The manifest, with the first record's `acl` and `legal` at its top level, is stored
+through the Dataset service as a `dataset--File.Generic` (of `datasetKind`) under
+`{partition}:{entity type}:osdu-delivery-manifest-{runId}`, and the run is triggered on the by-reference workflow with
+`{ Payload, acl, legal, manifest: "<id>" }`. The manifest step names the workflow and the dataset, so a retry resumes
+that run, and the dataset is removed reversibly (`softDelete`) once the run has settled. `always` on a partition
+without the workflow fails the batch; `auto` there splits the batch into manifests under the limit, a record whose
+manifest alone is above it going on its own.
+
 ## Before a run: legal tags
 
 Every record a mapping renders carries the same legal tags, and storage refuses a record whose tag is unknown or
@@ -305,7 +451,7 @@ do not ask; they send nothing.
 | --- | --- | --- |
 | Delivered | 2xx on every call | `delivered`, pending state promoted to current, version and returned values recorded |
 | Retry later | transport failure, 5xx exhausted within a call, 401, 408, 429, a workflow run that failed or timed out, a record a finished workflow run did not write | `pending` with `NextAttemptUtc` (exponential in minutes); completed steps kept for the resume |
-| Held | 400, 403, 404, 405, 409, 413, 415, 422, any status in `reliability.skipStatusCodes`, no payload chunks, an empty file, a `RecordHeldException` | `held` (terminal until released) |
+| Held | 400, 403, 404, 405, 409, 413, 415, 422, any status in `reliability.skipStatusCodes`, no payload chunks, an empty file, a staging location no upload can reach, a workflow context its contract refuses, a pending payload in parts this version did not write, a `RecordHeldException` | `held` (terminal until released) |
 | Failed | the record-level retry budget (`reliability.retry.attempts`) is exhausted | `failed` (released like held) |
 
 Inside one call the HTTP executor repeats a request only when repeating it is safe, the line the OSDU C# client
@@ -315,10 +461,13 @@ draws in its `ReadRetryHandler`:
   protocol that makes the call: record writes with client-supplied ids, `POST /records/{id}:delete` and the bulk
   soft delete (a repeat finds the records already gone), reads by id (`POST /query/records`), searches, the
   replace-the-whole-bulk `POST {dataPath}`, the workflow trigger (it names its own run id, so a resend answers
-  409), and token requests.
-- Never repeated: session create, session chunks, session commit, and file registration
-  (`POST /files/metadata`, which mints a dataset record per accepted call). Not after a status, and not after a
-  transport failure either, where the service may have acted before the connection went.
+  409), the Dataset service's storage instructions (a call only signs a location), registration (every record names
+  its own id) and retrieval instructions, its `softDelete` (a repeat answers 404, which reads as already gone), and
+  token requests.
+- Never repeated: session create, session chunks, session commit, file registration (`POST /files/metadata`, which
+  mints a dataset record per accepted call), and the uploads a provider takes by `PATCH` or `POST` (a Data Lake append
+  or flush, a POST policy form, a Google Cloud Storage media upload). Not after a status, and not after a transport
+  failure either, where the service may have acted before the connection went.
 - A safe request is repeated on 408, 425, 429, 503 and 504, and on a transport failure. 500 and 502 are not
   replayed inline: the services answer them for deterministic failures as often as passing ones. They fall to
   the record-level backoff, as does anything not repeated inline.

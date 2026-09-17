@@ -128,15 +128,6 @@
     "size": 710221
   },
   {
-    "file": "reservoir-management-ddms/openapi.generated.json",
-    "repo": "domain-data-mgmt-services/reservoir-management/reservoir-management-domain-services",
-    "from": "app/main.py (the FastAPI app, which generates the document at runtime)",
-    "commit": "088ae063eaedfb6ad24c9d8c3e1f52c2cb45d2cd",
-    "date": "2024-04-23",
-    "size": 198215,
-    "generatedBy": "tools/generate-rmddms-openapi.py"
-  },
-  {
     "file": "reservoir-management-ddms/README.md",
     "repo": "domain-data-mgmt-services/reservoir-management/reservoir-management-domain-services",
     "from": "README.md",
@@ -215,6 +206,39 @@
     "commit": "70e5543ae1e07ae356aec61466535c2b63c8e6f1",
     "date": "2026-08-26",
     "size": 2621
+  },
+  {
+    "file": "workflows/airflow/v1.yaml",
+    "repo": "github.com/apache/airflow (release 2.11.2)",
+    "from": "airflow/api_connexion/openapi/v1.yaml",
+    "commit": "8bf498965c87d562486a8e9344ccdb84aa351b2d",
+    "date": "2026-03-09",
+    "size": 185126
+  },
+  {
+    "file": "workflows/airflow/v2-rest-api-generated.yaml",
+    "repo": "github.com/apache/airflow (release 3.3.1)",
+    "from": "airflow-core/src/airflow/api_fastapi/core_api/openapi/v2-rest-api-generated.yaml",
+    "commit": "3adbbe1c58e4532df1964cb7794805e763816ee8",
+    "date": "2026-08-10",
+    "size": 459721
+  },
+  {
+    "file": "workflows/airflow/v2-simple-auth-manager-generated.yaml",
+    "repo": "github.com/apache/airflow (release 3.3.1)",
+    "from": "airflow-core/src/airflow/api_fastapi/auth/managers/simple/openapi/v2-simple-auth-manager-generated.yaml",
+    "commit": "3adbbe1c58e4532df1964cb7794805e763816ee8",
+    "date": "2026-08-10",
+    "size": 6153
+  },
+  {
+    "file": "reservoir-management-ddms/openapi.generated.json",
+    "repo": "domain-data-mgmt-services/reservoir-management/reservoir-management-domain-services",
+    "from": "app/main.py (the FastAPI app, which generates the document at runtime)",
+    "commit": "088ae063eaedfb6ad24c9d8c3e1f52c2cb45d2cd",
+    "date": "2024-04-23",
+    "size": 198215,
+    "generatedBy": "tools/generate-rmddms-openapi.py"
   },
   {
     "file": "core/storage/openapi.yaml",

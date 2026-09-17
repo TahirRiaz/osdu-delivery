@@ -579,6 +579,37 @@ public sealed class DeliveryWorker
                 continue;
             }
 
+            // A payload sent in parts lists each part with its files and hash; one payload set is its folder.
+            IPayloadSource? single = null;
+            IReadOnlyList<WorkPayloadPart> parts = [];
+            IReadOnlySet<string> forced = new HashSet<string>(StringComparer.Ordinal);
+            if (state.PendingPayloadLocation is { } location)
+            {
+                if (CompositePayload.IsComposite(location))
+                {
+                    CompositePayload composite;
+                    try
+                    {
+                        composite = CompositePayload.Decode(location);
+                    }
+                    catch (DeliveryException ex)
+                    {
+                        var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, ex.Message, null, null);
+                        await record(index, completion, evt, summary, null).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    parts = composite.Parts
+                        .Select(p => new WorkPayloadPart(p.Role, p.Payload, p.Location is null ? null : new StoragePayloadSource(_payloads, PayloadLocation.Parse(p.Location)), p.Hash))
+                        .ToList();
+                    forced = composite.Forced;
+                }
+                else
+                {
+                    single = new StoragePayloadSource(_payloads, PayloadLocation.Parse(location));
+                }
+            }
+
             var completedSteps = ParseSteps(state.PendingStepJson);
             var key = state.DeliveryKey;
             works.Add((index, state, new DeliveryWork
@@ -588,7 +619,9 @@ public sealed class DeliveryWorker
                 Document = document,
                 DeliverMetadata = sendMetadata,
                 DeliverPayload = sendPayload,
-                Payload = state.PendingPayloadLocation is { } location ? new StoragePayloadSource(_payloads, PayloadLocation.Parse(location)) : null,
+                Payload = single,
+                Parts = parts,
+                ForcedParts = forced,
                 ExistingVersion = state.TargetVersion,
                 SourceKey = state.SourceKey,
                 Label = state.Label,

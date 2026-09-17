@@ -1,8 +1,9 @@
 namespace SqlFlow.Delivery.Protocols;
 
 /// <summary>
-/// The closed vocabulary of OSDU delivery shapes (design.md section 8). Designed as a set so the four cohere: a flow
-/// names one, the factory builds it, and the engine never references a concrete protocol beyond that.
+/// The closed vocabulary of OSDU delivery shapes (design.md section 8; docs/interfaces-design.md section 5.4): the
+/// route types. Designed as a set so they cohere: a flow names one, the factory builds it, and the engine never
+/// references a concrete protocol beyond that.
 /// </summary>
 public enum DeliveryProtocol
 {
@@ -23,15 +24,40 @@ public enum DeliveryProtocol
     OsduFile,
 
     /// <summary>
-    /// Manifest ingestion: the files uploaded, one manifest per batch handed to the ingestion workflow, the run
-    /// polled, the records read back from storage (file, workflow and storage services).
+    /// Manifest ingestion: the files uploaded, one manifest per batch handed to the ingestion workflow (inline, or stored
+    /// as a dataset and handed over by reference), the run polled, the records read back from storage (file, dataset,
+    /// workflow and storage services).
     /// </summary>
     OsduManifest,
+
+    /// <summary>
+    /// The dataset route: files stored where the Dataset service says and registered with it, a record of a dataset kind
+    /// as that dataset under its own id, any other record referring to one dataset holding its files (dataset and storage
+    /// services).
+    /// </summary>
+    OsduDataset,
+
+    /// <summary>The composed route of files and DDMS bulk data: the files registered, the record through its DDMS referring to them, then the bulk data.</summary>
+    OsduFileAndDdms,
+
+    /// <summary>The composed route of a manifest and DDMS bulk data: the records by manifest, the run settled, then each record's bulk data through its DDMS.</summary>
+    OsduManifestAndDdms,
+
+    /// <summary>
+    /// The workflow route: the record written or registered, its inputs registered, a named workflow triggered with a
+    /// payload built from the interface's declaration (in stages when the workflow only translates), the runs polled and
+    /// what they created found and read back (dataset, workflow, storage and search services).
+    /// </summary>
+    OsduWorkflow,
 }
 
 public static class DeliveryProtocols
 {
-    /// <summary>Protocols that stream a payload set from the drop alongside the record.</summary>
+    /// <summary>Protocols that stream a payload alongside the record. The workflow route's run counts as its payload.</summary>
     public static bool CarriesPayload(DeliveryProtocol protocol)
-        => protocol is DeliveryProtocol.OsduWellLog or DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest;
+        => protocol is not DeliveryProtocol.OsduRecord;
+
+    /// <summary>Protocols that reach a DDMS, and so read the flow's <c>target.ddms</c>.</summary>
+    public static bool ReachesDdms(DeliveryProtocol protocol)
+        => protocol is DeliveryProtocol.OsduWellLog or DeliveryProtocol.OsduFileAndDdms or DeliveryProtocol.OsduManifestAndDdms;
 }

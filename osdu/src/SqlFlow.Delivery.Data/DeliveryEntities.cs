@@ -572,7 +572,7 @@ public sealed class DeliveryInterface
     /// <summary>The name the ledger identity is derived from: the flow, <c>flow/interface</c>, or the ledger it adopts.</summary>
     public string LedgerName { get; set; } = string.Empty;
 
-    /// <summary>The route the interface is delivered by: storage, file, manifest or ddms.</summary>
+    /// <summary>The route the interface is delivered by: storage, file, dataset, manifest, ddms, fileAndDdms, manifestAndDdms or workflow.</summary>
     public string Route { get; set; } = string.Empty;
 
     /// <summary>Why it goes by that route; null for the single form, whose document names its protocol.</summary>

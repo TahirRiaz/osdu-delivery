@@ -147,7 +147,8 @@ public sealed class DdmsDocumentsTests
     {
         var refused = Assert.Throws<FlowValidationException>(() => _loader.ParseFlow(Single(string.Empty, value), "logs.yaml"));
         Assert.Equal(
-            $"logs.yaml: 'target.protocol' value '{value}' is not one of storage, file, manifest, ddms (or the protocols they map onto: osduRecord, osduWellLog, osduFile, osduManifest).",
+            $"logs.yaml: 'target.protocol' value '{value}' is not one of storage, file, dataset, manifest, ddms, fileAndDdms, manifestAndDdms, workflow "
+            + "(or the protocols they map onto: osduRecord, osduWellLog, osduFile, osduManifest, osduDataset, osduFileAndDdms, osduManifestAndDdms, osduWorkflow).",
             refused.Message);
     }
 

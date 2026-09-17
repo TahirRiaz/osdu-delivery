@@ -64,9 +64,14 @@ public static class DeliveryLineage
         var warnings = new List<string>();
 
         var files = new List<DeclaredFileLocation>();
-        if (Planner.PayloadName(flow) is { } payloadName && flow.Source.Payloads.TryGetValue(payloadName, out var payload))
+        var sent = PayloadParts.Of(flow)?.Select(p => p.Payload).ToList()
+            ?? (Planner.PayloadName(flow) is { } payloadName ? [payloadName] : []);
+        foreach (var name in sent)
         {
-            files.Add(new DeclaredFileLocation { Relation = LineageRelation.Reads, Location = payload.Root, FilePattern = payload.Pattern });
+            if (flow.Source.Payloads.TryGetValue(name, out var payload))
+            {
+                files.Add(new DeclaredFileLocation { Relation = LineageRelation.Reads, Location = payload.Root, FilePattern = payload.Pattern });
+            }
         }
 
         var datasets = new List<DeclaredDataset>();
@@ -85,11 +90,21 @@ public static class DeliveryLineage
                 }
             }
 
-            if (flow.Target.Protocol is DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest)
+            // The routes that register datasets beside the record write the dataset kind too; the workflow route writes
+            // each input's own kind.
+            if (flow.Target.Protocol is DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest or DeliveryProtocol.OsduDataset
+                or DeliveryProtocol.OsduFileAndDdms or DeliveryProtocol.OsduManifestAndDdms
+                || (flow.Target.Protocol == DeliveryProtocol.OsduWorkflow && flow.Target.Workflow?.Anchor == WorkflowAnchor.Storage && flow.Source.Payloads.ContainsKey(PayloadParts.Files)))
             {
                 Add(datasets, OsduLineage.Type(
                     LineageRelation.Writes, endpoint, partition, flow.Target.ProtocolOptions.DatasetKind, who,
                     "target.protocolOptions.datasetKind", warnings));
+            }
+
+            foreach (var input in flow.Target.Workflow?.Inputs ?? [])
+            {
+                Add(datasets, OsduLineage.Type(
+                    LineageRelation.Writes, endpoint, partition, input.DatasetKind, who, $"workflow.inputs.{input.Name}.datasetKind", warnings));
             }
         }
 
