@@ -219,6 +219,10 @@ it runs there. The Reservoir Management DDMS's records are Storage records as we
 it is never called. The record scope leaves the rows the service keeps for the record; removing everything deletes
 those rows, then purges the record, and the service's copy of the record stays in its database.
 
+The dspdm route writes rows of the Production DDMS core service, not OSDU records. DSPDM keeps no deleted rows and no
+versions, so only `everything` applies: it deletes each row for good (`DELETE {root}/delete/{boName}/{id}`), and the
+target view reads `(refused: ...)` for the other two scopes.
+
 A removal names its records by key or by filter. The filter form is resolved on the node when the removal runs,
 so "every record this run delivered" travels as the filter rather than as tens of thousands of ids, and covers
 records no page ever rendered. One removal takes at most 25,000 records; a larger one is several removals.
@@ -354,6 +358,9 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 | A flow fails to load: `reliability.fanOut` needs `source.record.primaryKey` | The error names the flow file | Name the record table's identity primary key under `source.record.primaryKey`, or set `fanOut: 0`. |
 | A run fails: the database does not allow snapshot isolation | The error names the database and the statement | Run the `ALTER DATABASE ... SET ALLOW_SNAPSHOT_ISOLATION ON` it names, once, and run again. Nothing was claimed. |
 | A verify run reports drift | The Records tab with Drifted only | Decide whether the edit in OSDU was legitimate. Redeliver the record, or set `verify.reconcile: true` so verify runs queue redelivery. A newer version that changed only data keys other systems write (the flow's `preserveDataKeys`, or the run state External Data Services writes on a data job after a fetch) is not drift: the verify says so, on every route that writes records through storage or a manifest (all but ddms and fileAndDdms). |
+| Records held with `... already holds row N with ..., which this record did not write` | The record's last error names the business object, the row and its key | Look at the row in DSPDM. If the flow is to maintain rows loaded before it, set `target.dspdm.existingRows: update` and Release; otherwise remove the row or correct the key in the source, then Release ([documents.md](documents.md#the-production-ddms-core-service)). |
+| Records held with `the row cannot be saved in ...` or `DSPDM refused the row: ...` | The record's last error names each attribute and why | Fix the source rows or the mapping (attribute names, types, lengths, mandatory attributes), then Release. |
+| A run on the dspdm route fails its preflight naming a business object | The run's trace | Name the business object and its key under `target.dspdm.businessObjects`, or give the business object a unique constraint in DSPDM's metadata. |
 | Records held with `External Data Services could not use this ...` | The record's last error names every rule it breaks | Fix the source rows or the mapping so the registry entry, data job or proxy dataset carries what EDS needs, or say what the deployment needs under `target.eds` (a partition whose jobs fetch no files: `retrieval: false`; a gc build: `build: gc`), then Release ([documents.md](documents.md#external-data-services)). |
 | Everything re-renders after a change | The render context on the record | Only `render.*` and the template version its mapping pins enter the render context; a moved mapping version, template version or cache version renders every record that uses it again. Only a record whose rendered document differs is sent; the rest are skipped as unchanged and take the new context. |
 | A run fails: the mapping pins a template that is not saved in the catalog | The run's error names the mapping, the kind and the version | Save that version (the Templates page, `sqlflow template capture` or `import`) and run again. A schema that changed since saves as another version, which the mapping then has to pin. |

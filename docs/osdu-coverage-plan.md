@@ -34,7 +34,7 @@ and the order it is built in.
 | Reservoir DDMS (Open ETP server, ETP 1.2) | `osdu/specs/reservoir-ddms` | no | route type `etp` |
 | Rock and Fluid Samples DDMS | `osdu/specs/rafs-ddms` | ddms shape `rafsV2` (stage 7): every collection, records and content tables | none |
 | Well Delivery DDMS | `osdu/specs/well-delivery-ddms` | ddms shape `wellDeliveryV1` (stage 7): every entity type it knows, versioned references, its Storage copy | none |
-| Production DDMS (DSPDM) | `osdu/specs/production-dspdm` | no | route type `dspdm` |
+| Production DDMS (DSPDM) | `osdu/specs/production-dspdm` | route type `dspdm` (stage 7): business object rows of any business object whose rows one unique constraint finds, read from DSPDM's metadata, found again before every save, inserted and updated in one save | the typed spatial API and child rows in one save are not used; rows are removed for good only (DSPDM keeps no deleted rows); the route relies on DSPDM's shipped update and time zone settings |
 | Production time series (historian) | `osdu/specs/production-timeseries` | ddms shape `productionTimeSeriesV1` (stage 7): ProductionValues records through Storage, their points in requests under the body limit, every accepted version read back | none (the historian has no delete for points) |
 | Reservoir Management DDMS | `osdu/specs/reservoir-management-ddms` | ddms shape `reservoirManagement` (stage 7): the nine header kinds through Storage, taken into the service's database by its list call, and the rows of the tables below them posted with their keys fed down | the service's copy of a record keeps only its id and parent (its own write would write the record again without its id); records past the first 100 of a kind, and Kr syntheses, need an operator to insert the copy |
 | External Data Services | `osdu/specs/eds-dms` | the storage (or manifest) and workflow routes (stage 7): connected source registry entries, data jobs and proxy datasets checked for what eds-dms and the EDS workflows need before they are sent (`target.eds`), a job's run state carried into every rewrite and a version EDS writes not taken for drift, a fetch run by the workflow route | not checked: whether the secrets a registry entry names exist (no Secret service contract is pinned), whether a job's scheme name is one of its entry's (the brief leaves it open), and whether the proxy datasets of one entry share a source partition (it spans records EDS writes itself) |
@@ -229,7 +229,13 @@ carried into every rewrite on the storage, manifest and workflow routes (the man
 `preserveDataKeys` as the others do); a write that carries keys records the hash of the content the flow owns, so a verify
 tells a version another system wrote from drift; and a fetch is the stage 6 workflow route running `eds_ingest` or
 `eds_scheduler`. Every rule is tested against the brief's cases, and the three routes against the fake platform, a job
-rewritten, fetched and verified on each.
+rewritten, fetched and verified on each. The Production DDMS core service is the route type `dspdm` (`osduDspdm`): rows of
+business objects, whose templates' kinds have the source `dspdm`, checked against the business object DSPDM's metadata
+describes, found again by one of its unique constraints before they are saved, inserted and updated in one save with a
+refused save sent again row by row, a save whose answer was lost found again by the marker recorded before it, rows
+another system wrote held unless the flow takes them over, versions from the rows' change dates, and a delete that is for
+good; tested against a fake of DSPDM built from its code, every request checked against its contract. Not built: the
+Reservoir DDMS route type `etp`.
 
 ### Stage 8: records that wait for other records
 

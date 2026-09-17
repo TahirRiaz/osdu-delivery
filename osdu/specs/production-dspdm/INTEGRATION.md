@@ -29,6 +29,7 @@ Path shorthands inside `1245` citations:
 | `common/` | `src/dspdm-common/src/main/java/com/lgc/dspdm/core/common/` |
 | `config.properties` | `src/dspdm-common/src/main/resources/config.properties` |
 | `delegate/` | `src/dspdm-delegate/src/main/java/com/lgc/dspdm/repo/delegate/` |
+| `dao/` | `src/dspdm-repo/dspdm-dynamic-dao/src/main/java/com/lgc/dspdm/core/dao/dynamic/businessobject/impl/` |
 | `service/` | `src/dspdm-service/src/main/java/com/lgc/dspdm/service/common/` |
 | `spatial/` | `src/business-api-spatialservice/src/main/java/com/lgc/dspdm/businessapi/spatialservice/` |
 | `volume/` | `src/business-api-volumeservice/src/main/java/com/lgc/dspdm/businessapi/volumeservice/` |
@@ -555,19 +556,59 @@ Record route through a DDMS, parameters (from sections 1 to 6):
 10. The business API configuration files [CFG] carry legacy servers and no paths; `spatialservice.openapi.yaml`
     declares only `bearerAuth`, although the partition filter applies to every route; `wellstatus.openapi.yaml`
     repeats the title "PDM Domain APIs for Well Flow Measurement" [CFG: wellstatus].
-11. Docs versus code: `delete.adoc` and `delete-with-children.adoc` say a successful delete returns an Excel
+11. `CriteriaFilter.values` is an array of `object` in the contract [C: components.schemas.CriteriaFilter]; the code
+    declares `Object[] values` [1245 main/model/CriteriaFilter.java:24-26], which Jackson fills with any JSON value, and
+    converts each value to the attribute's type before the query runs
+    [1245 main/utils/DTOHelper.java:579-617]. A query on a text, number or date attribute sends strings and numbers,
+    which break the contract's typing and nothing else.
+12. Docs versus code: `delete.adoc` and `delete-with-children.adoc` say a successful delete returns an Excel
     `application/octet-stream` file [1245 api-docs/delete.adoc:56-60; api-docs/delete-with-children.adoc:113-117];
     the handler produces JSON [1245 main/MainserviceImpl.java:3320-3323]. `write-records.adoc` says `readBack` brings
     back only the new id [1245 api-docs/write-records.adoc:27-36]; the code returns whole rows (section 4). The
     `responses.adoc` table maps every negative status to 500; the code uses the exception's code (section 6).
 
+### Values, updates and time zones (from the code)
+
+- A save converts each value to its attribute's type (`DTOHelper.validateAndConvertDataType`,
+  `MetadataUtils.convertValueToJavaDataTypeFromString`): text is trimmed and refused past its column's length; a decimal
+  with more places than its column's scale is rounded half up (`RoundingMode.HALF_UP`) and loses its trailing zeros; a
+  flag takes `true`, `false`, `1`, `0`, `Y` and `N`; a value that cannot be converted is refused
+  [1245 main/utils/DTOHelper.java:417-498; common/util/metadata/MetadataUtils.java:49-122, 232-352].
+- Dates and times (`DateTimeUtils.parse`): a value in the ISO form with an offset (`ISO_ZONED_DATE_TIME`) is moved into
+  the request's time zone; every other accepted form keeps the date and time it was written with, whatever offset
+  follows; a date alone is midnight [1245 common/util/DateTimeUtils.java:175-278]. With the shipped
+  `use_utc_timezone_to_save=false` and `use_client_timezone_to_display=false` [1245 config.properties:10-11], that
+  wall-clock time is stored as it is and written back labelled with the request's zone
+  [1245 main/utils/DSPDMResponseSerializer.java:533-540].
+- The audit stamps `ROW_CREATED_DATE` and `ROW_CHANGED_DATE` are the UTC time of the save
+  (`DateTimeUtils.getCurrentTimestampUTC`) [1245 dao/AbstractDynamicDAOImplForUpdate.java:133-146, 424-426;
+  dao/AbstractDynamicDAOImplForInsert.java:79], written back under the same label, so their wall-clock part is the UTC moment
+  (inference).
+- With `read_before_update=true` and `do_tiny_update=true` [1245 config.properties:5-6], an update reads the row, skips
+  a row whose attributes did not change, and sets only the changed attributes the row names, stamping
+  `ROW_CHANGED_DATE` (`updateOne`); a row it skipped is counted as ignored and gets no `isUpdated`
+  [1245 dao/AbstractDynamicDAOImplForUpdate.java:50-91, 413-445]. With `do_tiny_update=false` an update
+  writes every column of the row, those the request leaves out as null (`updateListInBatch`)
+  [1245 dao/AbstractDynamicDAOImplForUpdate.java:164-220].
+- Read back happens only when the call inserted or updated a row; otherwise the rows go back as they were sent
+  [1245 delegate/common/write/BusinessObjectWriteDelegateImpl.java:88-92, 146-168].
+- A mandatory attribute is checked on insert (non-null and not blank), and on a tiny update only when the row names it
+  [1245 dao/AbstractDynamicDAOImpl.java:270-291, 530-560, 725-739]. A unique constraint is checked before a save and
+  refused with 409 [1245 dao/AbstractDynamicDAOImpl.java:295, 741-746].
+- An error answer's status is WARNING when the exception has no cause (a refusal DSPDM raised itself), and ERROR
+  otherwise; a constraint the database refused is renamed in fixed text (`SQLState.getActualExceptionForSave`), a foreign
+  key among them [1245 main/model/DSPDMResponse.java:41-69; main/BaseController.java:141-149;
+  common/util/SQLState.java:197-219].
+
 ## 9. Open questions
 
-- `write-records.adoc` section 3.1 "b. Example" claims that a row carrying a primary key value that does not exist is
-  inserted, while its section 3.2 example and the service's INFO message say such a row updates nothing
-  [1245 api-docs/write-records.adoc:209-282, 522-599; main/MainserviceImpl.java:3079-3084]. The data access code that
-  decides this (`DynamicDAO.saveOrUpdate`) was not examined; test against the target deployment before relying on
-  either reading.
+- Answered from the code: a row carrying a primary key value is an update, never an insert (`saveOrUpdate` sends a row
+  without a key to insert and a row with one to update) [1245 dao/AbstractDynamicDAOImpl.java:41-112]. With the shipped
+  `read_before_update=true`, an update whose key does not exist fails the whole call with
+  `NO_BUSINESS_OBJECT_ALREADY_EXISTS_WITH_THE_ID` [1245 dao/AbstractDynamicDAOImplForUpdate.java:314-340], so
+  neither documented reading holds on such a deployment; the INFO answer ("no records updated") comes only with
+  `read_before_update=false`. `write-records.adoc` section 3.1 "b. Example" [1245 api-docs/write-records.adoc:209-282]
+  describes the pre-OSDU product. The target deployment's settings are still to be confirmed live.
 - Transactional behaviour of `deleteCascade`, which bypasses the transaction wrapper (section 5.3).
 - The texts behind message keys such as `NO_DELETE_PERMISSION` and `TOO_MANY_RECORDS_IN_A_SINGLE_REQUEST_FOR_BO_NAME`.
 - The gateway path and rate limit on the target deployment; only the GC chart was examined.

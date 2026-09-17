@@ -91,7 +91,7 @@ internal static partial class MappingMapper
             },
             Parameters = parameters,
             Entries = entries,
-            Envelope = Envelope(entries, source),
+            Envelope = Envelope(entries, kind, source),
             Fixtures = (y.Fixtures ?? []).Select((f, i) => new MappingFixture
             {
                 Name = FlowMapper.Require(f.Name, $"fixtures[{i}].name", source),
@@ -305,8 +305,29 @@ internal static partial class MappingMapper
         }
     }
 
-    private static MappingEnvelope Envelope(List<MappingEntry> entries, string source)
+    private static MappingEnvelope Envelope(List<MappingEntry> entries, string kind, string source)
     {
+        if (DspdmKinds.Is(kind))
+        {
+            // A DSPDM business object row is no OSDU record: it has no access or legal block, and its business object's
+            // attributes are all a mapping fills (osdu/specs/production-dspdm/INTEGRATION.md section 3.1).
+            if (entries.FirstOrDefault(e => EnvelopeTargets.Any(t => t.Target == e.Target.Text)) is { } envelope)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {envelope.Where} fills {envelope.Target.Text}, and {kind} is a row of a DSPDM business object, which has no access or legal block. Remove the entry.");
+            }
+
+            // The row is its data block: each attribute of the business object is a property of data, and nothing else is sent.
+            if (entries.FirstOrDefault(e => e.Target.Segments.Count < 2 || e.Target.Segments[0].Name != "data") is { } outside)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {outside.Where} fills {outside.Target.Text}, and {kind} is a row of a DSPDM business object, whose attributes are the properties of "
+                    + $"{TemplatePath.Prefix}.data ({TemplatePath.Prefix}.data.UWI). Fill an attribute, or remove the entry.");
+            }
+
+            return new MappingEnvelope([], [], [], []);
+        }
+
         var lists = new List<IReadOnlyList<string>>();
         foreach (var (target, name) in EnvelopeTargets)
         {

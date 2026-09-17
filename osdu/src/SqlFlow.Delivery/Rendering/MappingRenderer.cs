@@ -24,6 +24,7 @@ public sealed class MappingRenderer
     private readonly IReadOnlyList<string> _requiredData;
     private readonly IReadOnlyList<MappingEntry> _recordEntries;
     private readonly IReadOnlyList<(MappingEntry Repeater, IReadOnlyList<MappingEntry> Items)> _repeaters;
+    private readonly IReadOnlyList<string>? _owned;
 
     public MappingRenderer(MappingDefinition mapping, SchemaSnapshot schema, ReferenceSnapshot references, RenderContext context)
         : this(mapping, schema, references, context, requireParameters: true)
@@ -61,6 +62,16 @@ public sealed class MappingRenderer
         _requiredData = schema.RequiredAt("data");
         _recordEntries = mapping.Entries.Where(e => !e.IsRepeater && !e.Target.IsRepeated).ToList();
         _repeaters = mapping.Entries.Where(e => e.IsRepeater).Select(r => (r, (IReadOnlyList<MappingEntry>)mapping.ItemEntries(r).ToList())).ToList();
+
+        // A DSPDM business object row lists the attributes its mapping fills, which are the ones a save may clear.
+        _owned = DspdmKinds.Is(mapping.Kind)
+            ? mapping.Entries
+                .Where(e => e.Target.Segments.Count >= 2 && e.Target.Segments[0].Name == "data")
+                .Select(e => e.Target.Segments[1].Name.ToUpperInvariant())
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToList()
+            : null;
     }
 
     public MappingDefinition Mapping => _mapping;
@@ -243,12 +254,18 @@ public sealed class MappingRenderer
     internal static string Where(MappingDefinition mapping) => mapping.SourcePath ?? mapping.Reference;
 
     /// <summary>
-    /// Writes every entry's value into <paramref name="document"/>: the record's own entries at their targets, then each
-    /// repeater's array with one item per row, then the check that the data the schema requires is there. What a value
-    /// cannot be written for is added to <paramref name="holds"/>. The one assembly a render and a shape share.
+    /// Writes every entry's value into <paramref name="document"/>: the list of attributes a DSPDM business object row owns
+    /// (<see cref="DspdmKinds.OwnedProperty"/>), the record's own entries at their targets, then each repeater's array with one
+    /// item per row, then the check that the data the schema requires is there. What a value cannot be written for is added
+    /// to <paramref name="holds"/>. The one assembly a render and a shape share.
     /// </summary>
     private void Assemble(JsonObject document, IRecordValues values, List<string> holds)
     {
+        if (_owned is not null)
+        {
+            document[DspdmKinds.OwnedProperty] = new JsonArray(_owned.Select(a => (JsonNode?)JsonValue.Create(a)).ToArray());
+        }
+
         foreach (var entry in _recordEntries)
         {
             if (values.Value(entry, item: null) is { } value)

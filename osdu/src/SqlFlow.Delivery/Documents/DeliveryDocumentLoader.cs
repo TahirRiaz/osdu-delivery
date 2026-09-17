@@ -401,6 +401,7 @@ internal static partial class FlowMapper
                 Workflow = workflow,
                 Airflow = MapAirflow(target.Airflow, source),
                 Eds = MapEds(target.Eds, source),
+                Dspdm = MapDspdm(target.Dspdm, protocol, source),
             },
             Reliability = MapReliability(y.Reliability, source, paths),
             Verify = new FlowVerify { Reconcile = y.Verify?.Reconcile ?? false },
@@ -482,6 +483,13 @@ internal static partial class FlowMapper
             }
 
             flows.Add(flow);
+        }
+
+        if (target.Dspdm is not null && !flows.Any(f => f.Target.Protocol == DeliveryProtocol.OsduDspdm))
+        {
+            throw new FlowValidationException(
+                $"{source}: target.dspdm declares the Production DDMS core service the dspdm route writes rows to, and no interface is delivered by it (route: dspdm). "
+                + "Remove target.dspdm, or route the interfaces it is meant for through it.");
         }
 
         if (target.Ddms is not null && !flows.Any(f => DeliveryProtocols.ReachesDdms(f.Target.Protocol)))
@@ -616,6 +624,9 @@ internal static partial class FlowMapper
                 Workflow = i.Workflow,
                 Airflow = target.Airflow,
                 Eds = target.Eds,
+
+                // The DSPDM the source declares is where its dspdm interfaces go; the other interfaces have no use for it.
+                Dspdm = route.Protocol == DeliveryProtocol.OsduDspdm ? target.Dspdm : null,
             },
             Reliability = YamlOverlay.Apply(y.Reliability, i.Reliability),
             Verify = YamlOverlay.Apply(y.Verify, i.Verify),
@@ -731,6 +742,12 @@ internal static partial class FlowMapper
                     DeliveryProtocol.OsduWellLog,
                     bulk ? BulkPayload : null,
                     $"{at}.route names the ddms route: each record is written through its DDMS" + (bulk ? ", then its bulk data" : string.Empty));
+            case InterfaceRouteName.Dspdm:
+                Refuse(files || bulk, $"{at}.route is dspdm, which saves business object rows alone, so {(files ? filesKey : bulkKey)} would never be sent. Remove it, or choose the route that delivers it.");
+                return new InterfaceRoute(
+                    DeliveryProtocol.OsduDspdm,
+                    null,
+                    $"{at}.route names the dspdm route: each record is a row of a Production DDMS business object, found again by its unique key and saved through DSPDM");
             case InterfaceRouteName.Workflow:
                 Refuse(!workflow, $"{at}.route is workflow, and the interface declares no workflow under {workflowKey}.");
                 Refuse(bulk, $"{at}.route is workflow, which writes no DDMS bulk data, so {bulkKey} would never be sent.");
@@ -801,6 +818,7 @@ internal static partial class FlowMapper
         FileAndDdms,
         ManifestAndDdms,
         Workflow,
+        Dspdm,
     }
 
     /// <summary>The protocol that delivers a route type.</summary>
@@ -814,6 +832,7 @@ internal static partial class FlowMapper
         InterfaceRouteName.FileAndDdms => DeliveryProtocol.OsduFileAndDdms,
         InterfaceRouteName.ManifestAndDdms => DeliveryProtocol.OsduManifestAndDdms,
         InterfaceRouteName.Workflow => DeliveryProtocol.OsduWorkflow,
+        InterfaceRouteName.Dspdm => DeliveryProtocol.OsduDspdm,
         _ => throw new ArgumentOutOfRangeException(nameof(route), route, "not a route type"),
     };
 
@@ -1888,7 +1907,7 @@ internal static partial class FlowMapper
     }
 
     /// <summary>Where a declared DDMS is under the endpoint: a path starting with '/', without a trailing '/'; null when the endpoint is the DDMS.</summary>
-    private static string? MapDdmsRoot(string? declared, string key, string source)
+    private static string? MapDdmsRoot(string? declared, string key, string source, string example = "/api/os-wellbore-ddms")
     {
         if (string.IsNullOrWhiteSpace(declared))
         {
@@ -1899,7 +1918,7 @@ internal static partial class FlowMapper
         var root = written.TrimEnd('/');
         if (root.Length == 0 || root[0] != '/' || root.Contains("://", StringComparison.Ordinal) || root.Any(c => char.IsWhiteSpace(c) || c is '{' or '}' or '?' or '#'))
         {
-            throw new FlowValidationException($"{source}: {key} '{written}' must be a path under the endpoint starting with '/', such as /api/os-wellbore-ddms.");
+            throw new FlowValidationException($"{source}: {key} '{written}' must be a path under the endpoint starting with '/', such as {example}.");
         }
 
         return root;
@@ -2222,6 +2241,96 @@ internal static partial class FlowMapper
             Build = string.IsNullOrWhiteSpace(declared.Build) ? null : ParseEnum<EdsBuild>(declared.Build.Trim(), "target.eds.build", source),
         };
     }
+
+    /// <summary>
+    /// The Production DDMS core service block (<c>target.dspdm</c>): where DSPDM is under the endpoint, the time zone every
+    /// request names, and the business objects the flow's kinds are rows of (osdu/specs/production-dspdm/INTEGRATION.md
+    /// section 7). Whether each business object exists, and which unique constraint its key is, is DSPDM's metadata, which
+    /// the run's preflight reads.
+    /// </summary>
+    private static DspdmTarget MapDspdm(DspdmYaml? declared, DeliveryProtocol protocol, string source)
+    {
+        if (declared is null)
+        {
+            return new DspdmTarget();
+        }
+
+        if (protocol != DeliveryProtocol.OsduDspdm)
+        {
+            throw new FlowValidationException(
+                $"{source}: target.dspdm declares the Production DDMS core service the dspdm route writes rows to, and this flow's route is {Engine.RouteChecks.Name(protocol)}. Remove target.dspdm.");
+        }
+
+        var timezone = string.IsNullOrWhiteSpace(declared.Timezone) ? DspdmTarget.DefaultTimeZone : declared.Timezone.Trim();
+        if (!DspdmKinds.IsTimezone(timezone))
+        {
+            throw new FlowValidationException(
+                $"{source}: target.dspdm.timezone '{timezone}' must be GMT+hh:mm or GMT-hh:mm, from GMT-12:00 to GMT+14:00, the only form DSPDM's save takes.");
+        }
+
+        var objects = new Dictionary<string, DspdmBusinessObject>(StringComparer.Ordinal);
+        var named = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in declared.BusinessObjects ?? [])
+        {
+            var entity = key?.Trim() ?? string.Empty;
+            var at = $"target.dspdm.businessObjects.{entity}";
+            if (!KindSegment().IsMatch(entity))
+            {
+                throw new FlowValidationException(
+                    $"{source}: target.dspdm.businessObjects names '{entity}', which is not an entity type: the entity segment of a DSPDM kind is letters, digits, '_', '-' and '.'.");
+            }
+
+            var business = value ?? new DspdmBusinessObjectYaml();
+            // DSPDM names business objects in upper case (DTOHelper upper-cases the names a request gives), and its metadata is read by that name.
+            var name = string.IsNullOrWhiteSpace(business.Name) ? DspdmKinds.DefaultName(entity) : business.Name.Trim().ToUpperInvariant();
+            if (!DspdmKinds.IsName(name))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {at}.name '{name}' is not a name DSPDM gives a business object: at most 50 characters, not starting with a digit.");
+            }
+
+            if (named.TryGetValue(name, out var other))
+            {
+                throw new FlowValidationException($"{source}: {at} and target.dspdm.businessObjects.{other} are both rows of the business object '{name}'.");
+            }
+
+            named[name] = entity;
+            if (business.Key is { Count: 0 })
+            {
+                throw new FlowValidationException($"{source}: {at}.key lists no attribute. Leave it out to find rows by the business object's one unique constraint.");
+            }
+
+            var attributes = new List<string>();
+            foreach (var attribute in business.Key ?? [])
+            {
+                var upper = attribute?.Trim().ToUpperInvariant() ?? string.Empty;
+                if (!DspdmKinds.IsName(upper))
+                {
+                    throw new FlowValidationException($"{source}: {at}.key names '{attribute}', which is not an attribute name.");
+                }
+
+                if (attributes.Contains(upper, StringComparer.Ordinal))
+                {
+                    throw new FlowValidationException($"{source}: {at}.key names {upper} more than once (DSPDM reads attribute names in upper case).");
+                }
+
+                attributes.Add(upper);
+            }
+
+            objects[entity] = new DspdmBusinessObject { Name = string.IsNullOrWhiteSpace(business.Name) ? null : name, Key = attributes };
+        }
+
+        return new DspdmTarget
+        {
+            Root = MapDdmsRoot(declared.Root, "target.dspdm.root", source, "/api/dspdm/v1"),
+            Timezone = timezone,
+            BusinessObjects = objects,
+            ExistingRows = ParseEnum(declared.ExistingRows?.Trim(), DspdmExistingRows.Hold, "target.dspdm.existingRows", source),
+        };
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^[A-Za-z0-9_\-\.]+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex KindSegment();
 
     /// <summary>The file service's expiryTime shape: a whole number of minutes, hours or days.</summary>
     private static bool ValidExpiry(string expiry)

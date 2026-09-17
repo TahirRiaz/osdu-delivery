@@ -15,7 +15,7 @@ namespace SqlFlow.Delivery.Engine;
 /// </summary>
 public static class RouteChecks
 {
-    /// <summary>The route names a flow reads: storage, file, dataset, manifest, ddms, fileAndDdms, manifestAndDdms and workflow.</summary>
+    /// <summary>The route names a flow reads: storage, file, dataset, manifest, ddms, fileAndDdms, manifestAndDdms, workflow and dspdm.</summary>
     public static string Name(DeliveryProtocol protocol) => protocol switch
     {
         DeliveryProtocol.OsduRecord => "storage",
@@ -26,6 +26,7 @@ public static class RouteChecks
         DeliveryProtocol.OsduFileAndDdms => "fileAndDdms",
         DeliveryProtocol.OsduManifestAndDdms => "manifestAndDdms",
         DeliveryProtocol.OsduWorkflow => "workflow",
+        DeliveryProtocol.OsduDspdm => "dspdm",
         _ => throw new ArgumentOutOfRangeException(nameof(protocol), protocol, "not a delivery protocol"),
     };
 
@@ -45,6 +46,17 @@ public static class RouteChecks
         var entityType = OsduKind.EntityType(kind)
             ?? throw new DeliveryException(
                 $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, which names no entity type, so the {route} route cannot tell where it goes.");
+        // A DSPDM business object row is no OSDU record: the dspdm route writes rows alone, and no other route writes them.
+        var row = DspdmKinds.Is(kind);
+        if (row != (flow.Target.Protocol == DeliveryProtocol.OsduDspdm))
+        {
+            throw new DeliveryException(row
+                ? $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, a row of a DSPDM business object (its template's source is '{DspdmKinds.Source}'), which only the dspdm route writes. "
+                  + $"Deliver it by the dspdm route ({keys.Shared("route")}: dspdm)."
+                : $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, an OSDU record, and the dspdm route writes rows of DSPDM business objects, whose templates' kinds have the source '{DspdmKinds.Source}' "
+                  + "(osdu/specs/production-dspdm/INTEGRATION.md section 2).");
+        }
+
         var dataset = Protocols.DatasetService.IsDatasetType(entityType);
         if (EdsRecordRules.IsProxyDataset(entityType) && RegistersFiles(flow))
         {

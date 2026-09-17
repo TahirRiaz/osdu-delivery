@@ -68,8 +68,9 @@ target:
   headers:                         # extra headers on every request
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
     data-partition-id: dev         # required: every OSDU service rejects a request without it, so the loader insists on it; its cache is the one the mapping reads
-  # the route type: storage | file | dataset | manifest | ddms | fileAndDdms | manifestAndDdms | workflow, or the protocol it
-  # maps onto: osduRecord | osduFile | osduDataset | osduManifest | osduWellLog | osduFileAndDdms | osduManifestAndDdms | osduWorkflow
+  # the route type: storage | file | dataset | manifest | ddms | fileAndDdms | manifestAndDdms | workflow | dspdm, or the protocol
+  # it maps onto: osduRecord | osduFile | osduDataset | osduManifest | osduWellLog | osduFileAndDdms | osduManifestAndDdms |
+  # osduWorkflow | osduDspdm
   protocol: ddms
   ddms:                            # ddms: DDMSs the records go to by entity type, before the Wellbore DDMS under ddmsRoot (see "The DDMSs a flow delivers to")
     wellbore: { root: /api/os-wellbore-ddms }
@@ -83,6 +84,12 @@ target:
     checks: true                   # hold registry entries, data jobs and proxy datasets EDS could not use (default true)
     retrieval: true                # registry entries need the DatasetURL eds-dms retrieves their datasets through (default true)
     build: azure                   # the eds-dms build: corePlus | azure | gc; only gc takes GcpServiceAccount schemes
+  dspdm:                           # dspdm: the Production DDMS core service the rows go to (see "The Production DDMS core service")
+    root: /api/dspdm/v1            # where DSPDM is under the endpoint; left out when the endpoint is DSPDM
+    timezone: GMT+00:00            # the zone every request names, GMT+hh:mm (default GMT+00:00)
+    existingRows: hold             # a row that holds a record's key and that the record did not write: hold (default) | update
+    businessObjects:               # by the entity type a kind names; a kind not listed is the business object named like its entity
+      well_test: { name: WELL TEST, key: [UWI, TEST_NUM] }
   protocolOptions:
     payload: curves                # which source.payloads entry the protocol streams
     # ddms: every path defaults to the collection serving the record's entity type (/ddms/v3/welllogs for a WellLog);
@@ -503,6 +510,75 @@ them from the version OSDU holds, and a version whose only changes are in them i
 ([protocols.md](protocols.md#osdurecord)). A job is stopped by delivering it with `ActiveIndicator: false`, not by removing
 it.
 
+### The Production DDMS core service
+
+The Production DDMS core service (DSPDM) keeps production data as rows of business objects in its own database, not as
+OSDU records ([../specs/production-dspdm/INTEGRATION.md](../specs/production-dspdm/INTEGRATION.md) section 2). The
+`dspdm` route writes those rows.
+
+- A mapping of rows fills a template whose kind has the source `dspdm`: `{authority}:dspdm:{entity}:{version}`
+  (`acme:dspdm:well_test:1.0.0`), the entity being the business object's entity (its table). The template is imported
+  like any other (`sqlflow template import`), from a JSON schema whose `data` properties are the business object's
+  attributes.
+- Its entries fill the attributes as properties of `osdu.data` (`osdu.data.UWI`) and nothing else. A row has no access or
+  legal block, so the loader refuses an envelope entry, and any target outside `osdu.data`, in a mapping of a DSPDM kind.
+  Attribute names are read in upper case, as DSPDM reads them.
+- The route and the kind go together: the dspdm route writes only kinds with the source `dspdm`, and no other route
+  writes them.
+
+```yaml
+target:
+  endpoint: https://osdu.example.com
+  headers: { data-partition-id: opendes }
+  protocol: dspdm
+  dspdm:
+    root: /api/dspdm/v1
+    timezone: GMT+02:00
+    existingRows: hold
+    businessObjects:
+      well_test: { name: WELL TEST, key: [UWI, TEST_NUM] }
+```
+
+| Key | Meaning |
+| --- | --- |
+| `root` | Where DSPDM is under the endpoint (`/api/dspdm/v1` behind the GC gateway). Left out when the endpoint is DSPDM itself. |
+| `timezone` | The zone every request names: `GMT+hh:mm` or `GMT-hh:mm`, from GMT-12:00 to GMT+14:00, the only form DSPDM's save takes. Default `GMT+00:00`. DSPDM moves a date and time written in the ISO form with an offset into this zone, and keeps any other form as written. |
+| `businessObjects.<entity>.name` | The business object the rows of that entity are. Default: the entity in upper case, a space for each `_` (`well_test` is `WELL TEST`). |
+| `businessObjects.<entity>.key` | The attributes a row is found again by, which must be one of the business object's unique constraints. Default: its one unique constraint. |
+| `existingRows` | What happens to a row that holds a record's key when the record did not write it (a row another system wrote, a row loaded before the flow existed, or the row of another record that renders the same key). `hold`, the default, holds the record and names the row. `update` updates the row and keeps it as the record's, to take over rows loaded before. |
+
+Before a run, the route reads each business object from DSPDM's metadata (`BUSINESS OBJECT`, `BUSINESS OBJECT ATTR`,
+`BUS OBJ ATTR UNIQ CONSTRAINTS`). It refuses a business object it cannot write:
+
+- a name DSPDM does not know, or another entity than the kind names;
+- an inactive business object, or a metadata or equipment catalog table;
+- a primary key that is not one whole number;
+- rows that cannot be found again by one unique constraint: there is none, there are several and `key` names none of
+  them, or `key` is not one of them or names the primary key.
+
+A row is checked before it is sent, and held with every reason:
+
+- an attribute the business object does not have, or one DSPDM keeps itself (its primary key, the four audit attributes,
+  a read-only attribute);
+- a value its data type does not take: a number, a whole number in range, text within its length, a decimal within its
+  precision, a date or time in a form DSPDM reads, true or false (`Y`, `N`, `1`, `0` as text);
+- an empty key attribute;
+- a mandatory attribute missing from an insert, or cleared by an update.
+
+Two records of one delivery that are one row hold the later one.
+
+Removal: DSPDM keeps no deleted rows and no versions. The `everything` scope deletes a record's row for good; the
+`record` and `history` scopes are refused. So a live test of this route cannot be cleaned up by a soft delete, and
+needs its own approval.
+
+What the route relies on and cannot see:
+
+- DSPDM's shipped settings: `read_before_update` and `do_tiny_update` true, `use_utc_timezone_to_save` and
+  `use_client_timezone_to_display` false. With `do_tiny_update` off, an update rewrites every attribute of a row,
+  clearing the ones the mapping does not fill. With the time zone settings changed, a date key or a version reads
+  differently.
+- Whether DSPDM runs on the target deployment, and which business objects and constraints it holds, are known only there.
+
 ### Parameters
 
 Flow parameters are supplied by `--set name=value` or by the run's values. `{name}` tokens are substituted in
@@ -620,12 +696,14 @@ What an interface's records carry decides how they are delivered:
 | `route: manifest`, with or without `files` | `manifest` | has its files registered first, then goes through the ingestion workflow in manifests (`osduManifest`). |
 | `route: manifest` and `bulk`, with or without `files` | `manifestAndDdms` | goes through the ingestion workflow in manifests, its files registered first, then its bulk data through its DDMS (`osduManifestAndDdms`). |
 | `workflow` | `workflow` | is written first, its inputs registered, then the workflow runs in stages and what it wrote is read back (`osduWorkflow`). |
+| `route: dspdm` | `dspdm` | is a row of a Production DDMS business object: found again by its unique key, then saved through DSPDM (`osduDspdm`, [The Production DDMS core service](#the-production-ddms-core-service)). |
 
 `route:` names a route outright. A named route and a part only another route sends make the two routes' composition:
 `file` with `bulk` and `ddms` with `files` are `fileAndDdms`, and `manifest` with `bulk` is `manifestAndDdms`. A route
 that cannot deliver what the interface declares is refused when the document loads: `storage` with `files` or `bulk`,
-`file` or `dataset` without `files`, `dataset` or `workflow` with `bulk`, a `workflow` block on any other route, and a
-composed route without both of its parts.
+`file` or `dataset` without `files`, `dataset` or `workflow` with `bulk`, `dspdm` with `files` or `bulk`, a `workflow`
+block on any other route, and a composed route without both of its parts. A source's `target.dspdm` goes to its `dspdm`
+interfaces, and is refused when no interface takes that route.
 
 A `ddms` interface needs to know where its DDMS is: a DDMS under `target.ddms`, `ddmsRoot` under the source's or its
 own `protocolOptions`, or paths of its own (`recordPath` and the rest). Its records go to the collection serving their
@@ -1259,6 +1337,11 @@ list of values becomes a list of one, and a value that cannot take the type hold
 target. A variable with no entry, an entry that does not apply and an optional entry with no value are left out; an
 array item that received no value is left out of its array, and an array with no items is left out. A property the
 schema requires in `data` that renders empty holds the record, and so does a record key with an empty column.
+
+A mapping of a DSPDM kind renders a business object row: `id` and `kind` as above, the attributes under `data`, and
+`attributes`, the upper-case list of the attributes its entries fill. An update sends each attribute in that list that
+rendered empty as null, so a value the source no longer gives is cleared in DSPDM, and leaves the attributes the mapping
+does not fill as they are ([protocols.md](protocols.md#osdudspdm-the-dspdm-route)).
 
 ### Fixtures
 

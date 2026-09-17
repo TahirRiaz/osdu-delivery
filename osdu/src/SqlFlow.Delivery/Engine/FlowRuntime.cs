@@ -220,11 +220,22 @@ public sealed class FlowRuntime : IDisposable
     /// <summary>
     /// Checks that the flow's route can deliver <paramref name="kind"/>, the kind its mapping renders
     /// (<see cref="RouteChecks"/>). A flow on the ddms route that names a DDMS by its registration has its protocol built
-    /// first, which reads the registration, so the check sees what the DDMS registered.
+    /// first, which reads the registration, so the check sees what the DDMS registered. A flow on the dspdm route has its
+    /// business object read from DSPDM's metadata, which says whether it exists and how its rows are found again.
     /// </summary>
     public async Task CheckRouteAsync(string kind, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        if (Flow.Target.Protocol == DeliveryProtocol.OsduDspdm)
+        {
+            RouteChecks.Check(Flow, kind);
+            if (await ProtocolAsync(ct).ConfigureAwait(false) is OsduDspdmProtocol dspdm)
+            {
+                await dspdm.CheckKindAsync(kind, ct).ConfigureAwait(false);
+            }
+
+            return;
+        }
         if (DeliveryProtocols.ReachesDdms(Flow.Target.Protocol) && DdmsDiscovery.Needed(Flow))
         {
             var routing = await ProtocolAsync(ct).ConfigureAwait(false) switch
@@ -639,6 +650,13 @@ public sealed class FlowRuntime : IDisposable
     {
         if (_legalTagsChecked)
         {
+            return;
+        }
+
+        if (Mapping.Mapping.Envelope.LegalTags.Count == 0)
+        {
+            // A mapping of DSPDM business object rows puts no legal tags on anything: its rows are no OSDU records.
+            _legalTagsChecked = true;
             return;
         }
 

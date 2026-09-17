@@ -60,7 +60,10 @@ public sealed record MappingDefinition
     }
 }
 
-/// <summary>The four envelope values OSDU requires on every record, which a mapping gives as static lists.</summary>
+/// <summary>
+/// The four envelope values OSDU requires on every record, which a mapping gives as static lists. A mapping of a DSPDM
+/// business object's rows (<see cref="DspdmKinds"/>) has none: its rows are no OSDU records.
+/// </summary>
 public sealed record MappingEnvelope(
     IReadOnlyList<string> Owners, IReadOnlyList<string> Viewers, IReadOnlyList<string> LegalTags, IReadOnlyList<string> OtherRelevantDataCountries);
 

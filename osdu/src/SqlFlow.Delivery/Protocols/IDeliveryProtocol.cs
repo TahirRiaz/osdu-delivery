@@ -241,6 +241,12 @@ public interface IDeliveryProtocol
     int MaxVerifyBatch => 1;
 
     /// <summary>
+    /// Whether a verify needs each record's target state, which then goes with every <see cref="VerifyRequest"/>: a protocol
+    /// whose target keeps a record under a key the target gave (a DSPDM row's primary key) finds the record by it.
+    /// </summary>
+    bool VerifiesWithTargetState => false;
+
+    /// <summary>
     /// Verifies several records, in one request when <see cref="MaxVerifyBatch"/> allows it. Results align with
     /// <paramref name="requests"/>. The default reads them one at a time; a protocol whose service takes a list of
     /// ids overrides this, which is what keeps a drift pass over a large estate to a handful of requests rather
@@ -311,6 +317,14 @@ public interface IDeliveryProtocol
 
     /// <summary>Reads the record back as the target holds it, or null when the target has no such record.</summary>
     Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Reads the record back as the target holds it, given what its deliveries recorded (<paramref name="targetState"/>), or
+    /// null when the target has no such record. A protocol that finds a record by its id alone reads it as
+    /// <see cref="ReadAsync(string, CancellationToken)"/> does.
+    /// </summary>
+    Task<JsonObject?> ReadAsync(string targetId, IReadOnlyDictionary<string, string>? targetState, CancellationToken ct)
+        => ReadAsync(targetId, ct);
 
     /// <summary>A reachability and credential check against the service's info endpoint, under the flow's auth.</summary>
     Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default);

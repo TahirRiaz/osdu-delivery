@@ -429,6 +429,35 @@ internal sealed class FlowTargetYaml
 
     /// <summary>The External Data Services deployment behind the target, and how the records that configure it are checked.</summary>
     public EdsYaml? Eds { get; set; }
+
+    /// <summary>The Production DDMS core service the dspdm route writes business object rows to.</summary>
+    public DspdmYaml? Dspdm { get; set; }
+}
+
+/// <summary>The Production DDMS core service behind the target (<c>target.dspdm</c>).</summary>
+internal sealed class DspdmYaml
+{
+    /// <summary>Where DSPDM sits under the endpoint (<c>/api/dspdm/v1</c>); left out when the endpoint is DSPDM.</summary>
+    public string? Root { get; set; }
+
+    /// <summary>The time zone every request names: GMT+hh:mm. Default GMT+00:00.</summary>
+    public string? Timezone { get; set; }
+
+    /// <summary>The business objects the flow's kinds are rows of, by entity type.</summary>
+    public OrderedDictionary<string, DspdmBusinessObjectYaml?>? BusinessObjects { get; set; }
+
+    /// <summary>What happens to a row found by a record's key that the record did not write: hold (default) or update.</summary>
+    public string? ExistingRows { get; set; }
+}
+
+/// <summary>One business object under <c>target.dspdm.businessObjects</c>.</summary>
+internal sealed class DspdmBusinessObjectYaml
+{
+    /// <summary>Its name in DSPDM (<c>WELL TEST</c>); the entity type's when left out.</summary>
+    public string? Name { get; set; }
+
+    /// <summary>The attributes a row is found again by: one of its unique constraints.</summary>
+    public List<string>? Key { get; set; }
 }
 
 /// <summary>One DDMS a flow declares under <c>target.ddms</c>.</summary>

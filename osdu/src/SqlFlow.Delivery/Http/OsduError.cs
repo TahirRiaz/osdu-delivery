@@ -13,7 +13,9 @@ namespace SqlFlow.Delivery.Http;
 /// request its controller never reached (a 415 for a missing Content-Type) with a problem document:
 /// <c>{"title", "detail", "status"}</c>. The wellbore DDMS is FastAPI and sends <c>{"detail": "..."}</c>, or for a
 /// validation failure <c>{"detail": [{"loc": [...], "msg": "...", "type": "..."}]}</c>, which only makes sense with
-/// the field each message is about. A raw preview of those bodies cuts the message off or buries it in JSON; the
+/// the field each message is about. The Production DDMS core service (DSPDM) answers <c>{"status": {"statusCode", ...},
+/// "messages": [{"message"}], "exception": {"message", "stackTrace"}}</c>, whose messages say what went wrong and whose
+/// stack trace is never repeated. A raw preview of those bodies cuts the message off or buries it in JSON; the
 /// OSDU C# client surfaces <c>AppError.message</c> and <c>reason</c> typed for the same reason.
 ///
 /// Anything else (HTML from a gateway, plain text, JSON in some other shape) is kept as a bounded preview, so nothing
@@ -50,6 +52,12 @@ public static class OsduError
             if (root.ValueKind != JsonValueKind.Object)
             {
                 return null;
+            }
+
+            // DSPDM: the messages and the exception's message, never the stack trace it prints beside them.
+            if (root.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.Object && status.TryGetProperty("statusCode", out _))
+            {
+                return DspdmMessages(root, status);
             }
 
             // FastAPI (wellbore DDMS): detail is a sentence, or a list of per-field validation errors. The Reservoir
@@ -115,6 +123,32 @@ public static class OsduError
         return parts.Count == 0 ? null : string.Join("; ", parts);
     }
 
+    /// <summary>What a DSPDM answer says: its messages and its exception's message, or its status when it says nothing more.</summary>
+    private static string DspdmMessages(JsonElement root, JsonElement status)
+    {
+        var said = new List<string>();
+        if (root.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var message in messages.EnumerateArray())
+            {
+                if (message.ValueKind == JsonValueKind.Object && Text(message, "message") is { } text && !said.Contains(text, StringComparer.Ordinal))
+                {
+                    said.Add(text);
+                }
+            }
+        }
+
+        if (root.TryGetProperty("exception", out var exception) && exception.ValueKind == JsonValueKind.Object
+            && Text(exception, "message") is { } thrown && !said.Contains(thrown, StringComparer.Ordinal))
+        {
+            said.Add(thrown);
+        }
+
+        return said.Count > 0
+            ? string.Join("; ", said)
+            : $"DSPDM answered status {Text(status, "statusLabel") ?? status.GetProperty("statusCode").GetRawText()} without a message";
+    }
+
     /// <summary>"message (reason)", leaving out whichever the service did not send or repeated.</summary>
     private static string? Join(string? message, string? reason)
     {
@@ -133,8 +167,10 @@ public static class OsduError
             ? text.Trim()
             : null;
 
-    private static string Bound(string text)
+    /// <summary>Text on one line, cut at <see cref="MaxLength"/> characters with an ellipsis.</summary>
+    public static string Bound(string text)
     {
+        ArgumentNullException.ThrowIfNull(text);
         var single = new StringBuilder(text.Length);
         foreach (var c in text)
         {

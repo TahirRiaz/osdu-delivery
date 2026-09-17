@@ -41,6 +41,7 @@ public static class ProtocolFactory
                 secrets,
                 flow.Target.Airflow is { } airflow ? new Workflows.AirflowXCom(http, airflow, secrets) : new Workflows.LatestInfoXCom(client),
                 ceiling),
+            DeliveryProtocol.OsduDspdm => new OsduDspdmProtocol(client, options, flow.Target.Dspdm, loggers.CreateLogger<OsduDspdmProtocol>()),
             _ => throw new FlowValidationException($"{flow.SourcePath ?? flow.Name}: target.protocol '{flow.Target.Protocol}' is not a known protocol."),
         };
     }

@@ -158,6 +158,7 @@ public sealed class ReadRecordOperation : DeliveryOperation
     {
         var targetId = payload.Argument("targetId");
         Guid? deliveryKey = null;
+        IReadOnlyDictionary<string, string>? targetState = null;
         if (targetId is null)
         {
             var key = DeliveryKey.Parse(payload.RequireArgument("deliveryKey"));
@@ -167,13 +168,23 @@ public sealed class ReadRecordOperation : DeliveryOperation
             // What a record's page reads back is what this flow wrote: an id the record never claimed can be another flow's.
             targetId = record.ClaimedTargetId
                 ?? throw new SqlFlowException($"Record {key} has not queued a document for OSDU in flow '{flow.Label}', so this flow wrote nothing to read back.");
+            targetState = JsonMerge.ToValues(record.TargetStateJson);
+        }
+        else if (Context.Ledger is { } ledger)
+        {
+            // A target that keeps a record under a key it gave (a DSPDM row) is read by what the record's deliveries recorded.
+            var matches = await ledger.ListAsync(flow.Id, new RecordQuery { Search = targetId, Max = 2 }, ct).ConfigureAwait(false);
+            if (matches.FirstOrDefault(r => string.Equals(r.TargetId, targetId, StringComparison.Ordinal)) is { } record)
+            {
+                targetState = JsonMerge.ToValues(record.TargetStateJson);
+            }
         }
 
         var (http, protocol) = await OpenTargetAsync(flow, ct).ConfigureAwait(false);
         using var correlation = Http.OsduCorrelation.Begin();
         using (http)
         {
-            JsonObject? document = await protocol.ReadAsync(targetId, ct).ConfigureAwait(false);
+            JsonObject? document = await protocol.ReadAsync(targetId, targetState, ct).ConfigureAwait(false);
             return new
             {
                 flow = flow.Label,

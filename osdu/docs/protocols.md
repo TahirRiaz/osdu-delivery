@@ -14,12 +14,13 @@ code and parameterised by the flow, not an authorable step language.
 | `osduFileAndDdms` | file, the DDMS | The record's files as `osduFile` registers them, the record through its DDMS naming them, then its bulk data; each part only when it moved. | one record per request |
 | `osduManifestAndDdms` | file, dataset, workflow, search, storage, the DDMS | The batch through the manifest, then each record's bulk data through its DDMS. | as `osduManifest` |
 | `osduWorkflow` | dataset, workflow, search, storage; Airflow's REST API when the flow names it | The record written, its inputs registered, up to four workflow runs in order, what they wrote found and read back. | one record per run |
+| `osduDspdm` | the Production DDMS core service (DSPDM) | A business object row, not an OSDU record: found again by its unique key, then inserted or updated under the primary key DSPDM gave it, and read back, verified and deleted by that key. | up to `batchSize` rows per save (at most 256) |
 
 A flow in the single form names its route with `target.protocol`, as a route type or as the protocol it maps onto.
 An interface of a source is given one by its route, which follows from what the interface declares
 ([documents.md](documents.md#routes)): `storage` is `osduRecord`, `file` is `osduFile`, `dataset` is `osduDataset`,
 `manifest` is `osduManifest`, `ddms` is `osduWellLog` (whose payload is the interface's `bulk`), `fileAndDdms` is
-`osduFileAndDdms`, `manifestAndDdms` is `osduManifestAndDdms`, and `workflow` is `osduWorkflow`.
+`osduFileAndDdms`, `manifestAndDdms` is `osduManifestAndDdms`, `workflow` is `osduWorkflow`, and `dspdm` is `osduDspdm`.
 
 The core is protocol independent: identity, rendering, change detection, the ledger, idempotency and the
 preflight gate never change. A protocol implements the delivery, and the read-back, verify, probe and delete
@@ -30,7 +31,10 @@ int MaxBatch { get; }
 Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct);
 Task<IReadOnlyList<DeliveryOutcome>> DeliverBatchAsync(IReadOnlyList<DeliveryWork> works, CancellationToken ct);
 Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct);
+Task<IReadOnlyList<VerifyResult>> VerifyBatchAsync(IReadOnlyList<VerifyRequest> requests, CancellationToken ct);
+bool VerifiesWithTargetState { get; }   // true: each VerifyRequest carries the record's target state
 Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct);
+Task<JsonObject?> ReadAsync(string targetId, IReadOnlyDictionary<string, string>? targetState, CancellationToken ct);
 Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState, CancellationToken ct);
 Task<IReadOnlyList<RemovalResult>> DeleteBatchAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct);
 Task<ProbeOutcome> ProbeAsync(CancellationToken ct);
@@ -676,6 +680,72 @@ that run, and the dataset is removed reversibly (`softDelete`) once the run has 
 without the workflow fails the batch; `auto` there splits the batch into manifests under the limit, a record whose
 manifest alone is above it going on its own.
 
+## `osduDspdm`: the dspdm route
+
+The Production DDMS core service keeps rows of business objects in its own database, under a primary key it draws from
+a sequence when it inserts a row ([../specs/production-dspdm/INTEGRATION.md](../specs/production-dspdm/INTEGRATION.md)).
+Its save (`POST {root}/save`) is an upsert by that key: a row sent without the key is inserted, and inserted again if it
+is sent again. So the route finds every row before it saves it. What a flow declares, and what is checked before a run
+and before a row is sent, is in [documents.md](documents.md#the-production-ddms-core-service).
+
+- Metadata: read once per protocol (`POST {root}/common` on `BUSINESS OBJECT`, `BUSINESS OBJECT ATTR` and
+  `BUS OBJ ATTR UNIQ CONSTRAINTS`), and read again when a read failed.
+- Find: one read for a delivery's rows. The query is `POST {root}/common` with each key attribute `IN` the values the rows
+  give, ordered by the primary key, 1000 rows a page. The rows the records were delivered as, when that read did not
+  return them, are read by primary key (`IN`, up to 256 a read). A row found is matched to its record by its key in the
+  form DSPDM keeps it:
+  - text trimmed;
+  - a decimal rounded half up to its column's scale;
+  - a date or time as DSPDM stores it: an ISO value with an offset moved into the request's zone, any other form as
+    written.
+
+  If a row comes back whose key is none of the values sent, DSPDM compares that value differently. The records then left
+  without a row are looked up one at a time with `EQUALS`, so DSPDM's own comparison decides. Filter values go as the
+  rows give them (text, numbers, flags): the contract types them as objects, and the code reads any value (brief section 8).
+- Decide: a record's row is the row its target state names (`dspdm.id`) while that row exists; otherwise the row its key
+  finds; otherwise a new row.
+  - A row the key finds that the record did not write is taken only when the record's earlier try sent a save for that
+    key (below), or when `existingRows` is `update`. Otherwise the record is held.
+  - Also held: a key that names another row while the record's row exists, several rows with one key, and a target state
+    that names a row of another business object.
+- Save: the step `save-begin` records the business object, the key's fingerprint, and whether the save inserts or
+  updates, before anything is sent. Then one save sends the business object's rows (`language: en`, the flow's
+  `timezone`, `readBack: true`), which DSPDM runs as one transaction.
+  - An insert sends the values the row gives.
+  - An update sends the primary key, the values, and null for each attribute the mapping fills that rendered empty.
+  - A save is never repeated inline. If a try fails after DSPDM may have saved (a lost answer, a gateway's 502), the next
+    try finds the row by its key. Because its `save-begin` fingerprint matches, it updates that row instead of
+    inserting another.
+- Refusals: DSPDM answers most refusals with HTTP 500 and a negative status, and the route reads that answer.
+  - A save of several rows that DSPDM refuses (WARNING, ERROR, or a 4xx other than 401, 403, 408, 425 and 429) is sent
+    again one row at a time, so a refused row holds only itself.
+  - A failure that is not DSPDM's answer (a gateway, the connection) fails every row of the save for a later try, and
+    stops a row-by-row pass.
+  - A row sent alone is held when DSPDM raised the refusal itself (WARNING: a value it cannot convert, a mandatory
+    attribute, a row it cannot find), or when the refusal names a constraint other than a foreign key, in the fixed text
+    of `SQLState.getActualExceptionForSave`.
+  - Other refusals of a lone row are retried: an ERROR can be a lost database connection, and a foreign key can refer to
+    a row a later delivery brings.
+  - A 409, DSPDM's own check that another row holds a unique key, holds the row.
+- Settle: each row is settled from the rows the save answered with, in the order they were sent: `isInserted` with its
+  new key, `isUpdated`, or neither (unchanged).
+  - DSPDM reads rows back only when the save changed something, so an unchanged row keeps the version the find read.
+  - A row the answer does not settle (an INFO answer, an insert without its key) is read again.
+- Versions: `ROW_CHANGED_DATE`, or `ROW_CREATED_DATE` for a row never changed, in milliseconds. DSPDM stamps both with
+  the UTC time of the save. With its shipped settings it writes them back unchanged, labelled with the request's zone,
+  so the route reads the time as written, as UTC.
+- Steps: `find` (the rows found), `save-begin`, `save`.
+- Returned: `dspdm.businessObject`, `dspdm.id`, `dspdm.operation` (inserted, updated, unchanged) and `version`.
+- Verify: the rows are read by primary key (`IN`, up to 256 a read). A row that is no longer there is missing; a newer
+  change date is drift. The verify gives the protocol each record's target state (`VerifiesWithTargetState`), since a
+  row is found by the key the state names. A record whose state names no row cannot be verified.
+- Read back: the row by primary key, laid out as a record: `id`, `version`, `dspdm.businessObject` and `dspdm.id`, and
+  the row's attributes under `data`.
+- Remove: `everything` deletes the row for good (`DELETE {root}/delete/{boName}/{id}`); a 404 is a row already gone.
+  The `record` and `history` scopes are refused, since DSPDM keeps no deleted rows and no versions.
+- Probe: `GET {root}/health`, which needs no token, then a read of `BUSINESS OBJECT`, which needs the token, a
+  partition DSPDM serves and the entitlement to read.
+
 ## Before a run: legal tags
 
 Every record a mapping renders carries the same legal tags, and storage refuses a record whose tag is unknown or
@@ -730,8 +800,9 @@ draws in its `ReadRetryHandler`:
 The record-level backoff is the outer loop across worker passes. HTTP errors name the request URL without its
 query string, so a signed URL's credential never reaches an error message. An error body is read for what the
 service said rather than kept as raw JSON: AppError's `message` and `reason` from the Java services, a Spring
-problem's `title` and `detail` (the 415 storage sends for a missing `Content-Type`), or the wellbore DDMS `detail`,
-with the fields a validation error names. Anything else is kept as a bounded, single-line preview.
+problem's `title` and `detail` (the 415 storage sends for a missing `Content-Type`), the wellbore DDMS `detail` with
+the fields a validation error names, or DSPDM's `messages` and its exception's `message`, never the stack trace it prints
+beside them. Anything else is kept as a bounded, single-line preview.
 
 ## Adding a protocol
 

@@ -49,13 +49,20 @@ public enum DeliveryProtocol
     /// what they created found and read back (dataset, workflow, storage and search services).
     /// </summary>
     OsduWorkflow,
+
+    /// <summary>
+    /// The dspdm route: rows of the Production DDMS core service's business objects, not OSDU records. Each row is found
+    /// again by a unique key of its business object and saved under the primary key DSPDM gave it, and read back and
+    /// deleted by that key (osdu/specs/production-dspdm/INTEGRATION.md).
+    /// </summary>
+    OsduDspdm,
 }
 
 public static class DeliveryProtocols
 {
     /// <summary>Protocols that stream a payload alongside the record. The workflow route's run counts as its payload.</summary>
     public static bool CarriesPayload(DeliveryProtocol protocol)
-        => protocol is not DeliveryProtocol.OsduRecord;
+        => protocol is not (DeliveryProtocol.OsduRecord or DeliveryProtocol.OsduDspdm);
 
     /// <summary>Protocols that reach a DDMS, and so read the flow's <c>target.ddms</c>.</summary>
     public static bool ReachesDdms(DeliveryProtocol protocol)

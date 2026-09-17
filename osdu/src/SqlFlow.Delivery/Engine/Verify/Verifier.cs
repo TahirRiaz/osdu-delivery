@@ -44,6 +44,13 @@ public sealed class Verifier
         _logger = logger;
     }
 
+    /// <summary>
+    /// The target state a verify of <paramref name="record"/> takes: all of it for a protocol that finds records by it, and
+    /// otherwise only what a hash of the owned content needs, which spares parsing it for every record of a large pass.
+    /// </summary>
+    private IReadOnlyDictionary<string, string>? StateFor(RecordState record)
+        => _protocol.VerifiesWithTargetState ? JsonMerge.ToValues(record.TargetStateJson) : Protocols.OwnedContent.StateOf(record.TargetStateJson);
+
     public async Task<VerifySummary> RunAsync(int max, TimeSpan? notVerifiedWithin, bool reconcile, IReadOnlyList<DeliveryKey>? keys = null, CancellationToken ct = default)
     {
         var now = _time.GetUtcNow().UtcDateTime;
@@ -77,7 +84,7 @@ public sealed class Verifier
                 try
                 {
                     results = await _protocol.VerifyBatchAsync(
-                        chunk.Select(r => new VerifyRequest(r.TargetId!, r.TargetVersion, Protocols.OwnedContent.StateOf(r.TargetStateJson))).ToList(), ct).ConfigureAwait(false);
+                        chunk.Select(r => new VerifyRequest(r.TargetId!, r.TargetVersion, StateFor(r))).ToList(), ct).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
                 {

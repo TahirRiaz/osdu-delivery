@@ -408,6 +408,12 @@ public sealed record FlowTarget
     /// checked before they are sent. Without the block they are checked with the defaults.
     /// </summary>
     public EdsTarget Eds { get; init; } = new();
+
+    /// <summary>
+    /// The Production DDMS core service behind the target (<c>target.dspdm</c>): where the dspdm route reaches it, and the
+    /// business objects its kinds are rows of. Without the block the endpoint is DSPDM, and every default applies.
+    /// </summary>
+    public DspdmTarget Dspdm { get; init; } = new();
 }
 
 public enum TargetAuthType

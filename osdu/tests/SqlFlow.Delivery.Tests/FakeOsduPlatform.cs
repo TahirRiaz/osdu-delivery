@@ -15,8 +15,8 @@ namespace SqlFlow.Delivery.Tests;
 /// scripted engine behind it (what each workflow writes, the status it ends in and the XCom entries it pushes), the
 /// Airflow REST API, the Wellbore, Well Delivery, RAFS and Production historian DDMSs, Seismic Store with the object
 /// stores behind it (FakeOsduPlatform.Seismic.cs) and the Reservoir Management DDMS
-/// (FakeOsduPlatform.ReservoirManagement.cs). Every request is recorded as <see cref="FakeHttpHandler"/> records them, so
-/// the contract harness checks them.
+/// (FakeOsduPlatform.ReservoirManagement.cs), and the Production DDMS core service (FakeOsduPlatform.Dspdm.cs). Every request
+/// is recorded as <see cref="FakeHttpHandler"/> records them, so the contract harness checks them.
 /// </summary>
 public sealed partial class FakeOsduPlatform : HttpMessageHandler
 {
@@ -307,6 +307,11 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
         if (ReservoirManagementRoute(method, path, uri, body) is { } reservoirManagement)
         {
             return reservoirManagement;
+        }
+
+        if (DspdmRoute(method, path, body, request) is { } dspdm)
+        {
+            return dspdm;
         }
 
         if (path == "/api/search/v2/query_with_cursor" || path == "/api/search/v2/query")
