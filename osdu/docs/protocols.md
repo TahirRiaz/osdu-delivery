@@ -80,12 +80,25 @@ part without files.
   marks the records the service found unchanged. A single-record write also honours `versionPath`.
 - A batch the service refuses as a whole (a 4xx) is retried record by record, so one bad document holds
   itself and not its neighbours.
+- Preserved keys: an update of a record the ledger holds a version of reads the record first
+  (`GET {endpoint}{verifyPath}`) and copies into the document the data keys other systems write: the flow's
+  `preserveDataKeys` ([decisions/0004](decisions/0004-preserved-keys.md)) and, on a connected source data job, the run
+  state External Data Services writes after a fetch (`LastSuccessfulRunDateUTC`, `FailedRecords`, `CreateTimeMax`;
+  [documents.md](documents.md#external-data-services)). A write that carries keys returns `ownedContent.hash`, the hash
+  of what a client writes of the record (id, kind, acl, the legal tags and countries, data, ancestry, meta and tags,
+  never what storage adds) with those keys left out, and `ownedContent.excluded`, the keys; a later write that carries
+  none clears them. `osduFile`, and the storage writes of `osduDataset` and of the workflow route, go through this
+  route and carry them the same way; a registration through the Dataset service writes the record whole.
 - Verify, one record: `GET {endpoint}{verifyPath}` (default `/api/storage/v2/records/{id}`), compare `version`.
 - Verify, a pass: `POST {verifyBatchPath}` (default `/api/storage/v2/query/records`) with up to 100 ids and
   the attributes projected down, so a drift pass over a large estate costs a handful of requests rather than
   one per record. The records it returns carry their observed version, and the rest are missing, whether or not
   the response names them under `invalidRecords`, which is how storage answers for a record it does not hold.
   `osduFile` and `osduManifest` verify through the same read, because their records live in storage too.
+- A record whose version moved and whose target state holds `ownedContent.hash` is read whole, in a second batched read
+  of those records alone. When the hash of what it holds matches, only keys another system writes changed (EDS updating
+  a job's run state after a fetch): the record matches, and the result says the newer version is not drift. A read that
+  fails leaves those records undecided rather than drifted, so a reconciling pass does not send them again on a guess.
 - Remove: `POST {id}:delete` stops the record resolving and is revertible in OSDU; `DELETE {id}/versions`
   purges the earlier versions and leaves the latest live; `DELETE {id}` purges the record and every version.
   A set of records at the reversible scope goes through `POST /records/delete` (up to 500 ids per request);
@@ -568,8 +581,10 @@ One protocol for every ingestion workflow ([documents.md](documents.md#the-workf
    `legal`. Step `register-{input}` returns the ids; the target state keeps them as `input.<name>`. A storage anchor's
    own files are registered the same way, as `datasetKind`.
 3. The anchor is written when its document or its files changed: a dataset anchor with new files is staged and
-   registered as `osduDataset` registers a dataset record; any other write goes through storage (a dataset anchor
-   carrying the `DatasetProperties` storage holds, a storage anchor its dataset list). Step `anchor`.
+   registered as `osduDataset` registers a dataset record; any other write goes through storage as `osduRecord` writes
+   it, with the keys other systems write (a dataset anchor carrying the `DatasetProperties` storage holds, a storage
+   anchor its dataset list). Step `anchor` keeps `ownedContent.hash` when the write returned one, so a try that resumes
+   past the anchor still returns it.
 4. When a run is due (`runWhen`: the anchor or an input was written, the record is new, or a redelivery names
    `workflow`), each stage in order: the context filled (secrets only in the request), `Payload` added when the
    workflow reads it and the context leaves it out, the context checked against the workflow's contract (a context
@@ -619,7 +634,9 @@ workflow run.
    a manifest sent a second after registration lost its record, and the same manifest sent once the index
    listed the dataset wrote it. A wait that runs out is named on step `indexed` and the manifest goes ahead.
    Then each record's version is read from storage, as in step 5, and carried on the manifest step as
-   `priorVersion`.
+   `priorVersion`. A record the ledger holds a version of, and storage holds, has the keys other systems write (as
+   `osduRecord` carries them) read in one more batched read projected to `data.<key>`, and copied into the manifest's
+   copy of it.
 3. One manifest (`manifestKind`, default `osdu:wks:Manifest:1.0.0`) carries every record of the batch in the
    section its kind names (`ReferenceData`, `MasterData`, `Data.WorkProduct`, `Data.WorkProductComponents`,
    `Data.Datasets`; `manifestSection` overrides). `POST {workflowRunPath}` (default
@@ -643,7 +660,8 @@ workflow run.
    not write, not a verdict on the id. A record still at the version it held before the run (`priorVersion`)
    was not written by it either, because a finished run that dropped a record leaves an existing one in place,
    and it goes into a new run the same way. Step `records` returns
-   the record id and version.
+   the record id and version, and a record that carries keys other systems write returns `ownedContent.hash` and
+   `ownedContent.excluded` as `osduRecord` does.
 
 Verify, read back and removal go to storage, and a purge of everything deletes the datasets and their files through the file
 service, as for `osduFile`.

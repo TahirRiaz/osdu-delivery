@@ -46,6 +46,14 @@ public static class RouteChecks
             ?? throw new DeliveryException(
                 $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, which names no entity type, so the {route} route cannot tell where it goes.");
         var dataset = Protocols.DatasetService.IsDatasetType(entityType);
+        if (EdsRecordRules.IsProxyDataset(entityType) && RegistersFiles(flow))
+        {
+            throw new DeliveryException(
+                $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, an External Data Services proxy dataset: the dataset it names stays in the external source, "
+                + $"where eds-dms retrieves it, so there are no files to register for it. Deliver it by the storage route ({keys.Shared("route")}: storage) "
+                + "(osdu/specs/eds-dms/INTEGRATION.md section 2.3).");
+        }
+
         switch (flow.Target.Protocol)
         {
             case DeliveryProtocol.OsduFile when dataset:
@@ -73,4 +81,17 @@ public static class RouteChecks
             throw new DeliveryException($"{problem} ({mapping} renders {kind}.)");
         }
     }
+
+    /// <summary>
+    /// Whether the flow's route registers files for the records it delivers: the record's own files, or the files of the
+    /// dataset it registers the record as. A workflow's inputs are datasets of their own and do not count.
+    /// </summary>
+    private static bool RegistersFiles(FlowDefinition flow) => flow.Target.Protocol switch
+    {
+        DeliveryProtocol.OsduFile or DeliveryProtocol.OsduDataset or DeliveryProtocol.OsduFileAndDdms => true,
+        DeliveryProtocol.OsduManifest => Planning.Planner.PayloadName(flow) is not null,
+        DeliveryProtocol.OsduManifestAndDdms => flow.Source.Payloads.ContainsKey(PayloadParts.Files),
+        DeliveryProtocol.OsduWorkflow => flow.Target.Workflow?.Anchor == WorkflowAnchor.Dataset || flow.Source.Payloads.ContainsKey(PayloadParts.Files),
+        _ => false,
+    };
 }

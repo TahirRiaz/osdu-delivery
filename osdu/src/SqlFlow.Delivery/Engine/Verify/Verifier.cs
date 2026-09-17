@@ -77,7 +77,7 @@ public sealed class Verifier
                 try
                 {
                     results = await _protocol.VerifyBatchAsync(
-                        chunk.Select(r => new VerifyRequest(r.TargetId!, r.TargetVersion)).ToList(), ct).ConfigureAwait(false);
+                        chunk.Select(r => new VerifyRequest(r.TargetId!, r.TargetVersion, Protocols.OwnedContent.StateOf(r.TargetStateJson))).ToList(), ct).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
                 {

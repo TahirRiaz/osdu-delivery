@@ -216,6 +216,19 @@ internal sealed class AirflowYaml
     public string? ApiVersion { get; set; }
 }
 
+/// <summary>The External Data Services deployment behind the target (<c>target.eds</c>).</summary>
+internal sealed class EdsYaml
+{
+    /// <summary>Whether the records that configure EDS are checked before they are sent. Default true.</summary>
+    public bool? Checks { get; set; }
+
+    /// <summary>Whether proxy datasets are retrieved through eds-dms, which needs every registry entry's DatasetURL. Default true.</summary>
+    public bool? Retrieval { get; set; }
+
+    /// <summary>The eds-dms build the partition runs: corePlus, azure or gc.</summary>
+    public string? Build { get; set; }
+}
+
 /// <summary>What an interface may override of the source's render block: the mapping is the interface's own key.</summary>
 internal sealed class InterfaceRenderYaml
 {
@@ -413,6 +426,9 @@ internal sealed class FlowTargetYaml
     public WorkflowYaml? Workflow { get; set; }
 
     public AirflowYaml? Airflow { get; set; }
+
+    /// <summary>The External Data Services deployment behind the target, and how the records that configure it are checked.</summary>
+    public EdsYaml? Eds { get; set; }
 }
 
 /// <summary>One DDMS a flow declares under <c>target.ddms</c>.</summary>

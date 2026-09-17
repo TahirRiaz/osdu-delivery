@@ -400,6 +400,7 @@ internal static partial class FlowMapper
                 Ddms = MapDdms(target.Ddms, protocol, paths.Interface is not null, options.DdmsRoot, source),
                 Workflow = workflow,
                 Airflow = MapAirflow(target.Airflow, source),
+                Eds = MapEds(target.Eds, source),
             },
             Reliability = MapReliability(y.Reliability, source, paths),
             Verify = new FlowVerify { Reconcile = y.Verify?.Reconcile ?? false },
@@ -614,6 +615,7 @@ internal static partial class FlowMapper
                 Ddms = DeliveryProtocols.ReachesDdms(route.Protocol) ? target.Ddms : null,
                 Workflow = i.Workflow,
                 Airflow = target.Airflow,
+                Eds = target.Eds,
             },
             Reliability = YamlOverlay.Apply(y.Reliability, i.Reliability),
             Verify = YamlOverlay.Apply(y.Verify, i.Verify),
@@ -2191,6 +2193,33 @@ internal static partial class FlowMapper
             FanOut = r.FanOut ?? defaults.FanOut,
             FanOutMinRecords = r.FanOutMinRecords ?? defaults.FanOutMinRecords,
             RenderParallelism = r.RenderParallelism ?? defaults.RenderParallelism,
+        };
+    }
+
+    /// <summary>
+    /// The External Data Services block (<c>target.eds</c>): how the records that configure EDS are checked before they are
+    /// sent (osdu/specs/eds-dms/INTEGRATION.md section 2.1). A retrieval setting or a build named while the checks are off
+    /// is refused, since nothing would read it.
+    /// </summary>
+    private static EdsTarget MapEds(EdsYaml? declared, string source)
+    {
+        if (declared is null)
+        {
+            return new EdsTarget();
+        }
+
+        var checks = declared.Checks ?? true;
+        if (!checks && (declared.Retrieval is not null || !string.IsNullOrWhiteSpace(declared.Build)))
+        {
+            throw new FlowValidationException(
+                $"{source}: target.eds.checks is false, so nothing reads target.eds.retrieval or target.eds.build. Remove them, or turn the checks back on.");
+        }
+
+        return new EdsTarget
+        {
+            Checks = checks,
+            Retrieval = declared.Retrieval ?? true,
+            Build = string.IsNullOrWhiteSpace(declared.Build) ? null : ParseEnum<EdsBuild>(declared.Build.Trim(), "target.eds.build", source),
         };
     }
 

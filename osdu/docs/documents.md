@@ -79,6 +79,10 @@ target:
     apiVersion: v1                 # v1 (Airflow 2, /api/v1) | v2 (Airflow 3, /api/v2)
     auth: { type: basic, secondarySecretRef: ${env:AIRFLOW_USER}, secretRef: ${env:AIRFLOW_PASSWORD} }  # on v2, basic is exchanged for a token at /auth/token
     headers: {}
+  eds:                             # External Data Services: how the records that configure it are checked (see "External Data Services")
+    checks: true                   # hold registry entries, data jobs and proxy datasets EDS could not use (default true)
+    retrieval: true                # registry entries need the DatasetURL eds-dms retrieves their datasets through (default true)
+    build: azure                   # the eds-dms build: corePlus | azure | gc; only gc takes GcpServiceAccount schemes
   protocolOptions:
     payload: curves                # which source.payloads entry the protocol streams
     # ddms: every path defaults to the collection serving the record's entity type (/ddms/v3/welllogs for a WellLog);
@@ -111,7 +115,7 @@ target:
     contentSchemaVersion: 1.0.0    # ddms, RAFS: the content schema version of a table whose file name names none (nmr.parquet, not nmr.1.1.0.parquet)
     validateLegalTags: true        # deliver and intake runs ask the legal service about the mapping's legal tags first; false skips it
     legalValidatePath: /api/legal/v1/legaltags:validate  # where to ask; needed (as a whole URL) only for a ddms flow whose endpoint is the DDMS itself
-    preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]
+    preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]  # data keys other systems write, carried from the stored record into every update
     batchSize: 100                 # records per write request where the service takes arrays (osduRecord, osduFile, osduManifest; at most 500)
     uploadUrlPath: /api/file/v2/files/uploadURL      # osduFile, osduManifest: the signed landing-zone location
     uploadUrlExpiry: 12H           # how long the signed URL stays valid (30M, 12H, 2D); default the service's one hour
@@ -458,6 +462,46 @@ The run's preflight and `sqlflow check` refuse a mapping whose kind no DDMS the 
 whose records go to a collection that holds records alone; `sqlflow check` says where each flow's records go, and so
 does the API's view of a flow's target. [protocols.md](protocols.md#osduwelllog-the-ddms-route) says what the route
 sends to each collection.
+
+### External Data Services
+
+External Data Services pulls from an external source and takes no pushed data
+([../specs/eds-dms/INTEGRATION.md](../specs/eds-dms/INTEGRATION.md) section 2), so it has no route of its own. What a
+flow delivers for it are the records that configure it: connected source registry entries
+(`master-data--ConnectedSourceRegistryEntry`), connected source data jobs (`master-data--ConnectedSourceDataJob`) and
+proxy datasets (`dataset--External`, `dataset--ConnectedSource.Generic`), through the storage route, or the manifest
+route the upstream tools use. A fetch an operator starts is the workflow route running `eds_ingest` for one job or
+`eds_scheduler` for every active one ([The workflow route](#the-workflow-route)).
+
+```yaml
+target:
+  eds:
+    checks: true        # default true; false checks nothing
+    retrieval: true     # default true; false lets through a registry entry without a DatasetURL
+    build: azure        # corePlus | azure | gc; left out, a GcpServiceAccount scheme is held
+```
+
+Before anything is sent, every rendered record of those types is checked for what eds-dms and the EDS workflows need,
+and a record that breaks a rule is held with every rule it breaks named:
+
+| Record | What is checked |
+| --- | --- |
+| Registry entry | `data.DatasetURL` is an absolute http(s) URL, and is there unless `retrieval` is false: without it eds-dms answers 500 to every retrieval of the entry's datasets, and an empty one leaves them out without a word. `data.SecuritySchemes` lists at least one scheme, and every scheme, not only the first (eds-dms builds them all on every retrieval), has a `Name` no other scheme has, a `TypeID`, and a `FlowTypeID` naming a flow eds-dms builds, with the keys that flow requires: `ClientCredentials`, `PasswordCredentials`, `RefreshToken` and `AuthorizationCode` with their secret names and an absolute http(s) `TokenUrl`, `GcpServiceAccount` only when `build` is `gc`, and never `Implicit`. |
+| Data job | `ConnectedSourceRegistryEntryID` refers to a registry entry with its trailing colon (`<partition>:master-data--ConnectedSourceRegistryEntry:<id>:`); `ActiveIndicator` is true or false; `FetchKind` is a kind the source's search takes; `Filter` is a string (an empty one fetches every record of the kind); `ConnectedSourceDataPartitionID` and `OnIngestionDataPartitionID` are partition ids; `OnIngestionLegalTags` holds legal tags and countries, and `OnIngestionAcl` owners and viewers in Storage's ACL form, since EDS gives them to every record it fetches; `ScheduleUTC` is a cron expression of five or six fields; `LimitRecords`, when given, is a whole number above zero; and one `Workflows` entry is tagged `FETCH`, with the handler `eds_ingest`, an absolute http(s) `Url` and a `SecuritySchemeName`. |
+| Proxy dataset | `data.DatasetProperties` holds its four ids, each under an `Id` or an `ID` suffix (the same value when both are given): the registry entry, which must be one; the data job; the source partition; and the source record, as eds-dms sends it to the source (a version after the third colon cut off, and the partition put in front of an id that does not start with it). A record missing one fails every retrieval request that includes it. |
+
+What the engine cannot see is not checked: whether the secrets a registry entry names exist in the partition's Secret
+service (no contract of that service is pinned), whether a job's `SecuritySchemeName` names a scheme of its registry
+entry (the brief leaves it open), and whether the proxy datasets of one registry entry name one source partition (EDS
+writes a proxy for every dataset it fetches with its own job's partition, and only a retrieval request that mixes them
+suffers). A proxy dataset names a dataset that stays in the source, so the routes that register files for a record (file,
+dataset, and a manifest or workflow route with files) refuse its kind.
+
+EDS writes a data job itself after a fetch: `LastSuccessfulRunDateUTC`, `FailedRecords` and `CreateTimeMax`. On the
+storage, manifest and workflow routes those keys join the flow's `preserveDataKeys` for a data job: every update carries
+them from the version OSDU holds, and a version whose only changes are in them is not drift
+([protocols.md](protocols.md#osdurecord)). A job is stopped by delivering it with `ActiveIndicator: false`, not by removing
+it.
 
 ### Parameters
 

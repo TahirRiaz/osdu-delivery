@@ -87,7 +87,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
     private async Task<IReadOnlyList<DeliveryOutcome>> WriteBatchAsync(IReadOnlyList<DeliveryWork> works, CancellationToken ct)
     {
         var outcomes = new DeliveryOutcome[works.Count];
-        var toWrite = new List<(int Index, DeliveryWork Work, JsonObject Document)>();
+        var toWrite = new List<(int Index, DeliveryWork Work, JsonObject Document, IReadOnlyList<string> Preserved)>();
         for (var i = 0; i < works.Count; i++)
         {
             var work = works[i];
@@ -100,12 +100,13 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
             try
             {
                 var document = (JsonObject)work.Document.DeepClone();
-                if (_options.PreserveDataKeys.Count > 0 && work.ExistingVersion is not null)
+                var preserved = OwnedContent.PreservedKeys(_options, document);
+                if (preserved.Count > 0 && work.ExistingVersion is not null)
                 {
-                    await RecordWriter.PreserveAsync(_client, _options.VerifyPath ?? DefaultVerifyPath, work.TargetId, document, _options.PreserveDataKeys, ct).ConfigureAwait(false);
+                    await RecordWriter.PreserveAsync(_client, _options.VerifyPath ?? DefaultVerifyPath, work.TargetId, document, preserved, ct).ConfigureAwait(false);
                 }
 
-                toWrite.Add((i, work, document));
+                toWrite.Add((i, work, document, preserved));
             }
             catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
             {
@@ -135,7 +136,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
         catch (OsduStatusException ex) when (toWrite.Count > 1 && ex.StatusCode is >= 400 and < 500 and not (401 or 408 or 425 or 429))
         {
             // The service refused the array as a whole; find out which records it refuses by sending them alone.
-            foreach (var (index, work, _) in toWrite)
+            foreach (var (index, work, _, _) in toWrite)
             {
                 var alone = await WriteBatchAsync([work], ct).ConfigureAwait(false);
                 outcomes[index] = alone[0];
@@ -146,7 +147,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
         catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
         {
             steps.Add(RecordsStep, started, (ex as OsduStatusException)?.StatusCode, null, ex.Message);
-            foreach (var (index, _, _) in toWrite)
+            foreach (var (index, _, _, _) in toWrite)
             {
                 outcomes[index] = DeliveryOutcome.Failed(ex, steps.Steps);
             }
@@ -181,7 +182,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
         // Every record of the request is written at the target now, so their steps are reported together, and the worker
         // writes them to the ledger in one go.
         var reports = new List<Task>(toWrite.Count);
-        foreach (var (index, work, _) in toWrite)
+        foreach (var (index, work, document, preserved) in toWrite)
         {
             var version = versions.TryGetValue(work.TargetId, out var text) ? RecordWriter.ParseVersion(text) : RecordWriter.ParseVersion(single);
             var returned = new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = work.TargetId };
@@ -189,6 +190,8 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
             {
                 returned["version"] = v.ToString(CultureInfo.InvariantCulture);
             }
+
+            OwnedContent.Record(returned, document, preserved, work.TargetState);
 
             if (skipped.Contains(work.TargetId))
             {
@@ -458,7 +461,59 @@ internal static class RecordWriter
             }
         }
 
+        await SettleMovedAsync(client, batchPath, requests, results, ct).ConfigureAwait(false);
         return results;
+    }
+
+    /// <summary>
+    /// Reads whole, in batched reads, the records whose version moved while their delivery recorded the hash of the content
+    /// it wrote (<see cref="OwnedContent"/>). A record whose only changes are in the data keys another system writes (External
+    /// Data Services updating a data job's run state) matches: the version is the other system's, not drift. A read that
+    /// fails leaves those records undecided rather than drifted, so a reconciling pass does not send them again on a guess.
+    /// </summary>
+    private static async Task SettleMovedAsync(OsduHttpClient client, string batchPath, IReadOnlyList<VerifyRequest> requests, VerifyResult[] results, CancellationToken ct)
+    {
+        var moved = Enumerable.Range(0, requests.Count)
+            .Where(i => results[i].Outcome == VerifyOutcome.Drifted && OwnedContent.Recorded(requests[i].TargetState) is not null)
+            .ToList();
+        if (moved.Count == 0)
+        {
+            return;
+        }
+
+        IReadOnlyDictionary<string, JsonObject> stored;
+        try
+        {
+            stored = await ReadManyAsync(client, batchPath, moved.Select(i => requests[i].TargetId).ToList(), null, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException or JsonException)
+        {
+            foreach (var i in moved)
+            {
+                results[i] = new VerifyResult(
+                    VerifyOutcome.Error,
+                    results[i].ObservedVersion,
+                    $"{results[i].Detail}; the record could not be read to tell whether only the data keys another system writes changed: {HeaderRedaction.RedactMessage(ex.Message)}");
+            }
+
+            return;
+        }
+
+        foreach (var i in moved)
+        {
+            var request = requests[i];
+            if (!stored.TryGetValue(request.TargetId, out var record) || OwnedContent.Unchanged(record, request.TargetState) != true)
+            {
+                continue;
+            }
+
+            var observed = record["version"] is JsonValue read && read.TryGetValue<long>(out var version) ? version : results[i].ObservedVersion;
+            var excluded = OwnedContent.Recorded(request.TargetState)!.Value.Excluded;
+            results[i] = new VerifyResult(
+                VerifyOutcome.Match,
+                observed,
+                string.Create(CultureInfo.InvariantCulture, $"observed version {observed}, ledger holds {request.ExpectedVersion}: the newer version changed only data keys another system writes ({string.Join(", ", excluded)}), which is not drift"));
+        }
     }
 
     /// <summary>What one record's batched read means for it: its version, or an absence.</summary>

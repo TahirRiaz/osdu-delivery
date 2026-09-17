@@ -402,6 +402,12 @@ public sealed record FlowTarget
     /// Airflow's REST API returns; null when the flow reads none.
     /// </summary>
     public AirflowAccess? Airflow { get; init; }
+
+    /// <summary>
+    /// The External Data Services deployment behind the target (<c>target.eds</c>): how the records that configure it are
+    /// checked before they are sent. Without the block they are checked with the defaults.
+    /// </summary>
+    public EdsTarget Eds { get; init; } = new();
 }
 
 public enum TargetAuthType

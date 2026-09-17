@@ -138,7 +138,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                 }
 
                 var section = _options.ManifestSection ?? SectionOf(document);
-                var staged = new Staged(i, work, document, section, ids, steps, files);
+                var staged = new Staged(i, work, document, section, ids, steps, files, OwnedContent.PreservedKeys(_options, document));
                 if (work.Completed(ManifestStep) is { } earlier && earlier.TryGetValue("runId", out var runId) && !string.IsNullOrEmpty(runId))
                 {
                     steps.Resumed(ManifestStep, earlier);
@@ -677,6 +677,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                     returned["files"] = staged.Files.ToString(CultureInfo.InvariantCulture);
                 }
 
+                OwnedContent.Record(returned, staged.Document, staged.Preserved, staged.Work.TargetState);
                 outcomes[staged.Index] = new DeliveryOutcome
                 {
                     MetadataDelivered = true,
@@ -716,7 +717,10 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     /// <summary>
     /// The version storage holds of each record before its run is triggered, carried on the manifest step so that a run
     /// a later try resumes is judged against it too. Ingestion finishes a run that dropped a record, and a record that
-    /// already existed is still present afterwards, so only a version that moved shows the run wrote it.
+    /// already existed is still present afterwards, so only a version that moved shows the run wrote it. An update of a
+    /// record the ledger holds then carries the data keys another system writes (the flow's <c>preserveDataKeys</c>, and
+    /// the run state External Data Services writes on a data job) from the version storage holds into the manifest, as the
+    /// storage route does, read in one batched read of those keys.
     /// </summary>
     private async Task ReadPriorVersionsAsync(List<Staged> group, CancellationToken ct)
     {
@@ -724,6 +728,23 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         foreach (var staged in group)
         {
             staged.PriorVersion = read.Versions.TryGetValue(staged.Work.TargetId, out var version) ? version : null;
+        }
+
+        var updates = group.Where(s => s.Preserved.Count > 0 && s.Work.ExistingVersion is not null && s.PriorVersion is not null).ToList();
+        if (updates.Count == 0)
+        {
+            return;
+        }
+
+        var attributes = updates.SelectMany(s => s.Preserved).Distinct(StringComparer.Ordinal).Select(key => "data." + key).ToList();
+        var stored = await RecordWriter.ReadManyAsync(
+            _client, _options.RecordQueryPath ?? DefaultRecordQueryPath, updates.Select(s => s.Work.TargetId).ToList(), attributes, ct).ConfigureAwait(false);
+        foreach (var staged in updates)
+        {
+            if (stored.TryGetValue(staged.Work.TargetId, out var record))
+            {
+                RecordWriter.Preserve(record, staged.Document, staged.Preserved);
+            }
         }
     }
 
@@ -856,7 +877,8 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         public int Status { get; set; }
     }
 
-    private sealed record Staged(int Index, DeliveryWork Work, JsonObject Document, string Section, List<string> Ids, DeliverySteps Steps, int Files)
+    /// <summary>One record of a batch as its manifest carries it; <c>Preserved</c> names the data keys an update carries forward from the version storage holds.</summary>
+    private sealed record Staged(int Index, DeliveryWork Work, JsonObject Document, string Section, List<string> Ids, DeliverySteps Steps, int Files, IReadOnlyList<string> Preserved)
     {
         /// <summary>The version storage held of the record before its run was triggered; null when it held none or it is not known.</summary>
         public long? PriorVersion { get; set; }

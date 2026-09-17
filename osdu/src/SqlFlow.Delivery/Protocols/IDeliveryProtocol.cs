@@ -189,8 +189,11 @@ public sealed record DeliveryOutcome
 
 public sealed record VerifyResult(Ledger.VerifyOutcome Outcome, long? ObservedVersion, string? Detail);
 
-/// <summary>One record to verify: the id the target holds it under, and the version the ledger recorded for it.</summary>
-public sealed record VerifyRequest(string TargetId, long? ExpectedVersion);
+/// <summary>
+/// One record to verify: the id the target holds it under, the version the ledger recorded for it, and, when its delivery
+/// recorded what a verify compares beyond the version (the hash of the content the flow owns), the record's target state.
+/// </summary>
+public sealed record VerifyRequest(string TargetId, long? ExpectedVersion, IReadOnlyDictionary<string, string>? TargetState = null);
 
 /// <summary>
 /// A named delivery protocol implemented in code and parameterised by the flow (design.md section 8.4). The core is

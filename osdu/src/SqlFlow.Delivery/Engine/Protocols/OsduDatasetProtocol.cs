@@ -384,6 +384,12 @@ public sealed class OsduDatasetProtocol : IDeliveryProtocol
                 returned["files"] = Files.ToString(CultureInfo.InvariantCulture);
             }
 
+            if (IsDataset && Registration is not null && Written is null)
+            {
+                // A registration writes the record whole and carries nothing forward, so no hash of the flow's own content stands.
+                OwnedContent.Record(returned, Registration, [], Work.TargetState);
+            }
+
             return new DeliveryOutcome
             {
                 MetadataDelivered = Work.DeliverMetadata || (IsDataset && Registration is not null) || Written is not null,

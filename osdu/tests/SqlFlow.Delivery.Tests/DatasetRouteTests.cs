@@ -269,6 +269,41 @@ public sealed class DatasetRouteTests
     }
 
     [Fact]
+    public async Task A_dataset_record_written_through_storage_records_the_hash_of_its_own_content_and_a_registration_clears_it()
+    {
+        var platform = new FakeOsduPlatform();
+        using var rig = new Rig(platform, new ProtocolOptions
+        {
+            PayloadContentType = "application/octet-stream",
+            PreserveDataKeys = ["ExtensionProperties"],
+            UploadHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["x-ms-blob-type"] = "BlockBlob" },
+        });
+        const string id = "opendes:dataset--File.Generic:report-3";
+        const string kind = "osdu:wks:dataset--File.Generic:1.0.0";
+        var delivered = await rig.Protocol.DeliverAsync(Work(FakeOsduPlatform.Record(id, kind), new MemoryFiles(("report.pdf", "%PDF"))));
+        Assert.True(delivered.Succeeded, delivered.Failure?.Message);
+        Assert.False(delivered.Returned.ContainsKey(OwnedContent.HashValue));
+
+        // Another system enriches the record; a change to the record alone carries what it wrote and records the hash.
+        var enriched = (JsonObject)platform.Records[id].DeepClone();
+        enriched.Remove("version");
+        enriched["data"]!["ExtensionProperties"] = new JsonObject { ["indexed"] = true };
+        platform.Put(enriched);
+        var renamed = FakeOsduPlatform.Record(id, kind, new JsonObject { ["Name"] = "Annual report" });
+        var written = await rig.Protocol.DeliverAsync(Work(renamed, null, payload: false, existing: delivered.TargetVersion, state: delivered.Returned));
+        Assert.True(written.Succeeded, written.Failure?.Message);
+        Assert.True(platform.Records[id]["data"]!["ExtensionProperties"]!["indexed"]!.GetValue<bool>());
+        Assert.NotEmpty(written.Returned[OwnedContent.HashValue]);
+
+        // New files register the record whole through the Dataset service, and the hash no longer stands.
+        var registered = await rig.Protocol.DeliverAsync(Work(renamed, new MemoryFiles(("report.pdf", "%PDF-2")), existing: written.TargetVersion, state: written.Returned));
+        Assert.True(registered.Succeeded, registered.Failure?.Message);
+        Assert.Equal(string.Empty, registered.Returned[OwnedContent.HashValue]);
+        Assert.Equal(string.Empty, registered.Returned[OwnedContent.ExcludedValue]);
+        AssertConform(platform);
+    }
+
+    [Fact]
     public async Task A_dataset_the_service_cannot_hand_out_fails_its_record_and_the_others_land()
     {
         var platform = new FakeOsduPlatform();

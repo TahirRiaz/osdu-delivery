@@ -34,6 +34,9 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
 
     public static string StageStep(int stage) => "stage-" + stage.ToString(CultureInfo.InvariantCulture);
 
+    /// <summary>The values the anchor step keeps of what the storage write recorded about the flow's own content.</summary>
+    private static readonly string[] OwnedValues = [OwnedContent.HashValue, OwnedContent.ExcludedValue];
+
     /// <summary>The most ids a search for a run's results pages through.</summary>
     public const int MaxSearchResults = 100_000;
 
@@ -342,11 +345,20 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
         if (work.Completed(AnchorStep) is { } done && done.TryGetValue("version", out var known))
         {
             steps.Resumed(AnchorStep, done);
+            foreach (var key in OwnedValues)
+            {
+                if (done.TryGetValue(key, out var value))
+                {
+                    returned[key] = value;
+                }
+            }
+
             return RecordWriter.ParseVersion(known);
         }
 
         var started = steps.Now;
         long? version;
+        var owned = new Dictionary<string, string>(StringComparer.Ordinal);
         if (_route.Anchor == WorkflowAnchor.Dataset && sendsFiles)
         {
             var entityType = TargetId.EntityTypeFromKind(document["kind"]?.GetValue<string>() ?? throw new RecordHeldException("the record has no kind"));
@@ -354,6 +366,9 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
             DatasetUploads.Point(document, staged);
             var landed = await _datasets.RegisterAsync([document], ct).ConfigureAwait(false);
             version = landed.GetValueOrDefault(work.TargetId);
+
+            // A registration writes the record whole and carries nothing forward, so no hash of the flow's own content stands.
+            OwnedContent.Record(owned, document, [], work.TargetState);
         }
         else
         {
@@ -376,12 +391,24 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
             }
 
             version = outcome.TargetVersion;
+            foreach (var key in OwnedValues)
+            {
+                if (outcome.Returned.TryGetValue(key, out var value))
+                {
+                    owned[key] = value;
+                }
+            }
         }
 
         var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = work.TargetId };
         if (version is { } v)
         {
             values["version"] = v.ToString(CultureInfo.InvariantCulture);
+        }
+
+        foreach (var (name, value) in owned)
+        {
+            values[name] = value;
         }
 
         steps.Add(AnchorStep, started, null, values);

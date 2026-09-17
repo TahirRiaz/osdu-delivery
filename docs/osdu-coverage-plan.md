@@ -37,7 +37,7 @@ and the order it is built in.
 | Production DDMS (DSPDM) | `osdu/specs/production-dspdm` | no | route type `dspdm` |
 | Production time series (historian) | `osdu/specs/production-timeseries` | ddms shape `productionTimeSeriesV1` (stage 7): ProductionValues records through Storage, their points in requests under the body limit, every accepted version read back | none (the historian has no delete for points) |
 | Reservoir Management DDMS | `osdu/specs/reservoir-management-ddms` | ddms shape `reservoirManagement` (stage 7): the nine header kinds through Storage, taken into the service's database by its list call, and the rows of the tables below them posted with their keys fed down | the service's copy of a record keeps only its id and parent (its own write would write the record again without its id); records past the first 100 of a kind, and Kr syntheses, need an operator to insert the copy |
-| External Data Services | `osdu/specs/eds-dms` | no | storage and workflow routes, with the checks EDS needs |
+| External Data Services | `osdu/specs/eds-dms` | the storage (or manifest) and workflow routes (stage 7): connected source registry entries, data jobs and proxy datasets checked for what eds-dms and the EDS workflows need before they are sent (`target.eds`), a job's run state carried into every rewrite and a version EDS writes not taken for drift, a fetch run by the workflow route | not checked: whether the secrets a registry entry names exist (no Secret service contract is pinned), whether a job's scheme name is one of its entry's (the brief leaves it open), and whether the proxy datasets of one entry share a source partition (it spans records EDS writes itself) |
 | DDMS discovery (Register service) | register v1 | `target.ddms`, with a registration read by id (stage 5) | none |
 
 And the engine itself:
@@ -221,7 +221,15 @@ records through Storage, taken into the service's database by its list call unti
 tables below them posted one per call with their keys fed down and recorded, found again after a failed try, replaced
 on redelivery, and never the service's own record write or purging delete), each against a fake of the service (and,
 for Seismic Store, of the three object stores, the S3 one checking every signature with the AWS SDK) with every request
-to an OSDU service checked against its pinned contract, and the ddms route split into one writer per shape.
+to an OSDU service checked against its pinned contract, and the ddms route split into one writer per shape. External
+Data Services takes no pushed data, so it is served by the routes that exist: the records that configure it (registry
+entries, data jobs and proxy datasets) are checked when a plan renders them, with the flow's `target.eds` saying what the
+deployment needs, and held with every rule they break; a data job's run state, which EDS writes after every fetch, is
+carried into every rewrite on the storage, manifest and workflow routes (the manifest route now carries a flow's
+`preserveDataKeys` as the others do); a write that carries keys records the hash of the content the flow owns, so a verify
+tells a version another system wrote from drift; and a fetch is the stage 6 workflow route running `eds_ingest` or
+`eds_scheduler`. Every rule is tested against the brief's cases, and the three routes against the fake platform, a job
+rewritten, fetched and verified on each.
 
 ### Stage 8: records that wait for other records
 

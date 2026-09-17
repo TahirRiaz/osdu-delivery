@@ -698,6 +698,12 @@ public sealed class Planner
             }
 
             var render = renderer.Render(record);
+            if (!render.IsHeld && EdsRecordRules.Hold(flow.Target.Eds, render.Document) is { } unusable)
+            {
+                // A record External Data Services could not use is held before anything is sent, whichever route writes it.
+                render = render with { Holds = [unusable] };
+            }
+
             if (render.IsHeld)
             {
                 entries.Add(basis with
