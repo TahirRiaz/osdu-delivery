@@ -6,7 +6,8 @@ Three hosts in `osdu/hosts`, each composing SQLFlow with the OSDU module: the co
 (`SqlFlow.Delivery.ControlPlane.Host`, one replica, which schedules, records and answers), the worker nodes
 (`SqlFlow.Delivery.Worker.Host`, scaled on the control plane's replica target, which deliver), and the CLI on a
 workstation (`SqlFlow.Delivery.Cli.Host`). The GUI is a static image. See [architecture.md](architecture.md) and
-[../deploy/README.md](../deploy/README.md).
+[../deploy/README.md](../deploy/README.md). Why the control plane is one replica, and what to do when it is not
+running, is [Availability and recovery](#availability-and-recovery).
 
 ## Configuration
 
@@ -118,7 +119,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
-| `POST /ledger/prune` | admin | Age out attempts older than `olderThanDays`, keeping the latest per record. |
+| `POST /ledger/prune` | admin | The ledger's retention pass at one cut-off (`olderThanDays`): ages out attempts older than it, keeping the latest of every record, and clears the captured run log of the activities older than it that have finished. No row of the audit trail is deleted. Answers what it took ([Retention and backup](#retention-and-backup)). |
 
 A route under `/flows/{pipelineId}` that acts on records (`records`, `target`, `submissions`, `release`, `probe`,
 `records/remove` and its preview, and `GET /activities?pipelineId=`) works on one interface of the flow. A flow in the
@@ -429,6 +430,254 @@ Once they are exported, alert on a rising share of `held` or `failed` outcomes p
 `timeout` results per host, and on any `refused` result, which is a URL the guard would not let a node reach. A rising
 `waiting` share says an estate is delivering children faster than the records they refer to; the flow's waiting count
 in the GUI says whether they are moving.
+
+## Availability and recovery
+
+The control plane runs one replica, and this section says exactly what that costs and how an operator gets back from
+it. Everything below was read in the code on 17 September; the file and class are named wherever knowing them helps.
+
+### Why one replica
+
+`osdu/deploy/bicep/control-plane.bicep` pins `minReplicas` and `maxReplicas` to 1 (`main.bicep` passes
+`controlPlaneMinReplicas` and `controlPlaneMaxReplicas`, both 1). The reason is the dispatch lease: one row named
+`dispatch` in SQLFlow's catalog (`sqlflow/src/SqlFlow.Catalog/DispatchLeaseStore.cs`), acquired and renewed by one
+conditional UPDATE. `DispatchService` (`sqlflow/src/SqlFlow.ControlPlane/Dispatch/DispatchService.cs`) tries for it
+every `Dispatch:OwnershipRenewSeconds` (10 by default) and holds it for `Dispatch:OwnershipTtlSeconds` (30), and only
+the replica holding it activates the `Dispatcher` (`sqlflow/src/SqlFlow.Dispatch/Dispatcher.cs`), which owns the run
+queue and hands work to nodes. A replica that does not hold it answers every node protocol call 503
+(`DispatchInactiveException`), and the node retries.
+
+The lease is per estate, not per replica, so the code is already safe under more than one replica. What a second
+replica **would** do today:
+
+- Serve the whole API, including triggering runs. An enqueue is written to the catalog first and only then notified to
+  the local dispatcher (`InProcessRunDispatcher`); on a replica whose dispatcher is passive the notify is a no-op and
+  the owner's reconcile picks the row up within `Dispatch:ReconcileSeconds` (5).
+- Fire schedules. `SchedulerService` runs on every replica and claims each occurrence by a compare-and-swap on the
+  schedule's next fire, so an occurrence is enqueued exactly once however many replicas scan.
+- Sync repositories. `RepoSyncService` claims each source's next sync the same way.
+- Roll approved cache changes out. `CacheUpdateRolloutService`
+  (`osdu/src/SqlFlow.Delivery.ControlPlane/Background/CacheUpdateRolloutService.cs`) is hosted on every replica; its
+  batches are idempotent and its cursor only moves forward.
+- Answer the autoscaler. `GET /api/v1/node/scale-target` is computed from the catalog by `ScaleTargetStore`, not from
+  the dispatcher, so every replica answers the same number whether it owns dispatch or not.
+- Take dispatch over when the owner goes. Within one TTL (30 seconds) after a crash, and at once after a graceful
+  stop, because `DispatchService` releases the lease on shutdown instead of letting it lapse.
+
+What a second replica **would not** do:
+
+- Dispatch in parallel. One replica hands work out; a passive one holds no queue at all.
+- Make hand-outs faster. The container app declares plain ingress with no session affinity, so a node's poll lands on a
+  passive replica about as often as not and is answered 503; the node then backs off from 1 second up to 20
+  (`sqlflow/src/SqlFlow.Node/RunWorker.cs`). Two replicas therefore slow hand-outs down. That is what the
+  `maxReplicas` comment in `control-plane.bicep` records, and it is the whole of the case for one replica.
+
+**This needs a decision (DEC-5 in [../../docs/go-live-map.md](../../docs/go-live-map.md)):** accept one replica with the
+recovery below, or make the node protocol reach the lease holder (affinity does not do it, because affinity is per
+client and the owner can move) and raise the cap. Nothing in the code forces either answer.
+
+### While the control plane is down
+
+- The API answers nothing, so the GUI (a separate image, still served) draws empty pages, and the CLI's remote verbs
+  fail. `sqlflow run` on a workstation still works: a delivery run opens the module database itself and never calls the
+  control plane, and it takes the ledger's own leases, which any number of nodes share safely.
+- No run is queued and none is handed out. A schedule that should have fired does not fire, and is not backfilled
+  afterwards unless the schedule declares `catchup: true` (`SchedulerService`; the loader defaults it to false).
+- No repository sync runs, and no cache change rolls out.
+- The worker pool is not scaled. KEDA's metrics-api rule in `osdu/deploy/bicep/worker.bicep` reads the replica target
+  from `GET /api/v1/node/scale-target` on the control plane itself, so while the control plane is down the metric
+  cannot be read at all, and the worker app's own `minReplicas` is 0. What the platform does with a scale rule it
+  cannot read is Azure's behaviour and not this repository's: assume the pool does not grow, and confirm what it
+  actually does on the target deployment (LIVE-4).
+
+A worker node that is already running keeps working (`RunWorker`):
+
+- It keeps executing what it holds and never exits. A failed poll is logged and retried with a jittered backoff from
+  1 second to 20.
+- A delivery in flight keeps delivering. The node reaches OSDU with its own credentials and the ledger with its own
+  module database connection (`SQLFLOW_OSDU_DB`), neither of which passes through the control plane, so records keep
+  being claimed, sent and settled and every attempt keeps being written.
+- What a run needs from the control plane while it executes (the flow version, its lineage context) is retried for
+  about half a minute (`DispatcherRetry.SupportWaits`) and then fails the run.
+- The live trace stops reaching the GUI. `NodeTraceFeed` retries a batch for 60 seconds, then breaks the feed and
+  keeps draining and discarding so the run is never stalled by it; the gap is filled from the run's own artifact when
+  the run reports its outcome, so a run whose outcome never lands has no trace either.
+- The outcome report is retried for about a minute (`DispatcherRetry.OutcomeWaits`). Past that the result never
+  reaches the queue and the run is recovered by the dispatcher's lease expiry instead.
+
+What an operator does meanwhile: check `/health/live` (no dependencies) and `/health/ready` (the catalog and every
+module database) to tell an outage from a schema refusal, and **leave the worker nodes alone**. They are delivering,
+and a stop or a restart costs the runs they hold their progress: a severed run records no outcome at all and is
+recovered only by the lease expiry, which charges one of its three executions.
+
+### Recovery, in order
+
+The control plane recovers most of this by itself, in this order:
+
+1. **Migrations and the version check.** `BootstrapProvisioningService` applies SQLFlow's catalog migrations and then
+   every module database's, and stops the host when one is missing, behind or ahead of the build.
+   `ModuleDatabaseVerification` carries the refusal on `/health/ready`. A control plane that will not come back after
+   an image change is this check, not the outage.
+2. **Dispatch ownership.** The replica that wins the lease activates and rebuilds the queue from the catalog
+   (`Dispatcher.ActivateAsync`): every queued run is queued again, and every running run and compute task is leased
+   back to the node that held it under a grace lease of `Dispatch:LeaseSeconds` (90), so a node still executing it
+   reattaches on its next poll and loses nothing.
+3. **Runs whose node did not come back.** The grace lease lapses and `Dispatcher.ExpireLeasesAsync` requeues the run
+   while it has attempts left (`Dispatch:MaxExecutionAttempts`, 3) or fails it once they are spent. A requeued delivery
+   run finds its submission already planned and its records still leased in the ledger; it waits the delivery lease out
+   (`reliability.leaseSeconds`, 300 by default), recovers it, applies what the stopped worker had appended and sends
+   the rest ([ledger.md](ledger.md#leasing)). Nothing is delivered twice.
+4. **Queued runs.** Nothing expires a queued run: one queued before the outage is handed out as soon as a node polls.
+5. **Compute tasks.** A probe, a read-back, a source read or a removal that was *queued* is failed when the control
+   plane returns if it has waited longer than `Dispatch:TaskQueuedExpiryMinutes` (15), with "No worker claimed the task
+   within N minutes"; the wait is measured from when it was enqueued, so a requeue does not reset it. One that was
+   *running* is requeued and runs again, which is safe: a removal that runs again reports what has already gone as
+   already gone and writes its own attempt.
+6. **Schedules.** The next occurrence after now fires; the ones the outage covered do not, unless the schedule declares
+   `catchup: true`, which fires one missed occurrence per scheduler tick (`ControlPlane:Scheduler:PollSeconds`, 15)
+   until it is current. For a delivery flow this rarely matters: a deliver run plans from the watermark, so one run
+   after the outage covers every row that changed during it.
+7. **Repository sync.** Every source whose next sync fell due is synced on the first tick
+   (`ControlPlane:ManagedSync:PollSeconds`, 30). Nothing is backfilled, because a sync reconciles state rather than
+   replaying events.
+8. **Cache rollout.** Each approved change resumes from its own cursor, so a rollout interrupted mid-way carries on
+   where it stopped.
+
+Then the operator's own pass, in this order:
+
+1. `sqlflow db status --db <ref>` and `/health/ready`, before anything else. Exit 2 from `db status` means migrations
+   are pending; a red readiness naming a module database means the schema and the build disagree, and the message
+   names the migration or version.
+2. **The dispatcher.** The GUI's Nodes page (`/nodes`, the Dispatcher panel) or `GET /api/v1/dispatch`: the owner and
+   when it activated, the per-pool backlog, every queued run with the gate holding it back, and every lease with its
+   node and expiry. `active: false` on the only replica means a dead incarnation still holds the lease; it lapses
+   within the 30 second TTL on its own.
+3. **The fleet.** The same page, or `sqlflow nodes`. A pool with a backlog and no online node is the scale rule not
+   read yet; it recovers on the scaler's next poll. If the pool stays at zero with a backlog, the rule is still not
+   being read: check that the control plane answers `GET /api/v1/node/scale-target?pool=<pool>` with the node-scope
+   token the worker app presents.
+4. **Runs.** The run list for anything failed with an interrupted message, and the fan-out family of every submission
+   that was running (a run page names its root and slot). A submission left `running` with batches `queued` is drained
+   by re-running the submission, or by triggering `drain` with its `submissionId` (see the Runbook).
+5. **Records.** Each flow's Records tab filtered to `delivering`, where the lease on the record page is in the past.
+   Nothing has to be done: the flow's next deliver run recovers them. If no run is due, trigger `drain`.
+6. **Compute tasks.** Queue the probes, read-backs, source reads and removals that were failed with "No worker claimed
+   the task" again.
+7. **Schedules.** For a flow whose occurrence the outage covered and whose data has to be current before the next one,
+   trigger it once by hand.
+
+No step above needs a repair script or a hand edit of the ledger, and neither exists: every recovery path goes through
+the ledger, which is what keeps a delivered record reconstructible.
+
+## Retention and backup
+
+The `osdu` schema is a live status store, not a reporting table. Traceability is the product, so what may be aged out
+of it is exactly bounded: **every delivered record must stay reconstructible from the ledger alone.** That rules out
+deleting a record, its submission, the cache version it was rendered against, or any audit row.
+
+### What each table holds, and what may go
+
+| Table | What it holds | Grows with | May be pruned |
+| --- | --- | --- | --- |
+| `osdu.Record` | The current state of one deliverable per flow: its custody, hashes, OSDU id and version, origin file and row. | Deliverables | **Never.** It is the state and the anchor of every trail. |
+| `osdu.Attempt` | One delivery try, append-only: outcome, phase, error, steps, and the file and row it sent. | Tries | **Yes**, by age, and only where a later try of the same record exists. |
+| `osdu.Activity` | The audit trail of runs and interventions: flow, kind, actor, times, parameters, outcome, summary, and the captured run log. | Runs and interventions | The **row: never** (it is the operator action the traceability rule keeps). Its `Log`: **yes**, by age, once the activity has finished. |
+| `osdu.Submission` | One plan of a flow over its ingestion tables; a record points at the submission that planned it. | Plans | **Never** by this tool. |
+| `osdu.WorkBatch` | One file of rendered documents of a submission, with its counts and outcome; an attempt names its batch. | Submissions, and batches inside them | **Never** by this tool: it belongs to its submission. |
+| `osdu.Lease`, `osdu.RecordEvent` | A worker's live hold and what it has appended and not yet applied. | In-flight work only | **Self-clearing**: applying a lease deletes its events in the same transaction, and closing or recovering it deletes the lease. |
+| `osdu.SourceWatermark` | One row per flow scope: how far the last whole-scope plan read. | Scopes | **Never**: it is state, and losing it re-reads everything. |
+| `osdu.Retrieval` | One run of a retrieval flow: window, location, counts, outcome. | Retrieval runs | **Never** by this tool. |
+| `osdu.CacheVersion`, `osdu.CacheItem` | Every version of every partition's cache, and the records each version held (rows only for what changed, arrived or left). | Refreshes that changed something | **Never.** A delivered record's render context names the version it was rendered against, and the ledger has to be able to show what that version held. |
+| `osdu.CacheMember` | That a cache flow's last capture held a record: current state, not history. | Cached records and the flows capturing them | Maintained by a refresh's merge and by the repository sync; not an operator's to prune. |
+| `osdu.CacheSet`, `osdu.CacheSetEntry` | The distinct combinations of cached values renders consumed; a record points at its set. | Distinct combinations (a few thousand, not one per record) | **Never**: it is how a record says what it read. |
+| `osdu.UpdateTag` | One cache change and how far its rollout has carried it. | Cache changes | **Never** by this tool. |
+| `osdu.Mapping`, `osdu.CacheDefinition`, `osdu.Interface` | The read model of what the repositories declare. | Documents | Maintained by the repository sync. An interface a repository no longer declares is kept, inactive, so its records still lead to their flow. |
+| `osdu.Template` | One saved schema version per kind and schema hash. | Saved versions | `DELETE /api/v1/delivery/templates` (author scope), refused with 409 while a synced mapping pins it. |
+| `osdu.RecordCount` | The indexed view the statistics are read from. | (a view) | Maintained by SQL Server inside every record write. |
+| `osdu.SchemaVersion` | One row: the module version, the last migration, when and by whom, and the minimum catalog migration. | Nothing | **Never.** |
+
+Two things grow without bound and have a path to prune: **attempts**, and the **captured log on an activity**. An
+activity row is small and bounded, but its log is up to 200,000 characters written once per run, which is the only
+column in the schema with no ceiling on how much of it accumulates. SQLFlow sweeps its own run trace (`RunEvent`,
+`RunStatement`) on a cadence of its own (`ControlPlane:RunTrace`); this log is the module's own copy of a delivery
+run's log and had no sweep at all, which is why the retention pass clears it.
+
+Everything else that grows is one small row per plan, per batch, per retrieval run, per cache change or per changed
+cached record, and none of it is pruned, because each is part of a trail the ledger has to be able to show: a record
+names the submission that planned it, an attempt names its work batch, a record's render context names the cache
+version it was built against, a cache change is the reason a set of records went out again, and a retrieval flow's
+watermark rests on its last completed retrieval row. **If volume ever demands it, partition those tables by time in the
+model rather than delete from them** ([decisions/0005-ledger-retention.md](decisions/0005-ledger-retention.md)); that is
+a decision the team takes with a measured table in front of it, not in advance.
+
+### How to prune
+
+One admin call, one cut-off, everything that may be aged out at that cut-off:
+
+```bash
+curl -sS -X POST "$CONTROL_PLANE/api/v1/delivery/ledger/prune" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"olderThanDays": 90}'
+```
+
+It answers `{"attemptsPruned": n, "activityLogsCleared": n}`. `olderThanDays` below 1 is refused with 400, and the
+route needs the `admin` scope: operating the estate is not administering it.
+
+What it does, precisely:
+
+- **Attempts.** Deletes tries started before the cut-off, but only where a later try of the same flow's record exists,
+  so every record's last outcome stays explainable from the ledger alone. It deletes 4,000 per statement, oldest
+  first, each statement its own short transaction, so a prune of years of history never holds a long lock on the table
+  every drain appends to and never takes enough row locks for SQL Server to escalate to the whole table.
+- **Activity logs.** Clears the `Log` of activities that started before the cut-off and have finished, 1,000 per
+  statement on the same reasoning. The row stays with its flow, kind, actor, times, parameters, outcome and summary.
+  An activity still running is left alone whatever its age, because its log is not written until it completes.
+
+It is safe to interrupt and repeat: every statement is its own transaction, and a second pass at the same cut-off
+finds nothing left to take.
+
+**Recommended retention: 90 days, weekly.** That is the window
+[decisions/0005-ledger-retention.md](decisions/0005-ledger-retention.md) proposes for attempts, and the same cut-off
+suits the logs, which are read while a run is recent and never after. Start there and widen it only for a deployment
+that has a reason.
+
+There is no CLI verb and no GUI page for the prune: the GUI's API client carries the call
+(`osdu/gui/src/api/delivery.ts`) but no page uses it, and a schedule fires a flow rather than an API call. So the
+weekly pass is a job of the estate's own scheduler (a cron job, an Azure automation task) holding an admin token, run
+with a generous client timeout, because the first pass over years of history is the long one. Watch what it reports:
+a pass that suddenly prunes far more than the last says a flow is retrying hard.
+
+### What a backup must include
+
+- **The whole `osdu` schema, with the SQLFlow catalog it belongs to.** By default the module has no connection of its
+  own and the `osdu` schema lives in the catalog's database, so one backup covers both. Where a deployment gives the
+  module its own database (`SQLFLOW_OSDU_DB`), the two must be restorable to the same instant: a run row in the
+  catalog and the submission, records and attempts it wrote in `osdu` are one unit of work, committed on one
+  connection and one transaction. Two backups taken at different times do not restore together.
+- **`[osdu].[__EFMigrationsHistory]` and `[osdu].[SchemaVersion]`.** They are in the schema, so a schema backup has
+  them, but a restore is only usable with a build that matches: a database behind the build is migrated on start, and
+  one ahead of it stops the host by name. Restore the image that goes with the backup, or migrate forward. Never edit
+  the version row.
+- **The catalog's own migration history.** `SchemaVersion.MinimumCatalogMigration` names the oldest SQLFlow catalog
+  migration the schema works with (`20260915212521_RunFanOutAndResult` for module version 1.7.0), and the hosts and
+  `sqlflow db status` refuse to run against a catalog older than it. A restore that pairs a new `osdu` schema with an
+  old catalog is refused rather than half-working.
+- **`ALLOW_SNAPSHOT_ISOLATION` on the restored database.** The ledger reads under it. A restore from a backup keeps
+  database options; a database rebuilt from scripts does not, and the first run fails naming the statement to run
+  ([ledger.md](ledger.md#provisioning)).
+
+What is not in the database and has to be restored beside it:
+
+- **The repositories.** The flow, mapping and cache flow documents live in git; the catalog holds a synced copy and a
+  repository sync rebuilds it. Restore the repository at the commit the catalog records.
+- **The secrets.** Flows carry references only (`${env:...}`, `${keyvault:...}`), so the vault and the nodes'
+  environment are their own backup and nothing sensitive is in a database backup to begin with.
+- **The work locations and payload roots.** A work batch names a file under the flow's `source.work`; a restore that
+  brings the database back without those files cannot drain the batches that were still queued. Plan those scopes
+  again (`replan`); the records already delivered are skipped as unchanged.
+- **The OSDU partition the ledger describes.** A backup is only meaningful beside the partition it was taken against.
+  Restoring a ledger older than the partition it describes leaves records whose OSDU copy has since moved on: a verify
+  run finds them as drift and the Drifted filter lists them.
 
 ## Size ceilings
 

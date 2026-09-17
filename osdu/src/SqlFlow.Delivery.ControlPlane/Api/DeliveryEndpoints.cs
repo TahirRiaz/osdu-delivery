@@ -274,6 +274,8 @@ public sealed record DeliveryRemovalAccepted(Guid TaskId, string Status, string 
 public sealed record DeliveryRemovalPreview(
     string Scope, int Records, int InOsdu, int NeverDelivered, bool Capped, DeliveryTargetDto Target);
 
+/// <summary>How far back the ledger's retention pass keeps its history: everything older than this many days that may be
+/// aged out is, and nothing a delivered record has to stay reconstructible from ever is.</summary>
 public sealed record DeliveryPruneRequest(int OlderThanDays);
 
 /// <summary>
@@ -287,7 +289,9 @@ public static class DeliveryRecordRoutes
     public static string Path(Guid flowId, Guid deliveryKey) => $"{flowId:D}/{deliveryKey:D}";
 }
 
-public sealed record DeliveryPruneResult(int AttemptsPruned);
+/// <summary>What the retention pass aged out: delivery tries deleted (the latest of every record always kept), and
+/// activities whose captured run log was cleared (the audit row itself is never deleted).</summary>
+public sealed record DeliveryPruneResult(int AttemptsPruned, int ActivityLogsCleared);
 
 /// <summary>
 /// The delivery ledger's API: what each flow delivered (records, their history, their submissions), the audit trail
@@ -1547,16 +1551,68 @@ public static class DeliveryEndpoints
         return await EnqueueOperationAsync(db, dispatcher, flow, ProbeTargetOperation.OperationName, new Dictionary<string, string>(StringComparer.Ordinal), user, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The ledger's retention pass: everything the <c>osdu</c> schema grows without bound and a delivered record does not
+    /// have to stay reconstructible from, aged out at one cut-off. Attempts go through the ledger (the latest try of every
+    /// record is always kept, so a record's last outcome stays explainable), and the captured run log of settled activities
+    /// is cleared, which is the schema's only column with no ceiling at all. No row of the audit trail is deleted: who did
+    /// what, when, with which parameters and to what outcome is what the traceability rule keeps.
+    /// </summary>
     private static async Task<Results<Ok<DeliveryPruneResult>, ProblemHttpResult>> PruneAsync(
-        DeliveryPruneRequest request, ILedger ledger, TimeProvider clock, CancellationToken ct)
+        DeliveryPruneRequest request, ILedger ledger, OsduDbContext osdu, TimeProvider clock, CancellationToken ct)
     {
         if (request is null || request.OlderThanDays < 1)
         {
             return TypedResults.Problem(detail: "olderThanDays must be at least 1.", statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
         }
 
-        var pruned = await ledger.PruneAttemptsAsync(clock.GetUtcNow().UtcDateTime.AddDays(-request.OlderThanDays), ct).ConfigureAwait(false);
-        return TypedResults.Ok(new DeliveryPruneResult(pruned));
+        var olderThanUtc = clock.GetUtcNow().UtcDateTime.AddDays(-request.OlderThanDays);
+        var pruned = await ledger.PruneAttemptsAsync(olderThanUtc, ct).ConfigureAwait(false);
+        var cleared = await ClearActivityLogsAsync(osdu, olderThanUtc, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new DeliveryPruneResult(pruned, cleared));
+    }
+
+    /// <summary>
+    /// The most activities one statement clears the log of. Each batch is its own short statement, so clearing years of
+    /// logs never holds a long lock on the table every run appends an activity to, and never takes enough row locks for
+    /// SQL Server to lock the whole table instead.
+    /// </summary>
+    private const int ActivityLogBatch = 1_000;
+
+    /// <summary>
+    /// Clears the captured log of every activity that started before <paramref name="olderThanUtc"/> and has finished,
+    /// and answers how many it cleared. The row stays: its flow, kind, actor, parameters, times, outcome and summary are
+    /// the audit trail, and a record's own history is its attempts. Only the free-text log goes, which is the one thing in
+    /// the schema with no ceiling per row beyond 200,000 characters and no lifecycle of its own. An activity still running
+    /// is left alone, whatever its age, because its log is not written until it completes.
+    /// </summary>
+    private static async Task<int> ClearActivityLogsAsync(OsduDbContext osdu, DateTime olderThanUtc, CancellationToken ct)
+    {
+        var cleared = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var batch = await osdu.DeliveryActivities.AsNoTracking()
+                .Where(a => a.StartedUtc < olderThanUtc && a.CompletedUtc != null && a.Log != null)
+                .OrderBy(a => a.StartedUtc)
+                .Select(a => a.ActivityId)
+                .Take(ActivityLogBatch)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+            if (batch.Count == 0)
+            {
+                return cleared;
+            }
+
+            cleared += await osdu.DeliveryActivities
+                .Where(a => batch.Contains(a.ActivityId))
+                .ExecuteUpdateAsync(s => s.SetProperty(a => a.Log, (string?)null), ct)
+                .ConfigureAwait(false);
+            if (batch.Count < ActivityLogBatch)
+            {
+                return cleared;
+            }
+        }
     }
 
     // ---- Plumbing ------------------------------------------------------------------------------------------------
