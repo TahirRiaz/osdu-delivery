@@ -28,6 +28,7 @@ public static class InterfaceStates
 /// <param name="Route">The route it is delivered by (storage, file, manifest, ddms).</param>
 /// <param name="RouteReason">Why it goes by that route.</param>
 /// <param name="WaitsFor">The interfaces of this run it waited for.</param>
+/// <param name="WaitReasons">Why it waited for each of them: the <c>after:</c> that names it, or the references its mapping fills.</param>
 /// <param name="Wave">The wave it ran in, from 1.</param>
 /// <param name="State">One of <see cref="InterfaceStates"/>.</param>
 /// <param name="Reason">Why it stopped or was skipped; null when it completed.</param>
@@ -41,6 +42,7 @@ public sealed record InterfaceOutcome(
     string Route,
     string? RouteReason,
     IReadOnlyList<string> WaitsFor,
+    IReadOnlyList<string> WaitReasons,
     int Wave,
     string State,
     string? Reason,
@@ -198,26 +200,30 @@ public sealed class SourceRuntime
         ArgumentException.ThrowIfNullOrWhiteSpace(operation);
         ArgumentNullException.ThrowIfNull(payload);
         var selected = _source.Select(payload.Interfaces);
-        var names = selected.Select(f => f.Interface ?? string.Empty).ToList();
-        var dependencies = InterfaceOrder.Declared(_source);
-        var waves = InterfaceOrder.Waves(names, dependencies);
+        var (runtimes, order) = await PreflightAsync(selected, operation, ct).ConfigureAwait(false);
         _log.LogInformation(
             "{Operation} of {Count} interface(s) of '{Source}' in {Waves} wave(s): {Order}.",
-            operation, selected.Count, _source.Name, waves.Count, string.Join(" then ", waves.Select(w => string.Join(" + ", w))));
+            operation, selected.Count, _source.Name, order.Waves.Count, order.Describe());
+        foreach (var dependency in order.Dependencies)
+        {
+            _log.LogInformation("'{Interface}' waits for '{DependsOn}': {Why}.", dependency.Interface, dependency.DependsOn, dependency.Why);
+        }
 
-        var runtimes = await PreflightAsync(selected, operation, ct).ConfigureAwait(false);
+        foreach (var reference in order.NotWaitedFor)
+        {
+            _log.LogInformation("'{Interface}' does not wait for '{DependsOn}': {Why}.", reference.Interface, reference.DependsOn, reference.Why);
+        }
+
         try
         {
             var outcomes = new ConcurrentDictionary<string, InterfaceOutcome>(StringComparer.OrdinalIgnoreCase);
-            for (var index = 0; index < waves.Count; index++)
+            foreach (var wave in order.Waves)
             {
-                var wave = index + 1;
                 var runnable = new List<FlowDefinition>();
-                foreach (var name in waves[index])
+                foreach (var name in wave)
                 {
                     var flow = selected.First(f => string.Equals(f.Interface, name, StringComparison.OrdinalIgnoreCase));
-                    var waitsFor = WaitsFor(name, dependencies, names);
-                    var blocking = waitsFor.Where(d => outcomes[d].State != InterfaceStates.Completed).ToList();
+                    var blocking = order.WaitsFor(name).Select(d => d.DependsOn).Where(d => outcomes[d].State != InterfaceStates.Completed).ToList();
                     if (blocking.Count == 0)
                     {
                         runnable.Add(flow);
@@ -225,7 +231,7 @@ public sealed class SourceRuntime
                     }
 
                     var reason = $"it waits for {string.Join(", ", blocking)}, which did not complete";
-                    outcomes[name] = Outcome(flow, waitsFor, wave, InterfaceStates.Skipped, reason, null, null, null);
+                    outcomes[name] = Outcome(flow, order, InterfaceStates.Skipped, reason, null, null, null);
                     _log.LogWarning("Interface '{Interface}' is skipped: {Reason}.", name, reason);
                     await EmitAsync(flow, "interface.skipped", reason).ConfigureAwait(false);
                 }
@@ -236,7 +242,7 @@ public sealed class SourceRuntime
                     async (flow, token) =>
                     {
                         var name = flow.Interface ?? string.Empty;
-                        outcomes[name] = await RunInterfaceAsync(flow, runtimes[name], operation, payload, WaitsFor(name, dependencies, names), wave, token).ConfigureAwait(false);
+                        outcomes[name] = await RunInterfaceAsync(flow, runtimes[name], operation, payload, order, token).ConfigureAwait(false);
                     }).ConfigureAwait(false);
             }
 
@@ -253,25 +259,19 @@ public sealed class SourceRuntime
         }
     }
 
-    /// <summary>The interfaces of the run <paramref name="name"/> waits for.</summary>
-    private static List<string> WaitsFor(string name, IEnumerable<InterfaceDependency> dependencies, IReadOnlyList<string> selected)
-        => dependencies
-            .Where(d => string.Equals(d.Interface, name, StringComparison.OrdinalIgnoreCase) && selected.Contains(d.DependsOn, StringComparer.OrdinalIgnoreCase))
-            .Select(d => selected.First(s => string.Equals(s, d.DependsOn, StringComparison.OrdinalIgnoreCase)))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
     /// <summary>
     /// Opens a runtime for every selected interface and checks, before anything is planned or sent, everything that would
     /// otherwise fail an interface halfway (docs/interfaces-design.md section 8.1): the ledger, each mapping, template and
-    /// cache, each route against the kind its mapping renders, each record table's shape, each route's service and the
-    /// credentials, and each mapping's legal tags. Every finding is reported at once.
+    /// cache, each route against the kind its mapping renders, the order the interfaces run in, each record table's shape,
+    /// each route's service and the credentials, and each mapping's legal tags. Every finding is reported at once.
     /// </summary>
-    private async Task<Dictionary<string, FlowRuntime>> PreflightAsync(IReadOnlyList<FlowDefinition> selected, string operation, CancellationToken ct)
+    private async Task<(Dictionary<string, FlowRuntime> Runtimes, InterfaceOrderPlan Order)> PreflightAsync(
+        IReadOnlyList<FlowDefinition> selected, string operation, CancellationToken ct)
     {
         var findings = new List<string>();
         var runtimes = new Dictionary<string, FlowRuntime>(StringComparer.OrdinalIgnoreCase);
         var readsSource = DeliveryExecutor.ReadsSource(operation);
+        InterfaceOrderPlan order;
         try
         {
             await CheckLedgerAsync(selected[0], findings, ct).ConfigureAwait(false);
@@ -296,6 +296,7 @@ public sealed class SourceRuntime
                 }
             }
 
+            order = await OrderAsync(selected, runtimes, findings, ct).ConfigureAwait(false);
             foreach (var (name, runtime) in runtimes)
             {
                 if (readsSource)
@@ -332,7 +333,42 @@ public sealed class SourceRuntime
         }
 
         _log.LogInformation("Preflight passed for {Interfaces}.", string.Join(", ", runtimes.Keys));
-        return runtimes;
+        return (runtimes, order);
+    }
+
+    /// <summary>
+    /// The order the selected interfaces run in: what the document declares with <c>after:</c>, and what the relationships
+    /// their mappings fill imply. Interfaces that wait for each other in a way no rule cuts are a finding. When an
+    /// interface could not be opened, or only one runs, <c>after:</c> alone orders the run: a failed preflight stops it
+    /// anyway, and one interface waits for nothing.
+    /// </summary>
+    private async Task<InterfaceOrderPlan> OrderAsync(
+        IReadOnlyList<FlowDefinition> selected, Dictionary<string, FlowRuntime> runtimes, List<string> findings, CancellationToken ct)
+    {
+        var names = selected.Select(f => f.Interface ?? string.Empty).ToList();
+        var declared = InterfaceOrder.Declared(_source);
+        if (selected.Count > 1 && runtimes.Count == selected.Count)
+        {
+            var schemas = new List<InterfaceSchema>(selected.Count);
+            foreach (var name in names)
+            {
+                await FindAsync(findings, name, async () => schemas.Add(await runtimes[name].SchemaAsync(ct).ConfigureAwait(false)), ct).ConfigureAwait(false);
+            }
+
+            if (schemas.Count == selected.Count)
+            {
+                try
+                {
+                    return InterfaceOrder.Plan(names, declared, schemas);
+                }
+                catch (DeliveryException ex)
+                {
+                    findings.Add($"the order of the interfaces: {ex.Message}");
+                }
+            }
+        }
+
+        return InterfaceOrder.Plan(names, declared, []);
     }
 
     /// <summary>The ledger answers a read the way every run reads it, under snapshot isolation.</summary>
@@ -418,7 +454,7 @@ public sealed class SourceRuntime
 
     /// <summary>One interface's run: its operation under its failure guard, its trace events, and how it ended.</summary>
     private async Task<InterfaceOutcome> RunInterfaceAsync(
-        FlowDefinition flow, FlowRuntime runtime, string operation, DeliveryRunPayload payload, IReadOnlyList<string> waitsFor, int wave, CancellationToken ct)
+        FlowDefinition flow, FlowRuntime runtime, string operation, DeliveryRunPayload payload, InterfaceOrderPlan order, CancellationToken ct)
     {
         var log = runtime.Context.Loggers.CreateLogger("run");
         var route = RouteChecks.Name(flow.Target.Protocol);
@@ -436,7 +472,7 @@ public sealed class SourceRuntime
             var summary = Summarize(result);
             log.LogInformation("Interface completed in {Seconds:0.#}s: {Summary}.", (completed - started).TotalSeconds, summary);
             await EmitAsync(flow, "interface.completed", summary).ConfigureAwait(false);
-            return Outcome(flow, waitsFor, wave, InterfaceStates.Completed, null, started, completed, result);
+            return Outcome(flow, order, InterfaceStates.Completed, null, started, completed, result);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -447,15 +483,20 @@ public sealed class SourceRuntime
             var reason = ex is InterfaceStoppedException stopped ? stopped.Reason : RunFailure.Describe(ex);
             log.LogError(RunFailure.IsExpected(ex) ? null : ex, "Interface stopped: {Reason}", reason);
             await EmitAsync(flow, "interface.stopped", reason).ConfigureAwait(false);
-            return Outcome(flow, waitsFor, wave, InterfaceStates.Stopped, reason, started, _context.Time.GetUtcNow().UtcDateTime, null);
+            return Outcome(flow, order, InterfaceStates.Stopped, reason, started, _context.Time.GetUtcNow().UtcDateTime, null);
         }
     }
 
     private static InterfaceOutcome Outcome(
-        FlowDefinition flow, IReadOnlyList<string> waitsFor, int wave, string state, string? reason, DateTime? started, DateTime? completed, object? result)
-        => new(
-            flow.Interface ?? string.Empty, flow.Id, flow.LedgerName, RouteChecks.Name(flow.Target.Protocol), flow.RouteReason, waitsFor, wave,
+        FlowDefinition flow, InterfaceOrderPlan order, string state, string? reason, DateTime? started, DateTime? completed, object? result)
+    {
+        var name = flow.Interface ?? string.Empty;
+        var waits = order.WaitsFor(name);
+        return new InterfaceOutcome(
+            name, flow.Id, flow.LedgerName, RouteChecks.Name(flow.Target.Protocol), flow.RouteReason,
+            waits.Select(w => w.DependsOn).ToList(), waits.Select(w => $"{w.DependsOn}: {w.Why}").ToList(), order.WaveOf(name),
             state, reason, started, completed, result);
+    }
 
     private static string Summarize(object result) => result switch
     {

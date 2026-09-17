@@ -2,9 +2,10 @@
 
 Status: accepted, and built stage by stage ([osdu-coverage-plan.md](osdu-coverage-plan.md)). Built so far: the
 document model with both forms, the ledger identity per interface and `ledger:` adoption, the read model of sources
-and interfaces, route resolution from what an interface declares with its refusals, `after:` and the waves, the source
-runtime with its preflight, stop rules and outcome, and the API and CLI selection of interfaces (sections 3, 4, 8 and
-10, and the routes of section 5.2 that the four existing protocols deliver). The rest of this document is the design
+and interfaces, route resolution from what an interface declares with its refusals, the order from the schemas'
+relationships and `after:` with its waves, the source runtime with its preflight, stop rules and outcome, and the API
+and CLI selection and explanation of interfaces (sections 3, 4, 6, 8 and 10, and the routes of section 5.2 that the
+four existing protocols deliver). The rest of this document is the design
 the later stages build. What shipped is documented in [../osdu/docs/documents.md](../osdu/docs/documents.md#a-source-with-interfaces)
 and [../osdu/docs/operations.md](../osdu/docs/operations.md#running-a-source).
 
@@ -189,13 +190,27 @@ session, and the rows and columns read back after it.
 
 - **Dependencies from the schemas.** Interface A waits for interface B when A's mapping fills a property whose
   relationship targets B's kind, and B is in the same source. A mapping that does not fill the property creates no
-  dependency.
-- **Group order as the tie-break:** reference data, master data, datasets, work product components, work products.
-  It is the order the ingestion workflow processes a manifest in.
+  dependency. A relationship that names only a group (`Datasets[]` names `dataset`) targets every kind of the group.
+- **Group order:** reference data, master data, datasets, work product components, work products. It follows the
+  direction OSDU's schemas refer in: a work product lists its components (`WorkProduct.1.0.0`, `Components[]`), a
+  component refers to its datasets (`AbstractWPCGroupType.1.0.0`, `Datasets[]`) and to master data, and a dataset refers
+  to reference data alone (`AbstractDataset.1.0.0`) (project 91, osdu/data/data-definitions, `Generated/` at
+  `99f8fc88d8ad838b5738ac5ad92ac643538b5766`). It orders the interfaces within a wave and cuts cycles. OSDU's own
+  manifest ingestion does not order by group: it orders a manifest's records by the ids each record's content refers
+  to, each record after every record of the manifest it refers to, and does not wait for an id outside the manifest
+  (project 823, osdu/platform/data-flow/ingestion/osdu-ingestion-lib, `osdu_ingestion/libs/manifest_analyzer.py`,
+  `ManifestAnalyzer`, at `b09eca721fd0aea002878bf7313f20398ab001ed`). The order is the same principle at the level
+  of interfaces.
 - **Cycles.** OSDU schemas refer both ways (a wellbore refers to its definitive trajectory, the trajectory to its
-  wellbore). A cycle is cut by group order, and within one group by `after:`; a cycle still unresolved is refused
-  when the flow is read, naming the interfaces. The references that point back are written as they are: the ids are
-  deterministic, so they resolve once the other side lands, and a manifest carries both sides in one batch.
+  wellbore). A cycle is cut first by `after:` (a reference the document orders the other way is not waited for), then
+  by group order (a reference from an earlier group to a later one points back); a cycle within one group that
+  `after:` does not decide is refused, naming the interfaces. Templates live in the catalog, so the order is worked
+  out by the run's preflight, `sqlflow check` and the API, not when the flow is read. The references that point back
+  are written as they are: the ids are deterministic, so they resolve once the other side lands. One manifest cannot
+  carry both sides of a cycle: the ingestion library sorts a manifest's records with `toposort` 1.6, which raises
+  `CircularDependencyError` on a cycle, and its processor catches only errors of single records
+  (`osdu_ingestion/libs/processors/single_manifest_processor.py`, `process_manifest`). The manifest route keeps records
+  that refer to each other out of one manifest (section 7).
 - **`after:`** adds dependencies the schemas do not show.
 - **Waves.** Interfaces with nothing left to wait for run together; each still fans out over slices of its own
   primary key, and drains its own batches.

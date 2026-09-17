@@ -24,12 +24,17 @@ mapping reference, the template's kind and version, render context, layout, and 
 `partition`, `version` and `types` count, null when the mapping reads no cache).
 
 A flow that declares interfaces ([documents.md](../../documents.md#a-source-with-interfaces)) is checked one
-interface at a time, the same checks for each, plus whether its route can deliver the kind its mapping renders. The
-text output starts with a line giving the order the interfaces run in (`recall: 2 of 2 interface(s) checked, in
-the order they run: wellbores then welllogs`), and each interface's block adds its ledger, its route with the reason,
-and what it waits for. `--interface <name>` checks that interface alone. With `--json` the answer is the flow's name
-and an `interfaces` array holding one object per interface, each with its `interface`, `ledger`, `route` (`name` and
-`reason`) and `after` beside the facts above.
+interface at a time, the same checks for each, plus whether its route can deliver the kind its mapping renders, and
+then the order the interfaces run in, worked out as a run works it out ([documents.md](../../documents.md#order)). The
+text output starts with a line giving that order (`recall: 2 of 2 interface(s) checked, in the order they run:
+wellbores then welllogs`), and each interface's block adds its ledger, its route with the reason, its wave, a
+`waits for` line for each interface it waits for with why (`wellbores: osdu.data.WellboreID refers to
+master-data--Wellbore, which wellbores delivers (osdu:wks:master-data--Wellbore:1.3.0)`), and a `not waited` line for
+each reference left out of a cycle. Interfaces that wait for each other in a way nothing cuts fail the check with an
+`ERROR` naming the file, the interfaces and the properties. `--interface <name>` checks that interface alone. With
+`--json` the answer is the flow's name, its `order`, and an `interfaces` array holding one object per interface, each
+with its `interface`, `ledger`, `route` (`name` and `reason`), `after`, `wave`, `waitsFor` and `notWaitedFor` (each an
+`interface`, its `origin`, `after` or `schema`, and `why`) beside the facts above.
 
 ## cache
 

@@ -114,17 +114,19 @@ public sealed class SourceRuntimeTests : IDisposable
     /// The recall source: its wellbores, the well logs waiting for them, and optionally an archive of wellbores read from a
     /// table of its own and waiting for nothing. <paramref name="wellbores"/> is a YAML fragment the wellbores interface adds.
     /// </summary>
-    private string SourceYaml(bool archive = false, string wellbores = "", string welllogMapping = "WellLog@1.4.0")
+    private string SourceYaml(
+        bool archive = false, string wellbores = "", string welllogMapping = "WellLog@1.4.0", bool welllogsAfter = true,
+        string wellboreMapping = "Wellbore@1.0.0", string archiveMapping = "Wellbore@1.0.0", string? mappingsDirectory = null)
     {
         var root = _root.Replace('\\', '/');
-        var mappings = Samples.Mappings.Replace('\\', '/');
+        var mappings = (mappingsDirectory ?? Samples.Mappings).Replace('\\', '/');
         var archiveInterface = archive
             ? $$"""
                 archive:
                   record: { object: {{ArchiveTable}}, key: [facility_name], primaryKey: RecId }
                   datasets:
                     aliases: { object: OsduSample.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
-                  mapping: Wellbore@1.0.0
+                  mapping: {{archiveMapping}}
               """
             : string.Empty;
         return ($$"""
@@ -156,7 +158,7 @@ public sealed class SourceRuntimeTests : IDisposable
                 record: { object: {{WellboreTable}}, key: [facility_name], primaryKey: RecId }
                 datasets:
                   aliases: { object: OsduSample.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
-                mapping: Wellbore@1.0.0
+                mapping: {{wellboreMapping}}
                 {{wellbores}}
               welllogs:
                 record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_name: logSource } }
@@ -164,7 +166,7 @@ public sealed class SourceRuntimeTests : IDisposable
                   curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: {{welllogMapping}}
-                after: [wellbores]
+                {{(welllogsAfter ? "after: [wellbores]" : string.Empty)}}
             {{archiveInterface}}
             """).ReplaceLineEndings("\n");
     }
@@ -195,6 +197,8 @@ public sealed class SourceRuntimeTests : IDisposable
                     ["facility_description"] = wellbore.Description,
                     ["facility_id"] = wellbore.FacilityId,
                     ["update_date"] = wellbore.UpdateDateUtc,
+                    // The wellbore a sidetrack was kicked off from: none of the sample wellbores is one.
+                    ["kickoff_wellbore"] = null,
                 },
                 UpdatedUtc = _clock.GetUtcNow().UtcDateTime,
                 FileName = "wellbore_20260901.csv",
@@ -385,14 +389,105 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.True(result.Success, result.Error);
         var outcome = Outcome(result);
         Assert.Equal(["welllogs", "archive"], outcome.Interfaces.Select(i => i.Interface));
-        Assert.All(outcome.Interfaces, i => Assert.Equal(1, i.Wave));
-        Assert.Empty(outcome.Interfaces[0].WaitsFor);
+
+        // The well logs refer to wellbores, which the archive delivers too: they wait for the archive, and not for the
+        // wellbores interface the run leaves out, although after: names it.
+        Assert.Equal((2, 1), (outcome.Interfaces[0].Wave, outcome.Interfaces[1].Wave));
+        Assert.Equal(["archive"], outcome.Interfaces[0].WaitsFor);
+        Assert.StartsWith(
+            "archive: osdu.data.WellboreID refers to master-data--Wellbore, which archive delivers",
+            Assert.Single(outcome.Interfaces[0].WaitReasons), StringComparison.Ordinal);
         Assert.Empty(_protocols["wellbores"].Deliveries);
         Assert.Equal(3, _protocols["welllogs"].Deliveries.Count);
 
         var unknown = await RunAsync(engine, source, payload: new DeliveryRunPayload { Interfaces = ["cores"] });
         Assert.False(unknown.Success);
         Assert.Contains("Flow 'recall' has no interface 'cores'; it declares wellbores, welllogs, archive.", unknown.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_source_runs_its_interfaces_in_the_order_their_mappings_refer_to_each_other()
+    {
+        // Nothing declares an order: the well log mapping fills osdu.data.WellboreID, which the template says refers to
+        // wellbores, and the wellbores interface delivers them.
+        var source = Load(SourceYaml(welllogsAfter: false));
+        var engine = Engine(await EstateAsync());
+
+        var result = await RunAsync(engine, source);
+
+        Assert.True(result.Success, result.Error);
+        var (wellbores, welllogs) = (Outcome(result).Interfaces[0], Outcome(result).Interfaces[1]);
+        Assert.Equal((1, 2), (wellbores.Wave, welllogs.Wave));
+        Assert.Equal(["wellbores"], welllogs.WaitsFor);
+        Assert.Equal(
+            $"wellbores: osdu.data.WellboreID refers to master-data--Wellbore, which wellbores delivers ({Samples.WellboreKind})",
+            Assert.Single(welllogs.WaitReasons));
+        var trace = _events.Events.Where(e => e.Kind.StartsWith("interface.", StringComparison.Ordinal)).Select(e => $"{e.Kind} {e.Interface}").ToList();
+        Assert.Equal(["interface.started wellbores", "interface.completed wellbores", "interface.started welllogs", "interface.completed welllogs"], trace);
+
+        // The run's artifact says why.
+        var artifact = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(result.RunDirectory!, "run.json"))).RootElement;
+        var reasons = artifact.GetProperty("result").GetProperty("interfaces")[1].GetProperty("waitReasons");
+        Assert.Contains("osdu.data.WellboreID", reasons[0].GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_preflight_refuses_interfaces_that_refer_to_each_other_until_after_says_which_goes_first()
+    {
+        // Both wellbore interfaces fill osdu.data.KickOffWellbore, which refers to wellbores: each could refer to the other's.
+        var mappings = SidetrackMappings();
+        var engine = Engine(await EstateAsync(archive: true));
+
+        var refused = await RunAsync(engine, Load(SourceYaml(archive: true, wellboreMapping: "Sidetrack@1.0.0", archiveMapping: "Sidetrack@1.0.0", mappingsDirectory: mappings)));
+
+        Assert.False(refused.Success);
+        Assert.Contains("The preflight of 'recall' found 1 problem(s), so nothing was planned or sent", refused.Error, StringComparison.Ordinal);
+        Assert.Contains("the order of the interfaces: The interfaces wellbores -> archive -> wellbores wait for each other", refused.Error, StringComparison.Ordinal);
+        Assert.Contains("wellbores: osdu.data.KickOffWellbore refers to master-data--Wellbore, which archive delivers", refused.Error, StringComparison.Ordinal);
+        Assert.Contains("Name the interface that waits for the other with after:", refused.Error, StringComparison.Ordinal);
+        Assert.Empty(_protocols["wellbores"].Deliveries);
+        Assert.Empty(_protocols["archive"].Deliveries);
+
+        // Told which goes first, the run takes the archive, then the wellbores, then the well logs that refer to both.
+        var ordered = await RunAsync(
+            engine,
+            Load(SourceYaml(archive: true, wellbores: "after: [archive]", wellboreMapping: "Sidetrack@1.0.0", archiveMapping: "Sidetrack@1.0.0", mappingsDirectory: mappings)));
+
+        Assert.True(ordered.Success, ordered.Error);
+        var outcome = Outcome(ordered);
+        Assert.Equal(
+            [("wellbores", 2), ("welllogs", 3), ("archive", 1)],
+            outcome.Interfaces.Select(i => (i.Interface, i.Wave)).ToArray());
+        Assert.Equal(["archive"], outcome.Interfaces[0].WaitsFor);
+        Assert.Empty(outcome.Interfaces[2].WaitsFor);
+        Assert.Equal(["wellbores", "archive"], outcome.Interfaces[1].WaitsFor);
+        Assert.All(outcome.Interfaces, i => Assert.Equal(InterfaceStates.Completed, i.State));
+    }
+
+    /// <summary>
+    /// The sample mappings, plus Sidetrack@1.0.0: the sample wellbore mapping that also fills osdu.data.KickOffWellbore from
+    /// an optional column, so the wellbores it renders may refer to other wellbores.
+    /// </summary>
+    private string SidetrackMappings()
+    {
+        var directory = Path.Combine(_root, "sidetrack-mappings");
+        Directory.CreateDirectory(directory);
+        foreach (var file in Directory.EnumerateFiles(Samples.Mappings, "*.yaml"))
+        {
+            File.Copy(file, Path.Combine(directory, Path.GetFileName(file)));
+        }
+
+        var wellbore = File.ReadAllText(Path.Combine(Samples.Mappings, "Wellbore@1.0.0.yaml")).ReplaceLineEndings("\n");
+        const string Anchor = "\n  # Alternative names:";
+        Assert.Contains(Anchor, wellbore, StringComparison.Ordinal);
+        var sidetrack = wellbore
+            .Replace("\nname: Wellbore\n", "\nname: Sidetrack\n", StringComparison.Ordinal)
+            .Replace(
+                Anchor,
+                "\n  - target: osdu.data.KickOffWellbore\n    source: dataset.kickoff_wellbore\n    required: false\n" + Anchor,
+                StringComparison.Ordinal);
+        File.WriteAllText(Path.Combine(directory, "Sidetrack@1.0.0.yaml"), sidetrack);
+        return directory;
     }
 
     [Fact]

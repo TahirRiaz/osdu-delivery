@@ -292,8 +292,7 @@ interfaces:
       curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
     bulk: { root: ../data/curves, locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
     protocolOptions: { sessionThresholdChunks: 1 }
-    mapping: WellLog@1.4.0
-    after: [wellbores]
+    mapping: WellLog@1.4.0          # fills osdu.data.WellboreID, so it waits for wellbores without an after:
     failWhen: { consecutiveFailures: 50 }
 ```
 
@@ -308,7 +307,7 @@ interfaces:
 | `bulk` | The DDMS bulk data each record carries, a payload set of the same shape, written after the record. |
 | `route` | `storage`, `file`, `manifest` or `ddms`: names the route instead of letting what the interface declares decide it. |
 | `ledger` | The name of an existing flow whose ledger the interface keeps. |
-| `after` | The interfaces of this document it waits for. |
+| `after` | Interfaces of this document it waits for, beside the ones its records refer to ([Order](#order)). |
 | `failWhen` | Its stop rules, laid over the source's. |
 | `description` | Free text. |
 | `lastModified`, `systemColumns`, `incremental` | The source's settings, overridden for this interface. |
@@ -367,12 +366,37 @@ ledger name is at most 200 characters.
 
 ### Order
 
-`after:` names the interfaces an interface waits for. A run takes the interfaces in waves: the first wave holds every
-interface that waits for nothing, and each later wave the interfaces whose dependencies all ran before it. Up to
-`reliability.parallelInterfaces` interfaces of one wave run at once, and each still plans, fans out and drains as a
-run of that interface alone does. An `after:` naming an interface the document does not declare, the interface
-itself, or one interface twice is refused, and so are interfaces that wait for each other, naming the cycle
-(`the interfaces a -> b -> a wait for each other`).
+An interface waits for another in two cases:
+
+- **Its records refer to what the other delivers.** A property its mapping fills (from a column, the cache or a static
+  value) refers to other records when the template's schema says so with `x-osdu-relationship`: `osdu.data.WellboreID`
+  of a well log refers to `master-data--Wellbore`. The interface then waits for every other interface of the source
+  whose mapping fills that entity type. A relationship that names only a group (`Datasets[]` refers to `dataset`) waits
+  for every interface delivering a kind of that group. A reference to a kind no other interface delivers is not waited
+  for: those records are OSDU's already, or another source's.
+- **`after:` names the other.** It adds what the schemas do not show.
+
+A run takes the interfaces in waves: the first wave holds every interface that waits for nothing, and each later wave
+the interfaces whose dependencies all ran before it. Within a wave the interfaces are taken by OSDU group (reference
+data, master data, datasets, work product components, work products, then any other group) and then as the document
+lists them; up to `reliability.parallelInterfaces` of them run at once. Each still plans, fans out and drains as a run
+of that interface alone does.
+
+OSDU's schemas refer both ways (a wellbore to its definitive trajectory, the trajectory to its wellbore), so two
+interfaces can wait for each other. Such a cycle is cut, and the reference that is not waited for is reported with why:
+
+1. A reference the document's `after:` orders the other way is not waited for.
+2. Otherwise, a reference from a group that comes earlier in the order above to a later group is not waited for (the
+   wellbores run before the trajectories). The reference points back, and it resolves once the other interface has
+   delivered.
+3. Interfaces of one group that refer to each other are refused, naming them and the properties involved, until
+   `after:` says which one waits.
+
+The references are read from the mappings and the templates they pin, which live in the catalog, so the order is worked
+out when a run starts (its preflight refuses a cycle nothing cuts), by `sqlflow check`, and by the API's listing of a
+flow's interfaces. When the document is read, only `after:` is checked: an `after:` naming an interface the document
+does not declare, the interface itself, or one interface twice is refused, and so are interfaces whose `after:` wait
+for each other (`the interfaces a -> b -> a wait for each other`).
 
 ### When an interface stops
 

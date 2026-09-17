@@ -8,6 +8,8 @@ using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.ControlPlane;
+using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using Xunit;
@@ -60,7 +62,6 @@ public sealed class DeliveryInterfacesApiTests
                 record: { object: OsduSample.ing.WellLog, key: [source_project, log_id] }
                 bulk: { root: ../data/curves, locationColumn: curve_folder, hashColumn: payload_hash }
                 mapping: WellLog@1.4.0
-                after: [wellbores]
             """;
 
         await using (var db = CatalogDatabase.Create(cs))
@@ -126,10 +127,55 @@ public sealed class DeliveryInterfacesApiTests
                 Assert.Equal("ddms", items[1].GetProperty("route").GetString());
                 Assert.Equal(logsLedger, items[1].GetProperty("flowId").GetGuid());
                 Assert.Equal(flowName + "/welllogs", items[1].GetProperty("ledger").GetString());
-                Assert.Equal(["wellbores"], items[1].GetProperty("after").EnumerateArray().Select(a => a.GetString()));
+                Assert.Empty(items[1].GetProperty("after").EnumerateArray());
                 Assert.Equal(1, items[1].GetProperty("stats").GetProperty("pending").GetInt64());
                 Assert.Equal(0, items[0].GetProperty("stats").GetProperty("total").GetInt64());
                 Assert.Contains("declares bulk", items[1].GetProperty("routeReason").GetString(), StringComparison.Ordinal);
+
+                // The repository's mappings are not synced yet, so nothing but after: orders the interfaces, and the listing says why.
+                Assert.All(items, i => Assert.Equal(1, i.GetProperty("wave").GetInt32()));
+                Assert.Empty(items[1].GetProperty("waitsFor").EnumerateArray());
+                Assert.Contains("Mapping Wellbore@1.0.0 of interface 'wellbores' is not among the repository's valid mappings", items[0].GetProperty("orderProblem").GetString(), StringComparison.Ordinal);
+            }
+
+            // Once the mappings are synced and their templates saved, the well logs wait for the wellbores they refer to.
+            await SampleEstate.SaveTemplatesAsync(cs);
+            await using (var osdu = SampleEstate.Context(cs))
+            {
+                var loader = new DeliveryDocumentLoader();
+                foreach (var reference in new[] { "Wellbore@1.0.0", "WellLog@1.4.0" })
+                {
+                    var yamlText = SampleEstate.MappingYaml(reference);
+                    var mapping = loader.ParseMapping(yamlText, $"mappings/{reference}.yaml");
+                    osdu.DeliveryMappings.Add(new DeliveryMapping
+                    {
+                        Id = FlowIdentity.FromName($"delivery-mapping/{repoId:N}/{reference}"),
+                        RepoId = repoId,
+                        Reference = reference,
+                        Name = mapping.Name,
+                        Version = mapping.Version,
+                        Kind = mapping.Kind,
+                        TemplateVersion = mapping.Template.Version,
+                        RelativePath = $"mappings/{reference}.yaml",
+                        ContentHash = new string('0', 64),
+                        Yaml = yamlText,
+                        FirstSeenUtc = now,
+                        LastSeenUtc = now,
+                    });
+                }
+
+                await osdu.SaveChangesAsync();
+            }
+
+            using (var ordered = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/interfaces"))
+            {
+                Assert.Equal(HttpStatusCode.OK, ordered.StatusCode);
+                var items = JsonDocument.Parse(await ordered.Content.ReadAsStringAsync()).RootElement.EnumerateArray().ToList();
+                Assert.Equal((1, 2), (items[0].GetProperty("wave").GetInt32(), items[1].GetProperty("wave").GetInt32()));
+                var wait = Assert.Single(items[1].GetProperty("waitsFor").EnumerateArray().ToList());
+                Assert.Equal(("wellbores", "schema"), (wait.GetProperty("interface").GetString(), wait.GetProperty("origin").GetString()));
+                Assert.StartsWith("osdu.data.WellboreID refers to master-data--Wellbore, which wellbores delivers", wait.GetProperty("why").GetString(), StringComparison.Ordinal);
+                Assert.All(items, i => Assert.Equal(JsonValueKind.Null, i.GetProperty("orderProblem").ValueKind));
             }
 
             // The source as a whole adds its interfaces up; one interface is asked for by name.
@@ -175,6 +221,7 @@ public sealed class DeliveryInterfacesApiTests
             {
                 await osdu.DeliveryRecords.Where(r => r.FlowId == logsLedger).ExecuteDeleteAsync();
                 await osdu.DeliveryInterfaces.Where(i => i.RepoId == repoId).ExecuteDeleteAsync();
+                await osdu.DeliveryMappings.Where(m => m.RepoId == repoId).ExecuteDeleteAsync();
             }
 
             await using (var db = CatalogDatabase.Create(cs))

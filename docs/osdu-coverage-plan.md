@@ -118,6 +118,13 @@ under its own ledger.
 
 Done when the ordering tests cover a chain, a diamond, a cycle cut by group order, an unresolved cycle, and `after:`.
 
+Status: done. The order is worked out where the templates are: the run's preflight (a cycle nothing cuts is a finding),
+`sqlflow check` (which is the explanation: every interface with its route, wave, what it waits for and why, and the
+references left out of a cycle; `--json` carries the same), and the API's listing of a flow's interfaces. The group
+order is grounded in the OSDU data definitions, and OSDU's manifest ingestion, which orders a manifest's records by
+their references and refuses a cycle among them, was read from its library (docs/interfaces-design.md section 6). The
+flow page's explanation is part of stage 9.
+
 ### Stage 5: route types on a common footing
 
 - Protocols are built from a resolved route rather than from `target.protocol`; the four existing protocols become

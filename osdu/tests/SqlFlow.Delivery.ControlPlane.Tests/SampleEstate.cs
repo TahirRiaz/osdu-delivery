@@ -74,6 +74,13 @@ internal static class SampleEstate
     /// <summary>The repo-relative path of a flow document, as the catalog records it.</summary>
     public static string FlowPath(string flowName) => "flows/" + flowName + ".yaml";
 
+    /// <summary>A sample mapping document (<c>Name@version</c>) as the repository holds it.</summary>
+    public static string MappingYaml(string reference)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+        return File.ReadAllText(Path.Combine(Locate(), "mappings", reference + ".yaml"));
+    }
+
     /// <summary>
     /// Brings the module's own schema up to date in the catalog database, exactly as the control plane's bootstrap does
     /// before it serves a request. The database itself is never created here: the suite is given a disposable one.

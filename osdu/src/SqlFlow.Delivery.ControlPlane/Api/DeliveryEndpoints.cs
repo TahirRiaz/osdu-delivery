@@ -44,10 +44,19 @@ public sealed record DeliveryFlowStatsDto(
 /// One interface of a delivery flow (docs/interfaces-design.md): its ledger identity, how it is delivered and why, the
 /// mapping and kind it delivers, the record table it reads, what it waits for, and its record counts. A flow in the single
 /// form lists one, with no name.
+/// <para><c>After</c> is what the document declares; <c>Wave</c>, <c>WaitsFor</c> and <c>NotWaitedFor</c> are the order a
+/// run takes, from <c>after:</c> and the relationships the mappings fill. When that order cannot be worked out (a mapping
+/// or template the catalog does not hold, interfaces that wait for each other), <c>OrderProblem</c> says why and the
+/// order shown is the one <c>after:</c> alone gives.</para>
 /// </summary>
 public sealed record DeliveryInterfaceDto(
     string? Interface, Guid FlowId, string Ledger, string Route, string? RouteReason, string Mapping, string? Kind, string RecordObject,
-    IReadOnlyList<string> After, DeliveryFlowStatsDto Stats);
+    IReadOnlyList<string> After, DeliveryFlowStatsDto Stats,
+    int Wave = 1, IReadOnlyList<DeliveryInterfaceWaitDto>? WaitsFor = null, IReadOnlyList<DeliveryInterfaceWaitDto>? NotWaitedFor = null,
+    string? OrderProblem = null);
+
+/// <summary>One interface another waits for, or does not wait for, with where that comes from (<c>after</c> or <c>schema</c>) and why.</summary>
+public sealed record DeliveryInterfaceWaitDto(string Interface, string Origin, string Why);
 
 /// <summary>
 /// One plan of a flow over its ingestion tables as the ledger received it, and what became of it: which selection it
@@ -366,9 +375,9 @@ public static class DeliveryEndpoints
         return TypedResults.Ok(StatsDto(source.Pipeline, stats));
     }
 
-    /// <summary>A flow's interfaces in document order, each with how it is delivered, what it waits for and its counts.</summary>
+    /// <summary>A flow's interfaces in document order, each with how it is delivered, the order a run takes it in and its counts.</summary>
     private static async Task<Results<Ok<IReadOnlyList<DeliveryInterfaceDto>>, ProblemHttpResult>> ListInterfacesAsync(
-        Guid pipelineId, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, TimeProvider clock, CancellationToken ct)
+        Guid pipelineId, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger, TimeProvider clock, CancellationToken ct)
     {
         var (source, problem) = await ResolveSourceAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
         if (source is null)
@@ -378,18 +387,84 @@ public static class DeliveryEndpoints
 
         // The kind each mapping fills is what the repository sync read; a mapping it could not read has none yet.
         var described = await DeliveryInterfaceCatalog.OfFlowAsync(osdu, source.Pipeline.RepoId, source.Pipeline.Name, ct).ConfigureAwait(false);
+        var (order, orderProblem) = await OrderAsync(osdu, documents, engine, source, ct).ConfigureAwait(false);
         var now = clock.GetUtcNow().UtcDateTime;
         var result = new List<DeliveryInterfaceDto>(source.Source.Interfaces.Count);
         foreach (var flow in source.Source.Interfaces)
         {
             var stats = await ledger.StatsAsync(flow.Id, now, ct).ConfigureAwait(false);
             var kind = described.FirstOrDefault(d => d.LedgerFlowId == flow.Id)?.Kind;
+            var name = flow.Interface ?? string.Empty;
             result.Add(new DeliveryInterfaceDto(
                 flow.Interface, flow.Id, flow.LedgerName, RouteChecks.Name(flow.Target.Protocol), flow.RouteReason, flow.Render.Mapping,
-                string.IsNullOrEmpty(kind) ? null : kind, flow.Source.Record.Object, flow.After, StatsDto(source.Pipeline, [(flow, stats)])));
+                string.IsNullOrEmpty(kind) ? null : kind, flow.Source.Record.Object, flow.After, StatsDto(source.Pipeline, [(flow, stats)]),
+                order.WaveOf(name),
+                order.WaitsFor(name).Select(d => Wait(d, d.DependsOn)).ToList(),
+                order.NotWaitedFor.Where(d => string.Equals(d.Interface, name, StringComparison.OrdinalIgnoreCase)).Select(d => Wait(d, d.DependsOn)).ToList(),
+                orderProblem));
         }
 
         return TypedResults.Ok<IReadOnlyList<DeliveryInterfaceDto>>(result);
+    }
+
+    private static DeliveryInterfaceWaitDto Wait(InterfaceDependency dependency, string other)
+        => new(other, dependency.Origin == DependencyOrigin.After ? "after" : "schema", dependency.Why);
+
+    /// <summary>
+    /// The order a run takes the source's interfaces in, worked out as the run's preflight works it out: from <c>after:</c>
+    /// and the relationships the mappings fill, read from the repository's synced mappings and the catalog's templates. When
+    /// a mapping or template is missing, or the interfaces wait for each other, the order <c>after:</c> alone gives is
+    /// returned with the reason.
+    /// </summary>
+    private static async Task<(InterfaceOrderPlan Order, string? Problem)> OrderAsync(
+        OsduDbContext osdu, DeliveryDocumentLoader documents, EngineContext engine, SourceContext source, CancellationToken ct)
+    {
+        var names = source.Source.Interfaces.Select(f => f.Interface ?? string.Empty).ToList();
+        var declared = InterfaceOrder.Declared(source.Source);
+        if (names.Count < 2)
+        {
+            return (InterfaceOrder.Plan(names, declared, []), null);
+        }
+
+        var references = source.Source.Interfaces.Select(f => f.Render.Mapping).Distinct(StringComparer.Ordinal).ToList();
+        var rows = await osdu.DeliveryMappings.AsNoTracking()
+            .Where(m => m.RepoId == source.Pipeline.RepoId && references.Contains(m.Reference) && m.Status == "valid")
+            .Select(m => new { m.Reference, m.Yaml, m.RelativePath })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var schemas = new List<InterfaceSchema>(names.Count);
+        foreach (var flow in source.Source.Interfaces)
+        {
+            var row = rows.FirstOrDefault(r => r.Reference == flow.Render.Mapping);
+            if (row is null)
+            {
+                return (InterfaceOrder.Plan(names, declared, []), $"Mapping {flow.Render.Mapping} of interface '{flow.Interface}' is not among the repository's valid mappings, so only after: orders the interfaces.");
+            }
+
+            try
+            {
+                var mapping = documents.ParseMapping(row.Yaml, row.RelativePath);
+                var schema = engine.Templates is { } templates ? await templates.LoadAsync(mapping.Template, ct).ConfigureAwait(false) : null;
+                if (schema is null)
+                {
+                    return (InterfaceOrder.Plan(names, declared, []), $"Mapping {mapping.Reference} of interface '{flow.Interface}' pins template {mapping.Template}, which is not saved in the catalog, so only after: orders the interfaces.");
+                }
+
+                schemas.Add(InterfaceSchemas.Describe(flow.Interface ?? string.Empty, mapping, OsduTemplate.From(schema)));
+            }
+            catch (FlowValidationException ex)
+            {
+                return (InterfaceOrder.Plan(names, declared, []), $"Mapping {flow.Render.Mapping} of interface '{flow.Interface}' could not be read ({ex.Message}), so only after: orders the interfaces.");
+            }
+        }
+
+        try
+        {
+            return (InterfaceOrder.Plan(names, declared, schemas), null);
+        }
+        catch (DeliveryException ex)
+        {
+            return (InterfaceOrder.Plan(names, declared, []), ex.Message + " Until then a run refuses to start, and only after: orders the interfaces here.");
+        }
     }
 
     /// <summary>The dashboard card of one interface, or of several added up.</summary>

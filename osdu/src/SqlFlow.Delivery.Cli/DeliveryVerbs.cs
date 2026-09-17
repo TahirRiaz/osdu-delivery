@@ -46,7 +46,7 @@ internal static class DeliveryVerbs
         var named = context.Arguments.GetOption("--interface");
         var flows = named is null ? source.Interfaces : [source.Interface(named)];
 
-        var checks = new List<(JsonObject Result, Action Write)>(flows.Count);
+        var checks = new List<FlowCheck>(flows.Count);
         foreach (var flow in flows)
         {
             checks.Add(await CheckFlowAsync(context, engine, flow, values, connect, ct).ConfigureAwait(false));
@@ -55,22 +55,42 @@ internal static class DeliveryVerbs
         if (!source.DeclaresInterfaces)
         {
             // The single form reports as it always has: one flow, one object.
-            var (result, write) = checks[0];
+            var single = checks[0];
             if (context.Json)
             {
-                context.Out.WriteLine(CanonicalJson.Pretty(result));
+                context.Out.WriteLine(CanonicalJson.Pretty(single.Result));
                 return 0;
             }
 
-            write();
+            single.Write(null);
             return 0;
         }
 
+        // The order of the checked interfaces, from after: and the relationships their mappings fill, as a run orders them.
+        Model.InterfaceOrderPlan order;
+        try
+        {
+            order = Model.InterfaceOrder.Plan(
+                checks.Select(c => c.Schema.Interface).ToList(), Model.InterfaceOrder.Declared(source), checks.Select(c => c.Schema).ToList());
+        }
+        catch (DeliveryException ex)
+        {
+            throw new FlowValidationException($"{source.SourcePath ?? flowPath}: {ex.Message}", ex);
+        }
         if (context.Json)
         {
+            foreach (var check in checks)
+            {
+                var name = check.Schema.Interface;
+                check.Result["wave"] = order.WaveOf(name);
+                check.Result["waitsFor"] = Dependencies(order.WaitsFor(name), d => d.DependsOn);
+                check.Result["notWaitedFor"] = Dependencies(order.NotWaitedFor.Where(d => Same(d.Interface, name)).ToList(), d => d.DependsOn);
+            }
+
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
             {
                 ["flow"] = source.Name,
+                ["order"] = order.Describe(),
                 ["interfaces"] = new JsonArray(checks.Select(c => (JsonNode)c.Result).ToArray()),
             }));
             return 0;
@@ -78,29 +98,41 @@ internal static class DeliveryVerbs
 
         context.Out.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
-            $"{source.Name}: {checks.Count} of {source.Interfaces.Count} interface(s) checked, in the order they run: {string.Join(" then ", Waves(source, flows))}"));
-        foreach (var (_, write) in checks)
+            $"{source.Name}: {checks.Count} of {source.Interfaces.Count} interface(s) checked, in the order they run: {order.Describe()}"));
+        foreach (var check in checks)
         {
-            write();
+            check.Write(order);
         }
 
         return 0;
     }
 
-    /// <summary>The waves the checked interfaces run in, each written as its interfaces joined by '+'.</summary>
-    private static IEnumerable<string> Waves(Model.SourceDefinition source, IReadOnlyList<Model.FlowDefinition> flows)
-        => Model.InterfaceOrder.Waves(flows.Select(f => f.Interface ?? string.Empty).ToList(), Model.InterfaceOrder.Declared(source))
-            .Select(wave => string.Join(" + ", wave));
+    /// <summary>What one flow (one interface of a source) answers as JSON, how it writes itself as text, and what it refers to.</summary>
+    private sealed record FlowCheck(JsonObject Result, Action<Model.InterfaceOrderPlan?> Write, Model.InterfaceSchema Schema);
+
+    private static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static JsonArray Dependencies(IReadOnlyList<Model.InterfaceDependency> dependencies, Func<Model.InterfaceDependency, string> other)
+        => new(dependencies
+            .Select(d => (JsonNode)new JsonObject
+            {
+                ["interface"] = other(d),
+                ["origin"] = d.Origin == Model.DependencyOrigin.After ? "after" : "schema",
+                ["why"] = d.Why,
+            })
+            .ToArray());
 
     /// <summary>
-    /// Everything checkable for one flow (one interface of a source): what the check answers as JSON, and how it writes it
-    /// as text. The runtime is opened and disposed here, so a source's interfaces are checked one at a time.
+    /// Everything checkable for one flow (one interface of a source): what the check answers as JSON, how it writes it as
+    /// text once the order of the checked interfaces is known, and what its records refer to. The runtime is opened and
+    /// disposed here, so a source's interfaces are checked one at a time.
     /// </summary>
-    private static async Task<(JsonObject Result, Action Write)> CheckFlowAsync(
+    private static async Task<FlowCheck> CheckFlowAsync(
         CliVerbContext context, EngineContext engine, Model.FlowDefinition flow, IReadOnlyDictionary<string, string> values, bool connect, CancellationToken ct)
     {
         using var runtime = await FlowRuntime.CreateAsync(flow.Interface is null ? engine : engine.ForInterface(flow.Interface), flow, values, ct).ConfigureAwait(false);
         RouteChecks.Check(flow, runtime.Mapping.Mapping.Kind);
+        var schema = await runtime.SchemaAsync(ct).ConfigureAwait(false);
         var roots = PayloadRoots.Of(flow, runtime.Parameters);
 
         var result = new JsonObject
@@ -159,14 +191,29 @@ internal static class DeliveryVerbs
         var contextHash = runtime.Mapping.Context.Hash()[..16];
         var mappings = runtime.Layout.MappingsDirectory;
 
-        void Write()
+        void Write(Model.InterfaceOrderPlan? order)
         {
             context.Out.WriteLine($"OK  {flow.Label} ({flow.Id:D})");
-            if (flow.Interface is not null)
+            if (flow.Interface is { } name && order is not null)
             {
                 context.Out.WriteLine($"    ledger      {flow.LedgerName}");
                 context.Out.WriteLine($"    route       {RouteChecks.Name(flow.Target.Protocol)}: {flow.RouteReason}");
-                context.Out.WriteLine(flow.After.Count == 0 ? "    after       nothing" : $"    after       {string.Join(", ", flow.After)}");
+                context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"    wave        {order.WaveOf(name)}"));
+                var waits = order.WaitsFor(name);
+                if (waits.Count == 0)
+                {
+                    context.Out.WriteLine("    waits for   nothing");
+                }
+
+                foreach (var wait in waits)
+                {
+                    context.Out.WriteLine($"    waits for   {wait.DependsOn}: {wait.Why}");
+                }
+
+                foreach (var reference in order.NotWaitedFor.Where(d => Same(d.Interface, name)))
+                {
+                    context.Out.WriteLine($"    not waited  {reference.DependsOn}: {reference.Why}");
+                }
             }
 
             context.Out.WriteLine($"    mapping     {reference}");
@@ -190,7 +237,7 @@ internal static class DeliveryVerbs
             }
         }
 
-        return (result, Write);
+        return new FlowCheck(result, Write, schema);
     }
 
     /// <summary>

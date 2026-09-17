@@ -74,7 +74,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | Route | Scope | Purpose |
 | --- | --- | --- |
 | `GET /flows/{pipelineId}/stats` | read | Record counts by state, drift, the last 24 hours, the last submission. For a source with several interfaces, the counts of every interface added up (`interfaces` says how many, `flowId` is empty), or one interface's with `?interface=`. |
-| `GET /flows/{pipelineId}/interfaces` | read | The flow's interfaces in document order: each one's name, ledger identity (`flowId`) and the name it is derived from (`ledger`), route and why (`route`, `routeReason`), mapping, the kind the mapping fills as the last sync read it, record table, what it waits for (`after`), and its counts. A flow in the single form lists one entry with no name. |
+| `GET /flows/{pipelineId}/interfaces` | read | The flow's interfaces in document order: each one's name, ledger identity (`flowId`) and the name it is derived from (`ledger`), route and why (`route`, `routeReason`), mapping, the kind the mapping fills as the last sync read it, record table, what the document declares it waits for (`after`), its counts, and the order a run takes: its `wave`, `waitsFor` and `notWaitedFor` (each an interface with `origin`, `after` or `schema`, and `why`). When the order cannot be worked out (a mapping the repository's sync did not read, a template the catalog does not hold, interfaces that wait for each other), `orderProblem` says why and the order shown is `after:` alone. A flow in the single form lists one entry with no name. |
 | `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId`, `runId` (the records that run touched, through its attempts), `drifted`. |
 | `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, and the path each removal scope calls. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
@@ -149,16 +149,18 @@ its payload selects, every one when it selects none, in three steps:
 
 1. **Preflight.** Every selected interface is checked before anything is planned or sent, and every finding is
    reported at once: the ledger answers a read under snapshot isolation; each mapping, its template and the cache
-   version it reads load; each route can deliver the kind its mapping renders; each record table exists with the
-   shape the interface declares (the columns, the identity primary key, a unique record key); each route's service
-   answers with the flow's credentials (probed once per distinct service; unreachable, HTTP 401, 403 or 5xx is a
-   finding); and, for a run that plans, each mapping's legal tags are valid. A run with findings fails with
-   `The preflight of '<source>' found <n> problem(s), so nothing was planned or sent:` and the findings, each naming
-   its interface. Fix them and run again.
-2. **Waves.** The interfaces run in the waves their `after:` puts them in, up to `reliability.parallelInterfaces` at
-   once. Each plans, fans out over member runs and drains exactly as a run of that interface alone does, under its
-   own ledger identity and its own failure guard. Every member run the interface fans out to carries the interface
-   in its payload, so the node that runs it works on that interface only.
+   version it reads load; each route can deliver the kind its mapping renders; the interfaces can be ordered (the
+   `after:` of the document and the references their mappings fill, [documents.md](documents.md#order)); each record
+   table exists with the shape the interface declares (the columns, the identity primary key, a unique record key);
+   each route's service answers with the flow's credentials (probed once per distinct service; unreachable, HTTP 401,
+   403 or 5xx is a finding); and, for a run that plans, each mapping's legal tags are valid. A run with findings fails
+   with `The preflight of '<source>' found <n> problem(s), so nothing was planned or sent:` and the findings, each
+   naming its interface. Fix them and run again.
+2. **Waves.** The interfaces run in the waves that order puts them in, up to `reliability.parallelInterfaces` at once.
+   The run log says what each interface waits for and why, and which references are not waited for. Each interface
+   plans, fans out over member runs and drains exactly as a run of that interface alone does, under its own ledger
+   identity and its own failure guard. Every member run the interface fans out to carries the interface in its
+   payload, so the node that runs it works on that interface only.
 3. **Outcome.** An interface ends `completed`, `stopped` (something failed for it as a whole, or its records'
    failures crossed its `failWhen` rules) or `skipped` (it waits for an interface that did not complete). A stopped
    interface takes only the interfaces waiting for it along; the others carry on. The run succeeds when every
@@ -166,7 +168,7 @@ its payload selects, every one when it selects none, in three steps:
    skipped, and why.
 
 The run's `result` lists the interfaces in document order, each with its ledger identity, route and why, what it
-waited for, its wave, its state and reason, when it started and ended, and the outcome a run of it alone returns. The
+waited for and why (`waitsFor`, `waitReasons`), its wave, its state and reason, when it started and ended, and the outcome a run of it alone returns. The
 totals (`planned`, `delivered`, `held`, `failed`, and `rowsLoaded`, which the run row shows) add the interfaces up. The
 trace carries `interface.started`, `interface.completed`, `interface.stopped` and `interface.skipped` beside the batch
 and record events, and every line an interface logs starts with its name in brackets. The run's activities and the
@@ -314,7 +316,7 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 | Verb | Purpose |
 | --- | --- |
 | `sqlflow validate <flow.yaml>` | The platform's document validation (the CI gate for a folder). |
-| `sqlflow check <flow.yaml> [--interface <name>] [--connect] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the flow, its mappings, its templates and its payload roots. With `--connect` it opens the flow's source connection on this machine and reports the tables, their columns, the key types, the system columns, the current watermark window and the candidate counts. A source is checked one interface at a time, each with its route, its ledger and what it waits for, after a first line giving the order the interfaces run in; `--interface` checks one. With `--json`, a source answers `flow` and one object per interface. |
+| `sqlflow check <flow.yaml> [--interface <name>] [--connect] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the flow, its mappings, its templates and its payload roots. With `--connect` it opens the flow's source connection on this machine and reports the tables, their columns, the key types, the system columns, the current watermark window and the candidate counts. A source is checked one interface at a time, each with its route, its ledger, its wave, what it waits for and why, and the references it does not wait for, after a first line giving the order the interfaces run in; `--interface` checks one. Interfaces that wait for each other in a way nothing cuts fail the check, naming them. With `--json`, a source answers `flow`, `order` and one object per interface (with `wave`, `waitsFor` and `notWaitedFor`). |
 | `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|intake\|drain\|replan\|retrieve\|refresh] [--set name=value]... [--payload <json>\|@<file>] [--db <ref>]` | A run on the workstation. The payload carries the delivery kind's arguments (`force`, `submissionId`, `recordKeys`, `redeliver`, `interface`, `interfaces`; [The API](#the-api)). A delivery flow's runs need the module database connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which merges into the cache of its partition and so needs it. |
 | `sqlflow cache list <partition\|cache.yaml> [--db <ref>] [--json]` | The versions of a partition's cache (a cache flow's file lists the partition it fills), newest first: the cache flow that wrote each, when it was captured, by whom and in which run, and what it holds. |
 | `sqlflow cache import <cache.yaml> --from-dir <dir> [--db <ref>] [--json]` | Merge type files (`{Name}.json`) into the cache of the flow's partition as that flow's capture, for work without OSDU. The files must match the types, entity types and captured names the cache flow declares. A cache is captured from OSDU with `sqlflow run <cache.yaml>`. |
@@ -356,6 +358,8 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 | A run of a source fails: `<n> of <m> interface(s) completed` | The run's result lists each interface's state and reason; the trace has its `interface.stopped` and `interface.skipped` events | What completed is in the ledger. Fix what stopped the interface (the reason quotes the last failure) and run again: the stopped interface sends what it had left, then the interfaces that waited for it run. `--payload '{"interfaces":[...]}'` runs only those. |
 | An interface stopped: `an outage: <n> records in a row could not reach the service` | The interface's reason in the run's result; the records' attempts | The service was down or unreachable, or refused the credentials (`were refused by the service`). Nothing was held or failed for it: the records it tried are pending with those tries charged, and the rest are pending untried. Run again once the service answers. |
 | An interface stopped: `<n> of the <m> records ... were held or failed ... at or above failWhen.failedPercent` | The Records view of the interface filtered to held and failed | The data or the mapping is wrong for many records at once. Fix it, release the records, and run again. |
+| A run of a source fails: `the order of the interfaces: The interfaces a -> b -> a wait for each other` | The finding names the interfaces and the properties that refer across; `sqlflow check` prints the same | Two interfaces of one OSDU group refer to each other's kind (a wellbore to its kick-off wellbore). Add `after:` to the one that should wait. |
+| An interface waits for another the document does not name | `sqlflow check`, or the run log's `waits for` lines | Its mapping fills a property that refers to the kind the other delivers. That is intended: the referring records land after the ones they refer to. |
 | An API call answers 400 `Interface required` | The message lists the flow's interfaces | The flow is a source of several interfaces: add `?interface=<name>`. |
 | A flow fails to load: `the document declares interfaces, so these belong to an interface rather than the source` | The error names each misplaced key | Move `source.record`, `source.datasets`, `source.payloads`, `render.mapping`, `target.protocol` or `target.protocolOptions.payload` under the interface they belong to ([documents.md](documents.md#a-source-with-interfaces)). |
 | The sync warns that a ledger is kept by two flows | The warning names the interface and the flow keeping it | An interface adopted the ledger (`ledger:`) of a flow the repository still holds. Remove the old flow, or the adoption; until then both deliver into one ledger. |

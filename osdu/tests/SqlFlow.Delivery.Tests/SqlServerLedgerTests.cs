@@ -15,7 +15,11 @@ namespace SqlFlow.Delivery.Tests;
 /// <c>SQLFLOW_TEST_DB</c> points at a reachable, disposable database and skips otherwise; it writes only in the
 /// <c>osdu</c> schema its own migration creates, and every run works under a flow and keys of its own, so runs never
 /// see each other's rows.
+/// <para>Some of these tests watch the database as a whole (how often it locked a whole ledger table), which the suite's
+/// other SQL Server classes would disturb, so the class runs in <see cref="SqlServerLedgerIsolation"/>, after them and
+/// apart from them.</para>
 /// </summary>
+[Collection(SqlServerLedgerIsolation.Name)]
 public class SqlServerLedgerTests
 {
     private static readonly Lazy<string?> ConnectionString = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
@@ -634,8 +638,9 @@ public class SqlServerLedgerTests
         Assert.Equal(before, await LockEscalationsAsync());
 
         // The measure is live: one statement over the same records does lock the whole table, rolled back at once. The
-        // database escalates only while no other session holds a lock on the table, and other suites share it, so the
-        // statement is run until that moment comes.
+        // database escalates only while no other session holds a lock on the table. The suite's other classes are done by
+        // now, but other processes may share the database, so the statement is run again, a moment apart, until that
+        // moment comes.
         await using var connection = new SqlConnection(ConnectionString.Value);
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
@@ -645,12 +650,17 @@ public class SqlServerLedgerTests
             ROLLBACK TRANSACTION;
             """;
         command.Parameters.Add(new SqlParameter("@flow", System.Data.SqlDbType.UniqueIdentifier) { Value = _flow });
-        for (var attempt = 0; attempt < 50 && await LockEscalationsAsync() == before; attempt++)
+        var giveUp = DateTime.UtcNow.AddMinutes(1);
+        while (await LockEscalationsAsync() == before && DateTime.UtcNow < giveUp)
         {
             await command.ExecuteNonQueryAsync();
+            if (await LockEscalationsAsync() == before)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100));
+            }
         }
 
-        Assert.True(await LockEscalationsAsync() > before, "One statement over 6,000 records should have locked the whole record table.");
+        Assert.True(await LockEscalationsAsync() > before, "One statement over 6,000 records should have locked the whole record table within a minute of trying.");
     }
 
     [SkippableFact]

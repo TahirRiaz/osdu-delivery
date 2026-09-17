@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
@@ -178,6 +179,28 @@ public sealed class FlowRuntime : IDisposable
         return new FlowRuntime(
             context, flow, layout, new MappingCatalog(layout.MappingsDirectory, context.Documents),
             new Dictionary<string, string>(StringComparer.Ordinal), null);
+    }
+
+    /// <summary>
+    /// What this runtime's interface delivers and what its records refer to: the kind its mapping fills and the
+    /// relationships of the properties it fills, read from the template the mapping pins (docs/interfaces-design.md
+    /// section 6). A runtime opened for target operations reads the mapping and its template here.
+    /// </summary>
+    public async Task<InterfaceSchema> SchemaAsync(CancellationToken ct = default)
+    {
+        var name = Flow.Interface ?? Flow.Name;
+        if (_mapping is { } resolved)
+        {
+            return InterfaceSchemas.Describe(name, resolved.Mapping, Templates.OsduTemplate.From(resolved.Schema));
+        }
+
+        var mapping = Mappings.Load(Flow.Render.Mapping);
+        var templates = _context.Templates ?? throw new FlowValidationException(
+            $"{KeyPaths.Where(Flow)}: a source's interfaces are ordered by the relationships in the templates their mappings pin, and templates live in the catalog, which this host was started without. Start it with the catalog connection (--db, or the catalog variable).");
+        var schema = await templates.LoadAsync(mapping.Template, ct).ConfigureAwait(false)
+            ?? throw new FlowValidationException(
+                $"{KeyPaths.Where(Flow)}: mapping {mapping.Reference} pins template {mapping.Template}, which is not saved in the catalog. Save it on the Templates page, or with 'sqlflow template import'.");
+        return InterfaceSchemas.Describe(name, mapping, Templates.OsduTemplate.From(schema));
     }
 
     /// <summary>The flow's ingestion tables, opened once per runtime with the flow's own connection reference.</summary>
