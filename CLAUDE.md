@@ -69,9 +69,16 @@ When a flow finds no files or seems to point at the wrong place: diagnose and re
 
 **Every id a test or a verification run creates in a live OSDU partition is logged when it is created, and removed when the work is done.** The log is `.sqlflow/live-e2e/actions.log`, and it, not the ledger, is the authority on what exists.
 
-- Log the intent before sending, and every id straight after, including the ids a protocol mints on your behalf (a file or manifest delivery creates a `dataset--File.Generic` as well as the document).
+**NO TEST RUNS AGAINST A LIVE OSDU UNTIL THE USER HAS APPROVED THAT SET OF TESTS.** Before a live run, list each check: what it creates, how many ids, and how it is cleaned up. An approval covers the tests it was given for, not later ones.
+
+**Every test keeps track of its ids, so our test data is always known.** The inventory is `.sqlflow/live-e2e/test-data.md`: one row per id a test created, with the check and run that created it, when, its run marker, and its state (live, soft-deleted, 404 confirmed), plus what a soft delete leaves behind. Update it whenever a test creates or removes an id. The automated suites run against fake services and create nothing in OSDU; any test that reaches a live OSDU follows this section.
+
+- Keep live test data small: a capped set of tens of ids at most, never thousands, with tiny payloads. Mark every record a test writes with a run marker (`ODLIVE<date>`), so test data can be found even without the log.
+- Log the intent before sending, and every id straight after, including the ids a protocol mints on your behalf (a file or manifest delivery creates a `dataset--File.Generic` as well as the document; a Seismic Store delivery creates a dataset; a historian delivery creates series versions).
 - Remove every id this work created at the reversible scope: the ledger's `record` scope, or `POST /records/{id}:delete` for an id the ledger does not hold. Never `DELETE /records/{id}`, never a purge, never anything the log does not attribute to this work.
 - A GET on each id must answer 404 before cleanup counts as done. Local artifacts (uploads, staged files, work folders) count too.
+- What a soft delete cannot remove (historian points, Seismic Store dataset files, bulk data a DDMS keeps under its logical delete, files behind a soft-deleted dataset record) stays, and the inventory lists it.
+- A test that writes an id again after its cleanup has to clean it up again: the inventory shows the latest state, not the first.
 
 ## Single Code Path Principle
 
