@@ -354,7 +354,8 @@ internal static partial class FlowMapper
         var render = y.Render ?? throw Missing("render", source);
         var target = y.Target ?? throw Missing("target", source);
 
-        var protocol = ParseEnum<DeliveryProtocol>(Require(target.Protocol, "target.protocol", source), "target.protocol", source);
+        var protocol = ParseProtocol(Require(target.Protocol, "target.protocol", source), source);
+        var options = MapOptions(target.ProtocolOptions);
         var mapping = Require(render.Mapping, paths.Mapping, source);
         if (!mapping.Contains('@', StringComparison.Ordinal))
         {
@@ -393,7 +394,8 @@ internal static partial class FlowMapper
                 Auth = MapAuth(target.Auth, source),
                 Headers = new Dictionary<string, string>(target.Headers ?? [], StringComparer.OrdinalIgnoreCase),
                 Protocol = protocol,
-                ProtocolOptions = MapOptions(target.ProtocolOptions),
+                ProtocolOptions = options,
+                Ddms = MapDdms(target.Ddms, protocol, paths.Interface is not null, options.DdmsRoot, source),
             },
             Reliability = MapReliability(y.Reliability, source, paths),
             Verify = new FlowVerify { Reconcile = y.Verify?.Reconcile ?? false },
@@ -466,14 +468,22 @@ internal static partial class FlowMapper
                 RouteReason = route.Reason,
             };
 
-            if (flow.Target.Protocol == DeliveryProtocol.OsduWellLog && flow.Target.ProtocolOptions is { DdmsRoot: null, RecordPath: null })
+            if (flow.Target.Protocol == DeliveryProtocol.OsduWellLog && flow.Target.ProtocolOptions is { DdmsRoot: null, RecordPath: null } && flow.Target.Ddms.Count == 0)
             {
                 throw new FlowValidationException(
                     $"{source}: {at} is delivered through a DDMS, and the source's endpoint is the platform every interface reaches its services under. "
-                    + $"Say where the DDMS is under it with target.protocolOptions.ddmsRoot or {at}.protocolOptions.ddmsRoot (the wellbore DDMS is usually deployed under /api/os-wellbore-ddms).");
+                    + $"Say where the DDMS is under it: declare it under target.ddms with its root, or set target.protocolOptions.ddmsRoot or {at}.protocolOptions.ddmsRoot "
+                    + "for the Wellbore DDMS (usually deployed under /api/os-wellbore-ddms).");
             }
 
             flows.Add(flow);
+        }
+
+        if (target.Ddms is not null && !flows.Any(f => f.Target.Protocol == DeliveryProtocol.OsduWellLog))
+        {
+            throw new FlowValidationException(
+                $"{source}: target.ddms declares the DDMSs the source's interfaces are delivered to, and no interface is delivered through one "
+                + "(an interface with a bulk part, or route: ddms). Remove target.ddms, or route the interfaces it is meant for through their DDMS.");
         }
 
         CheckAfter(flows, source);
@@ -590,6 +600,9 @@ internal static partial class FlowMapper
                 Headers = target.Headers,
                 Protocol = route.Protocol.ToString(),
                 ProtocolOptions = options,
+
+                // The DDMSs the source declares are where its ddms interfaces go; the other interfaces have no use for them.
+                Ddms = route.Protocol == DeliveryProtocol.OsduWellLog ? target.Ddms : null,
             },
             Reliability = YamlOverlay.Apply(y.Reliability, i.Reliability),
             Verify = YamlOverlay.Apply(y.Verify, i.Verify),
@@ -658,21 +671,21 @@ internal static partial class FlowMapper
         {
             case InterfaceRouteName.Storage:
                 Refuse(files || bulk, $"{at}.route is storage, which writes the record alone, so {(files ? filesKey : bulkKey)} would never be sent. Remove it, or choose the route that delivers it.");
-                return new InterfaceRoute(DeliveryProtocol.OsduRecord, null, $"{at}.route names the storage route: each record is written through the storage service");
+                return new InterfaceRoute(RouteProtocol(InterfaceRouteName.Storage), null, $"{at}.route names the storage route: each record is written through the storage service");
             case InterfaceRouteName.File:
                 Refuse(!files, $"{at}.route is file, which uploads and registers each record's files, and the interface declares none under {filesKey}.");
                 Refuse(bulk, $"{at}.route is file, which does not write DDMS bulk data, so {bulkKey} would never be sent.");
-                return new InterfaceRoute(DeliveryProtocol.OsduFile, FilesPayload, $"{at}.route names the file route: each record's files are uploaded and registered through the file service before the record is written");
+                return new InterfaceRoute(RouteProtocol(InterfaceRouteName.File), FilesPayload, $"{at}.route names the file route: each record's files are uploaded and registered through the file service before the record is written");
             case InterfaceRouteName.Manifest:
                 Refuse(bulk, $"{at}.route is manifest, which sends records through the ingestion workflow and writes no DDMS bulk data, so {bulkKey} would never be sent.");
                 return new InterfaceRoute(
-                    DeliveryProtocol.OsduManifest,
+                    RouteProtocol(InterfaceRouteName.Manifest),
                     files ? FilesPayload : null,
                     $"{at}.route names the manifest route: the records go through the ingestion workflow in manifests" + (files ? ", their files registered first" : string.Empty));
             case InterfaceRouteName.Ddms:
                 Refuse(files, $"{at}.route is ddms, which writes the record and its bulk data through a DDMS and registers no files, so {filesKey} would never be sent. Deliver the files through an interface of their own.");
                 return new InterfaceRoute(
-                    DeliveryProtocol.OsduWellLog,
+                    RouteProtocol(InterfaceRouteName.Ddms),
                     bulk ? BulkPayload : null,
                     $"{at}.route names the ddms route: each record is written through its DDMS" + (bulk ? ", then its bulk data" : string.Empty));
         }
@@ -691,13 +704,51 @@ internal static partial class FlowMapper
         return new InterfaceRoute(DeliveryProtocol.OsduRecord, null, $"{at} declares no {FilesPayload} and no {BulkPayload}, so each record is written through the storage service");
     }
 
-    /// <summary>The routes an interface can name with <c>route:</c>.</summary>
+    /// <summary>The routes an interface can name with <c>route:</c>, and a document in the single form with <c>target.protocol</c>.</summary>
     private enum InterfaceRouteName
     {
         Storage,
         File,
         Manifest,
         Ddms,
+    }
+
+    /// <summary>The protocol that delivers a route type.</summary>
+    private static DeliveryProtocol RouteProtocol(InterfaceRouteName route) => route switch
+    {
+        InterfaceRouteName.Storage => DeliveryProtocol.OsduRecord,
+        InterfaceRouteName.File => DeliveryProtocol.OsduFile,
+        InterfaceRouteName.Manifest => DeliveryProtocol.OsduManifest,
+        InterfaceRouteName.Ddms => DeliveryProtocol.OsduWellLog,
+        _ => throw new ArgumentOutOfRangeException(nameof(route), route, "not a route type"),
+    };
+
+    /// <summary>
+    /// The protocol <c>target.protocol</c> names: a route type (<c>storage</c>, <c>file</c>, <c>manifest</c>,
+    /// <c>ddms</c>), or the protocol a route type maps onto (<c>osduRecord</c>, <c>osduFile</c>, <c>osduManifest</c>,
+    /// <c>osduWellLog</c>), as documents written before the route types name it.
+    /// </summary>
+    private static DeliveryProtocol ParseProtocol(string value, string source)
+    {
+        foreach (var route in Enum.GetValues<InterfaceRouteName>())
+        {
+            if (string.Equals(value, route.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                return RouteProtocol(route);
+            }
+        }
+
+        foreach (var protocol in Enum.GetValues<DeliveryProtocol>())
+        {
+            if (string.Equals(value, protocol.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                return protocol;
+            }
+        }
+
+        throw new FlowValidationException(
+            $"{source}: 'target.protocol' value '{value}' is not one of storage, file, manifest, ddms (or the protocols they map onto: "
+            + $"{string.Join(", ", Enum.GetNames<DeliveryProtocol>().Select(n => char.ToLowerInvariant(n[0]) + n[1..]))}).");
     }
 
     private static string? MapLedger(string? ledger, string at, string source)
@@ -1216,6 +1267,22 @@ internal static partial class FlowMapper
                 $"{source}: {paths.Shared("target.protocolOptions.legalValidatePath")} '{legalPath}' must be a path under the endpoint starting with '/', or an absolute http(s) URL.");
         }
 
+        if (flow.Target.ProtocolOptions.RegisterPath is { } registerPath)
+        {
+            if (!flow.Target.Ddms.Any(d => d.Registration is not null))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {paths.Shared("target.protocolOptions.registerPath")} says where the Register service reads a DDMS registration, and no DDMS under target.ddms names one with register.");
+            }
+
+            if (!registerPath.Contains("{id}", StringComparison.Ordinal)
+                || (registerPath[0] != '/' && !(Uri.TryCreate(registerPath, UriKind.Absolute, out var registerUrl) && registerUrl.Scheme is "http" or "https")))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {paths.Shared("target.protocolOptions.registerPath")} '{registerPath}' must be a path under the endpoint starting with '/', or an absolute http(s) URL, with {{id}} where the registration's id goes.");
+            }
+        }
+
         // The bulk endpoint replaces the whole bulk, so at most one chunk can go to it; more than one is a session.
         // A flow that asked for a higher threshold was asking for chunks to overwrite each other.
         if (flow.Target.ProtocolOptions.SessionThresholdChunks is < 0 or > 1)
@@ -1308,6 +1375,183 @@ internal static partial class FlowMapper
         };
     }
 
+    /// <summary>
+    /// The DDMSs a flow declares under <c>target.ddms</c> (docs/documents.md, "The DDMSs a flow delivers to"), in document
+    /// order. Each has a name, a root under the endpoint, a shape and the collections it serves (the shape's own when it
+    /// lists none). No entity type is served by two of them, since a record goes to one DDMS. A DDMS without a root makes
+    /// the endpoint that DDMS itself, so it is the only DDMS such a flow reaches; a source with interfaces reaches every
+    /// service under the platform endpoint, so each of its DDMSs names its root.
+    /// </summary>
+    private static IReadOnlyList<DdmsService> MapDdms(
+        OrderedDictionary<string, DdmsYaml?>? declared, DeliveryProtocol protocol, bool interfaceForm, string? ddmsRoot, string source)
+    {
+        if (declared is null)
+        {
+            return [];
+        }
+
+        if (protocol != DeliveryProtocol.OsduWellLog)
+        {
+            throw new FlowValidationException($"{source}: target.ddms declares the DDMSs the ddms route delivers to, and this flow's protocol is {protocol}. Remove target.ddms.");
+        }
+
+        if (declared.Count == 0)
+        {
+            throw new FlowValidationException($"{source}: target.ddms declares no DDMS. Name each DDMS the flow delivers to under it, or remove it.");
+        }
+
+        var services = new List<DdmsService>(declared.Count);
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var servedBy = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in declared)
+        {
+            var name = key?.Trim() ?? string.Empty;
+            if (!DdmsCatalog.IsName(name))
+            {
+                throw new FlowValidationException($"{source}: target.ddms names a DDMS '{name}'; a DDMS name is a letter followed by letters, digits, '_' and '-', at most 64 characters.");
+            }
+
+            if (!names.Add(name))
+            {
+                throw new FlowValidationException($"{source}: target.ddms declares '{name}' more than once (DDMS names are compared ignoring case).");
+            }
+
+            var at = $"target.ddms.{name}";
+            var ddms = value ?? new DdmsYaml();
+            var shape = ParseEnum(ddms.Shape, DdmsShape.WellboreDdmsV3, at + ".shape", source);
+            var root = MapDdmsRoot(ddms.Root, at + ".root", source);
+            var registration = MapRegistration(ddms, at, source);
+            if (root is null && registration is null && interfaceForm)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {at}.root is required. The source's endpoint is the platform its interfaces reach every service under, so say where the DDMS is under it "
+                    + "(the Wellbore DDMS is usually deployed under /api/os-wellbore-ddms), or name its registration in the Register service with register.");
+            }
+
+            // A registered DDMS whose collections the flow leaves out serves what its registration says, once it is read.
+            var collections = registration is not null && ddms.Collections is null ? [] : MapDdmsCollections(ddms.Collections, shape, at, source);
+            foreach (var collection in collections)
+            {
+                if (!servedBy.TryAdd(collection.EntityType, name))
+                {
+                    throw new FlowValidationException(
+                        $"{source}: target.ddms serves {collection.EntityType} from both '{servedBy[collection.EntityType]}' and '{name}'. A record goes to one DDMS, "
+                        + "so list the collections of one of them under its collections, leaving that entity type out.");
+                }
+            }
+
+            services.Add(new DdmsService(name, root, shape, collections) { Registration = registration });
+        }
+
+        if (services.FirstOrDefault(s => s.Root is null && s.Registration is null) is { } unrooted && (services.Count > 1 || ddmsRoot is not null))
+        {
+            throw new FlowValidationException(
+                $"{source}: target.ddms.{unrooted.Name} names no root, which makes the flow's endpoint that DDMS itself, so the flow reaches no other DDMS"
+                + (ddmsRoot is null ? string.Empty : " and target.protocolOptions.ddmsRoot places none under it")
+                + ". Give every DDMS its root under the endpoint, or declare that one alone.");
+        }
+
+        return services;
+    }
+
+    /// <summary>
+    /// The Register service id a declared DDMS is looked up under, or null. A DDMS that declares both its root and its
+    /// collections leaves its registration nothing to supply, so naming one as well is refused.
+    /// </summary>
+    private static string? MapRegistration(DdmsYaml ddms, string at, string source)
+    {
+        if (ddms.Register is null)
+        {
+            return null;
+        }
+
+        var id = ddms.Register.Trim();
+        if (!DdmsCatalog.IsRegistration(id))
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.register '{id}' is not an id the Register service keeps a DDMS under: 2 to 50 letters, digits and '-'.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(ddms.Root) && ddms.Collections is not null)
+        {
+            throw new FlowValidationException(
+                $"{source}: {at} declares its root and its collections, so its registration has nothing to supply. Remove register, or leave out what the registration should say.");
+        }
+
+        return id;
+    }
+
+    /// <summary>Where a declared DDMS is under the endpoint: a path starting with '/', without a trailing '/'; null when the endpoint is the DDMS.</summary>
+    private static string? MapDdmsRoot(string? declared, string key, string source)
+    {
+        if (string.IsNullOrWhiteSpace(declared))
+        {
+            return null;
+        }
+
+        var written = declared.Trim();
+        var root = written.TrimEnd('/');
+        if (root.Length == 0 || root[0] != '/' || root.Contains("://", StringComparison.Ordinal) || root.Any(c => char.IsWhiteSpace(c) || c is '{' or '}' or '?' or '#'))
+        {
+            throw new FlowValidationException($"{source}: {key} '{written}' must be a path under the endpoint starting with '/', such as /api/os-wellbore-ddms.");
+        }
+
+        return root;
+    }
+
+    /// <summary>The collections a declared DDMS serves, or those of its shape when it lists none.</summary>
+    private static IReadOnlyList<DdmsCollectionEntry> MapDdmsCollections(
+        OrderedDictionary<string, DdmsCollectionYaml?>? declared, DdmsShape shape, string at, string source)
+    {
+        if (declared is null)
+        {
+            return DdmsCatalog.DefaultCollections(shape);
+        }
+
+        if (declared.Count == 0)
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.collections lists no collection. List the entity types the DDMS serves, or leave collections out for the ones its shape serves.");
+        }
+
+        var collections = new List<DdmsCollectionEntry>(declared.Count);
+        var types = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in declared)
+        {
+            var entityType = key?.Trim() ?? string.Empty;
+            if (!DdmsCatalog.IsEntityType(entityType))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {at}.collections names '{entityType}', which is not an OSDU entity type with its group, such as work-product-component--WellLog.");
+            }
+
+            if (!types.Add(entityType))
+            {
+                throw new FlowValidationException($"{source}: {at}.collections lists {entityType} more than once (entity types are compared ignoring case).");
+            }
+
+            var entry = $"{at}.collections.{entityType}";
+            var declaredCollection = value ?? throw new FlowValidationException($"{source}: {entry} declares nothing; name at least the path the DDMS serves it under.");
+            var segment = declaredCollection.Path?.Trim() ?? string.Empty;
+            if (!DdmsCatalog.IsSegment(segment))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {entry}.path '{segment}' must be the collection's path segment, such as welllogs: letters, digits, '.', '_' and '-', at most 100 characters.");
+            }
+
+            var bulk = declaredCollection.Bulk ?? false;
+            var columns = ParseEnum(declaredCollection.Columns, DdmsBulkColumns.Unchecked, entry + ".columns", source);
+            if (!bulk && columns != DdmsBulkColumns.Unchecked)
+            {
+                throw new FlowValidationException($"{source}: {entry}.columns says what bulk data columns are checked against, and the collection holds records alone (bulk is false).");
+            }
+
+            collections.Add(new DdmsCollectionEntry(entityType, segment, bulk) { Columns = columns });
+        }
+
+        return collections;
+    }
+
     private static ProtocolOptions MapOptions(ProtocolOptionsYaml? o)
     {
         if (o is null)
@@ -1361,6 +1605,7 @@ internal static partial class FlowMapper
             WorkflowPayload = new Dictionary<string, string>(o.WorkflowPayload ?? [], StringComparer.Ordinal),
             RecordQueryPath = o.RecordQueryPath,
             SearchQueryPath = o.SearchQueryPath,
+            RegisterPath = string.IsNullOrWhiteSpace(o.RegisterPath) ? null : o.RegisterPath!.Trim(),
         };
     }
 

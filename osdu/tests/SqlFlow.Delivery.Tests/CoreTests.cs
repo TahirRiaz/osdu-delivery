@@ -767,6 +767,33 @@ public class PreflightTests
     }
 
     [Fact]
+    public void A_required_object_is_filled_by_the_entries_for_its_properties_when_one_of_them_always_renders()
+    {
+        // A template that requires an object whose properties the mapping fills, as WellboreTrajectory requires VerticalMeasurement.
+        var schema = SchemaSnapshot.Parse(
+            TestSchema.Kind,
+            TestSchema.Build().Root.ToJsonString().Replace("\"required\":[\"Depth\"]", "\"required\":[\"Depth\",\"Nested\"]", StringComparison.Ordinal),
+            DateTimeOffset.UnixEpoch);
+        IReadOnlyList<ValidationIssue> Issues(string entries)
+        {
+            var yaml = TestSchema.MappingDocument(entries).Replace($"version: {TestSchema.Build().Version}", $"version: {schema.Version}", StringComparison.Ordinal);
+            var mapping = new DeliveryDocumentLoader().ParseMapping(yaml, "thing.yaml");
+            return Preflight.Check(mapping, schema, TestSchema.References(), TestSchema.Context() with { SchemaSnapshotVersion = schema.Version }, null);
+        }
+
+        static bool Mentions(IReadOnlyList<ValidationIssue> issues) => issues.Any(i => i.Severity == IssueSeverity.Error && i.Message.Contains("osdu.data.Nested", StringComparison.Ordinal));
+
+        HasError(Issues(string.Empty), "requires osdu.data.Nested, which the mapping does not fill");
+        Assert.False(Mentions(Issues("  - { target: osdu.data.Nested.Inner, source: dataset.name }")));
+        Assert.False(Mentions(Issues("  - { target: osdu.data.Nested.Inner, static: fixed }")));
+
+        var optional = Issues("  - { target: osdu.data.Nested.Inner, source: dataset.name, required: false }");
+        HasError(optional, "requires osdu.data.Nested, and every entry filling its properties (");
+        HasError(optional, " (osdu.data.Nested.Inner)) may leave it out (required: false or appliesWhen), so a record without it cannot be sent.");
+        HasError(Issues("  - { target: osdu.data.Nested.Inner, source: dataset.name, appliesWhen: dataset.flag is yes }"), "may leave it out (required: false or appliesWhen)");
+    }
+
+    [Fact]
     public void Refuses_what_the_engine_and_OSDU_write()
     {
         HasError(Check("  - { target: osdu.id, static: x }"), "osdu.id is written by OSDU Delivery");

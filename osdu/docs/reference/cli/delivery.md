@@ -21,7 +21,11 @@ Templates and caches live in the catalog, so `check` needs the catalog connectio
 
 `--set` supplies the flow's own parameters (`logSource=STAT_COMP`). `--json` prints the resolved facts (flow id,
 mapping reference, the template's kind and version, render context, layout, and the cache read with its
-`partition`, `version` and `types` count, null when the mapping reads no cache).
+`partition`, `version` and `types` count, null when the mapping reads no cache). A flow on the `ddms` route also gets a
+`ddms` line, and `ddms` in its JSON, saying which collection of which DDMS its records go to
+(`work-product-component--WellLog records go to the welllogs collection of the DDMS 'wellbore'
+(/api/os-wellbore-ddms).`), or why no DDMS the flow reaches takes them; a DDMS the flow names by its registration is
+read from the Register service when the flow runs, not by `check` ([documents.md](../../documents.md#the-ddmss-a-flow-delivers-to)).
 
 A flow that declares interfaces ([documents.md](../../documents.md#a-source-with-interfaces)) is checked one
 interface at a time, the same checks for each, plus whether its route can deliver the kind its mapping renders, and
@@ -132,7 +136,7 @@ rather than half-applied.
 | `force` | `true` lifts the whole-run gates (the tier 0 skip and an already completed submission); each record's own hashes still decide what is sent. | all but `drain` |
 | `submissionId` | The submission the run works on: a re-run, or a fan-out member's share. | all but `verify` and `replan` |
 | `recordKeys` | The delivery keys (UUIDs) the run is scoped to, at most 1,000, each once. Not with `submissionId`. | `deliver`, `plan`, `intake`, `verify` |
-| `redeliver` | What a run scoped to `recordKeys` sends again: `all` (the default), `metadata` or `payload`. | `deliver` |
+| `redeliver` | What a run scoped to `recordKeys` sends again: `all` (the default), `record` (the record document; its datasets and bulk data keep what OSDU holds), `files` (uploaded and registered again, on the file and manifest routes) or `bulk` (a new version of the bulk data, on the ddms route). `metadata` and `payload` name the same parts. A part the route does not send fails the run. | `deliver` |
 | `slices` | The key slices of `submissionId` a fan-out intake member plans (indexes 0 to 1023, each once). | `intake` |
 | `interface` | The one interface of a source the run works on. A run on records or slices of a source with several interfaces has to name it. | all |
 | `interfaces` | The interfaces a run of a source runs, each once; every interface when left out. Not with `interface`, `submissionId`, `recordKeys` or `slices`. | all |
@@ -148,7 +152,7 @@ sqlflow trigger --repo recall --flow recall-welllog --operation drain --payload 
 sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interfaces":["wellbores","welllogs"]}'
 
 # send the curves of one well log again
-sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interface":"welllogs","recordKeys":["<key>"],"redeliver":"payload"}'
+sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interface":"welllogs","recordKeys":["<key>"],"redeliver":"bulk"}'
 ```
 
 ### The result

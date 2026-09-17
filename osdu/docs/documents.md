@@ -68,10 +68,14 @@ target:
   headers:                         # extra headers on every request
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
     data-partition-id: dev         # required: every OSDU service rejects a request without it, so the loader insists on it; its cache is the one the mapping reads
-  protocol: osduWellLog            # osduRecord | osduWellLog | osduFile | osduManifest
+  protocol: ddms                   # the route type: storage | file | manifest | ddms (or osduRecord | osduFile | osduManifest | osduWellLog)
+  ddms:                            # ddms: DDMSs the records go to by entity type, before the Wellbore DDMS under ddmsRoot (see "The DDMSs a flow delivers to")
+    wellbore: { root: /api/os-wellbore-ddms }
   protocolOptions:
     payload: curves                # which source.payloads entry the protocol streams
-    recordPath: /ddms/v3/welllogs  # protocol defaults shown; override for petrodb-api routes
+    # ddms: every path defaults to the collection serving the record's entity type (/ddms/v3/welllogs for a WellLog);
+    # a path set here is used as written, for a facade such as petrodb-api, and the collection supplies the rest.
+    recordPath: /ddms/v3/welllogs
     recordMethod: POST
     dataPath: /ddms/v3/welllogs/{id}/data
     sessionPath: /ddms/v3/welllogs/{id}/sessions
@@ -79,9 +83,12 @@ target:
     sessionCommitPath: /ddms/v3/welllogs/{id}/sessions/{sessionId}
     verifyPath: /ddms/v3/welllogs/{id}
     deletePath: /ddms/v3/welllogs/{id}       # logical delete (osduRecord: POST /api/storage/v2/records/{id}:delete)
-    purgePath: /ddms/v3/welllogs/{id}        # physical purge (osduRecord: DELETE /api/storage/v2/records/{id})
-    # Versions belong to the storage service, which is not where an osduWellLog endpoint points, so that protocol
-    # needs the whole URL here. Any path option may be written absolute; it is guarded like every other request.
+    # The storage service's purge (osduRecord: DELETE /api/storage/v2/records/{id}). On the ddms route a bulk
+    # collection purges with DELETE {deletePath}?purge=true, and a record collection, whose DELETE is logical only,
+    # purges here; a DDMS endpoint does not reach storage by a path, so write the whole URL.
+    purgePath: https://osdu.example.com/api/storage/v2/records/{id}
+    # Versions belong to the storage service, which is not where a DDMS endpoint points, so a ddms flow whose endpoint
+    # is the DDMS needs the whole URL here. Any path option may be written absolute; it is guarded like every other request.
     purgeVersionsPath: https://osdu.example.com/api/storage/v2/records/{id}/versions
     sessionThresholdChunks: 1      # 1: a single chunk goes to the bulk endpoint, more open a session. 0: always a session
     maxChunkValues: 10000000       # wellbore DDMS ceiling: cells (rows x columns) per chunk (0 = do not check)
@@ -90,9 +97,10 @@ target:
     versionPath: recordIdVersions[0]
     skipDuplicates: false          # osduRecord, osduFile: opt in to skipdupes=true only once the target is confirmed to compare acl, legal and tags, not just data
     verifyBatchPath: /api/storage/v2/query/records   # the batched read a verify pass uses (100 ids per request)
-    ddmsRoot: /api/os-wellbore-ddms  # osduWellLog: the endpoint is the platform root and the DDMS sits under this path; omit when the endpoint is the DDMS itself
+    ddmsRoot: /api/os-wellbore-ddms  # ddms: the endpoint is the platform root and the Wellbore DDMS sits under this path; omit when the endpoint is the DDMS itself
+    registerPath: /api/register/v1/ddms/{id}  # ddms: where the Register service reads the registration of a DDMS target.ddms names with register
     validateLegalTags: true        # deliver and intake runs ask the legal service about the mapping's legal tags first; false skips it
-    legalValidatePath: /api/legal/v1/legaltags:validate  # where to ask; needed (as a whole URL) only for osduWellLog without ddmsRoot
+    legalValidatePath: /api/legal/v1/legaltags:validate  # where to ask; needed (as a whole URL) only for a ddms flow whose endpoint is the DDMS itself
     preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]
     batchSize: 100                 # records per write request where the service takes arrays (osduRecord, osduFile, osduManifest; at most 500)
     uploadUrlPath: /api/file/v2/files/uploadURL      # osduFile, osduManifest: the signed landing-zone location
@@ -228,6 +236,63 @@ OSDU id, and joins the child tables; the primary key is how the rows are found a
   creates a table: set on an existing table, it adds a plain nullable column that nothing fills, which a run refuses as
   not an identity column (drop it before adding the real one).
 
+### The DDMSs a flow delivers to
+
+A record on the `ddms` route goes to the collection of the DDMS that serves its entity type, which every record id
+names (`opendes:work-product-component--WellboreTrajectory:...`). OSDU Delivery knows the collections of the Wellbore
+DDMS ([../specs/wellbore-ddms/INTEGRATION.md](../specs/wellbore-ddms/INTEGRATION.md) sections 2 and 4.3):
+
+| Entity type | Collection | Bulk data | Bulk columns checked against |
+| --- | --- | --- | --- |
+| `work-product-component--WellLog` | `welllogs` | yes | `data.Curves[].CurveID`, and each curve's `NumberOfColumns` |
+| `work-product-component--WellboreTrajectory` | `wellboretrajectories` | yes | `data.AvailableTrajectoryStationProperties[].Name` |
+| `work-product-component--PPFGDataset` | `ppfgdataset` | yes | `data.Curves[].CurveID` |
+| `work-product-component--WellPressureTestRawMeasurement` | `wellpressuretestrawmeasurement` | yes | `data.Curves[].CurveID`, and each curve's `NumberOfColumns` |
+| `master-data--Well` | `wells` | no | |
+| `master-data--Wellbore` | `wellbores` | no | |
+| `work-product-component--WellboreMarkerSet` | `wellboremarkersets` | no | |
+| `work-product-component--WellboreIntervalSet` | `wellboreintervalsets` | no | |
+| `master-data--WellLogAcquisition` | `welllogacquisition` | no | |
+
+`protocolOptions.ddmsRoot` says where the Wellbore DDMS is under the endpoint (`/api/os-wellbore-ddms`); a flow in the
+single form without it and without `target.ddms` has the Wellbore DDMS itself as its endpoint. `target.ddms` declares
+DDMSs by name: a Wellbore DDMS deployed elsewhere, a DDMS of the same call pattern serving other collections, or one the
+Register service knows.
+
+```yaml
+target:
+  endpoint: ${env:OSDU_URL}
+  headers: { data-partition-id: opendes }
+  ddms:
+    wellbore:
+      root: /api/os-wellbore-ddms       # where it is under the endpoint
+      shape: wellboreDdmsV3             # its call pattern, and the default
+      collections:                      # what it serves; the shape's own collections (the table above) when left out
+        work-product-component--WellLog: { path: welllogs, bulk: true, columns: curveIdsAndWidths }
+        master-data--Wellbore: { path: wellbores }
+    partner:
+      register: partner-wdms            # its root and collections are read from the Register service when the flow runs
+```
+
+| Key | Meaning |
+| --- | --- |
+| `root` | Where the DDMS is under the endpoint: a path starting with `/`. Left out, the endpoint is the DDMS itself, which only a flow in the single form declaring that one DDMS and no `ddmsRoot` can say; every DDMS of a source with interfaces names its root or its registration. |
+| `shape` | The DDMS's call pattern: `wellboreDdmsV3` (the default), the Wellbore DDMS v3's `/ddms/v3/<collection>` calls. |
+| `collections` | The entity types (with their group) the DDMS serves, each with `path`, the collection's path segment; `bulk`, whether it keeps bulk data beside its records (default `false`); and `columns`, what the bulk data's columns are checked against before they are sent: `unchecked` (the default), `curveIds`, `curveIdsAndWidths` or `trajectoryStations`, which only a bulk collection takes. |
+| `register` | The id the DDMS is registered under in the Register service (2 to 50 letters, digits and `-`). What the flow leaves out is read from the registration when the flow's protocol is built: the root from the one server its interfaces' OpenAPI documents name, the collections from their retrieval operations (`x-ddms-retrieve-entity`), where a collection the shape knows by its path takes the shape's entity type and rules. `protocolOptions.registerPath` says where the registration is read (default `/api/register/v1/ddms/{id}` under the endpoint). A DDMS that declares both its root and its collections has nothing to read, so `register` is refused there. |
+
+A record goes to the DDMS serving its entity type: the DDMSs under `target.ddms`, then the Wellbore DDMS under
+`ddmsRoot` (or at the endpoint, as above). A record goes to one DDMS, so the loader refuses an entity type two declared
+DDMSs serve, and the protocol refuses a registration serving one another DDMS serves. A source declaring `target.ddms`
+with no interface on the `ddms` route is refused, and so is `target.ddms` in a single-form flow on another route. A flow
+that names its own paths (`recordPath` and the rest) has them used as written, and the collection of its records'
+entity type supplies the paths it leaves out.
+
+The run's preflight and `sqlflow check` refuse a mapping whose kind no DDMS the flow reaches serves, and a bulk part
+whose records go to a collection that holds records alone; `sqlflow check` says where each flow's records go, and so
+does the API's view of a flow's target. [protocols.md](protocols.md#osduwelllog-the-ddms-route) says what the route
+sends to each collection.
+
 ### Parameters
 
 Flow parameters are supplied by `--set name=value` or by the run's values. `{name}` tokens are substituted in
@@ -346,12 +411,12 @@ document loads: `storage` with `files` or `bulk`, `file` without `files` or with
 `ddms` with `files`. An interface that declares both `files` and `bulk` is refused too: deliver them through two
 interfaces, one for each.
 
-A `ddms` interface needs to know where its DDMS is: `ddmsRoot` under the source's or its own `protocolOptions`, or
-paths of its own (`recordPath` and the rest). Without paths of its own it writes to the wellbore DDMS's well log
-collection, so the run's preflight refuses a mapping that renders another entity type, naming the paths to set. The
-same check applies to a flow in the single form whose `target.protocol` is `osduWellLog`. The four routes are the four
-protocols of [protocols.md](protocols.md); a document without interfaces still names its protocol with
-`target.protocol`.
+A `ddms` interface needs to know where its DDMS is: a DDMS under `target.ddms`, `ddmsRoot` under the source's or its
+own `protocolOptions`, or paths of its own (`recordPath` and the rest). Its records go to the collection serving their
+entity type ([The DDMSs a flow delivers to](#the-ddmss-a-flow-delivers-to)), and the run's preflight refuses a mapping
+whose kind no DDMS the interface reaches serves. The same applies to a flow in the single form whose `target.protocol`
+is `ddms`. The four routes are the four protocols of [protocols.md](protocols.md); a document without interfaces names
+its route with `target.protocol`, as a route type or as the protocol it maps onto.
 
 ### Ledger identity
 
@@ -908,7 +973,10 @@ is rendered, and with no OSDU call:
 2. Every target is a variable of the template, with an agreeing shape: a repeater only on an array of objects, `[]`
    only under a repeater, a single value only on a scalar or a list of values, an object only from `static`.
 3. No entry fills `osdu.id`, `osdu.kind` or a property OSDU sets.
-4. Every property the schema requires in `data` has an entry, and none of those entries is `required: false`.
+4. Every property the schema requires in `data` has an entry, and none of those entries is `required: false`. An
+   object the schema requires may instead be filled by entries for its properties (a WellboreTrajectory's
+   `osdu.data.VerticalMeasurement.VerticalMeasurement` and the rest), of which at least one is static or required
+   without `appliesWhen`, so the object renders on every record that is sent.
 5. Every dataset column and child dataset the mapping reads, the record key's and the label's included, exists in the
    flow's ingestion tables, when those are known.
 6. Every cached type exists in the cache version the render reads and holds the field the source reads. A `findBy` field the cache

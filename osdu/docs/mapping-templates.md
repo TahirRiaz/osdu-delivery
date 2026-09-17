@@ -289,7 +289,9 @@ Before any row is rendered (the preflight):
 3. No entry fills `osdu.id`, `osdu.kind` or a property OSDU sets.
 4. `osdu.acl.owners`, `osdu.acl.viewers`, `osdu.legal.legaltags` and `osdu.legal.otherRelevantDataCountries` are
    static, non-empty and free of repeats, so the legal service can check the tags before a run.
-5. Every property the schema requires has an entry, and none of those entries is `required: false`.
+5. Every property the schema requires has an entry, and none of those entries is `required: false`. A required
+   object may instead be filled by entries for its properties, at least one of them static or required without
+   `appliesWhen`.
 6. Every dataset column and child dataset exists in the flow's ingestion tables, when those are known.
 7. Every cache type exists in the cache, and holds the fields `findBy` compares and the field the source reads.
 8. A cache source resolves to the entity type the schema expects for its target. `osdu.data.WellboreID` can only be

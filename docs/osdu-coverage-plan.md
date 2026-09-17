@@ -27,8 +27,8 @@ and the order it is built in.
 | Dataset service (registry, storage instructions, file collections) | dataset v1 | no | route type `datasetCollection` |
 | Manifest ingestion (`Osdu_ingest`) | workflow v1 | `osduManifest` | manifest by reference for large batches |
 | Other ingestion workflows (CSV parser, Energistics parsers, SEG-Y to VDS, ZGY, MDIO, PDMS CSV) | workflow v1 + DAG sources | no | route type `workflow` |
-| Wellbore DDMS, bulk kinds (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) | `osdu/specs/wellbore-ddms` | WellLog only (`osduWellLog`) | generic tabular DDMS route |
-| Wellbore DDMS, record kinds (Well, Wellbore, WellboreMarkerSet, WellboreIntervalSet, WellLogAcquisition) | `osdu/specs/wellbore-ddms` | through Storage only | DDMS record route |
+| Wellbore DDMS, bulk kinds (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) | `osdu/specs/wellbore-ddms` | every bulk collection (`ddms`, stage 5) | none |
+| Wellbore DDMS, record kinds (Well, Wellbore, WellboreMarkerSet, WellboreIntervalSet, WellLogAcquisition) | `osdu/specs/wellbore-ddms` | every record collection (`ddms`, stage 5) | none |
 | Seismic DDMS (Seismic Store) | `osdu/specs/seismic-ddms` | no | route type `seismicStore` |
 | Reservoir DDMS (Open ETP server, ETP 1.2) | `osdu/specs/reservoir-ddms` | no | route type `etp` |
 | Rock and Fluid Samples DDMS | `osdu/specs/rafs-ddms` | no | DDMS routes (shape from its brief) |
@@ -37,7 +37,7 @@ and the order it is built in.
 | Production time series (historian) | `osdu/specs/production-timeseries` | no | route type `timeSeries` |
 | Reservoir Management DDMS | `osdu/specs/reservoir-management-ddms` | no | route from its brief |
 | External Data Services | `osdu/specs/eds-dms` | no | route from its brief |
-| DDMS discovery (Register service) | register v1 | no | registry client and `target.ddms` catalog |
+| DDMS discovery (Register service) | register v1 | `target.ddms`, with a registration read by id (stage 5) | none |
 
 And the engine itself:
 
@@ -48,7 +48,7 @@ And the engine itself:
 | Order between kinds | lineage between separate flows | order between interfaces from schema relationships, cycles, `after:` |
 | Run | one flow | one source: preflight, waves, stop rules, one outcome |
 | Record dependencies | none | a record waits for the record it refers to, and is released when it lands |
-| Partial redelivery | metadata, payload, all | record, files, bulk, all, per route |
+| Partial redelivery | record, files, bulk, metadata, payload, all, per route (stage 5) | none |
 | Catalog lookup of a ledger identity | pipeline name hash | an indexed read model of sources and interfaces |
 | Views | a flow's records and runs | sources, interfaces, filters and roll-ups in the GUI, API and CLI |
 
@@ -142,6 +142,19 @@ flow page's explanation is part of stage 9.
 
 Done when the route contract tests pass for every Wellbore DDMS kind, and a source delivers a trajectory and a well
 log through the same route type.
+
+Status: done. The four protocols are the four route types, and `target.protocol` takes the route names as well as the
+protocols they map onto. The ddms route sends each record to the collection of the DDMS serving its entity type, which
+the record id names: a DDMS under `target.ddms` (its root, shape and collections, or its Register service
+registration, read by id when the protocol is built), then the Wellbore DDMS, whose nine collections are catalogued
+from its pinned contract. Bulk collections keep their tabular checks, now per collection (curve ids and widths, or
+trajectory station properties), with the Wellbore DDMS's record rules checked before anything is sent and the bulk link
+carried on metadata updates; record collections take records alone and purge through storage. The contract tests
+write, read and remove through every Wellbore DDMS collection, and a source delivers surveys and well logs through the
+one route, a survey whose stations its record does not describe held before anything is sent (the sample estate gained
+the WellboreTrajectory template, mapping and the reference values its stations resolve against). Redelivery takes the
+part a route sends (`record`, `files`, `bulk`, `metadata`, `payload`, `all`). The Register service's lookup by type
+cannot carry an entity type with its group, so discovery reads a registration the flow names.
 
 ### Stage 6: datasets and workflows
 

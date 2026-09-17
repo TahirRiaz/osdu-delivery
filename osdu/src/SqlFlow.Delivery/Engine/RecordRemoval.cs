@@ -1,4 +1,5 @@
 using System.Globalization;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -70,27 +71,38 @@ public sealed record RemovalSelection
 /// <summary>
 /// The three endpoints a removal of this flow's records would call, as the flow resolves them: the protocol's
 /// defaults with the flow's own overrides applied. The GUI shows them next to the target so an operator can see
-/// exactly which call each scope makes before asking for it, and the well log protocol genuinely differs from the
-/// others, so this is derived from the flow rather than assumed.
+/// exactly which call each scope makes before asking for it, and the ddms route genuinely differs from the others,
+/// so this is derived from the flow rather than assumed.
 ///
-/// The history scope always names a storage service path, because versions belong to storage for every kind of
-/// record. For a well log flow that is a different service from the flow's endpoint, so a path there resolves
-/// under the wrong base unless the flow declares an absolute <c>purgeVersionsPath</c>; the endpoint is reported
-/// as unconfigured in that case rather than as a URL that would not answer.
+/// On the ddms route the endpoints are those of the collection serving the records' entity type
+/// (<see cref="DdmsRouting"/>), which the kind the flow's mapping renders names. The history scope always names a
+/// storage service path, because versions belong to storage for every kind of record, and so does the everything
+/// scope of a record-only collection, whose DDMS deletes logically only. When the flow's endpoint is a DDMS itself,
+/// a storage path resolves under the wrong base unless the flow declares it as an absolute URL; the endpoint is
+/// reported as unconfigured in that case rather than as a URL that would not answer.
 /// </summary>
 public sealed record RemovalEndpoints(string Record, string History, string Everything)
 {
-    /// <summary>What the history endpoint reads as when the flow cannot reach the storage service by a path.</summary>
-    public const string HistoryNotConfigured = "(not configured: set protocolOptions.ddmsRoot when the endpoint is the platform root, or purgeVersionsPath to the storage service's URL)";
+    /// <summary>What the history endpoint reads as when the flow cannot reach the storage service's version purge.</summary>
+    public const string HistoryNotConfigured = "(not configured: set protocolOptions.ddmsRoot, or a root for the DDMS under target.ddms, when the endpoint is the platform root, or purgeVersionsPath to the storage service's URL)";
 
-    public static RemovalEndpoints Of(FlowTarget target)
+    /// <summary>What the everything endpoint of a record-only DDMS collection reads as when the flow cannot reach the storage service's purge.</summary>
+    public const string PurgeNotConfigured = "(not configured: set protocolOptions.ddmsRoot, or a root for the DDMS under target.ddms, when the endpoint is the platform root, or purgePath to the storage service's URL)";
+
+    /// <summary>What a ddms-route endpoint reads as while the kind the flow's mapping renders is not known.</summary>
+    public const string CollectionNotKnown = "(the collection serving the records' entity type, known once the flow's mapping is synced)";
+
+    /// <summary>What a ddms-route endpoint reads as while the registration of the DDMS that may serve the records is not read.</summary>
+    public const string RegistrationNotRead = "(the collection the DDMS registered for the records' entity type, read from the Register service when the flow runs)";
+
+    /// <summary>The endpoints of <paramref name="flow"/>; <paramref name="kind"/> is the kind its mapping renders, when known.</summary>
+    public static RemovalEndpoints Of(FlowDefinition flow, string? kind)
     {
-        ArgumentNullException.ThrowIfNull(target);
-        var options = target.ProtocolOptions;
-        if (target.Protocol == DeliveryProtocol.OsduWellLog)
+        ArgumentNullException.ThrowIfNull(flow);
+        var options = flow.Target.ProtocolOptions;
+        if (flow.Target.Protocol == DeliveryProtocol.OsduWellLog)
         {
-            var delete = options.DeletePath ?? OsduWellLogProtocol.DdmsPath(options, OsduWellLogProtocol.DefaultDeletePath);
-            return new RemovalEndpoints(delete, WellLogHistory(options), delete + "?purge=true");
+            return OfDdms(flow, kind);
         }
 
         return new RemovalEndpoints(
@@ -99,13 +111,36 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
             options.PurgePath ?? OsduRecordProtocol.DefaultPurgePath);
     }
 
-    /// <summary>
-    /// A well log flow's endpoint is the wellbore DDMS, whose own paths carry no <c>/api/&lt;service&gt;/</c>
-    /// prefix, so the storage default would resolve under the DDMS and answer 404. Only an absolute URL, or a path
-    /// the flow itself chose (a facade that fronts both services), can be honoured.
-    /// </summary>
-    private static string WellLogHistory(ProtocolOptions options)
-        => OsduWellLogProtocol.HistoryPath(options) ?? HistoryNotConfigured;
+    private static RemovalEndpoints OfDdms(FlowDefinition flow, string? kind)
+    {
+        var routing = DdmsRouting.Of(flow);
+        var history = routing.HistoryPath ?? HistoryNotConfigured;
+        if ((string.IsNullOrWhiteSpace(kind) ? null : OsduKind.EntityType(kind)) is not { } entityType)
+        {
+            return new RemovalEndpoints(CollectionNotKnown, history, CollectionNotKnown);
+        }
+
+        if (!routing.NamesPaths && routing.Unread.Count > 0 && routing.Find(entityType) is null)
+        {
+            return new RemovalEndpoints(RegistrationNotRead, history, RegistrationNotRead);
+        }
+
+        DdmsRecordPaths paths;
+        try
+        {
+            paths = routing.For(entityType);
+        }
+        catch (DeliveryException ex)
+        {
+            var unroutable = $"(not routable: {ex.Message})";
+            return new RemovalEndpoints(unroutable, history, unroutable);
+        }
+
+        var everything = paths.Route is { Collection.Bulk: false }
+            ? routing.StoragePurgePath ?? PurgeNotConfigured
+            : paths.Delete + "?purge=true";
+        return new RemovalEndpoints(paths.Delete, history, everything);
+    }
 }
 
 /// <summary>What a removal did to one record: enough to answer "what happened to this one" without a second query.</summary>

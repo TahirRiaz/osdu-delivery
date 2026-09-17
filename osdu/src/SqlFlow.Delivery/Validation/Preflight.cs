@@ -62,18 +62,34 @@ public static partial class Preflight
             CheckEntry(entry, template, references, renderer, issues, where);
         }
 
-        // 5. Every property the schema requires has an entry that is allowed to be empty only if the schema allows it.
+        // 5. Every property the schema requires has an entry that is allowed to be empty only if the schema allows it. An
+        //    object the schema requires (a WellboreTrajectory's VerticalMeasurement) is filled by the entries for its
+        //    properties when it has no entry of its own, and one of them has to render on every row: a static value, or a
+        //    required entry without appliesWhen, which holds the record when its value is empty.
         foreach (var required in schema.RequiredAt("data"))
         {
             var target = $"{TemplatePath.Prefix}.data.{required}";
             var entry = mapping.Entries.FirstOrDefault(e => e.Target.Text == target);
-            if (entry is null)
+            if (entry is not null)
+            {
+                if (!entry.IsStatic && !entry.Required)
+                {
+                    issues.Add(ValidationIssue.Error($"{where}: {entry.Where} is required: false, but the template requires {target}, so a record without it cannot be sent."));
+                }
+
+                continue;
+            }
+
+            var properties = mapping.Entries.Where(e => e.Target.Text.StartsWith(target + ".", StringComparison.Ordinal)).ToList();
+            if (properties.Count == 0)
             {
                 issues.Add(ValidationIssue.Error($"{where}: template {mapping.Template.Kind} requires {target}, which the mapping does not fill."));
             }
-            else if (!entry.IsStatic && !entry.Required)
+            else if (!properties.Any(p => p.AppliesWhen is null && (p.IsStatic || p.Required)))
             {
-                issues.Add(ValidationIssue.Error($"{where}: {entry.Where} is required: false, but the template requires {target}, so a record without it cannot be sent."));
+                issues.Add(ValidationIssue.Error(
+                    $"{where}: template {mapping.Template.Kind} requires {target}, and every entry filling its properties ({string.Join(", ", properties.Select(p => p.Where))}) "
+                    + $"may leave it out (required: false or appliesWhen), so a record without it cannot be sent. Make one of them required, or fill {target} itself."));
             }
         }
 

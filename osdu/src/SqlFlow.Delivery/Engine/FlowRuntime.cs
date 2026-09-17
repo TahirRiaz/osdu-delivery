@@ -217,6 +217,25 @@ public sealed class FlowRuntime : IDisposable
     public Task<DeliveryPlan> PlanAsync(bool force = false, CancellationToken ct = default)
         => Planner.PlanAsync(Flow, Mapping, Parameters, Selection, force, ct);
 
+    /// <summary>
+    /// Checks that the flow's route can deliver <paramref name="kind"/>, the kind its mapping renders
+    /// (<see cref="RouteChecks"/>). A flow on the ddms route that names a DDMS by its registration has its protocol built
+    /// first, which reads the registration, so the check sees what the DDMS registered.
+    /// </summary>
+    public async Task CheckRouteAsync(string kind, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        if (Flow.Target.Protocol == DeliveryProtocol.OsduWellLog
+            && DdmsDiscovery.Needed(Flow)
+            && await ProtocolAsync(ct).ConfigureAwait(false) is OsduWellLogProtocol ddms)
+        {
+            RouteChecks.Check(Flow, kind, ddms.Routing);
+            return;
+        }
+
+        RouteChecks.Check(Flow, kind);
+    }
+
     public async Task<IDeliveryProtocol> ProtocolAsync(CancellationToken ct = default)
     {
         if (_protocol is not null)

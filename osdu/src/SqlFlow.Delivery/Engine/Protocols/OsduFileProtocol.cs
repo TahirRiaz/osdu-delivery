@@ -162,7 +162,7 @@ public sealed class OsduFileProtocol : IDeliveryProtocol
     public async Task<IReadOnlyDictionary<string, string>?> InvalidLegalTagsAsync(IReadOnlyCollection<string> tags, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(tags);
-        if (LegalTagValidator.PathFor(Kind, _options) is not { } path)
+        if (LegalTagValidator.PathFor(_options, platformEndpoint: true) is not { } path)
         {
             return null;
         }

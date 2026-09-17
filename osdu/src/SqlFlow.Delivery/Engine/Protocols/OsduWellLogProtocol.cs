@@ -11,40 +11,37 @@ using SqlFlow.Delivery.Storage;
 namespace SqlFlow.Delivery.Engine.Protocols;
 
 /// <summary>
-/// Record plus bulk (design.md sections 8.1 and 8.3): the metadata record through the wellbore DDMS record endpoint,
-/// then the payload chunks streamed past the service. A single chunk goes in one request; more than the threshold
-/// opens an overwrite session, streams each chunk in order and commits. Chunks are never buffered: each request
-/// re-opens its blob so the retry stack can resend it, and carries its length. Each step reports what the service
-/// returned (the record version, the session id, the chunk count); a retry after a payload failure resumes past
-/// the metadata step it already completed.
+/// The ddms route (design.md sections 8.1 and 8.3, docs/interfaces-design.md section 5.4): each record through the
+/// collection of the DDMS serving its entity type (<see cref="DdmsRouting"/>), then, on a bulk collection, its bulk data
+/// streamed past the service. A single chunk goes in one request; more than the threshold opens an overwrite session,
+/// streams each chunk in order and commits. Chunks are never buffered: each request re-opens its blob so the retry stack
+/// can resend it, and carries its length. Each step reports what the service returned (the record version, the session
+/// id, the chunk count); a retry after a payload failure resumes past the metadata step it already completed.
+/// Every rule the Wellbore DDMS applies that can be checked from the record and its chunks' footers is checked before
+/// the first request (<see cref="WellboreDdmsRules"/>), and a metadata update carries the bulk link the DDMS manages
+/// (<see cref="WellboreDdmsBulkLink"/>). The protocol is named after the <c>osduWellLog</c> value a flow's
+/// <c>target.protocol</c> gives it.
 /// </summary>
 public sealed class OsduWellLogProtocol : IDeliveryProtocol
 {
-    public const string DefaultRecordPath = "/ddms/v3/welllogs";
-    public const string DefaultDataPath = "/ddms/v3/welllogs/{id}/data";
-    public const string DefaultSessionPath = "/ddms/v3/welllogs/{id}/sessions";
-    public const string DefaultSessionDataPath = "/ddms/v3/welllogs/{id}/sessions/{sessionId}/data";
-    public const string DefaultSessionCommitPath = "/ddms/v3/welllogs/{id}/sessions/{sessionId}";
-    public const string DefaultVerifyPath = "/ddms/v3/welllogs/{id}";
-    public const string DefaultDeletePath = "/ddms/v3/welllogs/{id}";
-    public const string DefaultProbePath = "/about";
-
     public const string MetadataStep = "metadata";
     public const string PayloadStep = "payload";
 
     private readonly OsduHttpClient _client;
     private readonly ProtocolOptions _options;
+    private readonly DdmsRouting _routing;
     private readonly long _requestBodyCeiling;
     private readonly ILogger _logger;
     private readonly TimeProvider _time;
 
-    public OsduWellLogProtocol(OsduHttpClient client, ProtocolOptions options, ILogger logger, long requestBodyCeiling = 0, TimeProvider? time = null)
+    public OsduWellLogProtocol(OsduHttpClient client, ProtocolOptions options, ILogger logger, long requestBodyCeiling = 0, TimeProvider? time = null, DdmsRouting? routing = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         _client = client;
         _options = options;
+        _routing = routing ?? DdmsRouting.Of(options);
         _logger = logger;
         _requestBodyCeiling = requestBodyCeiling;
         _time = time ?? TimeProvider.System;
@@ -52,21 +49,37 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
 
     public DeliveryProtocol Kind => DeliveryProtocol.OsduWellLog;
 
+    /// <summary>Where the protocol sends each record: the flow's DDMSs, every registration among them read.</summary>
+    public DdmsRouting Routing => _routing;
+
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(work);
+        var paths = Held(work.TargetId);
         var steps = new DeliverySteps(_time);
         var version = work.ExistingVersion;
         var metadataDelivered = false;
+        var writesMetadata = work.DeliverMetadata && work.Completed(MetadataStep) is null;
+
+        if (work.DeliverPayload && BulkProblem(work.TargetId, paths) is { } nowhere)
+        {
+            throw new RecordHeldException(nowhere);
+        }
+
+        // The record rules first: they cost nothing, and a record the DDMS would refuse is held before its chunks are read.
+        if ((writesMetadata || work.DeliverPayload) && WellboreDdmsRules.RecordProblem(paths.EntityType, work.Document, work.DeliverPayload) is { } problem)
+        {
+            throw new RecordHeldException(problem);
+        }
 
         IReadOnlyList<PayloadFile> chunks = [];
         IReadOnlyList<ParquetShape>? shapes = null;
         var session = false;
         if (work.DeliverPayload)
         {
-            // Check the payload against the ceilings, and a session's chunks against each other, before anything is
-            // sent, so a chunk the target cannot take whole holds the record instead of failing or losing rows
-            // mid-session after the metadata write (design.md section 14.3).
+            // Check the payload against the ceilings, its columns against the record, and a session's chunks against each
+            // other, before anything is sent, so a chunk the target cannot take whole holds the record instead of failing
+            // or losing rows mid-session after the metadata write (design.md section 14.3).
             var payload = work.Payload ?? throw new RecordHeldException("the record needs a payload but none is attached");
             chunks = await payload.ListChunksAsync(ct).ConfigureAwait(false);
             if (chunks.Count == 0)
@@ -75,7 +88,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             }
 
             session = chunks.Count > 1 || _options.SessionThresholdChunks < 1;
-            shapes = await PreflightAsync(payload, chunks, session, ct).ConfigureAwait(false);
+            shapes = await PreflightAsync(work.Document, paths, payload, chunks, session, ct).ConfigureAwait(false);
         }
 
         if (work.DeliverMetadata)
@@ -88,17 +101,8 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             }
             else
             {
-                // The wellbore DDMS refuses a log whose ReferenceCurveID names no curve of its own ("WellLog[0] should
-                // have a curve with a curveID value equal to the ReferenceCurveID value", HTTP 400 from a live M26 service;
-                // the OpenAPI description does not state the rule). Holding it here names the curves the log does
-                // describe and saves a write that can only be refused.
-                if (ReferenceCurveProblem(work.Document) is { } problem)
-                {
-                    throw new RecordHeldException(problem);
-                }
-
                 var started = steps.Now;
-                var (written, status) = await RecordWriter.WriteAsync(_client, _options, _options.RecordPath ?? Ddms(DefaultRecordPath), _options.RecordMethod ?? "POST", _options.VerifyPath ?? Ddms(DefaultVerifyPath), work, ct).ConfigureAwait(false);
+                var (written, status) = await WriteRecordAsync(work, paths, ct).ConfigureAwait(false);
                 version = written ?? version;
                 var returned = new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = work.TargetId };
                 if (version is { } v)
@@ -123,19 +127,19 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
 
             // One chunk may go straight to the bulk endpoint, and only one: that request carries "the entire bulk
             // which will replace as latest version any previous bulk" (openapi wellbore_ddms,
-            // POST /ddms/v3/welllogs/{record_id}/data). Posting several chunks to it in turn would leave the record
+            // POST /ddms/v3/{collection}/{record_id}/data). Posting several chunks to it in turn would leave the record
             // holding the last one and report every one of them as delivered. Aggregating chunks is what a session
             // is for, so anything past the first uses one.
             if (!session)
             {
                 var chunk = chunks[0];
-                var url = _client.Url(_options.DataPath ?? Ddms(DefaultDataPath), work.TargetId);
+                var url = _client.Url(paths.Data!, work.TargetId);
                 await _client.SendStreamAsync(HttpMethod.Post, url, () => OpenSync(payload, chunk), _options.PayloadContentType, chunk.Size > 0 ? chunk.Size : null, ct, idempotent: true).ConfigureAwait(false);
                 chunksSent = 1;
             }
             else
             {
-                (chunksSent, sessionId) = await SendSessionAsync(work, payload, chunks, version, ct).ConfigureAwait(false);
+                (chunksSent, sessionId) = await SendSessionAsync(work, paths, payload, chunks, version, ct).ConfigureAwait(false);
             }
 
             var returned = new Dictionary<string, string>(StringComparer.Ordinal) { ["chunks"] = chunksSent.ToString(CultureInfo.InvariantCulture) };
@@ -144,24 +148,23 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
                 returned["sessionId"] = sessionId;
 
                 // The labels read before the session opened keep its chunks from colliding where the footers can tell
-                // them; the committed log is read back as well, because a collision the footers cannot show loses rows
+                // them; the committed bulk is read back as well, because a collision the footers cannot show loses rows
                 // just as silently.
-                if (shapes is not null && await CommittedRowsAsync(work.TargetId, sessionId, shapes, ct).ConfigureAwait(false) is { } rows)
+                if (shapes is not null && await CommittedRowsAsync(work.TargetId, paths, sessionId, shapes, ct).ConfigureAwait(false) is { } rows)
                 {
                     returned["rows"] = rows.ToString(CultureInfo.InvariantCulture);
                 }
             }
 
             // Writing the bulk creates a new version of the record ("It creates a new version", openapi wellbore_ddms,
-            // POST /ddms/v3/welllogs/{record_id}/data; a session commit creates one too), and the direct write documents
-            // no response body to read it from. The ledger has to hold the version OSDU now serves: the metadata write's
-            // version makes every verify report the record drifted, and opens the next session from a version that is
-            // no longer the latest. So the record is read back.
-            var verifyPath = _options.VerifyPath ?? Ddms(DefaultVerifyPath);
-            var landed = await RecordWriter.VerifyAsync(_client, verifyPath, work.TargetId, null, ct).ConfigureAwait(false);
+            // POST /ddms/v3/{collection}/{record_id}/data; a session commit creates one too), and the direct write
+            // documents no response body to read it from. The ledger has to hold the version OSDU now serves: the
+            // metadata write's version makes every verify report the record drifted, and opens the next session from a
+            // version that is no longer the latest. So the record is read back.
+            var landed = await RecordWriter.VerifyAsync(_client, paths.Record, work.TargetId, null, ct).ConfigureAwait(false);
             var landedVersion = landed.ObservedVersion
                 ?? throw new DeliveryException(
-                    $"The bulk data for {work.TargetId} was written, but the record's version could not be read back from {verifyPath}: {landed.Detail}.");
+                    $"The bulk data for {work.TargetId} was written, but the record's version could not be read back from {paths.Record}: {landed.Detail}.");
             version = landedVersion;
             returned["version"] = landedVersion.ToString(CultureInfo.InvariantCulture);
 
@@ -188,51 +191,52 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         };
     }
 
-    /// <summary>
-    /// Why a log's <c>data.ReferenceCurveID</c> names no curve among its <c>data.Curves</c>, or null when it names one of
-    /// them or names none at all. Curve ids are compared exactly, as the service compares them.
-    /// </summary>
-    internal static string? ReferenceCurveProblem(JsonObject document)
-    {
-        ArgumentNullException.ThrowIfNull(document);
-        if (document["data"] is not JsonObject data
-            || data["ReferenceCurveID"] is not JsonValue reference
-            || !reference.TryGetValue<string>(out var id)
-            || string.IsNullOrWhiteSpace(id))
-        {
-            return null;
-        }
-
-        var curves = (data["Curves"] as JsonArray ?? [])
-            .OfType<JsonObject>()
-            .Select(curve => curve["CurveID"] is JsonValue value && value.TryGetValue<string>(out var curveId) ? curveId : null)
-            .OfType<string>()
-            .ToList();
-        if (curves.Contains(id, StringComparer.Ordinal))
-        {
-            return null;
-        }
-
-        var described = curves.Count == 0 ? "describes no curve" : "describes only " + string.Join(", ", curves);
-        return $"data.ReferenceCurveID is '{id}' but data.Curves {described}; the wellbore DDMS refuses a log whose reference curve is not one of its curves";
-    }
-
     public Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default)
-        => RecordWriter.VerifyAsync(_client, _options.VerifyPath ?? Ddms(DefaultVerifyPath), targetId, expectedVersion, ct);
+        => RecordWriter.VerifyAsync(_client, _routing.ForRecord(targetId).Record, targetId, expectedVersion, ct);
 
     public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
-        => RecordWriter.ReadAsync(_client, _options.VerifyPath ?? Ddms(DefaultVerifyPath), targetId, ct);
+        => RecordWriter.ReadAsync(_client, _routing.ForRecord(targetId).Record, targetId, ct);
 
-    public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
-        => RecordWriter.ProbeAsync(_client, _options.ProbePath ?? Ddms(DefaultProbePath), ct);
+    /// <summary>
+    /// Asks each DDMS the flow reaches for its service description (<c>GET /about</c>, openapi wellbore_ddms), or the
+    /// flow's own probe path. The target is reachable when every one of them answers.
+    /// </summary>
+    public async Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
+    {
+        var probes = _routing.ProbePaths;
+        if (probes.Count == 0)
+        {
+            return new ProbeOutcome(false, 0, "the flow names its own DDMS paths and reaches no DDMS whose service description could be asked; name protocolOptions.probePath", string.Empty);
+        }
+
+        var answered = new List<ProbeOutcome>(probes.Count);
+        foreach (var probe in probes)
+        {
+            var outcome = await RecordWriter.ProbeAsync(_client, probe, ct).ConfigureAwait(false);
+            if (!outcome.Reachable)
+            {
+                return outcome;
+            }
+
+            answered.Add(outcome);
+        }
+
+        return answered.Count == 1
+            ? answered[0]
+            : answered[^1] with
+            {
+                Detail = string.Create(CultureInfo.InvariantCulture, $"all {answered.Count} DDMSs answered"),
+                Path = string.Join(", ", answered.Select(a => a.Path)),
+            };
+    }
 
     private LegalTagValidator? _legal;
 
-    /// <summary>Asks the legal service under this target, when the flow's target reaches it (see <see cref="LegalTagValidator.PathFor"/>).</summary>
+    /// <summary>Asks the legal service under this target, when the flow's target reaches it (<see cref="DdmsRouting.LegalValidatePath"/>).</summary>
     public async Task<IReadOnlyDictionary<string, string>?> InvalidLegalTagsAsync(IReadOnlyCollection<string> tags, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(tags);
-        if (LegalTagValidator.PathFor(Kind, _options) is not { } path)
+        if (_routing.LegalValidatePath is not { } path)
         {
             return null;
         }
@@ -242,38 +246,55 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     }
 
     /// <summary>
-    /// Wellbore DDMS semantics (openapi wellbore_ddms, DELETE /ddms/v3/welllogs/{record_id}): a logical deletion of
-    /// the record by default, a physical one with <c>?purge=true</c>; no recursive delete of owned entities; 204.
+    /// Wellbore DDMS semantics (openapi wellbore_ddms, DELETE /ddms/v3/{collection}/{record_id}): a logical deletion of
+    /// the record by default, a physical one with <c>?purge=true</c> on the four bulk collections, which also removes
+    /// the bulk data; no recursive delete of owned entities; 204. A record-only collection's DELETE is logical only, so
+    /// <see cref="RemovalScope.Everything"/> goes to the storage service's purge for its records, which is the purge the
+    /// DDMS itself calls for a bulk record.
     ///
     /// The DDMS has no operation on a record's versions (its only versions route is a GET listing), and versions
     /// belong to the storage service for every kind of record, so <see cref="RemovalScope.History"/> goes to
     /// storage's version purge and leaves the DDMS record itself untouched, which is exactly what that scope
-    /// promises. Storage is a different service from this flow's endpoint, though, and the DDMS paths carry no
-    /// <c>/api/&lt;service&gt;/</c> prefix, so the storage default cannot be resolved under a DDMS endpoint. The
-    /// flow says where storage lives by declaring <c>protocolOptions.purgeVersionsPath</c>, usually as an absolute
-    /// URL. Without it the scope is refused, because guessing would send a delete somewhere nobody chose.
+    /// promises. Storage is a different service from a DDMS endpoint, though, and the DDMS paths carry no
+    /// <c>/api/&lt;service&gt;/</c> prefix, so the storage default resolves only when the endpoint is the platform root.
+    /// Otherwise the flow says where storage lives (<c>purgeVersionsPath</c>, <c>purgePath</c>), usually as an
+    /// absolute URL, and without it the scope is refused, because guessing would send a delete somewhere nobody chose.
     /// </summary>
     public async Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
+        var paths = Held(targetId);
         if (scope == RemovalScope.History)
         {
-            if (HistoryPath(_options) is not { } purgeVersions)
+            if (_routing.HistoryPath is not { } purgeVersions)
             {
                 throw new RecordHeldException(
-                    "the wellbore DDMS has no version purge, and this flow does not say where the storage service is. "
-                    + "Declare target.protocolOptions.ddmsRoot when the endpoint is the OSDU platform root, or "
+                    "a DDMS has no version purge, and this flow does not say where the storage service is. "
+                    + "Declare target.protocolOptions.ddmsRoot (or a root for the DDMS under target.ddms) when the endpoint is the OSDU platform root, or "
                     + "purgeVersionsPath (an absolute URL such as https://<host>/api/storage/v2/records/{id}/versions) "
-                    + "when it is the DDMS itself, before purging a well log's history.");
+                    + "when it is the DDMS itself, before purging a record's history.");
             }
 
             return await RecordWriter.DeleteAsync(_client, RemovalPaths.From(_options) with { PurgeVersions = purgeVersions }, targetId, scope, ct).ConfigureAwait(false);
         }
 
-        var url = _client.Url(_options.DeletePath ?? Ddms(DefaultDeletePath), targetId);
+        if (scope == RemovalScope.Everything && paths.Route is { Collection.Bulk: false } route)
+        {
+            if (_routing.StoragePurgePath is not { } purge)
+            {
+                throw new RecordHeldException(
+                    $"{targetId} is in {route.Describe()}, whose DELETE is logical only, and this flow does not say where the storage service is to purge it. "
+                    + "Declare target.protocolOptions.ddmsRoot (or a root for the DDMS under target.ddms) when the endpoint is the OSDU platform root, or "
+                    + "purgePath (an absolute URL such as https://<host>/api/storage/v2/records/{id}) when it is the DDMS itself.");
+            }
+
+            return await RecordWriter.DeleteAsync(_client, RemovalPaths.From(_options) with { Purge = purge }, targetId, scope, ct).ConfigureAwait(false);
+        }
+
+        var url = _client.Url(paths.Delete, targetId);
         if (scope == RemovalScope.Everything)
         {
-            url = new Uri(url + (string.IsNullOrEmpty(url.Query) ? "?purge=true" : "&purge=true"));
+            url = OsduHttpClient.WithQuery(url, "purge", "true");
         }
 
         var result = await _client.SendJsonAsync(HttpMethod.Delete, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
@@ -283,25 +304,110 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         }
 
         return new DeleteOutcome(true, false, scope == RemovalScope.Everything
-            ? "purged from OSDU (the record and every version)"
+            ? "purged from OSDU (the record, every version and its bulk data)"
             : "removed from OSDU (reversible)");
+    }
+
+    /// <summary>
+    /// Writes the record through its collection. A record of a bulk collection carries the bulk link the DDMS holds for
+    /// it: the latest version is read first when the ledger knows the record was delivered, and when it does not, a
+    /// refused write reads it once and is sent again if the DDMS holds a link after all (a delivery whose outcome was
+    /// lost). The OSDU-owned data keys the flow preserves (<see cref="ProtocolOptions.PreserveDataKeys"/>) come from the
+    /// same read.
+    /// </summary>
+    private async Task<(long? Version, int Status)> WriteRecordAsync(DeliveryWork work, DdmsRecordPaths paths, CancellationToken ct)
+    {
+        var document = (JsonObject)work.Document.DeepClone();
+        var preserve = _options.PreserveDataKeys.Count > 0;
+        var method = _options.RecordMethod ?? "POST";
+        var read = work.ExistingVersion is not null && (preserve || paths.Bulk);
+        JsonObject? stored = null;
+        if (read)
+        {
+            stored = await RecordWriter.ReadAsync(_client, paths.Record, work.TargetId, ct).ConfigureAwait(false);
+            if (stored is not null && preserve)
+            {
+                RecordWriter.Preserve(stored, document, _options.PreserveDataKeys);
+            }
+        }
+
+        if (paths.Bulk)
+        {
+            Link(stored, document, work.TargetId);
+        }
+
+        try
+        {
+            return await RecordWriter.SendAsync(_client, _options, paths.Records, method, document, ct).ConfigureAwait(false);
+        }
+        catch (OsduStatusException ex) when (ex.StatusCode == 400 && paths.Bulk && !read)
+        {
+            stored = await RecordWriter.ReadAsync(_client, paths.Record, work.TargetId, ct).ConfigureAwait(false);
+            if (WellboreDdmsBulkLink.Of(stored) is null)
+            {
+                throw;
+            }
+
+            _logger.LogWarning(
+                "The DDMS holds {TargetId} with a bulk link the ledger did not know of and refused the write without it; writing it again with the link: {Message}",
+                work.TargetId, HeaderRedaction.RedactMessage(ex.Message));
+            Link(stored, document, work.TargetId);
+            return await RecordWriter.SendAsync(_client, _options, paths.Records, method, document, ct).ConfigureAwait(false);
+        }
+    }
+
+    private void Link(JsonObject? stored, JsonObject document, string targetId)
+    {
+        if (!WellboreDdmsBulkLink.Carry(stored, document))
+        {
+            _logger.LogWarning(
+                "The record {TargetId} is rendered with its own data.ExtensionProperties.wdms.bulkURI, which the DDMS manages; the link the DDMS holds is sent instead.",
+                targetId);
+        }
+    }
+
+    /// <summary>Why the record's bulk data has nowhere to go, or null when every bulk path is known.</summary>
+    private static string? BulkProblem(string targetId, DdmsRecordPaths paths)
+    {
+        if (paths.Data is not null && paths.Sessions is not null && paths.SessionData is not null && paths.Session is not null)
+        {
+            return null;
+        }
+
+        return paths.Route is { Collection.Bulk: false } route
+            ? $"{targetId} goes to {route.Describe()}, which holds records alone and takes no bulk data; deliver the record without a payload"
+            : $"{targetId} has bulk data and the flow names no DDMS path for it (dataPath, sessionPath, sessionDataPath, sessionCommitPath)";
+    }
+
+    /// <summary>The calls for a record, a record the flow cannot route being held with the reason.</summary>
+    private DdmsRecordPaths Held(string targetId)
+    {
+        try
+        {
+            return _routing.ForRecord(targetId);
+        }
+        catch (DeliveryException ex)
+        {
+            throw new RecordHeldException(ex.Message, ex);
+        }
     }
 
     /// <summary>
     /// What a payload is checked for before its first request. Two ceilings bound a chunk. The estate's request body
     /// size is declared as <c>reliability.maxRequestBodyBytes</c> and can be raised where it is configured. The
     /// wellbore DDMS bulk shape (<see cref="WellboreDdmsBulkLimits"/>) cannot: it is the frame the service
-    /// materialises, so a chunk can be small enough to send and still be too large to accept. A session's chunks are
-    /// also checked against each other, because the session aggregates them by row label and two chunks that give the
-    /// same labels to different rows lose rows while the commit still succeeds (<see cref="WellboreDdmsSessionChunks"/>).
-    /// Shapes are read from the parquet footers, never from the chunks' contents, when the payload is parquet and a
-    /// ceiling is in force or a session opens. They are returned so the committed log can be checked against them, and
-    /// are null when they were not read.
+    /// materialises, so a chunk can be small enough to send and still be too large to accept. The columns of all the
+    /// chunks are checked against the record as the collection's DDMS checks them (<see cref="WellboreDdmsRules"/>). A
+    /// session's chunks are also checked against each other, because the session aggregates them by row label and two
+    /// chunks that give the same labels to different rows lose rows while the commit still succeeds
+    /// (<see cref="WellboreDdmsSessionChunks"/>). Shapes are read from the parquet footers, never from the chunks'
+    /// contents, when the payload is parquet and a ceiling or a column rule is in force or a session opens. They are
+    /// returned so the committed bulk can be checked against them, and are null when they were not read.
     /// </summary>
-    private async Task<IReadOnlyList<ParquetShape>?> PreflightAsync(IPayloadSource payload, IReadOnlyList<PayloadFile> chunks, bool session, CancellationToken ct)
+    private async Task<IReadOnlyList<ParquetShape>?> PreflightAsync(JsonObject document, DdmsRecordPaths paths, IPayloadSource payload, IReadOnlyList<PayloadFile> chunks, bool session, CancellationToken ct)
     {
         var parquet = _options.PayloadContentType.Contains("parquet", StringComparison.OrdinalIgnoreCase);
-        var readsShape = parquet && (session || _options.MaxChunkValues > 0 || _options.MaxChunkColumns > 0);
+        var readsShape = parquet && (session || _options.MaxChunkValues > 0 || _options.MaxChunkColumns > 0 || paths.Columns != DdmsBulkColumns.Unchecked);
         var measured = readsShape ? new List<WellboreDdmsSessionChunks.Chunk>(chunks.Count) : null;
 
         foreach (var chunk in chunks)
@@ -331,6 +437,12 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
             return null;
         }
 
+        var labels = measured.SelectMany(m => m.Shape.ColumnNames).Distinct(StringComparer.Ordinal).ToList();
+        if (WellboreDdmsRules.ColumnsProblem(paths.Columns, document, labels) is { } columns)
+        {
+            throw new RecordHeldException(columns);
+        }
+
         if (session && WellboreDdmsSessionChunks.Conflict(measured) is { } conflict)
         {
             throw new RecordHeldException(conflict);
@@ -340,16 +452,15 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     }
 
     /// <summary>
-    /// Reads the log a session committed back (openapi wellbore_ddms, GET /ddms/v3/welllogs/{record_id}/data with
-    /// <c>describe=true</c>, which answers the number of rows and the column names) and holds the record when the log
-    /// lacks rows or curves its chunks carried. Returns the rows the log holds, or null when the target cannot describe
-    /// its bulk (a facade without the describe query, for instance): the delivery then stands unchecked, with a
-    /// warning, rather than failing a log that did land.
+    /// Reads the bulk a session committed back (openapi wellbore_ddms, GET /ddms/v3/{collection}/{record_id}/data with
+    /// <c>describe=true</c>, which answers the number of rows and the column names) and holds the record when the bulk
+    /// lacks rows or columns its chunks carried. Returns the rows the bulk holds, or null when the target cannot describe
+    /// it (a facade without the describe query, for instance): the delivery then stands unchecked, with a warning,
+    /// rather than failing bulk data that did land.
     /// </summary>
-    private async Task<long?> CommittedRowsAsync(string targetId, string sessionId, IReadOnlyList<ParquetShape> shapes, CancellationToken ct)
+    private async Task<long?> CommittedRowsAsync(string targetId, DdmsRecordPaths paths, string sessionId, IReadOnlyList<ParquetShape> shapes, CancellationToken ct)
     {
-        var dataUrl = _client.Url(_options.DataPath ?? Ddms(DefaultDataPath), targetId);
-        var url = new Uri(dataUrl + (string.IsNullOrEmpty(dataUrl.Query) ? "?describe=true" : "&describe=true"));
+        var url = OsduHttpClient.WithQuery(_client.Url(paths.Data!, targetId), "describe", "true");
         long rows;
         List<string>? columns = null;
         try
@@ -401,7 +512,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
 
     private void LogUnchecked(string targetId, string sessionId, string reason)
         => _logger.LogWarning(
-            "The log session {SessionId} committed for {TargetId} could not be described, so its rows were not checked against its chunks: {Reason}",
+            "The bulk session {SessionId} committed for {TargetId} could not be described, so its rows were not checked against its chunks: {Reason}",
             sessionId, targetId, reason);
 
     /// <summary>Reads one chunk's shape from its footer. A chunk that does not parse holds the record: the service would refuse it too.</summary>
@@ -434,9 +545,9 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         }
     }
 
-    private async Task<(int Sent, string SessionId)> SendSessionAsync(DeliveryWork work, IPayloadSource payload, IReadOnlyList<PayloadFile> chunks, long? version, CancellationToken ct)
+    private async Task<(int Sent, string SessionId)> SendSessionAsync(DeliveryWork work, DdmsRecordPaths paths, IPayloadSource payload, IReadOnlyList<PayloadFile> chunks, long? version, CancellationToken ct)
     {
-        var createUrl = _client.Url(_options.SessionPath ?? Ddms(DefaultSessionPath), work.TargetId);
+        var createUrl = _client.Url(paths.Sessions!, work.TargetId);
         var createBody = new JsonObject
         {
             ["mode"] = "overwrite",
@@ -452,7 +563,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         {
             foreach (var chunk in chunks)
             {
-                var url = _client.Url(_options.SessionDataPath ?? Ddms(DefaultSessionDataPath), work.TargetId, sessionId);
+                var url = _client.Url(paths.SessionData!, work.TargetId, sessionId);
 
                 // A chunk sent twice into a session lands twice in the committed bulk, so a chunk whose outcome is
                 // unclear fails the session (which is abandoned) rather than being resent.
@@ -460,19 +571,19 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
                 sent++;
             }
 
-            await CommitAsync(work.TargetId, sessionId, ct).ConfigureAwait(false);
+            await CommitAsync(work.TargetId, paths, sessionId, ct).ConfigureAwait(false);
             return (sent, sessionId);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            await AbandonAsync(work.TargetId, sessionId).ConfigureAwait(false);
+            await AbandonAsync(work.TargetId, paths, sessionId).ConfigureAwait(false);
             throw;
         }
     }
 
     /// <summary>
     /// Commits the session, and settles a commit the service answers 409 or 412 to by asking what state the session
-    /// is actually in (openapi wellbore_ddms, GET /ddms/v3/welllogs/{record_id}/sessions/{session_id}).
+    /// is actually in (openapi wellbore_ddms, GET /ddms/v3/{collection}/{record_id}/sessions/{session_id}).
     ///
     /// The commit is a PATCH and is never resent blind, so its outcome can be unclear: the connection went, a
     /// gateway answered 5xx after the service had acted, or an intermediary resent it and the second copy met a
@@ -481,9 +592,9 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     /// happened, so it is read rather than guessed: committed or committing is the commit that worked, anything
     /// else is a real failure.
     /// </summary>
-    private async Task CommitAsync(string targetId, string sessionId, CancellationToken ct)
+    private async Task CommitAsync(string targetId, DdmsRecordPaths paths, string sessionId, CancellationToken ct)
     {
-        var commitUrl = _client.Url(_options.SessionCommitPath ?? Ddms(DefaultSessionCommitPath), targetId, sessionId);
+        var commitUrl = _client.Url(paths.Session!, targetId, sessionId);
         try
         {
             await _client.SendJsonAsync(HttpMethod.Patch, commitUrl, new JsonObject { ["state"] = "commit" }, null, ct).ConfigureAwait(false);
@@ -491,7 +602,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         }
         catch (Exception ex) when (ex is OsduStatusException { StatusCode: 409 or 412 or >= 500 } || ex is DeliveryException { InnerException: HttpRequestException or IOException or TaskCanceledException })
         {
-            var state = await SessionStateAsync(targetId, sessionId, ct).ConfigureAwait(false);
+            var state = await SessionStateAsync(targetId, paths, sessionId, ct).ConfigureAwait(false);
             if (state is not ("committed" or "committing"))
             {
                 throw new DeliveryException(
@@ -505,11 +616,11 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     }
 
     /// <summary>The session's state as the service reports it, or null when it cannot be read.</summary>
-    private async Task<string?> SessionStateAsync(string targetId, string sessionId, CancellationToken ct)
+    private async Task<string?> SessionStateAsync(string targetId, DdmsRecordPaths paths, string sessionId, CancellationToken ct)
     {
         try
         {
-            var url = _client.Url(_options.SessionCommitPath ?? Ddms(DefaultSessionCommitPath), targetId, sessionId);
+            var url = _client.Url(paths.Session!, targetId, sessionId);
             var result = await _client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
             if ((int)result.Status == 404 || result.Body.Length == 0)
             {
@@ -525,43 +636,17 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         }
     }
 
-    private async Task AbandonAsync(string targetId, string sessionId)
+    private async Task AbandonAsync(string targetId, DdmsRecordPaths paths, string sessionId)
     {
         try
         {
-            var url = _client.Url(_options.SessionCommitPath ?? Ddms(DefaultSessionCommitPath), targetId, sessionId);
+            var url = _client.Url(paths.Session!, targetId, sessionId);
             await _client.SendJsonAsync(HttpMethod.Patch, url, new JsonObject { ["state"] = "abandon" }, null, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
         {
             _logger.LogWarning("Could not abandon session {SessionId} for {TargetId}: {Message}", sessionId, targetId, HeaderRedaction.RedactMessage(ex.Message));
         }
-    }
-
-    /// <summary>A DDMS default path, under <see cref="ProtocolOptions.DdmsRoot"/> when the endpoint is the platform root.</summary>
-    private string Ddms(string path) => DdmsPath(_options, path);
-
-    /// <summary>A DDMS default path as a flow resolves it: under its DDMS root when it declares one, else as written.</summary>
-    internal static string DdmsPath(ProtocolOptions options, string path)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        return options.DdmsRoot is { Length: > 0 } root ? root.TrimEnd('/') + path : path;
-    }
-
-    /// <summary>
-    /// Where a well log flow sends the storage history purge: its explicit path, or the storage default when the
-    /// endpoint is the platform root (a DDMS root is declared), or nowhere, when the endpoint is the DDMS itself and
-    /// storage is somewhere this flow has not named.
-    /// </summary>
-    internal static string? HistoryPath(ProtocolOptions options)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        if (options.PurgeVersionsPath is { Length: > 0 } explicitPath)
-        {
-            return explicitPath;
-        }
-
-        return options.DdmsRoot is { Length: > 0 } ? OsduRecordProtocol.DefaultPurgeVersionsPath : null;
     }
 
     /// <summary>The request factory is synchronous; opening a blob stream is cheap and the copy is what streams.</summary>

@@ -153,10 +153,12 @@ public sealed class LineageTests : IDisposable
         Assert.Empty(lineage.Files);
         Assert.Equal(
             "osdu-type/opendes/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/opendes/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
-            + "osdu-type/opendes/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/opendes/master-data/osdu:wks:master-data--Wellbore:*",
+            + "osdu-type/opendes/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/opendes/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*, "
+            + "osdu-type/opendes/master-data/osdu:wks:master-data--Wellbore:*",
             Datasets(lineage, LineageRelation.Reads));
         Assert.Equal(
-            "osdu-cache/opendes/cache/UnitOfMeasure, osdu-cache/opendes/cache/LogCurveBusinessValue, osdu-cache/opendes/cache/VerticalMeasurementType, osdu-cache/opendes/cache/Wellbore",
+            "osdu-cache/opendes/cache/UnitOfMeasure, osdu-cache/opendes/cache/LogCurveBusinessValue, osdu-cache/opendes/cache/VerticalMeasurementType, "
+            + "osdu-cache/opendes/cache/TrajectoryStationPropertyType, osdu-cache/opendes/cache/Wellbore",
             Datasets(lineage, LineageRelation.Writes));
     }
 
@@ -167,7 +169,8 @@ public sealed class LineageTests : IDisposable
 
         Assert.Equal(
             "osdu-type/opendes/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/opendes/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
-            + "osdu-type/opendes/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/opendes/master-data/osdu:wks:master-data--Wellbore:*",
+            + "osdu-type/opendes/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/opendes/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*, "
+            + "osdu-type/opendes/master-data/osdu:wks:master-data--Wellbore:*",
             Datasets(lineage, LineageRelation.Reads));
         Assert.Empty(Datasets(lineage, LineageRelation.Writes));
         Assert.Equal(

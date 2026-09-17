@@ -6,14 +6,14 @@ implemented in code and parameterised by the flow, not an authorable step langua
 | Protocol | Services | Pattern | Batched |
 | --- | --- | --- | --- |
 | `osduRecord` | storage | One JSON document, upsert by client-supplied id, array endpoint. | up to `batchSize` records per request |
-| `osduWellLog` | wellbore DDMS | Record, then binary payload, optionally through a session. | one record per request |
+| `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default) | Record, then, on a collection that keeps bulk data, its bulk data, optionally through a session. | one record per request |
 | `osduFile` | file, storage | Signed upload URL per file, streamed upload, dataset registration, then the record with its dataset list. | the record write, up to `batchSize` |
 | `osduManifest` | file, workflow, storage | Uploads, one manifest per batch handed to the ingestion workflow, the run polled, the records read back. | one workflow run per batch of up to `batchSize` |
 
-A flow in the single form names its protocol with `target.protocol`. An interface of a source is given one by its
-route, which follows from what the interface declares ([documents.md](documents.md#routes)): `storage` is
-`osduRecord`, `file` is `osduFile`, `manifest` is `osduManifest`, and `ddms` is `osduWellLog`, whose files are the
-interface's `bulk`.
+A flow in the single form names its route with `target.protocol`, as a route type or as the protocol it maps onto.
+An interface of a source is given one by its route, which follows from what the interface declares
+([documents.md](documents.md#routes)): `storage` is `osduRecord`, `file` is `osduFile`, `manifest` is `osduManifest`,
+and `ddms` is `osduWellLog`, whose files are the interface's `bulk`.
 
 The core is protocol independent: identity, rendering, change detection, the ledger, idempotency and the
 preflight gate never change. A protocol implements the delivery, and the read-back, verify, probe and delete
@@ -76,29 +76,74 @@ a workflow run id. See [design.md](design.md) section 16.3.
   time: every record in it carries the one failure that happened. The paths are `deletePath`,
   `purgeVersionsPath`, `purgePath` and `bulkDeletePath`.
 
-## `osduWellLog`
+## `osduWellLog`: the ddms route
 
-- Metadata: `POST {endpoint}/ddms/v3/welllogs` with a one-element array (the wellbore DDMS shape). Override
-  `recordPath` and `recordMethod` for a facade such as petrodb-api. Step `metadata` returns the version.
-- The endpoint of a well log flow is, by default, the wellbore DDMS itself (or a facade serving its paths): the
-  DDMS paths (`/ddms/v3/...`, `/about`) carry no `/api/<service>/` prefix, unlike every other protocol, whose
-  endpoint is the OSDU platform root. A flow whose endpoint is the platform root declares
-  `protocolOptions.ddmsRoot: /api/os-wellbore-ddms` (the platform's ingress route for the DDMS, and the base the
-  OSDU C# client uses); every DDMS default path is then taken under it, and the storage-owned calls resolve under
-  the endpoint as they do for the other protocols. A path option the flow sets explicitly is used as written
-  either way. `ddmsRoot` must be a path starting with `/` and is refused on any other protocol. A cache flow declares
-  its own `source.endpoint`, the platform root its searches go to, so it never depends on a well log flow's endpoint.
-- Remove: `DELETE {deletePath}` is a logical deletion the DDMS can revert; `?purge=true` makes it physical. The
-  DDMS has no operation on a record's versions (its only versions route is a GET listing), and versions belong to
-  the storage service for every kind of record, so the history scope goes to storage. With `ddmsRoot` declared the
-  endpoint is the platform root and the storage default (`/api/storage/v2/records/{id}/versions`) resolves under
-  it. Without it, storage is a different service from this flow's endpoint, so the flow says where it is by
-  declaring `purgeVersionsPath`, normally as a whole URL (`https://<host>/api/storage/v2/records/{id}/versions`). Any protocol path option may be written as an
-  absolute URL, and absolute URLs go through the same SSRF guard and `reliability.urlAllowlist` as every other
-  request. Without it the scope is refused rather than sent somewhere nobody chose, and the GUI does not offer it.
+The route's calls, rules and deletes follow the Wellbore DDMS's pinned contract and its source at the same commit
+([../specs/wellbore-ddms/INTEGRATION.md](../specs/wellbore-ddms/INTEGRATION.md)).
+
+- Where a record goes: the collection of the DDMS serving its entity type, which the record id names
+  ([documents.md](documents.md#the-ddmss-a-flow-delivers-to)): a DDMS under `target.ddms`, then the Wellbore DDMS. The
+  Wellbore DDMS has four collections that keep bulk data beside their records (`welllogs`, `wellboretrajectories`,
+  `ppfgdataset`, `wellpressuretestrawmeasurement`) and five that hold records alone (`wells`, `wellbores`,
+  `wellboremarkersets`, `wellboreintervalsets`, `welllogacquisition`). A kind no DDMS the flow reaches serves, and a
+  bulk part whose records go to a record collection, are refused by the run's preflight and by `sqlflow check`, and a
+  record the protocol cannot route is held naming why.
+- Metadata: `POST {root}/ddms/v3/{collection}` with a one-element array (the Wellbore DDMS v3 shape). Override
+  `recordPath` and `recordMethod` for a facade such as petrodb-api; the paths a flow leaves out come from the collection
+  of its records' entity type. Step `metadata` returns the version.
+- The endpoint of a ddms flow in the single form is, by default, the Wellbore DDMS itself (or a facade serving its
+  paths): the DDMS paths (`/ddms/v3/...`, `/about`) carry no `/api/<service>/` prefix, unlike every other protocol,
+  whose endpoint is the OSDU platform root. A flow whose endpoint is the platform root declares
+  `protocolOptions.ddmsRoot: /api/os-wellbore-ddms` (the platform's ingress route for the DDMS, and the base the OSDU C#
+  client uses), or a DDMS with its root under `target.ddms`; every DDMS default path is then taken under that root, and
+  the storage-owned calls resolve under the endpoint as they do for the other protocols. A source with interfaces always
+  has the platform root as its endpoint. A path option the flow sets explicitly is used as written either way.
+  `ddmsRoot` must be a path starting with `/` and is refused on any other protocol. A cache flow declares its own
+  `source.endpoint`, the platform root its searches go to, so it never depends on a ddms flow's endpoint.
+- The record's rules: before anything is sent, the record is checked against the rules the Wellbore DDMS applies to its
+  kind (the service's `app/consistency` modules), and a record that breaks one is held naming the rule. A WellLog's
+  CurveIDs are unique and its ReferenceCurveID is one of them; a WellboreTrajectory's station property names are
+  unique; a PPFGDataset names its ContextTypeID and ReferenceWellTrajectoryID, keeps unique CurveIDs and a
+  PrimaryReferenceCurveID among them; a WellPressureTestRawMeasurement keeps unique CurveIDs. With bulk data, every
+  curve of a WellLog, PPFGDataset or WellPressureTestRawMeasurement carries a CurveID, which the service matches
+  columns by. A value counts as given the way the service's Python reads it: not null, not empty, not zero, not false.
+- The bulk data's columns, read from the chunks' parquet footers and checked together: every column of a WellLog,
+  PPFGDataset or WellPressureTestRawMeasurement is a `data.Curves[].CurveID` of the record, a column labelled
+  `NAME[...]` being one column of the array curve `NAME`, and a WellLog's or WellPressureTestRawMeasurement's curve has
+  as many columns as its `NumberOfColumns` (1 when not given); every column of a WellboreTrajectory is a
+  `data.AvailableTrajectoryStationProperties[].Name`. What needs the rows (a monotonic reference, sampling bounds that
+  match its first and last values) is the service's to check: the chunks are never parsed.
+- The bulk link: the DDMS writes `data.ExtensionProperties.wdms.bulkURI` on every bulk write and session commit, and
+  refuses a record write whose bulkURI differs from the one the latest version holds, a write that leaves it out
+  included. An update of a record in a bulk collection therefore reads the version the DDMS holds first, and carries its
+  bulkURI and the `urn://wdms-1/uuid:` entries the DDMS appended to `DDMSDatasets`; the rest of `ExtensionProperties`
+  and `DDMSDatasets` is what the mapping renders. A bulkURI the mapping renders is replaced by the DDMS's, with a
+  warning, and a create sends none. When the ledger knew no version of the record and the DDMS refuses the write, the
+  record is read once and the write sent again if the DDMS holds a link after all (a delivery whose outcome was lost);
+  any other refusal stands. A record collection keeps no link and is written without a read.
+- Remove: `DELETE {root}/ddms/v3/{collection}/{id}` is a logical deletion the DDMS can revert. On a bulk collection
+  `?purge=true` makes it physical: the DDMS purges the record in storage and deletes its bulk data without waiting. A
+  record collection's DELETE is logical only, so the everything scope goes to the storage service's purge
+  (`purgePath`, or `/api/storage/v2/records/{id}` under a platform-root endpoint), which is what the DDMS itself calls
+  for a bulk record. The DDMS has no operation on a record's versions (its only versions route is a GET listing), and
+  versions belong to the storage service for every kind of record, so the history scope goes to storage's
+  `/api/storage/v2/records/{id}/versions`. Under a platform-root endpoint the storage defaults resolve; otherwise
+  storage is a different service from this flow's endpoint, so the flow says where it is by declaring `purgePath` and
+  `purgeVersionsPath`, normally as whole URLs. Any protocol path option may be written as an absolute URL, and absolute
+  URLs go through the same SSRF guard and `reliability.urlAllowlist` as every other request. Without them those scopes
+  are refused rather than sent somewhere nobody chose, and the GUI does not offer them.
 - `preserveDataKeys` (for example `Datasets`, `DDMSDatasets`, `ExtensionProperties`) are read from the
   existing record before an update and copied into the document's `data`, because OSDU owns them
-  ([decisions/0004](decisions/0004-preserved-keys.md)).
+  ([decisions/0004](decisions/0004-preserved-keys.md)). The read is the same one the bulk link takes.
+- Probe: `GET {root}/about` of every DDMS the flow reaches, or the flow's `probePath`; the target is reachable when
+  every one of them answers.
+- Discovery: a DDMS `target.ddms` names with `register` is read from the Register service
+  (`GET /api/register/v1/ddms/{id}`, [../specs/core/INTEGRATION.md](../specs/core/INTEGRATION.md) section 2.7) when the
+  protocol is built, once per run, and the run's route check sees what it registered. A registration names one server
+  per interface and one retrieval operation (`x-ddms-retrieve-entity`); a retrieval path that is not a collection of the
+  declared shape, a registration naming several servers for a DDMS without a declared root, and a missing registration
+  (404) fail the run naming the registration. The lookup by type (`GET /ddms?type=`) is not used: its `type` pattern
+  (`^[A-Za-z0-9]{1,50}`) cannot carry an entity type with its group.
 - Payload, one chunk: `POST {dataPath}` with the chunk streamed as `payloadContentType` with its length. Only
   ever one chunk goes this way: that request carries "the entire bulk which will replace as latest version any
   previous bulk", so several chunks sent to it would overwrite each other. Step `payload` returns the chunk count.
@@ -112,7 +157,7 @@ a workflow run id. See [design.md](design.md) section 16.3.
   (a stored index column's statistics, a pandas `RangeIndex`, or the rows numbered from zero when the file carries no
   pandas metadata), and two chunks that give the same labels to different rows hold the record, naming both files.
   Chunks with exactly the same labels and different curves (a log whose curves were split) go together. After the
-  commit, `GET {dataPath}?describe=true` reads the log back: fewer rows or curves than the chunks carried holds the
+  commit, `GET {dataPath}?describe=true` reads the bulk back: fewer rows or columns than the chunks carried holds the
   record, naming both counts, and step `payload` returns `rows`. A target that cannot describe its bulk leaves the
   delivery unchecked with a warning, and a JSON payload is not measured, because the payload itself is never parsed.
 - The commit is a PATCH and is never resent blind, so its outcome can be unclear: the connection went, a gateway
@@ -243,10 +288,11 @@ expired, on every record that carries it. So a deliver or intake run asks the le
 before anything is planned or sent, naming each tag and the reason the service gives (expired, not found). Plan runs
 do not ask; they send nothing.
 
-- Where it asks: under the endpoint, for every protocol whose endpoint is the platform root, which includes a well log
-  flow that declares `ddmsRoot`. A well log flow whose endpoint is the DDMS itself does not reach the legal service by
-  a path; it asks only when it names `protocolOptions.legalValidatePath` (normally an absolute URL), and otherwise the
-  run logs that the tags were not checked. Not checked is never read as valid.
+- Where it asks: under the endpoint, for every flow whose endpoint is the platform root, which includes a ddms flow
+  that declares `ddmsRoot`, a DDMS with a root or a registration under `target.ddms`, or any interface of a source. A
+  ddms flow whose endpoint is the DDMS itself does not reach the legal service by a path; it asks only when it names
+  `protocolOptions.legalValidatePath` (normally an absolute URL), and otherwise the run logs that the tags were not
+  checked. Not checked is never read as valid.
 - `protocolOptions.validateLegalTags: false` turns the check off; storage then refuses a bad tag record by record.
 - A verdict on a tag is trusted for ten minutes, so the batches of one run do not each ask again. The service answers
   404 without naming which of several names it does not know, so such a request is asked again name by name; a 404

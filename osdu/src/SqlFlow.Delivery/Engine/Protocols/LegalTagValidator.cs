@@ -52,11 +52,12 @@ public sealed class LegalTagValidator
     }
 
     /// <summary>
-    /// Where a flow's target asks about legal tags, or null when it does not ask: the flow turned the check off, or
-    /// it is a well log flow whose endpoint is the wellbore DDMS itself (no <c>ddmsRoot</c>) and it has not said
-    /// where the legal service is. Every other target's endpoint is the platform root, where the default resolves.
+    /// Where a flow's target asks about legal tags, or null when it does not ask: the flow turned the check off, or its
+    /// endpoint is a DDMS itself rather than the OSDU platform root (<paramref name="platformEndpoint"/> false: a ddms
+    /// flow whose DDMS has no root, <see cref="DdmsRouting.PlatformEndpoint"/>) and it has not said where the legal
+    /// service is. Under a platform endpoint the default resolves.
     /// </summary>
-    public static string? PathFor(DeliveryProtocol protocol, ProtocolOptions options)
+    public static string? PathFor(ProtocolOptions options, bool platformEndpoint)
     {
         ArgumentNullException.ThrowIfNull(options);
         if (!options.ValidateLegalTags)
@@ -69,7 +70,7 @@ public sealed class LegalTagValidator
             return explicitPath;
         }
 
-        return protocol == DeliveryProtocol.OsduWellLog && options.DdmsRoot is not { Length: > 0 } ? null : DefaultValidatePath;
+        return platformEndpoint ? DefaultValidatePath : null;
     }
 
     /// <summary>

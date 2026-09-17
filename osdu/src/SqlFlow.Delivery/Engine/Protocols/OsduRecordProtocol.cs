@@ -231,7 +231,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
     public async Task<IReadOnlyDictionary<string, string>?> InvalidLegalTagsAsync(IReadOnlyCollection<string> tags, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(tags);
-        if (LegalTagValidator.PathFor(Kind, _options) is not { } path)
+        if (LegalTagValidator.PathFor(_options, platformEndpoint: true) is not { } path)
         {
             return null;
         }
@@ -330,18 +330,25 @@ internal sealed record RemovalPaths(string Delete, string PurgeVersions, string 
 /// <summary>The record write, read-back, probe and delete shared by the OSDU protocols.</summary>
 internal static class RecordWriter
 {
-    /// <summary>Writes one record through the array endpoint and returns the version the response reported, with the status.</summary>
-    public static async Task<(long? Version, int Status)> WriteAsync(OsduHttpClient client, ProtocolOptions options, string recordPath, string method, string verifyPath, DeliveryWork work, CancellationToken ct)
+    /// <summary>Writes one prepared record through the array endpoint and returns the version the response reported, with the status.</summary>
+    public static async Task<(long? Version, int Status)> SendAsync(OsduHttpClient client, ProtocolOptions options, string recordPath, string method, JsonObject document, CancellationToken ct)
     {
-        var document = (JsonObject)work.Document.DeepClone();
-        if (options.PreserveDataKeys.Count > 0 && work.ExistingVersion is not null)
-        {
-            await PreserveAsync(client, verifyPath, work.TargetId, document, options.PreserveDataKeys, ct).ConfigureAwait(false);
-        }
-
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(document);
         var url = client.Url(recordPath);
         var body = new JsonArray(document);
-        var result = await client.SendJsonAsync(new HttpMethod(method.ToUpperInvariant()), url, body, null, ct, idempotent: true).ConfigureAwait(false);
+        HttpFetchResult result;
+        try
+        {
+            result = await client.SendJsonAsync(new HttpMethod(method.ToUpperInvariant()), url, body, null, ct, idempotent: true).ConfigureAwait(false);
+        }
+        finally
+        {
+            // The document is the caller's, and a caller that writes it again gives it to another array.
+            body.Remove(document);
+        }
+
         if (result.Body.Length == 0)
         {
             return (null, (int)result.Status);
@@ -534,18 +541,22 @@ internal static class RecordWriter
         });
     }
 
-    /// <summary>Copies the OSDU-owned data keys (design.md section 7.6) from the current record into the document.</summary>
+    /// <summary>Copies the OSDU-owned data keys (design.md section 7.6) from the current record, read from the target, into the document.</summary>
     public static async Task PreserveAsync(OsduHttpClient client, string verifyPath, string targetId, JsonObject document, IReadOnlyList<string> keys, CancellationToken ct)
     {
-        var url = client.Url(verifyPath, targetId);
-        var result = await client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
-        if ((int)result.Status == 404)
+        if (await ReadAsync(client, verifyPath, targetId, ct).ConfigureAwait(false) is { } existing)
         {
-            return;
+            Preserve(existing, document, keys);
         }
+    }
 
-        var existing = JsonNode.Parse(result.Body) as JsonObject;
-        if (existing?["data"] is not JsonObject existingData)
+    /// <summary>Copies the OSDU-owned data keys (design.md section 7.6) from <paramref name="existing"/> into the document.</summary>
+    public static void Preserve(JsonObject existing, JsonObject document, IReadOnlyList<string> keys)
+    {
+        ArgumentNullException.ThrowIfNull(existing);
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(keys);
+        if (existing["data"] is not JsonObject existingData)
         {
             return;
         }

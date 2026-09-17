@@ -550,6 +550,10 @@ export interface DeliveryTarget {
   recordPath: string;
   historyPath: string;
   everythingPath: string;
+  /** The interface of the source the target is for, or null for a flow in the single form. */
+  interface: string | null;
+  /** On the ddms route: which collection of which DDMS the records go to, as a sentence; null on the other routes. */
+  ddms: string | null;
 }
 
 /** The listing a removal is aimed at: the same filter the records list is built from. */

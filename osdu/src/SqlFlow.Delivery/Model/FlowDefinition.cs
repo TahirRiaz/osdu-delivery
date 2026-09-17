@@ -385,6 +385,14 @@ public sealed record FlowTarget
     public required Protocols.DeliveryProtocol Protocol { get; init; }
 
     public ProtocolOptions ProtocolOptions { get; init; } = new();
+
+    /// <summary>
+    /// The DDMSs the flow declares under <c>target.ddms</c>, in document order: where each is under the endpoint, its
+    /// call pattern and its collections. No entity type is served by two of them. A record on the ddms route goes to the
+    /// one serving its entity type, and otherwise to the Wellbore DDMS under <see cref="ProtocolOptions.DdmsRoot"/>
+    /// (the engine's <c>DdmsRouting</c>).
+    /// </summary>
+    public IReadOnlyList<DdmsService> Ddms { get; init; } = [];
 }
 
 public enum TargetAuthType
@@ -629,6 +637,12 @@ public sealed record ProtocolOptions
 
     /// <summary>Manifest protocol: the storage path that reads records back by id after a run. Default /api/storage/v2/query/records.</summary>
     public string? RecordQueryPath { get; init; }
+
+    /// <summary>
+    /// ddms route: where the Register service reads a DDMS registration (openapi register v1, <c>GET /ddms/{id}</c>),
+    /// for a DDMS the flow declares with <c>register</c>. Default <c>/api/register/v1/ddms/{id}</c> under the endpoint.
+    /// </summary>
+    public string? RegisterPath { get; init; }
 
     /// <summary>The sections of an osdu:wks:Manifest:1.0.0 a record can be placed in.</summary>
     public static readonly IReadOnlyList<string> ManifestSections = ["ReferenceData", "MasterData", "WorkProduct", "WorkProductComponents", "Datasets"];

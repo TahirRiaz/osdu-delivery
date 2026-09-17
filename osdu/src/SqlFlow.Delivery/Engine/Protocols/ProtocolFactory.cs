@@ -21,7 +21,10 @@ public static class ProtocolFactory
         return flow.Target.Protocol switch
         {
             DeliveryProtocol.OsduRecord => new OsduRecordProtocol(client, flow.Target.ProtocolOptions),
-            DeliveryProtocol.OsduWellLog => new OsduWellLogProtocol(client, flow.Target.ProtocolOptions, loggers.CreateLogger<OsduWellLogProtocol>(), flow.Reliability.MaxRequestBodyBytes),
+            // The DDMSs the flow names by registration are read here, so every operation routes by what they registered.
+            DeliveryProtocol.OsduWellLog => new OsduWellLogProtocol(
+                client, flow.Target.ProtocolOptions, loggers.CreateLogger<OsduWellLogProtocol>(), flow.Reliability.MaxRequestBodyBytes,
+                routing: DdmsRouting.Of(await DdmsDiscovery.ResolveAsync(flow, client, ct).ConfigureAwait(false))),
             DeliveryProtocol.OsduFile => new OsduFileProtocol(client, flow.Target.ProtocolOptions, flow.Reliability.MaxRequestBodyBytes),
             DeliveryProtocol.OsduManifest => new OsduManifestProtocol(client, flow.Target.ProtocolOptions, loggers.CreateLogger<OsduManifestProtocol>(), flow.Reliability.MaxRequestBodyBytes),
             _ => throw new FlowValidationException($"{flow.SourcePath ?? flow.Name}: target.protocol '{flow.Target.Protocol}' is not a known protocol."),

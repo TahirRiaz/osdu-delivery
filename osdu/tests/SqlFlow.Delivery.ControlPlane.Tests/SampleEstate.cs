@@ -41,6 +41,7 @@ internal static class SampleEstate
     [
         ("osdu:wks:work-product-component--WellLog:1.4.0", "osdu_wks_work-product-component--WellLog_1.4.0.json"),
         (WellboreTemplateKind, "osdu_wks_master-data--Wellbore_1.3.0.json"),
+        ("osdu:wks:work-product-component--WellboreTrajectory:1.3.0", "osdu_wks_work-product-component--WellboreTrajectory_1.3.0.json"),
     ];
 
     /// <summary>The parts of the estate a run needs: the documents, what they render with, and the data folders.</summary>

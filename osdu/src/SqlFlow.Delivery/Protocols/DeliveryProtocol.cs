@@ -9,7 +9,11 @@ public enum DeliveryProtocol
     /// <summary>Plain record: one JSON document, upsert by id, batched arrays (storage service).</summary>
     OsduRecord,
 
-    /// <summary>Record plus bulk: record, then binary payload, optionally via a session (wellbore DDMS).</summary>
+    /// <summary>
+    /// The ddms route: the record through the collection of the DDMS serving its entity type, then, on a collection that
+    /// keeps bulk data, its bulk data, optionally via a session (docs/interfaces-design.md section 5.4). Named after the
+    /// well log collection it first served.
+    /// </summary>
     OsduWellLog,
 
     /// <summary>

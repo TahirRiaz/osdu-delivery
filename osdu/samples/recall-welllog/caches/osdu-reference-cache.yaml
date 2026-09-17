@@ -1,7 +1,7 @@
 # Cache flow: osdu-reference-cache
 #
-# What this flow caches (docs/delivery/design.md section 6.2): the OSDU reference and master data the WellLog and
-# Wellbore mappings resolve against, and which paths of each record are kept. Add a type or a path here, and the next
+# What this flow caches (docs/delivery/design.md section 6.2): the OSDU reference and master data the WellLog,
+# WellboreTrajectory and Wellbore mappings resolve against, and which paths of each record are kept. Add a type or a path here, and the next
 # refresh captures it. A run of this flow (the refresh operation; the schedule below runs one nightly) searches OSDU for
 # every declared type and merges what it finds into the cache of its partition (data-partition-id below) in the catalog,
 # which writes a new version when anything changed and records the flow and the run that wrote it. A partition has one
@@ -42,6 +42,9 @@ types:
     fields: [data.Code, data.Name]
   - kind: "osdu:wks:reference-data--VerticalMeasurementType:*"
     name: VerticalMeasurementType
+    fields: [data.Code, data.Name]
+  - kind: "osdu:wks:reference-data--TrajectoryStationPropertyType:*"
+    name: TrajectoryStationPropertyType
     fields: [data.Code, data.Name]
   - kind: "osdu:wks:master-data--Wellbore:*"
     name: Wellbore

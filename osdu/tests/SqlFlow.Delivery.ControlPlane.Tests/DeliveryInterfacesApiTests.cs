@@ -202,6 +202,16 @@ public sealed class DeliveryInterfacesApiTests
             var target = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/target?interface=welllogs");
             Assert.Equal(("welllogs", "OsduWellLog"), (target.GetProperty("interface").GetString(), target.GetProperty("protocol").GetString()));
 
+            // The well logs' mapping is synced, so the target names the collection of the kind it renders.
+            Assert.Equal(
+                "work-product-component--WellLog records go to the welllogs collection of the DDMS 'wellbore' (/api/os-wellbore-ddms).",
+                target.GetProperty("ddms").GetString());
+            Assert.Equal("/api/os-wellbore-ddms/ddms/v3/welllogs/{id}", target.GetProperty("recordPath").GetString());
+            Assert.Equal("/api/os-wellbore-ddms/ddms/v3/welllogs/{id}?purge=true", target.GetProperty("everythingPath").GetString());
+            Assert.Equal("/api/storage/v2/records/{id}/versions", target.GetProperty("historyPath").GetString());
+            var storageTarget = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/target?interface=wellbores");
+            Assert.Equal(JsonValueKind.Null, storageTarget.GetProperty("ddms").ValueKind);
+
             // A record leads to its pipeline and interface, and a task queued for it names the interface the node acts through.
             var record = await JsonAsync(client, token, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}");
             Assert.Equal((pipelineId, flowName, "welllogs"), (record.GetProperty("pipelineId").GetGuid(), record.GetProperty("flowName").GetString(), record.GetProperty("interface").GetString()));

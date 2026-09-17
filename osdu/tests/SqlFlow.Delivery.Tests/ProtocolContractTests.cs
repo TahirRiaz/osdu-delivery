@@ -201,6 +201,100 @@ public sealed class ProtocolContractTests
             OsduContracts.AssertConform(handler.Calls, null, OsduContracts.WellboreDdms, OsduContracts.Storage));
     }
 
+    public static TheoryData<string> WellboreDdmsCollections => new(DdmsCatalog.WellboreDdmsCollections.Select(c => c.Segment));
+
+    /// <summary>
+    /// A record of the collection's entity type, with the data its collection's rules ask for: curves for the curve
+    /// collections, station properties for trajectories, and a PPFG dataset's context and trajectory.
+    /// </summary>
+    private static string CollectionDocument(DdmsCollectionEntry collection, string id)
+    {
+        var data = collection.Columns switch
+        {
+            DdmsBulkColumns.TrajectoryStations => """{"Name":"survey","AvailableTrajectoryStationProperties":[{"Name":"MD"},{"Name":"GR"}]}""",
+            DdmsBulkColumns.CurveIds => """{"Name":"ppfg","ContextTypeID":"dev:reference-data--PPFGContextType:Prognosis:","ReferenceWellTrajectoryID":"dev:work-product-component--WellboreTrajectory:t-1:","Curves":[{"CurveID":"MD"},{"CurveID":"GR"}]}""",
+            DdmsBulkColumns.CurveIdsAndWidths => """{"Name":"curves","Curves":[{"CurveID":"MD"},{"CurveID":"GR"}]}""",
+            _ => """{"Name":"record"}""",
+        };
+        return "{\"id\":\"" + id + "\",\"kind\":\"osdu:wks:" + collection.EntityType + ":1.0.0\","
+            + "\"acl\":{\"viewers\":[\"data.default.viewers@dev.example.com\"],\"owners\":[\"data.default.owners@dev.example.com\"]},"
+            + "\"legal\":{\"legaltags\":[\"dev-public\"],\"otherRelevantDataCountries\":[\"NO\"]},\"data\":" + data + "}";
+    }
+
+    [Theory]
+    [MemberData(nameof(WellboreDdmsCollections))]
+    public async Task Every_wellbore_ddms_collection_is_written_read_and_removed_within_its_contract(string segment)
+    {
+        var collection = DdmsCatalog.WellboreDdmsCollections.Single(c => c.Segment == segment);
+        var id = $"dev:{collection.EntityType}:contract-1";
+        var stored = "{\"id\":\"" + id + "\",\"version\":11" + (collection.Bulk ? ",\"data\":{\"ExtensionProperties\":{\"wdms\":{\"bulkURI\":\"urn:wdms-1:uuid:38f0438e-71b8-4806-924b-9753796a77c1\"}}}" : string.Empty) + "}";
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Post, "/ddms/v3/" + segment, HttpStatusCode.OK, "{\"recordCount\":1,\"recordIds\":[\"" + id + "\"],\"recordIdVersions\":[\"" + id + ":10\"]}")
+            .On(HttpMethod.Post, $"/{segment}/{id}/data", HttpStatusCode.OK, "{}")
+            .OnMatch(r => r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath.EndsWith("/data", StringComparison.Ordinal),
+                _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"numberOfRows":3,"columns":["MD","GR"]}"""))
+            .On(HttpMethod.Post, "/sessions", HttpStatusCode.OK, """{"id":"8d7b2c52-4c7d-4c9f-9a53-5d1f8a6a1f00"}""")
+            .On(HttpMethod.Post, "/sessions/8d7b2c52-4c7d-4c9f-9a53-5d1f8a6a1f00/data", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Patch, "/sessions/8d7b2c52-4c7d-4c9f-9a53-5d1f8a6a1f00", HttpStatusCode.OK, "{}")
+            .On(HttpMethod.Get, $"/{segment}/{id}", HttpStatusCode.OK, stored)
+            .On(HttpMethod.Delete, $"/{segment}/{id}", HttpStatusCode.NoContent, null)
+            .On(HttpMethod.Delete, "/versions", HttpStatusCode.NoContent, null)
+            .On(HttpMethod.Delete, "/records/" + id, HttpStatusCode.NoContent, null)
+            .On(HttpMethod.Get, "/about", HttpStatusCode.OK, "{}");
+        var (client, runtime) = Client(handler, "http://localhost");
+        using (runtime)
+        {
+            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms" }, Samples.Logger<OsduWellLogProtocol>());
+            var work = Work(true, collection.Bulk, new ParquetChunks(1), existing: 10) with { TargetId = id, Document = TestSchema.Doc(CollectionDocument(collection, id)) };
+            var outcome = await protocol.DeliverAsync(work);
+            Assert.True(outcome.Succeeded, outcome.Failure?.Message);
+            if (collection.Bulk)
+            {
+                var session = await protocol.DeliverAsync(work with { DeliverMetadata = false, Payload = new ParquetChunks(3) });
+                Assert.True(session.Succeeded, session.Failure?.Message);
+            }
+
+            await protocol.VerifyAsync(id, 11);
+            Assert.True((await protocol.ProbeAsync()).Reachable);
+            Assert.True((await protocol.DeleteAsync(id, RemovalScope.Record)).Deleted);
+            Assert.True((await protocol.DeleteAsync(id, RemovalScope.History)).Deleted);
+            Assert.True((await protocol.DeleteAsync(id, RemovalScope.Everything)).Deleted);
+        }
+
+        var ddms = "wellbore-ddms {0} /ddms/v3/" + segment;
+        string[] expected = collection.Bulk
+            ?
+            [
+                "core/storage DELETE /records/{id}/versions",
+                string.Format(CultureInfo.InvariantCulture, ddms, "DELETE") + "/{record_id}",
+                "wellbore-ddms GET /about",
+                string.Format(CultureInfo.InvariantCulture, ddms, "GET") + "/{record_id}",
+                string.Format(CultureInfo.InvariantCulture, ddms, "GET") + "/{record_id}/data",
+                string.Format(CultureInfo.InvariantCulture, ddms, "PATCH") + "/{record_id}/sessions/{session_id}",
+                string.Format(CultureInfo.InvariantCulture, ddms, "POST"),
+                string.Format(CultureInfo.InvariantCulture, ddms, "POST") + "/{record_id}/data",
+                string.Format(CultureInfo.InvariantCulture, ddms, "POST") + "/{record_id}/sessions",
+                string.Format(CultureInfo.InvariantCulture, ddms, "POST") + "/{record_id}/sessions/{session_id}/data",
+            ]
+            :
+            [
+                "core/storage DELETE /records/{id}",
+                "core/storage DELETE /records/{id}/versions",
+                string.Format(CultureInfo.InvariantCulture, ddms, "DELETE") + "/{record_id}",
+                "wellbore-ddms GET /about",
+                string.Format(CultureInfo.InvariantCulture, ddms, "GET") + "/{record_id}",
+                string.Format(CultureInfo.InvariantCulture, ddms, "POST"),
+            ];
+        Assert.Equal(
+            expected.Order(StringComparer.Ordinal).ToList(),
+            OsduContracts.AssertConform(handler.Calls, null, OsduContracts.WellboreDdms, OsduContracts.Storage).Order(StringComparer.Ordinal).ToList());
+
+        // A bulk record's update carried the link its stored version holds; a record collection's needed no read.
+        var write = handler.Calls.First(c => c.Method == HttpMethod.Post && c.Uri.AbsolutePath.EndsWith("/ddms/v3/" + segment, StringComparison.Ordinal));
+        Assert.Equal(collection.Bulk, write.Body!.Contains("urn:wdms-1:uuid:38f0438e-71b8-4806-924b-9753796a77c1", StringComparison.Ordinal));
+        Assert.Equal(collection.Bulk, handler.Calls.IndexOf(write) > 0);
+    }
+
     [Fact]
     public async Task Legal_tag_checks_keep_to_the_legal_contract()
     {

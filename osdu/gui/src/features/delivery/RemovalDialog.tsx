@@ -56,9 +56,12 @@ interface ScopeChoice {
   ledger: string;
   reversible: boolean;
   path: (target: DeliveryTarget) => string;
-  method: string;
+  method: (target: DeliveryTarget) => string;
   confirmLabel: string;
 }
+
+/** The ddms route removes a record with a DDMS DELETE; the storage service takes a POST to its :delete path. */
+const DDMS_PROTOCOL = "OsduWellLog";
 
 const SCOPES: ScopeChoice[] = [
   {
@@ -68,7 +71,7 @@ const SCOPES: ScopeChoice[] = [
     ledger: "Marked deleted here and blocked from redelivery until its source changes or it is released.",
     reversible: true,
     path: (target) => target.recordPath,
-    method: "POST",
+    method: (target) => (target.protocol === DDMS_PROTOCOL ? "DELETE" : "POST"),
     confirmLabel: "Remove from OSDU",
   },
   {
@@ -78,7 +81,7 @@ const SCOPES: ScopeChoice[] = [
     ledger: "The record stays delivered; only the purge is written to its history.",
     reversible: false,
     path: (target) => target.historyPath,
-    method: "DELETE",
+    method: () => "DELETE",
     confirmLabel: "Purge history",
   },
   {
@@ -88,7 +91,7 @@ const SCOPES: ScopeChoice[] = [
     ledger: "Marked deleted here and blocked from redelivery until its source changes or it is released.",
     reversible: false,
     path: (target) => target.everythingPath,
-    method: "DELETE",
+    method: () => "DELETE",
     confirmLabel: "Purge everything",
   },
 ];
@@ -201,6 +204,9 @@ export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, 
                 <Badge variant="outline">{target.protocol}</Badge>
                 <Badge variant="outline">{target.authType}</Badge>
               </div>
+              {target.ddms !== null && (
+                <p className="mt-1.5 text-[12px] text-muted-foreground" data-testid="removal-ddms">{target.ddms}</p>
+              )}
             </div>
           )}
 
@@ -213,7 +219,8 @@ export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, 
 
             // A scope whose call the flow cannot resolve is not offered: the node would refuse it anyway, and
             // showing it as available invites an operator to ask for a removal that never happens.
-            const unavailable = target !== undefined && option.path(target).startsWith("(not configured");
+            const path = target === undefined ? undefined : option.path(target);
+            const unavailable = path !== undefined && (path.startsWith("(not configured") || path.startsWith("(not routable"));
             return (
               <button
                 key={option.scope}
@@ -244,7 +251,7 @@ export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, 
                 <span className="text-[12px] text-muted-foreground">Here: {option.ledger}</span>
                 {target !== undefined && (
                   <span className="font-mono text-[11px] text-muted-foreground">
-                    {option.method} {option.path(target)}
+                    {option.method(target)} {path}
                   </span>
                 )}
               </button>

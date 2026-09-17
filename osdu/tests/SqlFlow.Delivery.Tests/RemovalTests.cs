@@ -184,7 +184,7 @@ public class RemovalProtocolTests
     [Fact]
     public void The_endpoints_a_flow_would_call_follow_its_protocol()
     {
-        var storage = RemovalEndpoints.Of(new FlowTarget { Endpoint = "http://x", Protocol = DeliveryProtocol.OsduRecord });
+        var storage = RemovalEndpoints.Of(Samples.Targeting(new FlowTarget { Endpoint = "http://x", Protocol = DeliveryProtocol.OsduRecord }), null);
         Assert.Equal("/api/storage/v2/records/{id}:delete", storage.Record);
         Assert.Equal("/api/storage/v2/records/{id}/versions", storage.History);
         Assert.Equal("/api/storage/v2/records/{id}", storage.Everything);
@@ -192,19 +192,42 @@ public class RemovalProtocolTests
         // The wellbore DDMS owns the record but not its versions, so only the history scope leaves the DDMS. Its
         // paths carry no /api/<service>/ prefix, so a storage path under a DDMS endpoint would not resolve: with
         // nowhere to send it the scope reports itself unconfigured rather than naming a URL that would 404.
-        var ddms = RemovalEndpoints.Of(new FlowTarget { Endpoint = "http://x", Protocol = DeliveryProtocol.OsduWellLog });
+        var ddmsFlow = Samples.Targeting(new FlowTarget { Endpoint = "http://x", Protocol = DeliveryProtocol.OsduWellLog });
+        var ddms = RemovalEndpoints.Of(ddmsFlow, "osdu:wks:work-product-component--WellLog:1.4.0");
         Assert.Equal("/ddms/v3/welllogs/{id}", ddms.Record);
         Assert.Equal(RemovalEndpoints.HistoryNotConfigured, ddms.History);
         Assert.Equal("/ddms/v3/welllogs/{id}?purge=true", ddms.Everything);
 
-        // A well log flow that says where storage lives is taken at its word.
-        var configured = RemovalEndpoints.Of(new FlowTarget
-        {
-            Endpoint = "http://x",
-            Protocol = DeliveryProtocol.OsduWellLog,
-            ProtocolOptions = new ProtocolOptions { PurgeVersionsPath = "https://osdu.example.com/api/storage/v2/records/{id}/versions" },
-        });
+        // The collection follows the kind: a trajectory's records are in wellboretrajectories.
+        Assert.Equal("/ddms/v3/wellboretrajectories/{id}", RemovalEndpoints.Of(ddmsFlow, "osdu:wks:work-product-component--WellboreTrajectory:1.3.0").Record);
+
+        // A record-only collection's DELETE is logical only, so its purge is the storage service's, which a DDMS
+        // endpoint does not reach either.
+        var wellbores = RemovalEndpoints.Of(ddmsFlow, "osdu:wks:master-data--Wellbore:1.3.0");
+        Assert.Equal("/ddms/v3/wellbores/{id}", wellbores.Record);
+        Assert.Equal(RemovalEndpoints.PurgeNotConfigured, wellbores.Everything);
+
+        // Until the kind is known, the collection is not.
+        Assert.Equal(RemovalEndpoints.CollectionNotKnown, RemovalEndpoints.Of(ddmsFlow, null).Record);
+
+        // A kind no DDMS the flow reaches serves says so instead of naming a path.
+        Assert.StartsWith("(not routable: ", RemovalEndpoints.Of(ddmsFlow, "osdu:wks:work-product-component--SeismicTraceData:1.0.0").Record, StringComparison.Ordinal);
+
+        // A ddms flow that says where storage lives is taken at its word.
+        var configured = RemovalEndpoints.Of(
+            Samples.Targeting(new FlowTarget
+            {
+                Endpoint = "http://x",
+                Protocol = DeliveryProtocol.OsduWellLog,
+                ProtocolOptions = new ProtocolOptions
+                {
+                    PurgeVersionsPath = "https://osdu.example.com/api/storage/v2/records/{id}/versions",
+                    PurgePath = "https://osdu.example.com/api/storage/v2/records/{id}",
+                },
+            }),
+            "osdu:wks:master-data--Wellbore:1.3.0");
         Assert.Equal("https://osdu.example.com/api/storage/v2/records/{id}/versions", configured.History);
+        Assert.Equal("https://osdu.example.com/api/storage/v2/records/{id}", configured.Everything);
     }
 
     [Fact]

@@ -280,6 +280,38 @@ internal sealed class FlowTargetYaml
     public string? Protocol { get; set; }
 
     public ProtocolOptionsYaml? ProtocolOptions { get; set; }
+
+    /// <summary>The DDMSs the flow delivers to, by the names the flow gives them, in document order.</summary>
+    public OrderedDictionary<string, DdmsYaml?>? Ddms { get; set; }
+}
+
+/// <summary>One DDMS a flow declares under <c>target.ddms</c>.</summary>
+internal sealed class DdmsYaml
+{
+    /// <summary>Where the DDMS is under the endpoint (<c>/api/os-wellbore-ddms</c>); null when the endpoint is the DDMS.</summary>
+    public string? Root { get; set; }
+
+    /// <summary>Its call pattern (<c>wellboreDdmsV3</c>, the default).</summary>
+    public string? Shape { get; set; }
+
+    /// <summary>The id the DDMS is registered under in the Register service, to look up what the flow does not declare.</summary>
+    public string? Register { get; set; }
+
+    /// <summary>The entity types it serves, each with the collection it serves it under; the shape's own when left out.</summary>
+    public OrderedDictionary<string, DdmsCollectionYaml?>? Collections { get; set; }
+}
+
+/// <summary>One collection of a declared DDMS.</summary>
+internal sealed class DdmsCollectionYaml
+{
+    /// <summary>The path segment the collection is served under (<c>welllogs</c>).</summary>
+    public string? Path { get; set; }
+
+    /// <summary>Whether the collection stores bulk data beside its records. Default false.</summary>
+    public bool? Bulk { get; set; }
+
+    /// <summary>What the bulk data's columns are checked against: unchecked (the default), curveIds or trajectoryStations.</summary>
+    public string? Columns { get; set; }
 }
 
 internal sealed class TargetAuthYaml
@@ -401,6 +433,8 @@ internal sealed class ProtocolOptionsYaml
     public Dictionary<string, string>? WorkflowPayload { get; set; }
 
     public string? RecordQueryPath { get; set; }
+
+    public string? RegisterPath { get; set; }
 }
 
 internal sealed class FlowReliabilityYaml

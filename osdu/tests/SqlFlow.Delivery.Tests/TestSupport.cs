@@ -412,6 +412,41 @@ public sealed class FakeProtocolFactory : IProtocolFactory
 }
 
 /// <summary>A scripted HTTP handler: matches requests by method and path, records bodies, returns canned responses.</summary>
+/// <summary>
+/// Builds the real protocols over one fake OSDU (<paramref name="handler"/>), the way the node's factory builds them over
+/// the network, each over an HTTP runtime of its own that the factory disposes.
+/// </summary>
+public sealed class FakeOsduProtocols(FakeHttpHandler handler) : IProtocolFactory, IDisposable
+{
+    private readonly List<HttpRuntime> _runtimes = [];
+    private readonly object _gate = new();
+
+    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        var runtime = new HttpRuntime(flow.Reliability, new SecretResolver([new EnvSecretProvider()]), new TestClock(), handler, allowLoopback: true);
+        lock (_gate)
+        {
+            _runtimes.Add(runtime);
+        }
+
+        return ProtocolFactory.CreateAsync(flow, runtime, new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance, ct);
+    }
+
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            foreach (var runtime in _runtimes)
+            {
+                runtime.Dispose();
+            }
+
+            _runtimes.Clear();
+        }
+    }
+}
+
 public sealed class FakeHttpHandler : HttpMessageHandler
 {
     public sealed record Request(HttpMethod Method, Uri Uri, string? Body, string? ContentType, IReadOnlyDictionary<string, string> Headers);
@@ -480,6 +515,9 @@ public static class Samples
     public const string WellLogKind = "osdu:wks:work-product-component--WellLog:1.4.0";
 
     public const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
+
+    /// <summary>The kind the sample trajectory mapping renders.</summary>
+    public const string WellboreTrajectoryKind = "osdu:wks:work-product-component--WellboreTrajectory:1.3.0";
 
     /// <summary>The connection reference the suites give a flow whose source is the in-memory ingestion tables.</summary>
     public const string MemoryConnection = "mem://ingestion";
@@ -559,7 +597,7 @@ public static class Samples
     {
         ArgumentNullException.ThrowIfNull(store);
         var saved = new List<TemplateSaved>();
-        foreach (var kind in new[] { WellLogKind, WellboreKind })
+        foreach (var kind in new[] { WellLogKind, WellboreKind, WellboreTrajectoryKind })
         {
             var schema = SampleTemplate(kind);
             saved.Add(await store.SaveAsync(schema, "sample file", "tests"));
@@ -686,6 +724,21 @@ public static class Samples
     }
 
     public static ILogger<T> Logger<T>() => NullLogger<T>.Instance;
+
+    /// <summary>A flow read for its target alone: its source and render name tables and a mapping no test opens.</summary>
+    public static FlowDefinition Targeting(FlowTarget target, string? interfaceName = null) => new()
+    {
+        Name = "targeting",
+        Interface = interfaceName,
+        Source = new FlowSource
+        {
+            Connection = MemoryConnection,
+            Record = new FlowSourceTable { Object = "ing.Record", Key = ["record_id"] },
+            Work = "work",
+        },
+        Render = new FlowRender { Mapping = "Targeting@1.0.0" },
+        Target = target,
+    };
 }
 
 /// <summary>A compact OSDU-shaped schema for unit tests: allOf, a definitions ref, an array of objects, tags.</summary>

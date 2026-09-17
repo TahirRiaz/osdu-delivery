@@ -2,7 +2,9 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Source;
 
 namespace SqlFlow.Delivery.Engine;
@@ -87,16 +89,76 @@ public static class DeliveryOperations
     }
 }
 
-/// <summary>What a record-scoped deliver run sends again, by the names a run's payload carries.</summary>
+/// <summary>
+/// What a record-scoped deliver run sends again, by the names a run's payload and the API carry
+/// (docs/interfaces-design.md section 10): everything, or one part of the record, named by what it is on the record's
+/// route. The part that is not named keeps what OSDU holds: the record keeps its dataset references and its DDMS bulk
+/// link, and a bulk resend writes a new bulk version of the same record.
+/// </summary>
 public static class RedeliverScopes
 {
     public const string All = "all";
 
+    /// <summary>The record document alone.</summary>
+    public const string Record = "record";
+
+    /// <summary>The files a record carries as datasets (the file and manifest routes): uploaded and registered again, and the record rewritten with them.</summary>
+    public const string Files = "files";
+
+    /// <summary>The bulk data a DDMS stores for the record (the ddms route): written again as a new version of the record's bulk data.</summary>
+    public const string Bulk = "bulk";
+
+    /// <summary>The record document, by the name the single form has always used for it.</summary>
     public const string Metadata = "metadata";
 
+    /// <summary>The files or the bulk data, whichever the route sends, by the name the single form has always used for them.</summary>
     public const string Payload = "payload";
 
-    public static IReadOnlyList<string> Names { get; } = [All, Metadata, Payload];
+    public static IReadOnlyList<string> Names { get; } = [All, Record, Files, Bulk, Metadata, Payload];
+
+    /// <summary>The parts a record delivered by <paramref name="protocol"/> can be sent again by.</summary>
+    public static IReadOnlyList<string> For(DeliveryProtocol protocol) => protocol switch
+    {
+        DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest => [All, Record, Files, Metadata, Payload],
+        DeliveryProtocol.OsduWellLog => [All, Record, Bulk, Metadata, Payload],
+        _ => [All, Record, Metadata],
+    };
+
+    /// <summary>
+    /// What <paramref name="name"/> sends again of a record <paramref name="flow"/> delivers: everything when it names
+    /// nothing. Throws <see cref="DeliveryException"/> for a name that is not a part, or a part the flow's route does not
+    /// send (files on a ddms route, bulk data on a file route, anything but the record on the storage route).
+    /// </summary>
+    public static RedeliverScope Of(string? name, FlowDefinition flow)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        var part = string.IsNullOrWhiteSpace(name) ? All : name.Trim().ToLowerInvariant();
+        if (!Names.Contains(part, StringComparer.Ordinal))
+        {
+            throw new DeliveryException($"redeliver '{name}' is not one of {string.Join(", ", Names)}.");
+        }
+
+        var protocol = flow.Target.Protocol;
+        if (!For(protocol).Contains(part, StringComparer.Ordinal))
+        {
+            throw new DeliveryException(
+                $"'{flow.Label}' is delivered by the {RouteChecks.Name(protocol)} route, which sends {Sends(protocol)}, so a redelivery of '{part}' has nothing to send; name one of {string.Join(", ", For(protocol))}.");
+        }
+
+        return part switch
+        {
+            All => RedeliverScope.All,
+            Record or Metadata => RedeliverScope.Metadata,
+            _ => RedeliverScope.Payload,
+        };
+    }
+
+    private static string Sends(DeliveryProtocol protocol) => protocol switch
+    {
+        DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest => "the record and its files",
+        DeliveryProtocol.OsduWellLog => "the record and its bulk data",
+        _ => "the record alone",
+    };
 }
 
 /// <summary>

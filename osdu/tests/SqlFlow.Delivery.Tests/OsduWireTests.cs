@@ -418,12 +418,14 @@ public class WellboreDdmsRootTests
     [Fact]
     public void The_endpoints_a_removal_would_call_follow_the_root()
     {
-        var endpoints = SqlFlow.Delivery.Engine.RemovalEndpoints.Of(new FlowTarget
-        {
-            Endpoint = "https://osdu.example.com",
-            Protocol = DeliveryProtocol.OsduWellLog,
-            ProtocolOptions = PlatformRoot,
-        });
+        var endpoints = SqlFlow.Delivery.Engine.RemovalEndpoints.Of(
+            Samples.Targeting(new FlowTarget
+            {
+                Endpoint = "https://osdu.example.com",
+                Protocol = DeliveryProtocol.OsduWellLog,
+                ProtocolOptions = PlatformRoot,
+            }),
+            "osdu:wks:work-product-component--WellLog:1.4.0");
 
         Assert.Equal("/api/os-wellbore-ddms/ddms/v3/welllogs/{id}", endpoints.Record);
         Assert.Equal("/api/storage/v2/records/{id}/versions", endpoints.History);
@@ -505,8 +507,12 @@ public class LegalTagCheckTests
     [InlineData(DeliveryProtocol.OsduRecord, null, null, false, null)]
     public void The_check_goes_where_the_target_can_reach_the_legal_service(DeliveryProtocol protocol, string? ddmsRoot, string? legalPath, bool validate, string? expected)
     {
+        // Every endpoint but a DDMS's own is the platform root; the ddms route knows which its endpoint is.
         var options = new ProtocolOptions { DdmsRoot = ddmsRoot, LegalValidatePath = legalPath, ValidateLegalTags = validate };
-        Assert.Equal(expected, LegalTagValidator.PathFor(protocol, options));
+        var path = protocol == DeliveryProtocol.OsduWellLog
+            ? SqlFlow.Delivery.Engine.DdmsRouting.Of(options).LegalValidatePath
+            : LegalTagValidator.PathFor(options, platformEndpoint: true);
+        Assert.Equal(expected, path);
     }
 
     [Fact]

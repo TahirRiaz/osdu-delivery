@@ -178,7 +178,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         runtime.ActivityLog = runLogger.Render;
         if (runtime.ReadsSource)
         {
-            RouteChecks.Check(flow, runtime.Mapping.Mapping.Kind);
+            await runtime.CheckRouteAsync(runtime.Mapping.Mapping.Kind, ct).ConfigureAwait(false);
         }
 
         return await GuardedAsync(runtime, operation, token => ExecuteInterfaceAsync(runtime, operation, payload, submission, log, token), ct).ConfigureAwait(false);
@@ -294,7 +294,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
                 {
                     // A scoped redelivery: forget what OSDU holds for these records (all of it, or the part the run
                     // names), then let the plan re-send them.
-                    var marked = await runtime.RedeliverAsync(keys, RedeliverScopeOf(payload), ct).ConfigureAwait(false);
+                    var marked = await runtime.RedeliverAsync(keys, RedeliverScopeOf(payload, flow), ct).ConfigureAwait(false);
                     LogRedeliver(log, marked, keys.Count);
                 }
 
@@ -442,11 +442,14 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         return payload.Force || reRunningSubmission || payload.RecordKeys.Count > 0;
     }
 
-    /// <summary>What a record-scoped deliver run sends again: the run's validated <c>redeliver</c>, everything when unset.</summary>
-    public static RedeliverScope RedeliverScopeOf(DeliveryRunPayload payload)
+    /// <summary>
+    /// What a record-scoped deliver run of <paramref name="flow"/> sends again: the part the run's <c>redeliver</c> names,
+    /// everything when unset. A part the flow's route does not send is refused.
+    /// </summary>
+    public static RedeliverScope RedeliverScopeOf(DeliveryRunPayload payload, FlowDefinition flow)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        return payload.Redeliver is { } scope ? Enum.Parse<RedeliverScope>(scope, ignoreCase: true) : RedeliverScope.All;
+        return RedeliverScopes.Of(payload.Redeliver, flow);
     }
 
     /// <summary>A plan run streams its records, writes the first entries to its trace and counts the rest.</summary>

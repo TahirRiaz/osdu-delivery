@@ -220,7 +220,11 @@ public sealed record DeliveryReleaseRequest(IReadOnlyList<Guid>? Keys);
 
 public sealed record DeliveryReleaseResult(int Released);
 
-/// <summary>Redeliver: <c>scope</c> is all, metadata or payload; <c>run</c> queues the deliver run that sends it.</summary>
+/// <summary>
+/// Redeliver: <c>scope</c> is the part to send again, <c>all</c> by default, <c>record</c>, or <c>files</c> or <c>bulk</c>
+/// as the record's route sends them (<c>metadata</c> and <c>payload</c> name the same parts); <c>run</c> queues the deliver
+/// run that sends it.
+/// </summary>
 public sealed record DeliveryRedeliverRequest(string? Scope = null, bool Run = true, string? Pool = null);
 
 public sealed record DeliveryRedeliverResult(int Marked, Guid? RunId);
@@ -229,10 +233,11 @@ public sealed record DeliveryRedeliverResult(int Marked, Guid? RunId);
 /// Where a flow's records actually live: the endpoint and data partition every removal in the GUI names before it
 /// runs, with the exact call each scope makes. The endpoint is reported as the flow declares it, secret references
 /// and all, because that reference is what identifies the environment; no credential or header value is exposed.
+/// <c>Ddms</c> says, for a flow on the ddms route, which collection of which DDMS its records go to.
 /// </summary>
 public sealed record DeliveryTargetDto(
     Guid PipelineId, string FlowName, string Endpoint, string? DataPartition, string Protocol, string AuthType,
-    string RecordPath, string HistoryPath, string EverythingPath, string? Interface = null);
+    string RecordPath, string HistoryPath, string EverythingPath, string? Interface = null, string? Ddms = null);
 
 /// <summary>The listing a removal is aimed at, the same filter the records list is built from.</summary>
 public sealed record DeliveryRecordFilterDto(
@@ -547,10 +552,10 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryTargetDto>, ProblemHttpResult>> GetTargetAsync(
-        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, CancellationToken ct)
+        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
-        return flow is null ? problem! : TypedResults.Ok(ToTargetDto(flow));
+        return flow is null ? problem! : TypedResults.Ok(await ToTargetDtoAsync(osdu, flow, ct).ConfigureAwait(false));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliverySubmissionDto>>, ProblemHttpResult>> ListSubmissionsAsync(
@@ -1140,10 +1145,16 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        var scopeText = string.IsNullOrWhiteSpace(request?.Scope) ? "all" : request.Scope.Trim();
-        if (!Enum.TryParse<RedeliverScope>(scopeText, ignoreCase: true, out var scope))
+        // The part to send again, named by what it is on the record's route (record, files, bulk), or all of it.
+        var part = string.IsNullOrWhiteSpace(request?.Scope) ? RedeliverScopes.All : request.Scope.Trim().ToLowerInvariant();
+        RedeliverScope scope;
+        try
         {
-            return TypedResults.Problem(detail: "scope must be all, metadata or payload.", statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+            scope = RedeliverScopes.Of(part, flow.Flow);
+        }
+        catch (DeliveryException ex)
+        {
+            return TypedResults.Problem(detail: $"scope: {ex.Message}", statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
         }
 
         // With a run, the node marks and re-sends in one recorded run (the mark carries the run id and the scope);
@@ -1157,7 +1168,7 @@ public static class DeliveryEndpoints
             {
                 Operation = DeliveryOperations.Deliver,
                 Values = SubmissionValues(last?.ParametersJson),
-                Payload = new DeliveryRunPayload { RecordKeys = [key], Redeliver = scope.ToString().ToLowerInvariant(), Interface = flow.Flow.Interface }.ToJson(),
+                Payload = new DeliveryRunPayload { RecordKeys = [key], Redeliver = part, Interface = flow.Flow.Interface }.ToJson(),
             };
             var runId = await EnqueueRunAsync(db, dispatcher, flow, parameters, request?.Pool, user, ct).ConfigureAwait(false);
             return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryRedeliverResult(1, runId));
@@ -1357,7 +1368,7 @@ public static class DeliveryEndpoints
 
     /// <summary>What a removal would take away, and from where: the confirmation's contents, computed not guessed.</summary>
     private static async Task<Results<Ok<DeliveryRemovalPreview>, ProblemHttpResult>> PreviewRemovalAsync(
-        Guid pipelineId, DeliveryRemovalRequest request, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        Guid pipelineId, DeliveryRemovalRequest request, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
         if (flow is null)
@@ -1413,7 +1424,7 @@ public static class DeliveryEndpoints
         }
 
         return TypedResults.Ok(new DeliveryRemovalPreview(
-            RemovalScopes.Wire(scope), records, Math.Max(0, records - neverDelivered), neverDelivered, capped, ToTargetDto(flow)));
+            RemovalScopes.Wire(scope), records, Math.Max(0, records - neverDelivered), neverDelivered, capped, await ToTargetDtoAsync(osdu, flow, ct).ConfigureAwait(false)));
     }
 
     /// <summary>A record listing outside the ledger's bounds (<see cref="RecordListing"/>): the detail says how to narrow it.</summary>
@@ -1446,17 +1457,38 @@ public static class DeliveryEndpoints
 
     /// <summary>
     /// The flow's target as the GUI names it before a removal. The data partition is read from the flow's headers,
-    /// which is where OSDU takes it; no other header is reported, since a header can carry a credential reference.
+    /// which is where OSDU takes it; no other header is reported, since a header can carry a credential reference. On the
+    /// ddms route the endpoints and the collection are those serving the kind the flow's mapping renders, as the
+    /// repository sync read it.
     /// </summary>
-    private static DeliveryTargetDto ToTargetDto(FlowContext flow)
+    private static async Task<DeliveryTargetDto> ToTargetDtoAsync(OsduDbContext osdu, FlowContext flow, CancellationToken ct)
     {
         var target = flow.Flow.Target;
         target.Headers.TryGetValue("data-partition-id", out var partition);
-        var paths = RemovalEndpoints.Of(target);
+        string? kind = null;
+        string? ddms = null;
+        if (target.Protocol == DeliveryProtocol.OsduWellLog)
+        {
+            var reference = flow.Flow.Render.Mapping;
+            kind = await osdu.DeliveryMappings.AsNoTracking()
+                .Where(m => m.RepoId == flow.Pipeline.RepoId && m.Reference == reference && m.Status == "valid")
+                .Select(m => m.Kind)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+            ddms = DdmsDescription(flow.Flow, kind);
+        }
+
+        var paths = RemovalEndpoints.Of(flow.Flow, string.IsNullOrEmpty(kind) ? null : kind);
         return new DeliveryTargetDto(
             flow.Pipeline.Id, flow.Pipeline.Name, target.Endpoint, partition, target.Protocol.ToString(),
-            target.Auth.Type.ToString(), paths.Record, paths.History, paths.Everything, flow.Flow.Interface);
+            target.Auth.Type.ToString(), paths.Record, paths.History, paths.Everything, flow.Flow.Interface, ddms);
     }
+
+    /// <summary>Where a ddms-route flow's records go, as a sentence: the collection and the DDMS serving the kind its mapping renders.</summary>
+    private static string DdmsDescription(FlowDefinition flow, string? kind)
+        => string.IsNullOrEmpty(kind)
+            ? "The DDMS collection is chosen by the kind the flow's mapping renders, which the repository sync has not read yet."
+            : DdmsRouting.Of(flow).Explain(kind);
 
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ProbeAsync(
         Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)

@@ -288,7 +288,7 @@ public sealed class SourceRuntime
                     runtime.RunId = RunId;
                     runtime.ActivityLog = ActivityLog;
                     runtimes[name] = runtime;
-                    RouteChecks.Check(flow, readsSource ? runtime.Mapping.Mapping.Kind : runtime.Mappings.Load(flow.Render.Mapping).Kind);
+                    await runtime.CheckRouteAsync(readsSource ? runtime.Mapping.Mapping.Kind : runtime.Mappings.Load(flow.Render.Mapping).Kind, ct).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (Found(ex, ct))
                 {

@@ -295,7 +295,7 @@ document. Before anything is sent, the worker compares the queued document and p
 says OSDU holds at that moment and sends only the halves that differ; when neither does, it settles the record with
 an attempt (`skipped`, phase `unchanged`) and sends nothing.
 
-**Redeliver** forgets the hashes of what OSDU holds (all of them, or only the metadata or the payload) and stamps the
+**Redeliver** forgets the hashes of what OSDU holds (all of them, or only the record's or only its files' or bulk data's) and stamps the
 record to be planned again, so the next plan that reaches it sends that part again. From the GUI, redeliver also
 queues a deliver run scoped to the record, which reads it from the ingestion tables by key, so the redelivery happens
 at once and is recorded under the user who asked. It never bypasses the render: the document sent is always the one

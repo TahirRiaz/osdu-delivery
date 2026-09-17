@@ -138,9 +138,10 @@ The shared blocks are written once. The existing top-level `source.record`, `sou
 2. **The schema.** The mapping's template carries OSDU's `x-osdu-relationship` annotations: which properties refer to
    which group and entity types, including the dataset group a record's `Datasets` refer to. The template code
    already reads them.
-3. **The DDMS registry.** OSDU's Register service lists DDMS registrations by type
-   (`GET /api/register/v1/ddms?type=...`, openapi register), each with the entity types it serves and an OpenAPI
-   document for each.
+3. **The DDMS registry.** OSDU's Register service keeps DDMS registrations (openapi register v1), each with the entity
+   types it serves and an OpenAPI document for each, read by id (`GET /api/register/v1/ddms/{id}`). Its lookup by type
+   (`GET /ddms?type=`) takes only `^[A-Za-z0-9]{1,50}`, which cannot carry an entity type with its group
+   (osdu/specs/core/INTEGRATION.md section 2.7), so a flow names the registration it means.
 
 ### 5.2 The decision
 
@@ -160,14 +161,21 @@ DDMS lookup happens in the run's preflight, on the node.
 
 ### 5.3 Finding a DDMS
 
-In order:
+A record goes to the collection of the DDMS serving its entity type, which its id names
+(`{partition}:{entityType}:{key}`), so a verify, a read or a removal routes from the id alone. In order:
 
-1. `target.ddms` in the flow: a named DDMS, its root or URL, its route shape, and the collection each entity type is
-   served under. The collection is always stated, never derived: the Wellbore DDMS serves `WellLog` under `welllogs`
-   and `PPFGDataset` under `ppfgdataset`, so no rule turns an entity type into its path.
-2. The Register service's registrations, when the flow sets `target.ddmsDiscovery: register`: the registration's
-   OpenAPI document is matched against the known route shapes, and the collection is read from its paths.
-3. Neither: the interface is refused in preflight, naming the entity type and the two ways to declare its DDMS.
+1. `target.ddms` in the flow: named DDMSs, each with its root under the endpoint, its route shape and the collection
+   each entity type is served under (the shape's own collections when it lists none). The collection is always
+   stated, never derived: the Wellbore DDMS serves `WellLog` under `welllogs` and `PPFGDataset` under `ppfgdataset`,
+   so no rule turns an entity type into its path. A DDMS named with `register: <id>` has what the flow leaves out read
+   from its Register service registration when the protocol is built: the root from the one server its registered
+   documents name, the collections from their retrieval operations (`x-ddms-retrieve-entity`), matched against the
+   shape's known collections by path.
+2. The Wellbore DDMS, whose nine collections OSDU Delivery knows (four that keep bulk data, five that hold records
+   alone), under `protocolOptions.ddmsRoot`, or at the endpoint of a single-form flow that declares no DDMS.
+3. Neither: the interface is refused in preflight, naming the entity type, the DDMSs the flow reaches and what they
+   serve, and how to declare the one it needs. A type a DDMS named by registration may serve waits for the
+   registration to be read, which the run's preflight does before it checks.
 
 ### 5.4 Route types in code
 
@@ -178,13 +186,15 @@ A route type is one call pattern, written once:
 | `storage` | storage v2 | exists (`osduRecord`) |
 | `file` | file v2, storage v2 | exists (`osduFile`) |
 | `manifest` | file v2, workflow v1, storage v2 | exists (`osduManifest`) |
-| `ddms` with shape `wellboreDdmsV3` | wellbore DDMS v3: `POST /{collection}`, `/{collection}/{id}/data`, `/{collection}/{id}/sessions` | generalised from `osduWellLog`; serves WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement and any DDMS with the same shape |
+| `ddms` with shape `wellboreDdmsV3` | wellbore DDMS v3: `POST /{collection}`, `/{collection}/{id}/data`, `/{collection}/{id}/sessions` | built (stage 5, `osduWellLog`): every Wellbore DDMS collection, the four that keep bulk data (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) and the five that hold records alone, and any DDMS of the same shape |
 | `datasetCollection` | dataset v1: `storageInstructions`, `registerDataset` | new |
 | `fileAndDdms`, `manifestAndDdms` | the above, composed | new |
 | other DDMS shapes (seismic, reservoir, ...) | their own specifications | one route type each, once their specifications are added |
 
-The well log specific checks become checks of any tabular bulk upload: the row labels of each chunk read before a
-session, and the rows and columns read back after it.
+The well log specific checks became checks of any tabular bulk upload: the row labels of each chunk read before a
+session, the rows and columns read back after it, and the columns checked against what the record declares for its
+collection (curve ids and widths, or trajectory station properties). The record rules the Wellbore DDMS applies to each
+kind are checked before anything is sent, and a metadata update carries the bulk link the DDMS keeps on the record.
 
 ## 6. Order
 

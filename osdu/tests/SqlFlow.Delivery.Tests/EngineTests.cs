@@ -35,11 +35,17 @@ public class ProtocolTests
         return (client, handler, runtime);
     }
 
+    /// <summary>A log describing every curve the test chunks carry, as the wellbore DDMS requires of a log's bulk data.</summary>
+    private static readonly string LogDocument =
+        "{\"id\":\"dev:work-product-component--WellLog:abc\",\"kind\":\"k\",\"data\":{\"Name\":\"n\",\"Curves\":["
+        + string.Join(",", Enumerable.Range(0, 10).Select(i => "CURVE_" + i.ToString(System.Globalization.CultureInfo.InvariantCulture)).Prepend("MD").Select(c => "{\"CurveID\":\"" + c + "\"}"))
+        + "]}}";
+
     private static DeliveryWork Work(bool metadata, bool payload, int chunks, long? existing = null, IPayloadSource? source = null, string? document = null) => new()
     {
         Key = SqlFlow.Delivery.Identity.DeliveryKey.Derive("test", ["abc"]),
         TargetId = "dev:work-product-component--WellLog:abc",
-        Document = TestSchema.Doc(document ?? """{"id":"dev:work-product-component--WellLog:abc","kind":"k","data":{"Name":"n"}}"""),
+        Document = TestSchema.Doc(document ?? LogDocument),
         DeliverMetadata = metadata,
         DeliverPayload = payload,
         Payload = source ?? new MemoryPayload(chunks),
@@ -411,9 +417,9 @@ public class ProtocolTests
         }
 
         // A reference curve that is one of the log's curves, or none named at all, is not the protocol's concern.
-        Assert.Null(OsduWellLogProtocol.ReferenceCurveProblem(TestSchema.Doc("""{"data":{"ReferenceCurveID":"MD","Curves":[{"CurveID":"MD"},{"CurveID":"GR"}]}}""")));
-        Assert.Null(OsduWellLogProtocol.ReferenceCurveProblem(TestSchema.Doc("""{"data":{"Curves":[{"CurveID":"GR"}]}}""")));
-        Assert.Contains("describes no curve", OsduWellLogProtocol.ReferenceCurveProblem(TestSchema.Doc("""{"data":{"ReferenceCurveID":"MD"}}""")), StringComparison.Ordinal);
+        Assert.Null(WellboreDdmsRules.RecordProblem(WellboreDdmsRules.WellLog, TestSchema.Doc("""{"data":{"ReferenceCurveID":"MD","Curves":[{"CurveID":"MD"},{"CurveID":"GR"}]}}"""), withBulk: false));
+        Assert.Null(WellboreDdmsRules.RecordProblem(WellboreDdmsRules.WellLog, TestSchema.Doc("""{"data":{"Curves":[{"CurveID":"GR"}]}}"""), withBulk: false));
+        Assert.Contains("describes no curve", WellboreDdmsRules.RecordProblem(WellboreDdmsRules.WellLog, TestSchema.Doc("""{"data":{"ReferenceCurveID":"MD"}}"""), withBulk: false), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -695,12 +701,38 @@ public class DeliverRunScopeTests
     }
 
     [Fact]
-    public void A_record_scoped_run_redelivers_what_it_names_and_everything_by_default()
+    public void A_record_scoped_run_redelivers_the_part_it_names_on_its_route_and_everything_by_default()
     {
         var key = Guid.NewGuid();
-        Assert.Equal(RedeliverScope.All, DeliveryExecutor.RedeliverScopeOf(new DeliveryRunPayload { RecordKeys = [key] }));
-        Assert.Equal(RedeliverScope.Payload, DeliveryExecutor.RedeliverScopeOf(new DeliveryRunPayload { RecordKeys = [key], Redeliver = RedeliverScopes.Payload }));
-        Assert.Equal(RedeliverScope.Metadata, DeliveryExecutor.RedeliverScopeOf(new DeliveryRunPayload { RecordKeys = [key], Redeliver = "Metadata" }));
+        var loader = new DeliveryDocumentLoader();
+        var logs = loader.LoadFlow(Samples.Flow);
+        var wellbores = loader.LoadFlow(Samples.WellboreFlowFile);
+        var files = logs with { Target = logs.Target with { Protocol = DeliveryProtocol.OsduFile } };
+        RedeliverScope Of(FlowDefinition flow, string? part) => DeliveryExecutor.RedeliverScopeOf(new DeliveryRunPayload { RecordKeys = [key], Redeliver = part }, flow);
+
+        // The ddms route sends the record and its bulk data.
+        Assert.Equal(RedeliverScope.All, Of(logs, null));
+        Assert.Equal(RedeliverScope.Payload, Of(logs, RedeliverScopes.Bulk));
+        Assert.Equal(RedeliverScope.Payload, Of(logs, RedeliverScopes.Payload));
+        Assert.Equal(RedeliverScope.Metadata, Of(logs, "Record"));
+        Assert.Equal(RedeliverScope.Metadata, Of(logs, "Metadata"));
+        Assert.Equal(
+            "'recall-welllog' is delivered by the ddms route, which sends the record and its bulk data, so a redelivery of 'files' has nothing to send; name one of all, record, bulk, metadata, payload.",
+            Assert.Throws<DeliveryException>(() => Of(logs, RedeliverScopes.Files)).Message);
+
+        // The file route sends the record and its files.
+        Assert.Equal(RedeliverScope.Payload, Of(files, RedeliverScopes.Files));
+        Assert.Contains("a redelivery of 'bulk' has nothing to send", Assert.Throws<DeliveryException>(() => Of(files, RedeliverScopes.Bulk)).Message, StringComparison.Ordinal);
+
+        // The storage route sends the record alone.
+        Assert.Equal(RedeliverScope.Metadata, Of(wellbores, RedeliverScopes.Record));
+        Assert.Equal(RedeliverScope.All, Of(wellbores, RedeliverScopes.All));
+        Assert.Contains(
+            "'recall-wellbore' is delivered by the storage route, which sends the record alone, so a redelivery of 'payload' has nothing to send; name one of all, record, metadata.",
+            Assert.Throws<DeliveryException>(() => Of(wellbores, RedeliverScopes.Payload)).Message,
+            StringComparison.Ordinal);
+
+        Assert.Contains("redeliver 'everything' is not one of all, record, files, bulk, metadata, payload", Assert.Throws<DeliveryException>(() => Of(logs, "everything")).Message, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -1,8 +1,8 @@
 # Flow: osdu-cache-sync
 #
 # The metadata sync (docs/delivery/design.md section 15). It pages OSDU's search index into files on the lake: the
-# reference and master data the WellLog mapping matches units, curve business values, vertical measurement types and
-# wellbores by, landed as the records the index holds. What the mappings resolve against is not these files but the
+# reference and master data the WellLog and WellboreTrajectory mappings match units, curve business values, vertical
+# measurement types, trajectory station property types and wellbores by, landed as the records the index holds. What the mappings resolve against is not these files but the
 # cache, which ../caches/osdu-reference-cache.yaml defines and its own runs capture into the catalog.
 flowType: retrieval
 name: osdu-cache-sync
@@ -25,6 +25,7 @@ source:
     - "osdu:wks:reference-data--UnitOfMeasure:*"
     - "osdu:wks:reference-data--LogCurveBusinessValue:*"
     - "osdu:wks:reference-data--VerticalMeasurementType:*"
+    - "osdu:wks:reference-data--TrajectoryStationPropertyType:*"
     - "osdu:wks:master-data--Wellbore:*"
 
 target:
