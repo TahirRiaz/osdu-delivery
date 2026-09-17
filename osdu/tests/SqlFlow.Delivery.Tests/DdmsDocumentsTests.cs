@@ -259,6 +259,51 @@ public sealed class DdmsDocumentsTests
     }
 
     [Fact]
+    public void A_flow_declares_a_reservoir_management_ddms_with_its_waits_and_the_header_collections_it_uses()
+    {
+        var flow = _loader.ParseFlow(Single("""
+              ddms:
+                rm:
+                  root: /api/rm-ddms/
+                  shape: reservoirManagement
+                  settleSeconds: 0
+                  pollSeconds: 10
+                  collections:
+                    work-product-component--PersistedCollection: { path: kr-synthesis }
+                    work-product-component--AquiferInterpretation: { path: ' tank-datum ' }
+                    work-product-component--ReservoirEstimatedVolumes:
+                    master-data--FluidSystem: {}
+            """), "logs.yaml");
+
+        var rm = flow.Target.Ddms.Single();
+        Assert.Equal((DdmsShape.ReservoirManagement, "/api/rm-ddms"), (rm.Shape, rm.Root));
+        Assert.Equal(new ReservoirManagementSettings { SettleSeconds = 0, PollSeconds = 10 }, rm.ReservoirManagement);
+        Assert.Equal(
+            [
+                "work-product-component--PersistedCollection:kr-synthesis:True",
+                "work-product-component--AquiferInterpretation:tank-datum:True",
+                "work-product-component--ReservoirEstimatedVolumes:estimated-volumes:True",
+                "master-data--FluidSystem:pvt-properties:False",
+            ],
+            rm.Collections.Select(c => $"{c.EntityType}:{c.Segment}:{c.Bulk}"));
+        Assert.Null(rm.TimeSeries);
+        Assert.Null(rm.SeismicStore);
+
+        // Without settings, the defaults; without collections, the service's own entity types.
+        var defaults = _loader.ParseFlow(Single("""
+              ddms:
+                rm: { root: /api/rm-ddms, shape: reservoirManagement }
+            """), "logs.yaml").Target.Ddms.Single();
+        Assert.Equal(new ReservoirManagementSettings(), defaults.ReservoirManagement);
+        Assert.Equal((60, 5), (defaults.ReservoirManagement!.SettleSeconds, defaults.ReservoirManagement.PollSeconds));
+        Assert.Same(DdmsCatalog.ReservoirManagementCollections, defaults.Collections);
+        Assert.Null(_loader.ParseFlow(Single("""
+              ddms:
+                h: { root: /api/pddms/ingest/v1, shape: productionTimeSeriesV1, settleSeconds: 5 }
+            """), "logs.yaml").Target.Ddms.Single().ReservoirManagement);
+    }
+
+    [Fact]
     public void A_ddms_named_by_its_registration_leaves_what_it_does_not_declare_to_the_register_service()
     {
         var flow = _loader.ParseFlow(Single("""
@@ -386,6 +431,18 @@ public sealed class DdmsDocumentsTests
         { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { dataset--FileCollection.SEGY: { bulk: false } } }", "ddms", "", "target.ddms.s.collections.dataset--FileCollection.SEGY says what a dataset keeps, and a Seismic Store dataset always keeps its files; remove bulk, columns and typedContent." },
         { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { dataset--FileCollection.SEGY: { columns: curveIds } } }", "ddms", "", "target.ddms.s.collections.dataset--FileCollection.SEGY says what a dataset keeps" },
         { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { dataset--FileCollection.SEGY: { path: 'a/b' } } }", "ddms", "", "target.ddms.s.collections.dataset--FileCollection.SEGY.path 'a/b' must be a name of letters, digits, '.', '_' and '-', at most 100 characters." },
+        { "  ddms:\n    r: { shape: reservoirManagement }", "ddms", "", "target.ddms.r.root is required. A header record is written, read and removed through Storage, so the flow's endpoint is the platform the Reservoir Management DDMS is under; say where the service is under it (its project names no prefix, so it is the deployment's)." },
+        { "  ddms:\n    r: { root: /r, shape: reservoirManagement, settleSeconds: 3601 }", "ddms", "", "target.ddms.r.settleSeconds must be between 0 and 3600: how long a delivery with rows waits for the service to take its header record, 0 asking once." },
+        { "  ddms:\n    r: { root: /r, shape: reservoirManagement, pollSeconds: 0 }", "ddms", "", "target.ddms.r.pollSeconds must be between 1 and 60." },
+        { "  ddms:\n    r: { root: /r, shape: reservoirManagement, queryRoot: /q, maxRequestBytes: 20000 }", "ddms", "", "target.ddms.r.queryRoot, target.ddms.r.maxRequestBytes describe the Production DDMS historian, and target.ddms.r has the reservoirManagement shape" },
+        { "  ddms:\n    r: { root: /r, shape: reservoirManagement, provider: azure }", "ddms", "", "target.ddms.r.provider describe a Well Delivery DDMS deployment, and target.ddms.r has the reservoirManagement shape" },
+        { "  ddms:\n    r: { root: /r, shape: reservoirManagement, subproject: seismic }", "ddms", "", "target.ddms.r.subproject describe a Seismic Store, and target.ddms.r has the reservoirManagement shape" },
+        { "  ddms:\n    r: { root: /r, shape: reservoirManagement, register: rm-ddms }", "ddms", "", "target.ddms.r.register reads a DDMS's collections from its Register service registration, which the route reads for DDMSs of the wellboreDdmsV3 shape" },
+        { "  ddms:\n    r: { root: /r, shape: reservoirManagement, collections: { work-product-component--Other: {} } }", "ddms", "", "target.ddms.r.collections.work-product-component--Other.path is required: the header collection of the Reservoir Management DDMS the records go to (estimated-volumes, pvt-properties, geological-labels, petro-properties, tank-datum, fluid-synthesis, kr-synthesis, phi-k-synthesis, forecast); work-product-component--Other is none of its own entity types." },
+        { "  ddms:\n    r: { root: /r, shape: reservoirManagement, collections: { work-product-component--Other: { path: aquifer-datum } } }", "ddms", "", "target.ddms.r.collections.work-product-component--Other.path 'aquifer-datum' is not a header collection of the Reservoir Management DDMS: estimated-volumes, pvt-properties" },
+        { "  ddms:\n    r: { root: /r, shape: reservoirManagement, collections: { work-product-component--ReservoirEstimatedVolumes: { bulk: false } } }", "ddms", "", "target.ddms.r.collections.work-product-component--ReservoirEstimatedVolumes says what the collection keeps, and the Reservoir Management DDMS's tables decide that (estimated-volumes keeps rows in estimated-volumes-det); remove bulk, columns and typedContent." },
+        { "  ddms:\n    r: { root: /r, shape: reservoirManagement, collections: { master-data--FluidSystem: { columns: curveIds } } }", "ddms", "", "(pvt-properties keeps no rows); remove bulk, columns and typedContent." },
+        { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1 }\n    r: { root: /r, shape: reservoirManagement }", "ddms", "", "target.ddms serves work-product-component--ProductionValues from both 'h' and 'r'" },
     };
 
     [Theory]

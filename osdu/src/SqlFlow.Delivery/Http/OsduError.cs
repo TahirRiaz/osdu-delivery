@@ -52,13 +52,15 @@ public static class OsduError
                 return null;
             }
 
-            // FastAPI (wellbore DDMS): detail is a sentence, or a list of per-field validation errors.
+            // FastAPI (wellbore DDMS): detail is a sentence, or a list of per-field validation errors. The Reservoir
+            // Management DDMS also answers {"detail": {"message": ...}}.
             if (root.TryGetProperty("detail", out var detail) && !root.TryGetProperty("title", out _))
             {
                 return detail.ValueKind switch
                 {
                     JsonValueKind.String => detail.GetString(),
                     JsonValueKind.Array => ValidationErrors(detail),
+                    JsonValueKind.Object => Text(detail, "message"),
                     _ => null,
                 };
             }

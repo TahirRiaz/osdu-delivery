@@ -41,6 +41,15 @@ public enum DdmsShape
     /// file metadata (<c>PATCH ...?close=</c>). The record is a Storage record.
     /// </summary>
     SeismicStoreV3,
+
+    /// <summary>
+    /// The Reservoir Management DDMS (osdu/specs/reservoir-management-ddms/INTEGRATION.md): a header record written through
+    /// Storage, taken into the service's database by its list call (<c>GET /ddms/{collection}/</c>), and the rows of the
+    /// tables below it posted one per call (<c>POST /ddms/{table}</c>), each row's key fed to the rows below it. The
+    /// service's own record write and delete are never called: the first writes records without their ids, the second
+    /// purges.
+    /// </summary>
+    ReservoirManagement,
 }
 
 /// <summary>The cloud a DDMS deployment runs on, where the API cannot tell and its behaviour depends on it.</summary>
@@ -207,6 +216,28 @@ public sealed record SeismicStoreSettings
 }
 
 /// <summary>
+/// How long a delivery to the Reservoir Management DDMS waits for the service to take a header record into its database
+/// before posting the record's rows (osdu/specs/reservoir-management-ddms/INTEGRATION.md section 2.7): the service takes
+/// only records Search already serves.
+/// </summary>
+public sealed record ReservoirManagementSettings
+{
+    public const int DefaultSettleSeconds = 60;
+
+    public const int MaxSettleSeconds = 3_600;
+
+    public const int DefaultPollSeconds = 5;
+
+    public const int MaxPollSeconds = 60;
+
+    /// <summary>How long a delivery with rows waits for the service to hold the record's row; 0 asks once.</summary>
+    public int SettleSeconds { get; init; } = DefaultSettleSeconds;
+
+    /// <summary>The pause between two asks.</summary>
+    public int PollSeconds { get; init; } = DefaultPollSeconds;
+}
+
+/// <summary>
 /// A DDMS a flow delivers to: the name the flow gives it, where it is under the flow's endpoint (null when the endpoint
 /// is the DDMS itself, or an absolute URL when the Register service places it on another host), its call pattern and
 /// the collections it serves.
@@ -233,6 +264,9 @@ public sealed record DdmsService(string Name, string? Root, DdmsShape Shape, IRe
 
     /// <summary>Where a Seismic Store keeps the flow's datasets; null for every other shape.</summary>
     public SeismicStoreSettings? SeismicStore { get; init; }
+
+    /// <summary>How long a delivery to the Reservoir Management DDMS waits for its header rows; null for every other shape.</summary>
+    public ReservoirManagementSettings? ReservoirManagement { get; init; }
 
     /// <summary>Whether the registration still has to be read before the DDMS's root and collections are known.</summary>
     public bool AwaitsDiscovery => Registration is not null && !Discovered;
@@ -305,6 +339,15 @@ public static partial class DdmsCatalog
 
     /// <summary>The token a Seismic Store path takes the tenant in when the flow names none: the flow's <c>data-partition-id</c>.</summary>
     public const string PartitionToken = "{partition}";
+
+    /// <summary>The Reservoir Management DDMS's health check, below its root (<c>GET /</c>, no token).</summary>
+    public const string ReservoirManagementHealthPath = "/";
+
+    /// <summary>
+    /// A read of the Reservoir Management DDMS that checks the token and answers 200 with no rows: the estimated volume
+    /// details of a header id no record has (<c>GET /ddms/estimated-volumes-det/header-entity/{id}?header_entity_id=</c>).
+    /// </summary>
+    public const string ReservoirManagementTokenPath = "/ddms/estimated-volumes-det/header-entity/probe?header_entity_id=probe";
 
     /// <summary>
     /// The Wellbore DDMS v3's collections, as its pinned contract serves them (osdu/specs/wellbore-ddms/openapi.json and
@@ -417,6 +460,19 @@ public static partial class DdmsCatalog
         new("dataset--FileCollection.Generic", "generic", Bulk: true),
     ];
 
+    /// <summary>
+    /// The Reservoir Management DDMS's header collections (osdu/specs/reservoir-management-ddms/INTEGRATION.md section 2.4),
+    /// each keeping rows beside its records when tables are below it. Kr and Phi-K syntheses are both
+    /// <c>PersistedCollection</c> records, and a record goes to one collection, so the Phi-K synthesis, whose records the
+    /// service can take into its database, serves them unless a flow lists <c>kr-synthesis</c> for them.
+    /// </summary>
+    public static IReadOnlyList<DdmsCollectionEntry> ReservoirManagementCollections { get; } =
+    [
+        .. ReservoirManagementTables.Headers
+            .Where(h => h.Segment != "kr-synthesis")
+            .Select(h => new DdmsCollectionEntry(h.EntityType, h.Segment, Bulk: h.Tables.Count > 0)),
+    ];
+
     /// <summary>The Wellbore DDMS under <paramref name="root"/>, with the collections its contract serves.</summary>
     public static DdmsService WellboreDdms(string? root) => new(WellboreDdmsName, root, DdmsShape.WellboreDdmsV3, WellboreDdmsCollections);
 
@@ -428,17 +484,22 @@ public static partial class DdmsCatalog
         DdmsShape.RafsV2 => RafsCollections,
         DdmsShape.ProductionTimeSeriesV1 => TimeSeriesCollections,
         DdmsShape.SeismicStoreV3 => SeismicStoreCollections,
+        DdmsShape.ReservoirManagement => ReservoirManagementCollections,
         _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "not a DDMS shape"),
     };
 
-    /// <summary>Where a DDMS of <paramref name="shape"/> is deployed under the platform, as the service's charts route it.</summary>
-    public static string UsualRoot(DdmsShape shape) => shape switch
+    /// <summary>
+    /// Where a DDMS of <paramref name="shape"/> is deployed under the platform, as the service's charts route it; null for
+    /// the Reservoir Management DDMS, whose project names no prefix (its brief's section 1.1).
+    /// </summary>
+    public static string? UsualRoot(DdmsShape shape) => shape switch
     {
         DdmsShape.WellboreDdmsV3 => "/api/os-wellbore-ddms",
         DdmsShape.WellDeliveryV1 => "/api/well-delivery",
         DdmsShape.RafsV2 => "/api/rafs-ddms",
         DdmsShape.ProductionTimeSeriesV1 => "/api/pddms/ingest/v1",
         DdmsShape.SeismicStoreV3 => UsualSeismicStoreRoot,
+        DdmsShape.ReservoirManagement => null,
         _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "not a DDMS shape"),
     };
 
@@ -452,9 +513,10 @@ public static partial class DdmsCatalog
     /// <summary>
     /// The service descriptions a probe of <paramref name="service"/> asks, in order, below the endpoint. The Wellbore DDMS
     /// answers <c>/about</c>, the Well Delivery DDMS <c>/info</c>, RAFS <c>/info</c> without a token, then its type
-    /// catalogue, which checks the token and the partition, the historian the <c>/info</c> of both its services, and
+    /// catalogue, which checks the token and the partition, the historian the <c>/info</c> of both its services,
     /// Seismic Store its status, its status behind the token, and the flow's subproject, which checks the tenant, the
-    /// subproject, its legal tag and the caller's admin role (the tenant being the flow's partition when it names none).
+    /// subproject, its legal tag and the caller's admin role (the tenant being the flow's partition when it names none),
+    /// and the Reservoir Management DDMS its health check, then a read that checks the token.
     /// </summary>
     public static IReadOnlyList<string> ProbePaths(DdmsService service)
     {
@@ -467,6 +529,7 @@ public static partial class DdmsCatalog
             DdmsShape.RafsV2 => [root + RafsInfoPath, root + RafsAnalysisTypesPath],
             DdmsShape.ProductionTimeSeriesV1 => [root + TimeSeriesInfoPath, (service.TimeSeries?.QueryRoot ?? UsualTimeSeriesQueryRoot) + TimeSeriesInfoPath],
             DdmsShape.SeismicStoreV3 => [root + "/svcstatus", root + "/svcstatus/access", SeismicSubprojectPath(service)],
+            DdmsShape.ReservoirManagement => [root + ReservoirManagementHealthPath, root + ReservoirManagementTokenPath],
             _ => throw new ArgumentOutOfRangeException(nameof(service), service.Shape, "not a DDMS shape"),
         };
     }

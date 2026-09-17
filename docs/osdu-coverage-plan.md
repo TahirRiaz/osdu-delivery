@@ -36,7 +36,7 @@ and the order it is built in.
 | Well Delivery DDMS | `osdu/specs/well-delivery-ddms` | ddms shape `wellDeliveryV1` (stage 7): every entity type it knows, versioned references, its Storage copy | none |
 | Production DDMS (DSPDM) | `osdu/specs/production-dspdm` | no | route type `dspdm` |
 | Production time series (historian) | `osdu/specs/production-timeseries` | ddms shape `productionTimeSeriesV1` (stage 7): ProductionValues records through Storage, their points in requests under the body limit, every accepted version read back | none (the historian has no delete for points) |
-| Reservoir Management DDMS | `osdu/specs/reservoir-management-ddms` | no | ddms shape `reservoirManagement` |
+| Reservoir Management DDMS | `osdu/specs/reservoir-management-ddms` | ddms shape `reservoirManagement` (stage 7): the nine header kinds through Storage, taken into the service's database by its list call, and the rows of the tables below them posted with their keys fed down | the service's copy of a record keeps only its id and parent (its own write would write the record again without its id); records past the first 100 of a kind, and Kr syntheses, need an operator to insert the copy |
 | External Data Services | `osdu/specs/eds-dms` | no | storage and workflow routes, with the checks EDS needs |
 | DDMS discovery (Register service) | register v1 | `target.ddms`, with a registration read by id (stage 5) | none |
 
@@ -216,9 +216,12 @@ requests under the body limit sent once each, every accepted version read back t
 Store (`seismicStoreV3`: `dataset--FileCollection.*` records registered as their datasets' `seismicmeta` under a lock
 id each record keeps, the files uploaded to Azure Blob Storage, Google Cloud Storage or S3 with the credentials the
 service issues, renewed when they expire, a try resumed past the objects that landed, the dataset closed with its file
-metadata, the record's version read from Storage), each against a fake of the service (and, for Seismic Store, of the
-three object stores, the S3 one checking every signature with the AWS SDK) with every request to an OSDU service
-checked against its pinned contract, and the ddms route split into one writer per shape.
+metadata, the record's version read from Storage) and the Reservoir Management DDMS (`reservoirManagement`: header
+records through Storage, taken into the service's database by its list call until Search serves them, the rows of the
+tables below them posted one per call with their keys fed down and recorded, found again after a failed try, replaced
+on redelivery, and never the service's own record write or purging delete), each against a fake of the service (and,
+for Seismic Store, of the three object stores, the S3 one checking every signature with the AWS SDK) with every request
+to an OSDU service checked against its pinned contract, and the ddms route split into one writer per shape.
 
 ### Stage 8: records that wait for other records
 

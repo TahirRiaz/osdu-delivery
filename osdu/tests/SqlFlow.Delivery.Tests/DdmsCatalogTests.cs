@@ -271,6 +271,37 @@ public sealed partial class DdmsCatalogTests
             "/s/subproject/tenant/osdu/subproject/raw",
             DdmsCatalog.SeismicSubprojectPath(seismic with { SeismicStore = new SeismicStoreSettings { Tenant = "osdu", Subproject = "raw" } }));
         Assert.Throws<ArgumentException>(() => DdmsCatalog.ProbePaths(seismic with { SeismicStore = null }));
+        Assert.Null(DdmsCatalog.UsualRoot(DdmsShape.ReservoirManagement));
+        Assert.Equal("reservoirManagement", DdmsCatalog.ShapeName(DdmsShape.ReservoirManagement));
+        Assert.Same(DdmsCatalog.ReservoirManagementCollections, DdmsCatalog.DefaultCollections(DdmsShape.ReservoirManagement));
+        Assert.Equal(
+            ["/r/", "/r/ddms/estimated-volumes-det/header-entity/probe?header_entity_id=probe"],
+            DdmsCatalog.ProbePaths(new DdmsService("r", "/r", DdmsShape.ReservoirManagement, [])));
+    }
+
+    [Fact]
+    public void The_reservoir_management_header_collections_search_the_kinds_the_contract_reads_their_records_by()
+    {
+        var contract = OsduContracts.ReservoirManagementDdms;
+        foreach (var header in ReservoirManagementTables.Headers)
+        {
+            Assert.Equal(header.EntityType, header.Kind.Split(':')[2]);
+
+            // The read by id declares the pattern of the collection's ids, with the type's hyphens escaped.
+            var read = Assert.Single(contract.Operations, o => o.Method == "GET" && o.Template.StartsWith($"/ddms/{header.Segment}/{{", StringComparison.Ordinal));
+            var pattern = read.Definition["parameters"]!.AsArray().Single(p => p!["name"]!.GetValue<string>() == "catalog_entity_id")!["schema"]!["pattern"]!.GetValue<string>();
+            Assert.Contains(":" + header.EntityType + ":", pattern.Replace("\\", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
+            Assert.Contains(contract.Operations, o => o.Method == "GET" && o.Template == $"/ddms/{header.Segment}/");
+        }
+
+        // Kr and Phi-K syntheses share their kind, so the defaults take the Phi-K synthesis, whose records the service can take in.
+        Assert.Equal(8, DdmsCatalog.ReservoirManagementCollections.Count);
+        Assert.DoesNotContain(DdmsCatalog.ReservoirManagementCollections, c => c.Segment == "kr-synthesis");
+        Assert.Equal("phi-k-synthesis", DdmsCatalog.ReservoirManagementCollections.Single(c => c.EntityType == "work-product-component--PersistedCollection").Segment);
+        Assert.Equal(
+            ["estimated-volumes", "tank-datum", "fluid-synthesis", "phi-k-synthesis", "forecast"],
+            DdmsCatalog.ReservoirManagementCollections.Where(c => c.Bulk).Select(c => c.Segment));
+        Assert.All(DdmsCatalog.ReservoirManagementCollections, c => Assert.True(DdmsCatalog.IsEntityType(c.EntityType)));
     }
 
     [Fact]

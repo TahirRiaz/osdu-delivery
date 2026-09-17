@@ -215,7 +215,9 @@ reversible delete, so the record scope leaves the dataset and its files in place
 everything deletes the dataset with its files, then purges the record. On a gc deployment that removal is refused,
 since one dataset's delete there removes the files of every dataset in its subproject; the target view reads
 `(refused: ...)` for it when the flow declares `provider: gc`, and the removal refuses it whenever the deployment says
-it runs there.
+it runs there. The Reservoir Management DDMS's records are Storage records as well; the service's own delete purges, so
+it is never called. The record scope leaves the rows the service keeps for the record; removing everything deletes
+those rows, then purges the record, and the service's copy of the record stays in its database.
 
 A removal names its records by key or by filter. The filter form is resolved on the node when the removal runs,
 so "every record this run delivered" travels as the filter rather than as tens of thousands of ids, and covers

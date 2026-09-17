@@ -22,6 +22,12 @@ public sealed record DdmsRoute(DdmsService Service, DdmsCollectionEntry Collecti
     /// <summary>The token a Seismic Store dataset path takes the dataset's name (the record's key) in.</summary>
     public const string DatasetToken = "{dataset}";
 
+    /// <summary>The token a Reservoir Management DDMS row path takes the table's segment in.</summary>
+    public const string TableToken = "{table}";
+
+    /// <summary>The prefix every Reservoir Management DDMS collection and table is served under, below its root.</summary>
+    public const string ReservoirManagementPrefix = "/ddms/";
+
     /// <summary>
     /// The collection below the flow's endpoint: <c>/api/os-wellbore-ddms/ddms/v3/welllogs</c>,
     /// <c>/api/well-delivery/storage/v1/wellbore</c>, <c>/api/rafs-ddms/v2/samplesanalysis</c>,
@@ -36,15 +42,16 @@ public sealed record DdmsRoute(DdmsService Service, DdmsCollectionEntry Collecti
             DdmsShape.WellDeliveryV1 => DdmsCatalog.WellDeliveryPrefix,
             DdmsShape.RafsV2 => DdmsCatalog.RafsV2Prefix,
             DdmsShape.ProductionTimeSeriesV1 => "/",
+            DdmsShape.ReservoirManagement => ReservoirManagementPrefix,
             _ => throw new InvalidOperationException($"The DDMS '{Service.Name}' has the shape {Service.Shape}, which has no paths."),
         } + Collection.Segment,
     };
 
     /// <summary>
     /// Whether the DDMS's records are Storage records, written, read and removed through Storage while the DDMS keeps
-    /// their data: the historian's and Seismic Store's.
+    /// their data: the historian's, Seismic Store's and the Reservoir Management DDMS's.
     /// </summary>
-    public bool StorageRecords => Service.Shape is DdmsShape.ProductionTimeSeriesV1 or DdmsShape.SeismicStoreV3;
+    public bool StorageRecords => Service.Shape is DdmsShape.ProductionTimeSeriesV1 or DdmsShape.SeismicStoreV3 or DdmsShape.ReservoirManagement;
 
     /// <summary>Where a record is written: its collection, or the storage service's array endpoint for a DDMS whose records are Storage records.</summary>
     public string RecordsPath => StorageRecords ? OsduRecordProtocol.DefaultRecordPath : CollectionPath;
@@ -73,6 +80,7 @@ public sealed record DdmsRoute(DdmsService Service, DdmsCollectionEntry Collecti
         DdmsShape.RafsV2 => CollectionPath + "/{id}/data" + (Collection.TypedContent ? "/" + ContentTypeToken : string.Empty),
         DdmsShape.ProductionTimeSeriesV1 => CollectionPath + "/{id}/timeseries",
         DdmsShape.SeismicStoreV3 => CollectionPath + "/dataset/" + DatasetToken,
+        DdmsShape.ReservoirManagement => (Service.Root ?? string.Empty) + ReservoirManagementPrefix + TableToken,
         _ => null,
     };
 

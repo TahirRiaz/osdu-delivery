@@ -7,7 +7,7 @@ code and parameterised by the flow, not an authorable step language.
 | Protocol | Services | Pattern | Batched |
 | --- | --- | --- | --- |
 | `osduRecord` | storage | One JSON document, upsert by client-supplied id, array endpoint. | up to `batchSize` records per request |
-| `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default), by the call pattern of its shape: the Wellbore DDMS v3, the Well Delivery DDMS, RAFS, the Production DDMS historian, Seismic Store | Record, then, on a collection that keeps bulk data, its bulk data (a Wellbore DDMS session, RAFS's content tables, the historian's points, or a Seismic Store dataset's files). | one record per request |
+| `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default), by the call pattern of its shape: the Wellbore DDMS v3, the Well Delivery DDMS, RAFS, the Production DDMS historian, Seismic Store, the Reservoir Management DDMS | Record, then, on a collection that keeps bulk data, its bulk data (a Wellbore DDMS session, RAFS's content tables, the historian's points, a Seismic Store dataset's files, or the Reservoir Management DDMS's rows). | one record per request |
 | `osduFile` | file, storage | Signed upload URL per file, streamed upload, dataset registration, then the record with its dataset list. | the record write, up to `batchSize` |
 | `osduDataset` | dataset, storage | Staging location per record, upload the way its provider takes it, registration under the record's own id (or a dataset the record refers to), retrieval checked. | up to 20 registrations per request |
 | `osduManifest` | file, dataset, workflow, search, storage | Uploads, one manifest per batch handed to the ingestion workflow, inline or by reference, the run polled, the records read back. | one workflow run per batch of up to `batchSize` |
@@ -98,7 +98,8 @@ part without files.
 
 A record goes to the DDMS serving its entity type, and by the call pattern of that DDMS's shape: `wellboreDdmsV3`
 (described first, below), [`wellDeliveryV1`](#the-well-delivery-shape), [`rafsV2`](#the-rafs-shape),
-[`productionTimeSeriesV1`](#the-production-historian-shape) and [`seismicStoreV3`](#the-seismic-store-shape). The Wellbore
+[`productionTimeSeriesV1`](#the-production-historian-shape), [`seismicStoreV3`](#the-seismic-store-shape) and
+[`reservoirManagement`](#the-reservoir-management-shape). The Wellbore
 DDMS shape's calls, rules and deletes follow its pinned contract and its source at the same commit
 ([../specs/wellbore-ddms/INTEGRATION.md](../specs/wellbore-ddms/INTEGRATION.md)).
 
@@ -400,6 +401,50 @@ Storage ([../specs/seismic-ddms/INTEGRATION.md](../specs/seismic-ddms/INTEGRATIO
   again whole (a Google session is itself a credential, and an S3 upload is aborted); on Azure a try resumes at the
   first blob that did not land. The work product component that refers to a dataset is an interface of its own on the
   storage route.
+
+### The Reservoir Management shape
+
+The Reservoir Management DDMS keeps copies of nine kinds of records, and the rows of tables below them, in its own
+database ([../specs/reservoir-management-ddms/INTEGRATION.md](../specs/reservoir-management-ddms/INTEGRATION.md)). Its
+own record write sends the records to Storage without their ids, and its delete purges, so the route calls neither.
+
+- Record: a Storage record, written with `PUT /api/storage/v2/records` under its own id (with the data keys the flow
+  preserves), and read, verified and removed through Storage. The service's copy of it keeps only its id and parent: its
+  other columns are set by the service's own write alone.
+- Rows: the `bulk` part's files ([documents.md](documents.md#the-ddmss-a-flow-delivers-to)), read in full before anything
+  is sent, and checked as the service would: tables below the collection, columns of their tables, values of the
+  columns' types, the columns a table requires, and none of the columns the route fills. A record with rows is one of
+  the service's kinds, names its `data.ParentObjectID`, and has an id of the collection's pattern (`catalog_entity_id`).
+- Take in: rows go under the service's copy of the record, which only its list call creates, from the first 100 records
+  of the kind Search serves, and only under a parent it has a pool row for. The copy is read
+  (`GET {root}/ddms/{collection}/{id}?data_partition_id=&catalog_entity_id=`), and while it is missing the list call runs
+  (`GET {root}/ddms/{collection}/?data_partition_id=&parent_type=`, the parent type being the one the record's parent
+  names), for at most `settleSeconds`, `pollSeconds` apart. The step `sync` records the copy's parent and forecast base.
+  A copy still missing is left for the next try while Search does not serve the record (`POST /api/search/v2/query`),
+  and holds the record when Search does: the list call does not take records past its first 100, fails for a parent
+  without a pool row or a forecast without the forecast base 0, and never takes in a Kr synthesis, whose copy an
+  operator inserts. A delivery of rows alone whose record Storage no longer holds holds the record.
+- Post: each row goes alone (`POST {root}/ddms/{table}`), in the file's order, a row before the rows below it, with the
+  route's columns filled in: the header's id, the copy's parent, the key of the row above it, and a forecast's base. The
+  key the service answers with feeds the rows below. A 422 (a missing column, a value the database refuses, a reference
+  row that does not exist) and a 404 (the row above is gone) hold the record.
+- Steps: a post is not idempotent. `rows-begin` marks the posting as started, and `rows-<n>` records the keys of every 50
+  rows. A later try takes the recorded keys and, for the 50 rows after them, reads the rows the service holds under the
+  same parent (`GET {root}/ddms/{table}/header-entity/{key}?header_entity_id=`): a held row with the values a row would be
+  posted with, whose key no row has taken, is that row, posted by the try that failed. The first row not found ends the
+  search, and the rest are posted.
+- Replace: once the new rows are posted, the rows the record's earlier delivery posted are deleted, the rows below
+  before the rows above (`DELETE {root}/ddms/{table}/{key}?catalog_entity_id=`); `rows-done` records it. A record whose
+  rows did not change keeps them.
+- Returned: `reservoirManagement.rows`, the rows in posting order as runs of keys per table
+  (`phi-k-synthesis-rt=101;phi-k-synthesis-phi-k=102-103`), and `reservoirManagement.parent`.
+- Remove: the record scope soft-deletes the record in Storage and leaves the service's rows and its copy; the history
+  scope purges the record's earlier versions; everything deletes the rows the record's deliveries posted, the rows below
+  first, then purges the record. The copy stays in the service's database, since only the service's own purge removes
+  it; the list call no longer shows it once Search no longer serves the record.
+- Probe: `GET {root}/`, the health check, then
+  `GET {root}/ddms/estimated-volumes-det/header-entity/probe?header_entity_id=probe`, a read that checks the token and
+  answers with no rows.
 
 ## `osduFile`
 

@@ -1544,11 +1544,21 @@ internal static partial class FlowMapper
                     + $"say where Seismic Store is under it, version path included (usually {DdmsCatalog.UsualRoot(shape)}, or /seistore-svc/api/v3 on Azure).");
             }
 
-            if (root is null && registration is null && interfaceForm)
+            if (root is null && shape == DdmsShape.ReservoirManagement)
             {
                 throw new FlowValidationException(
+                    $"{source}: {at}.root is required. A header record is written, read and removed through Storage, so the flow's endpoint is the platform the "
+                    + "Reservoir Management DDMS is under; say where the service is under it (its project names no prefix, so it is the deployment's).");
+            }
+
+            if (root is null && registration is null && interfaceForm)
+            {
+                var usual = DdmsCatalog.UsualRoot(shape) is { } known
+                    ? $"a DDMS of the {DdmsCatalog.ShapeName(shape)} shape is usually deployed under {known}"
+                    : $"a DDMS of the {DdmsCatalog.ShapeName(shape)} shape is deployed under the prefix its deployment gives it";
+                throw new FlowValidationException(
                     $"{source}: {at}.root is required. The source's endpoint is the platform its interfaces reach every service under, so say where the DDMS is under it "
-                    + $"(a DDMS of the {DdmsCatalog.ShapeName(shape)} shape is usually deployed under {DdmsCatalog.UsualRoot(shape)})"
+                    + $"({usual})"
                     + (shape == DdmsShape.WellboreDdmsV3 ? ", or name its registration in the Register service with register." : "."));
             }
 
@@ -1557,6 +1567,7 @@ internal static partial class FlowMapper
             var settings = MapWellDelivery(ddms, shape, at, source);
             var timeSeries = MapTimeSeries(ddms, shape, at, source);
             var seismic = MapSeismicStore(ddms, shape, at, source);
+            var reservoirManagement = MapReservoirManagement(ddms, shape, at, source);
             foreach (var collection in collections)
             {
                 if (!servedBy.TryAdd(collection.EntityType, name))
@@ -1574,6 +1585,7 @@ internal static partial class FlowMapper
                 WellDelivery = settings,
                 TimeSeries = timeSeries,
                 SeismicStore = seismic,
+                ReservoirManagement = reservoirManagement,
             });
         }
 
@@ -1642,8 +1654,10 @@ internal static partial class FlowMapper
         {
             var misplaced = new[]
                 {
-                    ("queryRoot", ddms.QueryRoot is not null), ("settleSeconds", ddms.SettleSeconds is not null),
-                    ("pollSeconds", ddms.PollSeconds is not null), ("maxRequestBytes", ddms.MaxRequestBytes is not null),
+                    ("queryRoot", ddms.QueryRoot is not null),
+                    ("settleSeconds", ddms.SettleSeconds is not null && shape != DdmsShape.ReservoirManagement),
+                    ("pollSeconds", ddms.PollSeconds is not null && shape != DdmsShape.ReservoirManagement),
+                    ("maxRequestBytes", ddms.MaxRequestBytes is not null),
                 }
                 .Where(k => k.Item2)
                 .Select(k => $"{at}.{k.Item1}")
@@ -1689,6 +1703,37 @@ internal static partial class FlowMapper
             PollSeconds = poll,
             MaxRequestBytesPerRequest = bytes,
         };
+    }
+
+    /// <summary>
+    /// The settings of a declared Reservoir Management DDMS, or null for any other shape
+    /// (osdu/specs/reservoir-management-ddms/INTEGRATION.md section 2.7: how long a delivery with rows waits for the service
+    /// to take the header record into its database, and how often it asks). The other shapes refuse the two keys, except
+    /// the historian, whose own they are too.
+    /// </summary>
+    private static ReservoirManagementSettings? MapReservoirManagement(DdmsYaml ddms, DdmsShape shape, string at, string source)
+    {
+        if (shape != DdmsShape.ReservoirManagement)
+        {
+            return null;
+        }
+
+        var settle = ddms.SettleSeconds ?? ReservoirManagementSettings.DefaultSettleSeconds;
+        if (settle is < 0 or > ReservoirManagementSettings.MaxSettleSeconds)
+        {
+            throw new FlowValidationException(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{source}: {at}.settleSeconds must be between 0 and {ReservoirManagementSettings.MaxSettleSeconds}: how long a delivery with rows waits for the service to take its header record, 0 asking once."));
+        }
+
+        var poll = ddms.PollSeconds ?? ReservoirManagementSettings.DefaultPollSeconds;
+        if (poll is < 1 or > ReservoirManagementSettings.MaxPollSeconds)
+        {
+            throw new FlowValidationException(string.Create(
+                CultureInfo.InvariantCulture, $"{source}: {at}.pollSeconds must be between 1 and {ReservoirManagementSettings.MaxPollSeconds}."));
+        }
+
+        return new ReservoirManagementSettings { SettleSeconds = settle, PollSeconds = poll };
     }
 
     /// <summary>
@@ -1908,6 +1953,12 @@ internal static partial class FlowMapper
                 continue;
             }
 
+            if (shape == DdmsShape.ReservoirManagement)
+            {
+                collections.Add(MapReservoirManagementCollection(entityType, value, entry, source));
+                continue;
+            }
+
             var declaredCollection = value ?? throw new FlowValidationException($"{source}: {entry} declares nothing; name at least the path the DDMS serves it under.");
             var segment = declaredCollection.Path?.Trim() ?? string.Empty;
             if (!DdmsCatalog.IsSegment(segment))
@@ -1996,6 +2047,35 @@ internal static partial class FlowMapper
         }
 
         return new DdmsCollectionEntry(entityType, segment, Bulk: true);
+    }
+
+    /// <summary>
+    /// An entity type a declared Reservoir Management DDMS serves: under one of its nine header collections, the one whose
+    /// records the service keeps being named by <c>path</c> (the collection the service's own entity type has when left
+    /// out). The collection's tables decide whether its records keep rows, so bulk, columns and typedContent are not given.
+    /// </summary>
+    private static DdmsCollectionEntry MapReservoirManagementCollection(string entityType, DdmsCollectionYaml? declared, string entry, string source)
+    {
+        var known = DdmsCatalog.ReservoirManagementCollections.FirstOrDefault(c => string.Equals(c.EntityType, entityType, StringComparison.OrdinalIgnoreCase));
+        var written = declared?.Path?.Trim();
+        var segment = written is { Length: > 0 } ? written : known?.Segment;
+        var segments = string.Join(", ", ReservoirManagementTables.Headers.Select(h => h.Segment));
+        if (segment is null)
+        {
+            throw new FlowValidationException(
+                $"{source}: {entry}.path is required: the header collection of the Reservoir Management DDMS the records go to ({segments}); {entityType} is none of its own entity types.");
+        }
+
+        var header = ReservoirManagementTables.Header(segment)
+            ?? throw new FlowValidationException($"{source}: {entry}.path '{segment}' is not a header collection of the Reservoir Management DDMS: {segments}.");
+        if (declared?.Bulk is not null || declared?.Columns is not null || declared?.TypedContent is not null)
+        {
+            throw new FlowValidationException(
+                $"{source}: {entry} says what the collection keeps, and the Reservoir Management DDMS's tables decide that ({header.Segment} keeps "
+                + (header.Tables.Count == 0 ? "no rows" : "rows in " + string.Join(", ", header.Tables)) + "); remove bulk, columns and typedContent.");
+        }
+
+        return new DdmsCollectionEntry(entityType, header.Segment, Bulk: header.Tables.Count > 0);
     }
 
     private static ProtocolOptions MapOptions(ProtocolOptionsYaml? o, string source)

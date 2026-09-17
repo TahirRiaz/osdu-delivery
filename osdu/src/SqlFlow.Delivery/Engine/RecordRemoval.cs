@@ -180,6 +180,15 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
                 paths.Route!.Service.SeismicStore?.Provider == DdmsProvider.Gc
                     ? SeismicGcDeleteRefused
                     : routing.StoragePurgePath is { } purge ? $"{paths.Data} (the dataset and its files), then {purge}" : PurgeNotConfigured),
+
+            // The Reservoir Management DDMS's records are storage records; its own delete purges, so it is never called,
+            // and the rows of its tables are deleted one by one before the purge.
+            DdmsShape.ReservoirManagement => new RemovalEndpoints(
+                routing.StorageDeletePath ?? DeleteNotConfigured,
+                history,
+                routing.StoragePurgePath is not { } storagePurge ? PurgeNotConfigured
+                    : paths.Data is { } rows ? $"{rows}/{{key}} (each row the record's deliveries posted), then {storagePurge}"
+                    : storagePurge),
             _ => new RemovalEndpoints(
                 paths.Delete,
                 history,

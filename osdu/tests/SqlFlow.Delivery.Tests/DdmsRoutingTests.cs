@@ -330,6 +330,41 @@ public sealed class DdmsRoutingTests
     }
 
     [Fact]
+    public void A_reservoir_management_record_is_a_storage_record_whose_rows_go_to_the_tables_below_its_collection()
+    {
+        var rm = new DdmsService("rm", "/api/rm-ddms", DdmsShape.ReservoirManagement, DdmsCatalog.ReservoirManagementCollections) { ReservoirManagement = new ReservoirManagementSettings() };
+        var routing = DdmsRouting.Of(Flow(ddms: [rm], interfaceName: "reservoir"));
+        var volumes = routing.For("work-product-component--ReservoirEstimatedVolumes");
+
+        Assert.Equal(DdmsShape.ReservoirManagement, volumes.Shape);
+        Assert.Equal("/api/storage/v2/records", volumes.Records);
+        Assert.Equal("/api/storage/v2/records/{id}", volumes.Record);
+        Assert.Equal("/api/storage/v2/records/{id}:delete", volumes.Delete);
+        Assert.Equal("/api/rm-ddms/ddms/{table}", volumes.Data);
+        Assert.Null(volumes.Sessions);
+        Assert.True(volumes.Bulk);
+        Assert.True(volumes.Route!.StorageRecords);
+        Assert.Equal("/api/rm-ddms/ddms/estimated-volumes", volumes.Route.CollectionPath);
+        Assert.Null(routing.Problem("work-product-component--ReservoirEstimatedVolumes", sendsBulk: true));
+
+        // A header collection without tables holds its records alone.
+        var fluids = routing.For("master-data--FluidSystem");
+        Assert.False(fluids.Bulk);
+        Assert.Null(fluids.Data);
+        Assert.Contains("which holds records alone", routing.Problem("master-data--FluidSystem", sendsBulk: true), StringComparison.Ordinal);
+        Assert.Equal(
+            "work-product-component--PersistedCollection records go to the phi-k-synthesis collection of the DDMS 'rm' (/api/rm-ddms).",
+            routing.Explain("osdu:wks:work-product-component--PersistedCollection:1.2.0"));
+        Assert.Equal(["/api/rm-ddms/", "/api/rm-ddms/ddms/estimated-volumes-det/header-entity/probe?header_entity_id=probe"], routing.ProbePaths);
+
+        var endpoints = RemovalEndpoints.Of(Flow(ddms: [rm], interfaceName: "reservoir"), "osdu:wks:work-product-component--ReservoirEstimatedVolumes:1.0.0");
+        Assert.Equal(("/api/storage/v2/records/{id}:delete", "POST"), (endpoints.Record, endpoints.RecordMethod));
+        Assert.Equal("/api/storage/v2/records/{id}/versions", endpoints.History);
+        Assert.Equal("/api/rm-ddms/ddms/{table}/{key} (each row the record's deliveries posted), then /api/storage/v2/records/{id}", endpoints.Everything);
+        Assert.Equal("/api/storage/v2/records/{id}", RemovalEndpoints.Of(Flow(ddms: [rm], interfaceName: "reservoir"), "osdu:wks:master-data--FluidSystem:1.0.0").Everything);
+    }
+
+    [Fact]
     public void A_rafs_record_takes_its_content_under_its_type_where_the_collection_holds_several()
     {
         var routing = DdmsRouting.Of(Flow(ddms: [Rafs], interfaceName: "samples"));
