@@ -164,6 +164,12 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
         var plan = prepared as SeismicPlan
             ?? throw new InvalidOperationException("The Seismic Store shape was handed work another shape prepared.");
         var attempt = new Attempt(work, route, Settings(route), plan, new DeliverySteps(_time));
+        if (_options.PreserveDataKeys.Count > 0 && work.ExistingVersion is not null)
+        {
+            // Every call that sends the record sends it whole, so the data keys OSDU owns come from the stored record first.
+            await RecordWriter.PreserveAsync(_client, route.RecordPath, work.TargetId, attempt.Document, _options.PreserveDataKeys, ct).ConfigureAwait(false);
+        }
+
         EnsureLink(attempt.Document, plan.Dataset, work.DeliverPayload ? plan.Size : attempt.Known ? KnownSize(work.TargetState) : null);
         attempt.RecordWritten = Resume(work, OsduWellLogProtocol.MetadataStep, attempt.Steps) is not null;
 

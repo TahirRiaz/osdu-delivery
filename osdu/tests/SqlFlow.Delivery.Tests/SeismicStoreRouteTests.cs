@@ -54,7 +54,7 @@ public sealed class SeismicStoreRouteTests
 
     private sealed class Rig : IDisposable
     {
-        public Rig(FakeOsduPlatform platform, SeismicStoreSettings? settings = null)
+        public Rig(FakeOsduPlatform platform, SeismicStoreSettings? settings = null, ProtocolOptions? options = null)
         {
             Runtime = new HttpRuntime(
                 new FlowReliability { Retry = new FlowRetry { Attempts = 1, BaseDelayMs = 1, MaxDelayMs = 1 } },
@@ -62,7 +62,7 @@ public sealed class SeismicStoreRouteTests
             var client = new OsduHttpClient(
                 Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
-            var options = new ProtocolOptions { WorkflowPollSeconds = 1, DatasetIndexWaitSeconds = 0 };
+            options ??= new ProtocolOptions { WorkflowPollSeconds = 1, DatasetIndexWaitSeconds = 0 };
             var seismic = new DdmsService("seismic", FakeOsduPlatform.SeismicRoot, DdmsShape.SeismicStoreV3, DdmsCatalog.SeismicStoreCollections)
             {
                 SeismicStore = settings ?? Settings(),
@@ -628,6 +628,31 @@ public sealed class SeismicStoreRouteTests
         Assert.Equal(["lock", "register", "metadata", "upload", "close"], fourth.Steps.Select(s => s.Name));
         Assert.DoesNotContain("removed", fourth.Detail, StringComparison.Ordinal);
         OsduContracts.AssertConform(platform.Calls, Store, OsduContracts.Storage, OsduContracts.SeismicDdms);
+    }
+
+    [Fact]
+    public async Task A_record_sent_again_keeps_the_data_keys_osdu_owns()
+    {
+        var platform = new FakeOsduPlatform();
+        using var rig = new Rig(platform, options: new ProtocolOptions { PreserveDataKeys = ["Owned"] });
+
+        // A first delivery has nothing to keep, and reads nothing.
+        var first = await rig.Protocol.DeliverAsync(Work(Line()));
+        Assert.Equal(ReadRecord, Assert.Single(ServiceCalls(platform), c => c.StartsWith("GET /api/storage/", StringComparison.Ordinal)));
+        platform.Records[LineId]["data"]!["Owned"] = "kept";
+
+        // Every call that sends the record sends what Storage holds for the keys the flow preserves.
+        var calls = platform.Calls.Count;
+        var patched = await rig.Protocol.DeliverAsync(Work(Line("renamed"), existing: first.TargetVersion, state: first.Returned));
+        Assert.True(patched.Succeeded, patched.Failure?.Message);
+        Assert.Equal([ReadRecord, $"PATCH {Base}?path=surveys/north", ReadRecord], ServiceCalls(platform, calls));
+        Assert.Equal(("renamed", "kept"), (platform.Records[LineId]["data"]!["Name"]!.GetValue<string>(), platform.Records[LineId]["data"]!["Owned"]!.GetValue<string>()));
+
+        platform.SeismicDatasets.Remove(SdPath);
+        var again = await rig.Protocol.DeliverAsync(Work(Line("again"), Files(("line-001.sgy", Bytes(10))), existing: patched.TargetVersion, state: patched.Returned));
+        Assert.True(again.Succeeded, again.Failure?.Message);
+        Assert.Equal(("again", "kept"), (platform.Records[LineId]["data"]!["Name"]!.GetValue<string>(), platform.Records[LineId]["data"]!["Owned"]!.GetValue<string>()));
+        Assert.Equal("sd://opendes/seismic/surveys/north/", platform.Records[LineId]["data"]!["DatasetProperties"]!["FileCollectionPath"]!.GetValue<string>());
     }
 
     [Fact]
