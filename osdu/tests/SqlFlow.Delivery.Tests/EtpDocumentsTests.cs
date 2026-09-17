@@ -1,6 +1,7 @@
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Protocols.Etp;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
@@ -96,6 +97,23 @@ public class EtpDocumentsTests
         Assert.Equal([PayloadParts.Files, PayloadParts.Bulk], parts.Select(p => p.Role));
         Assert.All(parts, part => Assert.True(part.Optional));
         Assert.True(PayloadParts.Composed(DeliveryProtocol.OsduEtp));
+    }
+
+    [Fact]
+    public void The_route_removes_an_object_for_good_and_shows_the_two_scopes_it_refuses()
+    {
+        var flow = _loader.ParseFlow(Flow("  etp:\n    dataspace: volve/study"), "grids.yaml");
+        var endpoints = RemovalEndpoints.Of(flow, "energistics:etp:obj_Grid2dRepresentation:2.0.1");
+
+        Assert.Equal("Store.DeleteDataObjects {object uri}", endpoints.Everything);
+        Assert.Equal("ETP", endpoints.RecordMethod);
+        Assert.Contains("no reversible removal", endpoints.Record, StringComparison.Ordinal);
+        Assert.Contains("no history to purge", endpoints.History, StringComparison.Ordinal);
+
+        // A redelivery of an object that carries its XML and arrays in its document sends the object.
+        Assert.Equal([RedeliverScopes.All, RedeliverScopes.Record, RedeliverScopes.Metadata], RedeliverScopes.For(flow));
+        var refused = Assert.Throws<DeliveryException>(() => RedeliverScopes.Of(RedeliverScopes.Bulk, flow));
+        Assert.Contains("the object alone", refused.Message, StringComparison.Ordinal);
     }
 
     [Theory]

@@ -185,6 +185,7 @@ public static class RedeliverScopes
         {
             DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest or DeliveryProtocol.OsduDataset => "the record and its files",
             DeliveryProtocol.OsduWellLog => "the record and its bulk data",
+            DeliveryProtocol.OsduEtp => "the object alone, its XML and arrays rendered into its document",
             _ => "the record alone",
         };
     }

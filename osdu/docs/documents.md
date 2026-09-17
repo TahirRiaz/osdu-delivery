@@ -585,6 +585,11 @@ holds the record. `Type` is one of `arrayOfBoolean`, `arrayOfInt`, `arrayOfLong`
 object an array hangs under when it is not the record's own object (a RESQML 2.0.1 array hangs under the
 `EpcExternalPartReference` its representation names).
 
+The Reservoir DDMS creates objects of its own alongside a delivery: at each commit it writes a
+`resqml20.obj_Activity` naming the objects that are new to the dataspace as its outputs, and, once per dataspace, the
+`obj_ActivityTemplate` it belongs to. They carry uuids the server minted and are not this flow's records; a verify looks
+only at the types the batch delivered, so they do not disturb it, and a removal leaves them where they are.
+
 A record on this route has no OSDU version: the store keeps only an object's latest content. A verify lists the
 dataspace's resources and compares the store's last write with the one the delivery recorded, and a removal deletes the
 object outright (the everything scope); the record and history scopes are refused, as they are for DSPDM rows.

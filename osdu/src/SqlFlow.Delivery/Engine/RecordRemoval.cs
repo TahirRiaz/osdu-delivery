@@ -120,6 +120,13 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
             return new RemovalEndpoints(DspdmRecordRefused, DspdmHistoryRefused, (flow.Target.Dspdm.Root ?? string.Empty) + DspdmDelete) { RecordMethod = "DELETE" };
         }
 
+        if (flow.Target.Protocol == DeliveryProtocol.OsduEtp)
+        {
+            // The Reservoir DDMS keeps no deleted objects and no earlier versions: an object is deleted for good, over
+            // ETP rather than over HTTP, and no dataspace is ever deleted (its delete purges an OSDU record).
+            return new RemovalEndpoints(EtpRecordRefused, EtpHistoryRefused, EtpDelete) { RecordMethod = "ETP" };
+        }
+
         // A dataset the route registers itself is removed reversibly through the Dataset service, whose undelete restores it.
         var registersDataset = flow.Target.Protocol switch
         {
@@ -213,6 +220,15 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
 
     /// <summary>The call the everything scope of the dspdm route makes for each row, under DSPDM's root.</summary>
     public const string DspdmDelete = "/delete/{businessObject}/{row id}";
+
+    /// <summary>What the record endpoint of the etp route reads as.</summary>
+    public const string EtpRecordRefused = "(refused: " + Protocols.OsduEtpProtocol.RecordScopeRefused + ")";
+
+    /// <summary>What the history endpoint of the etp route reads as.</summary>
+    public const string EtpHistoryRefused = "(refused: " + Protocols.OsduEtpProtocol.HistoryScopeRefused + ")";
+
+    /// <summary>The call the everything scope of the etp route makes for each object, on its dataspace's session.</summary>
+    public const string EtpDelete = "Store.DeleteDataObjects {object uri}";
 
     /// <summary>What the everything endpoint of a Seismic Store on gc reads as.</summary>
     public const string SeismicGcDeleteRefused = "(refused: Seismic Store on gc deletes the files of every dataset in a subproject when one dataset is deleted)";
