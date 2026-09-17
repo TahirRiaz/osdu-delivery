@@ -368,24 +368,54 @@ public class ReferenceCaptureCursorTests
     }
 
     [Fact]
-    public async Task A_cursor_that_never_moves_fails_instead_of_paging_forever()
+    public async Task A_service_that_hands_back_the_same_page_for_ever_ends_the_type_rather_than_paging_for_ever()
     {
-        var handler = new FakeHttpHandler().On(
-            HttpMethod.Post,
-            "/query_with_cursor",
-            HttpStatusCode.OK,
-            """{"cursor":"stuck","results":[{"id":"opendes:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}""");
+        // Nothing is new after the first page, so the capture is going in circles whatever the cursor says. It keeps
+        // what it read, warns, and closes the cursor.
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", HttpStatusCode.OK, Page("stuck", 1000));
         var (builder, osdu) = await BuildAsync(handler);
         using (osdu)
         {
-            var ex = await Assert.ThrowsAsync<DeliveryException>(() => builder.CaptureTypeAsync(osdu, Spec));
+            var captured = await builder.CaptureTypeAsync(osdu, Spec);
 
-            Assert.Contains("same cursor twice", ex.Message, StringComparison.Ordinal);
+            Assert.Equal(1000, captured.Items.Count);
 
-            // Two search pages, then one DELETE releasing the scroll the capture walked away from.
-            Assert.Equal(2, handler.Calls.Count(c => c.Method == HttpMethod.Post));
+            // The first page, then the three that brought nothing new, then the DELETE releasing the scroll.
+            Assert.Equal(4, handler.Calls.Count(c => c.Method == HttpMethod.Post));
             var closed = Assert.Single(handler.Calls, c => c.Method == HttpMethod.Delete);
             Assert.EndsWith("/query_with_cursor/stuck", closed.Uri.AbsolutePath, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public async Task The_same_cursor_on_every_page_is_still_paging_while_the_pages_bring_new_records()
+    {
+        // The contract says the cursor is null when there are no more results; a deployment answered with the same
+        // handle on every page while the context behind it advanced (Azure Data Manager for Energy, dev,
+        // 2026-09-18). A capture that took the repeated handle for a stuck service would refuse a refresh that is
+        // working, so what it reads is the records, not the handle.
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", hit => hit switch
+        {
+            0 => FakeHttpHandler.Json(HttpStatusCode.OK, Page("c1", 1000)),
+            1 => FakeHttpHandler.Json(HttpStatusCode.OK, Page("c1", 1000, from: 1000)),
+            2 => FakeHttpHandler.Json(HttpStatusCode.OK, Page("c1", 4, from: 2000)),
+            _ => FakeHttpHandler.Json(HttpStatusCode.OK, Page("c1", 0)),
+        });
+        var (builder, osdu) = await BuildAsync(handler);
+        using (osdu)
+        {
+            var captured = await builder.CaptureTypeAsync(osdu, Spec);
+
+            Assert.Equal(2004, captured.Items.Count);
+            Assert.Equal(4, handler.Calls.Count(c => c.Method == HttpMethod.Post));
+        }
+    }
+
+    /// <summary>One search page of <paramref name="count"/> units of measure, offered with <paramref name="cursor"/>.</summary>
+    private static string Page(string cursor, int count, int from = 0)
+    {
+        var results = string.Join(",", Enumerable.Range(from, count).Select(
+            i => "{\"id\":\"opendes:reference-data--UnitOfMeasure:u" + i + "\",\"data\":{\"Code\":\"u" + i + "\"}}"));
+        return "{\"cursor\":\"" + cursor + "\",\"results\":[" + results + "]}";
     }
 }

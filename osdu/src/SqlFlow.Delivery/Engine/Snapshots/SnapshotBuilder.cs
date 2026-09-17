@@ -200,6 +200,9 @@ public sealed partial class SnapshotBuilder
 {
     private const int SearchPageSize = 1000;
 
+    /// <summary>Pages in a row that bring nothing new before a capture takes the type as finished.</summary>
+    private const int BarrenPages = 3;
+
     /// <summary>The cursor search the capture pages through (openapi search v2, POST /query_with_cursor).</summary>
     private const string SearchPath = "/api/search/v2/query_with_cursor";
 
@@ -212,6 +215,7 @@ public sealed partial class SnapshotBuilder
 
         var items = new Dictionary<string, ReferenceItem>(StringComparer.Ordinal);
         var repeated = 0;
+        var barren = 0;
         var coverage = typeSpec.Fields.ToDictionary(f => f.Name, _ => 0, StringComparer.OrdinalIgnoreCase);
         string? cursor = null;
         string? previousCursor = null;
@@ -239,6 +243,7 @@ public sealed partial class SnapshotBuilder
                 var page = await osdu.PostJsonAsync(SearchPath, body, ct).ConfigureAwait(false);
                 var results = page["results"] as JsonArray;
                 var inPage = results?.Count ?? 0;
+                var added = 0;
                 if (results is not null)
                 {
                     foreach (var hit in results.OfType<JsonObject>())
@@ -256,6 +261,8 @@ public sealed partial class SnapshotBuilder
                             continue;
                         }
 
+                        added++;
+
                         foreach (var name in item.Fields.Keys)
                         {
                             coverage[name]++;
@@ -267,18 +274,25 @@ public sealed partial class SnapshotBuilder
                 cursor = page["cursor"] is JsonValue value && value.TryGetValue<string>(out var next) ? next : null;
 
                 // The search service hands back a cursor for the page after the last one too, and that page is
-                // empty; ending only on a null cursor would page forever. An empty page is the end, and a cursor
-                // that has not moved would be the same page again.
+                // empty; ending only on a null cursor would page forever. An empty page is the end.
                 if (inPage == 0 || string.IsNullOrEmpty(cursor))
                 {
                     finished = true;
                     break;
                 }
 
-                if (string.Equals(cursor, previousCursor, StringComparison.Ordinal))
+                // The cursor itself says nothing about progress: a deployment may hand back the same handle for every
+                // page while the context behind it advances, which is what Elasticsearch's scroll does and what Azure
+                // Data Manager for Energy answered on 2026-09-18. What says the capture is going in circles is a page
+                // that brings nothing new, so that is what ends it: a few of those in a row and the type is done, with
+                // the cursor closed on the way out.
+                barren = added == 0 ? barren + 1 : 0;
+                if (barren >= BarrenPages)
                 {
-                    throw new DeliveryException(
-                        $"Reference type {typeSpec.Name}: the search service returned the same cursor twice for kind {typeSpec.Kind} after {items.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)} item(s), so the capture would not advance.");
+                    _logger.LogWarning(
+                        "Reference type {Type}: the search returned {Pages} page(s) of kind {Kind} in a row with nothing new after {Count} item(s); the capture ends there.",
+                        typeSpec.Name, barren, typeSpec.Kind, items.Count);
+                    break;
                 }
             }
         }
