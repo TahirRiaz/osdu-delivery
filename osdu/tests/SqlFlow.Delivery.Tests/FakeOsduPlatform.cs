@@ -10,10 +10,11 @@ using SqlFlow.Delivery.Storage;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// A stateful stand-in for the OSDU services the Stage 6 routes call, built from their pinned contracts: Storage, Search,
-/// Legal, the Dataset service with the staging locations each provider signs, the Workflow service with a scripted
-/// engine behind it (what each workflow writes, the status it ends in and the XCom entries it pushes), and the Airflow
-/// REST API. Every request is recorded as <see cref="FakeHttpHandler"/> records them, so the contract harness checks them.
+/// A stateful stand-in for the OSDU services the Stage 6 and 7 routes call, built from their pinned contracts and briefs:
+/// Storage, Search, Legal, the Dataset service with the staging locations each provider signs, the Workflow service with a
+/// scripted engine behind it (what each workflow writes, the status it ends in and the XCom entries it pushes), the
+/// Airflow REST API, and the Wellbore, Well Delivery, RAFS and Production historian DDMSs. Every request is recorded as
+/// <see cref="FakeHttpHandler"/> records them, so the contract harness checks them.
 /// </summary>
 public sealed class FakeOsduPlatform : HttpMessageHandler
 {
@@ -29,6 +30,12 @@ public sealed class FakeOsduPlatform : HttpMessageHandler
 
     /// <summary>Where the Rock and Fluid Sample DDMS sits under the platform (the prefix its contract is generated with).</summary>
     public const string RafsRoot = "/api/rafs-ddms";
+
+    /// <summary>Where the Production DDMS historian's ingestion service sits under the platform (its contract's server).</summary>
+    public const string TimeSeriesRoot = "/api/pddms/ingest/v1";
+
+    /// <summary>Where the Production DDMS historian's query service sits under the platform (its contract's server).</summary>
+    public const string TimeSeriesQueryRoot = "/api/pddms/query/v1";
 
     /// <summary>How the Dataset service signs a location, per provider (osdu/specs/core/INTEGRATION.md section 2.5.1).</summary>
     public enum Staging
@@ -81,7 +88,10 @@ public sealed class FakeOsduPlatform : HttpMessageHandler
     }
 
     private readonly object _gate = new();
+    private readonly Dictionary<(string Record, string Series), int> _mappingReads = [];
     private int _locations;
+    private int _ingestions;
+    private long _timeSeriesClock = 1_781_770_405_994;
 
     public List<FakeHttpHandler.Request> Calls { get; } = [];
 
@@ -147,6 +157,30 @@ public sealed class FakeOsduPlatform : HttpMessageHandler
         ["capillarypressure"] = ["1.0.0", "1.1.0"],
         ["routinecoreanalysis"] = ["1.0.0"],
     };
+
+    /// <summary>The one partition the historian's ingestion deployment takes (its <c>DATA_PARTITION_ID</c>).</summary>
+    public string TimeSeriesPartition { get; set; } = "opendes";
+
+    /// <summary>
+    /// The versions the historian stores, by record and series, in the order it accepted them, each with its points by
+    /// timestamp as they were sent.
+    /// </summary>
+    public Dictionary<(string Record, string Series), List<(long Version, SortedDictionary<long, JsonNode?> Points)>> TimeSeries { get; } = [];
+
+    /// <summary>How many reads of a series the query service answers 404 "Failed to get a Stream Mapping" before the mapping exists.</summary>
+    public int TimeSeriesMappingDelay { get; set; }
+
+    /// <summary>Series whose next accepted version the historian loses after answering 202, as a publish that fails its retries does.</summary>
+    public HashSet<string> TimeSeriesLost { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The most points one read of the query service returns, as its page limit cuts a longer answer without saying so.</summary>
+    public int TimeSeriesReadLimit { get; set; } = int.MaxValue;
+
+    /// <summary>The ingestion requests, counted from 1, the service answers 500 "Storage service error" instead of taking.</summary>
+    public HashSet<int> TimeSeriesFailing { get; } = [];
+
+    /// <summary>The whole Content-Type header of every ingestion request, parameters included.</summary>
+    public List<string?> TimeSeriesContentTypes { get; } = [];
 
     public void Register(string workflow, Script? script = null) => Workflows[workflow] = script ?? new Script();
 
@@ -251,6 +285,16 @@ public sealed class FakeOsduPlatform : HttpMessageHandler
         if (path.StartsWith(RafsRoot + "/", StringComparison.Ordinal))
         {
             return Rafs(method, path[RafsRoot.Length..], uri, bytes, body, request);
+        }
+
+        if (path.StartsWith(TimeSeriesRoot + "/", StringComparison.Ordinal))
+        {
+            return TimeSeriesIngestion(method, path[TimeSeriesRoot.Length..], body, request);
+        }
+
+        if (path.StartsWith(TimeSeriesQueryRoot + "/", StringComparison.Ordinal))
+        {
+            return TimeSeriesQuery(method, path[TimeSeriesQueryRoot.Length..], uri);
         }
 
         if (path == "/api/search/v2/query_with_cursor" || path == "/api/search/v2/query")
@@ -1187,6 +1231,246 @@ public sealed class FakeOsduPlatform : HttpMessageHandler
 
     private static HttpResponseMessage RafsError(HttpStatusCode status, string reason)
         => Json(status, new JsonObject { ["code"] = (int)status, ["reason"] = reason });
+
+    /// <summary>
+    /// The historian's ingestion service as its brief reads the code (osdu/specs/production-timeseries/INTEGRATION.md
+    /// sections 1.3 and 3): the record is read from storage; each series is checked against the record, the deployment's
+    /// partition and its kind, and accepted under a version of its own; the answer is 207 with one item per series in order.
+    /// </summary>
+    private HttpResponseMessage TimeSeriesIngestion(string method, string path, string? body, HttpRequestMessage request)
+    {
+        if (path == "/info" && method == "GET")
+        {
+            return Json(HttpStatusCode.OK, new JsonObject { ["groupId"] = "org.opengroup.osdu.production", ["artifactId"] = "pddms-timeseries-ingestion", ["version"] = "0.1.0" });
+        }
+
+        var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.UnescapeDataString).ToArray();
+        if (method != "POST" || parts is not ["production-values", var recordId, "timeseries"])
+        {
+            return TimeSeriesError(HttpStatusCode.NotFound, "The requested resource could not be found.");
+        }
+
+        TimeSeriesContentTypes.Add(request.Content?.Headers.ContentType?.ToString());
+        if (request.Content?.Headers.ContentType?.MediaType != "application/json")
+        {
+            return TimeSeriesError(HttpStatusCode.UnsupportedMediaType, "The request's Content-Type is not supported. Expected: application/json");
+        }
+
+        if (TimeSeriesFailing.Contains(++_ingestions))
+        {
+            return TimeSeriesError(HttpStatusCode.InternalServerError, "Storage service error");
+        }
+
+        if (!Records.TryGetValue(recordId, out var record) || Removed.Contains(recordId))
+        {
+            return TimeSeriesError(HttpStatusCode.NotFound, $"Record not found {recordId}");
+        }
+
+        var kinds = SeriesKinds(record);
+        var partition = request.Headers.TryGetValues("data-partition-id", out var partitions) ? partitions.Single() : null;
+        var items = new JsonArray();
+        foreach (var node in JsonNode.Parse(body!)!["timeseries"]!.AsArray())
+        {
+            var entry = node!.AsObject();
+            var series = entry["timeseriesId"]!.GetValue<string>();
+            var points = entry["points"]!.AsArray();
+            if (partition != TimeSeriesPartition)
+            {
+                items.Add(new JsonObject { ["content"] = string.Empty, ["result"] = TimeSeriesResult(400, "Bad Request", "Data partition id is not valid") });
+                continue;
+            }
+
+            if (!kinds.TryGetValue(series, out var kind))
+            {
+                items.Add(new JsonObject { ["timeseriesId"] = series, ["result"] = TimeSeriesResult(404, "Not Found", $"'{series}' timeseries not found in {recordId}") });
+                continue;
+            }
+
+            if (points.Count == 0)
+            {
+                items.Add(new JsonObject { ["result"] = TimeSeriesResult(400, "Bad Request", "No data point is posted in the request") });
+                continue;
+            }
+
+            if (TimeSeriesValueProblem(series, kind, points) is { } invalid)
+            {
+                items.Add(new JsonObject { ["result"] = TimeSeriesResult(400, "Bad Request", invalid) });
+                continue;
+            }
+
+            var version = _timeSeriesClock++;
+            var stamps = points.Select(p => p!["timestamp"]!.GetValue<long>()).ToList();
+            if (!TimeSeriesLost.Remove(series))
+            {
+                var stored = new SortedDictionary<long, JsonNode?>();
+                foreach (var point in points)
+                {
+                    stored[point!["timestamp"]!.GetValue<long>()] = point["value"]?.DeepClone();
+                }
+
+                if (!TimeSeries.TryGetValue((recordId, series), out var versions))
+                {
+                    versions = [];
+                    TimeSeries[(recordId, series)] = versions;
+                }
+
+                versions.Add((version, stored));
+            }
+
+            items.Add(new JsonObject
+            {
+                ["timeseriesId"] = series,
+                ["version"] = version,
+                ["start"] = stamps.Min(),
+                ["end"] = stamps.Max(),
+                ["metadata"] = new JsonObject { ["parameterKindId"] = kind },
+                ["pointsCount"] = points.Count,
+                ["result"] = TimeSeriesResult(202, "Accepted", "The request has been accepted for processing, but the processing has not been completed."),
+            });
+        }
+
+        return Json((HttpStatusCode)207, new JsonArray(new JsonObject
+        {
+            ["recordId"] = recordId,
+            ["reportingEntityId"] = record["data"]?["ReportingEntityID"]?.DeepClone(),
+            ["timeseries"] = items,
+            ["result"] = TimeSeriesResult(207, "Multi-Status", "Partially successful. See sub-requests response codes."),
+        }));
+    }
+
+    /// <summary>
+    /// The historian's query service's read of one series version (section 6.1): the version's data as known when it was
+    /// accepted, later versions winning at a timestamp, in <c>[start, end)</c>; 404 "Failed to get a Stream Mapping" until
+    /// the series has a mapping.
+    /// </summary>
+    private HttpResponseMessage TimeSeriesQuery(string method, string path, Uri uri)
+    {
+        if (path == "/info" && method == "GET")
+        {
+            return Json(HttpStatusCode.OK, new JsonObject { ["groupId"] = "org.opengroup.osdu.production", ["artifactId"] = "pddms-timeseries", ["version"] = "0.1.0" });
+        }
+
+        var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.UnescapeDataString).ToArray();
+        if (method != "GET" || parts is not ["production-values", var recordId, "timeseries", var series, "versions", var versionText])
+        {
+            return TimeSeriesError(HttpStatusCode.NotFound, "The requested resource could not be found.");
+        }
+
+        var query = HttpUtility.ParseQueryString(uri.Query);
+        if (!long.TryParse(versionText, CultureInfo.InvariantCulture, out var version)
+            || !long.TryParse(query["start"], CultureInfo.InvariantCulture, out var start)
+            || !long.TryParse(query["end"], CultureInfo.InvariantCulture, out var end))
+        {
+            return TimeSeriesError(HttpStatusCode.BadRequest, "start, end and version must be numbers");
+        }
+
+        if (!Records.TryGetValue(recordId, out var record) || Removed.Contains(recordId))
+        {
+            return TimeSeriesError(HttpStatusCode.NotFound, $"Record not found {recordId}");
+        }
+
+        if (!SeriesKinds(record).ContainsKey(series))
+        {
+            return TimeSeriesAnswer(HttpStatusCode.NotFound, recordId, record, new JsonObject
+            {
+                ["timeseriesId"] = series,
+                ["result"] = TimeSeriesResult(404, "Not Found", $"'{series}' timeseries not found in {recordId}"),
+            });
+        }
+
+        var reads = _mappingReads.GetValueOrDefault((recordId, series)) + 1;
+        _mappingReads[(recordId, series)] = reads;
+        if (reads <= TimeSeriesMappingDelay || !TimeSeries.TryGetValue((recordId, series), out var versions))
+        {
+            return TimeSeriesAnswer(HttpStatusCode.NotFound, recordId, record, new JsonObject
+            {
+                ["timeseriesId"] = series,
+                ["result"] = TimeSeriesResult(404, "Not Found", "Failed to get a Stream Mapping"),
+            });
+        }
+
+        var known = new SortedDictionary<long, JsonNode?>();
+        foreach (var (_, points) in versions.Where(v => v.Version <= version))
+        {
+            foreach (var (timestamp, value) in points)
+            {
+                known[timestamp] = value;
+            }
+        }
+
+        var served = known.Where(p => p.Key >= start && p.Key < end).Take(TimeSeriesReadLimit).ToList();
+        return TimeSeriesAnswer(HttpStatusCode.OK, recordId, record, new JsonObject
+        {
+            ["timeseriesId"] = series,
+            ["version"] = version,
+            ["start"] = start,
+            ["end"] = end,
+            ["pointsCount"] = served.Count,
+            ["points"] = new JsonArray(served.Select(p => (JsonNode?)new JsonObject { ["timestamp"] = p.Key, ["value"] = p.Value?.DeepClone() }).ToArray()),
+            ["result"] = TimeSeriesResult(200, "OK", "OK"),
+        });
+    }
+
+    /// <summary>The kind each series of a stored ProductionValues record names, by its DDMSDatasetID.</summary>
+    private static Dictionary<string, string> SeriesKinds(JsonObject record)
+        => (record["data"]?["ProductionMetricValues"] as JsonArray ?? [])
+            .OfType<JsonObject>()
+            .Where(m => m["DDMSDatasetID"] is not null)
+            .ToDictionary(m => m["DDMSDatasetID"]!.GetValue<string>(), m => m["ParameterKindID"]?.GetValue<string>() ?? string.Empty, StringComparer.Ordinal);
+
+    /// <summary>The ingestion service's check of a series' values against its kind (section 3.4); null when every value passes.</summary>
+    private static string? TimeSeriesValueProblem(string series, string kind, JsonArray points)
+    {
+        var code = kind.Split(':').SkipWhile(p => !p.EndsWith("reference-data--ParameterKind", StringComparison.Ordinal)).Skip(1).FirstOrDefault() ?? kind;
+        if (kind.Contains("set-string", StringComparison.OrdinalIgnoreCase) || kind.Contains("setstring", StringComparison.OrdinalIgnoreCase))
+        {
+            return points.All(p => p!["value"] is JsonArray set && set.All(v => v is JsonValue text && text.GetValueKind() == JsonValueKind.String)
+                    && set.Select(v => v!.GetValue<string>()).Distinct(StringComparer.Ordinal).Count() == set.Count)
+                ? null
+                : $"Invalid Point value - {series} input is not a SET";
+        }
+
+        if (code is not ("Double" or "Integer" or "Boolean" or "String"))
+        {
+            // The detector never yields the timestamp kind, so a date-time series refuses every value.
+            return code == "Timestamp"
+                ? $"Invalid point value type. Expected Timestamp, but invalid value(s) are found for {series}"
+                : $"Unknown data type '{kind}' for '{series}'";
+        }
+
+        foreach (var point in points)
+        {
+            var value = point!["value"];
+            var detected = value switch
+            {
+                JsonValue text when text.GetValueKind() == JsonValueKind.String => "String",
+                JsonValue flag when flag.GetValueKind() is JsonValueKind.True or JsonValueKind.False => "Boolean",
+                JsonValue number when number.GetValueKind() == JsonValueKind.Number => number.ToJsonString().IndexOfAny(['.', 'e', 'E']) >= 0 ? "Double" : "Integer",
+                _ => "Unknown",
+            };
+            if (detected != code && !(code == "Double" && detected == "Integer"))
+            {
+                return $"Invalid point value type. Expected {code}, but invalid value(s): '{value?.ToJsonString()}' of {detected} is(are) found for timestamp(s): {point["timestamp"]}";
+            }
+        }
+
+        return null;
+    }
+
+    private static JsonObject TimeSeriesResult(int code, string reason, string message)
+        => new() { ["code"] = code, ["reason"] = reason, ["message"] = message };
+
+    private static HttpResponseMessage TimeSeriesAnswer(HttpStatusCode status, string recordId, JsonObject record, JsonObject series)
+        => Json(status, new JsonArray(new JsonObject
+        {
+            ["recordId"] = recordId,
+            ["reportingEntityId"] = record["data"]?["ReportingEntityID"]?.DeepClone(),
+            ["timeseries"] = new JsonArray(series),
+            ["result"] = TimeSeriesResult((int)status, status.ToString(), status.ToString()),
+        }));
+
+    private static HttpResponseMessage TimeSeriesError(HttpStatusCode status, string message)
+        => Json(status, new JsonObject { ["result"] = TimeSeriesResult((int)status, status.ToString(), message) });
 
     private HttpResponseMessage Airflow(string method, string path, HttpRequestMessage request)
     {

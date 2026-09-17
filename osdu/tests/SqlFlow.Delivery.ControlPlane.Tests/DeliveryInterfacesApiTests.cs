@@ -207,10 +207,12 @@ public sealed class DeliveryInterfacesApiTests
                 "work-product-component--WellLog records go to the welllogs collection of the DDMS 'wellbore' (/api/os-wellbore-ddms).",
                 target.GetProperty("ddms").GetString());
             Assert.Equal("/api/os-wellbore-ddms/ddms/v3/welllogs/{id}", target.GetProperty("recordPath").GetString());
+            Assert.Equal("DELETE", target.GetProperty("recordMethod").GetString());
             Assert.Equal("/api/os-wellbore-ddms/ddms/v3/welllogs/{id}?purge=true", target.GetProperty("everythingPath").GetString());
             Assert.Equal("/api/storage/v2/records/{id}/versions", target.GetProperty("historyPath").GetString());
             var storageTarget = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/target?interface=wellbores");
             Assert.Equal(JsonValueKind.Null, storageTarget.GetProperty("ddms").ValueKind);
+            Assert.Equal("POST", storageTarget.GetProperty("recordMethod").GetString());
 
             // A record leads to its pipeline and interface, and a task queued for it names the interface the node acts through.
             var record = await JsonAsync(client, token, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}");

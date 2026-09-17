@@ -35,7 +35,7 @@ and the order it is built in.
 | Rock and Fluid Samples DDMS | `osdu/specs/rafs-ddms` | ddms shape `rafsV2` (stage 7): every collection, records and content tables | none |
 | Well Delivery DDMS | `osdu/specs/well-delivery-ddms` | ddms shape `wellDeliveryV1` (stage 7): every entity type it knows, versioned references, its Storage copy | none |
 | Production DDMS (DSPDM) | `osdu/specs/production-dspdm` | no | route type `dspdm` |
-| Production time series (historian) | `osdu/specs/production-timeseries` | no | ddms shape `productionTimeSeriesV1` |
+| Production time series (historian) | `osdu/specs/production-timeseries` | ddms shape `productionTimeSeriesV1` (stage 7): ProductionValues records through Storage, their points in requests under the body limit, every accepted version read back | none (the historian has no delete for points) |
 | Reservoir Management DDMS | `osdu/specs/reservoir-management-ddms` | no | ddms shape `reservoirManagement` |
 | External Data Services | `osdu/specs/eds-dms` | no | storage and workflow routes, with the checks EDS needs |
 | DDMS discovery (Register service) | register v1 | `target.ddms`, with a registration read by id (stage 5) | none |
@@ -208,10 +208,13 @@ Status: in progress. A DDMS that takes an OSDU record and keeps data of its own 
 found by the record's entity type under `target.ddms`; one whose unit is not an OSDU record is a route type of its own
 (docs/interfaces-design.md section 5.10). Built: the Well Delivery DDMS (`wellDeliveryV1`: an entity per write under a
 version recorded first, references given the versions the DDMS holds, content rewritten in place, the Storage copy
-removed with the entity) and the Rock and Fluid Sample DDMS (`rafsV2`: records in arrays, content tables per type and
+removed with the entity), the Rock and Fluid Sample DDMS (`rafsV2`: records in arrays, content tables per type and
 schema version checked against the service's catalogue, both storage modes, the content datasets removed with the
-record), each against a fake of the service with every request checked against its pinned contract, and the ddms route
-split into one writer per shape.
+record) and the production historian (`productionTimeSeriesV1`: ProductionValues records through Storage with their
+link to their points, the points read from parquet or the service's JSON and checked against the record's series,
+requests under the body limit sent once each, every accepted version read back through the query service), each
+against a fake of the service with every request checked against its pinned contract, and the ddms route split into one
+writer per shape.
 
 ### Stage 8: records that wait for other records
 

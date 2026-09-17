@@ -233,11 +233,12 @@ public sealed record DeliveryRedeliverResult(int Marked, Guid? RunId);
 /// Where a flow's records actually live: the endpoint and data partition every removal in the GUI names before it
 /// runs, with the exact call each scope makes. The endpoint is reported as the flow declares it, secret references
 /// and all, because that reference is what identifies the environment; no credential or header value is exposed.
-/// <c>Ddms</c> says, for a flow on the ddms route, which collection of which DDMS its records go to.
+/// <c>Ddms</c> says, for a flow on the ddms route, which collection of which DDMS its records go to, and
+/// <c>RecordMethod</c> which method the record scope calls <c>RecordPath</c> with.
 /// </summary>
 public sealed record DeliveryTargetDto(
     Guid PipelineId, string FlowName, string Endpoint, string? DataPartition, string Protocol, string AuthType,
-    string RecordPath, string HistoryPath, string EverythingPath, string? Interface = null, string? Ddms = null);
+    string RecordPath, string HistoryPath, string EverythingPath, string? Interface = null, string? Ddms = null, string RecordMethod = "POST");
 
 /// <summary>The listing a removal is aimed at, the same filter the records list is built from.</summary>
 public sealed record DeliveryRecordFilterDto(
@@ -1481,7 +1482,7 @@ public static class DeliveryEndpoints
         var paths = RemovalEndpoints.Of(flow.Flow, string.IsNullOrEmpty(kind) ? null : kind);
         return new DeliveryTargetDto(
             flow.Pipeline.Id, flow.Pipeline.Name, target.Endpoint, partition, target.Protocol.ToString(),
-            target.Auth.Type.ToString(), paths.Record, paths.History, paths.Everything, flow.Flow.Interface, ddms);
+            target.Auth.Type.ToString(), paths.Record, paths.History, paths.Everything, flow.Flow.Interface, ddms, paths.RecordMethod);
     }
 
     /// <summary>Where a ddms-route flow's records go, as a sentence: the collection and the DDMS serving the kind its mapping renders.</summary>

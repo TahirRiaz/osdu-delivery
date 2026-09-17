@@ -157,6 +157,42 @@ public sealed class DdmsDocumentsTests
     }
 
     [Fact]
+    public void A_flow_declares_a_production_historian_with_its_query_service_and_its_waits()
+    {
+        var flow = _loader.ParseFlow(Single("""
+              ddms:
+                historian:
+                  root: /api/pddms/ingest/v1/
+                  shape: productionTimeSeriesV1
+                  queryRoot: /api/timeseries/v1
+                  settleSeconds: 0
+                  pollSeconds: 60
+                  maxRequestBytes: 4000000
+            """), "logs.yaml");
+
+        var historian = flow.Target.Ddms.Single();
+        Assert.Equal(DdmsShape.ProductionTimeSeriesV1, historian.Shape);
+        Assert.Equal("/api/pddms/ingest/v1", historian.Root);
+        Assert.Same(DdmsCatalog.TimeSeriesCollections, historian.Collections);
+        Assert.Null(historian.WellDelivery);
+        Assert.Equal(
+            new TimeSeriesSettings { QueryRoot = "/api/timeseries/v1", SettleSeconds = 0, PollSeconds = 60, MaxRequestBytesPerRequest = 4_000_000 },
+            historian.TimeSeries);
+
+        // Without settings, the query service is where its contract serves it, and a delivery reads its points back for a minute.
+        var defaults = _loader.ParseFlow(Single("""
+              ddms:
+                historian: { root: /api/pddms/ingest/v1, shape: productionTimeSeriesV1 }
+            """), "logs.yaml").Target.Ddms.Single().TimeSeries;
+        Assert.Equal(new TimeSeriesSettings { QueryRoot = DdmsCatalog.UsualTimeSeriesQueryRoot }, defaults);
+        Assert.Equal((60, 5, 8_000_000L), (defaults!.SettleSeconds, defaults.PollSeconds, defaults.MaxRequestBytesPerRequest));
+        Assert.Null(_loader.ParseFlow(Single("""
+              ddms:
+                rafs: { root: /api/rafs-ddms, shape: rafsV2 }
+            """), "logs.yaml").Target.Ddms.Single().TimeSeries);
+    }
+
+    [Fact]
     public void A_ddms_named_by_its_registration_leaves_what_it_does_not_declare_to_the_register_service()
     {
         var flow = _loader.ParseFlow(Single("""
@@ -245,6 +281,17 @@ public sealed class DdmsDocumentsTests
         { "  ddms:\n    r: { root: /r, shape: rafsV2, collections: { master-data--Sample: { path: masterdata, typedContent: true } } }", "ddms", "", "target.ddms.r.collections.master-data--Sample.typedContent says what content the collection holds, and it holds records alone (bulk is false)" },
         { "  ddms:\n    r: { root: /r, shape: rafsV2, collections: { work-product-component--FluidModel: { path: fluidmodel, bulk: true, columns: curveIds } } }", "ddms", "", "target.ddms.r.collections.work-product-component--FluidModel.columns names the curve and station checks the Wellbore DDMS applies to its bulk data, and target.ddms.r has the rafsV2 shape" },
         { "  ddms:\n    r: { root: /r, shape: rafsV2 }", "ddms", ", contentSchemaVersion: v1", "target.protocolOptions.contentSchemaVersion 'v1' is not a content schema version such as 1.0.0" },
+        { "  ddms:\n    h: { shape: productionTimeSeriesV1 }", "ddms", "", "target.ddms.h.root is required. The historian's records are written through Storage and its points through its ingestion service, so the flow's endpoint is the platform both are under; say where the ingestion service is under it (usually /api/pddms/ingest/v1)." },
+        { "  ddms:\n    h: { shape: productionTimeSeriesV1, register: pddms }", "ddms", "", "target.ddms.h.register reads a DDMS's collections from its Register service registration, which the route reads for DDMSs of the wellboreDdmsV3 shape" },
+        { "  ddms:\n    r: { root: /r, shape: rafsV2, queryRoot: /q, settleSeconds: 5 }", "ddms", "", "target.ddms.r.queryRoot, target.ddms.r.settleSeconds describe the Production DDMS historian, and target.ddms.r has the rafsV2 shape. Remove them, or declare shape: productionTimeSeriesV1." },
+        { "  ddms:\n    w: { root: /w, pollSeconds: 5, maxRequestBytes: 20000 }", "ddms", "", "target.ddms.w.pollSeconds, target.ddms.w.maxRequestBytes describe the Production DDMS historian, and target.ddms.w has the wellboreDdmsV3 shape" },
+        { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1, settleSeconds: 3601 }", "ddms", "", "target.ddms.h.settleSeconds must be between 0 and 3600" },
+        { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1, settleSeconds: -1 }", "ddms", "", "target.ddms.h.settleSeconds must be between 0 and 3600" },
+        { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1, pollSeconds: 0 }", "ddms", "", "target.ddms.h.pollSeconds must be between 1 and 60." },
+        { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1, maxRequestBytes: 9999 }", "ddms", "", "target.ddms.h.maxRequestBytes must be between 10000 and 64000000" },
+        { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1, maxRequestBytes: 64000001 }", "ddms", "", "target.ddms.h.maxRequestBytes must be between 10000 and 64000000" },
+        { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1, queryRoot: api/query }", "ddms", "", "target.ddms.h.queryRoot 'api/query' must be a path under the endpoint starting with '/'" },
+        { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1, collections: { work-product-component--ProductionValues: { path: production-values, bulk: true } } }", "ddms", "", "target.ddms.h.collections lists collections, and the historian serves work-product-component--ProductionValues records alone, under production-values. Leave collections out." },
     };
 
     [Theory]

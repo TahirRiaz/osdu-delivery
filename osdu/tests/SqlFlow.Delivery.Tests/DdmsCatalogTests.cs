@@ -256,6 +256,38 @@ public sealed partial class DdmsCatalogTests
         Assert.Equal(["/about"], DdmsCatalog.ProbePaths(DdmsCatalog.WellboreDdms(null)));
         Assert.Equal("bharun", DdmsCatalog.WellDeliveryType("master-data--BHARun"));
         Assert.Equal("rig", DdmsCatalog.WellDeliveryCollection("master-data--Rig").Segment);
+        Assert.Equal("/api/pddms/ingest/v1", DdmsCatalog.UsualRoot(DdmsShape.ProductionTimeSeriesV1));
+        Assert.Equal("productionTimeSeriesV1", DdmsCatalog.ShapeName(DdmsShape.ProductionTimeSeriesV1));
+        Assert.Equal(
+            ["/h/info", "/q/info"],
+            DdmsCatalog.ProbePaths(new DdmsService("h", "/h", DdmsShape.ProductionTimeSeriesV1, []) { TimeSeries = new TimeSeriesSettings { QueryRoot = "/q" } }));
+        Assert.Equal(["/h/info", "/api/pddms/query/v1/info"], DdmsCatalog.ProbePaths(new DdmsService("h", "/h", DdmsShape.ProductionTimeSeriesV1, [])));
+    }
+
+    [Fact]
+    public void The_historians_collection_and_roots_are_the_ones_both_of_its_contracts_serve()
+    {
+        var ingestion = OsduContracts.ProductionTimeSeriesIngestion;
+        var query = OsduContracts.ProductionTimeSeries;
+        Assert.Contains(DdmsCatalog.UsualRoot(DdmsShape.ProductionTimeSeriesV1), ingestion.BasePaths);
+        Assert.Contains(DdmsCatalog.UsualTimeSeriesQueryRoot, query.BasePaths);
+
+        var collection = Assert.Single(DdmsCatalog.TimeSeriesCollections);
+        Assert.Equal("work-product-component--ProductionValues", collection.EntityType);
+        Assert.Equal(DdmsCatalog.ProductionValues, collection.EntityType);
+        Assert.True(collection.Bulk);
+        Assert.False(collection.TypedContent);
+        Assert.Equal(DdmsBulkColumns.Unchecked, collection.Columns);
+
+        // The calls the shape makes: the single-record batch write, the read of one version, and both services' /info.
+        Assert.Contains(ingestion.Operations, o => o.Method == "POST" && o.Template == $"/{collection.Segment}/{{recordId}}/timeseries");
+        Assert.Contains(query.Operations, o => o.Method == "GET" && o.Template == $"/{collection.Segment}/{{recordId}}/timeseries/{{timeseriesId}}/versions/{{version}}");
+        Assert.Contains(ingestion.Operations, o => o.Method == "GET" && o.Template == DdmsCatalog.TimeSeriesInfoPath);
+        Assert.Contains(query.Operations, o => o.Method == "GET" && o.Template == DdmsCatalog.TimeSeriesInfoPath);
+
+        // Neither contract has a delete (osdu/specs/production-timeseries/INTEGRATION.md section 6.3).
+        Assert.DoesNotContain(ingestion.Operations, o => o.Method == "DELETE");
+        Assert.DoesNotContain(query.Operations, o => o.Method == "DELETE");
     }
 
     [GeneratedRegex(@"^/ddms/v3/(?<segment>[^/{}]+)$", RegexOptions.CultureInvariant)]

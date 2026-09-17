@@ -105,11 +105,19 @@ public sealed class OsduHttpClient
     /// the bare media type (RAFS refuses <c>application/json; charset=utf-8</c> on a record write, osdu/specs/rafs-ddms
     /// INTEGRATION.md section 1.3).
     /// </param>
-    public async Task<HttpFetchResult> SendJsonAsync(
+    public Task<HttpFetchResult> SendJsonAsync(
         HttpMethod method, Uri url, JsonNode? body, IReadOnlySet<int>? allowStatuses, CancellationToken ct, bool? idempotent = null,
         IReadOnlyDictionary<string, string>? headers = null, bool bareJsonType = false)
+        => SendJsonBytesAsync(method, url, body is null ? null : CanonicalJson.ToBytes(body), allowStatuses, ct, idempotent, headers, bareJsonType);
+
+    /// <summary>
+    /// <see cref="SendJsonAsync"/> with a body already serialised, sent as it stands: for a request the caller writes as a
+    /// stream of values (the historian's points) rather than as one document. Null sends no body.
+    /// </summary>
+    public async Task<HttpFetchResult> SendJsonBytesAsync(
+        HttpMethod method, Uri url, byte[]? body, IReadOnlySet<int>? allowStatuses, CancellationToken ct, bool? idempotent = null,
+        IReadOnlyDictionary<string, string>? headers = null, bool bareJsonType = false)
     {
-        var bytes = body is null ? null : CanonicalJson.ToBytes(body);
         return await WithFreshAuthAsync(auth => _http.Data.SendAsync(() =>
         {
             var request = new HttpRequestMessage(method, url);
@@ -119,7 +127,7 @@ public sealed class OsduHttpClient
                 request.Headers.TryAddWithoutValidation(name, value);
             }
 
-            request.Content = JsonBody(bytes, bareJsonType);
+            request.Content = JsonBody(body, bareJsonType);
             return request;
         }, allowStatuses, idempotent, ct), ct).ConfigureAwait(false);
     }

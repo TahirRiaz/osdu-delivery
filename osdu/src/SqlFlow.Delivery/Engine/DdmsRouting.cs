@@ -13,20 +13,45 @@ public sealed record DdmsRoute(DdmsService Service, DdmsCollectionEntry Collecti
     /// <summary>The token a typed RAFS content path takes the content type in.</summary>
     public const string ContentTypeToken = "{contentType}";
 
+    /// <summary>The token a historian read takes the series id (a <c>DDMSDatasetID</c> of the record) in.</summary>
+    public const string SeriesToken = "{timeseriesId}";
+
+    /// <summary>The token a historian read takes the series version the ingestion service answered in.</summary>
+    public const string VersionToken = "{version}";
+
     /// <summary>
     /// The collection below the flow's endpoint: <c>/api/os-wellbore-ddms/ddms/v3/welllogs</c>,
-    /// <c>/api/well-delivery/storage/v1/wellbore</c>, <c>/api/rafs-ddms/v2/samplesanalysis</c>.
+    /// <c>/api/well-delivery/storage/v1/wellbore</c>, <c>/api/rafs-ddms/v2/samplesanalysis</c>,
+    /// <c>/api/pddms/ingest/v1/production-values</c>.
     /// </summary>
     public string CollectionPath => (Service.Root ?? string.Empty) + Service.Shape switch
     {
         DdmsShape.WellboreDdmsV3 => DdmsCatalog.WellboreDdmsV3Prefix,
         DdmsShape.WellDeliveryV1 => DdmsCatalog.WellDeliveryPrefix,
         DdmsShape.RafsV2 => DdmsCatalog.RafsV2Prefix,
+        DdmsShape.ProductionTimeSeriesV1 => "/",
         _ => throw new InvalidOperationException($"The DDMS '{Service.Name}' has the shape {Service.Shape}, which has no paths."),
     } + Collection.Segment;
 
-    /// <summary>One record: read, verified and deleted here. The Well Delivery DDMS names it by its entity id alone.</summary>
-    public string RecordPath => CollectionPath + (Service.Shape == DdmsShape.WellDeliveryV1 ? "/" + EntityIdToken : "/{id}");
+    /// <summary>
+    /// Where a record is written: its collection, or, for the historian, whose records are Storage records, the storage
+    /// service's array endpoint.
+    /// </summary>
+    public string RecordsPath => Service.Shape == DdmsShape.ProductionTimeSeriesV1 ? OsduRecordProtocol.DefaultRecordPath : CollectionPath;
+
+    /// <summary>
+    /// One record: read and verified here, and deleted here too except on the historian. The Well Delivery DDMS names it by
+    /// its entity id alone; the historian's records are read through Storage.
+    /// </summary>
+    public string RecordPath => Service.Shape switch
+    {
+        DdmsShape.WellDeliveryV1 => CollectionPath + "/" + EntityIdToken,
+        DdmsShape.ProductionTimeSeriesV1 => OsduRecordProtocol.DefaultVerifyPath,
+        _ => CollectionPath + "/{id}",
+    };
+
+    /// <summary>Where a record is removed at the reversible scope: its DDMS's path, or storage's <c>:delete</c> for the historian's records.</summary>
+    public string DeletePath => Service.Shape == DdmsShape.ProductionTimeSeriesV1 ? OsduRecordProtocol.DefaultDeletePath : RecordPath;
 
     /// <summary>
     /// The whole bulk of a record, written at once (on the Wellbore DDMS, with <c>describe=true</c>, its description); on
@@ -36,8 +61,18 @@ public sealed record DdmsRoute(DdmsService Service, DdmsCollectionEntry Collecti
     {
         DdmsShape.WellboreDdmsV3 => CollectionPath + "/{id}/data",
         DdmsShape.RafsV2 => CollectionPath + "/{id}/data" + (Collection.TypedContent ? "/" + ContentTypeToken : string.Empty),
+        DdmsShape.ProductionTimeSeriesV1 => CollectionPath + "/{id}/timeseries",
         _ => null,
     };
+
+    /// <summary>
+    /// Where the historian's query service serves one version of one series of a record
+    /// (<c>/api/pddms/query/v1/production-values/{id}/timeseries/{timeseriesId}/versions/{version}</c>); null on every
+    /// other shape.
+    /// </summary>
+    public string? SeriesVersionPath => Service.Shape == DdmsShape.ProductionTimeSeriesV1
+        ? (Service.TimeSeries?.QueryRoot ?? DdmsCatalog.UsualTimeSeriesQueryRoot) + "/" + Collection.Segment + "/{id}/timeseries/" + SeriesToken + "/versions/" + VersionToken
+        : null;
 
     /// <summary>Where a bulk session of a record is opened; only the Wellbore DDMS has sessions.</summary>
     public string? SessionsPath => Service.Shape == DdmsShape.WellboreDdmsV3 ? CollectionPath + "/{id}/sessions" : null;
@@ -222,9 +257,9 @@ public sealed class DdmsRouting
             {
                 EntityType = entityType,
                 Route = shaped,
-                Records = shaped.CollectionPath,
+                Records = shaped.RecordsPath,
                 Record = shaped.RecordPath,
-                Delete = shaped.RecordPath,
+                Delete = shaped.DeletePath,
                 Data = shaped.Collection.Bulk ? shaped.DataPath : null,
             };
         }
@@ -361,8 +396,8 @@ public sealed class DdmsRouting
 
     /// <summary>
     /// Where the storage service's reversible delete is, for the records a DDMS writes into storage beside its own (the
-    /// Well Delivery DDMS's copies, the datasets RAFS registers for content): the storage default under a platform
-    /// endpoint; null when the flow's endpoint is a DDMS itself.
+    /// Well Delivery DDMS's copies, the datasets RAFS registers for content) and the historian's records: the storage
+    /// default under a platform endpoint; null when the flow's endpoint is a DDMS itself.
     /// </summary>
     public string? StorageDeletePath => PlatformEndpoint ? OsduRecordProtocol.DefaultDeletePath : null;
 

@@ -26,6 +26,13 @@ public enum DdmsShape
     /// <c>GET</c> and a logical <c>DELETE</c> on <c>/{id}</c>.
     /// </summary>
     RafsV2,
+
+    /// <summary>
+    /// The Production DDMS historian (osdu/specs/production-timeseries/INTEGRATION.md): the ProductionValues record through
+    /// Storage, its points through the ingestion service (<c>POST /production-values/{id}/timeseries</c>), each accepted
+    /// series version read back through the query service. Points have no delete.
+    /// </summary>
+    ProductionTimeSeriesV1,
 }
 
 /// <summary>The cloud a DDMS deployment runs on, where the API cannot tell and its behaviour depends on it.</summary>
@@ -112,6 +119,43 @@ public sealed record WellDeliverySettings
 }
 
 /// <summary>
+/// Where the Production DDMS historian answers reads, and how long a delivery waits for it
+/// (osdu/specs/production-timeseries/INTEGRATION.md sections 1, 6 and 9).
+/// </summary>
+public sealed record TimeSeriesSettings
+{
+    public const int DefaultSettleSeconds = 60;
+
+    public const int MaxSettleSeconds = 3_600;
+
+    public const int DefaultPollSeconds = 5;
+
+    public const int MaxPollSeconds = 60;
+
+    /// <summary>The request body the ingestion service is sent at most: the 8 MB its documentation gives, unverified.</summary>
+    public const long DefaultMaxRequestBytes = 8_000_000;
+
+    public const long MinRequestBytes = 10_000;
+
+    public const long MaxRequestBytes = 64_000_000;
+
+    /// <summary>Where the query service is under the endpoint (<c>/api/pddms/query/v1</c>).</summary>
+    public required string QueryRoot { get; init; }
+
+    /// <summary>
+    /// How long a delivery waits for the query service to serve every series version the ingestion service accepted
+    /// (an acceptance is not a guarantee: the service publishes points without waiting). 0 does not wait.
+    /// </summary>
+    public int SettleSeconds { get; init; } = DefaultSettleSeconds;
+
+    /// <summary>The pause between two reads of a series version that is not served yet.</summary>
+    public int PollSeconds { get; init; } = DefaultPollSeconds;
+
+    /// <summary>The largest request body a delivery sends the ingestion service; points are split across requests under it.</summary>
+    public long MaxRequestBytesPerRequest { get; init; } = DefaultMaxRequestBytes;
+}
+
+/// <summary>
 /// A DDMS a flow delivers to: the name the flow gives it, where it is under the flow's endpoint (null when the endpoint
 /// is the DDMS itself, or an absolute URL when the Register service places it on another host), its call pattern and
 /// the collections it serves.
@@ -132,6 +176,9 @@ public sealed record DdmsService(string Name, string? Root, DdmsShape Shape, IRe
 
     /// <summary>The Well Delivery DDMS's deployment settings; null for every other shape.</summary>
     public WellDeliverySettings? WellDelivery { get; init; }
+
+    /// <summary>The Production DDMS historian's query service and waits; null for every other shape.</summary>
+    public TimeSeriesSettings? TimeSeries { get; init; }
 
     /// <summary>Whether the registration still has to be read before the DDMS's root and collections are known.</summary>
     public bool AwaitsDiscovery => Registration is not null && !Discovered;
@@ -186,6 +233,15 @@ public static partial class DdmsCatalog
 
     /// <summary>The RAFS DDMS's type catalogue of SamplesAnalysis content, which checks the token and partition (<c>GET /v2/samplesanalysis/analysistypes</c>).</summary>
     public const string RafsAnalysisTypesPath = "/v2/samplesanalysis/analysistypes";
+
+    /// <summary>The historian's version information, below the ingestion and the query roots (<c>GET /info</c>, token only).</summary>
+    public const string TimeSeriesInfoPath = "/info";
+
+    /// <summary>Where the historian's query service is usually deployed under the platform.</summary>
+    public const string UsualTimeSeriesQueryRoot = "/api/pddms/query/v1";
+
+    /// <summary>The entity type whose records define the historian's series.</summary>
+    public const string ProductionValues = "work-product-component--ProductionValues";
 
     /// <summary>
     /// The Wellbore DDMS v3's collections, as its pinned contract serves them (osdu/specs/wellbore-ddms/openapi.json and
@@ -276,6 +332,16 @@ public static partial class DdmsCatalog
         new("work-product-component--DepthShift", "depthshift", Bulk: true),
     ];
 
+    /// <summary>
+    /// The historian's one collection: ProductionValues records, whose <c>data.ProductionMetricValues[].DDMSDatasetID</c>
+    /// name the series its points belong to (osdu/specs/production-timeseries/INTEGRATION.md section 2). The segment is the
+    /// path both services serve the records' series under.
+    /// </summary>
+    public static IReadOnlyList<DdmsCollectionEntry> TimeSeriesCollections { get; } =
+    [
+        new(ProductionValues, "production-values", Bulk: true),
+    ];
+
     /// <summary>The Wellbore DDMS under <paramref name="root"/>, with the collections its contract serves.</summary>
     public static DdmsService WellboreDdms(string? root) => new(WellboreDdmsName, root, DdmsShape.WellboreDdmsV3, WellboreDdmsCollections);
 
@@ -285,6 +351,7 @@ public static partial class DdmsCatalog
         DdmsShape.WellboreDdmsV3 => WellboreDdmsCollections,
         DdmsShape.WellDeliveryV1 => WellDeliveryCollections,
         DdmsShape.RafsV2 => RafsCollections,
+        DdmsShape.ProductionTimeSeriesV1 => TimeSeriesCollections,
         _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "not a DDMS shape"),
     };
 
@@ -294,6 +361,7 @@ public static partial class DdmsCatalog
         DdmsShape.WellboreDdmsV3 => "/api/os-wellbore-ddms",
         DdmsShape.WellDeliveryV1 => "/api/well-delivery",
         DdmsShape.RafsV2 => "/api/rafs-ddms",
+        DdmsShape.ProductionTimeSeriesV1 => "/api/pddms/ingest/v1",
         _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "not a DDMS shape"),
     };
 
@@ -306,8 +374,8 @@ public static partial class DdmsCatalog
 
     /// <summary>
     /// The service descriptions a probe of <paramref name="service"/> asks, in order, below the endpoint. The Wellbore DDMS
-    /// answers <c>/about</c>, the Well Delivery DDMS <c>/info</c>, and RAFS <c>/info</c> without a token, then its type
-    /// catalogue, which checks the token and the partition.
+    /// answers <c>/about</c>, the Well Delivery DDMS <c>/info</c>, RAFS <c>/info</c> without a token, then its type
+    /// catalogue, which checks the token and the partition, and the historian the <c>/info</c> of both its services.
     /// </summary>
     public static IReadOnlyList<string> ProbePaths(DdmsService service)
     {
@@ -318,6 +386,7 @@ public static partial class DdmsCatalog
             DdmsShape.WellboreDdmsV3 => [root + WellboreDdmsAboutPath],
             DdmsShape.WellDeliveryV1 => [root + WellDeliveryInfoPath],
             DdmsShape.RafsV2 => [root + RafsInfoPath, root + RafsAnalysisTypesPath],
+            DdmsShape.ProductionTimeSeriesV1 => [root + TimeSeriesInfoPath, (service.TimeSeries?.QueryRoot ?? UsualTimeSeriesQueryRoot) + TimeSeriesInfoPath],
             _ => throw new ArgumentOutOfRangeException(nameof(service), service.Shape, "not a DDMS shape"),
         };
     }

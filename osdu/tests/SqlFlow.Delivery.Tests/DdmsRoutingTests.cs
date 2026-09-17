@@ -227,6 +227,44 @@ public sealed class DdmsRoutingTests
     }
 
     [Fact]
+    public void A_production_values_record_is_a_storage_record_whose_points_go_to_the_historian()
+    {
+        var settings = new TimeSeriesSettings { QueryRoot = "/api/timeseries/v1" };
+        var historian = new DdmsService("historian", "/api/pddms/ingest/v1", DdmsShape.ProductionTimeSeriesV1, DdmsCatalog.TimeSeriesCollections) { TimeSeries = settings };
+        var routing = DdmsRouting.Of(Flow(ddms: [historian, Rafs], interfaceName: "production"));
+        var values = routing.For(DdmsCatalog.ProductionValues);
+
+        Assert.Equal(DdmsShape.ProductionTimeSeriesV1, values.Shape);
+        Assert.Equal("/api/storage/v2/records", values.Records);
+        Assert.Equal("/api/storage/v2/records/{id}", values.Record);
+        Assert.Equal("/api/storage/v2/records/{id}:delete", values.Delete);
+        Assert.Equal("/api/pddms/ingest/v1/production-values/{id}/timeseries", values.Data);
+        Assert.Null(values.Sessions);
+        Assert.Null(values.SessionData);
+        Assert.Null(values.Session);
+        Assert.True(values.Bulk);
+        Assert.Equal("/api/pddms/ingest/v1/production-values", values.Route!.CollectionPath);
+        Assert.Equal("/api/timeseries/v1/production-values/{id}/timeseries/{timeseriesId}/versions/{version}", values.Route.SeriesVersionPath);
+        Assert.Null(routing.For("work-product-component--DepthShift").Route!.SeriesVersionPath);
+        Assert.Null(routing.Problem(DdmsCatalog.ProductionValues, sendsBulk: true));
+        Assert.Equal(
+            "work-product-component--ProductionValues records go to the production-values collection of the DDMS 'historian' (/api/pddms/ingest/v1).",
+            routing.Explain("osdu:wks:work-product-component--ProductionValues:2.0.0"));
+        Assert.Equal(["/api/pddms/ingest/v1/info", "/api/timeseries/v1/info", "/api/rafs-ddms/info", "/api/rafs-ddms/v2/samplesanalysis/analysistypes"], routing.ProbePaths);
+
+        // The query service defaults to where its contract serves it; paths named for a Wellbore facade are refused.
+        var usual = DdmsRouting.Of(Flow(ddms: [historian with { TimeSeries = null }], interfaceName: "production"));
+        Assert.Equal("/api/pddms/query/v1/production-values/{id}/timeseries/{timeseriesId}/versions/{version}", usual.For(DdmsCatalog.ProductionValues).Route!.SeriesVersionPath);
+        var named = DdmsRouting.Of(Flow(new ProtocolOptions { RecordPath = "/records" }, [historian], "production"));
+        Assert.Contains("whose shape (productionTimeSeriesV1) says every call they take", Assert.Throws<DeliveryException>(() => named.For(DdmsCatalog.ProductionValues)).Message, StringComparison.Ordinal);
+
+        var endpoints = RemovalEndpoints.Of(Flow(ddms: [historian], interfaceName: "production"), "osdu:wks:work-product-component--ProductionValues:2.0.0");
+        Assert.Equal(("/api/storage/v2/records/{id}:delete", "POST"), (endpoints.Record, endpoints.RecordMethod));
+        Assert.Equal("/api/storage/v2/records/{id}/versions", endpoints.History);
+        Assert.Equal("/api/storage/v2/records/{id}", endpoints.Everything);
+    }
+
+    [Fact]
     public void A_rafs_record_takes_its_content_under_its_type_where_the_collection_holds_several()
     {
         var routing = DdmsRouting.Of(Flow(ddms: [Rafs], interfaceName: "samples"));
@@ -268,8 +306,11 @@ public sealed class DdmsRoutingTests
         Assert.Equal(RemovalEndpoints.HistoryRefusedByWellDelivery, entity.History);
         Assert.Equal("/api/well-delivery/storage/v1/well/{entityId}:purge", entity.Everything);
 
+        Assert.Equal("DELETE", entity.RecordMethod);
+
         var samples = RemovalEndpoints.Of(Flow(ddms: [Rafs], interfaceName: "samples"), "osdu:wks:work-product-component--SamplesAnalysis:1.0.0");
         Assert.Equal("/api/rafs-ddms/v2/samplesanalysis/{id}", samples.Record);
+        Assert.Equal("DELETE", samples.RecordMethod);
         Assert.Equal("/api/storage/v2/records/{id}/versions", samples.History);
         Assert.Equal("/api/storage/v2/records/{id}", samples.Everything);
     }

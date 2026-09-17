@@ -7,7 +7,7 @@ code and parameterised by the flow, not an authorable step language.
 | Protocol | Services | Pattern | Batched |
 | --- | --- | --- | --- |
 | `osduRecord` | storage | One JSON document, upsert by client-supplied id, array endpoint. | up to `batchSize` records per request |
-| `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default), by the call pattern of its shape: the Wellbore DDMS v3, the Well Delivery DDMS, RAFS | Record, then, on a collection that keeps bulk data, its bulk data (a Wellbore DDMS session, or RAFS's content tables). | one record per request |
+| `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default), by the call pattern of its shape: the Wellbore DDMS v3, the Well Delivery DDMS, RAFS, the Production DDMS historian | Record, then, on a collection that keeps bulk data, its bulk data (a Wellbore DDMS session, RAFS's content tables, or the historian's points). | one record per request |
 | `osduFile` | file, storage | Signed upload URL per file, streamed upload, dataset registration, then the record with its dataset list. | the record write, up to `batchSize` |
 | `osduDataset` | dataset, storage | Staging location per record, upload the way its provider takes it, registration under the record's own id (or a dataset the record refers to), retrieval checked. | up to 20 registrations per request |
 | `osduManifest` | file, dataset, workflow, search, storage | Uploads, one manifest per batch handed to the ingestion workflow, inline or by reference, the run polled, the records read back. | one workflow run per batch of up to `batchSize` |
@@ -97,7 +97,8 @@ part without files.
 ## `osduWellLog`: the ddms route
 
 A record goes to the DDMS serving its entity type, and by the call pattern of that DDMS's shape: `wellboreDdmsV3`
-(described first, below), [`wellDeliveryV1`](#the-well-delivery-shape) and [`rafsV2`](#the-rafs-shape). The Wellbore
+(described first, below), [`wellDeliveryV1`](#the-well-delivery-shape), [`rafsV2`](#the-rafs-shape) and
+[`productionTimeSeriesV1`](#the-production-historian-shape). The Wellbore
 DDMS shape's calls, rules and deletes follow its pinned contract and its source at the same commit
 ([../specs/wellbore-ddms/INTEGRATION.md](../specs/wellbore-ddms/INTEGRATION.md)).
 
@@ -286,6 +287,53 @@ The Rock and Fluid Sample DDMS writes sample records through Storage and keeps t
 - Probe: `GET {root}/info`, then `GET {root}/v2/samplesanalysis/analysistypes`, which checks the token and the
   partition.
 
+### The production historian shape
+
+The Production DDMS historian keeps the points of the series a `work-product-component--ProductionValues` record
+defines, behind an ingestion service and a query service
+([../specs/production-timeseries/INTEGRATION.md](../specs/production-timeseries/INTEGRATION.md)).
+
+- Record: a Storage record. It goes to `PUT /api/storage/v2/records`, with the data keys the flow preserves and its link
+  to its points, `urn://pddms/production-values/{id}/timeseries`, in `data.DDMSDatasets` (in place of any other
+  historian link it renders), and is read, verified and removed through Storage. Checked before anything is sent: a
+  ProductionValues kind of version 2.0.0 or later, a master data `ReportingEntityID`, and one
+  `ProductionMetricValues` entry per series with a unique `DDMSDatasetID` and a `ParameterKindID`.
+- Points: the `bulk` part's files ([documents.md](documents.md#the-ddmss-a-flow-delivers-to)), read in full before
+  the record is written: every series one the record defines, of a kind the ingestion service takes, its values of
+  that kind, its timestamps increasing, and the whole split into requests, so a point too large for one holds the
+  record too.
+- Write: `POST {root}/production-values/{id}/timeseries` with
+  `{"timeseries":[{"timeseriesId","points":[{"timestamp","value"}]}]}`, typed exactly `application/json`, each request
+  at most `maxRequestBytes` (or the target's declared ceiling below it), each series listed once per request, and the
+  attempt's correlation id as `trace-id` beside `correlation-id`. The points go in file order, a parquet file row group
+  by row group, series by series, so a request holds the next points of the series that fit.
+- Steps: each request is a step, `points-<n>`, returning the SHA-256 of its body, its bytes, points and series, and per
+  series the version it was accepted under and its points (`<series>.version`, `<series>.points`). The service takes no
+  request id and stores every accepted series as a new version, so a later try splits the points the same way and sends
+  only the requests whose body no try recorded. A request whose answer is lost after the service acted is the one that
+  goes twice; the second version holds the same points.
+- Answers: read per series from each item's `result.code`, matched to the request by position (the service answers
+  207 for every batch, and leaves the series id out of a failure). 202 is accepted, with its version, range and points,
+  which must be every point sent. A series the service refuses (400, 401, 403, 404) holds the record, the versions of
+  the series it accepted named; any other refusal leaves the record for its next try, which sends the whole request
+  again. The request refused as a whole with 400, 403 or 404 holds the record naming the likely cause; a 500 (the
+  service's storage lookup failing) is retried.
+- Read back: the ingestion service accepts points before they are stored, so each accepted version is read from the
+  query service, `GET {queryRoot}/production-values/{id}/timeseries/{series}/versions/{version}?start=&end=`, in ranges
+  of at most 10000 points (`end` being exclusive), until it serves at least the points sent in each, for at most
+  `settleSeconds`, `pollSeconds` apart. A series answering 404 "Failed to get a Stream Mapping" has not reached the
+  store yet. A request whose ranges are all served is recorded as `settled` on its step; when the time is up the record
+  waits for its next try, which reads back only what is not settled and sends nothing again. A 403 from the query
+  service holds the record: the flow's identity needs `service.pddms.viewer`, or `settleSeconds: 0`. Where the query
+  service reads as of a version, points an earlier version holds in the same range count too, so a redelivery of
+  points at timestamps a delivery already holds cannot tell its own version from the earlier one (how versions combine
+  is open in the brief, section 11).
+- Returned: `timeSeries.requests`, `timeSeries.points`, `timeSeries.settled`, and per series
+  `timeSeries.<series>.versions` (the first 50), `.points`, `.start` and `.end`.
+- Remove: every scope is Storage's, the record being a Storage record (`POST /records/{id}:delete`, the version purge,
+  the purge). The historian has no delete for points, so they stay; the outcome says so.
+- Probe: `GET {root}/info` and `GET {queryRoot}/info`.
+
 ## `osduFile`
 
 The files go first, then the record that references them (openapi file v2, storage v2).
@@ -386,7 +434,9 @@ the file service and every DDMS the flow reaches.
    `osduManifest` sends it (its files registered first, as `filesContentType`). A record that already holds bulk data
    has the DDMS's bulk link, and the `DDMSDatasets` entries the DDMS wrote, carried into its manifest from one batched
    storage read (`POST {verifyBatchPath}`, projected to `data.ExtensionProperties` and `data.DDMSDatasets`), since
-   ingestion writes through storage, past the DDMS; a read that fails fails those records for the try.
+   ingestion writes through storage, past the DDMS; a read that fails fails those records for the try. A new record's
+   manifest carries the link its DDMS gives a record it holds nothing for yet: the historian's link to its points, and
+   no Wellbore DDMS bulk link.
 3. Once the run has written the record, its bulk data goes through its DDMS from the version the manifest wrote. A
    failure there leaves the record as the manifest wrote it; the next try resumes the manifest step's run rather than
    ingesting the record again, and sends the bulk data.

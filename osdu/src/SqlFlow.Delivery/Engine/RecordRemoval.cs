@@ -83,11 +83,20 @@ public sealed record RemovalSelection
 /// </summary>
 public sealed record RemovalEndpoints(string Record, string History, string Everything)
 {
+    /// <summary>
+    /// The method the record scope calls <see cref="Record"/> with: POST for storage's <c>:delete</c> and the dataset
+    /// service's soft delete, DELETE for a DDMS's own removal.
+    /// </summary>
+    public string RecordMethod { get; init; } = "POST";
+
     /// <summary>What the history endpoint reads as when the flow cannot reach the storage service's version purge.</summary>
     public const string HistoryNotConfigured = "(not configured: set protocolOptions.ddmsRoot, or a root for the DDMS under target.ddms, when the endpoint is the platform root, or purgeVersionsPath to the storage service's URL)";
 
     /// <summary>What the everything endpoint of a record-only DDMS collection reads as when the flow cannot reach the storage service's purge.</summary>
     public const string PurgeNotConfigured = "(not configured: set protocolOptions.ddmsRoot, or a root for the DDMS under target.ddms, when the endpoint is the platform root, or purgePath to the storage service's URL)";
+
+    /// <summary>What the record endpoint of a DDMS whose records are storage records reads as when the flow cannot reach the storage service.</summary>
+    public const string DeleteNotConfigured = "(not configured: give the DDMS its root under target.ddms, the endpoint being the platform root)";
 
     /// <summary>What a ddms-route endpoint reads as while the kind the flow's mapping renders is not known.</summary>
     public const string CollectionNotKnown = "(the collection serving the records' entity type, known once the flow's mapping is synced)";
@@ -132,12 +141,12 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
         var history = routing.HistoryPath ?? HistoryNotConfigured;
         if ((string.IsNullOrWhiteSpace(kind) ? null : OsduKind.EntityType(kind)) is not { } entityType)
         {
-            return new RemovalEndpoints(CollectionNotKnown, history, CollectionNotKnown);
+            return new RemovalEndpoints(CollectionNotKnown, history, CollectionNotKnown) { RecordMethod = "DELETE" };
         }
 
         if (!routing.NamesPaths && routing.Unread.Count > 0 && routing.Find(entityType) is null)
         {
-            return new RemovalEndpoints(RegistrationNotRead, history, RegistrationNotRead);
+            return new RemovalEndpoints(RegistrationNotRead, history, RegistrationNotRead) { RecordMethod = "DELETE" };
         }
 
         DdmsRecordPaths paths;
@@ -148,20 +157,27 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
         catch (DeliveryException ex)
         {
             var unroutable = $"(not routable: {ex.Message})";
-            return new RemovalEndpoints(unroutable, history, unroutable);
+            return new RemovalEndpoints(unroutable, history, unroutable) { RecordMethod = "DELETE" };
         }
 
         return paths.Shape switch
         {
             // The Well Delivery DDMS purges under its own path, and its versions are what other entities' references cite.
-            DdmsShape.WellDeliveryV1 => new RemovalEndpoints(paths.Delete, HistoryRefusedByWellDelivery, paths.Delete + ":purge"),
+            DdmsShape.WellDeliveryV1 => new RemovalEndpoints(paths.Delete, HistoryRefusedByWellDelivery, paths.Delete + ":purge") { RecordMethod = "DELETE" },
 
             // RAFS deletes logically only; its records are storage records, which storage purges.
-            DdmsShape.RafsV2 => new RemovalEndpoints(paths.Delete, history, routing.StoragePurgePath ?? PurgeNotConfigured),
+            DdmsShape.RafsV2 => new RemovalEndpoints(paths.Delete, history, routing.StoragePurgePath ?? PurgeNotConfigured) { RecordMethod = "DELETE" },
+
+            // The historian's records are storage records, and nothing removes its points.
+            DdmsShape.ProductionTimeSeriesV1 => new RemovalEndpoints(
+                routing.StorageDeletePath ?? DeleteNotConfigured, history, routing.StoragePurgePath ?? PurgeNotConfigured),
             _ => new RemovalEndpoints(
                 paths.Delete,
                 history,
-                paths.Route is { Collection.Bulk: false } ? routing.StoragePurgePath ?? PurgeNotConfigured : paths.Delete + "?purge=true"),
+                paths.Route is { Collection.Bulk: false } ? routing.StoragePurgePath ?? PurgeNotConfigured : paths.Delete + "?purge=true")
+            {
+                RecordMethod = "DELETE",
+            },
         };
     }
 

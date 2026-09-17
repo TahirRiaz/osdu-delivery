@@ -121,38 +121,42 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
     }
 
     /// <summary>
-    /// The link each record's DDMS keeps to its bulk data, carried from the stored records into the manifest of every
-    /// record that already holds bulk data (<see cref="OsduWellLogProtocol.CarryLink"/>). The records are read in one
-    /// batched read.
+    /// The link each record's DDMS keeps to its data, carried into the manifest of every record the manifest writes
+    /// (<see cref="OsduWellLogProtocol.CarryLink"/>): from the stored record for a record storage holds, read in one
+    /// batched read, and as the DDMS links a record it holds nothing for yet for a new one (the historian's link to the
+    /// record's points; no bulk link on the Wellbore DDMS).
     /// </summary>
     private async Task CarryLinksAsync(List<Planned> planned, CancellationToken ct)
     {
-        var updates = planned.Where(p => p.Failure is null && p.ManifestWork.DeliverMetadata && p.Work.ExistingVersion is not null).ToList();
-        if (updates.Count == 0)
+        var written = planned.Where(p => p.Failure is null && p.ManifestWork.DeliverMetadata).ToList();
+        if (written.Count == 0)
         {
             return;
         }
 
-        IReadOnlyDictionary<string, JsonObject> stored;
-        try
+        var updates = written.Where(p => p.Work.ExistingVersion is not null).ToList();
+        IReadOnlyDictionary<string, JsonObject> stored = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        if (updates.Count > 0)
         {
-            stored = await RecordWriter.ReadManyAsync(
-                _client, _options.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath, updates.Select(p => p.Work.TargetId).ToList(), OsduWellLogProtocol.LinkAttributes, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
-        {
-            // Without the stored link the manifest could drop it, so these records wait for the next try.
-            foreach (var item in updates)
+            try
             {
-                item.Failure = ex;
+                stored = await RecordWriter.ReadManyAsync(
+                    _client, _options.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath, updates.Select(p => p.Work.TargetId).ToList(), OsduWellLogProtocol.LinkAttributes, ct).ConfigureAwait(false);
             }
-
-            return;
+            catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
+            {
+                // Without the stored link the manifest could drop it, so these records wait for the next try.
+                foreach (var item in updates)
+                {
+                    item.Failure = ex;
+                }
+            }
         }
 
-        foreach (var item in updates)
+        foreach (var item in written)
         {
-            if (!stored.TryGetValue(item.Work.TargetId, out var record))
+            JsonObject? record = null;
+            if (item.Failure is not null || (item.Work.ExistingVersion is not null && !stored.TryGetValue(item.Work.TargetId, out record)))
             {
                 continue;
             }

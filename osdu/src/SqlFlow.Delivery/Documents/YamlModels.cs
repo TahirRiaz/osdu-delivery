@@ -421,7 +421,7 @@ internal sealed class DdmsYaml
     /// <summary>Where the DDMS is under the endpoint (<c>/api/os-wellbore-ddms</c>); null when the endpoint is the DDMS.</summary>
     public string? Root { get; set; }
 
-    /// <summary>Its call pattern (<c>wellboreDdmsV3</c>, the default, <c>wellDeliveryV1</c> or <c>rafsV2</c>).</summary>
+    /// <summary>Its call pattern (<c>wellboreDdmsV3</c>, the default, <c>wellDeliveryV1</c>, <c>rafsV2</c> or <c>productionTimeSeriesV1</c>).</summary>
     public string? Shape { get; set; }
 
     /// <summary>The id the DDMS is registered under in the Register service, to look up what the flow does not declare.</summary>
@@ -438,6 +438,18 @@ internal sealed class DdmsYaml
 
     /// <summary>Well Delivery DDMS: the writes one process sends to the deployment at a time. Default 1.</summary>
     public int? Concurrency { get; set; }
+
+    /// <summary>Production DDMS historian: where its query service is under the endpoint. Default <c>/api/pddms/query/v1</c>.</summary>
+    public string? QueryRoot { get; set; }
+
+    /// <summary>Production DDMS historian: how long a delivery reads accepted points back for, in seconds. Default 60; 0 does not read them back.</summary>
+    public int? SettleSeconds { get; set; }
+
+    /// <summary>Production DDMS historian: the pause between two reads of points not served yet, in seconds. Default 5.</summary>
+    public int? PollSeconds { get; set; }
+
+    /// <summary>Production DDMS historian: the largest request body points are sent in, in bytes. Default 8000000.</summary>
+    public long? MaxRequestBytes { get; set; }
 }
 
 /// <summary>One collection of a declared DDMS.</summary>

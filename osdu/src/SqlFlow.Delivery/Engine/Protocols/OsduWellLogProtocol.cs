@@ -11,7 +11,8 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// The ddms route (design.md sections 8.1 and 8.3, docs/interfaces-design.md sections 5.3 and 5.4): each record goes to
 /// the collection of the DDMS serving its entity type (<see cref="DdmsRouting"/>), by the call pattern of that DDMS's
 /// shape: the Wellbore DDMS v3 (<see cref="WellboreDdmsV3Shape"/>), the Well Delivery DDMS
-/// (<see cref="WellDeliveryShape"/>) or the Rock and Fluid Sample DDMS (<see cref="RafsShape"/>). A record's shape
+/// (<see cref="WellDeliveryShape"/>), the Rock and Fluid Sample DDMS (<see cref="RafsShape"/>) or the Production DDMS
+/// historian (<see cref="ProductionTimeSeriesShape"/>). A record's shape
 /// checks it, and the data its DDMS keeps for it, before the first request, writes both, and says how the record is read
 /// back, verified and removed. The protocol is named after the <c>osduWellLog</c> value a flow's <c>target.protocol</c>
 /// gives it.
@@ -27,6 +28,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     private readonly IDdmsShape _wellbore;
     private readonly IDdmsShape _wellDelivery;
     private readonly IDdmsShape _rafs;
+    private readonly IDdmsShape _timeSeries;
 
     public OsduWellLogProtocol(OsduHttpClient client, ProtocolOptions options, ILogger logger, long requestBodyCeiling = 0, TimeProvider? time = null, DdmsRouting? routing = null)
     {
@@ -40,6 +42,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         _wellbore = new WellboreDdmsV3Shape(context);
         _wellDelivery = new WellDeliveryShape(context);
         _rafs = new RafsShape(context);
+        _timeSeries = new ProductionTimeSeriesShape(context);
     }
 
     public DeliveryProtocol Kind => DeliveryProtocol.OsduWellLog;
@@ -97,8 +100,8 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
 
     /// <summary>
     /// Asks each DDMS the flow reaches for its service description, as its shape describes itself (<c>GET /about</c> of
-    /// the Wellbore DDMS, <c>GET /info</c> of the others, and RAFS's type catalogue), or the flow's own probe path. The
-    /// target is reachable when every one of them answers.
+    /// the Wellbore DDMS, <c>GET /info</c> of the others, RAFS's type catalogue, and the historian's query service), or
+    /// the flow's own probe path. The target is reachable when every one of them answers.
     /// </summary>
     public async Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
     {
@@ -172,6 +175,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         DdmsShape.WellboreDdmsV3 => _wellbore,
         DdmsShape.WellDeliveryV1 => _wellDelivery,
         DdmsShape.RafsV2 => _rafs,
+        DdmsShape.ProductionTimeSeriesV1 => _timeSeries,
         _ => throw new InvalidOperationException($"The ddms route has no call pattern for the shape {paths.Shape}."),
     };
 

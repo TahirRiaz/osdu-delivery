@@ -1530,6 +1530,13 @@ internal static partial class FlowMapper
             var shape = ParseEnum(ddms.Shape, DdmsShape.WellboreDdmsV3, at + ".shape", source);
             var root = MapDdmsRoot(ddms.Root, at + ".root", source);
             var registration = MapRegistration(ddms, shape, at, source);
+            if (root is null && shape == DdmsShape.ProductionTimeSeriesV1)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {at}.root is required. The historian's records are written through Storage and its points through its ingestion service, so the flow's endpoint is "
+                    + $"the platform both are under; say where the ingestion service is under it (usually {DdmsCatalog.UsualRoot(shape)}).");
+            }
+
             if (root is null && registration is null && interfaceForm)
             {
                 throw new FlowValidationException(
@@ -1541,6 +1548,7 @@ internal static partial class FlowMapper
             // A registered DDMS whose collections the flow leaves out serves what its registration says, once it is read.
             var collections = registration is not null && ddms.Collections is null ? [] : MapDdmsCollections(ddms.Collections, shape, at, source);
             var settings = MapWellDelivery(ddms, shape, at, source);
+            var timeSeries = MapTimeSeries(ddms, shape, at, source);
             foreach (var collection in collections)
             {
                 if (!servedBy.TryAdd(collection.EntityType, name))
@@ -1556,6 +1564,7 @@ internal static partial class FlowMapper
                 Registration = registration,
                 DeclaresCollections = ddms.Collections is not null,
                 WellDelivery = settings,
+                TimeSeries = timeSeries,
             });
         }
 
@@ -1610,6 +1619,66 @@ internal static partial class FlowMapper
             Mirror = ddms.Mirror ?? true,
             Provider = string.IsNullOrWhiteSpace(ddms.Provider) ? null : provider,
             Concurrency = concurrency,
+        };
+    }
+
+    /// <summary>
+    /// The settings of a declared Production DDMS historian, or null for any other shape, which takes none of them
+    /// (osdu/specs/production-timeseries/INTEGRATION.md sections 1, 4 and 6: where the query service is, how long accepted
+    /// points are read back for, and the largest request the points are sent in).
+    /// </summary>
+    private static TimeSeriesSettings? MapTimeSeries(DdmsYaml ddms, DdmsShape shape, string at, string source)
+    {
+        if (shape != DdmsShape.ProductionTimeSeriesV1)
+        {
+            var misplaced = new[]
+                {
+                    ("queryRoot", ddms.QueryRoot is not null), ("settleSeconds", ddms.SettleSeconds is not null),
+                    ("pollSeconds", ddms.PollSeconds is not null), ("maxRequestBytes", ddms.MaxRequestBytes is not null),
+                }
+                .Where(k => k.Item2)
+                .Select(k => $"{at}.{k.Item1}")
+                .ToList();
+            if (misplaced.Count > 0)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {string.Join(", ", misplaced)} describe the Production DDMS historian, and {at} has the {DdmsCatalog.ShapeName(shape)} shape. "
+                    + "Remove them, or declare shape: productionTimeSeriesV1.");
+            }
+
+            return null;
+        }
+
+        var settle = ddms.SettleSeconds ?? TimeSeriesSettings.DefaultSettleSeconds;
+        if (settle is < 0 or > TimeSeriesSettings.MaxSettleSeconds)
+        {
+            throw new FlowValidationException(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{source}: {at}.settleSeconds must be between 0 and {TimeSeriesSettings.MaxSettleSeconds}: how long a delivery reads accepted points back for, 0 not reading them back."));
+        }
+
+        var poll = ddms.PollSeconds ?? TimeSeriesSettings.DefaultPollSeconds;
+        if (poll is < 1 or > TimeSeriesSettings.MaxPollSeconds)
+        {
+            throw new FlowValidationException(string.Create(
+                CultureInfo.InvariantCulture, $"{source}: {at}.pollSeconds must be between 1 and {TimeSeriesSettings.MaxPollSeconds}."));
+        }
+
+        var bytes = ddms.MaxRequestBytes ?? TimeSeriesSettings.DefaultMaxRequestBytes;
+        if (bytes is < TimeSeriesSettings.MinRequestBytes or > TimeSeriesSettings.MaxRequestBytes)
+        {
+            throw new FlowValidationException(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{source}: {at}.maxRequestBytes must be between {TimeSeriesSettings.MinRequestBytes} and {TimeSeriesSettings.MaxRequestBytes}; "
+                + $"the historian's documentation gives {TimeSeriesSettings.DefaultMaxRequestBytes} bytes as its limit, unverified, which is the default."));
+        }
+
+        return new TimeSeriesSettings
+        {
+            QueryRoot = MapDdmsRoot(ddms.QueryRoot, at + ".queryRoot", source) ?? DdmsCatalog.UsualTimeSeriesQueryRoot,
+            SettleSeconds = settle,
+            PollSeconds = poll,
+            MaxRequestBytesPerRequest = bytes,
         };
     }
 
@@ -1673,6 +1742,12 @@ internal static partial class FlowMapper
         if (declared is null)
         {
             return DdmsCatalog.DefaultCollections(shape);
+        }
+
+        if (shape == DdmsShape.ProductionTimeSeriesV1)
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.collections lists collections, and the historian serves {DdmsCatalog.ProductionValues} records alone, under production-values. Leave collections out.");
         }
 
         if (declared.Count == 0)

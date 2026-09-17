@@ -299,17 +299,28 @@ target:
     rafs:
       root: /api/rafs-ddms
       shape: rafsV2
+    historian:
+      root: /api/pddms/ingest/v1         # the ingestion service; required, the records going through Storage
+      shape: productionTimeSeriesV1
+      queryRoot: /api/pddms/query/v1     # the query service (the default)
+      settleSeconds: 60                  # how long a delivery reads accepted points back for (the default; 0 reads nothing back)
+      pollSeconds: 5                     # the pause between two reads of points not served yet (the default)
+      maxRequestBytes: 8000000           # the largest request the points go in (the default)
 ```
 
 | Key | Meaning |
 | --- | --- |
 | `root` | Where the DDMS is under the endpoint: a path starting with `/`. Left out, the endpoint is the DDMS itself, which only a flow in the single form declaring that one DDMS and no `ddmsRoot` can say; every DDMS of a source with interfaces names its root or its registration. |
-| `shape` | The DDMS's call pattern: `wellboreDdmsV3` (the default), the Wellbore DDMS v3's `/ddms/v3/<collection>` calls; `wellDeliveryV1`, the Well Delivery DDMS's `/storage/v1/<type>` calls; `rafsV2`, the Rock and Fluid Sample DDMS's `/v2/<collection>` calls. |
+| `shape` | The DDMS's call pattern: `wellboreDdmsV3` (the default), the Wellbore DDMS v3's `/ddms/v3/<collection>` calls; `wellDeliveryV1`, the Well Delivery DDMS's `/storage/v1/<type>` calls; `rafsV2`, the Rock and Fluid Sample DDMS's `/v2/<collection>` calls; `productionTimeSeriesV1`, the Production DDMS historian's `/production-values/<id>/timeseries` calls, beside Storage for its records. |
 | `collections` | The entity types (with their group) the DDMS serves, each with `path`, the collection's path segment; `bulk`, whether it keeps bulk data beside its records (default `false`); `columns`, what the bulk data's columns are checked against before they are sent: `unchecked` (the default), `curveIds`, `curveIdsAndWidths` or `trajectoryStations`, which only a bulk collection of a Wellbore DDMS takes; and `typedContent`, which says a RAFS content collection holds several content types, each under its own path segment (default `false`). A Well Delivery DDMS serves each type under the type itself, lowercased, so its collections name no `path` (or that one), and hold records alone. |
 | `register` | The id the DDMS is registered under in the Register service (2 to 50 letters, digits and `-`), for a DDMS of the `wellboreDdmsV3` shape. What the flow leaves out is read from the registration when the flow's protocol is built: the root from the one server its interfaces' OpenAPI documents name, the collections from their retrieval operations (`x-ddms-retrieve-entity`), where a collection the shape knows by its path takes the shape's entity type and rules. `protocolOptions.registerPath` says where the registration is read (default `/api/register/v1/ddms/{id}` under the endpoint). A DDMS that declares both its root and its collections has nothing to read, so `register` is refused there. |
 | `mirror` | Well Delivery DDMS: whether the deployment copies every entity into Storage (`app.entity.storage`, on in every provider's chart, so `true` by default). The API cannot tell. The copy's id is kept on the record, and a removal takes the copy through Storage too, since the DDMS never deletes it. |
 | `provider` | Well Delivery DDMS: the provider the deployment runs on, which the API cannot tell either. On `ibm` an entity is never written again under a version it already has, since that store refuses the second save. |
 | `concurrency` | Well Delivery DDMS: how many writes one node sends to the deployment at once, 1 to 16 (default 1). The service's Mongo and Cosmos stores keep the collection of the current write in shared state, so writes of different types at once can land in each other's collection. |
+| `queryRoot` | Production DDMS historian: where its query service is under the endpoint (default `/api/pddms/query/v1`, its contract's server). Each accepted version of the points is read back there, and the probe asks its `/info`. |
+| `settleSeconds` | Production DDMS historian: how long a delivery reads the points it sent back before it leaves the record for its next try, 0 to 3600 (default 60). The ingestion service accepts points before they are stored, so a delivery counts once the query service serves them; 0 delivers on the acceptance alone. |
+| `pollSeconds` | Production DDMS historian: the pause between two reads of points the query service does not serve yet, 1 to 60 (default 5). |
+| `maxRequestBytes` | Production DDMS historian: the largest request body the points are sent in, 10000 to 64000000 (default 8000000, the limit the historian's documentation gives and has not verified). A declared `reliability.maxRequestBodyBytes` below it bounds the requests instead. |
 
 The Well Delivery DDMS serves, by default, the entity types its brief lists
 ([../specs/well-delivery-ddms/INTEGRATION.md](../specs/well-delivery-ddms/INTEGRATION.md) section 4), in the groups the
@@ -338,6 +349,24 @@ A RAFS record's `bulk` part holds its content tables, one file per content type,
 `<contentType>.json` or `<contentType>.parquet`, or `<contentType>.<schemaVersion>.parquet` where the table follows
 another content schema version than `protocolOptions.contentSchemaVersion` (default `1.0.0`). JSON goes as
 `application/json` (the split form, or a list of rows), parquet as `application/x-parquet`.
+
+The historian serves `work-product-component--ProductionValues` records alone, so its DDMS lists no `collections`
+([../specs/production-timeseries/INTEGRATION.md](../specs/production-timeseries/INTEGRATION.md) section 2). A record of
+kind 2.0.0 or later defines one series per `data.ProductionMetricValues` entry, by its `DDMSDatasetID`, and the kind of
+its values by its `ParameterKindID` (Double, Integer, Boolean, String, a SET-STRING kind; the historian's checks refuse
+every Timestamp point, so a date-time series' points are not sent). The record's `bulk` part holds its points, in one or
+more files:
+
+- `<name>.parquet`, a wide table: a `timestamp` column in epoch milliseconds (whole numbers, parquet timestamps, or
+  dates, read as midnight UTC) and one column per series, named by its `DDMSDatasetID`. An empty cell (or a NaN) is no
+  point. A pandas index column is left out unless it is the `timestamp`.
+- `<name>.json`, the ingestion service's own body for one record, up to 64 MiB:
+  `{"timeseries":[{"timeseriesId":"OIL","points":[{"timestamp":978307200000,"value":58883469.74}]}]}`. A SET-STRING
+  series is sent from here, each value a list of distinct strings; a number is sent with the digits it was written with.
+
+Values are sent as they are, in the series' `UnitOfMeasureID`: the historian converts nothing. A series keeps its points
+in one file, in increasing timestamp order with one value per timestamp, and every point is of its series' kind (an
+Integer series takes whole numbers only); a file that breaks a rule holds the record before anything is sent.
 
 A record goes to the DDMS serving its entity type: the DDMSs under `target.ddms`, then the Wellbore DDMS under
 `ddmsRoot` (or at the endpoint, as above). A record goes to one DDMS, so the loader refuses an entity type two declared

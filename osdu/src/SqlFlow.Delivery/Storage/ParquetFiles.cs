@@ -144,6 +144,17 @@ public static class ParquetFiles
     }
 
     /// <summary>
+    /// The column a pandas writer stored a dataframe's single index in, as the footer's metadata names it, or null when the
+    /// file stores no index column (no pandas metadata, a range index, or an index of several levels).
+    /// </summary>
+    public static string? PandasIndexColumn(IReadOnlyDictionary<string, string> metadata)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        var index = PandasIndex.From(metadata);
+        return index.Kind == PandasIndexKind.Column ? index.Column : null;
+    }
+
+    /// <summary>
     /// Collapses the parquet CLR types to the small set the renderer understands. A float is read as the number it was
     /// written as (12.3, not the 12.300000190734863 its bits widen to), a decimal and an unsigned 64-bit value keep their
     /// exact value, and a NaN is read as a missing value, which is how numpy and pandas store one.

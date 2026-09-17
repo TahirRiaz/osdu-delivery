@@ -548,6 +548,8 @@ export interface DeliveryTarget {
   protocol: string;
   authType: string;
   recordPath: string;
+  /** The method the record scope calls recordPath with: POST for storage and the dataset service, DELETE for a DDMS's own removal. */
+  recordMethod: string;
   historyPath: string;
   everythingPath: string;
   /** The interface of the source the target is for, or null for a flow in the single form. */
