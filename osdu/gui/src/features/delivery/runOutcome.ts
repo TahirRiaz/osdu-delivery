@@ -39,12 +39,14 @@ export interface RunRecordCounts {
   held: number | null;
   failed: number | null;
   unchanged: number | null;
+  /** Records left waiting for a record they refer to; null when the run reports none. */
+  waiting: number | null;
 }
 
 /** The record counts a run reported: a deliver run's own, or a verify run's read as the same headline numbers. */
 export function runRecordCounts(result: Record<string, unknown> | null): RunRecordCounts {
   if (result === null) {
-    return { planned: null, delivered: null, held: null, failed: null, unchanged: null };
+    return { planned: null, delivered: null, held: null, failed: null, unchanged: null, waiting: null };
   }
 
   const drifted = count(result, "drifted");
@@ -55,6 +57,7 @@ export function runRecordCounts(result: Record<string, unknown> | null): RunReco
     held: count(result, "held") ?? (drifted === null && missing === null ? null : (drifted ?? 0) + (missing ?? 0)),
     failed: count(result, "failed") ?? count(result, "errors"),
     unchanged: count(result, "skippedUnchanged"),
+    waiting: count(result, "waiting"),
   };
 }
 

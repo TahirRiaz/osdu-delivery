@@ -402,6 +402,7 @@ internal static partial class FlowMapper
                 Airflow = MapAirflow(target.Airflow, source),
                 Eds = MapEds(target.Eds, source),
                 Dspdm = MapDspdm(target.Dspdm, protocol, source),
+                VerifyReferences = MapVerifyReferences(target.VerifyReferences, protocol, source),
             },
             Reliability = MapReliability(y.Reliability, source, paths),
             Verify = new FlowVerify { Reconcile = y.Verify?.Reconcile ?? false },
@@ -490,6 +491,13 @@ internal static partial class FlowMapper
             throw new FlowValidationException(
                 $"{source}: target.dspdm declares the Production DDMS core service the dspdm route writes rows to, and no interface is delivered by it (route: dspdm). "
                 + "Remove target.dspdm, or route the interfaces it is meant for through it.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(target.VerifyReferences) && flows.All(f => f.Target.Protocol == DeliveryProtocol.OsduDspdm))
+        {
+            throw new FlowValidationException(
+                $"{source}: target.verifyReferences checks the references of the records sent through OSDU's storage service, and every interface of the "
+                + "source is delivered by the dspdm route, whose rows refer to no storage record. Remove target.verifyReferences.");
         }
 
         if (target.Ddms is not null && !flows.Any(f => DeliveryProtocols.ReachesDdms(f.Target.Protocol)))
@@ -627,6 +635,9 @@ internal static partial class FlowMapper
 
                 // The DSPDM the source declares is where its dspdm interfaces go; the other interfaces have no use for it.
                 Dspdm = route.Protocol == DeliveryProtocol.OsduDspdm ? target.Dspdm : null,
+
+                // A DSPDM row refers to no storage record, so a dspdm interface has nothing for the storage check to read.
+                VerifyReferences = route.Protocol == DeliveryProtocol.OsduDspdm ? null : target.VerifyReferences,
             },
             Reliability = YamlOverlay.Apply(y.Reliability, i.Reliability),
             Verify = YamlOverlay.Apply(y.Verify, i.Verify),
@@ -2213,6 +2224,23 @@ internal static partial class FlowMapper
             FanOutMinRecords = r.FanOutMinRecords ?? defaults.FanOutMinRecords,
             RenderParallelism = r.RenderParallelism ?? defaults.RenderParallelism,
         };
+    }
+
+    /// <summary>
+    /// What a record's references are checked against before it is sent (<c>target.verifyReferences</c>): <c>none</c>,
+    /// the default, or <c>storage</c>. The dspdm route writes rows that refer to no storage record, so a flow it delivers
+    /// is refused the storage check.
+    /// </summary>
+    private static ReferenceVerification MapVerifyReferences(string? declared, DeliveryProtocol protocol, string source)
+    {
+        var verification = ParseEnum(declared?.Trim(), ReferenceVerification.None, "target.verifyReferences", source);
+        if (verification == ReferenceVerification.Storage && protocol == DeliveryProtocol.OsduDspdm)
+        {
+            throw new FlowValidationException(
+                $"{source}: target.verifyReferences is storage, and the flow is delivered by the dspdm route, whose rows refer to no storage record. Remove target.verifyReferences.");
+        }
+
+        return verification;
     }
 
     /// <summary>

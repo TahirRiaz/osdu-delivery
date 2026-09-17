@@ -17,6 +17,13 @@ public enum RecordStatus
 
     /// <summary>Removed from OSDU by an operator; blocked from redelivery while the source is unchanged.</summary>
     Deleted,
+
+    /// <summary>
+    /// Holds a rendered document that refers to a record another record of the ledger holds and has not delivered, and
+    /// goes back to pending when that one lands (docs/interfaces-design.md section 7). Waiting is not a try: it charges
+    /// nothing, and no operator is needed.
+    /// </summary>
+    Waiting,
 }
 
 public enum SubmissionStatus
@@ -132,6 +139,9 @@ public sealed record SubmissionState
     public long Held { get; init; }
 
     public long Failed { get; init; }
+
+    /// <summary>Records of the submission still waiting, when it closed, for a record they refer to that has not landed; they go out once it does.</summary>
+    public long Waiting { get; init; }
 
     /// <summary>Records without a derivable delivery key: not planned, not delivered.</summary>
     public long Untracked { get; init; }
@@ -311,6 +321,16 @@ public sealed record RecordState
     public bool PendingMetadata { get; init; }
 
     public bool PendingPayload { get; init; }
+
+    /// <summary>
+    /// The OSDU ids the pending document refers to through the properties its template declares relationships for,
+    /// with the property holding each. A record waits for the ones another record of the ledger holds and has not
+    /// delivered.
+    /// </summary>
+    public IReadOnlyList<RecordReference> PendingReferences { get; init; } = [];
+
+    /// <summary>While the record is <see cref="RecordStatus.Waiting"/>: the OSDU id of the record it waits for.</summary>
+    public string? WaitingFor { get; init; }
 
     /// <summary>
     /// Set when the record was held, failed or deleted and not released since. A blocked record is planned again
@@ -637,6 +657,9 @@ public sealed record FlowStats
 
     public long Deleted { get; init; }
 
+    /// <summary>Records waiting for a record they refer to that has not landed.</summary>
+    public long Waiting { get; init; }
+
     /// <summary>Delivered records whose last verify found drift or a missing record.</summary>
     public long Drifted { get; init; }
 
@@ -699,6 +722,9 @@ public sealed record WorkBatchState
     /// <summary>Records left pending with a retry time when the batch closed.</summary>
     public long Retrying { get; init; }
 
+    /// <summary>Records the batch's claim found waiting for a record they refer to, and did not send.</summary>
+    public long Waiting { get; init; }
+
     public string? Error { get; init; }
 }
 
@@ -728,13 +754,24 @@ public sealed record LeaseState
     public DateTime ExpiresUtc { get; init; }
 }
 
-/// <summary>A claimed batch, the lease it is drained under, and the pending records the lease holds.</summary>
-public sealed record ClaimedWorkBatch(WorkBatchState Batch, LeaseState Lease, IReadOnlyList<RecordState> Records);
+/// <summary>
+/// A claimed batch, the lease it is drained under, and the pending records the lease holds; beside them, the records of
+/// the batch the claim found waiting for a record they refer to.
+/// </summary>
+public sealed record ClaimedWorkBatch(WorkBatchState Batch, LeaseState Lease, IReadOnlyList<RecordState> Records)
+{
+    public IReadOnlyList<WaitingRecord> Waiting { get; init; } = [];
+}
 
-/// <summary>Records due for a retry, claimed together under one lease; no lease when nothing was due.</summary>
+/// <summary>
+/// Records due for a retry, claimed together under one lease; no lease when nothing was due. Beside them, the due records
+/// the claim found waiting for a record they refer to, which it did not take.
+/// </summary>
 public sealed record ClaimedRecords(LeaseState? Lease, IReadOnlyList<RecordState> Records)
 {
     public static ClaimedRecords None { get; } = new(null, []);
+
+    public IReadOnlyList<WaitingRecord> Waiting { get; init; } = [];
 }
 
 /// <summary>
@@ -1070,10 +1107,12 @@ public interface ILedger
 
     /// <summary>
     /// Claims up to <paramref name="max"/> of the flow's (or submission's) pending records that are due, under one new
-    /// lease for <paramref name="owner"/>, after recovering the flow's leases that ran out. The records come back holding
-    /// the lease; <see cref="ClaimedRecords.None"/> when nothing was due.
+    /// lease for <paramref name="owner"/>, after recovering the flow's leases that ran out. A due record that refers to a
+    /// record another record of the ledger holds and has not delivered is not claimed but left waiting, as
+    /// <paramref name="waits"/> says (every such record when null). The records come back holding the lease;
+    /// <see cref="ClaimedRecords.None"/> when nothing was due.
     /// </summary>
-    Task<ClaimedRecords> ClaimAsync(Guid flowId, Guid? submissionId, string owner, int max, TimeSpan lease, DateTime nowUtc, Guid? runId = null, CancellationToken ct = default);
+    Task<ClaimedRecords> ClaimAsync(Guid flowId, Guid? submissionId, string owner, int max, TimeSpan lease, DateTime nowUtc, Guid? runId = null, WaitRules? waits = null, CancellationToken ct = default);
 
     /// <summary>
     /// Extends a lease its worker still holds: one row, however many records it holds. False when the lease is gone or
@@ -1139,9 +1178,29 @@ public interface ILedger
     /// <summary>
     /// Claims the oldest queued work batch of the flow, or of one submission, under a new lease for
     /// <paramref name="owner"/>, after recovering the flow's leases that ran out, and has the lease hold the batch's
-    /// pending records that are due. Null when nothing is claimable.
+    /// pending records that are due, except those left waiting as <paramref name="waits"/> says (see
+    /// <see cref="ClaimAsync"/>). Null when nothing is claimable.
     /// </summary>
-    Task<ClaimedWorkBatch?> ClaimWorkBatchAsync(Guid flowId, Guid? submissionId, string owner, TimeSpan lease, DateTime nowUtc, Guid? runId = null, CancellationToken ct = default);
+    Task<ClaimedWorkBatch?> ClaimWorkBatchAsync(Guid flowId, Guid? submissionId, string owner, TimeSpan lease, DateTime nowUtc, Guid? runId = null, WaitRules? waits = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Sends back to pending the flow's waiting records (the ones named, or all of them) whose wait is over: the record
+    /// they wait for has landed, or no record the ledger holds is left to wait for. The next claim decides again. Returns
+    /// how many went back.
+    /// </summary>
+    Task<int> ReleaseResolvedWaitsAsync(Guid flowId, IReadOnlyCollection<DeliveryKey>? keys, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>The records waiting for <paramref name="targetId"/>, in any flow, at most <paramref name="max"/>, most recently updated first.</summary>
+    Task<IReadOnlyList<RecordState>> ListWaitingForAsync(string targetId, int max, CancellationToken ct = default);
+
+    /// <summary>The ids among <paramref name="ids"/> that a record of the ledger holds, other than a record removed from OSDU.</summary>
+    Task<IReadOnlySet<string>> HeldIdsAsync(IReadOnlyCollection<string> ids, CancellationToken ct = default);
+
+    /// <summary>
+    /// The records that hold <paramref name="targetId"/> as the id they are delivered to, in any flow, compared exactly: the
+    /// one that claimed it first, then any held before it claimed one. At most <paramref name="max"/>.
+    /// </summary>
+    Task<IReadOnlyList<RecordState>> ListHoldersAsync(string targetId, int max, CancellationToken ct = default);
 
     Task<IReadOnlyList<WorkBatchState>> ListWorkBatchesAsync(Guid submissionId, int max, int offset, CancellationToken ct = default);
 
@@ -1187,6 +1246,8 @@ public interface ILedger
     /// <summary>
     /// Releases held, failed or deleted records: those with a pending document go back to pending for the worker,
     /// the others are unblocked and asked to be planned again by the flow's next run. Null keys means every blocked record.
+    /// A waiting record named by key goes back to pending without its references, so it is sent without waiting any more;
+    /// a release of the whole flow leaves waiting records to their wait.
     /// </summary>
     Task<int> ReleaseAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, DateTime nowUtc, CancellationToken ct = default);
 

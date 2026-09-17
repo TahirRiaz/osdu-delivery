@@ -39,4 +39,40 @@ public static class TargetId
     /// </summary>
     public static string Reference(string dataPartition, string entityType, string unique)
         => $"{dataPartition}:{entityType}:{unique}:";
+
+    /// <summary>
+    /// A record reference without its version: <c>p:t:k:</c> and <c>p:t:k:123</c> become <c>p:t:k</c>. The unique
+    /// segment of an OSDU id may itself hold colons, so only a trailing empty or all-digit segment is taken as the version.
+    /// </summary>
+    public static string WithoutVersion(string reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        var last = reference.LastIndexOf(':');
+        if (last < 0)
+        {
+            return reference;
+        }
+
+        var tail = reference[(last + 1)..];
+        var colons = reference.Count(c => c == ':');
+        return colons >= 3 && tail.All(char.IsAsciiDigit) ? reference[..last] : reference;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="value"/> reads as a reference to an OSDU record: a partition, an entity type
+    /// (<c>group--Entity</c>) and a unique segment, with or without the version.
+    /// </summary>
+    public static bool IsRecordReference(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Any(char.IsWhiteSpace))
+        {
+            return false;
+        }
+
+        var parts = value.Split(':');
+        return parts.Length >= 3
+            && parts[0].Length > 0
+            && parts[1].IndexOf("--", StringComparison.Ordinal) is > 0 and var at && at < parts[1].Length - 2
+            && parts[2].Length > 0;
+    }
 }

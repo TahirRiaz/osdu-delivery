@@ -432,6 +432,9 @@ internal sealed class FlowTargetYaml
 
     /// <summary>The Production DDMS core service the dspdm route writes business object rows to.</summary>
     public DspdmYaml? Dspdm { get; set; }
+
+    /// <summary>What a record's references are checked against before it is sent: none (the ledger alone) or storage.</summary>
+    public string? VerifyReferences { get; set; }
 }
 
 /// <summary>The Production DDMS core service behind the target (<c>target.dspdm</c>).</summary>

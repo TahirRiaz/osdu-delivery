@@ -38,7 +38,7 @@ namespace SqlFlow.Delivery.ControlPlane.Api;
 public sealed record DeliveryFlowStatsDto(
     Guid PipelineId, string FlowName, Guid FlowId, long Total, long Pending, long Delivering, long Delivered, long Held, long Failed,
     long Deleted, long Drifted, long DeliveredLast24h, DateTime? LastDeliveredUtc, DateTime? LastVerifiedUtc, long Submissions,
-    DeliverySubmissionDto? LastSubmission, string? Interface = null, int Interfaces = 1);
+    DeliverySubmissionDto? LastSubmission, string? Interface = null, int Interfaces = 1, long Waiting = 0);
 
 /// <summary>
 /// One interface of a delivery flow (docs/interfaces-design.md): its ledger identity, how it is delivered and why, the
@@ -70,7 +70,7 @@ public sealed record DeliverySubmissionDto(
     string? WorkLocation, int BatchCount, int Slices,
     string Kind = SubmissionKinds.Incremental, long Untracked = 0,
     string SourceConnection = "", string SourceObject = "", DateTime? WindowFromUtc = null, DateTime? WindowToUtc = null,
-    JsonElement? SourceWindow = null, Guid? RunId = null);
+    JsonElement? SourceWindow = null, Guid? RunId = null, long Waiting = 0);
 
 /// <summary>One retrieval run of a retrieval flow: the window it covered, where its files went, and its outcome.</summary>
 public sealed record DeliveryRetrievalDto(
@@ -81,7 +81,8 @@ public sealed record DeliveryRetrievalDto(
 /// <summary>One work batch of a submission: a file of rendered documents and how far its drain got.</summary>
 public sealed record DeliveryWorkBatchDto(
     Guid SubmissionId, int Index, string Location, int RecordCount, string Status, string? LeaseOwner, DateTime? LeaseExpiresUtc, Guid? RunId,
-    DateTime CreatedUtc, DateTime? StartedUtc, DateTime? CompletedUtc, long Delivered, long Held, long Failed, long Retrying, string? Error);
+    DateTime CreatedUtc, DateTime? StartedUtc, DateTime? CompletedUtc, long Delivered, long Held, long Failed, long Retrying, string? Error,
+    long Waiting = 0);
 
 /// <summary>The current state of one deliverable: what OSDU holds for it, what is pending, and why it is where it is.</summary>
 public sealed record DeliveryRecordDto(
@@ -93,12 +94,25 @@ public sealed record DeliveryRecordDto(
     string? PendingDocumentRef, int? WorkBatch, JsonElement? TargetState, JsonElement? PendingSteps,
     string? SourceFileName, long? SourceRowNumber, DateTime? SourceUpdatedUtc,
     string? PendingSourceFileName, long? PendingSourceRowNumber, DateTime? PendingSourceUpdatedUtc,
-    string? SourceKeyJson, DateTime? PlanRequestedUtc);
+    string? SourceKeyJson, DateTime? PlanRequestedUtc,
+    string? WaitingFor = null, IReadOnlyList<DeliveryRecordReferenceDto>? References = null);
 
-/// <summary>A record with the pipeline (and, for a source, the interface) it belongs to. The pending document itself lives in
-/// the submission's work batches on storage, which the nodes read; its reference and batch are on the record.</summary>
+/// <summary>An OSDU id a record's pending document refers to, and the property of the record holding it.</summary>
+public sealed record DeliveryRecordReferenceDto(string Id, string Property);
+
+/// <summary>A record of the ledger another record waits for, or that waits for it: where it is and how it stands.</summary>
+public sealed record DeliveryRecordLinkDto(
+    Guid FlowId, Guid DeliveryKey, Guid? PipelineId, string? FlowName, string? Interface, string SourceKey, string? Label, string? TargetId, string Status);
+
+/// <summary>
+/// A record with the pipeline (and, for a source, the interface) it belongs to. The pending document itself lives in the
+/// submission's work batches on storage, which the nodes read; its reference and batch are on the record. A waiting record
+/// names the record it waits for (<c>WaitsOn</c>), and every record lists the records waiting for it (<c>WaitedOnBy</c>,
+/// the first <see cref="DeliveryEndpoints.MaxWaitersShown"/>).
+/// </summary>
 public sealed record DeliveryRecordDetailDto(
-    DeliveryRecordDto Record, Guid? PipelineId, Guid? RepoId, string? FlowName, string? Interface = null);
+    DeliveryRecordDto Record, Guid? PipelineId, Guid? RepoId, string? FlowName, string? Interface = null,
+    DeliveryRecordLinkDto? WaitsOn = null, IReadOnlyList<DeliveryRecordLinkDto>? WaitedOnBy = null);
 
 /// <summary>One delivery try, as the append-only history holds it: its outcome, and every step with what the target returned.</summary>
 public sealed record DeliveryAttemptDto(
@@ -483,7 +497,7 @@ public static class DeliveryEndpoints
             stats.Sum(s => s.Stats.Total), stats.Sum(s => s.Stats.Pending), stats.Sum(s => s.Stats.Delivering), stats.Sum(s => s.Stats.Delivered),
             stats.Sum(s => s.Stats.Held), stats.Sum(s => s.Stats.Failed), stats.Sum(s => s.Stats.Deleted), stats.Sum(s => s.Stats.Drifted),
             stats.Sum(s => s.Stats.DeliveredLast24h), stats.Max(s => s.Stats.LastDeliveredUtc), stats.Max(s => s.Stats.LastVerifiedUtc),
-            stats.Sum(s => s.Stats.Submissions), last is null ? null : ToDto(last), one?.Interface, stats.Count);
+            stats.Sum(s => s.Stats.Submissions), last is null ? null : ToDto(last), one?.Interface, stats.Count, stats.Sum(s => s.Stats.Waiting));
     }
 
     private static async Task<Results<Ok<PagedResult<DeliveryRecordDto>>, ProblemHttpResult>> ListRecordsAsync(
@@ -605,8 +619,38 @@ public static class DeliveryEndpoints
         }
 
         var found = await DeliveryPipelines.ForLedgerAsync(db, osdu, record.FlowId, ct).ConfigureAwait(false);
+        DeliveryRecordLinkDto? waitsOn = null;
+        var holders = record is { Status: RecordStatus.Waiting, WaitingFor: { } waitingFor }
+            ? await ledger.ListHoldersAsync(waitingFor, 1, ct).ConfigureAwait(false)
+            : [];
+        if (holders.Count > 0)
+        {
+            waitsOn = await LinkAsync(db, osdu, holders[0], ct).ConfigureAwait(false);
+        }
+
+        var waitedOnBy = new List<DeliveryRecordLinkDto>();
+        if (record.TargetId is { } targetId)
+        {
+            foreach (var waiter in await ledger.ListWaitingForAsync(targetId, MaxWaitersShown, ct).ConfigureAwait(false))
+            {
+                waitedOnBy.Add(await LinkAsync(db, osdu, waiter, ct).ConfigureAwait(false));
+            }
+        }
+
         return TypedResults.Ok(new DeliveryRecordDetailDto(
-            ToDto(record), found?.Pipeline.Id, found?.Pipeline.RepoId, found?.Pipeline.Name, NamedInterface(found)));
+            ToDto(record), found?.Pipeline.Id, found?.Pipeline.RepoId, found?.Pipeline.Name, NamedInterface(found), waitsOn, waitedOnBy));
+    }
+
+    /// <summary>How many of the records waiting for one record its page lists.</summary>
+    public const int MaxWaitersShown = 50;
+
+    /// <summary>A record as another record's page links to it: its flow, pipeline and interface, and how it stands.</summary>
+    private static async Task<DeliveryRecordLinkDto> LinkAsync(CatalogDbContext db, OsduDbContext osdu, RecordState record, CancellationToken ct)
+    {
+        var found = await DeliveryPipelines.ForLedgerAsync(db, osdu, record.FlowId, ct).ConfigureAwait(false);
+        return new DeliveryRecordLinkDto(
+            record.FlowId, record.DeliveryKey.Value, found?.Pipeline.Id, found?.Pipeline.Name, NamedInterface(found),
+            record.SourceKey, record.Label, record.TargetId, record.Status.ToString().ToLowerInvariant());
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliveryAttemptDto>>, ProblemHttpResult>> ListRecordAttemptsAsync(
@@ -1722,11 +1766,11 @@ public static class DeliveryEndpoints
         s.Status.ToString().ToLowerInvariant(), s.ReceivedUtc, s.StartedUtc, s.CompletedUtc, s.Planned, s.SkippedUnchanged, s.AwaitingApproval, s.SkippedStale, s.UnchangedAtPush, s.Blocked,
         s.Delivered, s.Held, s.Failed, s.Error, s.WorkLocation, s.BatchCount, s.Slices,
         s.Kind, s.Untracked, s.SourceConnection, s.SourceObject, s.WindowFromUtc, s.WindowToUtc,
-        ParseJsonOrNull(s.SourceWindowJson), s.RunId);
+        ParseJsonOrNull(s.SourceWindowJson), s.RunId, s.Waiting);
 
     private static DeliveryWorkBatchDto ToDto(WorkBatchState b) => new(
         b.SubmissionId, b.Index, b.Location, b.RecordCount, b.Status.ToString().ToLowerInvariant(), b.LeaseOwner, b.LeaseExpiresUtc, b.RunId,
-        b.CreatedUtc, b.StartedUtc, b.CompletedUtc, b.Delivered, b.Held, b.Failed, b.Retrying, b.Error);
+        b.CreatedUtc, b.StartedUtc, b.CompletedUtc, b.Delivered, b.Held, b.Failed, b.Retrying, b.Error, b.Waiting);
 
     private static DeliveryRecordDto ToDto(RecordState r) => new(
         r.DeliveryKey.Value, r.FlowId, r.SourceKey, r.Label, r.MappingName, r.RenderContext, r.SourceFingerprint, r.SourceModifiedUtc, r.MetadataHash, r.PayloadHash, r.PayloadModifiedUtc,
@@ -1738,7 +1782,9 @@ public static class DeliveryEndpoints
         // it was built from, and a record with work waiting says which file and row that work will be built from.
         r.SourceFileName, r.SourceRowNumber, r.SourceUpdatedUtc,
         r.PendingSourceFileName, r.PendingSourceRowNumber, r.PendingSourceUpdatedUtc,
-        r.SourceKeyJson, r.PlanRequestedUtc);
+        r.SourceKeyJson, r.PlanRequestedUtc,
+        // What the pending document refers to, and, while the record waits, the record it waits for.
+        r.WaitingFor, r.PendingReferences.Select(p => new DeliveryRecordReferenceDto(p.Id, p.Property)).ToList());
 
     private static DeliveryAttemptDto ToDto(AttemptRecord a) => new(
         a.AttemptId, a.DeliveryKey.Value, a.SubmissionId, a.RunId, a.Worker, a.StartedUtc, a.CompletedUtc, a.Outcome.ToString().ToLowerInvariant(),

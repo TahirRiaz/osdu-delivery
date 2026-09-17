@@ -7,10 +7,14 @@ import { del, get, getText, post, type QueryParams } from "@/api/client";
 import type { ComputeTaskAccepted, PagedResult, RunStatus } from "@/api/types";
 import type { PageQuery } from "@/api/endpoints";
 
-export type DeliveryRecordStatus = "pending" | "delivering" | "delivered" | "held" | "failed" | "deleted";
+/**
+ * A record's custody state. `waiting` holds a rendered document that refers to a record another record of the ledger
+ * holds and has not delivered; the record goes back to pending when that one lands.
+ */
+export type DeliveryRecordStatus = "pending" | "delivering" | "delivered" | "held" | "failed" | "deleted" | "waiting";
 
 export const DELIVERY_RECORD_STATUSES: readonly DeliveryRecordStatus[] = [
-  "pending", "delivering", "delivered", "held", "failed", "deleted",
+  "pending", "waiting", "delivering", "delivered", "held", "failed", "deleted",
 ];
 
 export type DeliverySubmissionStatus = "received" | "planned" | "running" | "completed" | "failed";
@@ -35,6 +39,8 @@ export interface DeliveryFlowStats {
   held: number;
   failed: number;
   deleted: number;
+  /** Records waiting for a record they refer to that has not landed. */
+  waiting: number;
   drifted: number;
   deliveredLast24h: number;
   lastDeliveredUtc: string | null;
@@ -68,6 +74,8 @@ export interface DeliverySubmission {
   delivered: number;
   held: number;
   failed: number;
+  /** Records of the submission still waiting, when it closed, for a record they refer to; they go out once it lands. */
+  waiting: number;
   error: string | null;
   /** Where the intake wrote the work batches (the rendered documents the drains read). */
   workLocation: string | null;
@@ -108,6 +116,8 @@ export interface DeliveryWorkBatch {
   held: number;
   failed: number;
   retrying: number;
+  /** Records the batch's claim found waiting for a record they refer to, and did not send. */
+  waiting: number;
   error: string | null;
 }
 
@@ -172,6 +182,29 @@ export interface DeliveryRecord {
   sourceKeyJson: string | null;
   /** When a plan last asked for this record, for a record waiting on one. */
   planRequestedUtc: string | null;
+  /** While the record is waiting: the OSDU id of the record it waits for. */
+  waitingFor: string | null;
+  /** The OSDU ids the pending document refers to, each with the property that holds it. */
+  references: DeliveryRecordReference[] | null;
+}
+
+/** An OSDU id a record's pending document refers to, and the property of the record holding it. */
+export interface DeliveryRecordReference {
+  id: string;
+  property: string;
+}
+
+/** A record of the ledger another record waits for, or that waits for it: where it is and how it stands. */
+export interface DeliveryRecordLink {
+  flowId: string;
+  deliveryKey: string;
+  pipelineId: string | null;
+  flowName: string | null;
+  interface: string | null;
+  sourceKey: string;
+  label: string | null;
+  targetId: string | null;
+  status: DeliveryRecordStatus;
 }
 
 export interface DeliveryRecordDetail {
@@ -179,6 +212,11 @@ export interface DeliveryRecordDetail {
   pipelineId: string | null;
   repoId: string | null;
   flowName: string | null;
+  interface?: string | null;
+  /** The record this one waits for, while it waits. */
+  waitsOn?: DeliveryRecordLink | null;
+  /** The records waiting for this one (the first 50). */
+  waitedOnBy?: DeliveryRecordLink[] | null;
 }
 
 /**

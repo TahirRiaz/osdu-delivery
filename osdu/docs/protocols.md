@@ -773,6 +773,8 @@ do not ask; they send nothing.
 | Retry later | transport failure, 5xx exhausted within a call, 401, 408, 429, a workflow run that failed or timed out, a record a finished workflow run did not write | `pending` with `NextAttemptUtc` (exponential in minutes); completed steps kept for the resume |
 | Held | 400, 403, 404, 405, 409, 413, 415, 422, any status in `reliability.skipStatusCodes`, no payload chunks, an empty file, a staging location no upload can reach, a workflow context its contract refuses, a pending payload in parts this version did not write, a `RecordHeldException` | `held` (terminal until released) |
 | Failed | the record-level retry budget (`reliability.retry.attempts`) is exhausted | `failed` (released like held) |
+| Waiting | the document refers to a record another record of the ledger holds and has not delivered (docs/interfaces-design.md section 7) | `waiting`; decided by the claim, so nothing is sent and no try is charged, and back to `pending` when that record lands |
+| Held | with `target.verifyReferences: storage`, the document refers to an id neither the ledger nor OSDU's storage service holds | `held`, naming the ids and the properties |
 
 Inside one call the HTTP executor repeats a request only when repeating it is safe, the line the OSDU C# client
 draws in its `ReadRetryHandler`:

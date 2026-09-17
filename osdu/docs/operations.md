@@ -354,6 +354,8 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 | A record-scoped run plans nothing: the ingestion tables hold no row for its key | The run's trace names the record table and the key | Look at the pre and ingestion runs that load that table; a run scoped to the record reads it by key once they have loaded it. |
 | Records `held` | The Records tab filtered to held | Read the last error. Fix the data (reference miss, empty key) or the mapping; then Release (one record, or all blocked). |
 | Records `failed` | The record's History tab | The retry budget is spent; the last error is redacted but specific. Release after fixing the cause. |
+| Records `waiting` | The Records tab filtered to waiting; the record page says what it waits for | Each refers to a record of the ledger that has not landed. Nothing is charged and nothing is needed: they go out on their own when that record is delivered. When the record they wait for is held or failed, fix that one and release it. To send one as it is, with the reference pointing at nothing until the other lands, use "Send without waiting" on its page. |
+| Records held with `refers to ... which neither the ledger nor OSDU's storage service holds` | The record's last error names the ids and the properties | The flow declares `target.verifyReferences: storage`, and the records it names are in neither the ledger nor OSDU. Deliver them (another flow, another system), or correct the mapping or the source rows, then Release. |
 | Records stuck `delivering` | `Lease` on the record page in the past | A worker stopped mid-delivery. The flow's next deliver run (the recovered run, a re-run of the submission, or `drain`) waits out the lease, recovers it (applying what the stopped worker had sent) and sends the rest; nothing else to do unless a node is wedged. |
 | Records show `delivering` while the run's trace says they were sent | The run's trace: `batch.progress` for the batch | Expected while the batch runs: a worker applies what it sent to the records at each renewal of its lease and when the batch closes, so the records trail the trace by at most one renewal. The attempts are there at once. |
 | A run fails: `source.record.primaryKey` names a column that is not an identity column, or not the table's primary key | The error names the table and what the column lacks, with the statement that adds the key | A table SQLFlow created before its ing flow set `target.identityColumn` has no identity key (or a plain `RecId` column the setting added and nothing fills). Stop the table's loads, drop that plain column, run the `ALTER TABLE ... ADD [RecId] bigint IDENTITY(1, 1) NOT NULL CONSTRAINT ... PRIMARY KEY CLUSTERED` from the message (it rewrites the table), and run again ([documents.md](documents.md#the-identity-primary-key)). |
@@ -394,7 +396,7 @@ The engine publishes its telemetry on the .NET metrics API, under the meter `Sql
 
 | Instrument | Unit | Tags | What it measures |
 | --- | --- | --- | --- |
-| `osdu_delivery.records` | record | `flow`, `route`, `outcome` | Delivery tries settled: `delivered`, `unchanged`, `retry`, `held`, `failed`. |
+| `osdu_delivery.records` | record | `flow`, `route`, `outcome` | Delivery tries settled: `delivered`, `unchanged`, `retry`, `held`, `failed`; and `waiting`, a record left waiting for a record it refers to, which is not a try and carries no duration. |
 | `osdu_delivery.record.duration` | s | `flow`, `route`, `outcome` | How long a try of one record took, from its claim to its outcome. |
 | `osdu_delivery.http.requests` | request | `method`, `host`, `result` | Call attempts to OSDU services and their storage, each counted once. `result` is the answer's status class, `2xx` to `5xx`, or what ended the attempt otherwise: `transport`, `timeout`, `refused` (the URL guard), `cancelled` (the node stopped waiting) or `error` (anything else, such as a redirect loop). |
 | `osdu_delivery.http.request.duration` | s | `method`, `host`, `result` | How long an attempt took, its redirects and response body included, the wait before the next attempt not. |
@@ -406,7 +408,9 @@ No exporter is wired yet: which backend receives them is a decision ([../../docs
 DEC-6), and the exporter package it needs goes through the dependency approval of [design.md](design.md) section 14.
 
 Once they are exported, alert on a rising share of `held` or `failed` outcomes per flow, on `5xx`, `transport` and
-`timeout` results per host, and on any `refused` result, which is a URL the guard would not let a node reach.
+`timeout` results per host, and on any `refused` result, which is a URL the guard would not let a node reach. A rising
+`waiting` share says an estate is delivering children faster than the records they refer to; the flow's waiting count
+in the GUI says whether they are moving.
 
 ## Size ceilings
 

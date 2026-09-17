@@ -244,6 +244,15 @@ Reservoir DDMS route type `etp`.
 
 Done when a child waits for its parent and goes out when the parent lands, across interfaces and across runs.
 
+Status: done. What a rendered record refers to is kept beside its document on the record itself rather than in a table
+of its own (docs/interfaces-design.md section 7): an estate holds hundreds of millions of records, and only the work
+still to be sent needs its references. A claim leaves a record waiting rather than taking it, so a wait charges no
+attempt; the record says which id it waits for, and a filtered index finds the waiters of an id when it lands. Waits
+are decided under one lock of the ledger and never lead back to the record deciding, so two records never wait for each
+other. A delivery releases what waited for it, a run ends the waits nothing holds any more before it plans, and an
+operator can send one waiting record as it is. `target.verifyReferences: storage` asks storage about the ids the ledger
+does not hold and holds a record that would write a dangling reference. Module version 1.7.0 (`RecordWaits`).
+
 ### Stage 9: views and operations
 
 - GUI: a source's page lists its interfaces with their route, order, state and counts; the records, submissions and

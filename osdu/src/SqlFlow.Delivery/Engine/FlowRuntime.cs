@@ -94,6 +94,9 @@ public sealed class FlowRuntime : IDisposable
     /// <summary>True once the mapping's legal tags were asked about for this runtime (a source's preflight asks up front).</summary>
     private bool _legalTagsChecked;
 
+    /// <summary>Which records this interface's records wait for, worked out once per runtime.</summary>
+    private WaitRules? _waits;
+
     private FlowRuntime(EngineContext context, FlowDefinition flow, DeliveryLayout layout, MappingCatalog mappings, IReadOnlyDictionary<string, string> parameters, ResolvedMapping? mapping)
     {
         _context = context;
@@ -145,6 +148,12 @@ public sealed class FlowRuntime : IDisposable
     /// held, the worker every record it settles. Whoever sets it cancels the run's token when it trips.
     /// </summary>
     public FailureGuard? Guard { get; set; }
+
+    /// <summary>
+    /// The source document this interface belongs to, when the caller has it (the executor and a source's run set it). A
+    /// runtime without it reads the document from the flow's file when it needs the other interfaces.
+    /// </summary>
+    public SourceDefinition? SourceDocument { get; set; }
 
     /// <summary>Loads and resolves a flow. Fails at parse time with the file path on every message.</summary>
     public static async Task<FlowRuntime> CreateAsync(EngineContext context, string flowPath, IReadOnlyDictionary<string, string>? parameters, CancellationToken ct = default)
@@ -268,7 +277,82 @@ public sealed class FlowRuntime : IDisposable
     }
 
     public async Task<DeliveryWorker> WorkerAsync(CancellationToken ct = default)
-        => new(RequireLedger(), _context.Payloads, _context.Stores, await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<DeliveryWorker>()) { RunId = RunId, Guard = Guard };
+        => new(RequireLedger(), _context.Payloads, _context.Stores, await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<DeliveryWorker>())
+        {
+            RunId = RunId,
+            Guard = Guard,
+            Waits = await WaitRulesAsync(ct).ConfigureAwait(false),
+            References = await ReferenceCheckAsync(ct).ConfigureAwait(false),
+        };
+
+    /// <summary>The storage check a flow with <c>target.verifyReferences: storage</c> runs before it sends a record, or null.</summary>
+    private async Task<ReferenceCheck?> ReferenceCheckAsync(CancellationToken ct)
+    {
+        if (Flow.Target.VerifyReferences != ReferenceVerification.Storage)
+        {
+            return null;
+        }
+
+        _ = await ProtocolAsync(ct).ConfigureAwait(false);
+        var client = await ProtocolFactory.ClientAsync(_http!, Flow.Target.Endpoint, Flow.Target.Auth, Flow.Target.Headers, _context.Secrets, ct).ConfigureAwait(false);
+        return new ReferenceCheck(RequireLedger(), client, Flow.Target.ProtocolOptions.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath);
+    }
+
+    /// <summary>
+    /// Which records this interface's records wait for (docs/interfaces-design.md section 7): every record of the ledger
+    /// still to land, except those of the interfaces of the same source that the source's order does not wait for, because
+    /// the two refer to each other and the order says which goes first. Worked out from every interface of the source,
+    /// whichever the run selected, so a run of one interface, and a fan-out member, wait exactly as a run of the source does.
+    /// </summary>
+    public async Task<WaitRules> WaitRulesAsync(CancellationToken ct = default)
+    {
+        if (_waits is not null)
+        {
+            return _waits;
+        }
+
+        var source = Flow.Interface is null
+            ? null
+            : SourceDocument ?? (Flow.SourcePath is { } path ? _context.Documents.LoadSource(path) : null);
+        if (source is null || source.Interfaces.Count < 2)
+        {
+            return _waits = WaitRules.WaitForAll;
+        }
+
+        var schemas = new List<InterfaceSchema>(source.Interfaces.Count);
+        foreach (var sibling in source.Interfaces)
+        {
+            if (string.Equals(sibling.Interface, Flow.Interface, StringComparison.OrdinalIgnoreCase))
+            {
+                schemas.Add(await SchemaAsync(ct).ConfigureAwait(false));
+                continue;
+            }
+
+            using var other = ForTarget(_context, sibling);
+            schemas.Add(await other.SchemaAsync(ct).ConfigureAwait(false));
+        }
+
+        var names = source.Interfaces.Select(i => i.Interface!).ToList();
+        var order = InterfaceOrder.Plan(names, InterfaceOrder.Declared(source), schemas);
+        var notWaitedFor = order.NotWaitedFor
+            .Where(d => string.Equals(d.Interface, Flow.Interface, StringComparison.OrdinalIgnoreCase))
+            .Select(d => source.Interface(d.DependsOn).Id)
+            .ToHashSet();
+        return _waits = new WaitRules { NotWaitedFor = notWaitedFor };
+    }
+
+    /// <summary>
+    /// Sends back to pending the flow's waiting records whose wait ended while nothing released them (the record they
+    /// wait for was found landed by a verify, or left the ledger), so this run takes them with the rest.
+    /// </summary>
+    private async Task ReleaseEndedWaitsAsync(CancellationToken ct)
+    {
+        var released = await RequireLedger().ReleaseResolvedWaitsAsync(Flow.Id, null, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+        if (released > 0)
+        {
+            _log.LogInformation("{Count} waiting record(s) have nothing left to wait for, and go out with this run.", released);
+        }
+    }
 
     public async Task<Verifier> VerifierAsync(CancellationToken ct = default)
         => new(RequireLedger(), await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<Verifier>());
@@ -278,6 +362,7 @@ public sealed class FlowRuntime : IDisposable
         => TrackAsync("deliver", new { force, source = Flow.Source.Record.Object, selection = Selection.Describe(), parameters = Parameters, fanOut = Flow.Reliability.FanOut }, null, async () =>
         {
             await EnsureLegalTagsAsync(ct).ConfigureAwait(false);
+            await ReleaseEndedWaitsAsync(ct).ConfigureAwait(false);
             FanOutHandle? handle = null;
             try
             {
@@ -300,12 +385,12 @@ public sealed class FlowRuntime : IDisposable
                     var sent = await PassUntilNothingClaimableAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
                     sent = sent.Add(await SendOrphanedLeasesAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false));
                     var leftovers = await SendSettledLeftoversAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
-                    if (sent.Processed == 0 && leftovers.Processed == 0)
+                    if (sent.Processed == 0 && leftovers.Processed == 0 && sent.Waiting == 0 && leftovers.Waiting == 0)
                     {
                         return (new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers), SubmissionIntake.Summarize(intake.Submission), intake.Submission.SubmissionId);
                     }
 
-                    var settled = sent.Processed > 0
+                    var settled = sent.Processed > 0 || sent.Waiting > 0
                         ? await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false)
                         : intake.Submission;
                     return (new RunResult(intake, sent.Add(leftovers), settled, intakeMembers), SubmissionIntake.Summarize(settled), settled.SubmissionId);
@@ -373,6 +458,7 @@ public sealed class FlowRuntime : IDisposable
     public Task<WorkerSummary> WorkAsync(bool once, Guid? submissionId = null, CancellationToken ct = default)
         => TrackAsync("drain", new { once, submissionId }, null, async () =>
         {
+            await ReleaseEndedWaitsAsync(ct).ConfigureAwait(false);
             var worker = await WorkerAsync(ct).ConfigureAwait(false);
             var summary = once ? await worker.PassAsync(submissionId, ct).ConfigureAwait(false) : await worker.DrainAsync(submissionId, ct).ConfigureAwait(false);
             if (submissionId is { } s)
@@ -598,12 +684,11 @@ public sealed class FlowRuntime : IDisposable
         {
             ct.ThrowIfCancellationRequested();
             var pass = await worker.PassAsync(submissionId, ct).ConfigureAwait(false);
-            if (pass.Processed == 0 && pass.Batches == 0)
+            total = total.Add(pass);
+            if (pass.Processed == 0 && pass.Batches == 0 && pass.Waiting == 0)
             {
                 return total;
             }
-
-            total = total.Add(pass);
         }
     }
 
@@ -622,7 +707,7 @@ public sealed class FlowRuntime : IDisposable
         foreach (var submissionId in settled)
         {
             var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
-            if (sent.Processed > 0)
+            if (sent.Processed > 0 || sent.Waiting > 0)
             {
                 await Intake.CompleteAsync(submissionId, Flow.Id, ct).ConfigureAwait(false);
                 _log.LogInformation(
@@ -801,7 +886,7 @@ public sealed class FlowRuntime : IDisposable
 
             var more = await worker.DrainAsync(submission.SubmissionId, ct).ConfigureAwait(false);
             total = total.Add(more);
-            if (more.Processed == 0 && more.Batches == 0)
+            if (more.Processed == 0 && more.Batches == 0 && more.Waiting == 0)
             {
                 if (!await ledger.HasPendingAsync(Flow.Id, submission.SubmissionId, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false))
                 {

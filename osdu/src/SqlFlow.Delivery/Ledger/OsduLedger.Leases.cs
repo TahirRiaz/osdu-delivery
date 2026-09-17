@@ -33,7 +33,8 @@ public sealed partial class OsduLedger
     /// <summary>The owner a lease this process recovers is held under while the recovery applies and hands back its work.</summary>
     private static readonly string Recoverer = Truncate($"{Environment.MachineName}/{Environment.ProcessId}/recovery", DeliveryModel.MaxLeaseTokenLength)!;
 
-    public async Task<ClaimedWorkBatch?> ClaimWorkBatchAsync(Guid flowId, Guid? submissionId, string owner, TimeSpan lease, DateTime nowUtc, Guid? runId = null, CancellationToken ct = default)
+    public async Task<ClaimedWorkBatch?> ClaimWorkBatchAsync(
+        Guid flowId, Guid? submissionId, string owner, TimeSpan lease, DateTime nowUtc, Guid? runId = null, WaitRules? waits = null, CancellationToken ct = default)
     {
         var token = NewToken(owner);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
@@ -74,6 +75,28 @@ public sealed partial class OsduLedger
                 continue;
             }
 
+            // A due record of the batch that refers to a record of the ledger still to land is left waiting, and the lease
+            // does not hold it; the batch counts it.
+            var batchSubmission = candidate.SubmissionId;
+            var batchIndex = candidate.Index;
+            var waiting = await LeaveWaitingAsync(
+                flowId,
+                db => db.DeliveryRecords.Where(r => r.LastSubmissionId == batchSubmission && r.WorkBatch == batchIndex && r.FlowId == flowId
+                    && r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc)),
+                waits ?? WaitRules.WaitForAll,
+                nowUtc,
+                ct).ConfigureAwait(false);
+            if (waiting.Count > 0)
+            {
+                var found = waiting.Count;
+                await using var counting = Open();
+                await RetryDeadlockAsync(
+                    () => counting.DeliveryWorkBatches
+                        .Where(b => b.SubmissionId == batchSubmission && b.Index == batchIndex)
+                        .ExecuteUpdateAsync(s => s.SetProperty(b => b.Waiting, b => b.Waiting + found), ct),
+                    ct).ConfigureAwait(false);
+            }
+
             // The lease holds the batch's records that are due: the retry claim never sees them, and a lease that runs out
             // hands them back. They are marked a slice at a time however large the batch, found through the batch index,
             // and a record claimed elsewhere meanwhile is no longer due.
@@ -97,7 +120,10 @@ public sealed partial class OsduLedger
                 db => db.DeliveryWorkBatches.FirstAsync(b => b.SubmissionId == candidate.SubmissionId && b.Index == candidate.Index, ct),
                 ct).ConfigureAwait(false);
             var state = ToState(held);
-            return new ClaimedWorkBatch(ToState(batch) with { LeaseExpiresUtc = state.ExpiresUtc }, state, await LeasedAsync(state, ct).ConfigureAwait(false));
+            return new ClaimedWorkBatch(ToState(batch) with { LeaseExpiresUtc = state.ExpiresUtc }, state, await LeasedAsync(state, ct).ConfigureAwait(false))
+            {
+                Waiting = waiting,
+            };
         }
 
         return null;
@@ -141,7 +167,8 @@ public sealed partial class OsduLedger
         }).ConfigureAwait(false);
     }
 
-    public async Task<ClaimedRecords> ClaimAsync(Guid flowId, Guid? submissionId, string owner, int max, TimeSpan lease, DateTime nowUtc, Guid? runId = null, CancellationToken ct = default)
+    public async Task<ClaimedRecords> ClaimAsync(
+        Guid flowId, Guid? submissionId, string owner, int max, TimeSpan lease, DateTime nowUtc, Guid? runId = null, WaitRules? waits = null, CancellationToken ct = default)
     {
         var token = NewToken(owner);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
@@ -164,6 +191,24 @@ public sealed partial class OsduLedger
         if (candidates.Count == 0)
         {
             return ClaimedRecords.None;
+        }
+
+        // A candidate that refers to a record of the ledger still to land is left waiting rather than claimed.
+        var waiting = await LeaveWaitingAsync(
+            flowId,
+            db => db.DeliveryRecords.Where(r => r.FlowId == flowId && candidates.Contains(r.DeliveryKey) && r.Status == pending
+                && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc)),
+            waits ?? WaitRules.WaitForAll,
+            nowUtc,
+            ct).ConfigureAwait(false);
+        if (waiting.Count > 0)
+        {
+            var left = waiting.Select(w => w.DeliveryKey.Value).ToHashSet();
+            candidates = candidates.Where(k => !left.Contains(k)).ToList();
+            if (candidates.Count == 0)
+            {
+                return ClaimedRecords.None with { Waiting = waiting };
+            }
         }
 
         var held = new DeliveryLease
@@ -202,11 +247,11 @@ public sealed partial class OsduLedger
         if (claimed == 0)
         {
             await RetryDeadlockAsync(() => DeleteLeaseAsync(token, ct), ct).ConfigureAwait(false);
-            return ClaimedRecords.None;
+            return ClaimedRecords.None with { Waiting = waiting };
         }
 
         var state = ToState(held);
-        return new ClaimedRecords(state, await LeasedAsync(state, ct).ConfigureAwait(false));
+        return new ClaimedRecords(state, await LeasedAsync(state, ct).ConfigureAwait(false)) { Waiting = waiting };
     }
 
     public async Task<bool> RenewLeaseAsync(string token, TimeSpan lease, DateTime nowUtc, CancellationToken ct = default)
@@ -515,7 +560,7 @@ public sealed partial class OsduLedger
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            (int Records, int Applied) slice;
+            (int Records, int Applied, IReadOnlyList<string> Landed) slice;
             await using (var db = Open())
             {
                 slice = SqlServerLedgerBulk.Applies(db)
@@ -523,6 +568,9 @@ public sealed partial class OsduLedger
                     : await ApplyEventsInModelAsync(db, token, WriteSlice, nowUtc, ct).ConfigureAwait(false);
             }
 
+            // After the commit, never inside it: a claim deciding to wait for one of these records meanwhile either saw it
+            // landed, or marked its record waiting before this release reads what waits.
+            await ReleaseWaitersOfAsync(slice.Landed, nowUtc, ct).ConfigureAwait(false);
             applied += slice.Applied;
             if (slice.Records < WriteSlice)
             {
@@ -535,7 +583,7 @@ public sealed partial class OsduLedger
     /// The entity path of <see cref="SqlServerLedgerBulk.ApplyEventsAsync"/>, for the providers without it: the same write,
     /// record by record, with the events deleted in the same save.
     /// </summary>
-    private static async Task<(int Records, int Applied)> ApplyEventsInModelAsync(OsduDbContext db, string token, int slice, DateTime nowUtc, CancellationToken ct)
+    private static async Task<(int Records, int Applied, IReadOnlyList<string> Landed)> ApplyEventsInModelAsync(OsduDbContext db, string token, int slice, DateTime nowUtc, CancellationToken ct)
     {
         var keys = await db.DeliveryRecordEvents
             .Where(e => e.LeaseToken == token)
@@ -546,7 +594,7 @@ public sealed partial class OsduLedger
             .ConfigureAwait(false);
         if (keys.Count == 0)
         {
-            return (0, 0);
+            return (0, 0, []);
         }
 
         var flowIds = keys.Select(k => k.FlowId).Distinct().ToList();
@@ -564,6 +612,7 @@ public sealed partial class OsduLedger
                 .ConfigureAwait(false))
             .ToDictionary(r => (r.FlowId, r.DeliveryKey));
         var applied = 0;
+        var landed = new HashSet<string>(StringComparer.Ordinal);
         foreach (var recordEvents in events.GroupBy(e => (e.FlowId, e.DeliveryKey)))
         {
             var latest = recordEvents.MaxBy(e => e.EventId)!;
@@ -577,6 +626,10 @@ public sealed partial class OsduLedger
             {
                 ApplyCompletion(record, latest, nowUtc);
                 applied++;
+                if (latest.Promote && record.TargetId is { } landedId)
+                {
+                    landed.Add(landedId);
+                }
             }
             else if (HoldsClaimedWork(record, latest))
             {
@@ -586,7 +639,7 @@ public sealed partial class OsduLedger
 
         db.DeliveryRecordEvents.RemoveRange(events);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return (keys.Count, applied);
+        return (keys.Count, applied, landed.ToList());
     }
 
     /// <summary>Settles a record as a try's completion says (the same write as the SQL Server path's set-based update).</summary>
@@ -685,6 +738,7 @@ public sealed partial class OsduLedger
             entity.PendingMetadata = false;
             entity.PendingPayload = false;
             entity.PendingPayloadLocation = null;
+            entity.PendingReferences = null;
             entity.AttemptCount = 0;
         }
     }

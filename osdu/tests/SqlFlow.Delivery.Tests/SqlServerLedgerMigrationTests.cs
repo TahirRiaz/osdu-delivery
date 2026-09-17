@@ -23,6 +23,8 @@ public sealed class SqlServerLedgerMigrationTests
 
     private const string BeforeLeases = "20260916133609_CoverWorkerReads";
 
+    private const string BeforeWaits = "20260916221306_DeliveryInterfaces";
+
     private static readonly Lazy<string?> TestDatabase = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
 
     private static readonly Lazy<bool> Reachable = new(() =>
@@ -270,6 +272,66 @@ public sealed class SqlServerLedgerMigrationTests
         // Allowed once, the same ledger claims the record.
         await database.AllowSnapshotAsync();
         Assert.Single((await ledger.ClaimAsync(Logs, null, "w1", 10, TimeSpan.FromMinutes(5), Now)).Records);
+    }
+
+    [SkippableFact]
+    public async Task A_ledger_written_before_records_could_wait_takes_the_columns_and_waits_after_the_migration()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.AllowSnapshotAsync();
+        await database.MigrateAsync(BeforeWaits);
+
+        // A record written by the schema before waits existed: it refers to nothing, because nothing recorded what it refers to.
+        var wellbore = Guid.NewGuid();
+        await database.ExecuteAsync(
+            """
+            INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [MappingName], [Status], [AttemptCount], [PendingMetadata], [PendingPayload],
+                [Blocked], [CreatedUtc], [UpdatedUtc], [TargetId], [ClaimedTargetId], [PendingDocumentRef])
+            VALUES (@wellbore, @wellbores, N'recall:WB-A', N'Wellbore', N'pending', 0, 1, 0, 0, @now, @now,
+                N'opendes:master-data--Wellbore:a', N'opendes:master-data--Wellbore:a', N'0:0:10');
+            """,
+            ("wellbore", wellbore));
+
+        await database.MigrateAsync(null);
+
+        // The columns are there and empty, and the ledger waits on the upgraded database as it does on a new one.
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Record] WHERE [PendingReferences] IS NOT NULL OR [WaitingFor] IS NOT NULL;"));
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Submission] WHERE [Waiting] <> 0;"));
+        var ledger = new OsduLedger(database.Context, TimeProvider.System);
+        var log = Guid.NewGuid();
+        Assert.Equal(1, (await ledger.UpsertPendingAsync(
+            Logs,
+            [Pending(Logs, log, "opendes:work-product-component--WellLog:s") with
+            {
+                PendingReferences = [new RecordReference("opendes:master-data--Wellbore:a", "data.WellboreID")],
+            }])).Staged);
+
+        var claim = await ledger.ClaimAsync(Logs, null, "w1", 10, TimeSpan.FromMinutes(5), Now);
+        Assert.Empty(claim.Records);
+        Assert.Equal("opendes:master-data--Wellbore:a", Assert.Single(claim.Waiting).WaitingFor);
+        Assert.Equal(1, (await ledger.StatsAsync(Logs, Now)).Waiting);
+
+        // The record written before the migration still delivers, and its delivery releases what waited for it.
+        var wellboreClaim = await ledger.ClaimAsync(Wellbores, null, "w2", 10, TimeSpan.FromMinutes(5), Now);
+        await ledger.CompleteAsync(Wellbores, new RecordCompletion
+        {
+            DeliveryKey = new DeliveryKey(wellbore),
+            Status = RecordStatus.Delivered,
+            Promote = true,
+            TargetVersion = 1,
+            Claimed = ClaimedWork.Of(Assert.Single(wellboreClaim.Records)),
+            Attempt = new AttemptRecord
+            {
+                DeliveryKey = new DeliveryKey(wellbore),
+                Worker = "w2",
+                StartedUtc = Now,
+                CompletedUtc = Now,
+                Outcome = AttemptOutcome.Delivered,
+                Phase = "metadata",
+            },
+        });
+
+        Assert.Equal(RecordStatus.Pending, (await ledger.GetRecordAsync(Logs, new DeliveryKey(log)))!.Status);
     }
 
     private static RecordState Pending(Guid flow, Guid key, string targetId) => new()

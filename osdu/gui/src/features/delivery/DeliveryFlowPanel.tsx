@@ -182,10 +182,17 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
           {s === undefined ? (
             <Skeleton className="h-24 w-full rounded-lg" />
           ) : (
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8" data-testid="delivery-stats">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-5 xl:grid-cols-9" data-testid="delivery-stats">
               <KpiCard label="Records" value={s.total} testId="delivery-kpi-total" />
               <KpiCard label="Delivered" value={s.delivered} color="success" caption={`${s.deliveredLast24h} in the last 24h`} testId="delivery-kpi-delivered" />
               <KpiCard label="Pending" value={s.pending + s.delivering} color="info" caption={s.delivering > 0 ? `${s.delivering} delivering now` : undefined} testId="delivery-kpi-pending" />
+              <KpiCard
+                label="Waiting"
+                value={s.waiting}
+                color={s.waiting > 0 ? "info" : undefined}
+                caption={s.waiting > 0 ? "for records they refer to" : undefined}
+                testId="delivery-kpi-waiting"
+              />
               <KpiCard label="Held" value={s.held} color={s.held > 0 ? "warning" : undefined} testId="delivery-kpi-held" />
               <KpiCard label="Failed" value={s.failed} color={s.failed > 0 ? "error" : undefined} testId="delivery-kpi-failed" />
               <KpiCard label="Deleted" value={s.deleted} testId="delivery-kpi-deleted" />
@@ -383,6 +390,7 @@ const submissionColumns: Column<DeliverySubmission>[] = [
   { id: "stale", header: "Stale", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.skippedStale}</span> },
   { id: "held", header: "Held", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.held}</span> },
   { id: "failed", header: "Failed", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.failed}</span> },
+  { id: "waiting", header: "Waiting", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.waiting}</span> },
   { id: "error", header: "Error", render: (row) => <TruncatedText text={row.error} maxWidth={280} /> },
 ];
 
@@ -398,6 +406,7 @@ export function SubmissionCounts({ submission }: { submission: DeliverySubmissio
     { label: "blocked", value: submission.blocked },
     { label: "held", value: submission.held, className: submission.held > 0 ? "text-warning" : undefined },
     { label: "failed", value: submission.failed, className: submission.failed > 0 ? "text-destructive" : undefined },
+    { label: "waiting", value: submission.waiting, className: submission.waiting > 0 ? "text-info" : undefined },
   ];
   return (
     <div className="flex flex-wrap gap-x-3 gap-y-1 text-[13px] text-muted-foreground" data-testid="submission-counts">

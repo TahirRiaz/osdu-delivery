@@ -151,6 +151,7 @@ target:
     datasetRegisterPath: /api/dataset/v1/registerDataset
     datasetRetrievalPath: /api/dataset/v1/retrievalInstructions
     datasetSoftDeletePath: /api/dataset/v1/metadataRecord/{id}/softDelete
+  verifyReferences: none           # none (the ledger alone) | storage (ask storage about the ids the ledger does not hold)
 
 reliability:
   concurrency: 8
@@ -847,6 +848,20 @@ out when a run starts (its preflight refuses a cycle nothing cuts), by `sqlflow 
 flow's interfaces. When the document is read, only `after:` is checked: an `after:` naming an interface the document
 does not declare, the interface itself, or one interface twice is refused, and so are interfaces whose `after:` wait
 for each other (`the interfaces a -> b -> a wait for each other`).
+
+### Records that wait for records
+
+Order between interfaces is not the whole story: one record can be ready while the record it refers to is not. When a
+record is rendered, the OSDU ids its relationship properties hold are kept beside its document. A claim leaves the
+record **waiting** when one of those ids belongs to a record the ledger holds and has not delivered, saying which
+record it waits for; it is sent when that record lands, and nothing is charged for the wait
+([ledger.md](ledger.md#record-lifecycle)). An id no record of the ledger holds is not waited for, since it is OSDU's
+or another system's; nor is a reference the order above does not wait for, because it points back.
+
+`target.verifyReferences: storage` goes further for a source that must not write dangling references: the ids no
+record of the ledger holds are asked of OSDU's storage service before the record is sent, and a record naming one
+storage does not hold is held with the ids and the properties. The dspdm route writes rows that refer to no storage
+record, so a flow it delivers is refused the setting.
 
 ### When an interface stops
 

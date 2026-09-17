@@ -176,6 +176,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         runtime.Actor = actor;
         runtime.RunId = runId;
         runtime.ActivityLog = runLogger.Render;
+        runtime.SourceDocument = source;
         if (runtime.ReadsSource)
         {
             await runtime.CheckRouteAsync(runtime.Mapping.Mapping.Kind, ct).ConfigureAwait(false);
@@ -560,7 +561,8 @@ public sealed record DeliverOutcome(
     Guid? RequestedSubmissionId,
     long RequestedRecords,
     string? Error,
-    SubmissionTotals Submission)
+    SubmissionTotals Submission,
+    long Waiting = 0)
 {
     /// <summary>
     /// The run's headline count as the platform reads it from the run artifact (<c>result.rowsLoaded</c>), which the
@@ -578,13 +580,13 @@ public sealed record DeliverOutcome(
     {
         ArgumentNullException.ThrowIfNull(run);
         var s = run.Submission;
-        var totals = new SubmissionTotals(s.Planned, s.SkippedUnchanged, s.AwaitingApproval, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, s.BatchCount);
+        var totals = new SubmissionTotals(s.Planned, s.SkippedUnchanged, s.AwaitingApproval, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, s.BatchCount, s.Waiting);
         if (run.IntakeMembers > 0 || run.DrainMembers > 0)
         {
             return new DeliverOutcome(
                 operation, s.SubmissionId, source, selection, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
                 s.Planned, s.SkippedUnchanged, s.AwaitingApproval, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, run.Work.Retried, s.BatchCount,
-                run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, requestedSubmission, requestedRecords, s.Error, totals);
+                run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, requestedSubmission, requestedRecords, s.Error, totals, s.Waiting);
         }
 
         var planned = run.Intake.Counts;
@@ -592,13 +594,14 @@ public sealed record DeliverOutcome(
         return new DeliverOutcome(
             operation, s.SubmissionId, source, selection, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
             planned.Planned, planned.Skipped, planned.AwaitingApproval, planned.Stale, work.Unchanged, planned.Blocked, work.Delivered, planned.Held + work.Held, work.Failed, work.Retried, planned.Batches,
-            run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, requestedSubmission, requestedRecords, s.Error, totals);
+            run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, requestedSubmission, requestedRecords, s.Error, totals, work.Waiting);
     }
 }
 
-/// <summary>A submission's counts across every run that has worked on it.</summary>
+/// <summary>A submission's counts across every run that has worked on it; <c>Waiting</c> counts its records still waiting for a record they refer to.</summary>
 public sealed record SubmissionTotals(
-    long Planned, long SkippedUnchanged, long AwaitingApproval, long SkippedStale, long UnchangedAtPush, long Blocked, long Delivered, long Held, long Failed, int Batches);
+    long Planned, long SkippedUnchanged, long AwaitingApproval, long SkippedStale, long UnchangedAtPush, long Blocked, long Delivered, long Held, long Failed, int Batches,
+    long Waiting = 0);
 
 /// <summary>The <c>result</c> of a plan run: what a deliver would do, the first records in the run log, the counts here.</summary>
 public sealed record PlanOutcome(
@@ -670,8 +673,8 @@ public sealed record IntakeOutcome(
     }
 }
 
-/// <summary>The <c>result</c> of a drain run.</summary>
-public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Processed, long Delivered, long Unchanged, long Retried, long Held, long Failed, int Batches)
+/// <summary>The <c>result</c> of a drain run; <c>Waiting</c> counts the records its claims left waiting for a record they refer to.</summary>
+public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Processed, long Delivered, long Unchanged, long Retried, long Held, long Failed, int Batches, long Waiting = 0)
 {
     /// <summary>The run's headline count on the run row (<c>result.rowsLoaded</c>): the records this drain delivered.</summary>
     public long RowsLoaded => Delivered;
@@ -679,7 +682,8 @@ public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Pro
     public static DrainOutcome From(WorkerSummary summary, Guid? submissionId)
     {
         ArgumentNullException.ThrowIfNull(summary);
-        return new DrainOutcome(DeliveryOperations.Drain, submissionId, summary.Processed, summary.Delivered, summary.Unchanged, summary.Retried, summary.Held, summary.Failed, summary.Batches);
+        return new DrainOutcome(
+            DeliveryOperations.Drain, submissionId, summary.Processed, summary.Delivered, summary.Unchanged, summary.Retried, summary.Held, summary.Failed, summary.Batches, summary.Waiting);
     }
 }
 

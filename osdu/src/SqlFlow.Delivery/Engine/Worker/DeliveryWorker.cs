@@ -18,17 +18,19 @@ namespace SqlFlow.Delivery.Engine.Worker;
 
 /// <summary>
 /// What a drain did. <c>Unchanged</c> counts the records the final hash check found OSDU already holding, settled
-/// without sending anything.
+/// without sending anything. <c>Waiting</c> counts the records its claims left waiting for a record they refer to; they
+/// were not tried, so they are not among the processed.
 /// </summary>
-public sealed record WorkerSummary(long Processed, long Delivered, long Retried, long Held, long Failed, int Batches = 0, long Unchanged = 0)
+public sealed record WorkerSummary(long Processed, long Delivered, long Retried, long Held, long Failed, int Batches = 0, long Unchanged = 0, long Waiting = 0)
 {
     public static WorkerSummary Empty { get; } = new(0, 0, 0, 0, 0);
 
     public WorkerSummary Add(WorkerSummary other) => new(
-        Processed + other.Processed, Delivered + other.Delivered, Retried + other.Retried, Held + other.Held, Failed + other.Failed, Batches + other.Batches, Unchanged + other.Unchanged);
+        Processed + other.Processed, Delivered + other.Delivered, Retried + other.Retried, Held + other.Held, Failed + other.Failed, Batches + other.Batches,
+        Unchanged + other.Unchanged, Waiting + other.Waiting);
 
     public override string ToString()
-        => string.Create(CultureInfo.InvariantCulture, $"{Processed} processed in {Batches} batch(es): {Delivered} delivered, {Unchanged} already held (nothing sent), {Retried} retrying later, {Held} held, {Failed} failed");
+        => string.Create(CultureInfo.InvariantCulture, $"{Processed} processed in {Batches} batch(es): {Delivered} delivered, {Unchanged} already held (nothing sent), {Retried} retrying later, {Held} held, {Failed} failed, {Waiting} waiting for a record they refer to");
 }
 
 /// <summary>
@@ -81,6 +83,18 @@ public sealed class DeliveryWorker
     /// <summary>How often a lease is renewed and checkpointed while the worker delivers: half the lease unless set (tests shorten it).</summary>
     internal TimeSpan? KeepInterval { get; init; }
 
+    /// <summary>
+    /// Which records the flow's records wait for (docs/interfaces-design.md section 7): every record of the ledger still to
+    /// land, unless the source's order says a reference points back.
+    /// </summary>
+    public WaitRules Waits { get; init; } = WaitRules.WaitForAll;
+
+    /// <summary>
+    /// The storage check of <c>target.verifyReferences: storage</c>, or null when the flow checks its references against
+    /// the ledger alone.
+    /// </summary>
+    public ReferenceCheck? References { get; init; }
+
     public DeliveryWorker(
         ILedger ledger,
         IPayloadFiles payloads,
@@ -127,7 +141,7 @@ public sealed class DeliveryWorker
         {
             var summary = await PassAsync(submissionId, ct).ConfigureAwait(false);
             total = total.Add(summary);
-            if (summary.Processed > 0 || summary.Batches > 0)
+            if (summary.Processed > 0 || summary.Batches > 0 || summary.Waiting > 0)
             {
                 continue;
             }
@@ -166,22 +180,62 @@ public sealed class DeliveryWorker
     public async Task<WorkerSummary> PassAsync(Guid? submissionId, CancellationToken ct = default)
     {
         var now = _time.GetUtcNow().UtcDateTime;
-        var claimed = await _ledger.ClaimWorkBatchAsync(_flow.Id, submissionId, _workerId, Lease, now, RunId, ct).ConfigureAwait(false);
+        var claimed = await _ledger.ClaimWorkBatchAsync(_flow.Id, submissionId, _workerId, Lease, now, RunId, Waits, ct).ConfigureAwait(false);
         if (claimed is not null)
         {
             _logger.LogInformation(
-                "Claimed batch {Batch} of submission {SubmissionId}: {Records} record(s) due.", claimed.Batch.Index, claimed.Batch.SubmissionId, claimed.Records.Count);
-            return await ProcessLeaseAsync(claimed.Lease, claimed.Batch, claimed.Records, ct).ConfigureAwait(false);
+                "Claimed batch {Batch} of submission {SubmissionId}: {Records} record(s) due, {Waiting} left waiting.",
+                claimed.Batch.Index, claimed.Batch.SubmissionId, claimed.Records.Count, claimed.Waiting.Count);
+            var waited = await ReportWaitingAsync(claimed.Waiting, claimed.Batch.SubmissionId, ct).ConfigureAwait(false);
+            var summary = await ProcessLeaseAsync(claimed.Lease, claimed.Batch, claimed.Records, ct).ConfigureAwait(false);
+            return summary with { Waiting = summary.Waiting + waited };
         }
 
-        var due = await _ledger.ClaimAsync(_flow.Id, submissionId, _workerId, _flow.Reliability.BatchSize, Lease, now, RunId, ct).ConfigureAwait(false);
+        var due = await _ledger.ClaimAsync(_flow.Id, submissionId, _workerId, _flow.Reliability.BatchSize, Lease, now, RunId, Waits, ct).ConfigureAwait(false);
+        var waitedDue = await ReportWaitingAsync(due.Waiting, submissionId, ct).ConfigureAwait(false);
         if (due.Lease is not { } lease)
         {
-            return WorkerSummary.Empty;
+            return WorkerSummary.Empty with { Waiting = waitedDue };
         }
 
         _logger.LogInformation("Claimed {Count} record(s) due for a retry.", due.Records.Count);
-        return await ProcessLeaseAsync(lease, batch: null, due.Records, ct).ConfigureAwait(false);
+        var retried = await ProcessLeaseAsync(lease, batch: null, due.Records, ct).ConfigureAwait(false);
+        return retried with { Waiting = retried.Waiting + waitedDue };
+    }
+
+    /// <summary>
+    /// Puts the records a claim left waiting on the run's trace, one line each saying what the record waits for, and
+    /// counts them. Waiting is not a try, so nothing is written to the ledger here: the claim already did.
+    /// </summary>
+    private async Task<long> ReportWaitingAsync(IReadOnlyList<WaitingRecord> waiting, Guid? submissionId, CancellationToken ct)
+    {
+        if (waiting.Count == 0)
+        {
+            return 0;
+        }
+
+        _logger.LogInformation(
+            "{Count} record(s) wait for a record they refer to that has not landed yet; the first {Key} {Reason}.",
+            waiting.Count, waiting[0].DeliveryKey, waiting[0].Reason);
+        var now = _time.GetUtcNow().UtcDateTime;
+        foreach (var record in waiting)
+        {
+            DeliveryMetrics.RecordWaiting(_flow.Label, RouteOf(_protocol.Kind));
+            await _listener.OnEventAsync(new DeliveryEvent
+            {
+                AtUtc = now,
+                FlowId = _flow.Id,
+                FlowName = _flow.Label,
+                Interface = _flow.Interface,
+                Kind = "record.waiting",
+                SubmissionId = submissionId,
+                DeliveryKey = record.DeliveryKey,
+                Worker = _workerId,
+                Detail = record.Reason,
+            }, ct).ConfigureAwait(false);
+        }
+
+        return waiting.Count;
     }
 
     /// <summary>
@@ -640,12 +694,26 @@ public sealed class DeliveryWorker
         // One id for the try: every OSDU request the protocol sends for these records carries it, and each attempt names
         // it, so what happened can be followed into the services' own logs.
         using var correlation = OsduCorrelation.Begin();
-        IReadOnlyList<DeliveryOutcome> outcomes;
+        var outcomes = new DeliveryOutcome?[works.Count];
         try
         {
-            outcomes = works.Count == 1
-                ? [await DeliverOneAsync(works[0].Work, ct).ConfigureAwait(false)]
-                : await _protocol.DeliverBatchAsync(works.Select(w => w.Work).ToList(), ct).ConfigureAwait(false);
+            await CheckReferencesAsync(works, outcomes, ct).ConfigureAwait(false);
+            var sending = Enumerable.Range(0, works.Count).Where(i => outcomes[i] is null).ToList();
+            if (sending.Count > 0)
+            {
+                var sent = sending.Count == 1
+                    ? [await DeliverOneAsync(works[sending[0]].Work, ct).ConfigureAwait(false)]
+                    : await _protocol.DeliverBatchAsync(sending.Select(i => works[i].Work).ToList(), ct).ConfigureAwait(false);
+                if (sent.Count != sending.Count)
+                {
+                    throw new DeliveryException($"The {_protocol.Kind} protocol answered {sent.Count} outcome(s) for {sending.Count} record(s).");
+                }
+
+                for (var i = 0; i < sending.Count; i++)
+                {
+                    outcomes[sending[i]] = sent[i];
+                }
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -653,17 +721,56 @@ public sealed class DeliveryWorker
             throw;
         }
 
-        if (outcomes.Count != works.Count)
-        {
-            throw new DeliveryException($"The {_protocol.Kind} protocol answered {outcomes.Count} outcome(s) for {works.Count} record(s).");
-        }
-
         for (var i = 0; i < works.Count; i++)
         {
             var (index, state, work) = works[i];
             var latestSteps = reportedSteps.TryGetValue(state.DeliveryKey.Value, out var reported) ? reported : state.PendingStepJson;
-            var (completion, evt, summary) = Classify(state, batch, started, work, outcomes[i], latestSteps, correlation.Id);
-            await record(index, completion, evt, summary, outcomes[i].Failure).ConfigureAwait(false);
+            var outcome = outcomes[i]!;
+            var (completion, evt, summary) = Classify(state, batch, started, work, outcome, latestSteps, correlation.Id);
+            await record(index, completion, evt, summary, outcome.Failure).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Settles, before anything is sent, the records whose documents refer to a record neither the ledger nor OSDU's
+    /// storage service holds, when the flow asks for that check: each is held with the ids it names. When the check itself
+    /// cannot be made, every record of the group is tried again later, as if its delivery had failed.
+    /// </summary>
+    private async Task CheckReferencesAsync(List<(int Index, RecordState Record, DeliveryWork Work)> works, DeliveryOutcome?[] outcomes, CancellationToken ct)
+    {
+        if (References is not { } check)
+        {
+            return;
+        }
+
+        var sendingDocuments = works.Where(w => w.Work.DeliverMetadata && w.Record.PendingReferences.Count > 0).ToList();
+        if (sendingDocuments.Count == 0)
+        {
+            return;
+        }
+
+        IReadOnlyDictionary<DeliveryKey, IReadOnlyList<RecordReference>> missing;
+        try
+        {
+            missing = await check.MissingAsync(sendingDocuments.Select(w => w.Record).ToList(), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            var failure = new DeliveryException($"the records this one refers to could not be looked up in OSDU's storage service before it was sent: {ex.Message}", ex);
+            for (var i = 0; i < works.Count; i++)
+            {
+                outcomes[i] = DeliveryOutcome.Failed(failure);
+            }
+
+            return;
+        }
+
+        for (var i = 0; i < works.Count; i++)
+        {
+            if (missing.TryGetValue(works[i].Record.DeliveryKey, out var references))
+            {
+                outcomes[i] = DeliveryOutcome.Failed(new RecordHeldException(ReferenceCheck.Describe(references)));
+            }
         }
     }
 

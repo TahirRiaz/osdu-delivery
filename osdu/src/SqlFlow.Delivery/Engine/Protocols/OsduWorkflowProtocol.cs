@@ -667,7 +667,7 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
                 && role.Contains(":reference-data--ArtefactRole:" + _route.Results.ArtefactRole, StringComparison.OrdinalIgnoreCase)
                 && kind.Contains(_route.Results.ArtefactKind!, StringComparison.OrdinalIgnoreCase))
             {
-                var id = WorkflowTemplate.WithoutVersion(resource);
+                var id = TargetId.WithoutVersion(resource);
                 if (!ids.Contains(id, StringComparer.Ordinal))
                 {
                     ids.Add(id);
@@ -778,18 +778,17 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
                     && !id.StartsWith("surrogate-key:", StringComparison.Ordinal)
                     && !into.Contains(id, StringComparer.Ordinal))
                 {
-                    into.Add(WorkflowTemplate.WithoutVersion(id));
+                    into.Add(TargetId.WithoutVersion(id));
                 }
             }
         }
     }
 
-    /// <summary>The ids among <paramref name="ids"/> storage holds (openapi storage v2, POST query/records, in batches).</summary>
+    /// <summary>The ids among <paramref name="ids"/> storage holds, in the order given (openapi storage v2, POST query/records, in batches).</summary>
     private async Task<IReadOnlyList<string>> PresentAsync(IReadOnlyList<string> ids, CancellationToken ct)
     {
-        var requests = ids.Select(id => new VerifyRequest(id, null)).ToList();
-        var verified = await RecordWriter.VerifyBatchAsync(_client, _options.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath, requests, ct).ConfigureAwait(false);
-        return requests.Where((r, i) => verified[i].Outcome == VerifyOutcome.Match).Select(r => r.TargetId).ToList();
+        var present = await StoragePresence.PresentAsync(_client, _options.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath, ids, ct).ConfigureAwait(false);
+        return ids.Where(present.Contains).ToList();
     }
 
     public Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default)

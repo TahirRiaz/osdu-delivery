@@ -1,5 +1,5 @@
 import {
-  AlertTriangle, Ban, CheckCircle2, CircleDashed, Loader2, PauseCircle, Trash2, XCircle, type LucideIcon,
+  AlertTriangle, Ban, CheckCircle2, CircleDashed, Hourglass, Loader2, PauseCircle, Trash2, XCircle, type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { DeliveryRecordStatus, DeliverySubmissionStatus, DeliveryVerifyOutcome } from "../../api/delivery";
@@ -14,6 +14,7 @@ const recordTones: Record<DeliveryRecordStatus, { tone: Tone; icon: LucideIcon }
   held: { tone: "warning", icon: PauseCircle },
   failed: { tone: "destructive", icon: XCircle },
   deleted: { tone: "muted", icon: Trash2 },
+  waiting: { tone: "info", icon: Hourglass },
 };
 
 /** A record's custody state, in the same pill family the run board uses. */

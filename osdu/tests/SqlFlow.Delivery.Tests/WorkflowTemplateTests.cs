@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Engine.Workflows;
+using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Protocols;
 using Xunit;
 
@@ -88,10 +89,10 @@ public sealed class WorkflowTemplateTests
         Assert.Equal("opendes:dataset--File.Generic:conv-1-h5-0", WorkflowTemplate.RenderText("{input:h5|first}", values));
 
         // A unique segment may hold colons; only a trailing empty or numeric segment is a version.
-        Assert.Equal("p:t:a:b", WorkflowTemplate.WithoutVersion("p:t:a:b"));
-        Assert.Equal("p:t:a", WorkflowTemplate.WithoutVersion("p:t:a:"));
-        Assert.Equal("p:t:a", WorkflowTemplate.WithoutVersion("p:t:a:1614105463059152"));
-        Assert.Equal("p:t:a", WorkflowTemplate.WithoutVersion("p:t:a"));
+        Assert.Equal("p:t:a:b", TargetId.WithoutVersion("p:t:a:b"));
+        Assert.Equal("p:t:a", TargetId.WithoutVersion("p:t:a:"));
+        Assert.Equal("p:t:a", TargetId.WithoutVersion("p:t:a:1614105463059152"));
+        Assert.Equal("p:t:a", TargetId.WithoutVersion("p:t:a"));
     }
 
     [Fact]

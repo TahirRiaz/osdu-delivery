@@ -18,7 +18,7 @@ public static class DeliveryMetrics
     private static readonly Meter Meter = new(MeterName, "1.0.0");
 
     private static readonly Counter<long> Records = Meter.CreateCounter<long>(
-        "osdu_delivery.records", "{record}", "Delivery tries settled, by flow, route and outcome (delivered, unchanged, retry, held, failed).");
+        "osdu_delivery.records", "{record}", "Delivery tries settled, by flow, route and outcome (delivered, unchanged, retry, held, failed), and records left waiting for a record they refer to (waiting).");
 
     private static readonly Histogram<double> RecordDuration = Meter.CreateHistogram<double>(
         "osdu_delivery.record.duration", "s", "How long a delivery try of one record took, from its claim to its outcome.");
@@ -44,6 +44,13 @@ public static class DeliveryMetrics
         Records.Add(1, tags);
         RecordDuration.Record(Math.Max(0, duration.TotalSeconds), tags);
     }
+
+    /// <summary>
+    /// Counts a record a claim left waiting for a record it refers to (outcome <c>waiting</c>). Waiting is not a try, so no
+    /// duration is recorded for it.
+    /// </summary>
+    public static void RecordWaiting(string flow, string route)
+        => Records.Add(1, new TagList { { "flow", flow }, { "route", route }, { "outcome", "waiting" } });
 
     /// <summary>
     /// Counts an HTTP call attempt that ended: <paramref name="result"/> is the status class of its answer (<c>2xx</c> to

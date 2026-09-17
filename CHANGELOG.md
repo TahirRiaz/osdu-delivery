@@ -61,6 +61,11 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   from the ledger.
 - Delivery metrics on the meter `SqlFlow.Delivery`: settled tries per flow, route and outcome, and every HTTP call
   attempt with its result, duration and retries (`osdu/docs/operations.md`).
+- Records that wait for records: a record whose document refers to a record the ledger holds and has not delivered is
+  left waiting by the claim, which charges nothing, and goes out when that record lands. Waits are decided under one
+  lock of the ledger and never lead back to the record deciding, so two records never wait for each other; an operator
+  can send one as it is. `target.verifyReferences: storage` asks OSDU's storage service about the ids the ledger does
+  not hold and holds a record that would write a dangling reference.
 - `docs/go-live-map.md`, the checklist from here to production, and an inventory of every id a live OSDU test creates,
   with the rule that no live test runs without approval (`CLAUDE.md`).
 - Generic extension points in the vendored SQLFlow, each in a `sqlflow:` commit: a registered flow kind describes its

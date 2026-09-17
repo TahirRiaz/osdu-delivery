@@ -4,8 +4,10 @@ using SqlFlow.Delivery.Engine.Intake;
 using SqlFlow.Delivery.Engine.Planning;
 using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Engine.Verify;
+using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Worker;
 using SqlFlow.Delivery.Http;
+using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
@@ -97,6 +99,143 @@ public class EndToEndTests : IDisposable
             Assert.All(counted, c => Assert.Equal("delivered", c.Tags["outcome"]));
             Assert.All(counted, c => Assert.Equal(Engine.RouteChecks.Name(protocol.Kind), c.Tags["route"]));
             Assert.Equal(3, capture.Of("osdu_delivery.record.duration", "flow", runtime.Flow.Label).Count);
+        }
+    }
+
+    [Fact]
+    public async Task A_record_waits_for_the_record_it_refers_to_and_goes_out_when_that_one_lands()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            // The wellbore the sample well logs refer to is another flow's record of this ledger, queued and not yet
+            // delivered: the well logs point at a record that is not in OSDU.
+            var wellboreFlow = FlowId.Of("recall-wellbore");
+            const string WellboreId = "opendes:master-data--Wellbore:OSDU-DEV-1-A";
+            var wellbore = new DeliveryKey(Guid.NewGuid());
+            var submission = Guid.NewGuid();
+            await ledger.RegisterSubmissionAsync(new SubmissionState
+            {
+                SubmissionId = submission,
+                FlowId = wellboreFlow,
+                FlowName = "recall-wellbore",
+                MappingReference = "Wellbore@1.3.0",
+                RenderContext = "{}",
+                SourceConnection = "${env:OSDU_SAMPLE_DB}",
+                SourceObject = "OsduSample.ing.Wellbore",
+            });
+            await ledger.UpsertPendingAsync(wellboreFlow, [new RecordState
+            {
+                DeliveryKey = wellbore,
+                FlowId = wellboreFlow,
+                SourceKey = "OSDU-DEV-1-A",
+                MappingName = "Wellbore",
+                TargetId = WellboreId,
+                LastSubmissionId = submission,
+                PendingDocumentRef = "0:0:10",
+                PendingRenderContext = "{}",
+                PendingMetadataHash = "mh",
+                PendingMetadata = true,
+            }]);
+
+            // The two logs of that wellbore wait, and no try is charged for them; the third log refers to the other
+            // wellbore, which no record of the ledger holds, so it goes out as it is.
+            var (work, logSubmission) = await RunAsync(runtime, protocol, ledger);
+            Assert.Equal(1, work.Delivered);
+            Assert.Equal(2, work.Waiting);
+            Assert.Single(protocol.Deliveries);
+            var waiting = await ledger.ListAsync(runtime.Flow.Id, new RecordQuery { Status = RecordStatus.Waiting });
+            Assert.Equal(2, waiting.Count);
+            Assert.All(waiting, r => Assert.Equal(WellboreId, r.WaitingFor));
+            Assert.All(waiting, r => Assert.Equal(0, r.AttemptCount));
+            Assert.All(waiting, r => Assert.Contains("data.WellboreID", r.LastError!, StringComparison.Ordinal));
+            Assert.Equal(2, (await ledger.GetSubmissionAsync(logSubmission))!.Waiting);
+            Assert.Equal(2, (await ledger.StatsAsync(runtime.Flow.Id, Now)).Waiting);
+
+            // The wellbore lands, which sends its waiters back to pending; the next drain of the same submission sends them.
+            await ledger.CompleteAsync(wellboreFlow, new RecordCompletion
+            {
+                DeliveryKey = wellbore,
+                Status = RecordStatus.Delivered,
+                Promote = true,
+                TargetVersion = 1,
+                TargetId = WellboreId,
+                Claimed = ClaimedWork.Of((await ledger.GetRecordAsync(wellboreFlow, wellbore))!),
+                Attempt = new AttemptRecord
+                {
+                    DeliveryKey = wellbore,
+                    Worker = "test",
+                    StartedUtc = Now,
+                    CompletedUtc = Now,
+                    Outcome = AttemptOutcome.Delivered,
+                    Phase = "metadata",
+                },
+            });
+
+            var worker = new DeliveryWorker(
+                ledger, runtime.Context.Payloads, runtime.Context.Stores, protocol, runtime.Flow, _clock,
+                CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker") { MaxWait = null };
+            var sent = await worker.DrainAsync(logSubmission);
+
+            Assert.Equal(2, sent.Delivered);
+            Assert.Equal(0, sent.Waiting);
+            Assert.Equal(3, protocol.Deliveries.Count);
+            Assert.Empty(await ledger.ListAsync(runtime.Flow.Id, new RecordQuery { Status = RecordStatus.Waiting }));
+        }
+    }
+
+    [Fact]
+    public async Task With_the_storage_check_on_a_record_whose_reference_is_nowhere_is_held_before_anything_is_sent()
+    {
+        using var platform = new FakeOsduPlatform();
+        using var http = new HttpRuntime(
+            new FlowReliability { Retry = new FlowRetry { Attempts = 1, BaseDelayMs = 1, MaxDelayMs = 1 } },
+            new SqlFlow.Core.Secrets.SecretResolver([new SqlFlow.Core.Secrets.EnvSecretProvider()]), _clock, platform, allowLoopback: true);
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            var check = new ReferenceCheck(
+                ledger,
+                new OsduHttpClient(
+                    http, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" }),
+                "/api/storage/v2/query/records");
+
+            // Neither the ledger nor storage holds the wellbores the sample well logs refer to.
+            var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
+            var worker = new DeliveryWorker(
+                ledger, runtime.Context.Payloads, runtime.Context.Stores, protocol, runtime.Flow, _clock,
+                CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker") { MaxWait = null, References = check };
+            var held = await worker.DrainAsync(intake.Submission.SubmissionId);
+
+            Assert.Equal(3, held.Held);
+            Assert.Equal(0, held.Delivered);
+            Assert.Empty(protocol.Deliveries);
+            var records = await ledger.ListAsync(runtime.Flow.Id, new RecordQuery { Status = RecordStatus.Held });
+            Assert.Equal(3, records.Count);
+            Assert.All(records, r => Assert.Contains("neither the ledger nor OSDU's storage service holds", r.LastError!, StringComparison.Ordinal));
+
+            Assert.All(records, r => Assert.Contains("opendes:master-data--Wellbore:OSDU-DEV-1-", r.LastError!, StringComparison.Ordinal));
+
+            // Once storage holds every record they refer to (the wellbores, the units, the curve types), the released
+            // records go out.
+            foreach (var id in records.SelectMany(r => r.PendingReferences).Select(r => r.Id).Distinct(StringComparer.Ordinal))
+            {
+                platform.Records[id] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["id"] = id,
+                    ["kind"] = "osdu:wks:master-data--Wellbore:1.3.0",
+                    ["version"] = 1,
+                };
+            }
+
+            Assert.Equal(3, await ledger.ReleaseAsync(runtime.Flow.Id, records.Select(r => r.DeliveryKey).ToList(), Now));
+            var sent = await worker.DrainAsync(intake.Submission.SubmissionId);
+
+            Assert.Equal(3, sent.Delivered);
+            Assert.Equal(3, protocol.Deliveries.Count);
         }
     }
 

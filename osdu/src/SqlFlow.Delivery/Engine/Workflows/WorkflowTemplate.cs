@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.Delivery.Engine.Workflows;
@@ -393,30 +394,12 @@ public static partial class WorkflowTemplate
                 return value switch
                 {
                     JsonArray references => new JsonArray(references.Select(item => Apply(modifier, item, placeholder)).ToArray()),
-                    JsonValue scalar when scalar.TryGetValue<string>(out var id) => JsonValue.Create(modifier == "id" ? WithoutVersion(id) : WithoutVersion(id) + ":"),
+                    JsonValue scalar when scalar.TryGetValue<string>(out var id) => JsonValue.Create(modifier == "id" ? TargetId.WithoutVersion(id) : TargetId.WithoutVersion(id) + ":"),
                     _ => throw new RecordHeldException($"{placeholder} applies |{modifier} to something that is not a record id"),
                 };
             default:
                 throw new RecordHeldException($"{placeholder} uses an unknown modifier '{modifier}'");
         }
-    }
-
-    /// <summary>
-    /// A record reference without its version: <c>p:t:k:</c> and <c>p:t:k:123</c> become <c>p:t:k</c>. The unique
-    /// segment of an OSDU id may itself hold colons, so only a trailing empty or all-digit segment is taken as the version.
-    /// </summary>
-    public static string WithoutVersion(string reference)
-    {
-        ArgumentNullException.ThrowIfNull(reference);
-        var last = reference.LastIndexOf(':');
-        if (last < 0)
-        {
-            return reference;
-        }
-
-        var tail = reference[(last + 1)..];
-        var colons = reference.Count(c => c == ':');
-        return colons >= 3 && tail.All(char.IsAsciiDigit) ? reference[..last] : reference;
     }
 
     private static void CheckArgument(Placeholder placeholder)

@@ -263,6 +263,45 @@ public class SqlServerLedgerTests
     };
 
     [SkippableFact]
+    public async Task A_record_waits_for_the_record_it_refers_to_and_is_sent_once_that_one_lands()
+    {
+        var ledger = await LedgerAsync(_clock);
+        var submission = Guid.NewGuid();
+        var holder = Work("wellbore", submission, "0:0:10", "mh", Now.AddDays(-1));
+        var waiter = Work("welllog", submission, "0:10:10", "mh", Now.AddDays(-1)) with
+        {
+            PendingReferences = [new RecordReference(holder.TargetId!, "data.WellboreID")],
+        };
+        await ledger.UpsertPendingAsync(_flow, [holder, waiter]);
+
+        // The holder is claimed and the waiter is left waiting: the decision and the mark are the set-based statements
+        // of the SQL Server path, taken under the ledger's own lock.
+        var claim = await ledger.ClaimAsync(_flow, submission, "w1", 10, TimeSpan.FromMinutes(5), Now);
+        Assert.Equal(holder.DeliveryKey, Assert.Single(claim.Records).DeliveryKey);
+        var left = Assert.Single(claim.Waiting);
+        Assert.Equal(waiter.DeliveryKey, left.DeliveryKey);
+        Assert.Equal(holder.TargetId, left.WaitingFor);
+        var waitingState = await ledger.GetRecordAsync(_flow, waiter.DeliveryKey);
+        Assert.Equal(RecordStatus.Waiting, waitingState!.Status);
+        Assert.Equal(0, waitingState.AttemptCount);
+        Assert.Equal(1, (await ledger.StatsAsync(_flow, Now)).Waiting);
+        Assert.Equal(waiter.DeliveryKey, Assert.Single(await ledger.ListWaitingForAsync(holder.TargetId!, 10)).DeliveryKey);
+
+        // Nothing releases a wait while the record it waits for has not landed.
+        Assert.Equal(0, await ledger.ReleaseResolvedWaitsAsync(_flow, null, Now));
+
+        // The holder lands: applying its completion names the id, and the waiter goes back to pending with it.
+        await ledger.CompleteAsync(_flow, Completion(claim.Records[0], submission, Now));
+
+        var released = await ledger.GetRecordAsync(_flow, waiter.DeliveryKey);
+        Assert.Equal(RecordStatus.Pending, released!.Status);
+        Assert.Null(released.WaitingFor);
+        var again = await ledger.ClaimAsync(_flow, submission, "w2", 10, TimeSpan.FromMinutes(5), Now);
+        Assert.Equal(waiter.DeliveryKey, Assert.Single(again.Records).DeliveryKey);
+        Assert.Empty(again.Waiting);
+    }
+
+    [SkippableFact]
     public async Task Flow_statistics_come_from_the_indexed_view_and_count_the_last_24_hours_to_the_tick()
     {
         // Half past the hour: the 24-hour window then opens part way through an hour, so both halves of its count run (the

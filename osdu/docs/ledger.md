@@ -291,7 +291,17 @@ it.
    operator removal ──▶ deleted (Blocked; OSDU no longer holds it) [scope record or everything]
                    └─▶ (no change)                                  [scope history: OSDU still holds it]
    operator release ──▶ pending (when a rendered document is still there) or unblocked for the next plan
+   claim ──▶ waiting (the document refers to a record of the ledger that has not landed) ──lands──▶ pending
 ```
+
+A **waiting** record holds a rendered document that refers to a record another record of the ledger holds and has not
+delivered (docs/interfaces-design.md section 7). The claim decides it, so nothing is charged and no worker is
+involved: the record says which OSDU id it waits for, and goes back to pending when the record holding that id lands.
+It is not blocked and needs no operator; a release by name sends it as it is, without waiting, and drops its
+references. An id no record of the ledger holds is not waited for, because it is OSDU's or another system's; nor is
+one whose record was removed from OSDU, nor one of an interface the source's order says this one does not wait for.
+With `target.verifyReferences: storage` the ids the ledger does not hold are asked of storage before the record is
+sent, and a record naming one storage does not hold is held instead.
 
 A **blocked** record (held, failed or deleted and not released) is skipped by every later plan as `blocked`
 until either the source row changes (its fingerprint moves, or its last-modified moment passes the one it was left
@@ -583,6 +593,13 @@ its records. The rebuilds are index builds over the record table, sized by its r
 [`osdu.Interface`](#osduinterface-the-sources-and-interfaces-the-repositories-declare)). It adds a table and changes
 nothing that exists: the ledger identities of existing flows are unchanged, because a flow in the single form keeps the
 id of its own name. The rows are written by the next repository sync, and by the control plane once when it starts.
+
+`RecordWaits` (module version 1.7.0) lets a record wait for a record it refers to (see the record lifecycle above). It
+adds two columns to `osdu.Record`: `PendingReferences`, the OSDU ids the pending document refers to, written and
+cleared with that document, and `WaitingFor`, the id a waiting record waits for, with a filtered index that finds the
+waiters of an id when it lands. It adds a `Waiting` count to `osdu.Submission` and `osdu.WorkBatch`. Every column is
+added empty, so an existing ledger takes the migration without a rewrite; the index is built over the record table,
+sized by its row count, and runs while no host is up.
 
 From 1.5.0 the ledger reads under snapshot isolation ([Many nodes, one table](#many-nodes-one-table)), so the database
 that holds the `osdu` schema must allow it. Allow it once:

@@ -97,6 +97,14 @@ public sealed record SourceRunOutcome(string Operation, string Source, IReadOnly
         _ => 0,
     });
 
+    /// <summary>Records left waiting, across the interfaces, for a record they refer to that has not landed.</summary>
+    public long Waiting => Sum(r => r switch
+    {
+        DeliverOutcome d => d.Waiting,
+        DrainOutcome d => d.Waiting,
+        _ => 0,
+    });
+
     /// <summary>The run's headline count on the run row (<c>result.rowsLoaded</c>): the records the run delivered.</summary>
     public long RowsLoaded => Delivered;
 
@@ -108,7 +116,7 @@ public sealed record SourceRunOutcome(string Operation, string Source, IReadOnly
     {
         var text = string.Create(
             CultureInfo.InvariantCulture,
-            $"{Operation} of '{Source}': {Completed} of {Interfaces.Count} interface(s) completed ({Delivered} record(s) delivered, {Held} held, {Failed} failed)");
+            $"{Operation} of '{Source}': {Completed} of {Interfaces.Count} interface(s) completed ({Delivered} record(s) delivered, {Held} held, {Failed} failed, {Waiting} waiting)");
         var stopped = Interfaces.Where(i => i.State == InterfaceStates.Stopped).Select(i => $"{i.Interface} ({i.Reason})").ToList();
         var skipped = Interfaces.Where(i => i.State == InterfaceStates.Skipped).Select(i => $"{i.Interface} ({i.Reason})").ToList();
         if (stopped.Count > 0)
@@ -287,6 +295,7 @@ public sealed class SourceRuntime
                     runtime.Actor = Actor;
                     runtime.RunId = RunId;
                     runtime.ActivityLog = ActivityLog;
+                    runtime.SourceDocument = _source;
                     runtimes[name] = runtime;
                     await runtime.CheckRouteAsync(readsSource ? runtime.Mapping.Mapping.Kind : runtime.Mappings.Load(flow.Render.Mapping).Kind, ct).ConfigureAwait(false);
                 }
@@ -502,10 +511,10 @@ public sealed class SourceRuntime
     {
         DeliverOutcome d => string.Create(
             CultureInfo.InvariantCulture,
-            $"{d.Planned} planned, {d.Delivered} delivered, {d.SkippedUnchanged + d.UnchangedAtPush} unchanged, {d.Held} held, {d.Failed} failed (submission {d.SubmissionId:D})"),
+            $"{d.Planned} planned, {d.Delivered} delivered, {d.SkippedUnchanged + d.UnchangedAtPush} unchanged, {d.Held} held, {d.Failed} failed, {d.Waiting} waiting (submission {d.SubmissionId:D})"),
         PlanOutcome p => string.Create(CultureInfo.InvariantCulture, $"{p.Records} record(s) read, {p.Deliveries} to deliver, {p.Skips} unchanged, {p.Holds} held"),
         IntakeOutcome i => string.Create(CultureInfo.InvariantCulture, $"{i.Planned} planned in {i.Batches} batch(es), {i.Held} held (submission {i.SubmissionId:D})"),
-        DrainOutcome d => string.Create(CultureInfo.InvariantCulture, $"{d.Processed} processed, {d.Delivered} delivered, {d.Held} held, {d.Failed} failed"),
+        DrainOutcome d => string.Create(CultureInfo.InvariantCulture, $"{d.Processed} processed, {d.Delivered} delivered, {d.Held} held, {d.Failed} failed, {d.Waiting} waiting"),
         VerifyRunOutcome v => string.Create(CultureInfo.InvariantCulture, $"{v.Checked} checked, {v.Matched} matched, {v.Drifted} drifted, {v.Missing} missing"),
         _ => result.ToString() ?? string.Empty,
     };

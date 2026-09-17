@@ -71,6 +71,7 @@ internal static class SqlServerLedgerBulk
             [PendingPayloadLocation] nvarchar(2000) NULL,
             [PendingMetadata] bit NOT NULL,
             [PendingPayload] bit NOT NULL,
+            [PendingReferences] nvarchar(max) NULL,
             [CacheSetId] bigint NULL,
             PRIMARY KEY ([Slice], [FlowId], [DeliveryKey]),
             UNIQUE ([FlowId], [DeliveryKey]));
@@ -148,6 +149,7 @@ internal static class SqlServerLedgerBulk
                 [PendingMetadataHash] = s.[PendingMetadataHash], [PendingPayloadHash] = s.[PendingPayloadHash],
                 [PendingPayloadModifiedUtc] = s.[PendingPayloadModifiedUtc],
                 [PendingPayloadLocation] = s.[PendingPayloadLocation], [PendingMetadata] = s.[PendingMetadata], [PendingPayload] = s.[PendingPayload],
+                [PendingReferences] = s.[PendingReferences], [WaitingFor] = NULL,
                 [CacheSetId] = s.[CacheSetId], [Blocked] = 0, [PlanRequestedUtc] = NULL, [UpdatedUtc] = @now
         FROM [osdu].[Record] AS t WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey])))
         INNER JOIN #PendingStage AS s ON t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
@@ -159,12 +161,12 @@ internal static class SqlServerLedgerBulk
                 [PendingDocumentRef], [WorkBatch], [PendingRenderContext], [PendingSourceFingerprint], [PendingSourceModifiedUtc],
                 [PendingSourceFileName], [PendingSourceRowNumber], [PendingSourceUpdatedUtc],
                 [PendingMetadataHash], [PendingPayloadHash], [PendingPayloadModifiedUtc],
-                [PendingPayloadLocation], [PendingMetadata], [PendingPayload], [CacheSetId], [Blocked], [CreatedUtc], [UpdatedUtc])
+                [PendingPayloadLocation], [PendingMetadata], [PendingPayload], [PendingReferences], [CacheSetId], [Blocked], [CreatedUtc], [UpdatedUtc])
         SELECT s.[DeliveryKey], s.[FlowId], s.[SourceKey], s.[SourceKeyJson], s.[Label], s.[MappingName], s.[TargetId], s.[TargetId] COLLATE Latin1_General_100_BIN2, N'pending', s.[LastSubmissionId], 0,
                 s.[PendingDocumentRef], s.[WorkBatch], s.[PendingRenderContext], s.[PendingSourceFingerprint], s.[PendingSourceModifiedUtc],
                 s.[PendingSourceFileName], s.[PendingSourceRowNumber], s.[PendingSourceUpdatedUtc],
                 s.[PendingMetadataHash], s.[PendingPayloadHash], s.[PendingPayloadModifiedUtc],
-                s.[PendingPayloadLocation], s.[PendingMetadata], s.[PendingPayload], s.[CacheSetId], 0, @now, @now
+                s.[PendingPayloadLocation], s.[PendingMetadata], s.[PendingPayload], s.[PendingReferences], s.[CacheSetId], 0, @now, @now
         FROM #PendingStage AS s
         WHERE s.[Slice] = @slice AND s.[Existing] = 0;
         SELECT @updated + @@ROWCOUNT;
@@ -194,6 +196,15 @@ internal static class SqlServerLedgerBulk
         {{CompletionUpdateSql}}
         DECLARE @applied int = @@ROWCOUNT;
 
+        -- The ids of the records a completion just promoted: what they delivered is in OSDU now, and the records waiting
+        -- for those ids go back to pending once this transaction commits. A record another lease holds was not applied.
+        CREATE TABLE #Landed ([TargetId] nvarchar(500) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY);
+        INSERT INTO #Landed ([TargetId])
+        SELECT DISTINCT r.[TargetId]
+        FROM #Latest AS s
+        INNER JOIN [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey]))) ON r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
+        WHERE s.[Kind] = N'completion' AND s.[Promote] = 1 AND r.[TargetId] IS NOT NULL AND r.[LeaseOwner] IS NULL;
+
         UPDATE r SET [PendingStepJson] = s.[StepJson]
         FROM [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey])))
         INNER JOIN #Latest AS s ON r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
@@ -206,6 +217,8 @@ internal static class SqlServerLedgerBulk
         DROP TABLE #Latest;
         DROP TABLE #Events;
         SELECT @events, @applied;
+        SELECT [TargetId] FROM #Landed;
+        DROP TABLE #Landed;
         """;
 
     // The same write as OsduLedger.ApplyCompletion. A record now carrying other pending work than the try claimed
@@ -261,6 +274,7 @@ internal static class SqlServerLedgerBulk
             [PendingMetadata] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN CAST(0 AS bit) ELSE r.[PendingMetadata] END,
             [PendingPayload] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN CAST(0 AS bit) ELSE r.[PendingPayload] END,
             [PendingPayloadLocation] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN NULL ELSE r.[PendingPayloadLocation] END,
+            [PendingReferences] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN NULL ELSE r.[PendingReferences] END,
             [AttemptCount] = CASE WHEN s.[Promote] = 1 OR x.[Superseded] = 1 THEN 0 ELSE r.[AttemptCount] END
         FROM [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey])))
         INNER JOIN #Latest AS s ON r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
@@ -410,9 +424,10 @@ internal static class SqlServerLedgerBulk
 
     /// <summary>
     /// Applies the next <paramref name="slice"/> events of a lease to their records and deletes them, in one transaction.
-    /// Returns how many events the slice took (fewer than the slice when none are left after it) and how many tries it settled.
+    /// Returns how many events the slice took (fewer than the slice when none are left after it), how many tries it
+    /// settled, and the OSDU ids of the records those tries landed.
     /// </summary>
-    public static Task<(int Records, int Applied)> ApplyEventsAsync(OsduDbContext db, string token, int slice, DateTime now, CancellationToken ct)
+    public static Task<(int Records, int Applied, IReadOnlyList<string> Landed)> ApplyEventsAsync(OsduDbContext db, string token, int slice, DateTime now, CancellationToken ct)
         => InTransactionAsync(db, async (connection, transaction) =>
         {
             await using var command = Command(connection, transaction, ApplyEventsSql, slice);
@@ -424,8 +439,142 @@ internal static class SqlServerLedgerBulk
                 throw new DeliveryException($"Applying the events of lease {token} returned no counts.");
             }
 
-            return (reader.GetInt32(0), reader.GetInt32(1));
+            var records = reader.GetInt32(0);
+            var applied = reader.GetInt32(1);
+            if (!await reader.NextResultAsync(ct).ConfigureAwait(false))
+            {
+                throw new DeliveryException($"Applying the events of lease {token} did not name the records that landed.");
+            }
+
+            var landed = new List<string>();
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                landed.Add(reader.GetString(0));
+            }
+
+            return (records, applied, (IReadOnlyList<string>)landed);
         }, ct);
+
+    // Takes the lock every decision to wait is made under, for the rest of the caller's transaction.
+    private const string WaitLockSql = """
+        DECLARE @granted int;
+        EXEC @granted = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = @timeout;
+        SELECT @granted;
+        """;
+
+    /// <summary>
+    /// Takes the application lock every decision to wait is made under, held until the caller's transaction ends. Throws
+    /// when another decision held it for longer than <paramref name="timeoutMs"/>, which a decision of a few reads never does.
+    /// </summary>
+    public static async Task TakeWaitLockAsync(OsduDbContext db, string resource, int timeoutMs, CancellationToken ct)
+    {
+        var (connection, transaction) = Current(db);
+        await using var command = Command(connection, transaction, WaitLockSql, slice: null);
+        command.Parameters.Add(new SqlParameter("@resource", SqlDbType.NVarChar, 255) { Value = resource });
+        command.Parameters.Add(new SqlParameter("@timeout", SqlDbType.Int) { Value = timeoutMs });
+        var granted = Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
+        if (granted < 0)
+        {
+            throw new DeliveryException(
+                $"The ledger could not take the lock its decisions to wait are made under ({resource}) within {timeoutMs / 1000} seconds (sp_getapplock answered {granted}); another claim held it that long, which a decision never needs. The claim is tried again on the worker's next pass.");
+        }
+    }
+
+    // The decided records, each still pending with the document the decision read and held by no lease, left waiting.
+    private const string MarkWaitingSql = $$"""
+        UPDATE r SET r.[Status] = N'waiting', r.[WaitingFor] = w.[WaitingFor], r.[LastError] = w.[Reason], r.[UpdatedUtc] = @now
+        OUTPUT inserted.[DeliveryKey]
+        FROM OPENJSON(@waits) WITH (
+            [DeliveryKey] uniqueidentifier '$.key',
+            [DocumentRef] nvarchar(64) '$.ref',
+            [WaitingFor] nvarchar(500) '$.id',
+            [Reason] nvarchar(2000) '$.reason') AS w
+        INNER JOIN [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey]))) ON r.[FlowId] = @flowId AND r.[DeliveryKey] = w.[DeliveryKey]
+        WHERE r.[Status] = N'pending' AND r.[LeaseOwner] IS NULL AND r.[PendingDocumentRef] = w.[DocumentRef];
+        """;
+
+    /// <summary>Leaves the decided records waiting in the caller's transaction, and returns the ones it did.</summary>
+    public static async Task<IReadOnlyList<Guid>> MarkWaitingAsync(
+        OsduDbContext db, Guid flowId, IReadOnlyList<(Guid Key, string DocumentRef, string WaitingFor, string Reason)> waits, DateTime now, CancellationToken ct)
+    {
+        var (connection, transaction) = Current(db);
+        var payload = System.Text.Json.JsonSerializer.Serialize(waits.Select(w => new { key = w.Key, @ref = w.DocumentRef, id = w.WaitingFor, reason = w.Reason }));
+        await using var command = Command(connection, transaction, MarkWaitingSql, slice: null);
+        command.Parameters.Add(new SqlParameter("@waits", SqlDbType.NVarChar, -1) { Value = payload });
+        command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
+        command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
+        return await GuidsAsync(command, ct).ConfigureAwait(false);
+    }
+
+    // A slice of the flow's waiting records (the named ones, when a key list is given) whose wait is over: the record
+    // holding the id they wait for landed, or no record holds it any more but ones removed from OSDU. A holder is found
+    // through the id index, whose collation folds case, and compared exactly as OSDU compares ids.
+    private const string ReleaseResolvedSql = """
+        UPDATE TOP (@slice) w SET w.[Status] = N'pending', w.[WaitingFor] = NULL, w.[NextAttemptUtc] = NULL, w.[LastError] = NULL, w.[UpdatedUtc] = @now
+        OUTPUT inserted.[DeliveryKey]
+        FROM [osdu].[Record] AS w
+        WHERE w.[FlowId] = @flowId AND w.[Status] = N'waiting'
+          AND (@keys IS NULL OR w.[DeliveryKey] IN (SELECT CAST(k.[value] AS uniqueidentifier) FROM OPENJSON(@keys) AS k))
+          AND (w.[WaitingFor] IS NULL
+               OR EXISTS (
+                    SELECT 1 FROM [osdu].[Record] AS p
+                    WHERE p.[TargetId] = w.[WaitingFor] COLLATE DATABASE_DEFAULT
+                      AND p.[TargetId] COLLATE Latin1_General_100_BIN2 = w.[WaitingFor]
+                      AND (p.[Status] = N'delivered' OR p.[TargetVersion] IS NOT NULL))
+               OR NOT EXISTS (
+                    SELECT 1 FROM [osdu].[Record] AS p
+                    WHERE p.[TargetId] = w.[WaitingFor] COLLATE DATABASE_DEFAULT
+                      AND p.[TargetId] COLLATE Latin1_General_100_BIN2 = w.[WaitingFor]
+                      AND p.[Status] <> N'deleted'
+                      AND NOT (p.[FlowId] = w.[FlowId] AND p.[DeliveryKey] = w.[DeliveryKey])));
+        """;
+
+    /// <summary>
+    /// Sends back to pending up to <paramref name="slice"/> of the flow's waiting records whose wait is over, of the ones
+    /// <paramref name="keys"/> names when given, in one statement of its own. Returns their keys.
+    /// </summary>
+    public static async Task<IReadOnlyList<Guid>> ReleaseResolvedWaitsAsync(
+        OsduDbContext db, Guid flowId, IReadOnlyList<Guid>? keys, int slice, DateTime now, CancellationToken ct)
+    {
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var connection = (SqlConnection)db.Database.GetDbConnection();
+            await using var command = Command(connection, null, ReleaseResolvedSql, slice);
+            command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
+            command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
+            command.Parameters.Add(new SqlParameter("@keys", SqlDbType.NVarChar, -1)
+            {
+                Value = keys is null ? DBNull.Value : System.Text.Json.JsonSerializer.Serialize(keys),
+            });
+            return await GuidsAsync(command, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The context's open connection and the transaction it is in, for a statement that belongs to that transaction.</summary>
+    private static (SqlConnection Connection, SqlTransaction? Transaction) Current(OsduDbContext db)
+    {
+        var connection = (SqlConnection)db.Database.GetDbConnection();
+        var transaction = db.Database.CurrentTransaction?.GetDbTransaction() as SqlTransaction;
+        return (connection, transaction);
+    }
+
+    /// <summary>Runs a statement whose result set is one key per row, and reads the keys.</summary>
+    private static async Task<IReadOnlyList<Guid>> GuidsAsync(SqlCommand command, CancellationToken ct)
+    {
+        var keys = new List<Guid>();
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            keys.Add(reader.GetGuid(0));
+        }
+
+        return keys;
+    }
 
     /// <summary>Whether a read failed because the database does not allow snapshot isolation (3951, 3952).</summary>
     internal static bool IsSnapshotRefused(Exception ex)
@@ -578,6 +727,7 @@ internal static class SqlServerLedgerBulk
         table.Columns.Add("PendingPayloadLocation", typeof(string));
         table.Columns.Add("PendingMetadata", typeof(bool));
         table.Columns.Add("PendingPayload", typeof(bool));
+        table.Columns.Add("PendingReferences", typeof(string));
         table.Columns.Add("CacheSetId", typeof(long));
         var position = 0;
         foreach (var r in records.OrderBy(r => new SqlGuid(r.DeliveryKey.Value)))
@@ -588,7 +738,8 @@ internal static class SqlServerLedgerBulk
                 Value(r.PendingSourceFingerprint), Value(r.PendingSourceModifiedUtc),
                 Value(Truncate(r.PendingSourceFileName, DeliveryModel.MaxSourceFileNameLength)), Value(r.PendingSourceRowNumber), Value(r.PendingSourceUpdatedUtc),
                 Value(r.PendingMetadataHash), Value(r.PendingPayloadHash),
-                Value(r.PendingPayloadModifiedUtc), Value(r.PendingPayloadLocation), r.PendingMetadata, r.PendingPayload, Value(r.CacheSetId));
+                Value(r.PendingPayloadModifiedUtc), Value(r.PendingPayloadLocation), r.PendingMetadata, r.PendingPayload,
+                Value(RecordReferences.Encode(r.PendingReferences)), Value(r.CacheSetId));
         }
 
         return table;

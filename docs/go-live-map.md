@@ -74,7 +74,9 @@ Done when every route above reads "proven live on the current build" and the tes
 Closes coverage plan stages 7 to 10.
 
 - [ ] **BLD-1** The `etp` route: an ETP 1.2 client over WebSocket with Avro messages, against a fake ETP server.
-- [ ] **BLD-2** Stage 8: records that wait for other records (a reference table and its migration, hold and release).
+- [x] **BLD-2** Stage 8: records that wait for other records (a reference table and its migration, hold and release).
+  What a record refers to is kept beside its document on the record; a claim leaves it waiting, charging nothing, and a
+  delivery releases what waited for it. `target.verifyReferences: storage` checks the ids the ledger does not hold.
 - [ ] **BLD-3** Stage 9: interface views in the GUI, API and CLI filters, lineage per interface, and a record's attempt
   history from the CLI, which the project rules promise: `sqlflow search` finds a record, but no verb lists its attempts.
 - [ ] **BLD-4** Stage 10: a sample estate across the kinds matrix (today three mappings: Wellbore, WellLog,
@@ -171,6 +173,10 @@ Each step protects the ones after it. Live runs happen only with an approved tes
   `deploy-prod.ps1`.
 - [ ] **DEC-10** Whether changes reach `main` through pull requests with the CI jobs required, or keep landing directly
   with CI reporting afterwards.
+- [ ] **DEC-11** Whether a mapping may name the record another interface of the same source delivers, so a child refers
+  to its parent by the key they share. Today a reference comes from the partition cache (a record OSDU already holds), a
+  column or a static value, so a child rendered before its parent ever landed is held by the cache lookup rather than
+  left waiting for it (docs/interfaces-design.md section 7).
 
 ## What this rests on
 
@@ -189,3 +195,5 @@ Each step protects the ones after it. Live runs happen only with an approved tes
 | 2026-09-17 | | `de0c6d5` | The map written; the `dspdm` route (stage 7) delivered before it. |
 | 2026-09-17 | SEC-1, SEC-2 | `7cbd4e6` | Resolved addresses and every redirect hop checked; private ranges only when the deployment lists them (`SQLFLOW_DELIVERY_PRIVATE_NETWORKS`). |
 | 2026-09-17 | CI-1, CI-3, CI-4, OPS-4 | `a7a77ea` | CI runs every suite against its own SQL Server and fails on a warning; a test checks which schemas the migration scripts write; a schema race the chain fixtures had on a new database fixed; the stale pages describe the current build. |
+| 2026-09-17 | OPS-1a | `04b3e04` | The engine publishes settled tries per flow, route and outcome, and every HTTP call attempt, on the meter `SqlFlow.Delivery`; a retried attempt releases its connection before the backoff. |
+| 2026-09-17 | CI-2, CI-5a | `c10dee4` | CI runs the GUI end-to-end suite and builds the three images, starting the control plane and GUI images; the changelog covers the work since it was written. |

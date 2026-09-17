@@ -401,16 +401,32 @@ contract checks and its documentation.
 
 Order between interfaces is not enough: a wellbore can be held while its well logs are ready.
 
-- When a record is rendered, the values it puts into relationship properties are the OSDU ids it refers to. Each
-  reference is kept in a new ledger table, `osdu.RecordReference` (the record, and the OSDU id it refers to), indexed
-  by the id.
-- A referred id that another record of this ledger has claimed and not delivered holds the referring record,
-  saying which record it waits for. An id the ledger does not hold is not waited for: it was delivered by another
-  system or already exists. `target.verifyReferences: storage` asks storage for those ids before sending, for
-  sources that must not write dangling references.
-- When a record is delivered, the records waiting on its id go back to pending, and the next pass sends them. A
-  waiting record costs no attempt.
-- This needs a module migration (the reference table and its index), which ships with the model change.
+- When a record is rendered, the values it puts into relationship properties are the OSDU ids it refers to, each
+  without its version. They are kept beside the document they belong to, on the record (`PendingReferences`), and
+  cleared with it: only work still to be sent carries them, which is what keeps them bounded on an estate of hundreds
+  of millions of records. A record holds no reference table of its own.
+- A referred id that another record of this ledger holds and has not delivered leaves the referring record
+  **waiting** (a status of its own), saying which record it waits for (`WaitingFor`, a filtered index). An id the
+  ledger does not hold is not waited for: it was delivered by another system or already exists. Neither is an id
+  whose record OSDU no longer holds, nor one of a flow this interface does not wait for, because the source's order
+  cut the reference as one that points back (section 6).
+- The decision is the claim's: a claim leaves such a record waiting instead of taking it, so waiting charges no
+  attempt and needs no worker. Every decision is taken under one lock of the ledger, and a record never waits for a
+  record whose own wait leads back to it, so records never wait for each other in a circle.
+- When a record is delivered, the records waiting for its id go back to pending, and the next claim takes them; the
+  claim decides again, so a record still referring to something undelivered waits again, for that record. A run also
+  ends the waits nothing holds any more before it plans (a record that left the ledger), and an operator can send one
+  waiting record as it is, which drops its references.
+- `target.verifyReferences: storage` asks OSDU's storage service, before a record is sent, about the ids no record of
+  the ledger holds, and holds a record that names one storage does not hold, for sources that must not write dangling
+  references.
+- This needs a module migration (the two record columns, the two counts and the index), which ships with the model
+  change.
+- What a record refers to is what its mapping fills: an id from the partition cache (a record OSDU already holds), an
+  id a column carries, or a static value ([mapping-templates.md](../osdu/docs/mapping-templates.md)). A mapping
+  cannot yet name the record another interface of the same source delivers for the same key, so a child rendered
+  before its parent ever landed is held at render time by the cache lookup rather than left waiting. Giving mappings
+  that reference is a decision of its own (go-live map, DEC-11).
 
 ## 8. When things stop
 

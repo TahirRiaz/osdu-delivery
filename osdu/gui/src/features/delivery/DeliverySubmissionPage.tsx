@@ -120,6 +120,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
     { id: "held", header: "Held", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.held}</span> },
     { id: "failed", header: "Failed", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.failed}</span> },
     { id: "retrying", header: "Retrying", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.retrying}</span> },
+    { id: "waiting", header: "Waiting", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.waiting}</span> },
     { id: "started", header: "Started", render: (row) => <RelativeTime value={row.startedUtc} absolute /> },
     { id: "completed", header: "Completed", render: (row) => <RelativeTime value={row.completedUtc} absolute /> },
     {

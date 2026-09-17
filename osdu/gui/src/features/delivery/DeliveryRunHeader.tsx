@@ -73,6 +73,7 @@ export function DeliveryRunCounts({ run }: { run: RunDetail }) {
       <DetailPair label="Held"><RecordCount value={counts.held} testId="run-records-held" /></DetailPair>
       <DetailPair label="Failed"><RecordCount value={counts.failed} testId="run-records-failed" /></DetailPair>
       <DetailPair label="Unchanged"><RecordCount value={counts.unchanged} testId="run-records-unchanged" /></DetailPair>
+      <DetailPair label="Waiting"><RecordCount value={counts.waiting} testId="run-records-waiting" /></DetailPair>
     </>
   );
 }

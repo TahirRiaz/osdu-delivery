@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Http;
+using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.Engine.Workflows;
@@ -267,7 +268,7 @@ public static partial class WorkflowIds
         {
             foreach (Match match in RecordId().Matches(text))
             {
-                var id = WorkflowTemplate.WithoutVersion(match.Value);
+                var id = TargetId.WithoutVersion(match.Value);
                 if (entityType is not null && !string.Equals(match.Groups["type"].Value, entityType, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;

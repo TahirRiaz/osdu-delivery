@@ -414,6 +414,28 @@ public sealed record FlowTarget
     /// business objects its kinds are rows of. Without the block the endpoint is DSPDM, and every default applies.
     /// </summary>
     public DspdmTarget Dspdm { get; init; } = new();
+
+    /// <summary>
+    /// What a record's references are checked against before it is sent (<c>target.verifyReferences</c>,
+    /// docs/interfaces-design.md section 7).
+    /// </summary>
+    public ReferenceVerification VerifyReferences { get; init; } = ReferenceVerification.None;
+}
+
+/// <summary>What the OSDU ids a record refers to are checked against before the record is sent.</summary>
+public enum ReferenceVerification
+{
+    /// <summary>
+    /// The ledger alone: a record waits for a record it refers to that another record of the ledger holds and has not
+    /// delivered, and refers to any other id as it is, since that record is OSDU's or another system's.
+    /// </summary>
+    None,
+
+    /// <summary>
+    /// The ledger, then OSDU's storage service for the ids no record of the ledger holds: a record referring to an id
+    /// storage does not hold is held, for sources that must not write dangling references.
+    /// </summary>
+    Storage,
 }
 
 public enum TargetAuthType

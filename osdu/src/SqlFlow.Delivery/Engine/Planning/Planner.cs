@@ -59,6 +59,9 @@ public sealed record PlanEntry
 
     public RecordState? Existing { get; init; }
 
+    /// <summary>The OSDU ids the rendered document refers to, when the delivery sends it: what the record may wait for.</summary>
+    public IReadOnlyList<RecordReference> References { get; init; } = [];
+
     public bool DeliverMetadata { get; init; }
 
     public bool DeliverPayload { get; init; }
@@ -85,6 +88,9 @@ public sealed record PlanHeader
     /// run that must skip millions of records reads a handful of ids rather than a column on every one of them.
     /// </summary>
     public IReadOnlySet<long> GatedCacheSets { get; init; } = new HashSet<long>();
+
+    /// <summary>Reads what a rendered record refers to, from the relationships of the template the mapping pins.</summary>
+    public ReferenceReader References { get; init; } = ReferenceReader.None;
 
     public bool SkippedWholeRun { get; init; }
 
@@ -284,6 +290,7 @@ public sealed class Planner
             PayloadName = PayloadName(flow),
             Parts = PayloadParts.Of(flow),
             GatedCacheSets = gatedSets,
+            References = ReferenceReader.Of(Templates.OsduTemplate.From(resolved.Schema)),
         };
 
         foreach (var missing in source.MissingKeys)
@@ -841,6 +848,9 @@ public sealed class Planner
                 ChunkCount = decision.DeliverPayload ? chunkCount : null,
                 DeliverMetadata = decision.DeliverMetadata,
                 DeliverPayload = decision.DeliverPayload,
+
+                // Only a document that is sent can point at a record that is not there yet; a payload alone changes no reference.
+                References = decision.DeliverMetadata ? header.References.Read(render.Document, render.TargetId) : [],
             });
         }
     }

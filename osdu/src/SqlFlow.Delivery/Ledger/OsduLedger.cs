@@ -290,6 +290,8 @@ public sealed partial class OsduLedger : ILedger
                 entity.PendingPayloadLocation = record.PendingPayloadLocation;
                 entity.PendingMetadata = record.PendingMetadata;
                 entity.PendingPayload = record.PendingPayload;
+                entity.PendingReferences = RecordReferences.Encode(record.PendingReferences);
+                entity.WaitingFor = null;
                 entity.CacheSetId = record.CacheSetId;
                 entity.Blocked = false;
                 entity.UpdatedUtc = now;
@@ -515,6 +517,8 @@ public sealed partial class OsduLedger : ILedger
                 entity.PendingDocumentRef = null;
                 entity.WorkBatch = null;
                 entity.PendingStepJson = null;
+                entity.PendingReferences = null;
+                entity.WaitingFor = null;
                 entity.SourceKeyJson = Truncate(record.SourceKeyJson, 2000) ?? entity.SourceKeyJson;
                 entity.PendingSourceFingerprint = record.PendingSourceFingerprint;
                 entity.PendingSourceModifiedUtc = record.PendingSourceModifiedUtc;
@@ -1014,6 +1018,7 @@ public sealed partial class OsduLedger : ILedger
             Held = byStatus.GetValueOrDefault("held"),
             Failed = byStatus.GetValueOrDefault("failed"),
             Deleted = byStatus.GetValueOrDefault("deleted"),
+            Waiting = byStatus.GetValueOrDefault("waiting"),
             Drifted = drifted,
             DeliveredLast24h = last24,
             LastDeliveredUtc = lastDelivered,
@@ -1182,7 +1187,26 @@ public sealed partial class OsduLedger : ILedger
                 .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
             ct).ConfigureAwait(false);
 
-        return requeued + unblocked;
+        // A waiting record an operator names is sent as it is: without its references it waits for nothing on its next
+        // claim. A release of the whole flow is for what is blocked, and leaves the waits to end on their own.
+        var unwaited = 0;
+        if (keys is not null)
+        {
+            var ids = keys.Select(k => k.Value).ToArray();
+            var waiting = StatusText.Of(RecordStatus.Waiting);
+            unwaited = await WriteEachAsync(
+                db.DeliveryRecords.Where(r => r.FlowId == flowId && r.Status == waiting && ids.Contains(r.DeliveryKey)),
+                slice => slice.ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.Status, pending)
+                    .SetProperty(r => r.WaitingFor, (string?)null)
+                    .SetProperty(r => r.PendingReferences, (string?)null)
+                    .SetProperty(r => r.NextAttemptUtc, (DateTime?)null)
+                    .SetProperty(r => r.LastError, (string?)null)
+                    .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+                ct).ConfigureAwait(false);
+        }
+
+        return requeued + unblocked + unwaited;
     }
 
     public Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default)
@@ -1318,6 +1342,8 @@ public sealed partial class OsduLedger : ILedger
         entity.PendingDocumentRef = null;
         entity.WorkBatch = null;
         entity.PendingStepJson = null;
+        entity.PendingReferences = null;
+        entity.WaitingFor = null;
         entity.PendingMetadata = false;
         entity.PendingPayload = false;
         entity.PendingPayloadLocation = null;
@@ -2150,6 +2176,7 @@ public sealed partial class OsduLedger : ILedger
         Held = b.Held,
         Failed = b.Failed,
         Retrying = b.Retrying,
+        Waiting = b.Waiting,
         Error = b.Error,
     };
 
@@ -2178,6 +2205,7 @@ public sealed partial class OsduLedger : ILedger
         entity.Delivered = s.Delivered;
         entity.Held = s.Held;
         entity.Failed = s.Failed;
+        entity.Waiting = s.Waiting;
         entity.Error = Truncate(s.Error, 4000);
         entity.Kind = SubmissionKinds.All.Contains(s.Kind, StringComparer.Ordinal)
             ? s.Kind
@@ -2216,6 +2244,7 @@ public sealed partial class OsduLedger : ILedger
         Delivered = e.Delivered,
         Held = e.Held,
         Failed = e.Failed,
+        Waiting = e.Waiting,
         Error = e.Error,
         Kind = e.Kind,
         Untracked = e.Untracked,
@@ -2272,6 +2301,8 @@ public sealed partial class OsduLedger : ILedger
         PendingPayloadLocation = r.PendingPayloadLocation,
         PendingMetadata = r.PendingMetadata,
         PendingPayload = r.PendingPayload,
+        PendingReferences = RecordReferences.Decode(r.PendingReferences),
+        WaitingFor = r.WaitingFor,
         Blocked = r.Blocked,
         CacheSetId = r.CacheSetId,
         PlanRequestedUtc = r.PlanRequestedUtc,
@@ -2291,6 +2322,7 @@ internal static class StatusText
         RecordStatus.Held => "held",
         RecordStatus.Failed => "failed",
         RecordStatus.Deleted => "deleted",
+        RecordStatus.Waiting => "waiting",
         _ => throw new ArgumentOutOfRangeException(nameof(status)),
     };
 
@@ -2302,6 +2334,7 @@ internal static class StatusText
         "held" => RecordStatus.Held,
         "failed" => RecordStatus.Failed,
         "deleted" => RecordStatus.Deleted,
+        "waiting" => RecordStatus.Waiting,
         _ => throw new DeliveryException($"Unknown record status '{text}' in the ledger."),
     };
 

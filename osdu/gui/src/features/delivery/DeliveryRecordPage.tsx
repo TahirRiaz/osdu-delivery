@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Navigate, useNavigate, useParams } from "react-router-dom";
+import { Link as RouterLink, Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpenCheck, CircleAlert, Database, RotateCcw, ShieldCheck, Trash2, Unlock } from "lucide-react";
+import { BookOpenCheck, CircleAlert, Database, Hourglass, RotateCcw, Send, ShieldCheck, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +15,9 @@ import {
   type DeliveryActivity,
   type DeliveryAttempt,
   type DeliveryAttemptResult,
+  type DeliveryRecordLink,
   type DeliveryRecordRef,
+  type DeliveryRecordReference,
 } from "../../api/delivery";
 import { AttemptDetail } from "./AttemptDetail";
 import { CodeView } from "@/components/CodeView";
@@ -119,6 +121,26 @@ function SubmissionLink({ submissionId }: { submissionId: string }) {
   );
 }
 
+/** A link to another record's page, named as the ledger names the record. */
+function RecordLink({ link, testId }: { link: DeliveryRecordLink; testId?: string }) {
+  return (
+    <RouterLink to={`/delivery/records/${link.flowId}/${link.deliveryKey}`} className="text-primary hover:underline" data-testid={testId}>
+      {link.label ?? link.sourceKey}
+    </RouterLink>
+  );
+}
+
+const referenceColumns: Column<DeliveryRecordReference>[] = [
+  { id: "id", header: "OSDU id", fill: true, render: (row) => <TruncatedText text={row.id} mono maxWidth={520} /> },
+  { id: "property", header: "Property", render: (row) => <span className="font-mono text-[12px]">{row.property}</span> },
+];
+
+const waiterColumns: Column<DeliveryRecordLink>[] = [
+  { id: "record", header: "Record", render: (row) => <RecordLink link={row} testId="record-waiter-link" /> },
+  { id: "flow", header: "Flow", render: (row) => <span className="text-[12px]">{row.interface ? `${row.flowName ?? "?"} / ${row.interface}` : row.flowName ?? row.flowId}</span> },
+  { id: "status", header: "Status", render: (row) => <RecordStatusBadge status={row.status} testId="record-waiter-status" /> },
+];
+
 function Hash({ value }: { value: string | null }) {
   return value ? <span className="font-mono text-[12px]" title={value}>{value.slice(0, 12)}</span> : <span className="text-muted-foreground">-</span>;
 }
@@ -138,7 +160,7 @@ export default function DeliveryRecordPage() {
 function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [confirm, setConfirm] = useState<"redeliver" | null>(null);
+  const [confirm, setConfirm] = useState<"redeliver" | "send-now" | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskLabel, setTaskLabel] = useState("");
@@ -149,7 +171,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     queryFn: () => deliveryApi.record(ref),
     refetchInterval: (q) => {
       const status = q.state.data?.record.status;
-      return status === "pending" || status === "delivering" ? 3000 : 15000;
+      return status === "pending" || status === "delivering" || status === "waiting" ? 3000 : 15000;
     },
   });
   const attempts = useQuery({
@@ -195,8 +217,12 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   });
   const release = useMutation({
     mutationFn: () => deliveryApi.release(ref),
-    onSuccess: (result) => { toast.success(result.released > 0 ? "Record released." : "Nothing to release."); refresh(); },
-    onError: fail,
+    onSuccess: (result) => {
+      setConfirm(null);
+      toast.success(result.released > 0 ? "Record released." : "Nothing to release.");
+      refresh();
+    },
+    onError: (error) => { setConfirm(null); fail(error); },
   });
   const readBack = useMutation({
     mutationFn: () => deliveryApi.read(ref),
@@ -231,6 +257,8 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const record = detail.record;
   const busy = verify.isPending || redeliver.isPending || release.isPending || readBack.isPending || readSource.isPending;
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
+  const references = record.references ?? [];
+  const waiters = detail.waitedOnBy ?? [];
   const taskState = task.data;
   const taskJson = isTerminalTask(taskState) ? taskResultJson(taskState) : null;
 
@@ -240,6 +268,21 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
         <Alert variant="destructive" data-testid="record-error">
           <CircleAlert />
           <AlertDescription>{record.lastError}</AlertDescription>
+        </Alert>
+      )}
+      {record.status === "waiting" && (
+        <Alert data-testid="record-waiting">
+          <Hourglass />
+          <AlertDescription>
+            <span>{record.lastError ?? `Waits for ${record.waitingFor ?? "a record it refers to"}.`}</span>
+            {detail.waitsOn && (
+              <span>
+                {"It goes out on its own once "}
+                <RecordLink link={detail.waitsOn} testId="record-waits-on-link" />
+                {" is delivered."}
+              </span>
+            )}
+          </AlertDescription>
         </Alert>
       )}
 
@@ -278,6 +321,12 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
               <Button variant="outline" size="sm" onClick={() => release.mutate()} disabled={busy} data-testid="record-release">
                 <Unlock />
                 Release
+              </Button>
+            )}
+            {record.status === "waiting" && (
+              <Button variant="outline" size="sm" onClick={() => setConfirm("send-now")} disabled={busy} data-testid="record-send-now">
+                <Send />
+                Send without waiting
               </Button>
             )}
             <Button
@@ -338,6 +387,10 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           <TabsTrigger value="activity" data-testid="record-tab-activity">Interventions</TabsTrigger>
           <TabsTrigger value="document" data-testid="record-tab-document">Target state</TabsTrigger>
           <TabsTrigger value="context" data-testid="record-tab-context">Render context</TabsTrigger>
+          <TabsTrigger value="references" data-testid="record-tab-references">
+            References
+            {waiters.length > 0 && <Badge variant="secondary" className="ml-1">{waiters.length}</Badge>}
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="history">
           <DataTable columns={attemptColumns} rows={attempts.data} rowKey={(row) => row.attemptId} emptyMessage="No delivery attempts yet." data-testid="record-attempts" />
@@ -373,8 +426,44 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
             ? <CodeView value={prettyJson(record.renderContext)} language="json" height={280} data-testid="record-render-context" />
             : <p className="text-[13px] text-muted-foreground">Recorded once the record has been delivered.</p>}
         </TabsContent>
+        <TabsContent value="references">
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1">
+              <h3 className="text-[13px] font-medium">What the waiting document refers to</h3>
+              <p className="text-[12px] text-muted-foreground">
+                A record another record of the ledger holds and has not delivered is waited for; any other id is OSDU&apos;s or another system&apos;s.
+              </p>
+              <DataTable
+                columns={referenceColumns}
+                rows={references}
+                rowKey={(row) => row.id}
+                emptyMessage={record.hasPendingDocument ? "The waiting document refers to no other record." : "No document is waiting, so nothing is referred to."}
+                data-testid="record-references"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <h3 className="text-[13px] font-medium">Records waiting for this one</h3>
+              <DataTable
+                columns={waiterColumns}
+                rows={waiters}
+                rowKey={(row) => `${row.flowId}:${row.deliveryKey}`}
+                emptyMessage="No record waits for this one."
+                data-testid="record-waiters"
+              />
+            </div>
+          </div>
+        </TabsContent>
       </Tabs>
 
+      <ConfirmDialog
+        open={confirm === "send-now"}
+        title="Send without waiting"
+        message="Send this record on its next claim as it is, without waiting for the record it refers to. Until that record lands, the reference points at nothing, and a route that checks references can refuse it. The release is recorded under your name."
+        confirmLabel="Send without waiting"
+        busy={release.isPending}
+        onConfirm={() => release.mutate()}
+        onClose={() => setConfirm(null)}
+      />
       <ConfirmDialog
         open={confirm === "redeliver"}
         title="Redeliver record"

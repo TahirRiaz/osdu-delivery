@@ -640,6 +640,7 @@ public sealed class SubmissionIntake
         PendingPayloadLocation = entry.PayloadLocation,
         PendingMetadata = entry.DeliverMetadata,
         PendingPayload = entry.DeliverPayload,
+        PendingReferences = entry.References,
     };
 
     /// <summary>Closes the submission after the drains finished, with honest counts scoped to the records it touched.</summary>
@@ -653,6 +654,7 @@ public sealed class SubmissionIntake
         var unchangedAtPush = await _ledger.CountAttemptsAsync(submissionId, AttemptOutcome.Skipped, AttemptPhases.Unchanged, ct).ConfigureAwait(false);
         var held = await _ledger.CountAsync(flowId, submissionId, RecordStatus.Held, ct).ConfigureAwait(false);
         var failed = await _ledger.CountAsync(flowId, submissionId, RecordStatus.Failed, ct).ConfigureAwait(false);
+        var waiting = await _ledger.CountAsync(flowId, submissionId, RecordStatus.Waiting, ct).ConfigureAwait(false);
         var stillPending = await _ledger.HasPendingAsync(flowId, submissionId, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
         var now = _time.GetUtcNow().UtcDateTime;
         var wasClosed = submission.Status is SubmissionStatus.Completed or SubmissionStatus.Failed;
@@ -662,6 +664,7 @@ public sealed class SubmissionIntake
             UnchangedAtPush = unchangedAtPush,
             Held = held,
             Failed = failed,
+            Waiting = waiting,
             Status = stillPending ? SubmissionStatus.Running : (failed > 0 ? SubmissionStatus.Failed : SubmissionStatus.Completed),
             CompletedUtc = stillPending ? null : now,
         };
@@ -703,7 +706,7 @@ public sealed class SubmissionIntake
     public static string Summarize(SubmissionState s)
     {
         ArgumentNullException.ThrowIfNull(s);
-        return string.Create(CultureInfo.InvariantCulture, $"{s.Status.ToString().ToLowerInvariant()}: {s.Planned} planned in {s.BatchCount} batch(es), {s.Delivered} delivered, {s.SkippedUnchanged + s.UnchangedAtPush} unchanged, {s.AwaitingApproval} awaiting approval, {s.SkippedStale} stale, {s.Blocked} blocked, {s.Held} held, {s.Failed} failed");
+        return string.Create(CultureInfo.InvariantCulture, $"{s.Status.ToString().ToLowerInvariant()}: {s.Planned} planned in {s.BatchCount} batch(es), {s.Delivered} delivered, {s.SkippedUnchanged + s.UnchangedAtPush} unchanged, {s.AwaitingApproval} awaiting approval, {s.SkippedStale} stale, {s.Blocked} blocked, {s.Held} held, {s.Failed} failed, {s.Waiting} waiting");
     }
 
     /// <summary>The batch numbers a share writes: a namespace per first slice, so fan-out members never collide.</summary>

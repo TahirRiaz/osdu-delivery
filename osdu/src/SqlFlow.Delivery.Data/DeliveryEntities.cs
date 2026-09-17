@@ -67,6 +67,9 @@ public sealed class DeliverySubmission
 
     public long Failed { get; set; }
 
+    /// <summary>Records of the submission still waiting, when it closed, for a record they refer to that has not landed.</summary>
+    public long Waiting { get; set; }
+
     /// <summary>Records without a derivable delivery key: not planned, not delivered.</summary>
     public long Untracked { get; set; }
 
@@ -217,7 +220,20 @@ public sealed class DeliveryRecord
 
     public bool PendingPayload { get; set; }
 
+    /// <summary>
+    /// The OSDU ids the pending document refers to through the properties its template declares relationships for, each
+    /// with the property that holds it, as a JSON array (docs/interfaces-design.md section 7). Written with the pending
+    /// document and cleared with it, so only the work still to be sent keeps them.
+    /// </summary>
+    public string? PendingReferences { get; set; }
+
     public bool Blocked { get; set; }
+
+    /// <summary>
+    /// While the record is waiting: the OSDU id of the record it waits for, which another record of the ledger holds and
+    /// has not delivered. The record goes back to pending when that one lands.
+    /// </summary>
+    public string? WaitingFor { get; set; }
 
     /// <summary>When the ledger asked for the record to be planned again (a redeliver, a release, a cache rollout); null
     /// once a plan took it.</summary>
@@ -332,6 +348,9 @@ public sealed class DeliveryWorkBatch
     public long Failed { get; set; }
 
     public long Retrying { get; set; }
+
+    /// <summary>Records of the batch its claim found waiting for a record they refer to, and did not send.</summary>
+    public long Waiting { get; set; }
 
     public string? Error { get; set; }
 }
@@ -1041,6 +1060,7 @@ public static class DeliveryModel
             e.Property(r => r.PayloadHash).HasMaxLength(64);
             e.Property(r => r.TargetId).HasMaxLength(500);
             OptionalOsduId(e.Property(r => r.ClaimedTargetId), sqlServer).HasMaxLength(500);
+            OptionalOsduId(e.Property(r => r.WaitingFor), sqlServer).HasMaxLength(500);
             e.Property(r => r.Status).HasMaxLength(16).IsRequired();
             e.Property(r => r.LastVerifyOutcome).HasMaxLength(16);
             e.Property(r => r.LeaseOwner).HasMaxLength(200);
@@ -1092,6 +1112,10 @@ public static class DeliveryModel
             // The records the ledger asked to be planned again, paged by the planner each run: the filter keeps the
             // index as small as the backlog.
             e.HasIndex(r => new { r.FlowId, r.PlanRequestedUtc }).HasFilter("[PlanRequestedUtc] IS NOT NULL");
+
+            // The records waiting for an id, released when the record holding that id lands: the filter keeps the index
+            // as small as what is waiting, so the release every settle runs costs a seek.
+            e.HasIndex(r => r.WaitingFor).HasFilter("[WaitingFor] IS NOT NULL");
         });
 
         modelBuilder.Entity<DeliveryAttempt>(e =>
