@@ -118,8 +118,11 @@ Done when a change cannot merge without every suite, the end-to-end run and a wa
 
 What an operator needs once real data flows.
 
-- [ ] **OPS-1** Metrics: none are emitted (no `Meter`, no OpenTelemetry or Application Insights exporter). Add
-  delivered, held, failed and retried counts and latency per route, with alerts.
+- [x] **OPS-1a** Metrics: none were emitted. The engine now publishes settled tries and their duration per flow,
+  route and outcome, and every HTTP call's result, duration and retries, on the meter `SqlFlow.Delivery`
+  ([../osdu/docs/operations.md](../osdu/docs/operations.md#metrics)).
+- [ ] **OPS-1b** Export the metrics and set the alerts: the exporter needs DEC-6 and the dependency approval of
+  `osdu/docs/design.md` section 14.
 - [ ] **OPS-2** Health: `/health/live` and `/health/ready` exist; OSDU reachability is only the operator's probe.
   Schedule the probe and alert on it.
 - [ ] **OPS-3** Availability: the control plane runs one replica (the dispatch lease). Decide whether that is acceptable
@@ -176,3 +179,4 @@ Each step protects the ones after it. Live runs happen only with an approved tes
 | --- | --- | --- | --- |
 | 2026-09-17 | | `de0c6d5` | The map written; the `dspdm` route (stage 7) delivered before it. |
 | 2026-09-17 | SEC-1, SEC-2 | `7cbd4e6` | Resolved addresses and every redirect hop checked; private ranges only when the deployment lists them (`SQLFLOW_DELIVERY_PRIVATE_NETWORKS`). |
+| 2026-09-17 | CI-1, CI-3, CI-4, OPS-4 | `a7a77ea` | CI runs every suite against its own SQL Server and fails on a warning; a test checks which schemas the migration scripts write; a schema race the chain fixtures had on a new database fixed; the stale pages describe the current build. |

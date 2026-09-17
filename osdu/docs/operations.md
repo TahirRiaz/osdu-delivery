@@ -388,6 +388,26 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 | The sync warns that a ledger is kept by two flows | The warning names the interface and the flow keeping it | An interface adopted the ledger (`ledger:`) of a flow the repository still holds. Remove the old flow, or the adoption; until then both deliver into one ledger. |
 | A failure has to be followed into OSDU's own logs | The record's History tab: the attempt's result names its `correlationId`, and a refused request's error quotes `(correlation-id ...)` | Give the OSDU operators that id: every request of the try carried it. |
 
+## Metrics
+
+The engine publishes its telemetry on the .NET metrics API, under the meter `SqlFlow.Delivery`:
+
+| Instrument | Unit | Tags | What it measures |
+| --- | --- | --- | --- |
+| `osdu_delivery.records` | record | `flow`, `route`, `outcome` | Delivery tries settled: `delivered`, `unchanged`, `retry`, `held`, `failed`. |
+| `osdu_delivery.record.duration` | s | `flow`, `route`, `outcome` | How long a try of one record took, from its claim to its outcome. |
+| `osdu_delivery.http.requests` | request | `method`, `host`, `result` | Call attempts to OSDU services and their storage, each counted once. `result` is the answer's status class, `2xx` to `5xx`, or what ended the attempt otherwise: `transport`, `timeout`, `refused` (the URL guard), `cancelled` (the node stopped waiting) or `error` (anything else, such as a redirect loop). |
+| `osdu_delivery.http.request.duration` | s | `method`, `host`, `result` | How long an attempt took, its redirects and response body included, the wait before the next attempt not. |
+| `osdu_delivery.http.retries` | retry | `method`, `host`, `reason` | Calls repeated after a passing failure: a status code, `transport` or `timeout`. |
+
+They are rates to watch and alert on. The delivered, pending, held and failed counts the GUI and the CLI show are read
+from the ledger, never from these. On a node, `dotnet-counters monitor --counters SqlFlow.Delivery -p <pid>` reads them.
+No exporter is wired yet: which backend receives them is a decision ([../../docs/go-live-map.md](../../docs/go-live-map.md),
+DEC-6), and the exporter package it needs goes through the dependency approval of [design.md](design.md) section 14.
+
+Once they are exported, alert on a rising share of `held` or `failed` outcomes per flow, on `5xx`, `transport` and
+`timeout` results per host, and on any `refused` result, which is a URL the guard would not let a node reach.
+
 ## Size ceilings
 
 Set the request body ceilings on the way to OSDU (the service's own server, the ingress, an API gateway) to one

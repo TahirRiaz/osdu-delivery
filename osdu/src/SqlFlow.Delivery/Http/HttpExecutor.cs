@@ -8,6 +8,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using SqlFlow.Core;
+using SqlFlow.Delivery.Diagnostics;
 
 namespace SqlFlow.Delivery.Http;
 
@@ -94,9 +95,19 @@ public sealed class HttpExecutor
 
             using var first = requestFactory();
             repeatable ??= idempotent ?? IsIdempotent(first.Method);
+            var method = first.Method.Method;
+            var host = first.RequestUri is { IsAbsoluteUri: true } absolute ? absolute.IdnHost : "(none)";
             if (first.RequestUri is { } uri)
             {
-                _urlGuard.Check(uri);
+                try
+                {
+                    _urlGuard.Check(uri);
+                }
+                catch (UrlRefusedException)
+                {
+                    DeliveryMetrics.RequestEnded(method, host, "refused", TimeSpan.Zero);
+                    throw;
+                }
             }
 
             // A request that must not be repeated is decided as if it were already on its last attempt.
@@ -104,12 +115,20 @@ public sealed class HttpExecutor
 
             using var hops = new Hops(first);
             HttpResponseMessage? response = null;
+
+            // Each attempt is counted once, when its response is released: by what it ended with (any failure named
+            // below by its cause, any other, such as a redirect loop, as an error) and how long it took, its body included
+            // and the wait before the next attempt not.
+            var began = _time.GetTimestamp();
+            var result = "error";
+            var wait = TimeSpan.Zero;
             try
             {
                 response = await SendFollowingAsync(hops, requestFactory, allowStatuses, ct).ConfigureAwait(false);
                 var request = hops.Current;
                 var status = response.StatusCode;
                 var code = (int)status;
+                result = DeliveryMetrics.StatusClass(code);
 
                 if (response.IsSuccessStatusCode || (allowStatuses?.Contains(code) ?? false))
                 {
@@ -124,23 +143,33 @@ public sealed class HttpExecutor
                     throw new OsduStatusException(code, $"HTTP {code} {status} from {request.Method} {Describe(request.RequestUri)}{CorrelationNote(response, request)}: {preview}", decision.RetryAfter);
                 }
 
-                await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
+                DeliveryMetrics.RequestRetried(method, host, code.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                wait = decision.Delay;
+            }
+            catch (UrlRefusedException)
+            {
+                // A redirect the guard refused.
+                result = "refused";
+                throw;
             }
             catch (HttpRequestException ex) when (Refusal(ex) is { } refused)
             {
                 // The connection would have opened to an address the deployment does not reach: a verdict on the URL,
                 // which no retry changes.
+                result = "refused";
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(refused);
             }
             catch (HttpRequestException ex)
             {
+                result = "transport";
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
                     throw new DeliveryException($"HTTP transport failure calling {hops.Current.Method} {Describe(hops.Current.RequestUri)}{CorrelationNote(null, hops.Current)}: {ex.Message}", ex);
                 }
 
-                await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
+                DeliveryMetrics.RequestRetried(method, host, result);
+                wait = decision.Delay;
             }
             catch (IOException ex) when (!ct.IsCancellationRequested)
             {
@@ -148,29 +177,43 @@ public sealed class HttpExecutor
                 // IOException because the send uses ResponseHeadersRead. Treat it as the transient transport failure
                 // it is and retry from the factory. The response-size cap throws DeliveryException, so an oversized
                 // body is still permanent.
+                result = "transport";
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
                     throw new DeliveryException($"HTTP transport failure reading the response from {Describe(hops.Current.RequestUri)}: {ex.Message}", ex);
                 }
 
-                await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
+                DeliveryMetrics.RequestRetried(method, host, result);
+                wait = decision.Delay;
             }
             catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
             {
                 // A per-request timeout (not caller cancellation): treat as a transient transport failure.
+                result = "timeout";
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
                     throw new DeliveryException($"HTTP request to {Describe(hops.Current.RequestUri)} timed out after {_client.Timeout.TotalSeconds:0}s.", ex);
                 }
 
-                await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
+                DeliveryMetrics.RequestRetried(method, host, result);
+                wait = decision.Delay;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // The caller stopped waiting, even after the status arrived.
+                result = "cancelled";
+                throw;
             }
             finally
             {
+                // Released before the wait, so an attempt that is repeated does not hold its connection through the backoff.
                 response?.Dispose();
+                DeliveryMetrics.RequestEnded(method, host, result, _time.GetElapsedTime(began));
             }
+
+            await Task.Delay(wait, _time, ct).ConfigureAwait(false);
         }
     }
 

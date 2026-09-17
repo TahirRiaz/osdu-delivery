@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
+using SqlFlow.Delivery.Diagnostics;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -858,8 +859,14 @@ public sealed class DeliveryWorker
             RecordStatus.Held => new WorkerSummary(1, 0, 0, 1, 0),
             _ => new WorkerSummary(1, 0, 0, 0, 1),
         };
+
+        // Telemetry for watching the fleet; the counts the product shows are read from the ledger.
+        DeliveryMetrics.RecordSettled(_flow.Label, RouteOf(_protocol.Kind), evt.Kind["record.".Length..], completed - started);
         return (completion, evt, summary);
     }
+
+    /// <summary>The route a protocol is, as flows name it, or the protocol's own name for one no flow can name.</summary>
+    private static string RouteOf(DeliveryProtocol kind) => Enum.IsDefined(kind) ? RouteChecks.Name(kind) : kind.ToString();
 
     /// <summary>
     /// The attempt's result: the correlation id its OSDU requests carried, every step (including the ones resumed from an

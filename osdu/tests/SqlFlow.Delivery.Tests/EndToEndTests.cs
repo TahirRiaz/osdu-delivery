@@ -81,6 +81,26 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Every_record_a_run_settles_is_counted_in_the_delivery_metrics()
+    {
+        using var capture = new MetricsCapture();
+        var name = $"metrics-{Guid.NewGuid():N}";
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables, f => f with { Name = name });
+        using (runtime)
+        {
+            var (summary, _) = await RunAsync(runtime, protocol, ledger);
+            Assert.Equal(3, summary.Delivered);
+
+            var counted = capture.Of("osdu_delivery.records", "flow", runtime.Flow.Label);
+            Assert.Equal(3, counted.Count);
+            Assert.All(counted, c => Assert.Equal("delivered", c.Tags["outcome"]));
+            Assert.All(counted, c => Assert.Equal(Engine.RouteChecks.Name(protocol.Kind), c.Tags["route"]));
+            Assert.Equal(3, capture.Of("osdu_delivery.record.duration", "flow", runtime.Flow.Label).Count);
+        }
+    }
+
+    [Fact]
     public async Task A_run_delivers_then_the_next_one_skips_a_scope_whose_rows_did_not_change()
     {
         var tables = await EstateAsync();
