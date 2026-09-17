@@ -95,6 +95,56 @@ internal static partial class WellboreDdmsRules
     }
 
     /// <summary>
+    /// Why the chunks of a session cannot carry this record's reference curve, or null when they can. A session's
+    /// commit merges its chunks and then checks that the collection's reference curve covers every row of the result,
+    /// and a curve the chunks carry as the frame's row index is not a column of that result: the commit answers
+    /// <c>422 Bulk error: reference curve '&lt;name&gt;' do not cover the entire bulk, &lt;n&gt; values are missing</c>
+    /// after every chunk has been accepted. A whole-bulk write of the same file is taken, so the rule is the session's
+    /// alone. Seen live on ADME 0.29 (osdu/docs/osdu-testing.md, LIVE-1 check 8), not in the pinned contract.
+    /// </summary>
+    /// <param name="columns">Which column rule the collection applies, which also says where its reference curve is named.</param>
+    /// <param name="document">The record as it will be written.</param>
+    /// <param name="labels">The bulk columns of all the session's chunks, a stored row index excluded.</param>
+    public static string? SessionReferenceProblem(DdmsBulkColumns columns, JsonObject document, IReadOnlyCollection<string> labels)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(labels);
+        if (columns == DdmsBulkColumns.Unchecked || document["data"] is not JsonObject data || data.Count == 0 || labels.Count == 0)
+        {
+            return null;
+        }
+
+        var reference = columns switch
+        {
+            DdmsBulkColumns.CurveIds or DdmsBulkColumns.CurveIdsAndWidths => Text(data["ReferenceCurveID"]) ?? Text(data["PrimaryReferenceCurveID"]),
+            DdmsBulkColumns.TrajectoryStations => StationReference(data),
+            _ => null,
+        };
+
+        if (reference is null || CurveColumns(labels).ContainsKey(reference))
+        {
+            return null;
+        }
+
+        return $"the session's chunks carry the column(s) {List(CurveColumns(labels).Keys)} and not the reference curve '{reference}'; "
+            + "the Wellbore DDMS takes every chunk and then refuses the commit, because a session's reference curve has to be one of the bulk's columns "
+            + "(a chunk that carries it as the row index of a dataframe does not count). Write the reference curve as a column of each chunk, "
+            + "and let the row labels continue from one chunk to the next";
+    }
+
+    /// <summary>
+    /// The station property a trajectory's bulk is indexed by: the first whose type is measured depth
+    /// (INTEGRATION.md section 4.3, the service's <c>trajectory_consistency</c>).
+    /// </summary>
+    private static string? StationReference(JsonObject data)
+        => (data[StationProperties] as JsonArray ?? [])
+            .OfType<JsonObject>()
+            .Where(station => Text(station["TrajectoryStationPropertyTypeID"]) is { } type
+                && type.Contains(":reference-data--TrajectoryStationPropertyType:MD:", StringComparison.Ordinal))
+            .Select(station => Text(station["Name"]))
+            .FirstOrDefault(name => name is not null);
+
+    /// <summary>
     /// The curves bulk columns belong to, with how many columns each has: a label <c>NAME[...]</c> is one column of the
     /// array curve <c>NAME</c>, any other non-empty label a curve of its own (the service's
     /// <c>_get_curve_name_and_column_count</c>).

@@ -122,6 +122,39 @@ public sealed class WellboreDdmsRulesTests
         Assert.Null(WellboreDdmsRules.ColumnsProblem(DdmsBulkColumns.Unchecked, record, ["anything"]));
     }
 
+    [Fact]
+    public void A_session_has_to_carry_its_reference_curve_as_a_column()
+    {
+        // Seen live on ADME 0.29: every chunk of a session whose depth is the dataframe's index is accepted, and the
+        // commit then answers "reference curve 'MD' do not cover the entire bulk" (INTEGRATION.md section 3.3).
+        var log = Data("""{"Curves":[{"CurveID":"MD"},{"CurveID":"GR"}],"ReferenceCurveID":"MD"}""");
+        Assert.Null(WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.CurveIdsAndWidths, log, ["MD", "GR"]));
+
+        var held = WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.CurveIdsAndWidths, log, ["GR"]);
+        Assert.Contains("the session's chunks carry the column(s) GR and not the reference curve 'MD'", held, StringComparison.Ordinal);
+        Assert.Contains("carries it as the row index of a dataframe does not count", held, StringComparison.Ordinal);
+
+        // An array curve's columns are that curve, so a reference written as one counts.
+        var array = Data("""{"Curves":[{"CurveID":"MD","NumberOfColumns":2},{"CurveID":"GR"}],"ReferenceCurveID":"MD"}""");
+        Assert.Null(WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.CurveIdsAndWidths, array, ["MD[0]", "MD[1]", "GR"]));
+
+        // A PPFGDataset names its reference the other way round; a pressure test has none to check.
+        var ppfg = Data("""{"Curves":[{"CurveID":"TVD"}],"PrimaryReferenceCurveID":"TVD"}""");
+        Assert.Null(WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.CurveIds, ppfg, ["TVD"]));
+        Assert.Contains("not the reference curve 'TVD'", WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.CurveIds, ppfg, ["GR"]), StringComparison.Ordinal);
+        Assert.Null(WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.CurveIds, Data("""{"Curves":[{"CurveID":"GR"}]}"""), ["GR"]));
+
+        // A trajectory's reference is the station whose type is measured depth.
+        var trajectory = Data("""{"AvailableTrajectoryStationProperties":[{"Name":"MD","TrajectoryStationPropertyTypeID":"osdu:reference-data--TrajectoryStationPropertyType:MD:"},{"Name":"TVD","TrajectoryStationPropertyTypeID":"osdu:reference-data--TrajectoryStationPropertyType:TVD:"}]}""");
+        Assert.Null(WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.TrajectoryStations, trajectory, ["MD", "TVD"]));
+        Assert.Contains("not the reference curve 'MD'", WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.TrajectoryStations, trajectory, ["TVD"]), StringComparison.Ordinal);
+
+        // Nothing to check: no columns read, no rule in force, no data.
+        Assert.Null(WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.CurveIdsAndWidths, log, []));
+        Assert.Null(WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.Unchecked, log, ["GR"]));
+        Assert.Null(WellboreDdmsRules.SessionReferenceProblem(DdmsBulkColumns.CurveIds, Data("{}"), ["GR"]));
+    }
+
     [Theory]
     [InlineData("2", true)]
     [InlineData("2.0", true)]

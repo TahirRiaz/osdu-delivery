@@ -445,6 +445,17 @@ Commit or abandon (call 5): `PATCH /ddms/v3/{c}/{record_id}/sessions/{session_id
   within the session"; abandon leaves the record unchanged; "bulk data consistency check will be run when committing
   bulk data" [C].
 
+**The reference curve of a session has to be a bulk column (observed live, not in the contract).** Each chunk of a
+session may carry the reference curve as its dataframe's row index, and every chunk is then accepted with a 200 whose
+`indexStart` and `indexEnd` are that curve's values; the commit answers `422 {"detail": "Bulk error: reference curve
+'<name>' do not cover the entire bulk, <n> values are missing."}`, where `<n>` is every row of the session. The same
+chunks, with the reference curve written as a column and the rows labelled by a range that continues from one chunk to
+the next, commit with a 200. A whole-bulk write (call 2) of a file whose index is the reference curve is accepted and
+reads back correctly, so the rule belongs to the session path alone. Seen on ADME 0.29 (partition `dev`) on
+2026-09-17 with two chunks of five and four rows; the worker raises it, so neither the contract nor project 98 carries
+it. The route holds a record whose session chunks do not carry the reference curve as a column
+[OD osdu/src/SqlFlow.Delivery/Engine/Protocols/WellboreDdmsRules.cs, `SessionReferenceProblem`].
+
 Commit, in code [98 app/routers/bulk/bulk_routes.py:298-350; 98 app/bulk_persistence/sessions_storage.py:276-311]:
 
 1. The session moves to `committing`.
@@ -987,7 +998,8 @@ differences that matter to a route serving both:
 
 - The bulk worker is a separate service. It decides parsing, index rules, size limits, how `update` and `overwrite`
   sessions merge chunks, and what a `describe` read returns when Parquet is negotiated. None of it is in the pinned
-  contract or in project 98, and the project and commit that hold it are not established here.
+  contract or in project 98, and the project and commit that hold it are not established here. One of its rules is
+  established by observation (section 3.3, the reference curve of a session), the rest are not.
 - Where session expiry is enforced is not visible in project 98 (section 3.3).
 - Storage calls go through the generated `odes_storage` client (package `osdu-data-ecosystem-storage==0.29.0`),
   wrapped by the service's own middleware [98 pyproject.toml:49; 98 `app/clients/__init__.py`:60-70]. The client
