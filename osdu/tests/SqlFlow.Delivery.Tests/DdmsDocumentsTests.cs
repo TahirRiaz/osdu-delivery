@@ -103,6 +103,60 @@ public sealed class DdmsDocumentsTests
     }
 
     [Fact]
+    public void A_flow_declares_a_well_delivery_ddms_with_its_deployment_and_a_rafs_ddms_with_its_content()
+    {
+        var flow = _loader.ParseFlow(Single("""
+              ddms:
+                welldelivery:
+                  root: /api/well-delivery
+                  shape: wellDeliveryV1
+                  mirror: false
+                  provider: ibm
+                  concurrency: 2
+                  collections:
+                    master-data--Well:
+                    master-data--WellboreSegment: {}
+                    master-data--Rig: { path: rig }
+                rafs:
+                  root: /api/rafs-ddms/
+                  shape: rafsV2
+                  collections:
+                    work-product-component--SamplesAnalysis: { path: samplesanalysis, bulk: true, typedContent: true }
+                    work-product-component--DepthShift: { path: depthshift, bulk: true }
+                    master-data--Sample: { path: masterdata }
+            """, options: ", contentSchemaVersion: '1.1'"), "logs.yaml");
+
+        var wd = flow.Target.Ddms[0];
+        Assert.Equal(DdmsShape.WellDeliveryV1, wd.Shape);
+        Assert.True(wd.DeclaresCollections);
+        Assert.Equal(new WellDeliverySettings { Mirror = false, Provider = DdmsProvider.Ibm, Concurrency = 2 }, wd.WellDelivery);
+        Assert.Equal(
+            ["master-data--Well:well", "master-data--WellboreSegment:wellboresegment", "master-data--Rig:rig"],
+            wd.Collections.Select(c => $"{c.EntityType}:{c.Segment}"));
+        Assert.All(wd.Collections, c => Assert.False(c.Bulk));
+
+        var rafs = flow.Target.Ddms[1];
+        Assert.Equal("/api/rafs-ddms", rafs.Root);
+        Assert.Null(rafs.WellDelivery);
+        Assert.Equal(
+            ["work-product-component--SamplesAnalysis:samplesanalysis:True:True", "work-product-component--DepthShift:depthshift:True:False", "master-data--Sample:masterdata:False:False"],
+            rafs.Collections.Select(c => $"{c.EntityType}:{c.Segment}:{c.Bulk}:{c.TypedContent}"));
+        Assert.Equal("1.1", flow.Target.ProtocolOptions.ContentSchemaVersion);
+
+        // Without collections or settings, each serves its shape's collections, and a Well Delivery deployment keeps a Storage copy.
+        var defaults = _loader.ParseFlow(Single("""
+              ddms:
+                welldelivery: { root: /api/well-delivery, shape: wellDeliveryV1 }
+                rafs: { root: /api/rafs-ddms, shape: rafsV2 }
+            """), "logs.yaml");
+        Assert.Same(DdmsCatalog.WellDeliveryCollections, defaults.Target.Ddms[0].Collections);
+        Assert.False(defaults.Target.Ddms[0].DeclaresCollections);
+        Assert.Equal(new WellDeliverySettings(), defaults.Target.Ddms[0].WellDelivery);
+        Assert.Same(DdmsCatalog.RafsCollections, defaults.Target.Ddms[1].Collections);
+        Assert.Equal(ProtocolOptions.DefaultContentSchemaVersion, defaults.Target.ProtocolOptions.ContentSchemaVersion);
+    }
+
+    [Fact]
     public void A_ddms_named_by_its_registration_leaves_what_it_does_not_declare_to_the_register_service()
     {
         var flow = _loader.ParseFlow(Single("""
@@ -180,6 +234,17 @@ public sealed class DdmsDocumentsTests
         { "  ddms:\n    a: { register: wellbore }", "ddms", ", registerPath: /api/register/v1/ddms", "target.protocolOptions.registerPath '/api/register/v1/ddms' must be a path under the endpoint starting with '/', or an absolute http(s) URL, with {id} where the registration's id goes" },
         { "  ddms:\n    a: { register: wellbore }", "ddms", ", registerPath: 'register/{id}'", "target.protocolOptions.registerPath 'register/{id}' must be a path" },
         { "  ddms:\n    a: { rooot: /wdms }", "ddms", "", "invalid YAML" },
+        { "  ddms:\n    wd: { root: /wd, shape: wellDeliveryV1, register: wd-1 }", "ddms", "", "target.ddms.wd.register reads a DDMS's collections from its Register service registration, which the route reads for DDMSs of the wellboreDdmsV3 shape" },
+        { "  ddms:\n    r: { root: /r, shape: rafsV2, mirror: false, concurrency: 2 }", "ddms", "", "target.ddms.r.mirror, target.ddms.r.concurrency describe a Well Delivery DDMS deployment, and target.ddms.r has the rafsV2 shape" },
+        { "  ddms:\n    wd: { root: /wd, shape: wellDeliveryV1, provider: anthos }", "ddms", "", "target.ddms.wd.provider 'anthos' is not a provider the Well Delivery DDMS runs on: azure, aws, gc or ibm" },
+        { "  ddms:\n    wd: { root: /wd, shape: wellDeliveryV1, provider: moon }", "ddms", "", "'target.ddms.wd.provider' value 'moon' is not one of azure, aws, gc, anthos, ibm" },
+        { "  ddms:\n    wd: { root: /wd, shape: wellDeliveryV1, concurrency: 0 }", "ddms", "", "target.ddms.wd.concurrency must be between 1 and 16" },
+        { "  ddms:\n    wd: { root: /wd, shape: wellDeliveryV1, collections: { master-data--Well: { path: wells } } }", "ddms", "", "target.ddms.wd.collections.master-data--Well.path 'wells' is not the path the Well Delivery DDMS serves master-data--Well under" },
+        { "  ddms:\n    wd: { root: /wd, shape: wellDeliveryV1, collections: { work-product-component--WellLog: { bulk: true } } }", "ddms", "", "target.ddms.wd.collections.work-product-component--WellLog describes bulk data, and the Well Delivery DDMS keeps records alone" },
+        { "  ddms:\n    petro: { root: /petro, collections: { master-data--Well: { path: wells, bulk: true, typedContent: true } } }", "ddms", "", "target.ddms.petro.collections.master-data--Well.typedContent says a RAFS collection holds several content types, and target.ddms.petro has the wellboreDdmsV3 shape" },
+        { "  ddms:\n    r: { root: /r, shape: rafsV2, collections: { master-data--Sample: { path: masterdata, typedContent: true } } }", "ddms", "", "target.ddms.r.collections.master-data--Sample.typedContent says what content the collection holds, and it holds records alone (bulk is false)" },
+        { "  ddms:\n    r: { root: /r, shape: rafsV2, collections: { work-product-component--FluidModel: { path: fluidmodel, bulk: true, columns: curveIds } } }", "ddms", "", "target.ddms.r.collections.work-product-component--FluidModel.columns names the curve and station checks the Wellbore DDMS applies to its bulk data, and target.ddms.r has the rafsV2 shape" },
+        { "  ddms:\n    r: { root: /r, shape: rafsV2 }", "ddms", ", contentSchemaVersion: v1", "target.protocolOptions.contentSchemaVersion 'v1' is not a content schema version such as 1.0.0" },
     };
 
     [Theory]
@@ -221,6 +286,7 @@ public sealed class DdmsDocumentsTests
     [InlineData("  ddms:\n    wellbore:\n      collections: { work-product-component--WellLog: { path: welllogs, bulk: true } }", "bulk: { root: curves, locationColumn: folder, hashColumn: curve_hash }", "target.ddms.wellbore.root is required. The source's endpoint is the platform its interfaces reach every service under")]
     [InlineData("", "bulk: { root: curves, locationColumn: folder, hashColumn: curve_hash }", "declare it under target.ddms with its root, or set target.protocolOptions.ddmsRoot or interfaces.logs.protocolOptions.ddmsRoot")]
     [InlineData("  ddms:\n    wellbore: { root: /api/os-wellbore-ddms }", "route: storage", "target.ddms declares the DDMSs the source's interfaces are delivered to, and no interface is delivered through one")]
+    [InlineData("  ddms:\n    welldelivery: { shape: wellDeliveryV1 }", "route: ddms", "target.ddms.welldelivery.root is required. The source's endpoint is the platform its interfaces reach every service under, so say where the DDMS is under it (a DDMS of the wellDeliveryV1 shape is usually deployed under /api/well-delivery).")]
     public void A_source_that_does_not_say_where_its_ddms_is_or_declares_one_it_does_not_use_is_refused(string ddms, string logs, string expected)
     {
         var refused = Assert.Throws<FlowValidationException>(() => _loader.ParseSource(Source(ddms, logs), "estate.yaml"));

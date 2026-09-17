@@ -221,7 +221,8 @@ public static partial class DdmsDiscovery
             DdmsShape.WellboreDdmsV3 when WellboreDdmsV3Retrieval().Match(retrieval) is { Success: true } match => match.Groups["segment"].Value,
             DdmsShape.WellboreDdmsV3 => throw new DeliveryException(
                 $"{at} retrieves records from {retrieval}, which is not a collection of a {shape} DDMS ({DdmsCatalog.WellboreDdmsV3Prefix}<collection>/{{id}})."),
-            _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "not a DDMS shape"),
+            _ => throw new DeliveryException(
+                $"{at} describes a DDMS of the {DdmsCatalog.ShapeName(shape)} shape, whose collections the route does not read from a registration; declare them under the DDMS."),
         };
     }
 

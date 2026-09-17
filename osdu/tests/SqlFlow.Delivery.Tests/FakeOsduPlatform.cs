@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Web;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Storage;
 
 namespace SqlFlow.Delivery.Tests;
 
@@ -22,6 +23,12 @@ public sealed class FakeOsduPlatform : HttpMessageHandler
 
     /// <summary>Where the Wellbore DDMS sits under the platform, as the flows name it with ddmsRoot.</summary>
     public const string DdmsRoot = "/api/os-wellbore-ddms";
+
+    /// <summary>Where the Well Delivery DDMS sits under the platform (its charts' ingress prefix).</summary>
+    public const string WellDeliveryRoot = "/api/well-delivery";
+
+    /// <summary>Where the Rock and Fluid Sample DDMS sits under the platform (the prefix its contract is generated with).</summary>
+    public const string RafsRoot = "/api/rafs-ddms";
 
     /// <summary>How the Dataset service signs a location, per provider (osdu/specs/core/INTEGRATION.md section 2.5.1).</summary>
     public enum Staging
@@ -111,6 +118,35 @@ public sealed class FakeOsduPlatform : HttpMessageHandler
 
     /// <summary>The DDMS refuses a record write whose bulk link differs from the one it holds (wellbore-ddms brief section 4).</summary>
     public int RefusedLinks { get; private set; }
+
+    /// <summary>The Well Delivery DDMS's store, by <c>type|entityId|version</c>, each entry the entity as written and whether it is deleted.</summary>
+    public SortedDictionary<string, (JsonObject Entity, bool Deleted)> WellDeliveryEntities { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The references the Well Delivery DDMS indexed, by the entity key that holds them (only those ending in a version).</summary>
+    public Dictionary<string, List<string>> WellDeliveryIndex { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Whether the Well Delivery deployment copies each entity into storage (<c>app.entity.storage</c>).</summary>
+    public bool WellDeliveryMirror { get; set; } = true;
+
+    /// <summary>Whether the Well Delivery store is IBM's Cloudant, which refuses a second save of a key with a 500.</summary>
+    public bool WellDeliveryCloudant { get; set; }
+
+    /// <summary>A server error the Well Delivery DDMS answers the next write with, after it stored the entity.</summary>
+    public bool WellDeliveryFailsAfterWrite { get; set; }
+
+    /// <summary>Whether RAFS stores content as blobs (<c>USE_BLOB_STORAGE</c>) rather than registering datasets.</summary>
+    public bool RafsBlobMode { get; set; }
+
+    /// <summary>The content RAFS holds, by <c>record id|content type</c>: the bytes, the media type and the schema version.</summary>
+    public Dictionary<string, (byte[] Bytes, string MediaType, string SchemaVersion)> RafsContent { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The SamplesAnalysis content types RAFS serves, with their versions (a subset of the brief's section 3.3).</summary>
+    public Dictionary<string, string[]> RafsAnalysisTypes { get; } = new(StringComparer.Ordinal)
+    {
+        ["nmr"] = ["1.0.0"],
+        ["capillarypressure"] = ["1.0.0", "1.1.0"],
+        ["routinecoreanalysis"] = ["1.0.0"],
+    };
 
     public void Register(string workflow, Script? script = null) => Workflows[workflow] = script ?? new Script();
 
@@ -205,6 +241,16 @@ public sealed class FakeOsduPlatform : HttpMessageHandler
         if (path.StartsWith(DdmsRoot + "/", StringComparison.Ordinal))
         {
             return Ddms(method, path[DdmsRoot.Length..], bytes, body);
+        }
+
+        if (path.StartsWith(WellDeliveryRoot + "/", StringComparison.Ordinal))
+        {
+            return WellDelivery(method, path[WellDeliveryRoot.Length..], body, request);
+        }
+
+        if (path.StartsWith(RafsRoot + "/", StringComparison.Ordinal))
+        {
+            return Rafs(method, path[RafsRoot.Length..], uri, bytes, body, request);
         }
 
         if (path == "/api/search/v2/query_with_cursor" || path == "/api/search/v2/query")
@@ -675,6 +721,472 @@ public sealed class FakeOsduPlatform : HttpMessageHandler
 
         return Error(HttpStatusCode.NotFound, "no DDMS route " + path);
     }
+
+    /// <summary>
+    /// The Well Delivery DDMS as its brief reads the service (osdu/specs/well-delivery-ddms/INTEGRATION.md sections 2 to 5):
+    /// one entity per PUT under the path of its type, the checks it runs before it writes, the version it keys the entity
+    /// by, the references it indexes (only those ending in a version), its copy into storage, and the reads and deletes
+    /// that name an entity by its entity id, the DELETEs among them only with a JSON content type.
+    /// </summary>
+    private HttpResponseMessage WellDelivery(string method, string path, string? body, HttpRequestMessage request)
+    {
+        if (path == "/info" && method == "GET")
+        {
+            return Json(HttpStatusCode.OK, new JsonObject { ["groupId"] = "org.opengroup.osdu", ["artifactId"] = "well-delivery", ["version"] = "0.29.0-SNAPSHOT" });
+        }
+
+        const string prefix = "/storage/v1/";
+        if (!path.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return WellDeliveryError(HttpStatusCode.NotFound, "no Well Delivery route " + path);
+        }
+
+        var parts = path[prefix.Length..].Split('/').Select(Uri.UnescapeDataString).ToArray();
+        var type = parts[0].ToLowerInvariant();
+        var json = request.Content?.Headers.ContentType?.MediaType == "application/json";
+        if (parts.Length == 1 && method == "PUT")
+        {
+            return json ? WellDeliveryWrite(parts[0], body, request) : new HttpResponseMessage(HttpStatusCode.UnsupportedMediaType);
+        }
+
+        if (parts.Length < 2)
+        {
+            return WellDeliveryError(HttpStatusCode.NotFound, "no Well Delivery route " + path);
+        }
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(parts[0], "^[0-9a-zA-Z-]*$"))
+        {
+            return WellDeliveryError(HttpStatusCode.BadRequest, $"Invalid entity type: {parts[0]}");
+        }
+
+        var purge = parts.Length == 2 && parts[1].EndsWith(":purge", StringComparison.Ordinal);
+        var entityId = purge ? parts[1][..^":purge".Length] : parts[1];
+        var versions = WellDeliveryEntities.Where(e => e.Key.StartsWith($"{type}|{entityId}|", StringComparison.Ordinal)).ToList();
+        if (method == "GET")
+        {
+            if (!WellDeliveryEntities.Keys.Any(k => k.StartsWith(type + "|", StringComparison.Ordinal)))
+            {
+                return WellDeliveryError(HttpStatusCode.BadRequest, $"Collection {parts[0]}Container is not existed.");
+            }
+
+            var live = versions.Where(v => !v.Value.Deleted).ToList();
+            var found = parts.Length == 3 ? live.FirstOrDefault(v => v.Key.EndsWith("|" + parts[2], StringComparison.Ordinal)) : live.LastOrDefault();
+            return found.Key is null
+                ? WellDeliveryError(HttpStatusCode.NotFound, $"Could not find entity with id: {entityId}")
+                : Json(HttpStatusCode.OK, found.Value.Entity.DeepClone());
+        }
+
+        if (method == "DELETE" && parts.Length == 2)
+        {
+            if (!json)
+            {
+                return new HttpResponseMessage(HttpStatusCode.UnsupportedMediaType);
+            }
+
+            if (versions.Count == 0)
+            {
+                return WellDeliveryError(HttpStatusCode.NotFound, $"Could not find entity with id: {entityId}");
+            }
+
+            foreach (var (key, entry) in versions)
+            {
+                if (purge)
+                {
+                    WellDeliveryEntities.Remove(key);
+                    WellDeliveryIndex.Remove(key);
+                }
+                else
+                {
+                    WellDeliveryEntities[key] = (entry.Entity, true);
+                }
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
+
+        return WellDeliveryError(HttpStatusCode.NotFound, "no Well Delivery route " + path);
+    }
+
+    private HttpResponseMessage WellDeliveryWrite(string pathType, string? body, HttpRequestMessage request)
+    {
+        if (JsonNode.Parse(body!) is not JsonObject entity || entity["id"] is not JsonValue idValue || idValue.GetValue<string>() is not { Length: > 0 } id)
+        {
+            return WellDeliveryError(HttpStatusCode.BadRequest, "Entity Id is empty.");
+        }
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(id, @"^[\w\-\.]+:[0-9a-zA-Z\-]+\-\-[\w\-]*:[\w\-\.\:\%]+$"))
+        {
+            return WellDeliveryError(HttpStatusCode.BadRequest, "Entity Id is invalid.");
+        }
+
+        var segments = id.Split(':');
+        var idType = segments[1][(segments[1].IndexOf("--", StringComparison.Ordinal) + 2)..].ToLowerInvariant();
+        var entityId = string.Join(':', segments.Skip(2));
+        if (!string.Equals(idType, pathType, StringComparison.OrdinalIgnoreCase))
+        {
+            return WellDeliveryError(HttpStatusCode.BadRequest, $"Entity type in API({pathType}) and body({idType}) are not same.");
+        }
+
+        if (entity["kind"] is null)
+        {
+            return WellDeliveryError(HttpStatusCode.BadRequest, $"The Kind of Entity {id} is empty.");
+        }
+
+        long version;
+        if (entity["version"] is JsonValue sent)
+        {
+            // Jackson's isLong: a value that fits in 32 bits is an int node, and refused.
+            if (!sent.TryGetValue(out version) || version is >= int.MinValue and <= int.MaxValue)
+            {
+                return WellDeliveryError(HttpStatusCode.BadRequest, $"The version of Entity {id} is invalid.");
+            }
+        }
+        else
+        {
+            version = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
+
+        if (entity["legal"]?["legaltags"] is not JsonArray { Count: > 0 } || entity["legal"]?["otherRelevantDataCountries"] is not JsonArray { Count: > 0 })
+        {
+            return WellDeliveryError(HttpStatusCode.BadRequest, "Legal Tags are empty");
+        }
+
+        if (entity["acl"]?["owners"] is not JsonArray { Count: > 0 } owners || entity["acl"]?["viewers"] is not JsonArray { Count: > 0 } viewers)
+        {
+            return WellDeliveryError(HttpStatusCode.BadRequest, "ACL are empty");
+        }
+
+        if (owners.Concat(viewers).Any(g => !g!.GetValue<string>().Contains('@', StringComparison.Ordinal)))
+        {
+            return WellDeliveryError(HttpStatusCode.InternalServerError, "Unknown error happened when validating ACL");
+        }
+
+        if (entity["data"] is not JsonObject data)
+        {
+            return WellDeliveryError(HttpStatusCode.BadRequest, "Entity data is empty");
+        }
+
+        if (data["ExistenceKind"] is not JsonValue existence)
+        {
+            return WellDeliveryError(HttpStatusCode.BadRequest, "ExistenceKind is empty.");
+        }
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(existence.GetValue<string>(), @"^[\w\-\.]+:[0-9a-zA-Z\-]+\-\-[\w\-]*:[\w\-\.\:\%]+:[0-9]*$"))
+        {
+            return WellDeliveryError(HttpStatusCode.BadRequest, "ExistenceKind is not reference data format.");
+        }
+
+        var key = $"{idType}|{entityId}|{version.ToString(CultureInfo.InvariantCulture)}";
+        if (WellDeliveryCloudant && WellDeliveryEntities.ContainsKey(key))
+        {
+            return WellDeliveryError(HttpStatusCode.InternalServerError, "An unknown error has occurred.");
+        }
+
+        var stored = new JsonObject
+        {
+            ["id"] = id,
+            ["kind"] = entity["kind"]!.DeepClone(),
+            ["version"] = version,
+            ["acl"] = entity["acl"]!.DeepClone(),
+            ["legal"] = entity["legal"]!.DeepClone(),
+            ["valid"] = data["SchemaInvalid"] is null,
+            ["data"] = data.DeepClone(),
+        };
+        WellDeliveryEntities[key] = (stored, false);
+        WellDeliveryIndex[key] = WellDeliveryReferences(data, idType);
+
+        if (WellDeliveryMirror && version > 20000)
+        {
+            var partition = request.Headers.TryGetValues("data-partition-id", out var values) ? values.Single() : segments[0];
+            var copy = (JsonObject)entity.DeepClone();
+            copy["id"] = id.Replace(segments[0], partition, StringComparison.Ordinal);
+            copy.Remove("version");
+            copy["data"]!["origId"] = id;
+            copy["data"]!["entityType"] = idType;
+            copy["data"]!["entityId"] = entityId;
+            copy["data"]!["ddmsid"] = "well-delivery-ddms-1";
+            Put(copy);
+        }
+
+        if (WellDeliveryFailsAfterWrite)
+        {
+            WellDeliveryFailsAfterWrite = false;
+            return WellDeliveryError(HttpStatusCode.InternalServerError, "An unknown error has occurred.");
+        }
+
+        var answer = (JsonObject)stored.DeepClone();
+        if (data["SchemaInvalid"] is not null)
+        {
+            answer["errors"] = new JsonArray("$.data.SchemaInvalid: is not defined in the schema and the schema does not allow additional properties");
+        }
+
+        return Json(HttpStatusCode.Created, answer);
+    }
+
+    /// <summary>The references the Well Delivery DDMS indexes: strings of data ending in a version, not of the entity's own type.</summary>
+    private static List<string> WellDeliveryReferences(JsonObject data, string ownType)
+    {
+        var found = new List<string>();
+        void Walk(JsonNode? node, bool inArray)
+        {
+            switch (node)
+            {
+                case JsonObject obj:
+                    foreach (var (_, value) in obj)
+                    {
+                        Walk(value, false);
+                    }
+
+                    break;
+                case JsonArray array when !inArray:
+                    foreach (var item in array)
+                    {
+                        Walk(item, true);
+                    }
+
+                    break;
+                case JsonValue value when value.TryGetValue(out string? text)
+                    && System.Text.RegularExpressions.Regex.Match(text, @"^[\w\-\.]+:[0-9a-zA-Z\-]+\-\-(?<type>[\w\-]*):[\w\-\.\:\%]+:[0-9]+$") is { Success: true } match
+                    && !string.Equals(match.Groups["type"].Value, ownType, StringComparison.OrdinalIgnoreCase):
+                    found.Add(text);
+                    break;
+            }
+        }
+
+        Walk(data, false);
+        return found;
+    }
+
+    private static HttpResponseMessage WellDeliveryError(HttpStatusCode status, string message)
+        => Json(status, new JsonObject { ["message"] = message });
+
+    /// <summary>The entity types each RAFS v2 collection accepts (osdu/specs/rafs-ddms/INTEGRATION.md section 2.1).</summary>
+    private static readonly Dictionary<string, string[]> RafsKinds = new(StringComparer.Ordinal)
+    {
+        ["masterdata"] = ["master-data--GenericFacility", "master-data--GenericSite", "master-data--Sample", "master-data--SampleAcquisitionJob", "master-data--SampleChainOfCustodyEvent", "master-data--SampleContainer"],
+        ["samplesanalysesreport"] = ["work-product-component--SamplesAnalysesReport"],
+        ["samplesanalysis"] = ["work-product-component--SamplesAnalysis"],
+        ["saturationfunctionset"] = ["work-product-component--SaturationFunctionSet"],
+        ["reservoirsimulationrockphysicsmodel"] = ["work-product-component--ReservoirSimulationRockPhysicsModel"],
+        ["fluidmodel"] = ["work-product-component--FluidModel"],
+        ["depthshift"] = ["work-product-component--DepthShift"],
+    };
+
+    /// <summary>
+    /// RAFS v2 as its brief reads the service (osdu/specs/rafs-ddms/INTEGRATION.md sections 2 to 5): records posted in an
+    /// array typed exactly <c>application/json</c> and written through storage, content posted per type with its schema
+    /// version and registered as a dataset (or kept as a blob), the record re-versioned with the content's URN, the type
+    /// catalogues and content schemas, reads, and the logical delete.
+    /// </summary>
+    private HttpResponseMessage Rafs(string method, string path, Uri uri, byte[] bytes, string? body, HttpRequestMessage request)
+    {
+        if (path == "/info" && method == "GET")
+        {
+            return Json(HttpStatusCode.OK, new JsonObject { ["name"] = "rafs-ddms-services", ["app_version"] = "0.2.0", ["release_version"] = "M26" });
+        }
+
+        var parts = path.StartsWith("/v2/", StringComparison.Ordinal) ? path["/v2/".Length..].Split('/').Select(Uri.UnescapeDataString).ToArray() : [];
+        if (parts.Length == 0 || !RafsKinds.TryGetValue(parts[0], out var accepted))
+        {
+            return RafsError(HttpStatusCode.NotFound, "Not Found");
+        }
+
+        var collection = parts[0];
+        var query = HttpUtility.ParseQueryString(uri.Query);
+        var typed = collection is "samplesanalysis" or "fluidmodel";
+        switch (parts.Length, method)
+        {
+            case (2, "GET") when collection == "samplesanalysis" && parts[1] == "analysistypes":
+                return Json(HttpStatusCode.OK, new JsonObject(RafsAnalysisTypes.Select(t => KeyValuePair.Create(t.Key, (JsonNode?)new JsonArray(t.Value.Select(v => (JsonNode?)v).ToArray())))));
+            case (2, "GET") when collection == "fluidmodel" && parts[1] == "fluidmodeltypes":
+                return Json(HttpStatusCode.OK, new JsonObject { ["blackoilfluidmodel"] = new JsonArray("1.0.0"), ["compositionalfluidmodel"] = new JsonArray("1.0.0") });
+            case (3, "GET") when !typed && parts[1] == "data" && parts[2] == "schema":
+                return query["content_schema_version"] == "1.0.0"
+                    ? Json(HttpStatusCode.OK, new JsonObject { ["title"] = collection, ["type"] = "object" })
+                    : RafsError(HttpStatusCode.NotFound, $"Model not found for type '{collection}', version '{query["content_schema_version"]}'. Available versions: ['1.0.0']");
+            case (1, "POST"):
+                return RafsRecords(collection, accepted, body, request);
+        }
+
+        var recordId = parts[1];
+        if (parts.Length == 2 && method == "GET")
+        {
+            return Records.TryGetValue(recordId, out var record) && !Removed.Contains(recordId)
+                ? Json(HttpStatusCode.OK, record.DeepClone())
+                : Json(HttpStatusCode.NotFound, new JsonObject { ["code"] = 404, ["reason"] = "Record not found", ["message"] = recordId });
+        }
+
+        if (parts.Length == 2 && method == "DELETE")
+        {
+            if (!Records.ContainsKey(recordId) || Removed.Contains(recordId))
+            {
+                return Json(HttpStatusCode.NotFound, new JsonObject { ["code"] = 404, ["reason"] = "Record not found", ["message"] = recordId });
+            }
+
+            Removed.Add(recordId);
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
+
+        if (parts.Length == (typed ? 4 : 3) && parts[2] == "data" && method == "POST")
+        {
+            return RafsContentWrite(collection, recordId, typed ? parts[3] : collection, query["content_schema_version"], bytes, request);
+        }
+
+        return RafsError(HttpStatusCode.NotFound, "Not Found");
+    }
+
+    private HttpResponseMessage RafsRecords(string collection, string[] accepted, string? body, HttpRequestMessage request)
+    {
+        var contentType = request.Content?.Headers.ContentType;
+        if (contentType is null)
+        {
+            return RafsError(HttpStatusCode.BadRequest, "Content-Type header is required, but was not provided");
+        }
+
+        // The route compares the raw header with the allowed values, so a charset parameter is refused.
+        if (contentType.ToString() != "application/json")
+        {
+            return RafsError(HttpStatusCode.UnsupportedMediaType, "The provided content-type is not supported.");
+        }
+
+        if (JsonNode.Parse(body!) is not JsonArray records)
+        {
+            return RafsError(HttpStatusCode.UnprocessableEntity, "body value is not a valid list");
+        }
+
+        var versions = new JsonArray();
+        var warned = new JsonArray();
+        foreach (var record in records.Select(r => r!.AsObject()))
+        {
+            var kind = record["kind"]?.GetValue<string>() ?? string.Empty;
+            var kindParts = kind.Split(':');
+            if (kindParts.Length != 4 || kindParts[1] != "wks" || !accepted.Contains(kindParts[2], StringComparer.Ordinal))
+            {
+                return RafsError(HttpStatusCode.UnprocessableEntity, $"Kind `{kind}` not supported in RAFS-DDMS. Supported kinds for this endpoint: [{string.Join(", ", accepted)}]");
+            }
+
+            if (collection == "samplesanalysis" && record["data"]?["SampleAnalysisTypeIDs"] is not JsonArray { Count: > 0 })
+            {
+                return RafsError(HttpStatusCode.UnprocessableEntity, "Missing SampleAnalysisTypeIDs in index 0");
+            }
+        }
+
+        foreach (var record in records.Select(r => r!.AsObject()))
+        {
+            var id = record["id"]!.GetValue<string>();
+            var version = Put(record);
+            versions.Add(id + ":" + version.ToString(CultureInfo.InvariantCulture));
+            if (collection == "fluidmodel" && record["data"]?["FluidModelTypeID"] is null)
+            {
+                warned.Add(id + ":" + version.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        var answer = new JsonObject { ["recordCount"] = records.Count, ["recordIdVersions"] = versions, ["skippedRecordCount"] = 0 };
+        if (warned.Count > 0)
+        {
+            answer["warning"] = "Records missing FluidModelTypeID will not be included in outputs produced by search endpoints";
+            answer["warningRecordIds"] = warned;
+        }
+
+        return Json(HttpStatusCode.OK, answer);
+    }
+
+    private HttpResponseMessage RafsContentWrite(string collection, string recordId, string contentType, string? schemaVersion, byte[] bytes, HttpRequestMessage request)
+    {
+        var media = request.Content?.Headers.ContentType?.MediaType;
+        if (media is not ("application/json" or "application/x-parquet"))
+        {
+            return RafsError(HttpStatusCode.UnsupportedMediaType, "The provided content-type is not supported.");
+        }
+
+        if (schemaVersion is null)
+        {
+            return RafsError(HttpStatusCode.NotAcceptable, "No schema version provided.");
+        }
+
+        var known = collection switch
+        {
+            "samplesanalysis" => RafsAnalysisTypes.TryGetValue(contentType, out var versions) && versions.Contains(schemaVersion),
+            "fluidmodel" => contentType is "blackoilfluidmodel" or "compositionalfluidmodel" && schemaVersion == "1.0.0",
+            _ => schemaVersion == "1.0.0",
+        };
+        if (!known)
+        {
+            return RafsError(HttpStatusCode.NotFound, $"Model not found for type '{contentType}', version '{schemaVersion}'.");
+        }
+
+        if (!Records.TryGetValue(recordId, out var parent) || Removed.Contains(recordId))
+        {
+            return Json(HttpStatusCode.NotFound, new JsonObject { ["code"] = 404, ["reason"] = "Record not found", ["message"] = recordId });
+        }
+
+        if (collection == "depthshift" && media == "application/x-parquet")
+        {
+            using var stream = new MemoryStream(bytes);
+            if (ParquetFiles.ReadShapeAsync(stream).GetAwaiter().GetResult().Rows != 1)
+            {
+                return RafsError(HttpStatusCode.UnprocessableEntity, "DepthShift content must hold exactly one row.");
+            }
+        }
+
+        var updated = (JsonObject)parent.DeepClone();
+        updated.Remove("version");
+        var data = updated["data"]!.AsObject();
+        var entries = data["DDMSDatasets"] as JsonArray ?? [];
+        data["DDMSDatasets"] = entries;
+        string urn;
+        var answer = new JsonObject();
+        if (RafsBlobMode)
+        {
+            urn = $"urn://rafs/{recordId}/{collection}/{contentType}/{schemaVersion}/{Guid.NewGuid():N}";
+            var sameSlot = $"/{collection}/{contentType}/{schemaVersion}/";
+            RemoveEntries(entries, e => e.StartsWith("urn://rafs/", StringComparison.Ordinal) && e.Contains(sameSlot, StringComparison.Ordinal));
+        }
+        else
+        {
+            var existing = entries.Select(e => e!.GetValue<string>())
+                .Where(e => e.StartsWith("urn://rafs-v2/", StringComparison.Ordinal))
+                .Select(e => e.Split('/')[^2])
+                .Select(contentId => contentId[..contentId.LastIndexOf(':')])
+                .FirstOrDefault(dataset => dataset.Split(':')[2].StartsWith(contentType + "-", StringComparison.Ordinal));
+            var dataset = existing ?? $"opendes:dataset--File.Generic:{contentType}-{Guid.NewGuid():D}";
+            var registered = Record(dataset, "osdu:wks:dataset--File.Generic:1.0.0", new JsonObject
+            {
+                ["DatasetProperties"] = new JsonObject { ["FileSourceInfo"] = new JsonObject { ["FileSource"] = $"/rafs/{dataset}", ["FileSize"] = bytes.Length.ToString(CultureInfo.InvariantCulture) } },
+            });
+            registered["acl"] = parent["acl"]!.DeepClone();
+            registered["legal"] = parent["legal"]!.DeepClone();
+            var datasetVersion = Put(registered);
+            urn = $"urn://rafs-v2/{contentType}data/{recordId}/{dataset}:{datasetVersion.ToString(CultureInfo.InvariantCulture)}/{schemaVersion}";
+            RemoveEntries(entries, e => e.StartsWith("urn://rafs-v2/", StringComparison.Ordinal) && e.Contains("/" + dataset + ":", StringComparison.Ordinal));
+        }
+
+        entries.Add(urn);
+        var parentVersion = Put(updated);
+        RafsContent[recordId + "|" + contentType] = (bytes, media, schemaVersion);
+        answer["ddms_urn"] = urn;
+        if (RafsBlobMode)
+        {
+            answer["updated_wpc_id"] = new JsonArray(recordId + ":" + parentVersion.ToString(CultureInfo.InvariantCulture));
+        }
+
+        return Json(HttpStatusCode.OK, answer);
+    }
+
+    private static void RemoveEntries(JsonArray entries, Func<string, bool> matches)
+    {
+        for (var i = entries.Count - 1; i >= 0; i--)
+        {
+            if (matches(entries[i]!.GetValue<string>()))
+            {
+                entries.RemoveAt(i);
+            }
+        }
+    }
+
+    private static HttpResponseMessage RafsError(HttpStatusCode status, string reason)
+        => Json(status, new JsonObject { ["code"] = (int)status, ["reason"] = reason });
 
     private HttpResponseMessage Airflow(string method, string path, HttpRequestMessage request)
     {

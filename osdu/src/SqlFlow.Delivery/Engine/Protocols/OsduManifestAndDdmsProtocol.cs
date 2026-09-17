@@ -13,14 +13,11 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// by reading each record back, and then each written record's bulk data goes through the collection of its DDMS, as
 /// the ddms route sends it. Every record and its bulk data are checked against the DDMS's rules before the manifest is
 /// sent. Ingestion writes a record through storage, past the DDMS, so a record that already holds bulk data carries the
-/// DDMS's bulk link into the manifest (<see cref="WellboreDdmsBulkLink"/>): without it the record would lose its link to
-/// the bulk data it holds.
+/// link its DDMS keeps to it into the manifest (<see cref="OsduWellLogProtocol.CarryLink"/>: the Wellbore DDMS's bulk
+/// link, RAFS's content datasets): without it the record would lose its link to the bulk data it holds.
 /// </summary>
 public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
 {
-    /// <summary>The attributes a read of a record for its bulk link projects.</summary>
-    private static readonly string[] LinkAttributes = ["data.ExtensionProperties", "data.DDMSDatasets"];
-
     private readonly OsduHttpClient _client;
     private readonly ProtocolOptions _options;
     private readonly OsduManifestProtocol _manifest;
@@ -124,12 +121,13 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
     }
 
     /// <summary>
-    /// The bulk link and the DDMS's own dataset entries, carried from the stored records into the manifest of every
-    /// record that already holds bulk data (<see cref="WellboreDdmsBulkLink"/>). The records are read in one batched read.
+    /// The link each record's DDMS keeps to its bulk data, carried from the stored records into the manifest of every
+    /// record that already holds bulk data (<see cref="OsduWellLogProtocol.CarryLink"/>). The records are read in one
+    /// batched read.
     /// </summary>
     private async Task CarryLinksAsync(List<Planned> planned, CancellationToken ct)
     {
-        var updates = planned.Where(p => p.ManifestWork.DeliverMetadata && p.Work.ExistingVersion is not null).ToList();
+        var updates = planned.Where(p => p.Failure is null && p.ManifestWork.DeliverMetadata && p.Work.ExistingVersion is not null).ToList();
         if (updates.Count == 0)
         {
             return;
@@ -139,7 +137,7 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
         try
         {
             stored = await RecordWriter.ReadManyAsync(
-                _client, _options.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath, updates.Select(p => p.Work.TargetId).ToList(), LinkAttributes, ct).ConfigureAwait(false);
+                _client, _options.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath, updates.Select(p => p.Work.TargetId).ToList(), OsduWellLogProtocol.LinkAttributes, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
         {
@@ -160,10 +158,21 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
             }
 
             var document = (JsonObject)item.ManifestWork.Document.DeepClone();
-            if (!WellboreDdmsBulkLink.Carry(record, document))
+            bool agreed;
+            try
+            {
+                agreed = _ddms.CarryLink(item.Work.TargetId, record, document);
+            }
+            catch (RecordHeldException ex)
+            {
+                item.Failure = ex;
+                continue;
+            }
+
+            if (!agreed)
             {
                 _logger.LogWarning(
-                    "The record {TargetId} is rendered with its own data.ExtensionProperties.wdms.bulkURI, which the DDMS manages; the link the DDMS holds goes into the manifest instead.",
+                    "The record {TargetId} is rendered with its own link to the bulk data its DDMS keeps, which the DDMS manages; the link the DDMS holds goes into the manifest instead.",
                     item.Work.TargetId);
             }
 

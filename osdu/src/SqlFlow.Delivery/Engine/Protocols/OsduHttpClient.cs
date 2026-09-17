@@ -93,17 +93,38 @@ public sealed class OsduHttpClient
         return builder.Uri;
     }
 
-    public async Task<HttpFetchResult> SendJsonAsync(HttpMethod method, Uri url, JsonNode? body, IReadOnlySet<int>? allowStatuses, CancellationToken ct, bool? idempotent = null)
+    /// <param name="method">The request method.</param>
+    /// <param name="url">The request URL.</param>
+    /// <param name="body">The JSON body, or null for none.</param>
+    /// <param name="allowStatuses">Non-2xx statuses to return instead of throwing.</param>
+    /// <param name="ct">Cancels the call.</param>
+    /// <param name="idempotent">Whether the request may be repeated; null takes it from the method.</param>
+    /// <param name="headers">Headers of this request alone, beside the flow's (a cache directive a read needs).</param>
+    /// <param name="bareJsonType">
+    /// Types the body <c>application/json</c> without its charset parameter, for a service that compares the header with
+    /// the bare media type (RAFS refuses <c>application/json; charset=utf-8</c> on a record write, osdu/specs/rafs-ddms
+    /// INTEGRATION.md section 1.3).
+    /// </param>
+    public async Task<HttpFetchResult> SendJsonAsync(
+        HttpMethod method, Uri url, JsonNode? body, IReadOnlySet<int>? allowStatuses, CancellationToken ct, bool? idempotent = null,
+        IReadOnlyDictionary<string, string>? headers = null, bool bareJsonType = false)
     {
         var bytes = body is null ? null : CanonicalJson.ToBytes(body);
         return await WithFreshAuthAsync(auth => _http.Data.SendAsync(() =>
         {
             var request = new HttpRequestMessage(method, url);
             Apply(request, auth);
-            request.Content = JsonBody(bytes);
+            foreach (var (name, value) in headers ?? NoHeaders)
+            {
+                request.Headers.TryAddWithoutValidation(name, value);
+            }
+
+            request.Content = JsonBody(bytes, bareJsonType);
             return request;
         }, allowStatuses, idempotent, ct), ct).ConfigureAwait(false);
     }
+
+    private static readonly IReadOnlyDictionary<string, string> NoHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// The JSON content of a request, including one that has nothing to send: zero bytes typed
@@ -116,12 +137,12 @@ public sealed class OsduHttpClient
     /// read-backs and status polls. Python clients never notice because their libraries send a bare header; .NET has
     /// nowhere to put a content header without content, so the request is given an empty one. The OSDU C# client
     /// does the same (<c>JsonContentTypeHandler</c>), and the platform's own REST scripts send the header on bodiless
-    /// calls. An empty body is semantically no body.
+    /// calls. An empty body is semantically no body. <paramref name="bare"/> leaves the charset parameter out of a body's type.
     /// </summary>
-    internal static ByteArrayContent JsonBody(byte[]? bytes)
+    internal static ByteArrayContent JsonBody(byte[]? bytes, bool bare = false)
     {
         var content = new ByteArrayContent(bytes ?? []);
-        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = bytes is null ? null : "utf-8" };
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = bytes is null || bare ? null : "utf-8" };
         return content;
     }
 

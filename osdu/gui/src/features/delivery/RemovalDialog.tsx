@@ -220,10 +220,11 @@ export function RemovalDialog({ open, onClose, pipelineId, flowName, selection, 
           {SCOPES.map((option) => {
             const active = option.scope === scope;
 
-            // A scope whose call the flow cannot resolve is not offered: the node would refuse it anyway, and
-            // showing it as available invites an operator to ask for a removal that never happens.
+            // A scope whose call the flow cannot resolve, or whose DDMS refuses it, is not offered: the node would
+            // refuse it anyway, and showing it as available invites an operator to ask for a removal that never happens.
             const path = target === undefined ? undefined : option.path(target);
-            const unavailable = path !== undefined && (path.startsWith("(not configured") || path.startsWith("(not routable"));
+            const unavailable = path !== undefined
+              && (path.startsWith("(not configured") || path.startsWith("(not routable") || path.startsWith("(refused"));
             return (
               <button
                 key={option.scope}

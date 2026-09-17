@@ -189,6 +189,91 @@ public sealed class DdmsRoutingTests
             resolved.Explain("osdu:wks:" + WellLog + ":1.4.0"));
     }
 
+    private static readonly DdmsService WellDelivery = new("welldelivery", "/api/well-delivery", DdmsShape.WellDeliveryV1, DdmsCatalog.WellDeliveryCollections)
+    {
+        WellDelivery = new WellDeliverySettings(),
+    };
+
+    private static readonly DdmsService Rafs = new("rafs", "/api/rafs-ddms", DdmsShape.RafsV2, DdmsCatalog.RafsCollections);
+
+    [Fact]
+    public void A_well_delivery_entity_is_written_under_its_type_and_read_by_its_entity_id()
+    {
+        var routing = DdmsRouting.Of(Flow(new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms" }, [WellDelivery, Rafs], "entities"));
+        var wellbores = routing.For(Wellbore);
+
+        Assert.Equal(DdmsShape.WellDeliveryV1, wellbores.Shape);
+        Assert.Equal("/api/well-delivery/storage/v1/wellbore", wellbores.Records);
+        Assert.Equal("/api/well-delivery/storage/v1/wellbore/{entityId}", wellbores.Record);
+        Assert.Equal("/api/well-delivery/storage/v1/wellbore/{entityId}", wellbores.Delete);
+        Assert.Null(wellbores.Data);
+        Assert.Null(wellbores.Sessions);
+        Assert.False(wellbores.Bulk);
+        Assert.Equal("/api/well-delivery/storage/v1/bharun", routing.For("master-data--BHARun").Records);
+
+        // Declared first, the Well Delivery DDMS takes the well logs the Wellbore DDMS under ddmsRoot would have kept.
+        Assert.Equal("/api/well-delivery/storage/v1/welllog", routing.For(WellLog).Records);
+        var bulk = routing.Problem(WellLog, sendsBulk: true);
+        Assert.Contains("the welllog collection of the DDMS 'welldelivery' (/api/well-delivery), which holds records alone", bulk, StringComparison.Ordinal);
+        Assert.Contains("target.ddms.welldelivery serves the type because its shape (wellDeliveryV1) serves it unless the flow lists other collections", bulk, StringComparison.Ordinal);
+
+        var listed = WellDelivery with { Collections = [DdmsCatalog.WellDeliveryCollection(Wellbore)], DeclaresCollections = true };
+        var chosen = DdmsRouting.Of(Flow(new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms" }, [listed], "entities"));
+        Assert.Equal("/api/os-wellbore-ddms/ddms/v3/welllogs", chosen.For(WellLog).Records);
+        Assert.EndsWith("which holds records alone and takes no bulk data, so interfaces.entities.bulk would never be sent. Deliver those records without it.", chosen.Problem(Wellbore, sendsBulk: true), StringComparison.Ordinal);
+
+        Assert.Equal(["/api/well-delivery/info", "/api/rafs-ddms/info", "/api/rafs-ddms/v2/samplesanalysis/analysistypes", "/api/os-wellbore-ddms/about"], routing.ProbePaths);
+        Assert.Equal("/api/storage/v2/records/{id}:delete", routing.StorageDeletePath);
+    }
+
+    [Fact]
+    public void A_rafs_record_takes_its_content_under_its_type_where_the_collection_holds_several()
+    {
+        var routing = DdmsRouting.Of(Flow(ddms: [Rafs], interfaceName: "samples"));
+
+        var analysis = routing.For("work-product-component--SamplesAnalysis");
+        Assert.Equal(DdmsShape.RafsV2, analysis.Shape);
+        Assert.Equal("/api/rafs-ddms/v2/samplesanalysis", analysis.Records);
+        Assert.Equal("/api/rafs-ddms/v2/samplesanalysis/{id}", analysis.Record);
+        Assert.Equal("/api/rafs-ddms/v2/samplesanalysis/{id}/data/{contentType}", analysis.Data);
+        Assert.Null(analysis.Sessions);
+        Assert.Null(routing.Problem("work-product-component--SamplesAnalysis", sendsBulk: true));
+
+        Assert.Equal("/api/rafs-ddms/v2/depthshift/{id}/data", routing.For("work-product-component--DepthShift").Data);
+        var sample = routing.For("master-data--Sample");
+        Assert.Equal("/api/rafs-ddms/v2/masterdata", sample.Records);
+        Assert.Null(sample.Data);
+        Assert.Contains("which holds records alone", routing.Problem("master-data--Sample", sendsBulk: true), StringComparison.Ordinal);
+        Assert.Equal(
+            "work-product-component--FluidModel records go to the fluidmodel collection of the DDMS 'rafs' (/api/rafs-ddms).",
+            routing.Explain("osdu:wks:work-product-component--FluidModel:1.0.0"));
+    }
+
+    [Fact]
+    public void Paths_a_flow_names_for_a_wellbore_ddms_facade_are_refused_for_a_ddms_of_another_shape()
+    {
+        var routing = DdmsRouting.Of(Flow(new ProtocolOptions { VerifyPath = "/petrodb/{id}", DataPath = "/petrodb/{id}/bulk" }, [Rafs], "samples"));
+        var refused = Assert.Throws<DeliveryException>(() => routing.For("work-product-component--DepthShift"));
+        Assert.Contains("the flow names DDMS paths of its own (verifyPath, dataPath under target.protocolOptions of interface 'samples')", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("whose shape (rafsV2) says every call they take", refused.Message, StringComparison.Ordinal);
+        Assert.Equal(refused.Message, routing.Problem("work-product-component--DepthShift", sendsBulk: true));
+    }
+
+    [Fact]
+    public void The_removal_endpoints_follow_the_shape_of_the_ddms()
+    {
+        var wells = Flow(ddms: [WellDelivery], interfaceName: "wells");
+        var entity = RemovalEndpoints.Of(wells, "osdu:wks:master-data--Well:1.0.0");
+        Assert.Equal("/api/well-delivery/storage/v1/well/{entityId}", entity.Record);
+        Assert.Equal(RemovalEndpoints.HistoryRefusedByWellDelivery, entity.History);
+        Assert.Equal("/api/well-delivery/storage/v1/well/{entityId}:purge", entity.Everything);
+
+        var samples = RemovalEndpoints.Of(Flow(ddms: [Rafs], interfaceName: "samples"), "osdu:wks:work-product-component--SamplesAnalysis:1.0.0");
+        Assert.Equal("/api/rafs-ddms/v2/samplesanalysis/{id}", samples.Record);
+        Assert.Equal("/api/storage/v2/records/{id}/versions", samples.History);
+        Assert.Equal("/api/storage/v2/records/{id}", samples.Everything);
+    }
+
     [Fact]
     public void The_route_check_refuses_what_the_route_cannot_deliver()
     {

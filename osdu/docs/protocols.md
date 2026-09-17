@@ -7,7 +7,7 @@ code and parameterised by the flow, not an authorable step language.
 | Protocol | Services | Pattern | Batched |
 | --- | --- | --- | --- |
 | `osduRecord` | storage | One JSON document, upsert by client-supplied id, array endpoint. | up to `batchSize` records per request |
-| `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default) | Record, then, on a collection that keeps bulk data, its bulk data, optionally through a session. | one record per request |
+| `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default), by the call pattern of its shape: the Wellbore DDMS v3, the Well Delivery DDMS, RAFS | Record, then, on a collection that keeps bulk data, its bulk data (a Wellbore DDMS session, or RAFS's content tables). | one record per request |
 | `osduFile` | file, storage | Signed upload URL per file, streamed upload, dataset registration, then the record with its dataset list. | the record write, up to `batchSize` |
 | `osduDataset` | dataset, storage | Staging location per record, upload the way its provider takes it, registration under the record's own id (or a dataset the record refers to), retrieval checked. | up to 20 registrations per request |
 | `osduManifest` | file, dataset, workflow, search, storage | Uploads, one manifest per batch handed to the ingestion workflow, inline or by reference, the run polled, the records read back. | one workflow run per batch of up to `batchSize` |
@@ -96,7 +96,9 @@ part without files.
 
 ## `osduWellLog`: the ddms route
 
-The route's calls, rules and deletes follow the Wellbore DDMS's pinned contract and its source at the same commit
+A record goes to the DDMS serving its entity type, and by the call pattern of that DDMS's shape: `wellboreDdmsV3`
+(described first, below), [`wellDeliveryV1`](#the-well-delivery-shape) and [`rafsV2`](#the-rafs-shape). The Wellbore
+DDMS shape's calls, rules and deletes follow its pinned contract and its source at the same commit
 ([../specs/wellbore-ddms/INTEGRATION.md](../specs/wellbore-ddms/INTEGRATION.md)).
 
 - Where a record goes: the collection of the DDMS serving its entity type, which the record id names
@@ -215,6 +217,74 @@ The shape is read from each chunk's parquet footer (the schema and the row group
 contents, so the cost is one footer read per chunk and the memory is the schema. The check runs only when the
 payload content type is parquet and at least one ceiling is above zero; set both to 0 to opt out. A chunk
 declared as parquet whose footer will not read holds the record, because the service would refuse it too.
+
+### The Well Delivery shape
+
+The Well Delivery DDMS keeps well planning and drilling entities in a store of its own, indexes the references between
+them for its domain queries, and copies each entity into Storage where the deployment says so
+([../specs/well-delivery-ddms/INTEGRATION.md](../specs/well-delivery-ddms/INTEGRATION.md)).
+
+- Write: `PUT {root}/storage/v1/{type}` with the entity alone (the service takes no array), `{type}` being the type of
+  the record id lowercased. The service answers 201 whether or not the entity passed its schema check; the findings of a
+  failed check are kept on the attempt (`wellDelivery.schemaFindings`) and the record is delivered with a warning.
+- Version: the route chooses it, a 13-digit epoch-millisecond value above the one the ledger holds, and records it as
+  step `version` before the write, so a retry of the same revision sends the same version, which the DDMS replaces in
+  place instead of adding a version. The service orders versions as text, which a fixed width keeps numeric. Content the
+  ledger already delivered, redelivered, goes back under the version the ledger holds, so the entities that cite that
+  version see the rewrite; on `provider: ibm`, whose store refuses a second save of a version, it takes a new one. A
+  write answered with a server error, or not at all, is settled by reading that version back.
+- References: the DDMS indexes only references that end in a version, and its queries and reference trees work only
+  through that index. A reference the mapping renders in the usual form (`opendes:master-data--Well:w1:`) to an entity
+  type the DDMS serves is sent with the version the DDMS holds for that entity (read once, and known without a read for
+  an entity the same protocol wrote); one the DDMS does not hold is sent as rendered, and the attempt names it
+  (`wellDelivery.unpinned`), so a redelivery once the entity lands adds the version.
+- Rules checked before anything is sent: the id's shape, a type the reads can take (letters, digits and `-`), an entity
+  id without `:` or `%` (the reference trees skip one with a colon), a kind, owners and viewers that name a domain, at
+  least one legal tag (at most 25, which the service validates in one Legal request) and one country, a data object with
+  `ExistenceKind` in reference form (ending in `:` or a version), `meta` as an array of objects, and a `StartDateTime`
+  or `EndDateTime` in a form the service parses (it stores one it cannot parse, fractional seconds included, as null).
+- Concurrency: the writes one node sends to the deployment go through a gate of `concurrency` (default 1).
+- Read and verify: `GET {root}/storage/v1/{type}/{entityId}`, the latest version.
+- Remove: the reversible scope is the DDMS's soft delete of every version (`DELETE .../{entityId}`, with the JSON
+  content type the service requires; only a write of the same version restores it) and, with `mirror`, storage's
+  `POST /records/{id}:delete` of the copy, whose id is the record id with its namespace replaced by the partition.
+  Everything is the DDMS's purge (`DELETE .../{entityId}:purge`, an admin operation) and storage's purge of the copy.
+  The history scope is refused: the DDMS keys every version by the value other entities' references cite.
+- Probe: `GET {root}/info`, which the service's code serves and its contract does not declare.
+
+### The RAFS shape
+
+The Rock and Fluid Sample DDMS writes sample records through Storage and keeps the tabular content of their analyses
+([../specs/rafs-ddms/INTEGRATION.md](../specs/rafs-ddms/INTEGRATION.md)).
+
+- Write: `POST {root}/v2/{collection}` with a one-element array, typed exactly `application/json` (the service refuses
+  a charset parameter). RAFS checks the kind against the collection, the record against its schema, its mandatory
+  references and the records it names before it writes; the route checks what it can before sending: a
+  `<authority>:wks:<entity type>:<x.y.z>` kind, an `acl` of owners and viewers alone, a `legal` block of tags, countries
+  and status alone with a tag and a country, a SamplesAnalysis's `SampleAnalysisTypeIDs`, and a SaturationFunctionSet's
+  identified functions. The version is matched by id in the response, whose names are camelCase on the wire; a record
+  Storage skipped is read back. A FluidModel without its type is delivered with the warning RAFS gives.
+- Content: each table of the record's `bulk` part, in content type order, as
+  `POST {root}/v2/{collection}/{id}/data?content_schema_version={version}`, or `.../data/{contentType}` in a collection
+  holding several types, streamed as `application/json` or `application/x-parquet`. Before the record is written, each
+  content type and version is checked against the service's own catalogue (`GET /v2/samplesanalysis/analysistypes`,
+  `GET /v2/fluidmodel/fluidmodeltypes`, or `GET /v2/{collection}/data/schema` for a collection of one type, each read
+  once), and a depth shift table must hold one row. Each table is a step (`content-<type>`) returning its URN, content
+  id and schema version, so a retry sends only the tables that did not land. The content id and schema version are read
+  from the URN: its last two segments, `{dataset id}:{version}/{schema version}` in dataset mode and
+  `{schema version}/{uuid}` in blob mode.
+- Every table registers a `dataset--File.Generic` for the content (in dataset mode) and writes a new record version; the
+  record is read back for the version it ends at. The ledger keeps the dataset ids (`rafs.datasets`): RAFS never removes
+  them.
+- The link: `data.DDMSDatasets` belongs to RAFS, and a record write replaces it, so a metadata update reads the stored
+  record and carries its RAFS URNs; a manifest that rewrites the record through `osduManifestAndDdms` carries them too.
+- Reads (verify, read back, the catalogues) send `Cache-Control: no-store`, since RAFS caches its answers for up to a
+  minute.
+- Remove: the reversible scope is RAFS's logical delete (`DELETE /v2/{collection}/{id}`) and storage's reversible
+  delete of each content dataset. RAFS has no purge and no version operation, so the history scope is storage's version
+  purge and everything is storage's purge of the record and of its content datasets.
+- Probe: `GET {root}/info`, then `GET {root}/v2/samplesanalysis/analysistypes`, which checks the token and the
+  partition.
 
 ## `osduFile`
 

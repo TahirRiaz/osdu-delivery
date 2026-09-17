@@ -151,11 +151,22 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
             return new RemovalEndpoints(unroutable, history, unroutable);
         }
 
-        var everything = paths.Route is { Collection.Bulk: false }
-            ? routing.StoragePurgePath ?? PurgeNotConfigured
-            : paths.Delete + "?purge=true";
-        return new RemovalEndpoints(paths.Delete, history, everything);
+        return paths.Shape switch
+        {
+            // The Well Delivery DDMS purges under its own path, and its versions are what other entities' references cite.
+            DdmsShape.WellDeliveryV1 => new RemovalEndpoints(paths.Delete, HistoryRefusedByWellDelivery, paths.Delete + ":purge"),
+
+            // RAFS deletes logically only; its records are storage records, which storage purges.
+            DdmsShape.RafsV2 => new RemovalEndpoints(paths.Delete, history, routing.StoragePurgePath ?? PurgeNotConfigured),
+            _ => new RemovalEndpoints(
+                paths.Delete,
+                history,
+                paths.Route is { Collection.Bulk: false } ? routing.StoragePurgePath ?? PurgeNotConfigured : paths.Delete + "?purge=true"),
+        };
     }
+
+    /// <summary>What the history endpoint of a Well Delivery DDMS collection reads as.</summary>
+    public const string HistoryRefusedByWellDelivery = "(refused: the Well Delivery DDMS keys every version by the value other entities' references cite)";
 }
 
 /// <summary>What a removal did to one record: enough to answer "what happened to this one" without a second query.</summary>

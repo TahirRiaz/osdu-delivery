@@ -359,10 +359,21 @@ internal static class RecordWriter
         return (ParseVersion(idVersion), (int)result.Status);
     }
 
-    public static async Task<VerifyResult> VerifyAsync(OsduHttpClient client, string verifyPath, string targetId, long? expectedVersion, CancellationToken ct)
+    public static Task<VerifyResult> VerifyAsync(OsduHttpClient client, string verifyPath, string targetId, long? expectedVersion, CancellationToken ct)
     {
-        var url = client.Url(verifyPath, targetId);
-        var result = await client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
+        ArgumentNullException.ThrowIfNull(client);
+        return VerifyAsync(client, client.Url(verifyPath, targetId), expectedVersion, ct);
+    }
+
+    /// <summary>
+    /// Reads the record at <paramref name="url"/> and compares its <c>version</c> with <paramref name="expectedVersion"/>;
+    /// <paramref name="headers"/> go with the read alone (a cache directive).
+    /// </summary>
+    public static async Task<VerifyResult> VerifyAsync(OsduHttpClient client, Uri url, long? expectedVersion, CancellationToken ct, IReadOnlyDictionary<string, string>? headers = null)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(url);
+        var result = await client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct, headers: headers).ConfigureAwait(false);
         if ((int)result.Status == 404)
         {
             return new VerifyResult(VerifyOutcome.Missing, null, "record not found");
@@ -525,11 +536,18 @@ internal static class RecordWriter
     }
 
     /// <summary>Reads a record back as the target holds it; null on 404.</summary>
-    public static async Task<JsonObject?> ReadAsync(OsduHttpClient client, string verifyPath, string targetId, CancellationToken ct)
+    public static Task<JsonObject?> ReadAsync(OsduHttpClient client, string verifyPath, string targetId, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(client);
-        var url = client.Url(verifyPath, targetId);
-        var result = await client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
+        return ReadAsync(client, client.Url(verifyPath, targetId), ct);
+    }
+
+    /// <summary>Reads the record at <paramref name="url"/> as the target holds it; null on 404. <paramref name="headers"/> go with the read alone.</summary>
+    public static async Task<JsonObject?> ReadAsync(OsduHttpClient client, Uri url, CancellationToken ct, IReadOnlyDictionary<string, string>? headers = null)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(url);
+        var result = await client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct, headers: headers).ConfigureAwait(false);
         if ((int)result.Status == 404)
         {
             return null;
@@ -537,6 +555,19 @@ internal static class RecordWriter
 
         return JsonNode.Parse(result.Body) as JsonObject
             ?? throw new DeliveryException($"{url.AbsolutePath}: the target answered with something other than a JSON record.");
+    }
+
+    /// <summary>
+    /// One removal call at <paramref name="url"/>: a 404 is a record already gone, and every other refusal throws.
+    /// Returns true when the call removed something.
+    /// </summary>
+    public static async Task<bool> RemoveAtAsync(OsduHttpClient client, HttpMethod method, Uri url, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(method);
+        ArgumentNullException.ThrowIfNull(url);
+        var result = await client.SendJsonAsync(method, url, null, new HashSet<int> { 404 }, ct, idempotent: true).ConfigureAwait(false);
+        return (int)result.Status != 404;
     }
 
     /// <summary>

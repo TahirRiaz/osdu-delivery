@@ -421,7 +421,7 @@ internal sealed class DdmsYaml
     /// <summary>Where the DDMS is under the endpoint (<c>/api/os-wellbore-ddms</c>); null when the endpoint is the DDMS.</summary>
     public string? Root { get; set; }
 
-    /// <summary>Its call pattern (<c>wellboreDdmsV3</c>, the default).</summary>
+    /// <summary>Its call pattern (<c>wellboreDdmsV3</c>, the default, <c>wellDeliveryV1</c> or <c>rafsV2</c>).</summary>
     public string? Shape { get; set; }
 
     /// <summary>The id the DDMS is registered under in the Register service, to look up what the flow does not declare.</summary>
@@ -429,6 +429,15 @@ internal sealed class DdmsYaml
 
     /// <summary>The entity types it serves, each with the collection it serves it under; the shape's own when left out.</summary>
     public OrderedDictionary<string, DdmsCollectionYaml?>? Collections { get; set; }
+
+    /// <summary>Well Delivery DDMS: whether the deployment copies every entity into Storage. Default true.</summary>
+    public bool? Mirror { get; set; }
+
+    /// <summary>Well Delivery DDMS: the provider the deployment runs on (azure, aws, gc, ibm).</summary>
+    public string? Provider { get; set; }
+
+    /// <summary>Well Delivery DDMS: the writes one process sends to the deployment at a time. Default 1.</summary>
+    public int? Concurrency { get; set; }
 }
 
 /// <summary>One collection of a declared DDMS.</summary>
@@ -442,6 +451,9 @@ internal sealed class DdmsCollectionYaml
 
     /// <summary>What the bulk data's columns are checked against: unchecked (the default), curveIds or trajectoryStations.</summary>
     public string? Columns { get; set; }
+
+    /// <summary>RAFS content collection: whether it holds several content types, each under its own path segment. Default false.</summary>
+    public bool? TypedContent { get; set; }
 }
 
 internal sealed class TargetAuthYaml
@@ -583,6 +595,8 @@ internal sealed class ProtocolOptionsYaml
     public string? ByReferenceWorkflowName { get; set; }
 
     public string? WorkflowPath { get; set; }
+
+    public string? ContentSchemaVersion { get; set; }
 }
 
 internal sealed class FlowReliabilityYaml

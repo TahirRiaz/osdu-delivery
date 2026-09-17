@@ -108,6 +108,7 @@ target:
     verifyBatchPath: /api/storage/v2/query/records   # the batched read a verify pass uses (100 ids per request)
     ddmsRoot: /api/os-wellbore-ddms  # ddms: the endpoint is the platform root and the Wellbore DDMS sits under this path; omit when the endpoint is the DDMS itself
     registerPath: /api/register/v1/ddms/{id}  # ddms: where the Register service reads the registration of a DDMS target.ddms names with register
+    contentSchemaVersion: 1.0.0    # ddms, RAFS: the content schema version of a table whose file name names none (nmr.parquet, not nmr.1.1.0.parquet)
     validateLegalTags: true        # deliver and intake runs ask the legal service about the mapping's legal tags first; false skips it
     legalValidatePath: /api/legal/v1/legaltags:validate  # where to ask; needed (as a whole URL) only for a ddms flow whose endpoint is the DDMS itself
     preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]
@@ -273,8 +274,8 @@ DDMS ([../specs/wellbore-ddms/INTEGRATION.md](../specs/wellbore-ddms/INTEGRATION
 
 `protocolOptions.ddmsRoot` says where the Wellbore DDMS is under the endpoint (`/api/os-wellbore-ddms`); a flow in the
 single form without it and without `target.ddms` has the Wellbore DDMS itself as its endpoint. `target.ddms` declares
-DDMSs by name: a Wellbore DDMS deployed elsewhere, a DDMS of the same call pattern serving other collections, or one the
-Register service knows.
+DDMSs by name: a Wellbore DDMS deployed elsewhere, a DDMS of the same call pattern serving other collections, one the
+Register service knows, or a DDMS of another call pattern.
 
 ```yaml
 target:
@@ -289,14 +290,54 @@ target:
         master-data--Wellbore: { path: wellbores }
     partner:
       register: partner-wdms            # its root and collections are read from the Register service when the flow runs
+    welldelivery:
+      root: /api/well-delivery
+      shape: wellDeliveryV1
+      mirror: true                      # the deployment copies each entity into Storage (the default)
+      provider: azure                   # azure, aws, gc or ibm
+      concurrency: 1                    # writes this node sends to the deployment at once (the default)
+    rafs:
+      root: /api/rafs-ddms
+      shape: rafsV2
 ```
 
 | Key | Meaning |
 | --- | --- |
 | `root` | Where the DDMS is under the endpoint: a path starting with `/`. Left out, the endpoint is the DDMS itself, which only a flow in the single form declaring that one DDMS and no `ddmsRoot` can say; every DDMS of a source with interfaces names its root or its registration. |
-| `shape` | The DDMS's call pattern: `wellboreDdmsV3` (the default), the Wellbore DDMS v3's `/ddms/v3/<collection>` calls. |
-| `collections` | The entity types (with their group) the DDMS serves, each with `path`, the collection's path segment; `bulk`, whether it keeps bulk data beside its records (default `false`); and `columns`, what the bulk data's columns are checked against before they are sent: `unchecked` (the default), `curveIds`, `curveIdsAndWidths` or `trajectoryStations`, which only a bulk collection takes. |
-| `register` | The id the DDMS is registered under in the Register service (2 to 50 letters, digits and `-`). What the flow leaves out is read from the registration when the flow's protocol is built: the root from the one server its interfaces' OpenAPI documents name, the collections from their retrieval operations (`x-ddms-retrieve-entity`), where a collection the shape knows by its path takes the shape's entity type and rules. `protocolOptions.registerPath` says where the registration is read (default `/api/register/v1/ddms/{id}` under the endpoint). A DDMS that declares both its root and its collections has nothing to read, so `register` is refused there. |
+| `shape` | The DDMS's call pattern: `wellboreDdmsV3` (the default), the Wellbore DDMS v3's `/ddms/v3/<collection>` calls; `wellDeliveryV1`, the Well Delivery DDMS's `/storage/v1/<type>` calls; `rafsV2`, the Rock and Fluid Sample DDMS's `/v2/<collection>` calls. |
+| `collections` | The entity types (with their group) the DDMS serves, each with `path`, the collection's path segment; `bulk`, whether it keeps bulk data beside its records (default `false`); `columns`, what the bulk data's columns are checked against before they are sent: `unchecked` (the default), `curveIds`, `curveIdsAndWidths` or `trajectoryStations`, which only a bulk collection of a Wellbore DDMS takes; and `typedContent`, which says a RAFS content collection holds several content types, each under its own path segment (default `false`). A Well Delivery DDMS serves each type under the type itself, lowercased, so its collections name no `path` (or that one), and hold records alone. |
+| `register` | The id the DDMS is registered under in the Register service (2 to 50 letters, digits and `-`), for a DDMS of the `wellboreDdmsV3` shape. What the flow leaves out is read from the registration when the flow's protocol is built: the root from the one server its interfaces' OpenAPI documents name, the collections from their retrieval operations (`x-ddms-retrieve-entity`), where a collection the shape knows by its path takes the shape's entity type and rules. `protocolOptions.registerPath` says where the registration is read (default `/api/register/v1/ddms/{id}` under the endpoint). A DDMS that declares both its root and its collections has nothing to read, so `register` is refused there. |
+| `mirror` | Well Delivery DDMS: whether the deployment copies every entity into Storage (`app.entity.storage`, on in every provider's chart, so `true` by default). The API cannot tell. The copy's id is kept on the record, and a removal takes the copy through Storage too, since the DDMS never deletes it. |
+| `provider` | Well Delivery DDMS: the provider the deployment runs on, which the API cannot tell either. On `ibm` an entity is never written again under a version it already has, since that store refuses the second save. |
+| `concurrency` | Well Delivery DDMS: how many writes one node sends to the deployment at once, 1 to 16 (default 1). The service's Mongo and Cosmos stores keep the collection of the current write in shared state, so writes of different types at once can land in each other's collection. |
+
+The Well Delivery DDMS serves, by default, the entity types its brief lists
+([../specs/well-delivery-ddms/INTEGRATION.md](../specs/well-delivery-ddms/INTEGRATION.md) section 4), in the groups the
+OSDU data definitions give them: `master-data--` Well, WellPlanningWell, WellPlanningWellbore, Wellbore,
+WellActivityProgram, ActivityPlan, WellboreArchitecture, HoleSection, BHARun, TubularAssembly, TubularComponent,
+OperationsReport, FluidsReport, FluidsProgram, CasingDesign, EvaluationPlan, PlannedCementJob, WellBarrierElementTest,
+GeometricTargetSet, Risk, SurveyProgram and Rig; `work-product-component--` WellboreTrajectory, TubularAssembly,
+TubularComponent, WellLog, PPFGDataset, PlannedLithology and WellboreMarkerSet. Declared first, a Well Delivery DDMS
+with those defaults takes the well logs, trajectories, pore pressure datasets and marker sets the Wellbore DDMS under
+`ddmsRoot` would otherwise keep; a flow that sends their bulk data to the Wellbore DDMS lists the Well Delivery
+collections it wants.
+
+RAFS serves ([../specs/rafs-ddms/INTEGRATION.md](../specs/rafs-ddms/INTEGRATION.md) section 2.1):
+
+| Entity type | Collection | Content |
+| --- | --- | --- |
+| `master-data--` GenericFacility, GenericSite, Sample, SampleAcquisitionJob, SampleChainOfCustodyEvent, SampleContainer | `masterdata` | none |
+| `work-product-component--SamplesAnalysesReport` | `samplesanalysesreport` | none |
+| `work-product-component--SamplesAnalysis` | `samplesanalysis` | several types (`nmr`, `capillarypressure` and the others the service's catalogue lists) |
+| `work-product-component--FluidModel` | `fluidmodel` | several types (`blackoilfluidmodel`, `compositionalfluidmodel`) |
+| `work-product-component--SaturationFunctionSet` | `saturationfunctionset` | one type, named after the collection |
+| `work-product-component--ReservoirSimulationRockPhysicsModel` | `reservoirsimulationrockphysicsmodel` | one type, named after the collection |
+| `work-product-component--DepthShift` | `depthshift` | one type, named after the collection, of exactly one row |
+
+A RAFS record's `bulk` part holds its content tables, one file per content type, named after what it holds:
+`<contentType>.json` or `<contentType>.parquet`, or `<contentType>.<schemaVersion>.parquet` where the table follows
+another content schema version than `protocolOptions.contentSchemaVersion` (default `1.0.0`). JSON goes as
+`application/json` (the split form, or a list of rows), parquet as `application/x-parquet`.
 
 A record goes to the DDMS serving its entity type: the DDMSs under `target.ddms`, then the Wellbore DDMS under
 `ddmsRoot` (or at the endpoint, as above). A record goes to one DDMS, so the loader refuses an entity type two declared

@@ -1406,6 +1406,13 @@ internal static partial class FlowMapper
             }
         }
 
+        // RAFS reads the version from the query as major.minor or major.minor.patch (osdu/specs/rafs-ddms/INTEGRATION.md section 1.2).
+        if (!System.Text.RegularExpressions.Regex.IsMatch(flow.Target.ProtocolOptions.ContentSchemaVersion, @"^\d+\.\d+(?:\.\d+)?\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+        {
+            throw new FlowValidationException(
+                $"{source}: {paths.Shared("target.protocolOptions.contentSchemaVersion")} '{flow.Target.ProtocolOptions.ContentSchemaVersion}' is not a content schema version such as 1.0.0.");
+        }
+
         if (flow.Target.ProtocolOptions.UploadUrlExpiry is { } expiry && !ValidExpiry(expiry))
         {
             throw new FlowValidationException($"{source}: {paths.Shared("target.protocolOptions.uploadUrlExpiry")} '{expiry}' must be a whole number of minutes, hours or days, such as 30M, 12H or 2D.");
@@ -1522,16 +1529,18 @@ internal static partial class FlowMapper
             var ddms = value ?? new DdmsYaml();
             var shape = ParseEnum(ddms.Shape, DdmsShape.WellboreDdmsV3, at + ".shape", source);
             var root = MapDdmsRoot(ddms.Root, at + ".root", source);
-            var registration = MapRegistration(ddms, at, source);
+            var registration = MapRegistration(ddms, shape, at, source);
             if (root is null && registration is null && interfaceForm)
             {
                 throw new FlowValidationException(
                     $"{source}: {at}.root is required. The source's endpoint is the platform its interfaces reach every service under, so say where the DDMS is under it "
-                    + "(the Wellbore DDMS is usually deployed under /api/os-wellbore-ddms), or name its registration in the Register service with register.");
+                    + $"(a DDMS of the {DdmsCatalog.ShapeName(shape)} shape is usually deployed under {DdmsCatalog.UsualRoot(shape)})"
+                    + (shape == DdmsShape.WellboreDdmsV3 ? ", or name its registration in the Register service with register." : "."));
             }
 
             // A registered DDMS whose collections the flow leaves out serves what its registration says, once it is read.
             var collections = registration is not null && ddms.Collections is null ? [] : MapDdmsCollections(ddms.Collections, shape, at, source);
+            var settings = MapWellDelivery(ddms, shape, at, source);
             foreach (var collection in collections)
             {
                 if (!servedBy.TryAdd(collection.EntityType, name))
@@ -1542,7 +1551,12 @@ internal static partial class FlowMapper
                 }
             }
 
-            services.Add(new DdmsService(name, root, shape, collections) { Registration = registration });
+            services.Add(new DdmsService(name, root, shape, collections)
+            {
+                Registration = registration,
+                DeclaresCollections = ddms.Collections is not null,
+                WellDelivery = settings,
+            });
         }
 
         if (services.FirstOrDefault(s => s.Root is null && s.Registration is null) is { } unrooted && (services.Count > 1 || ddmsRoot is not null))
@@ -1557,14 +1571,65 @@ internal static partial class FlowMapper
     }
 
     /// <summary>
-    /// The Register service id a declared DDMS is looked up under, or null. A DDMS that declares both its root and its
-    /// collections leaves its registration nothing to supply, so naming one as well is refused.
+    /// The deployment settings of a declared Well Delivery DDMS, or null for any other shape, which takes none of them
+    /// (osdu/specs/well-delivery-ddms/INTEGRATION.md section 8: whether the deployment copies entities into Storage, the
+    /// provider it runs on, and how many writes it takes at a time).
     /// </summary>
-    private static string? MapRegistration(DdmsYaml ddms, string at, string source)
+    private static WellDeliverySettings? MapWellDelivery(DdmsYaml ddms, DdmsShape shape, string at, string source)
+    {
+        if (shape != DdmsShape.WellDeliveryV1)
+        {
+            var misplaced = new[] { ("mirror", ddms.Mirror is not null), ("provider", ddms.Provider is not null), ("concurrency", ddms.Concurrency is not null) }
+                .Where(k => k.Item2)
+                .Select(k => $"{at}.{k.Item1}")
+                .ToList();
+            if (misplaced.Count > 0)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {string.Join(", ", misplaced)} describe a Well Delivery DDMS deployment, and {at} has the {DdmsCatalog.ShapeName(shape)} shape. Remove them, or declare shape: wellDeliveryV1.");
+            }
+
+            return null;
+        }
+
+        var provider = ParseEnum<DdmsProvider>(ddms.Provider, default, at + ".provider", source);
+        if (ddms.Provider is not null && provider == DdmsProvider.Anthos)
+        {
+            throw new FlowValidationException($"{source}: {at}.provider '{ddms.Provider}' is not a provider the Well Delivery DDMS runs on: azure, aws, gc or ibm.");
+        }
+
+        var concurrency = ddms.Concurrency ?? WellDeliverySettings.DefaultConcurrency;
+        if (concurrency is < 1 or > WellDeliverySettings.MaxConcurrency)
+        {
+            throw new FlowValidationException(
+                string.Create(CultureInfo.InvariantCulture, $"{source}: {at}.concurrency must be between 1 and {WellDeliverySettings.MaxConcurrency}; the Mongo and Cosmos stores are safe with 1 (section 6 of its brief)."));
+        }
+
+        return new WellDeliverySettings
+        {
+            Mirror = ddms.Mirror ?? true,
+            Provider = string.IsNullOrWhiteSpace(ddms.Provider) ? null : provider,
+            Concurrency = concurrency,
+        };
+    }
+
+    /// <summary>
+    /// The Register service id a declared DDMS is looked up under, or null. A DDMS that declares both its root and its
+    /// collections leaves its registration nothing to supply, so naming one as well is refused. Only the Wellbore DDMS's
+    /// registered documents say which collection serves which entity type in a way the route can read.
+    /// </summary>
+    private static string? MapRegistration(DdmsYaml ddms, DdmsShape shape, string at, string source)
     {
         if (ddms.Register is null)
         {
             return null;
+        }
+
+        if (shape != DdmsShape.WellboreDdmsV3)
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.register reads a DDMS's collections from its Register service registration, which the route reads for DDMSs of the wellboreDdmsV3 shape. "
+                + $"Declare the root of a DDMS of the {DdmsCatalog.ShapeName(shape)} shape, and its collections where they differ from the ones its shape serves.");
         }
 
         var id = ddms.Register.Trim();
@@ -1633,6 +1698,12 @@ internal static partial class FlowMapper
             }
 
             var entry = $"{at}.collections.{entityType}";
+            if (shape == DdmsShape.WellDeliveryV1)
+            {
+                collections.Add(MapWellDeliveryCollection(entityType, value, entry, source));
+                continue;
+            }
+
             var declaredCollection = value ?? throw new FlowValidationException($"{source}: {entry} declares nothing; name at least the path the DDMS serves it under.");
             var segment = declaredCollection.Path?.Trim() ?? string.Empty;
             if (!DdmsCatalog.IsSegment(segment))
@@ -1648,10 +1719,52 @@ internal static partial class FlowMapper
                 throw new FlowValidationException($"{source}: {entry}.columns says what bulk data columns are checked against, and the collection holds records alone (bulk is false).");
             }
 
-            collections.Add(new DdmsCollectionEntry(entityType, segment, bulk) { Columns = columns });
+            if (shape != DdmsShape.WellboreDdmsV3 && columns != DdmsBulkColumns.Unchecked)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {entry}.columns names the curve and station checks the Wellbore DDMS applies to its bulk data, and {at} has the {DdmsCatalog.ShapeName(shape)} shape.");
+            }
+
+            var typed = declaredCollection.TypedContent ?? false;
+            if (typed && (shape != DdmsShape.RafsV2 || !bulk))
+            {
+                throw new FlowValidationException(
+                    shape != DdmsShape.RafsV2
+                        ? $"{source}: {entry}.typedContent says a RAFS collection holds several content types, and {at} has the {DdmsCatalog.ShapeName(shape)} shape."
+                        : $"{source}: {entry}.typedContent says what content the collection holds, and it holds records alone (bulk is false).");
+            }
+
+            collections.Add(new DdmsCollectionEntry(entityType, segment, bulk) { Columns = columns, TypedContent = typed });
         }
 
         return collections;
+    }
+
+    /// <summary>
+    /// A collection of a declared Well Delivery DDMS: always the entity type lowercased, which is the path the service
+    /// takes the type from, and records alone. A declared path must be that segment.
+    /// </summary>
+    private static DdmsCollectionEntry MapWellDeliveryCollection(string entityType, DdmsCollectionYaml? declared, string entry, string source)
+    {
+        var collection = DdmsCatalog.WellDeliveryCollection(entityType);
+        if (declared is null)
+        {
+            return collection;
+        }
+
+        if (declared.Path is { } path && !string.Equals(path.Trim(), collection.Segment, StringComparison.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"{source}: {entry}.path '{path.Trim()}' is not the path the Well Delivery DDMS serves {entityType} under: it takes the type from the record id and requires the path to be that type, "
+                + $"so the path is {collection.Segment}. Leave path out.");
+        }
+
+        if (declared.Bulk == true || declared.Columns is not null || declared.TypedContent is not null)
+        {
+            throw new FlowValidationException($"{source}: {entry} describes bulk data, and the Well Delivery DDMS keeps records alone. Remove bulk, columns and typedContent.");
+        }
+
+        return collection;
     }
 
     private static ProtocolOptions MapOptions(ProtocolOptionsYaml? o, string source)
@@ -1717,6 +1830,7 @@ internal static partial class FlowMapper
             ManifestInlineLimitKb = o.ManifestInlineLimitKb ?? ProtocolOptions.DefaultManifestInlineLimitKb,
             ByReferenceWorkflowName = Optional(o.ByReferenceWorkflowName) ?? ProtocolOptions.DefaultByReferenceWorkflowName,
             WorkflowPath = Optional(o.WorkflowPath),
+            ContentSchemaVersion = Optional(o.ContentSchemaVersion) ?? ProtocolOptions.DefaultContentSchemaVersion,
         };
     }
 

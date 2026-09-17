@@ -152,6 +152,118 @@ public sealed partial class DdmsCatalogTests
         Assert.Null(DdmsCatalog.KnownCollection(DdmsShape.WellboreDdmsV3, "wellboretrajectory"));
     }
 
+    private static ContractOperation? RafsOperation(string method, string template)
+        => OsduContracts.RafsDdms.Operations.SingleOrDefault(o => o.Method == method && o.Template == FakeOsduPlatform.RafsRoot + template);
+
+    [Fact]
+    public void Every_rafs_collection_the_contract_serves_is_catalogued_with_the_entity_types_its_record_id_takes()
+    {
+        var served = OsduContracts.RafsDdms.Operations
+            .Where(o => o.Method == "POST")
+            .Select(o => RafsCollectionPost().Match(o.Template))
+            .Where(m => m.Success)
+            .Select(m => m.Groups["segment"].Value)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        Assert.Equal(7, served.Count);
+        Assert.Equal(served, DdmsCatalog.RafsCollections.Select(c => c.Segment).Distinct().Order(StringComparer.Ordinal).ToList());
+        Assert.Equal(12, DdmsCatalog.RafsCollections.Select(c => c.EntityType).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+
+        foreach (var segment in served)
+        {
+            var get = RafsOperation("GET", $"/v2/{segment}/{{record_id}}")!;
+            Assert.NotNull(RafsOperation("DELETE", $"/v2/{segment}/{{record_id}}"));
+            var pattern = new Regex(Parameters(get).Single(p => (string?)p["name"] == "record_id")["schema"]!["pattern"]!.GetValue<string>(), RegexOptions.CultureInvariant);
+            var mine = DdmsCatalog.RafsCollections.Where(c => c.Segment == segment).ToList();
+            Assert.All(mine, c => Assert.Matches(pattern, $"opendes:{c.EntityType}:abc"));
+            Assert.All(DdmsCatalog.RafsCollections.Where(c => c.Segment != segment), c => Assert.DoesNotMatch(pattern, $"opendes:{c.EntityType}:abc"));
+        }
+    }
+
+    [Fact]
+    public void A_rafs_content_collection_has_the_content_write_its_shape_sends_and_a_record_collection_has_none()
+    {
+        foreach (var collection in DdmsCatalog.RafsCollections)
+        {
+            var single = RafsOperation("POST", $"/v2/{collection.Segment}/{{record_id}}/data");
+            var typed = OsduContracts.RafsDdms.Operations.SingleOrDefault(o =>
+                o.Method == "POST" && RafsTypedContent().Match(o.Template) is { Success: true } m && m.Groups["segment"].Value == collection.Segment);
+            Assert.True(
+                (single is not null) == (collection.Bulk && !collection.TypedContent),
+                $"{collection.Segment}: the one-type content write is {(single is null ? "not " : string.Empty)}served, and the catalog says bulk {collection.Bulk}, typed {collection.TypedContent}.");
+            Assert.True(
+                (typed is not null) == collection.TypedContent,
+                $"{collection.Segment}: the typed content write is {(typed is null ? "not " : string.Empty)}served, and the catalog says typed {collection.TypedContent}.");
+            if (collection.Bulk)
+            {
+                var write = (single ?? typed)!;
+                Assert.Contains(Parameters(write), p => (string?)p["name"] == "content_schema_version" && (string?)p["in"] == "query" && p["required"]!.GetValue<bool>());
+                if (!collection.TypedContent)
+                {
+                    Assert.NotNull(RafsOperation("GET", $"/v2/{collection.Segment}/data/schema"));
+                }
+            }
+        }
+
+        // The type catalogues the shape reads for the two collections that hold several types.
+        Assert.NotNull(RafsOperation("GET", "/v2/samplesanalysis/analysistypes"));
+        Assert.NotNull(RafsOperation("GET", "/v2/fluidmodel/fluidmodeltypes"));
+        Assert.NotNull(RafsOperation("GET", "/info"));
+    }
+
+    [Fact]
+    public void Every_well_delivery_type_is_served_under_its_own_lowercased_name_including_every_type_the_contract_queries()
+    {
+        var types = DdmsCatalog.WellDeliveryCollections;
+        Assert.All(types, c =>
+        {
+            Assert.False(c.Bulk);
+            Assert.Equal(DdmsCatalog.WellDeliveryType(c.EntityType), c.Segment);
+            Assert.Matches("^[0-9a-z-]+$", c.Segment);
+            Assert.True(DdmsCatalog.IsEntityType(c.EntityType));
+        });
+        Assert.Equal(types.Count, types.Select(c => c.EntityType).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+
+        // The contract's query type lists; it spells one type wellboreArchitectory, which the service refuses
+        // (osdu/specs/well-delivery-ddms/INTEGRATION.md section 9, item 7).
+        var queried = OsduContracts.WellDeliveryDdms.Operations
+            .SelectMany(o => (o.Definition["parameters"] as JsonArray ?? []).OfType<JsonObject>())
+            .Where(p => (string?)p["name"] == "type" && p["enum"] is JsonArray)
+            .SelectMany(p => p["enum"]!.AsArray().Select(v => v!.GetValue<string>()))
+            .Select(t => t == "wellboreArchitectory" ? "wellboreArchitecture" : t)
+            .Select(t => t.ToLowerInvariant())
+            .Distinct()
+            .ToList();
+        Assert.Equal(21, queried.Count);
+        Assert.All(queried, t => Assert.Contains(t, types.Select(c => c.Segment)));
+
+        // The storage routes every type goes through.
+        foreach (var (method, template) in new[] { ("PUT", "/storage/v1/{type}"), ("GET", "/storage/v1/{type}/{id}"), ("GET", "/storage/v1/{type}/{id}/{version}"), ("DELETE", "/storage/v1/{type}/{id}"), ("DELETE", "/storage/v1/{type}/{id}:purge") })
+        {
+            Assert.Contains(OsduContracts.WellDeliveryDdms.Operations, o => o.Method == method && o.Template == template);
+        }
+    }
+
+    [Fact]
+    public void Each_shape_says_where_it_is_usually_deployed_and_how_it_is_probed()
+    {
+        Assert.Equal("/api/os-wellbore-ddms", DdmsCatalog.UsualRoot(DdmsShape.WellboreDdmsV3));
+        Assert.Equal("/api/well-delivery", DdmsCatalog.UsualRoot(DdmsShape.WellDeliveryV1));
+        Assert.Equal("/api/rafs-ddms", DdmsCatalog.UsualRoot(DdmsShape.RafsV2));
+        Assert.Equal("wellDeliveryV1", DdmsCatalog.ShapeName(DdmsShape.WellDeliveryV1));
+        Assert.Equal(["/wd/info"], DdmsCatalog.ProbePaths(new DdmsService("wd", "/wd", DdmsShape.WellDeliveryV1, [])));
+        Assert.Equal(["/r/info", "/r/v2/samplesanalysis/analysistypes"], DdmsCatalog.ProbePaths(new DdmsService("r", "/r", DdmsShape.RafsV2, [])));
+        Assert.Equal(["/about"], DdmsCatalog.ProbePaths(DdmsCatalog.WellboreDdms(null)));
+        Assert.Equal("bharun", DdmsCatalog.WellDeliveryType("master-data--BHARun"));
+        Assert.Equal("rig", DdmsCatalog.WellDeliveryCollection("master-data--Rig").Segment);
+    }
+
     [GeneratedRegex(@"^/ddms/v3/(?<segment>[^/{}]+)$", RegexOptions.CultureInvariant)]
     private static partial Regex CollectionPost();
+
+    [GeneratedRegex(@"^/api/rafs-ddms/v2/(?<segment>[^/{}]+)$", RegexOptions.CultureInvariant)]
+    private static partial Regex RafsCollectionPost();
+
+    [GeneratedRegex(@"^/api/rafs-ddms/v2/(?<segment>[^/{}]+)/\{record_id\}/data/\{[^/{}]+\}$", RegexOptions.CultureInvariant)]
+    private static partial Regex RafsTypedContent();
 }

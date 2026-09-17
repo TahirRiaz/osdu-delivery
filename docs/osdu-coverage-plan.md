@@ -30,14 +30,14 @@ and the order it is built in.
 | Files and bulk data of one record | file v2, dataset v1, workflow v1, `osdu/specs/wellbore-ddms` | `fileAndDdms` and `manifestAndDdms` (stage 6) | none |
 | Wellbore DDMS, bulk kinds (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) | `osdu/specs/wellbore-ddms` | every bulk collection (`ddms`, stage 5) | none |
 | Wellbore DDMS, record kinds (Well, Wellbore, WellboreMarkerSet, WellboreIntervalSet, WellLogAcquisition) | `osdu/specs/wellbore-ddms` | every record collection (`ddms`, stage 5) | none |
-| Seismic DDMS (Seismic Store) | `osdu/specs/seismic-ddms` | no | route type `seismicStore` |
+| Seismic DDMS (Seismic Store) | `osdu/specs/seismic-ddms` | no | ddms shape `seismicStoreV3` (docs/interfaces-design.md section 5.10) |
 | Reservoir DDMS (Open ETP server, ETP 1.2) | `osdu/specs/reservoir-ddms` | no | route type `etp` |
-| Rock and Fluid Samples DDMS | `osdu/specs/rafs-ddms` | no | DDMS routes (shape from its brief) |
-| Well Delivery DDMS | `osdu/specs/well-delivery-ddms` | no | DDMS record route (shape from its brief) |
-| Production DDMS (DSPDM) | `osdu/specs/production-dspdm` | no | route from its brief |
-| Production time series (historian) | `osdu/specs/production-timeseries` | no | route type `timeSeries` |
-| Reservoir Management DDMS | `osdu/specs/reservoir-management-ddms` | no | route from its brief |
-| External Data Services | `osdu/specs/eds-dms` | no | route from its brief |
+| Rock and Fluid Samples DDMS | `osdu/specs/rafs-ddms` | ddms shape `rafsV2` (stage 7): every collection, records and content tables | none |
+| Well Delivery DDMS | `osdu/specs/well-delivery-ddms` | ddms shape `wellDeliveryV1` (stage 7): every entity type it knows, versioned references, its Storage copy | none |
+| Production DDMS (DSPDM) | `osdu/specs/production-dspdm` | no | route type `dspdm` |
+| Production time series (historian) | `osdu/specs/production-timeseries` | no | ddms shape `productionTimeSeriesV1` |
+| Reservoir Management DDMS | `osdu/specs/reservoir-management-ddms` | no | ddms shape `reservoirManagement` |
+| External Data Services | `osdu/specs/eds-dms` | no | storage and workflow routes, with the checks EDS needs |
 | DDMS discovery (Register service) | register v1 | `target.ddms`, with a registration read by id (stage 5) | none |
 
 And the engine itself:
@@ -191,18 +191,27 @@ contract's object typing of context values (`osdu/specs/workflows/INTEGRATION.md
 
 ### Stage 7: the other DDMSs
 
-One route type per call pattern the briefs identify, each with its contract tests:
+One call pattern per service the briefs identify, each with its contract tests:
 
-- Seismic DDMS (`seismicStore`).
-- Reservoir DDMS (`etp`): an ETP 1.2 client over WebSocket with the Avro encoding of the messages it uses.
-- Rock and Fluid Samples DDMS.
-- Well Delivery DDMS.
-- Production DDMS and production time series.
-- Reservoir Management DDMS.
-- External Data Services.
+- Seismic DDMS (ddms shape `seismicStoreV3`).
+- Reservoir DDMS (route type `etp`): an ETP 1.2 client over WebSocket with the Avro encoding of the messages it uses.
+- Rock and Fluid Samples DDMS (ddms shape `rafsV2`).
+- Well Delivery DDMS (ddms shape `wellDeliveryV1`).
+- Production DDMS (route type `dspdm`) and production time series (ddms shape `productionTimeSeriesV1`).
+- Reservoir Management DDMS (ddms shape `reservoirManagement`).
+- External Data Services (the storage and workflow routes).
 
 Done when each has a route test end to end against a fake of its service built from its contract, and the kinds it
 serves resolve to it.
+
+Status: in progress. A DDMS that takes an OSDU record and keeps data of its own for it is a shape of the `ddms` route,
+found by the record's entity type under `target.ddms`; one whose unit is not an OSDU record is a route type of its own
+(docs/interfaces-design.md section 5.10). Built: the Well Delivery DDMS (`wellDeliveryV1`: an entity per write under a
+version recorded first, references given the versions the DDMS holds, content rewritten in place, the Storage copy
+removed with the entity) and the Rock and Fluid Sample DDMS (`rafsV2`: records in arrays, content tables per type and
+schema version checked against the service's catalogue, both storage modes, the content datasets removed with the
+record), each against a fake of the service with every request checked against its pinned contract, and the ddms route
+split into one writer per shape.
 
 ### Stage 8: records that wait for other records
 

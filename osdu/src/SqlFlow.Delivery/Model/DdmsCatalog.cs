@@ -11,6 +11,31 @@ public enum DdmsShape
     /// <c>GET</c> and <c>DELETE</c> on <c>/{id}</c>, with <c>purge</c> on a bulk collection only.
     /// </summary>
     WellboreDdmsV3,
+
+    /// <summary>
+    /// The Well Delivery DDMS (osdu/specs/well-delivery-ddms/INTEGRATION.md): <c>PUT /storage/v1/{type}</c> with one entity
+    /// per request under a version the writer chooses; <c>GET</c> and <c>DELETE</c> on <c>/storage/v1/{type}/{entityId}</c>,
+    /// the purge on <c>:purge</c>. It keeps records alone, and indexes the references that name a version.
+    /// </summary>
+    WellDeliveryV1,
+
+    /// <summary>
+    /// The Rock and Fluid Sample DDMS v2 (osdu/specs/rafs-ddms/INTEGRATION.md): <c>POST /v2/{collection}</c> with an array
+    /// of records; a content collection takes each content table in one request under <c>/{id}/data</c>, or
+    /// <c>/{id}/data/{contentType}</c> where it holds several types, with the content schema version in the query;
+    /// <c>GET</c> and a logical <c>DELETE</c> on <c>/{id}</c>.
+    /// </summary>
+    RafsV2,
+}
+
+/// <summary>The cloud a DDMS deployment runs on, where the API cannot tell and its behaviour depends on it.</summary>
+public enum DdmsProvider
+{
+    Azure,
+    Aws,
+    Gc,
+    Anthos,
+    Ibm,
 }
 
 /// <summary>
@@ -38,8 +63,8 @@ public enum DdmsBulkColumns
 
 /// <summary>
 /// One collection of a DDMS: the entity type it serves, the path segment it is served under, and whether it holds bulk
-/// data beside its records. Only a bulk collection takes bulk writes and sessions, keeps a bulk link on its records and
-/// purges on DELETE.
+/// data beside its records. Only a bulk collection takes bulk writes, keeps a link to them on its records and, on the
+/// Wellbore DDMS, takes sessions and purges on DELETE.
 /// </summary>
 /// <param name="EntityType">The entity type of the records it serves (<c>work-product-component--WellLog</c>).</param>
 /// <param name="Segment">The path segment it is served under (<c>welllogs</c>); never derived from the entity type.</param>
@@ -48,6 +73,42 @@ public sealed record DdmsCollectionEntry(string EntityType, string Segment, bool
 {
     /// <summary>What the record's bulk data columns are checked against before a bulk write.</summary>
     public DdmsBulkColumns Columns { get; init; } = DdmsBulkColumns.Unchecked;
+
+    /// <summary>
+    /// A RAFS content collection holding several content types, each written under its own path segment
+    /// (<c>/{id}/data/{contentType}</c>); a collection that holds one type is written under <c>/{id}/data</c>, and its
+    /// content type is its segment.
+    /// </summary>
+    public bool TypedContent { get; init; }
+}
+
+/// <summary>
+/// What the Well Delivery DDMS's API cannot tell about a deployment and the route depends on
+/// (osdu/specs/well-delivery-ddms/INTEGRATION.md sections 4, 6 and 8).
+/// </summary>
+public sealed record WellDeliverySettings
+{
+    public const int DefaultConcurrency = 1;
+
+    public const int MaxConcurrency = 16;
+
+    /// <summary>
+    /// Whether the deployment copies every entity into Storage (<c>app.entity.storage</c>, on in every provider's chart).
+    /// The copy is a record of its own that the DDMS never deletes, so a removal takes it too.
+    /// </summary>
+    public bool Mirror { get; init; } = true;
+
+    /// <summary>
+    /// The provider the deployment runs on, when the flow says. IBM's store refuses a second write of the same version,
+    /// so an entity is never written again in place there.
+    /// </summary>
+    public DdmsProvider? Provider { get; init; }
+
+    /// <summary>
+    /// Writes one process sends to this DDMS at a time. The Mongo and Cosmos stores keep the collection of the current
+    /// write in shared state, so writes of different types at once can land in each other's collection; one is safe.
+    /// </summary>
+    public int Concurrency { get; init; } = DefaultConcurrency;
 }
 
 /// <summary>
@@ -65,6 +126,12 @@ public sealed record DdmsService(string Name, string? Root, DdmsShape Shape, IRe
 
     /// <summary>Whether the registration has been read, so the root and collections are what the DDMS serves.</summary>
     public bool Discovered { get; init; }
+
+    /// <summary>Whether the flow listed the collections itself, rather than taking the ones its shape serves.</summary>
+    public bool DeclaresCollections { get; init; }
+
+    /// <summary>The Well Delivery DDMS's deployment settings; null for every other shape.</summary>
+    public WellDeliverySettings? WellDelivery { get; init; }
 
     /// <summary>Whether the registration still has to be read before the DDMS's root and collections are known.</summary>
     public bool AwaitsDiscovery => Registration is not null && !Discovered;
@@ -91,7 +158,8 @@ public sealed record DdmsService(string Name, string? Root, DdmsShape Shape, IRe
 /// <summary>
 /// The DDMSs OSDU Delivery knows the collections of without a flow declaring them. The collection a record goes to is
 /// always stated, never derived from its entity type: the Wellbore DDMS serves WellLog under <c>welllogs</c> and
-/// PPFGDataset under <c>ppfgdataset</c>.
+/// PPFGDataset under <c>ppfgdataset</c>. The one exception is the Well Delivery DDMS, whose write path takes any type and
+/// is the type itself, lowercased (osdu/specs/well-delivery-ddms/INTEGRATION.md section 4).
 /// </summary>
 public static partial class DdmsCatalog
 {
@@ -103,6 +171,21 @@ public static partial class DdmsCatalog
 
     /// <summary>The Wellbore DDMS's unauthenticated service description, below the DDMS root (<c>GET /about</c>).</summary>
     public const string WellboreDdmsAboutPath = "/about";
+
+    /// <summary>The path every Well Delivery DDMS entity type is written and read under, below the DDMS root.</summary>
+    public const string WellDeliveryPrefix = "/storage/v1/";
+
+    /// <summary>The Well Delivery DDMS's version information, below the DDMS root (in the service's code, not its contract).</summary>
+    public const string WellDeliveryInfoPath = "/info";
+
+    /// <summary>The path every RAFS v2 collection is served under, below the DDMS root.</summary>
+    public const string RafsV2Prefix = "/v2/";
+
+    /// <summary>The RAFS DDMS's application information, below the DDMS root (<c>GET /info</c>, no token).</summary>
+    public const string RafsInfoPath = "/info";
+
+    /// <summary>The RAFS DDMS's type catalogue of SamplesAnalysis content, which checks the token and partition (<c>GET /v2/samplesanalysis/analysistypes</c>).</summary>
+    public const string RafsAnalysisTypesPath = "/v2/samplesanalysis/analysistypes";
 
     /// <summary>
     /// The Wellbore DDMS v3's collections, as its pinned contract serves them (osdu/specs/wellbore-ddms/openapi.json and
@@ -126,6 +209,73 @@ public static partial class DdmsCatalog
         new("master-data--WellLogAcquisition", "welllogacquisition", Bulk: false),
     ];
 
+    /// <summary>
+    /// The entity types the Well Delivery DDMS knows (osdu/specs/well-delivery-ddms/INTEGRATION.md section 4, from the
+    /// service's <c>ENTITY_TYPE</c>, its query routes and the types its examples write), each in the group the OSDU data
+    /// definitions give it (project 91, <c>E-R</c> at <c>99f8fc88d8ad838b5738ac5ad92ac643538b5766</c>). The service keys an
+    /// entity by its type and entity id alone, so TubularAssembly and TubularComponent, which the data definitions define
+    /// in both groups, are served in both. The segment is always the type, lowercased; the service's write path takes any
+    /// type, so a flow lists the ones it needs beyond these.
+    /// </summary>
+    public static IReadOnlyList<DdmsCollectionEntry> WellDeliveryCollections { get; } =
+    [
+        .. new[]
+        {
+            "master-data--Well",
+            "master-data--WellPlanningWell",
+            "master-data--WellPlanningWellbore",
+            "master-data--Wellbore",
+            "master-data--WellActivityProgram",
+            "master-data--ActivityPlan",
+            "master-data--WellboreArchitecture",
+            "work-product-component--WellboreTrajectory",
+            "master-data--HoleSection",
+            "master-data--BHARun",
+            "master-data--TubularAssembly",
+            "work-product-component--TubularAssembly",
+            "master-data--TubularComponent",
+            "work-product-component--TubularComponent",
+            "master-data--OperationsReport",
+            "master-data--FluidsReport",
+            "master-data--FluidsProgram",
+            "master-data--CasingDesign",
+            "master-data--EvaluationPlan",
+            "master-data--PlannedCementJob",
+            "master-data--WellBarrierElementTest",
+            "work-product-component--WellLog",
+            "master-data--GeometricTargetSet",
+            "master-data--Risk",
+            "master-data--SurveyProgram",
+            "work-product-component--PPFGDataset",
+            "work-product-component--PlannedLithology",
+            "work-product-component--WellboreMarkerSet",
+            "master-data--Rig",
+        }.Select(WellDeliveryCollection),
+    ];
+
+    /// <summary>
+    /// The RAFS v2 collections and the entity types each accepts, as the pinned contract's paths and <c>record_id</c>
+    /// patterns serve them (osdu/specs/rafs-ddms/INTEGRATION.md section 2.1): six master data types under
+    /// <c>masterdata</c> and the samples analyses report hold records alone; SamplesAnalysis and FluidModel hold several
+    /// content types each; SaturationFunctionSet, ReservoirSimulationRockPhysicsModel and DepthShift one each, named after
+    /// the collection. A test checks every row against the pinned contract.
+    /// </summary>
+    public static IReadOnlyList<DdmsCollectionEntry> RafsCollections { get; } =
+    [
+        new("master-data--GenericFacility", "masterdata", Bulk: false),
+        new("master-data--GenericSite", "masterdata", Bulk: false),
+        new("master-data--Sample", "masterdata", Bulk: false),
+        new("master-data--SampleAcquisitionJob", "masterdata", Bulk: false),
+        new("master-data--SampleChainOfCustodyEvent", "masterdata", Bulk: false),
+        new("master-data--SampleContainer", "masterdata", Bulk: false),
+        new("work-product-component--SamplesAnalysesReport", "samplesanalysesreport", Bulk: false),
+        new("work-product-component--SamplesAnalysis", "samplesanalysis", Bulk: true) { TypedContent = true },
+        new("work-product-component--SaturationFunctionSet", "saturationfunctionset", Bulk: true),
+        new("work-product-component--ReservoirSimulationRockPhysicsModel", "reservoirsimulationrockphysicsmodel", Bulk: true),
+        new("work-product-component--FluidModel", "fluidmodel", Bulk: true) { TypedContent = true },
+        new("work-product-component--DepthShift", "depthshift", Bulk: true),
+    ];
+
     /// <summary>The Wellbore DDMS under <paramref name="root"/>, with the collections its contract serves.</summary>
     public static DdmsService WellboreDdms(string? root) => new(WellboreDdmsName, root, DdmsShape.WellboreDdmsV3, WellboreDdmsCollections);
 
@@ -133,8 +283,62 @@ public static partial class DdmsCatalog
     public static IReadOnlyList<DdmsCollectionEntry> DefaultCollections(DdmsShape shape) => shape switch
     {
         DdmsShape.WellboreDdmsV3 => WellboreDdmsCollections,
+        DdmsShape.WellDeliveryV1 => WellDeliveryCollections,
+        DdmsShape.RafsV2 => RafsCollections,
         _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "not a DDMS shape"),
     };
+
+    /// <summary>Where a DDMS of <paramref name="shape"/> is deployed under the platform, as the service's charts route it.</summary>
+    public static string UsualRoot(DdmsShape shape) => shape switch
+    {
+        DdmsShape.WellboreDdmsV3 => "/api/os-wellbore-ddms",
+        DdmsShape.WellDeliveryV1 => "/api/well-delivery",
+        DdmsShape.RafsV2 => "/api/rafs-ddms",
+        _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "not a DDMS shape"),
+    };
+
+    /// <summary>The name a flow document gives <paramref name="shape"/> (<c>wellboreDdmsV3</c>).</summary>
+    public static string ShapeName(DdmsShape shape)
+    {
+        var name = shape.ToString();
+        return char.ToLowerInvariant(name[0]) + name[1..];
+    }
+
+    /// <summary>
+    /// The service descriptions a probe of <paramref name="service"/> asks, in order, below the endpoint. The Wellbore DDMS
+    /// answers <c>/about</c>, the Well Delivery DDMS <c>/info</c>, and RAFS <c>/info</c> without a token, then its type
+    /// catalogue, which checks the token and the partition.
+    /// </summary>
+    public static IReadOnlyList<string> ProbePaths(DdmsService service)
+    {
+        ArgumentNullException.ThrowIfNull(service);
+        var root = service.Root ?? string.Empty;
+        return service.Shape switch
+        {
+            DdmsShape.WellboreDdmsV3 => [root + WellboreDdmsAboutPath],
+            DdmsShape.WellDeliveryV1 => [root + WellDeliveryInfoPath],
+            DdmsShape.RafsV2 => [root + RafsInfoPath, root + RafsAnalysisTypesPath],
+            _ => throw new ArgumentOutOfRangeException(nameof(service), service.Shape, "not a DDMS shape"),
+        };
+    }
+
+    /// <summary>
+    /// The Well Delivery collection of <paramref name="entityType"/>: the type after <c>--</c>, lowercased, which is the
+    /// path segment the service takes the type from (osdu/specs/well-delivery-ddms/INTEGRATION.md section 2, step 4).
+    /// </summary>
+    public static DdmsCollectionEntry WellDeliveryCollection(string entityType)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityType);
+        return new DdmsCollectionEntry(entityType, WellDeliveryType(entityType), Bulk: false);
+    }
+
+    /// <summary>The Well Delivery DDMS's type of an entity type: the part after <c>--</c>, lowercased.</summary>
+    public static string WellDeliveryType(string entityType)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityType);
+        var separator = entityType.IndexOf("--", StringComparison.Ordinal);
+        return (separator < 0 ? entityType : entityType[(separator + 2)..]).ToLowerInvariant();
+    }
 
     /// <summary>True for a name a flow may give a DDMS: a letter followed by letters, digits, '_' and '-', at most 64 characters.</summary>
     public static bool IsName(string name) => NamePattern().IsMatch(name);

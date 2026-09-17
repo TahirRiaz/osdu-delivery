@@ -7,27 +7,46 @@ namespace SqlFlow.Delivery.Engine;
 /// <summary>Where the records of one entity type go on the ddms route: the DDMS serving it and the collection it serves it under.</summary>
 public sealed record DdmsRoute(DdmsService Service, DdmsCollectionEntry Collection)
 {
-    /// <summary>The collection below the flow's endpoint (<c>/api/os-wellbore-ddms/ddms/v3/welllogs</c>).</summary>
-    public string CollectionPath => Service.Shape switch
+    /// <summary>The token a Well Delivery path takes the entity id in: the id's part after its type, never the whole id.</summary>
+    public const string EntityIdToken = "{entityId}";
+
+    /// <summary>The token a typed RAFS content path takes the content type in.</summary>
+    public const string ContentTypeToken = "{contentType}";
+
+    /// <summary>
+    /// The collection below the flow's endpoint: <c>/api/os-wellbore-ddms/ddms/v3/welllogs</c>,
+    /// <c>/api/well-delivery/storage/v1/wellbore</c>, <c>/api/rafs-ddms/v2/samplesanalysis</c>.
+    /// </summary>
+    public string CollectionPath => (Service.Root ?? string.Empty) + Service.Shape switch
     {
-        DdmsShape.WellboreDdmsV3 => (Service.Root ?? string.Empty) + DdmsCatalog.WellboreDdmsV3Prefix + Collection.Segment,
+        DdmsShape.WellboreDdmsV3 => DdmsCatalog.WellboreDdmsV3Prefix,
+        DdmsShape.WellDeliveryV1 => DdmsCatalog.WellDeliveryPrefix,
+        DdmsShape.RafsV2 => DdmsCatalog.RafsV2Prefix,
         _ => throw new InvalidOperationException($"The DDMS '{Service.Name}' has the shape {Service.Shape}, which has no paths."),
+    } + Collection.Segment;
+
+    /// <summary>One record: read, verified and deleted here. The Well Delivery DDMS names it by its entity id alone.</summary>
+    public string RecordPath => CollectionPath + (Service.Shape == DdmsShape.WellDeliveryV1 ? "/" + EntityIdToken : "/{id}");
+
+    /// <summary>
+    /// The whole bulk of a record, written at once (on the Wellbore DDMS, with <c>describe=true</c>, its description); on
+    /// RAFS, one content table, under its content type when the collection holds several. Null where the DDMS keeps none.
+    /// </summary>
+    public string? DataPath => Service.Shape switch
+    {
+        DdmsShape.WellboreDdmsV3 => CollectionPath + "/{id}/data",
+        DdmsShape.RafsV2 => CollectionPath + "/{id}/data" + (Collection.TypedContent ? "/" + ContentTypeToken : string.Empty),
+        _ => null,
     };
 
-    /// <summary>One record: read, verified and deleted here.</summary>
-    public string RecordPath => CollectionPath + "/{id}";
-
-    /// <summary>The whole bulk of a record, written at once; with <c>describe=true</c>, its description.</summary>
-    public string DataPath => CollectionPath + "/{id}/data";
-
-    /// <summary>Where a bulk session of a record is opened.</summary>
-    public string SessionsPath => CollectionPath + "/{id}/sessions";
+    /// <summary>Where a bulk session of a record is opened; only the Wellbore DDMS has sessions.</summary>
+    public string? SessionsPath => Service.Shape == DdmsShape.WellboreDdmsV3 ? CollectionPath + "/{id}/sessions" : null;
 
     /// <summary>One chunk of a session.</summary>
-    public string SessionDataPath => CollectionPath + "/{id}/sessions/{sessionId}/data";
+    public string? SessionDataPath => Service.Shape == DdmsShape.WellboreDdmsV3 ? CollectionPath + "/{id}/sessions/{sessionId}/data" : null;
 
     /// <summary>A session: committed or abandoned with PATCH, its state read with GET.</summary>
-    public string SessionPath => CollectionPath + "/{id}/sessions/{sessionId}";
+    public string? SessionPath => Service.Shape == DdmsShape.WellboreDdmsV3 ? CollectionPath + "/{id}/sessions/{sessionId}" : null;
 
     /// <summary>How a message names the collection: <c>welllogs of the DDMS 'wellbore' (/api/os-wellbore-ddms)</c>.</summary>
     public string Describe() => $"the {Collection.Segment} collection of {DdmsRouting.Describe(Service)}";
@@ -66,6 +85,9 @@ public sealed record DdmsRecordPaths
     /// <summary>What the bulk data's columns are checked against before they are sent.</summary>
     public DdmsBulkColumns Columns => Route?.Collection.Columns ?? DdmsBulkColumns.Unchecked;
 
+    /// <summary>The call pattern the records go by: their DDMS's, or the Wellbore DDMS's for paths the flow names itself.</summary>
+    public DdmsShape Shape => Route?.Service.Shape ?? DdmsShape.WellboreDdmsV3;
+
     /// <summary>How a message names where the records go.</summary>
     public string Describe() => Route?.Describe() ?? $"the paths the flow names ({Records})";
 }
@@ -81,6 +103,7 @@ public sealed class DdmsRouting
 {
     private readonly ProtocolOptions _options;
     private readonly bool _declaresDdms;
+    private readonly HashSet<string> _declared;
     private readonly bool _wellboreUnrooted;
     private readonly string _where;
     private readonly KeyPaths _keys;
@@ -89,6 +112,7 @@ public sealed class DdmsRouting
     {
         _options = options;
         _declaresDdms = declared.Count > 0;
+        _declared = declared.Select(d => d.Name).ToHashSet(StringComparer.Ordinal);
         _where = where;
         _keys = keys;
         Unread = declared.Where(d => d.AwaitsDiscovery).Select(d => d.Name).ToList();
@@ -182,6 +206,29 @@ public sealed class DdmsRouting
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(entityType);
         var route = Find(entityType);
+        if (route is { Service.Shape: not DdmsShape.WellboreDdmsV3 } shaped)
+        {
+            // Paths a flow names are those of a Wellbore DDMS facade; every other shape says each call it takes.
+            var named = NamedPathOptions();
+            if (named.Count > 0)
+            {
+                throw new DeliveryException(
+                    $"{_where}: the flow names DDMS paths of its own ({string.Join(", ", named)} under {_keys.Shared("target.protocolOptions")}), which only a DDMS of the "
+                    + $"wellboreDdmsV3 shape takes, and {entityType} records go to {shaped.Describe()}, whose shape ({DdmsCatalog.ShapeName(shaped.Service.Shape)}) "
+                    + "says every call they take. Remove those paths, or leave that entity type out of the DDMS's collections.");
+            }
+
+            return new DdmsRecordPaths
+            {
+                EntityType = entityType,
+                Route = shaped,
+                Records = shaped.CollectionPath,
+                Record = shaped.RecordPath,
+                Delete = shaped.RecordPath,
+                Data = shaped.Collection.Bulk ? shaped.DataPath : null,
+            };
+        }
+
         if (!NamesPaths)
         {
             if (route is null)
@@ -253,8 +300,19 @@ public sealed class DdmsRouting
         if (paths.Route is { Collection.Bulk: false } route && (paths.Data is null || paths.Sessions is null))
         {
             var payload = _keys.Payload(_options.Payload ?? FlowMapper.BulkPayload);
-            return $"{_where}: {entityType} records go to {route.Describe()}, which holds records alone and takes no bulk data, so {payload} would never be sent. "
-                + "Deliver those records without it, or name the DDMS paths that take their bulk data.";
+            var how = route.Service.Shape == DdmsShape.WellboreDdmsV3
+                ? "Deliver those records without it, or name the DDMS paths that take their bulk data."
+                : _declared.Contains(route.Service.Name) && !route.Service.DeclaresCollections
+                    ? $"target.ddms.{route.Service.Name} serves the type because its shape ({DdmsCatalog.ShapeName(route.Service.Shape)}) serves it unless the flow lists "
+                        + $"other collections: list the ones it is to serve under target.ddms.{route.Service.Name}.collections, leaving {entityType} to the DDMS that keeps its bulk data, "
+                        + "or deliver the records without it."
+                    : "Deliver those records without it.";
+            return $"{_where}: {entityType} records go to {route.Describe()}, which holds records alone and takes no bulk data, so {payload} would never be sent. {how}";
+        }
+
+        if (paths.Shape != DdmsShape.WellboreDdmsV3)
+        {
+            return null;
         }
 
         var missing = new[] { ("dataPath", paths.Data), ("sessionPath", paths.Sessions), ("sessionDataPath", paths.SessionData), ("sessionCommitPath", paths.Session) }
@@ -295,11 +353,37 @@ public sealed class DdmsRouting
         }
     }
 
-    /// <summary>The service descriptions the probe asks: the flow's own probe path, or each DDMS it reaches.</summary>
+    /// <summary>The service descriptions the probe asks: the flow's own probe path, or each DDMS it reaches, as its shape describes itself.</summary>
     public IReadOnlyList<string> ProbePaths
         => _options.ProbePath is { } probe
             ? [probe]
-            : Services.Select(s => (s.Root ?? string.Empty) + DdmsCatalog.WellboreDdmsAboutPath).Distinct(StringComparer.Ordinal).ToList();
+            : Services.SelectMany(DdmsCatalog.ProbePaths).Distinct(StringComparer.Ordinal).ToList();
+
+    /// <summary>
+    /// Where the storage service's reversible delete is, for the records a DDMS writes into storage beside its own (the
+    /// Well Delivery DDMS's copies, the datasets RAFS registers for content): the storage default under a platform
+    /// endpoint; null when the flow's endpoint is a DDMS itself.
+    /// </summary>
+    public string? StorageDeletePath => PlatformEndpoint ? OsduRecordProtocol.DefaultDeletePath : null;
+
+    /// <summary>The path options a flow sets that name DDMS calls of a Wellbore DDMS facade.</summary>
+    private List<string> NamedPathOptions()
+    {
+        var named = new List<string>();
+        foreach (var (name, value) in new[]
+        {
+            ("recordPath", _options.RecordPath), ("verifyPath", _options.VerifyPath), ("deletePath", _options.DeletePath), ("dataPath", _options.DataPath),
+            ("sessionPath", _options.SessionPath), ("sessionDataPath", _options.SessionDataPath), ("sessionCommitPath", _options.SessionCommitPath),
+        })
+        {
+            if (value is not null)
+            {
+                named.Add(name);
+            }
+        }
+
+        return named;
+    }
 
     /// <summary>
     /// Where the storage service's purge of a record's earlier versions is (versions belong to storage for every kind of

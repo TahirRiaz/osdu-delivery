@@ -703,6 +703,14 @@ public sealed record ProtocolOptions
     /// <summary>Manifest and workflow protocols: the path that reads a workflow by name; {workflow} is its name (openapi workflow v1, GET workflow/{workflow_name}).</summary>
     public string? WorkflowPath { get; init; }
 
+    /// <summary>
+    /// ddms route, RAFS shape: the content schema version a content table follows when its file name names none
+    /// (<c>nmr.parquet</c> rather than <c>nmr.1.1.0.parquet</c>). Default 1.0.0, a version every RAFS content type has.
+    /// </summary>
+    public string ContentSchemaVersion { get; init; } = DefaultContentSchemaVersion;
+
+    public const string DefaultContentSchemaVersion = "1.0.0";
+
     /// <summary>The sections of an osdu:wks:Manifest:1.0.0 a record can be placed in.</summary>
     public static readonly IReadOnlyList<string> ManifestSections = ["ReferenceData", "MasterData", "WorkProduct", "WorkProductComponents", "Datasets"];
 }

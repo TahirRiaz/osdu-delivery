@@ -169,8 +169,8 @@ are checked in the run's preflight, on the node.
 A record goes to the collection of the DDMS serving its entity type, which its id names
 (`{partition}:{entityType}:{key}`), so a verify, a read or a removal routes from the id alone. In order:
 
-1. `target.ddms` in the flow: named DDMSs, each with its root under the endpoint, its route shape and the collection
-   each entity type is served under (the shape's own collections when it lists none). The collection is always
+1. `target.ddms` in the flow: named DDMSs, each with its root under the endpoint, its route shape (section 5.10) and the
+   collection each entity type is served under (the shape's own collections when it lists none). The collection is always
    stated, never derived: the Wellbore DDMS serves `WellLog` under `welllogs` and `PPFGDataset` under `ppfgdataset`,
    so no rule turns an entity type into its path. A DDMS named with `register: <id>` has what the flow leaves out read
    from its Register service registration when the protocol is built: the root from the one server its registered
@@ -192,10 +192,12 @@ A route type is one call pattern, written once:
 | `file` | file v2, storage v2 | exists (`osduFile`) |
 | `manifest` | file v2, workflow v1, storage v2 | exists (`osduManifest`) |
 | `ddms` with shape `wellboreDdmsV3` | wellbore DDMS v3: `POST /{collection}`, `/{collection}/{id}/data`, `/{collection}/{id}/sessions` | built (stage 5, `osduWellLog`): every Wellbore DDMS collection, the four that keep bulk data (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) and the five that hold records alone, and any DDMS of the same shape |
+| `ddms` with shape `wellDeliveryV1` | Well Delivery DDMS: `PUT /storage/v1/{type}`, `/storage/v1/{type}/{entityId}`; storage v2 for the copy it keeps | built (stage 7, section 5.10) |
+| `ddms` with shape `rafsV2` | RAFS v2: `POST /v2/{collection}`, `/v2/{collection}/{id}/data[/{contentType}]`, the type catalogues; storage v2 for the datasets it registers | built (stage 7, section 5.10) |
 | `dataset` | dataset v1: `storageInstructions`, `registerDataset`, `retrievalInstructions`, `metadataRecord/{id}/softDelete`; storage v2 | built (stage 6, `osduDataset`), section 5.6 |
 | `fileAndDdms`, `manifestAndDdms` | the above, composed | built (stage 6, `osduFileAndDdms`, `osduManifestAndDdms`), section 5.7 |
 | `workflow` | workflow v1, dataset v1, storage v2, search v2; Airflow's REST API (v1 or v2) for the outputs only it returns | built (stage 6, `osduWorkflow`), section 5.9 |
-| other DDMS shapes (seismic, reservoir, ...) | their own specifications | one route type each, once their specifications are added |
+| the other DDMSs | their briefs under `osdu/specs` | stage 7, section 5.10 |
 
 The well log specific checks became checks of any tabular bulk upload: the row labels of each chunk read before a
 session, the rows and columns read back after it, and the columns checked against what the record declares for its
@@ -338,6 +340,29 @@ interfaces:
   trigger request; the step, the log and every message keep the context with `***` in their place.
 - **Preflight** asks the Workflow service for every workflow the route runs, so a name the partition does not register
   stops the run before anything is sent.
+
+### 5.10 The other DDMSs
+
+Every DDMS in OSDU is reached by one call pattern each, built from its brief (`osdu/specs/<service>/INTEGRATION.md`).
+Where a DDMS takes an OSDU record and keeps data of its own for it, the pattern is a shape of the `ddms` route: the
+record's entity type finds the DDMS under `target.ddms`, and the shape says how the record and its data are checked,
+written, read back, verified and removed. The composed routes then work with it as they do with the Wellbore DDMS (the
+link a DDMS keeps on a record is the shape's to carry). Where a DDMS's unit of delivery is not an OSDU record, the
+pattern is a route type of its own.
+
+| Service | Pattern | What the record is, and what goes beside it |
+| --- | --- | --- |
+| Well Delivery DDMS | shape `wellDeliveryV1` | The entity, one per write, under a version the route records before the write. References to entities the DDMS holds are sent with their versions, since its index takes no other; content redelivered goes back under the version other entities cite (not on IBM). The copy the deployment keeps in Storage (`mirror`) is removed with the entity. Records alone. |
+| Rock and Fluid Sample DDMS | shape `rafsV2` | The record, in an array typed exactly as RAFS requires; its content tables as the `bulk` part, one JSON or parquet file per content type, named after the type (and the content schema version when it is not the flow's default), each checked against the service's catalogue before anything is written. The content datasets RAFS registers are kept on the record and removed with it. |
+| Seismic DDMS (Seismic Store v3) | shape `seismicStoreV3` | A `dataset--FileCollection.*` record, registered as the dataset's `seismicmeta` under a lock id recorded before the call; the file as the `bulk` part, uploaded as objects `0..N-1` with the credentials the service issues (a SAS, a Google token, or an S3 key triple for a configured endpoint), then the dataset closed with its file metadata. Tenant, subproject and folder are the DDMS's settings. The work product component that refers to the dataset is an interface of its own on the storage route. |
+| Production time series (historian) | shape `productionTimeSeriesV1` | The `work-product-component--ProductionValues` record, written through Storage; its points as the `bulk` part, sent per series under the body limit, each series' accepted version kept on the record and read back until the query service serves it. Points cannot be deleted; a removal takes the record and says so. |
+| Reservoir Management DDMS | shape `reservoirManagement` | The header record, written through Storage (never through the service's `PUT`, which writes records without their ids, or its `DELETE`, which purges); the service's list call syncs it into its database; the child rows as the `bulk` part, posted one per call with the keys the service returns fed to the rows below and kept on the record. |
+| External Data Services | the `storage` route and the `workflow` route | Connected source registry entries and data jobs are records, checked for what EDS needs before they are sent, with the run state EDS writes on a job preserved; an EDS fetch is a workflow the workflow route runs. |
+| Production DDMS (DSPDM) | route type `dspdm` | A business object row keyed by its natural key, not an OSDU record: `POST /save` with the row, its primary key captured and kept, read back through `/common`. |
+| Reservoir DDMS (Open ETP server) | route type `etp` | A dataspace and the RESQML objects and arrays of an EPC package, written over ETP 1.2 in explicit transactions; the dataspace's Storage record is the server's, whose id the ledger keeps. |
+
+Status: the Well Delivery and RAFS shapes are built; the rest of the table is built in the order it is listed, each
+with its fake service, its contract checks and its documentation.
 
 ## 6. Order
 
