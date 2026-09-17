@@ -68,9 +68,14 @@ the GUI builds and lints clean, the documentation describes what shipped, and th
 Done when every service in section 2 has a pinned contract and a brief, and the harness validates the existing four
 protocols' requests against the core specifications.
 
-Status: the harness is built, the core specifications are copied into `osdu/specs/core` with their provenance, and
-every request the four protocols send is checked against them. The per-service integration briefs and the pinned copy
-of the Reservoir Management DDMS's generated contract remain.
+Status: done. The harness checks every request the four protocols send against the core specifications, which are
+copied into `osdu/specs/core` with their provenance (Partition, Unit and the two CRS services included). Every service
+in section 2 has a brief (`osdu/specs/<service>/INTEGRATION.md`, the core services and the Register service in
+`osdu/specs/core`), each citing the pinned contract or the source file and commit behind every statement, and marking
+what it infers. The Reservoir Management DDMS's contract is generated from its source at the pinned commit by
+`tools/generate-rmddms-openapi.py` and pinned with the generator named in `sources.json`. A test checks that every
+pinned file has its provenance row at the size recorded, with a full commit (or its generator), and that every service
+folder holds its brief.
 
 ### Stage 2: source documents and interfaces
 

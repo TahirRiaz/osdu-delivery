@@ -1,0 +1,127 @@
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using Xunit;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>
+/// The pinned OSDU contracts (<c>osdu/specs</c>) against their provenance (<c>osdu/specs/sources.json</c>, written by
+/// tools/vendor-osdu-specs.js): every pinned file has a row and every row its file, at the size recorded; every file of an
+/// OSDU project names the full commit it was read at, and every generated file the generator that wrote it; every service
+/// folder holds the integration brief its route type is built from; and no file holds an em dash.
+/// </summary>
+public sealed partial class SpecProvenanceTests
+{
+    /// <summary>The files the vendor script treats as text, whose line endings git may rewrite on checkout.</summary>
+    [GeneratedRegex(@"\.(md|json|ya?ml|avpr)$", RegexOptions.IgnoreCase)]
+    private static partial Regex TextFile();
+
+    [GeneratedRegex("^[0-9a-f]{40}$")]
+    private static partial Regex FullCommit();
+
+    private const string Brief = "INTEGRATION.md";
+
+    private static readonly byte[] EmDash = [0xE2, 0x80, 0x94];
+
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    private sealed record Row(string File, string Repo, string From, string? Commit, string Date, long Size, string? GeneratedBy);
+
+    private static IReadOnlyList<Row> Rows()
+    {
+        var text = File.ReadAllText(Path.Combine(OsduContracts.Root, "sources.json"));
+        return JsonSerializer.Deserialize<List<Row>>(text, Json)
+            ?? throw new InvalidOperationException("sources.json holds no rows.");
+    }
+
+    /// <summary>The pinned files: everything under osdu/specs but its own documentation and the provenance table.</summary>
+    private static IReadOnlyList<string> PinnedFiles()
+        => Directory.EnumerateFiles(OsduContracts.Root, "*", SearchOption.AllDirectories)
+            .Select(f => Path.GetRelativePath(OsduContracts.Root, f).Replace('\\', '/'))
+            .Where(f => f is not ("README.md" or "sources.json") && !f.EndsWith("/" + Brief, StringComparison.Ordinal))
+            .OrderBy(f => f, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>A file's size as the repository stores it: a text file's line endings are counted as git keeps them.</summary>
+    private static long StoredSize(string relative)
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(OsduContracts.Root, relative));
+        if (!TextFile().IsMatch(relative))
+        {
+            return bytes.LongLength;
+        }
+
+        long carriageReturns = 0;
+        for (var i = 0; i + 1 < bytes.Length; i++)
+        {
+            if (bytes[i] == '\r' && bytes[i + 1] == '\n')
+            {
+                carriageReturns++;
+            }
+        }
+
+        return bytes.LongLength - carriageReturns;
+    }
+
+    /// <summary>The repository the suite was built from: the folder that holds the solution.</summary>
+    private static string RepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "OsduDelivery.sln")))
+            {
+                return directory.FullName;
+            }
+        }
+
+        throw new InvalidOperationException($"No folder above {AppContext.BaseDirectory} holds OsduDelivery.sln; the suite runs from a build of the repository.");
+    }
+
+    [Fact]
+    public void Every_pinned_file_has_its_provenance_at_the_size_recorded()
+    {
+        var rows = Rows();
+        Assert.Equal(rows.Count, rows.Select(r => r.File).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(PinnedFiles(), rows.Select(r => r.File).OrderBy(f => f, StringComparer.Ordinal).ToList());
+
+        var root = RepositoryRoot();
+        foreach (var row in rows)
+        {
+            Assert.True(row.Size == StoredSize(row.File), $"{row.File}: sources.json records {row.Size} bytes, the repository holds {StoredSize(row.File)}.");
+            Assert.False(string.IsNullOrWhiteSpace(row.Repo), $"{row.File} names no source.");
+            Assert.False(string.IsNullOrWhiteSpace(row.From), $"{row.File} names no file it was read from.");
+            Assert.Matches(@"^\d{4}-\d{2}-\d{2}$", row.Date);
+
+            // The core set is copied from a local specification set that has no commit; everything else was read from an
+            // OSDU project at a commit, or generated from one.
+            if (row.File.StartsWith("core/", StringComparison.Ordinal))
+            {
+                Assert.Null(row.GeneratedBy);
+                continue;
+            }
+
+            Assert.True(row.Commit is not null && FullCommit().IsMatch(row.Commit), $"{row.File} names no full commit: {row.Commit ?? "none"}.");
+            if (row.GeneratedBy is { } generator)
+            {
+                Assert.True(File.Exists(Path.Combine(root, generator)), $"{row.File} was generated by {generator}, which the repository does not hold.");
+            }
+        }
+    }
+
+    [Fact]
+    public void Every_service_folder_holds_its_integration_brief_and_no_file_holds_an_em_dash()
+    {
+        var folders = Directory.EnumerateDirectories(OsduContracts.Root).Select(Path.GetFileName).OrderBy(f => f, StringComparer.Ordinal).ToList();
+        Assert.NotEmpty(folders);
+        foreach (var folder in folders)
+        {
+            Assert.True(File.Exists(Path.Combine(OsduContracts.Root, folder!, Brief)), $"osdu/specs/{folder} holds no {Brief}.");
+        }
+
+        foreach (var file in Directory.EnumerateFiles(OsduContracts.Root, "*", SearchOption.AllDirectories))
+        {
+            var bytes = File.ReadAllBytes(file);
+            Assert.True(bytes.AsSpan().IndexOf(EmDash) < 0, $"{Path.GetRelativePath(OsduContracts.Root, file)} holds an em dash.");
+        }
+    }
+}

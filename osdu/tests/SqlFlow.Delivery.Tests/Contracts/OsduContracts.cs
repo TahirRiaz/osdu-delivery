@@ -32,6 +32,16 @@ internal static class OsduContracts
 
     public static ApiContract Entitlements => Get("core/entitlements", "core", "entitlements", "openapi.yaml");
 
+    public static ApiContract Partition => Get("core/partition", "core", "partition", "openapi.yaml");
+
+    public static ApiContract UnitV2 => Get("core/unit-v2", "core", "unit", "v2", "openapi.yaml");
+
+    public static ApiContract UnitV3 => Get("core/unit-v3", "core", "unit", "v3", "openapi.yaml");
+
+    public static ApiContract CrsCatalog => Get("core/crs-catalog", "core", "crs_catalog", "openapi.yaml");
+
+    public static ApiContract CrsConversion => Get("core/crs-conversion", "core", "crs_conversion", "openapi.yaml");
+
     public static ApiContract WellboreDdms => Get("wellbore-ddms", "wellbore-ddms", "openapi.json");
 
     public static ApiContract SeismicDdms => Get("seismic-ddms", "seismic-ddms", "openapi.yaml");
@@ -48,12 +58,16 @@ internal static class OsduContracts
 
     public static ApiContract ExternalDataServices => Get("eds-dms", "eds-dms", "openapi.yaml");
 
+    /// <summary>The document the Reservoir Management DDMS generates at runtime, as tools/generate-rmddms-openapi.py wrote it.</summary>
+    public static ApiContract ReservoirManagementDdms => Get("reservoir-management-ddms", "reservoir-management-ddms", "openapi.generated.json");
+
     /// <summary>Every pinned OpenAPI and Swagger contract.</summary>
     public static IReadOnlyList<ApiContract> All =>
     [
         Storage, File, Dataset, Workflow, Search, Legal, Schema, Register, Entitlements,
+        Partition, UnitV2, UnitV3, CrsCatalog, CrsConversion,
         WellboreDdms, SeismicDdms, RafsDdms, WellDeliveryDdms, ProductionDspdm, ProductionTimeSeriesIngestion, ProductionTimeSeries,
-        ExternalDataServices,
+        ExternalDataServices, ReservoirManagementDdms,
     ];
 
     /// <summary>

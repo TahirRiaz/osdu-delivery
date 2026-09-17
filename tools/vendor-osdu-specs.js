@@ -73,10 +73,21 @@ async function main() {
     }
   }
 
-  // The core specifications are copied from the local specification set, not downloaded here; their rows are kept.
+  // The core specifications are copied from the local specification set, and a generated contract is written by its
+  // generator (generatedBy), so neither is downloaded here and their rows are kept. A generated contract whose project
+  // has moved on is named, so its generator is run again against the new commit.
   const listed = path.join(root, 'sources.json');
-  const core = fs.existsSync(listed) ? JSON.parse(fs.readFileSync(listed, 'utf8')).filter((row) => row.file.startsWith('core/')) : [];
-  fs.writeFileSync(listed, JSON.stringify([...rows, ...core], null, 2) + '\n');
+  const kept = fs.existsSync(listed)
+    ? JSON.parse(fs.readFileSync(listed, 'utf8')).filter((row) => row.file.startsWith('core/') || row.generatedBy)
+    : [];
+  for (const row of kept.filter((r) => r.generatedBy)) {
+    const current = rows.find((r) => r.repo === row.repo);
+    if (current && current.commit !== row.commit) {
+      console.warn(`${row.file} was generated at ${row.commit.slice(0, 12)} and ${row.repo} is now at ${current.commit.slice(0, 12)}: run ${row.generatedBy} against the new commit.`);
+    }
+  }
+
+  fs.writeFileSync(listed, JSON.stringify([...rows, ...kept], null, 2) + '\n');
 }
 
 main().catch((error) => { console.error(error); process.exit(1); });

@@ -165,6 +165,9 @@ public sealed class ApiContractTests : IDisposable
         Assert.NotNull(OsduContracts.File.Find("POST", "/api/file/v2/files/metadata"));
         Assert.NotNull(OsduContracts.Workflow.Find("POST", "/api/workflow/v1/workflow/Osdu_ingest/workflowRun"));
         Assert.NotNull(OsduContracts.WellboreDdms.Find("POST", "/api/os-wellbore-ddms/ddms/v3/welllogs/opendes:work-product-component--WellLog:1/sessions"));
+
+        // The generated Reservoir Management DDMS document declares its header collections' writes.
+        Assert.NotNull(OsduContracts.ReservoirManagementDdms.Find("PUT", "/ddms/pvt-properties"));
     }
 
     private ApiContract Contract(string name, string text)

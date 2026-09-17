@@ -128,6 +128,15 @@
     "size": 710221
   },
   {
+    "file": "reservoir-management-ddms/openapi.generated.json",
+    "repo": "domain-data-mgmt-services/reservoir-management/reservoir-management-domain-services",
+    "from": "app/main.py (the FastAPI app, which generates the document at runtime)",
+    "commit": "088ae063eaedfb6ad24c9d8c3e1f52c2cb45d2cd",
+    "date": "2024-04-23",
+    "size": 198215,
+    "generatedBy": "tools/generate-rmddms-openapi.py"
+  },
+  {
     "file": "reservoir-management-ddms/README.md",
     "repo": "domain-data-mgmt-services/reservoir-management/reservoir-management-domain-services",
     "from": "README.md",
@@ -157,7 +166,7 @@
     "from": "README.md",
     "commit": "ec1394a8016326d25672d51044099a2feb4a7d28",
     "date": "2026-09-16",
-    "size": 8869
+    "size": 8867
   },
   {
     "file": "workflows/csv-parser.md",
@@ -278,5 +287,45 @@
     "commit": null,
     "date": "2026-09-16",
     "size": 35997
+  },
+  {
+    "file": "core/partition/openapi.yaml",
+    "repo": "osdu-csharp-client-main (the core specification set this project designs against)",
+    "from": "D:\\Projects\\eq\\src\\osdu-csharp-client-main\\openapi_specs\\partition\\openapi.yaml",
+    "commit": null,
+    "date": "2026-09-17",
+    "size": 9685
+  },
+  {
+    "file": "core/unit/v2/openapi.yaml",
+    "repo": "osdu-csharp-client-main (the core specification set this project designs against)",
+    "from": "D:\\Projects\\eq\\src\\osdu-csharp-client-main\\openapi_specs\\unit\\v2\\openapi.yaml",
+    "commit": null,
+    "date": "2026-09-17",
+    "size": 85615
+  },
+  {
+    "file": "core/unit/v3/openapi.yaml",
+    "repo": "osdu-csharp-client-main (the core specification set this project designs against)",
+    "from": "D:\\Projects\\eq\\src\\osdu-csharp-client-main\\openapi_specs\\unit\\v3\\openapi.yaml",
+    "commit": null,
+    "date": "2026-09-17",
+    "size": 87709
+  },
+  {
+    "file": "core/crs_catalog/openapi.yaml",
+    "repo": "osdu-csharp-client-main (the core specification set this project designs against)",
+    "from": "D:\\Projects\\eq\\src\\osdu-csharp-client-main\\openapi_specs\\crs_catalog\\openapi.yaml",
+    "commit": null,
+    "date": "2026-09-17",
+    "size": 22307
+  },
+  {
+    "file": "core/crs_conversion/openapi.yaml",
+    "repo": "osdu-csharp-client-main (the core specification set this project designs against)",
+    "from": "D:\\Projects\\eq\\src\\osdu-csharp-client-main\\openapi_specs\\crs_conversion\\openapi.yaml",
+    "commit": null,
+    "date": "2026-09-17",
+    "size": 36660
   }
 ]
