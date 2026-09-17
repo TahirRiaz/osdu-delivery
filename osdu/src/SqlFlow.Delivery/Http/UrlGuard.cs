@@ -1,60 +1,98 @@
 // Vendored from SQLFlow (https://github.com/TahirRiaz/sqlflow-v3, commit ddd4ea12160bda044f75dcad2bbec5099c3a7263)
 // src/SqlFlow.Acquire/Runtime/UrlGuard.cs. Namespace and exception type changed; loopback may be allowed explicitly
-// so a developer can point a flow at a local stub.
+// so a developer can point a flow at a local stub; the address rules are the deployment's NetworkPolicy, applied to the
+// addresses names resolve to as well (HttpClientBuilder), and every redirect hop is checked (HttpExecutor).
 using System.Net;
-using System.Net.Sockets;
 
 namespace SqlFlow.Delivery.Http;
 
+/// <summary>A request the URL guard refused: the scheme, the address or the host is not one the delivery nodes may reach.</summary>
+public sealed class UrlRefusedException : DeliveryException
+{
+    public UrlRefusedException(string message)
+        : base(message)
+    {
+    }
+}
+
 /// <summary>
-/// SSRF guard for outbound delivery requests. A URL must be http/https with a host; a literal-IP host in a private,
-/// loopback, link-local (including the cloud metadata address 169.254.169.254), unspecified, multicast or
-/// unique-local range is rejected unless <c>allowLoopback</c> is set for loopback; and when an allowlist is
-/// configured the host must match it (*.suffix matches the bare domain and any subdomain).
+/// SSRF guard for outbound delivery requests. A URL must be http/https with a host; an address written as the host must
+/// be one the deployment's <see cref="NetworkPolicy"/> reaches (never link-local or metadata addresses; loopback and
+/// private ranges only when allowed); and when an allowlist is configured the host must match it (*.suffix matches the
+/// bare domain and any subdomain). The addresses a host name resolves to are checked against the same policy when the
+/// connection opens, and a redirect is followed only to a URL this guard lets through, never from https to http.
 /// </summary>
 public sealed class UrlGuard
 {
     private readonly IReadOnlyList<string> _allowlist;
-    private readonly bool _allowLoopback;
 
     public UrlGuard(IReadOnlyList<string> allowlist, bool allowLoopback = false)
+        : this(allowlist, new NetworkPolicy { AllowLoopback = allowLoopback })
+    {
+    }
+
+    public UrlGuard(IReadOnlyList<string> allowlist, NetworkPolicy network)
     {
         ArgumentNullException.ThrowIfNull(allowlist);
+        ArgumentNullException.ThrowIfNull(network);
         _allowlist = allowlist;
-        _allowLoopback = allowLoopback;
+        Network = network;
     }
+
+    /// <summary>The addresses the guard lets requests reach.</summary>
+    public NetworkPolicy Network { get; }
 
     public void Check(Uri url)
     {
         ArgumentNullException.ThrowIfNull(url);
 
-        if (url.Scheme is not ("http" or "https"))
+        if (!url.IsAbsoluteUri || url.Scheme is not ("http" or "https"))
         {
-            throw new DeliveryException($"URL '{url}' uses scheme '{url.Scheme}'; only http and https are allowed.");
+            throw new UrlRefusedException($"URL '{Describe(url)}' uses scheme '{(url.IsAbsoluteUri ? url.Scheme : "(none)")}'; only http and https are allowed.");
         }
 
         var host = url.Host;
         if (string.IsNullOrEmpty(host))
         {
-            throw new DeliveryException($"URL '{url}' has no host.");
+            throw new UrlRefusedException($"URL '{Describe(url)}' has no host.");
         }
 
-        if (_allowLoopback && (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || (IPAddress.TryParse(host, out var lo) && IPAddress.IsLoopback(lo))))
+        // A name that means loopback everywhere is refused here, before anything resolves it.
+        if (!Network.AllowLoopback && (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)))
         {
-            return;
+            throw new UrlRefusedException($"URL '{Describe(url)}' targets '{host}', a loopback address, which only a process with SQLFLOW_DELIVERY_ALLOW_LOOPBACK reaches.");
         }
 
-        if (IPAddress.TryParse(host, out var ip) && IsDangerous(ip))
+        if (IPAddress.TryParse(url.IdnHost.Trim('[', ']'), out var ip) && Network.Refusal(ip) is { } refusal)
         {
-            throw new DeliveryException($"URL '{url}' targets a blocked address range ({ip}). Private, loopback, link-local and metadata addresses are not reachable.");
+            throw new UrlRefusedException($"URL '{Describe(url)}' targets {ip}, {refusal}.");
         }
 
         if (_allowlist.Count > 0 && !IsAllowed(host))
         {
-            throw new DeliveryException(
+            throw new UrlRefusedException(
                 $"Host '{host}' is not in the url allowlist ({string.Join(", ", _allowlist)}). Add it to reliability.urlAllowlist to permit the request.");
         }
     }
+
+    /// <summary>
+    /// Checks a redirect from <paramref name="from"/> to <paramref name="to"/>: the target passes <see cref="Check"/>, and a
+    /// redirect never leaves https for http.
+    /// </summary>
+    public void CheckRedirect(Uri from, Uri to)
+    {
+        ArgumentNullException.ThrowIfNull(from);
+        ArgumentNullException.ThrowIfNull(to);
+        if (from.Scheme == Uri.UriSchemeHttps && to.IsAbsoluteUri && to.Scheme == Uri.UriSchemeHttp)
+        {
+            throw new UrlRefusedException($"{Describe(from)} redirected to {Describe(to)}; a redirect from https to http is refused.");
+        }
+
+        Check(to);
+    }
+
+    /// <summary>A URL as a message names it: without its query string, where a signed URL carries its credential.</summary>
+    internal static string Describe(Uri url) => url.IsAbsoluteUri ? url.GetLeftPart(UriPartial.Path) : url.OriginalString.Split('?')[0];
 
     private bool IsAllowed(string host)
     {
@@ -70,51 +108,6 @@ public sealed class UrlGuard
                 }
             }
             else if (host.Equals(pattern, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool IsDangerous(IPAddress ip)
-    {
-        if (IPAddress.IsLoopback(ip))
-        {
-            return true;
-        }
-
-        if (ip.AddressFamily == AddressFamily.InterNetwork)
-        {
-            var b = ip.GetAddressBytes();
-            return b[0] switch
-            {
-                0 => true,
-                10 => true,
-                127 => true,
-                169 when b[1] == 254 => true,
-                172 when b[1] >= 16 && b[1] <= 31 => true,
-                192 when b[1] == 168 => true,
-                >= 224 => true,
-                _ => false,
-            };
-        }
-
-        if (ip.AddressFamily == AddressFamily.InterNetworkV6)
-        {
-            if (ip.IsIPv6LinkLocal || ip.IsIPv6Multicast || ip.Equals(IPAddress.IPv6Any) || ip.Equals(IPAddress.IPv6None))
-            {
-                return true;
-            }
-
-            var b = ip.GetAddressBytes();
-            if ((b[0] & 0xFE) == 0xFC)
-            {
-                return true;
-            }
-
-            if (ip.IsIPv4MappedToIPv6 && IsDangerous(ip.MapToIPv4()))
             {
                 return true;
             }

@@ -86,12 +86,12 @@ Done when the coverage plan marks stages 7 to 10 done, each with its tests.
 
 Verified in the code on 17 September.
 
-- [ ] **SEC-1** The URL guard (`osdu/src/SqlFlow.Delivery/Http/UrlGuard.cs`) checks literal IP addresses only. A host
+- [x] **SEC-1** The URL guard (`osdu/src/SqlFlow.Delivery/Http/UrlGuard.cs`) checks literal IP addresses only. A host
   name that resolves to a loopback, link-local, cloud metadata or private address passes, because the connect callback
   (`HttpClientBuilder.KeepAliveConnectAsync`) resolves names without checking what they resolve to. Check every
   resolved address before connecting, and give deployments whose OSDU sits on a private network (Azure Private Link, a
   VNet-integrated environment) an explicit list of the ranges they may reach.
-- [ ] **SEC-2** The HTTP client follows up to five redirects itself, so a redirect target skips the URL guard (scheme,
+- [x] **SEC-2** The HTTP client follows up to five redirects itself, so a redirect target skips the URL guard (scheme,
   address and `reliability.urlAllowlist`). Follow redirects in the executor, check each hop, and keep credentials from
   another host.
 - [ ] **SEC-3** `osdu/tools/dev-setup.ps1` copies the live container apps' secrets to developer machines. Give

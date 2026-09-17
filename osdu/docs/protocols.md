@@ -796,6 +796,15 @@ draws in its `ReadRetryHandler`:
   than the service asked.
 - Every request carries a `Content-Type`, bodiless ones included (an empty `application/json` body), because
   storage answers a request without one with 415 even when the operation takes no body.
+- Redirects (300, 301, 302, 303, 307, 308 with a `Location`) are followed by the executor, at most five, the way the
+  .NET handler would (a POST becomes a GET on 300 to 303, and 307 and 308 send the same method and body again), except
+  that every hop passes the URL guard first (the scheme, the address, `reliability.urlAllowlist`), a redirect from https
+  to http is refused, and a hop to another host carries none of the request's credentials or the flow's headers. A
+  redirect status the protocol takes as an answer (Google Cloud Storage's 308 during a resumable upload) is not
+  followed.
+- A connection opens only to an address the deployment reaches: the URL guard checks every address a host name
+  resolves to (`SQLFLOW_DELIVERY_PRIVATE_NETWORKS`, [environment-variables.md](environment-variables.md)), and a
+  refused address fails the request at once, without a retry.
 
 The record-level backoff is the outer loop across worker passes. HTTP errors name the request URL without its
 query string, so a signed URL's credential never reaches an error message. An error body is read for what the

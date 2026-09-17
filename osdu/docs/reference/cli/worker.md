@@ -44,7 +44,10 @@ Every `${env:...}` reference the pool's flows declare resolves here, never in th
 
 `SQLFLOW_DELIVERY_ALLOW_LOOPBACK=true` lets a flow target a loopback address (a local OSDU stub, the tests). It is
 off by default: the URL guard refuses loopback and private targets, so a misconfigured endpoint cannot quietly
-deliver to something inside the node's own network.
+deliver to something inside the node's own network. `SQLFLOW_DELIVERY_PRIVATE_NETWORKS` lists the private ranges a node
+may reach (CIDR, comma separated) when its OSDU, storage accounts or proxy resolve to private addresses. The guard
+checks the address a URL names, every address a host name resolves to when the connection opens, and every redirect;
+link-local and cloud metadata addresses are never reachable.
 
 ## Compute tasks run here too
 

@@ -51,6 +51,11 @@ spec:
             - name: SQLFLOW_GIT_TOKEN
               valueFrom:
                 secretKeyRef: { name: osdu-delivery-secrets, key: git-token }
+            # The private ranges (CIDR, comma separated) the delivery engine may reach, when the OSDU, its storage or
+            # a proxy resolves to a private address. Empty reaches public addresses only; loopback, link-local and
+            # cloud metadata addresses are never reachable.
+            - name: SQLFLOW_DELIVERY_PRIVATE_NETWORKS
+              value: ""
             # Every ${env:...} reference the pool's flows use resolves HERE, on the node, never in the control
             # plane. Mount one entry per reference; these cover the delivery chain and the sample estate.
             - name: SQLFLOW_CONN_PRE

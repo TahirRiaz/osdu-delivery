@@ -111,7 +111,10 @@ Sign in at the `guiUrl` output with the bootstrap admin, then mint a node-scoped
   already run (a Managed Instance FQDN, for example) instead of creating one; create the databases there yourself,
   since bootstrap refuses to create a missing one unless `ControlPlane__Bootstrap__AllowCreate` is on.
   `infrastructureSubnetId` VNet-integrates the environment (an undelegated /23), which is how the apps reach a
-  VNet-only Managed Instance privately.
+  VNet-only Managed Instance privately. The delivery engine refuses every private address it is not told about, so
+  a worker whose OSDU, storage accounts or proxy resolve to private addresses (Azure Private Link) needs their ranges
+  in `privateNetworks` (`SQLFLOW_DELIVERY_PRIVATE_NETWORKS`, CIDR ranges, comma separated). Loopback, link-local and
+  cloud metadata addresses stay unreachable whatever it lists.
 - **Private git remotes**: `gitToken` lands in Key Vault and reaches managed sync (control plane) and
   materialization (nodes) as `SQLFLOW_GIT_TOKEN`. Hosts that pair the token with a username (Bitbucket app
   passwords or `x-token-auth` repository tokens) also set `gitUsername`; GitHub needs the token alone.

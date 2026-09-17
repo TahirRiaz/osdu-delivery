@@ -1,8 +1,9 @@
 // Vendored from SQLFlow (https://github.com/TahirRiaz/sqlflow-v3, commit ddd4ea12160bda044f75dcad2bbec5099c3a7263)
 // src/SqlFlow.Acquire/Runtime/HttpExecutor.cs. Changes: namespace, exception types, the charset normalisation and
 // code-page provider were dropped (OSDU speaks UTF-8 JSON), and SendAsync exposes the response headers for
-// non-JSON bodies. The request-factory contract is unchanged: a fresh request per attempt, so a StreamContent over a
-// re-opened blob stream retries correctly (design.md section 12.4).
+// non-JSON bodies; redirects are followed here, each hop checked by the URL guard. The request-factory contract is
+// unchanged: a fresh request per attempt (and per redirect), so a StreamContent over a re-opened blob stream retries
+// correctly (design.md section 12.4).
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -23,8 +24,8 @@ public sealed record HttpFetchResult(
 }
 
 /// <summary>
-/// Executes a single HTTP request through the shared reliability stack: rate limit, SSRF guard, bounded retry with
-/// backoff, and a hard response-size cap. Retries rebuild the request from the factory (a message cannot be resent),
+/// Executes a single HTTP request through the shared reliability stack: rate limit, SSRF guard (on the request and on
+/// every redirect it follows), bounded retry with backoff, and a hard response-size cap. Retries rebuild the request from the factory (a message cannot be resent),
 /// so every attempt is a clean request. A 2xx returns the bytes; a non-retryable or exhausted failure throws with
 /// the status and a truncated body preview.
 ///
@@ -62,6 +63,15 @@ public sealed class HttpExecutor
         _time = time;
     }
 
+    /// <summary>The most redirects one request follows.</summary>
+    public const int MaxRedirects = 5;
+
+    /// <summary>The request headers a redirect to another host keeps: none that could carry a credential.</summary>
+    private static readonly HashSet<string> CarriedAcrossHosts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Accept", "Accept-Encoding", "Accept-Language", "User-Agent", OsduCorrelation.HeaderName,
+    };
+
     /// <param name="requestFactory">Builds a fresh request per attempt (and may open a fresh payload stream).</param>
     /// <param name="allowStatuses">Non-2xx statuses to return instead of throwing.</param>
     /// <param name="idempotent">
@@ -82,9 +92,9 @@ public sealed class HttpExecutor
         {
             await _rateLimiter.AcquireAsync(ct).ConfigureAwait(false);
 
-            using var request = requestFactory();
-            repeatable ??= idempotent ?? IsIdempotent(request.Method);
-            if (request.RequestUri is { } uri)
+            using var first = requestFactory();
+            repeatable ??= idempotent ?? IsIdempotent(first.Method);
+            if (first.RequestUri is { } uri)
             {
                 _urlGuard.Check(uri);
             }
@@ -92,10 +102,12 @@ public sealed class HttpExecutor
             // A request that must not be repeated is decided as if it were already on its last attempt.
             var decisionAttempt = repeatable.Value ? attempt : int.MaxValue;
 
+            using var hops = new Hops(first);
             HttpResponseMessage? response = null;
             try
             {
-                response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                response = await SendFollowingAsync(hops, requestFactory, allowStatuses, ct).ConfigureAwait(false);
+                var request = hops.Current;
                 var status = response.StatusCode;
                 var code = (int)status;
 
@@ -114,12 +126,18 @@ public sealed class HttpExecutor
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
             }
+            catch (HttpRequestException ex) when (Refusal(ex) is { } refused)
+            {
+                // The connection would have opened to an address the deployment does not reach: a verdict on the URL,
+                // which no retry changes.
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(refused);
+            }
             catch (HttpRequestException ex)
             {
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
-                    throw new DeliveryException($"HTTP transport failure calling {request.Method} {Describe(request.RequestUri)}{CorrelationNote(null, request)}: {ex.Message}", ex);
+                    throw new DeliveryException($"HTTP transport failure calling {hops.Current.Method} {Describe(hops.Current.RequestUri)}{CorrelationNote(null, hops.Current)}: {ex.Message}", ex);
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
@@ -133,7 +151,7 @@ public sealed class HttpExecutor
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
-                    throw new DeliveryException($"HTTP transport failure reading the response from {Describe(request.RequestUri)}: {ex.Message}", ex);
+                    throw new DeliveryException($"HTTP transport failure reading the response from {Describe(hops.Current.RequestUri)}: {ex.Message}", ex);
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
@@ -144,7 +162,7 @@ public sealed class HttpExecutor
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
-                    throw new DeliveryException($"HTTP request to {Describe(request.RequestUri)} timed out after {_client.Timeout.TotalSeconds:0}s.", ex);
+                    throw new DeliveryException($"HTTP request to {Describe(hops.Current.RequestUri)} timed out after {_client.Timeout.TotalSeconds:0}s.", ex);
                 }
 
                 await Task.Delay(decision.Delay, _time, ct).ConfigureAwait(false);
@@ -152,6 +170,118 @@ public sealed class HttpExecutor
             finally
             {
                 response?.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sends the request and follows the redirects it is answered with, at most <see cref="MaxRedirects"/>, the way
+    /// SocketsHttpHandler would (300, 301 and 302 turn a POST into a GET, 303 turns anything but a HEAD into one, 307 and
+    /// 308 keep the method and the body), except that every hop passes the URL guard first and a hop to another host
+    /// carries none of the request's credentials or the flow's headers. A redirect status the caller takes as an answer
+    /// (<paramref name="allowStatuses"/>, a resumable upload's 308) and one without a <c>Location</c> are not followed.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendFollowingAsync(Hops hops, Func<HttpRequestMessage> factory, IReadOnlySet<int>? allowStatuses, CancellationToken ct)
+    {
+        var response = await _client.SendAsync(hops.Current, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        for (var followed = 0; ; followed++)
+        {
+            var code = (int)response.StatusCode;
+            if (code is not (300 or 301 or 302 or 303 or 307 or 308)
+                || (allowStatuses?.Contains(code) ?? false)
+                || response.Headers.Location is not { } location)
+            {
+                return response;
+            }
+
+            try
+            {
+                var from = hops.Current.RequestUri
+                    ?? throw new DeliveryException("A redirected request has no URL to resolve its redirect against.");
+                var target = location.IsAbsoluteUri ? location : new Uri(from, location);
+                if (followed == MaxRedirects)
+                {
+                    throw new DeliveryException(
+                        $"{Describe(hops.First.RequestUri)} was redirected more than {MaxRedirects} times; the last redirect named {Describe(target)}.");
+                }
+
+                _urlGuard.CheckRedirect(from, target);
+                var next = factory();
+                hops.Add(next);
+                var method = ForcesGet(code, hops.Previous.Method) ? HttpMethod.Get : hops.Previous.Method;
+                if (method != next.Method)
+                {
+                    next.Content?.Dispose();
+                    next.Content = null;
+                    next.Method = method;
+                }
+
+                next.RequestUri = target;
+                if (!SameAuthority(hops.First.RequestUri!, target))
+                {
+                    foreach (var name in next.Headers.Select(h => h.Key).Where(n => !CarriedAcrossHosts.Contains(n)).ToList())
+                    {
+                        next.Headers.Remove(name);
+                    }
+                }
+            }
+            finally
+            {
+                response.Dispose();
+            }
+
+            response = await _client.SendAsync(hops.Current, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Whether a redirect with <paramref name="status"/> turns a request of <paramref name="method"/> into a GET without a body.</summary>
+    private static bool ForcesGet(int status, HttpMethod method) => status switch
+    {
+        300 or 301 or 302 => method == HttpMethod.Post,
+        303 => method != HttpMethod.Get && method != HttpMethod.Head,
+        _ => false,
+    };
+
+    /// <summary>Whether <paramref name="target"/> is the host <paramref name="origin"/> named, on its port or on https's where the origin was plain http.</summary>
+    private static bool SameAuthority(Uri origin, Uri target)
+        => string.Equals(origin.IdnHost, target.IdnHost, StringComparison.OrdinalIgnoreCase)
+           && (origin.Port == target.Port
+               || (origin.Scheme == Uri.UriSchemeHttp && target.Scheme == Uri.UriSchemeHttps && origin.IsDefaultPort && target.IsDefaultPort));
+
+    /// <summary>The URL guard's refusal a failed connection carries, when that is why it failed.</summary>
+    private static UrlRefusedException? Refusal(Exception failure)
+    {
+        for (var current = failure.InnerException; current is not null; current = current.InnerException)
+        {
+            if (current is UrlRefusedException refused)
+            {
+                return refused;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The requests one attempt sent: the first, and one per redirect it followed, each disposed with the attempt.</summary>
+    private sealed class Hops(HttpRequestMessage first) : IDisposable
+    {
+        private readonly List<HttpRequestMessage> _followed = [];
+
+        public HttpRequestMessage First { get; } = first;
+
+        /// <summary>The request in flight.</summary>
+        public HttpRequestMessage Current => _followed.Count == 0 ? First : _followed[^1];
+
+        /// <summary>The request before the one in flight.</summary>
+        public HttpRequestMessage Previous => _followed.Count <= 1 ? First : _followed[^2];
+
+        public void Add(HttpRequestMessage next) => _followed.Add(next);
+
+        public void Dispose()
+        {
+            foreach (var request in _followed)
+            {
+                request.Dispose();
             }
         }
     }

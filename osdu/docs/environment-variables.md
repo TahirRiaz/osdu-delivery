@@ -56,6 +56,7 @@ YAML, its lineage context and its live trace all travel over that protocol.
 | `SQLFLOW_GIT_TOKEN`, `SQLFLOW_GIT_USERNAME` | For materializing a SHA-pinned run from a private remote. |
 | `SQLFLOW_AZURE_AUTH` (with the `AZURE_*` family) | How `${keyvault:...}` references and Azure storage locations authenticate from this node. |
 | `SQLFLOW_DELIVERY_ALLOW_LOOPBACK` | `true` lets a delivery flow target a loopback address (a local OSDU stub, the tests). Off by default: the URL guard refuses loopback and private targets. |
+| `SQLFLOW_DELIVERY_PRIVATE_NETWORKS` | The private ranges the delivery engine may reach, as CIDR ranges or addresses separated by commas (`10.20.0.0/16,fd12:3456::/48`): the ranges an OSDU, a storage account or a proxy behind a private endpoint resolves to. Empty by default, which reaches public addresses only. The guard checks the address a URL names and every address a host name resolves to when a connection opens, and every redirect; loopback (see above), link-local, cloud metadata and the Azure wireserver address are never reachable, whatever this lists. |
 | every `${env:...}` reference the pool's flows declare | The ingestion database connection the OSDU flow reads through, the payload storage, and the OSDU credentials. |
 
 The container image turns three further variables into node options through its entrypoint:

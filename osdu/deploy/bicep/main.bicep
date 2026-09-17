@@ -55,6 +55,9 @@ param existingSqlServer string = ''
 @description('Resource id of a vNet subnet to integrate the Container Apps environment into (consumption architecture: an undelegated subnet of at least /23). Empty deploys the environment without VNet integration.')
 param infrastructureSubnetId string = ''
 
+@description('The private ranges (CIDR, comma separated) the worker may reach: with infrastructureSubnetId set, the VNet ranges an OSDU, a storage account or a proxy behind a private endpoint resolves to. Empty reaches public addresses only.')
+param privateNetworks string = ''
+
 @description('SQL admin login: for the server created here, or the existing server\'s login when existingSqlServer is set.')
 param sqlAdminLogin string = 'osdudeliveryadmin'
 
@@ -447,6 +450,7 @@ module worker 'worker.bicep' = {
     nodeTokenSecretName: empty(nodeToken) ? '' : nodeTokenSecretName
     gitTokenSecretName: empty(gitToken) ? '' : gitTokenSecretName
     gitUsername: gitUsername
+    privateNetworks: privateNetworks
     flowEnv: concat(builtInFlowEnv, workerFlowEnv)
     acrName: acrName
     acrLoginServer: acrLoginServer

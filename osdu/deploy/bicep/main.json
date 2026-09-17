@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "2682702667964215624"
+      "templateHash": "16694521199184838602"
     }
   },
   "parameters": {
@@ -60,6 +60,13 @@
       "defaultValue": "",
       "metadata": {
         "description": "Resource id of a vNet subnet to integrate the Container Apps environment into (consumption architecture: an undelegated subnet of at least /23). Empty deploys the environment without VNet integration."
+      }
+    },
+    "privateNetworks": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The private ranges (CIDR, comma separated) the worker may reach: with infrastructureSubnetId set, the VNet ranges an OSDU, a storage account or a proxy behind a private endpoint resolves to. Empty reaches public addresses only."
       }
     },
     "sqlAdminLogin": {
@@ -1170,6 +1177,9 @@
           "gitUsername": {
             "value": "[parameters('gitUsername')]"
           },
+          "privateNetworks": {
+            "value": "[parameters('privateNetworks')]"
+          },
           "flowEnv": {
             "value": "[concat(variables('builtInFlowEnv'), parameters('workerFlowEnv'))]"
           },
@@ -1190,7 +1200,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "11391456118785678396"
+              "templateHash": "2583402434927479636"
             }
           },
           "parameters": {
@@ -1258,6 +1268,13 @@
               "defaultValue": "",
               "metadata": {
                 "description": "Username paired with the git token when the host requires one (Bitbucket app passwords take the account username, repository access tokens take x-token-auth; GitHub ignores it). Empty sends the token alone."
+              }
+            },
+            "privateNetworks": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "The private ranges (CIDR, comma separated) the nodes may reach, for an environment integrated into a VNet whose OSDU, storage accounts or proxy resolve to private addresses (SQLFLOW_DELIVERY_PRIVATE_NETWORKS). Empty reaches public addresses only; loopback, link-local and cloud metadata addresses are never reachable."
               }
             },
             "flowEnv": {
@@ -1332,6 +1349,7 @@
             "nodeTokenEnv": "[if(empty(parameters('nodeTokenSecretName')), createArray(), createArray(createObject('name', 'SQLFLOW_TOKEN', 'secretRef', 'node-token')))]",
             "gitTokenEnv": "[if(empty(parameters('gitTokenSecretName')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_TOKEN', 'secretRef', 'git-token')))]",
             "gitUsernameEnv": "[if(empty(parameters('gitUsername')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_USERNAME', 'value', parameters('gitUsername'))))]",
+            "privateNetworksEnv": "[if(empty(parameters('privateNetworks')), createArray(), createArray(createObject('name', 'SQLFLOW_DELIVERY_PRIVATE_NETWORKS', 'value', parameters('privateNetworks'))))]",
             "scaleRules": "[if(empty(parameters('nodeTokenSecretName')), createArray(), createArray(createObject('name', 'replica-target', 'custom', createObject('type', 'metrics-api', 'metadata', createObject('url', format('{0}/api/v1/node/scale-target?pool={1}', parameters('controlPlaneUrl'), uriComponent(parameters('pool'))), 'valueLocation', 'replicas', 'targetValue', '1', 'authMode', 'bearer'), 'auth', createArray(createObject('secretRef', 'node-token', 'triggerParameter', 'token'))))))]"
           },
           "resources": [
@@ -1398,7 +1416,7 @@
                         "cpu": "[json(parameters('cpu'))]",
                         "memory": "[parameters('memory')]"
                       },
-                      "env": "[concat(createArray(createObject('name', 'SQLFLOW_URL', 'value', parameters('controlPlaneUrl')), createObject('name', 'SQLFLOW_WORKER_POOL', 'value', parameters('pool')), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId)), variables('nodeTokenEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('flowEnvVars'))]"
+                      "env": "[concat(createArray(createObject('name', 'SQLFLOW_URL', 'value', parameters('controlPlaneUrl')), createObject('name', 'SQLFLOW_WORKER_POOL', 'value', parameters('pool')), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId)), variables('nodeTokenEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('privateNetworksEnv'), variables('flowEnvVars'))]"
                     }
                   ],
                   "scale": {

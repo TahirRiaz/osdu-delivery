@@ -92,10 +92,10 @@ public class UrlGuardTests
     public void Blocks_private_loopback_and_metadata_addresses_and_non_http_schemes()
     {
         var guard = new UrlGuard([]);
-        Assert.Throws<DeliveryException>(() => guard.Check(new Uri("http://169.254.169.254/latest")));
-        Assert.Throws<DeliveryException>(() => guard.Check(new Uri("http://10.0.0.5/")));
-        Assert.Throws<DeliveryException>(() => guard.Check(new Uri("http://127.0.0.1/")));
-        Assert.Throws<DeliveryException>(() => guard.Check(new Uri("ftp://example.org/")));
+        Assert.Throws<UrlRefusedException>(() => guard.Check(new Uri("http://169.254.169.254/latest")));
+        Assert.Throws<UrlRefusedException>(() => guard.Check(new Uri("http://10.0.0.5/")));
+        Assert.Throws<UrlRefusedException>(() => guard.Check(new Uri("http://127.0.0.1/")));
+        Assert.Throws<UrlRefusedException>(() => guard.Check(new Uri("ftp://example.org/")));
         guard.Check(new Uri("https://api.example.org/x"));
         new UrlGuard([], allowLoopback: true).Check(new Uri("http://localhost:5000/x"));
     }
@@ -106,7 +106,7 @@ public class UrlGuardTests
         var guard = new UrlGuard(["*.equinor.com", "api.example.org"]);
         guard.Check(new Uri("https://api-dev.gateway.equinor.com/petrodb"));
         guard.Check(new Uri("https://api.example.org/"));
-        Assert.Throws<DeliveryException>(() => guard.Check(new Uri("https://other.org/")));
+        Assert.Throws<UrlRefusedException>(() => guard.Check(new Uri("https://other.org/")));
     }
 }
 

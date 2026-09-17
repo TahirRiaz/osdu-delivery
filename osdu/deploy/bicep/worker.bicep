@@ -49,6 +49,9 @@ param gitTokenSecretName string = ''
 @description('Username paired with the git token when the host requires one (Bitbucket app passwords take the account username, repository access tokens take x-token-auth; GitHub ignores it). Empty sends the token alone.')
 param gitUsername string = ''
 
+@description('The private ranges (CIDR, comma separated) the nodes may reach, for an environment integrated into a VNet whose OSDU, storage accounts or proxy resolve to private addresses (SQLFLOW_DELIVERY_PRIVATE_NETWORKS). Empty reaches public addresses only; loopback, link-local and cloud metadata addresses are never reachable.')
+param privateNetworks string = ''
+
 @description('Flow environment references, one object per \${env:...} reference the pool\'s flows use, and for the OSDU module database connection the ledger is read and written through: { name: the environment variable, secretName: the Key Vault secret holding its value }. Credentials live on the node, never in the control plane.')
 param flowEnv array = []
 
@@ -181,6 +184,14 @@ var gitUsernameEnv = empty(gitUsername) ? [] : [
   }
 ]
 
+// The private ranges the delivery engine may connect to; without them it refuses every private address.
+var privateNetworksEnv = empty(privateNetworks) ? [] : [
+  {
+    name: 'SQLFLOW_DELIVERY_PRIVATE_NETWORKS'
+    value: privateNetworks
+  }
+]
+
 // Every ${env:...} reference the pool's flows use, and the OSDU module database connection, resolve HERE.
 var flowEnvVars = [for (entry, i) in flowEnv: {
   name: entry.name
@@ -253,7 +264,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json(cpu)
             memory: memory
           }
-          env: concat(baseEnv, nodeTokenEnv, gitTokenEnv, gitUsernameEnv, flowEnvVars)
+          env: concat(baseEnv, nodeTokenEnv, gitTokenEnv, gitUsernameEnv, privateNetworksEnv, flowEnvVars)
         }
       ]
       scale: {

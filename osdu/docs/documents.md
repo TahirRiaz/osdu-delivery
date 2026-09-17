@@ -159,7 +159,7 @@ reliability:
   timeoutSeconds: 100
   rateLimitRps: 0                  # 0 = unlimited
   verifyTls: true
-  urlAllowlist: []                 # SSRF allowlist; *.suffix wildcards
+  urlAllowlist: []                 # SSRF allowlist; *.suffix wildcards; checked on every redirect too
   maxResponseBytes: 67108864
   maxRequestBodyBytes: 0           # the target's declared request body ceiling; a bigger chunk holds the record (0 = not declared)
   leaseSeconds: 300
