@@ -3,7 +3,7 @@ import { expect, test } from "./helpers";
 // The OSDU cache page: the header names the cache and the file that defines it, a summary row says which version is
 // read and what it holds, and the records, versions, changes and definition are tabs, with a searchable type picker in
 // the tab bar. Runs after the seed (03), so the fixture repo is synced, its cache flow declares
-// four types (none asking for approval), and the sample references were imported through the CLI as the first version.
+// five types (none asking for approval), and the sample references were imported through the CLI as the first version.
 
 const CACHE = "osdu-reference-cache";
 
@@ -31,7 +31,7 @@ test.describe.serial("osdu cache", () => {
     await expect(picker).toHaveText(/All types/);
     await picker.click();
     const options = adminPage.getByRole("listbox");
-    for (const name of ["UnitOfMeasure", "LogCurveBusinessValue", "VerticalMeasurementType", "Wellbore"]) {
+    for (const name of ["UnitOfMeasure", "LogCurveBusinessValue", "VerticalMeasurementType", "TrajectoryStationPropertyType", "Wellbore"]) {
       await expect(options.getByRole("option").filter({ hasText: name }).first()).toBeVisible();
     }
     await expect(options.getByText(/master data · \d+ records?/).first()).toBeVisible();
@@ -49,7 +49,7 @@ test.describe.serial("osdu cache", () => {
     await expect(definition).toContainText(`caches/${CACHE}.yaml`, { timeout: 30_000 });
     await expect(definition).toContainText("goes out on the next run");
     const rows = definition.getByTestId("delivery-cache-definition-types").getByTestId("table-row");
-    await expect(rows).toHaveCount(4);
+    await expect(rows).toHaveCount(5);
     await expect(rows.filter({ hasText: "master-data--Wellbore" })).toContainText("NameAlias.AliasName");
     await expect(definition.getByTestId("delivery-cache-definition-flows").getByTestId("table-row")).toHaveCount(1);
 

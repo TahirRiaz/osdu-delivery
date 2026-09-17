@@ -106,13 +106,17 @@ Done when each item is fixed or accepted in writing, with tests for the guard.
 The project's rules are enforced by hand today (`.github/workflows/ci.yml`).
 
 - [x] **CI-1** CI skips the SQL Server suites (`SQLFLOW_TEST_DB` is unset): add a SQL Server service container.
-- [ ] **CI-2** The GUI end-to-end suite (Playwright, 6 specs) does not run in CI.
+- [x] **CI-2** The GUI end-to-end suite (Playwright, 6 specs) does not run in CI.
 - [x] **CI-3** Zero warnings is a rule, but `TreatWarningsAsErrors` is false and CI does not pass `-warnaserror`.
 - [x] **CI-4** OSDU migrations touching only the `osdu` schema is checked at runtime (`EnsureShape`); no test over the
   generated migration scripts was found.
-- [ ] **CI-5** No image build, deployment, release tags or changelog entries; `deploy-prod.ps1` runs by hand.
+- [x] **CI-5a** No image build and no changelog entries: CI now builds the three images, starts the control plane
+  image against a SQL Server of its own and the GUI image, and `CHANGELOG.md` covers the work since it was written.
+- [ ] **CI-5b** No published images, release tags or deployment from CI; `deploy-prod.ps1` runs by hand. Needs DEC-9.
 
-Done when a change cannot merge without every suite, the end-to-end run and a warning-free build.
+Done when a change cannot merge without every suite, the end-to-end run and a warning-free build. Work goes to `main`
+directly (`CLAUDE.md`), so CI reports on a change after it lands; stopping one before it lands needs pull requests and
+a branch rule that requires the CI jobs (DEC-10).
 
 ### Run it in production
 
@@ -162,6 +166,11 @@ Each step protects the ones after it. Live runs happen only with an approved tes
 - [ ] **DEC-6** Where metrics and alerts go: Application Insights, another OpenTelemetry backend, or the platform's own.
 - [ ] **DEC-7** A development estate with its own resources and credentials.
 - [ ] **DEC-8** DSPDM rows loaded before a flow: taken over (`existingRows: update`) or held for review.
+- [ ] **DEC-9** The release path: which registry CI publishes the images to, how CI signs in to Azure (a federated
+  credential rather than a stored secret), and whether a release tag deploys by itself or an operator still runs
+  `deploy-prod.ps1`.
+- [ ] **DEC-10** Whether changes reach `main` through pull requests with the CI jobs required, or keep landing directly
+  with CI reporting afterwards.
 
 ## What this rests on
 

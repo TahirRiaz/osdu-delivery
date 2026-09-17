@@ -9,8 +9,9 @@ import { defineConfig, devices } from "@playwright/test";
 //     provisioning applies SQLFlow's and the OSDU module's migrations, seeds roles, and creates the e2e admin the tests
 //     sign in with;
 //  2. the GUI dev server, pointed at that control plane via VITE_API_BASE_URL (which wins in dev mode).
-// Requirements on the machine: a local SQL Server (integrated security) and the .NET SDK, same as the
-// DB-backed xUnit suites.
+// Requirements on the machine: a SQL Server the suite may create a database on, sqlcmd, and the .NET SDK, same as the
+// DB-backed xUnit suites. The default connection uses integrated security on a local server; SQLFLOW_E2E_CATALOG_DB
+// names any other, a SQL login included (CI runs the suite that way).
 //
 // Both ports are overridable so the suite can run next to a developer's own environment. This matters most
 // for the GUI port: a long-running `npm run dev` server on the default 5173 points at the DEV control plane
@@ -25,6 +26,18 @@ const guiPort = Number(process.env.SQLFLOW_E2E_GUI_PORT ?? 5173);
 // The suite creates whatever database it is given.
 const catalogDb = process.env.SQLFLOW_E2E_CATALOG_DB
   ?? "Server=localhost;Database=SqlFlowCatalogE2EOsdu;Trusted_Connection=True;TrustServerCertificate=True";
+
+// The build configuration the hosts run from. Unset, `dotnet run` builds them on the way, inside the servers' start-up
+// timeout. CI builds the solution in Release first and names it here, so the hosts start from that build instead.
+const dotnetConfiguration = process.env.SQLFLOW_E2E_DOTNET_CONFIGURATION ?? "";
+if (!/^[A-Za-z0-9_.-]*$/.test(dotnetConfiguration)) {
+  throw new Error(`SQLFLOW_E2E_DOTNET_CONFIGURATION must be a build configuration name such as Release, not '${dotnetConfiguration}'.`);
+}
+
+/** The `dotnet` arguments that run one of the module's hosts, from the build configuration named above when there is one. */
+export function hostRun(project: string): string[] {
+  return ["run", "--project", project, ...(dotnetConfiguration ? ["-c", dotnetConfiguration, "--no-build"] : [])];
+}
 
 export const E2E = {
   apiBaseUrl: `http://localhost:${apiPort}`,
@@ -61,14 +74,17 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "dotnet run --project ../hosts/SqlFlow.Delivery.ControlPlane.Host",
+      command: ["dotnet", ...hostRun("../hosts/SqlFlow.Delivery.ControlPlane.Host")].join(" "),
       url: `${E2E.apiBaseUrl}/health/live`,
       timeout: 240_000,
       reuseExistingServer: !process.env.CI,
       env: {
         ASPNETCORE_URLS: E2E.apiBaseUrl,
         ASPNETCORE_ENVIRONMENT: "Production",
-        ControlPlane__Catalog__ConnectionReference: E2E.catalogDb,
+        // The catalog connection reaches the control plane as a reference, the way a deployment's does: it can carry a
+        // password, and a literal secret never goes into configuration.
+        ControlPlane__Catalog__ConnectionReference: "${env:SQLFLOW_E2E_CATALOG_CONNECTION}",
+        SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,
         // The sample flows read their ingestion tables through this reference. Without it a plan cannot open the tables
         // the seed loaded, and every delivery run fails on a connection it cannot resolve.
         OSDU_SAMPLE_DB: E2E.sampleDb,

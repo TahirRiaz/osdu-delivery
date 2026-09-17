@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { E2E } from "../playwright.config";
+import { E2E, hostRun } from "../playwright.config";
 import { connectionParts, connectionValue, LOADING_FLOWS } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
@@ -120,7 +120,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
     const output = execFileSync(
       "dotnet",
       [
-        "run", "--project", join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host"), "--",
+        ...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--",
         "cache", "import", `${meta.repoDir}/caches/osdu-reference-cache.yaml`,
         "--from-dir", `${meta.repoDir}/references`,
         "--db", "${env:SQLFLOW_E2E_CACHE_DB}",
@@ -143,7 +143,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
     for (const flow of LOADING_FLOWS) {
       const output = execFileSync(
         "dotnet",
-        ["run", "--project", join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host"), "--", "run", `${meta.repoDir}/flows/${flow}.yaml`],
+        [...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--", "run", `${meta.repoDir}/flows/${flow}.yaml`],
         { encoding: "utf8", timeout: 600_000, env: { ...process.env, OSDU_SAMPLE_DB: meta.sampleDb } },
       );
       expect(output, `${flow} reported nothing`).not.toBe("");

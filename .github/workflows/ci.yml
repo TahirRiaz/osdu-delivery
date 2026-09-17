@@ -50,8 +50,9 @@ jobs:
         run: dotnet build OsduDelivery.sln --no-restore -c Release -warnaserror -warnnotaserror:NU1903
 
       # The DB-backed suites run against a SQL Server started for this job, whose password is made
-      # here and masked, so no credential lives in the repository. The database allows snapshot
-      # isolation, which the delivery chain reads under.
+      # here and masked, so no credential lives in the repository. The suites' database allows
+      # snapshot isolation, which the delivery chain reads under; the GUI end-to-end suite creates
+      # a database of its own on the same server.
       - name: Start SQL Server
         run: |
           password="Ci-$(openssl rand -hex 16)-Aa1"
@@ -75,6 +76,7 @@ jobs:
           docker exec --env "SQLCMDPASSWORD=$password" mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b \
             -Q "CREATE DATABASE SqlFlowCi; ALTER DATABASE SqlFlowCi SET ALLOW_SNAPSHOT_ISOLATION ON;"
           echo "SQLFLOW_TEST_DB=Server=localhost,1433;Database=SqlFlowCi;User ID=sa;Password=$password;TrustServerCertificate=True" >> "$GITHUB_ENV"
+          echo "SQLFLOW_E2E_CATALOG_DB=Server=localhost,1433;Database=SqlFlowE2E;User ID=sa;Password=$password;TrustServerCertificate=True" >> "$GITHUB_ENV"
 
       # SQLFlow's own suites and the OSDU module's suites, in one run over the solution, one
       # project at a time: the DB-backed suites share the database above and migrate and seed it.
@@ -104,3 +106,146 @@ jobs:
       - name: Build SQLFlow GUI
         working-directory: sqlflow/gui
         run: npm run build
+
+      # The suite's setup batches call sqlcmd, which the runner image does not carry; the one in the
+      # SQL Server container serves them, reached through a wrapper on the PATH.
+      - name: Prepare the OSDU GUI end-to-end suite
+        working-directory: osdu/gui
+        run: |
+          wrapper="$RUNNER_TEMP/sqlcmd-wrapper"
+          mkdir -p "$wrapper"
+          printf '%s\n' '#!/usr/bin/env bash' \
+            'exec docker exec --env SQLCMDPASSWORD mssql /opt/mssql-tools18/bin/sqlcmd "$@"' > "$wrapper/sqlcmd"
+          chmod +x "$wrapper/sqlcmd"
+          echo "$wrapper" >> "$GITHUB_PATH"
+          npx playwright install --with-deps chromium
+
+      # The suite starts the control plane and the GUI itself, signs in and drives the pages over the
+      # sample estate; its runs only plan, so nothing reaches an OSDU. The hosts run from the Release
+      # build above.
+      - name: OSDU GUI end-to-end suite
+        working-directory: osdu/gui
+        env:
+          SQLFLOW_E2E_DOTNET_CONFIGURATION: Release
+        run: npm run e2e
+
+      - name: Keep the end-to-end report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: osdu-gui-e2e-report
+          path: |
+            osdu/gui/playwright-report
+            osdu/gui/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The three images build from the repository root, as a deployment builds them; nothing is
+  # pushed. The control plane image then starts against a SQL Server of its own and has to report
+  # ready (its catalog created, SQLFlow's and the OSDU module's migrations applied) and sign in the
+  # admin it provisions; the GUI image has to serve its pages and the runtime configuration it is
+  # given. The worker image needs a control plane token to start, so it is only built.
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the control plane image
+        run: docker build -f osdu/deploy/docker/control-plane.Dockerfile -t osdu-delivery-control-plane:ci .
+
+      - name: Build the worker image
+        run: docker build -f osdu/deploy/docker/worker.Dockerfile -t osdu-delivery-worker:ci .
+
+      - name: Build the GUI image
+        run: docker build -f osdu/deploy/docker/gui.Dockerfile -t osdu-delivery-gui:ci .
+
+      - name: Start the control plane image
+        run: |
+          sa_password="Ci-$(openssl rand -hex 16)-Aa1"
+          admin_password="$(openssl rand -hex 24)"
+          signing_key="$(openssl rand -hex 32)"
+          bootstrap_secret="$(openssl rand -hex 32)"
+          for secret in "$sa_password" "$admin_password" "$signing_key" "$bootstrap_secret"; do
+            echo "::add-mask::$secret"
+          done
+
+          docker network create images
+          docker run --detach --name mssql --network images --env ACCEPT_EULA=Y \
+            --env "MSSQL_SA_PASSWORD=$sa_password" mcr.microsoft.com/mssql/server:2022-latest
+          ready=false
+          for attempt in $(seq 1 90); do
+            if docker exec --env "SQLCMDPASSWORD=$sa_password" mssql \
+                 /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -Q "SELECT 1" > /dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            docker logs mssql
+            echo "SQL Server did not accept a connection in three minutes." >&2
+            exit 1
+          fi
+
+          # The catalog connection and the admin password reach the host as values of the variables
+          # its references name, never as literals in its configuration.
+          docker run --detach --name control-plane --network images --publish 8080:8080 \
+            --env "SQLFLOW_CATALOG_DB=Server=mssql,1433;Database=OsduDeliveryImage;User ID=sa;Password=$sa_password;TrustServerCertificate=True" \
+            --env "ControlPlane__Jwt__SigningKey=$signing_key" \
+            --env "ControlPlane__Jwt__BootstrapSecret=$bootstrap_secret" \
+            --env ControlPlane__Bootstrap__AllowCreate=true \
+            --env ControlPlane__Bootstrap__AdminUsername=ci-admin \
+            --env 'ControlPlane__Bootstrap__AdminPasswordReference=${env:CI_ADMIN_PASSWORD}' \
+            --env "CI_ADMIN_PASSWORD=$admin_password" \
+            --env ControlPlane__Worker__Enabled=false \
+            osdu-delivery-control-plane:ci
+          ready=false
+          for attempt in $(seq 1 90); do
+            if curl --silent --fail --max-time 5 http://localhost:8080/health/ready > /dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            docker logs control-plane
+            echo "The control plane image did not report ready in three minutes." >&2
+            exit 1
+          fi
+
+          # Provisioning the admin runs beside start-up, so the first sign-in may come too early.
+          body="$(jq -n --arg username ci-admin --arg password "$admin_password" '{username: $username, password: $password}')"
+          signed_in=false
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail --max-time 5 --header 'Content-Type: application/json' --data "$body" \
+                 http://localhost:8080/api/v1/auth/login | jq --exit-status '.accessToken | length > 0' > /dev/null; then
+              signed_in=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$signed_in" != true ]; then
+            docker logs control-plane
+            echo "The control plane image did not sign in the admin it provisions." >&2
+            exit 1
+          fi
+
+      - name: Start the GUI image
+        run: |
+          docker run --detach --name gui --publish 8081:8080 \
+            --env SQLFLOW_API_BASE_URL=https://api.example.test osdu-delivery-gui:ci
+          served=false
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail --max-time 5 http://localhost:8081/config.json > "$RUNNER_TEMP/config.json"; then
+              served=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$served" != true ] \
+             || ! jq --exit-status '.apiBaseUrl == "https://api.example.test"' "$RUNNER_TEMP/config.json" > /dev/null \
+             || ! curl --silent --fail --max-time 5 http://localhost:8081/ | grep --quiet '<div id="root">'; then
+            docker logs gui
+            echo "The GUI image did not serve its pages with the runtime configuration it was given." >&2
+            exit 1
+          fi
