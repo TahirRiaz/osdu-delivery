@@ -262,6 +262,81 @@ public sealed partial class DdmsCatalogTests
             ["/h/info", "/q/info"],
             DdmsCatalog.ProbePaths(new DdmsService("h", "/h", DdmsShape.ProductionTimeSeriesV1, []) { TimeSeries = new TimeSeriesSettings { QueryRoot = "/q" } }));
         Assert.Equal(["/h/info", "/api/pddms/query/v1/info"], DdmsCatalog.ProbePaths(new DdmsService("h", "/h", DdmsShape.ProductionTimeSeriesV1, [])));
+        Assert.Equal("/api/seismic-store/v3", DdmsCatalog.UsualRoot(DdmsShape.SeismicStoreV3));
+        Assert.Equal("seismicStoreV3", DdmsCatalog.ShapeName(DdmsShape.SeismicStoreV3));
+        Assert.Same(DdmsCatalog.SeismicStoreCollections, DdmsCatalog.DefaultCollections(DdmsShape.SeismicStoreV3));
+        var seismic = new DdmsService("s", "/s", DdmsShape.SeismicStoreV3, []) { SeismicStore = new SeismicStoreSettings { Subproject = "raw" } };
+        Assert.Equal(["/s/svcstatus", "/s/svcstatus/access", "/s/subproject/tenant/{partition}/subproject/raw"], DdmsCatalog.ProbePaths(seismic));
+        Assert.Equal(
+            "/s/subproject/tenant/osdu/subproject/raw",
+            DdmsCatalog.SeismicSubprojectPath(seismic with { SeismicStore = new SeismicStoreSettings { Tenant = "osdu", Subproject = "raw" } }));
+        Assert.Throws<ArgumentException>(() => DdmsCatalog.ProbePaths(seismic with { SeismicStore = null }));
+    }
+
+    [Fact]
+    public void Seismic_stores_dataset_types_and_calls_are_the_ones_its_contract_and_clients_serve()
+    {
+        // The four dataset types Seismic Store's clients and its v4 service know, each keeping its files.
+        Assert.Equal(
+            ["dataset--FileCollection.SEGY:segy", "dataset--FileCollection.Slb.OpenZGY:openzgy", "dataset--FileCollection.Bluware.OpenVDS:openvds", "dataset--FileCollection.Generic:generic"],
+            DdmsCatalog.SeismicStoreCollections.Select(c => $"{c.EntityType}:{c.Segment}"));
+        Assert.All(DdmsCatalog.SeismicStoreCollections, c =>
+        {
+            Assert.StartsWith(DdmsCatalog.FileCollectionPrefix, c.EntityType, StringComparison.Ordinal);
+            Assert.True(c.Bulk);
+            Assert.False(c.TypedContent);
+            Assert.Equal(DdmsBulkColumns.Unchecked, c.Columns);
+            Assert.True(DdmsCatalog.IsEntityType(c.EntityType));
+        });
+
+        // Every call the shape makes is one the pinned contract declares.
+        const string dataset = "/dataset/tenant/{tenantid}/subproject/{subprojectid}/dataset/{datasetid}";
+        foreach (var (method, template) in new[]
+        {
+            ("POST", dataset), ("GET", dataset), ("PATCH", dataset), ("DELETE", dataset), ("PUT", dataset + "/lock"), ("PUT", dataset + "/unlock"),
+            ("GET", "/utility/upload-connection-string"), ("GET", "/svcstatus"), ("GET", "/svcstatus/access"), ("GET", "/subproject/tenant/{tenantid}/subproject/{subprojectid}"),
+        })
+        {
+            Assert.Contains(OsduContracts.SeismicDdms.Operations, o => o.Method == method && o.Template == template);
+        }
+    }
+
+    [Theory]
+    [InlineData("seismic", true)]
+    [InlineData("seismic-raw", true)]
+    [InlineData("s1", true)]
+    [InlineData("s", false)]
+    [InlineData("Seismic", false)]
+    [InlineData("1seismic", false)]
+    [InlineData("seismic-", false)]
+    [InlineData("seis_mic", false)]
+    [InlineData("", false)]
+    public void A_seismic_subproject_name_is_the_one_its_contract_allows(string name, bool valid)
+        => Assert.Equal(valid, DdmsCatalog.IsSubproject(name));
+
+    [Theory]
+    [InlineData("surveys", true)]
+    [InlineData("surveys/north_2.b-c", true)]
+    [InlineData("surveys//north", false)]
+    [InlineData("/surveys", false)]
+    [InlineData("surveys/", false)]
+    [InlineData("north sea", false)]
+    [InlineData("", false)]
+    public void A_seismic_folder_is_segments_of_the_characters_a_dataset_path_takes(string folder, bool valid)
+        => Assert.Equal(valid, DdmsCatalog.IsSeismicFolder(folder));
+
+    [Theory]
+    [InlineData("line-001", true)]
+    [InlineData("a.b_c", true)]
+    [InlineData("opendes", true)]
+    [InlineData("a/b", false)]
+    [InlineData("line 001", false)]
+    [InlineData("ключ", false)]
+    [InlineData("", false)]
+    public void A_seismic_dataset_or_tenant_name_takes_the_path_characters_without_a_slash(string name, bool valid)
+    {
+        Assert.Equal(valid, DdmsCatalog.IsSeismicDataset(name));
+        Assert.Equal(valid, DdmsCatalog.IsSeismicTenant(name));
     }
 
     [Fact]

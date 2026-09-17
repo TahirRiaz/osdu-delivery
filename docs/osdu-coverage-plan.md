@@ -30,7 +30,7 @@ and the order it is built in.
 | Files and bulk data of one record | file v2, dataset v1, workflow v1, `osdu/specs/wellbore-ddms` | `fileAndDdms` and `manifestAndDdms` (stage 6) | none |
 | Wellbore DDMS, bulk kinds (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) | `osdu/specs/wellbore-ddms` | every bulk collection (`ddms`, stage 5) | none |
 | Wellbore DDMS, record kinds (Well, Wellbore, WellboreMarkerSet, WellboreIntervalSet, WellLogAcquisition) | `osdu/specs/wellbore-ddms` | every record collection (`ddms`, stage 5) | none |
-| Seismic DDMS (Seismic Store) | `osdu/specs/seismic-ddms` | no | ddms shape `seismicStoreV3` (docs/interfaces-design.md section 5.10) |
+| Seismic DDMS (Seismic Store) | `osdu/specs/seismic-ddms` | ddms shape `seismicStoreV3` (stage 7): `dataset--FileCollection.*` records as datasets' `seismicmeta`, their files uploaded to Azure Blob Storage, Google Cloud Storage or S3 as Seismic Store's clients write them | the record scope leaves the dataset (Seismic Store has no reversible delete); removing everything is refused on gc; the v4 service and work product components (the storage route) are not this shape's |
 | Reservoir DDMS (Open ETP server, ETP 1.2) | `osdu/specs/reservoir-ddms` | no | route type `etp` |
 | Rock and Fluid Samples DDMS | `osdu/specs/rafs-ddms` | ddms shape `rafsV2` (stage 7): every collection, records and content tables | none |
 | Well Delivery DDMS | `osdu/specs/well-delivery-ddms` | ddms shape `wellDeliveryV1` (stage 7): every entity type it knows, versioned references, its Storage copy | none |
@@ -212,9 +212,13 @@ removed with the entity), the Rock and Fluid Sample DDMS (`rafsV2`: records in a
 schema version checked against the service's catalogue, both storage modes, the content datasets removed with the
 record) and the production historian (`productionTimeSeriesV1`: ProductionValues records through Storage with their
 link to their points, the points read from parquet or the service's JSON and checked against the record's series,
-requests under the body limit sent once each, every accepted version read back through the query service), each
-against a fake of the service with every request checked against its pinned contract, and the ddms route split into one
-writer per shape.
+requests under the body limit sent once each, every accepted version read back through the query service) and Seismic
+Store (`seismicStoreV3`: `dataset--FileCollection.*` records registered as their datasets' `seismicmeta` under a lock
+id each record keeps, the files uploaded to Azure Blob Storage, Google Cloud Storage or S3 with the credentials the
+service issues, renewed when they expire, a try resumed past the objects that landed, the dataset closed with its file
+metadata, the record's version read from Storage), each against a fake of the service (and, for Seismic Store, of the
+three object stores, the S3 one checking every signature with the AWS SDK) with every request to an OSDU service
+checked against its pinned contract, and the ddms route split into one writer per shape.
 
 ### Stage 8: records that wait for other records
 

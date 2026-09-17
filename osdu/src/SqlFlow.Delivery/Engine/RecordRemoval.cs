@@ -171,6 +171,15 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
             // The historian's records are storage records, and nothing removes its points.
             DdmsShape.ProductionTimeSeriesV1 => new RemovalEndpoints(
                 routing.StorageDeletePath ?? DeleteNotConfigured, history, routing.StoragePurgePath ?? PurgeNotConfigured),
+
+            // Seismic Store's records are storage records; its datasets have no reversible delete, and on gc one dataset's
+            // delete takes the files of every dataset in the subproject.
+            DdmsShape.SeismicStoreV3 => new RemovalEndpoints(
+                routing.StorageDeletePath ?? DeleteNotConfigured,
+                history,
+                paths.Route!.Service.SeismicStore?.Provider == DdmsProvider.Gc
+                    ? SeismicGcDeleteRefused
+                    : routing.StoragePurgePath is { } purge ? $"{paths.Data} (the dataset and its files), then {purge}" : PurgeNotConfigured),
             _ => new RemovalEndpoints(
                 paths.Delete,
                 history,
@@ -180,6 +189,9 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
             },
         };
     }
+
+    /// <summary>What the everything endpoint of a Seismic Store on gc reads as.</summary>
+    public const string SeismicGcDeleteRefused = "(refused: Seismic Store on gc deletes the files of every dataset in a subproject when one dataset is deleted)";
 
     /// <summary>What the history endpoint of a Well Delivery DDMS collection reads as.</summary>
     public const string HistoryRefusedByWellDelivery = "(refused: the Well Delivery DDMS keys every version by the value other entities' references cite)";

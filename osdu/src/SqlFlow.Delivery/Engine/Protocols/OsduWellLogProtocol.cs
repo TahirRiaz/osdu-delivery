@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Engine.Protocols.Ddms;
+using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
 
@@ -11,8 +12,8 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// The ddms route (design.md sections 8.1 and 8.3, docs/interfaces-design.md sections 5.3 and 5.4): each record goes to
 /// the collection of the DDMS serving its entity type (<see cref="DdmsRouting"/>), by the call pattern of that DDMS's
 /// shape: the Wellbore DDMS v3 (<see cref="WellboreDdmsV3Shape"/>), the Well Delivery DDMS
-/// (<see cref="WellDeliveryShape"/>), the Rock and Fluid Sample DDMS (<see cref="RafsShape"/>) or the Production DDMS
-/// historian (<see cref="ProductionTimeSeriesShape"/>). A record's shape
+/// (<see cref="WellDeliveryShape"/>), the Rock and Fluid Sample DDMS (<see cref="RafsShape"/>), the Production DDMS
+/// historian (<see cref="ProductionTimeSeriesShape"/>) or Seismic Store (<see cref="SeismicStoreShape"/>). A record's shape
 /// checks it, and the data its DDMS keeps for it, before the first request, writes both, and says how the record is read
 /// back, verified and removed. The protocol is named after the <c>osduWellLog</c> value a flow's <c>target.protocol</c>
 /// gives it.
@@ -29,6 +30,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     private readonly IDdmsShape _wellDelivery;
     private readonly IDdmsShape _rafs;
     private readonly IDdmsShape _timeSeries;
+    private readonly IDdmsShape _seismic;
 
     public OsduWellLogProtocol(OsduHttpClient client, ProtocolOptions options, ILogger logger, long requestBodyCeiling = 0, TimeProvider? time = null, DdmsRouting? routing = null)
     {
@@ -43,6 +45,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         _wellDelivery = new WellDeliveryShape(context);
         _rafs = new RafsShape(context);
         _timeSeries = new ProductionTimeSeriesShape(context);
+        _seismic = new SeismicStoreShape(context);
     }
 
     public DeliveryProtocol Kind => DeliveryProtocol.OsduWellLog;
@@ -100,8 +103,9 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
 
     /// <summary>
     /// Asks each DDMS the flow reaches for its service description, as its shape describes itself (<c>GET /about</c> of
-    /// the Wellbore DDMS, <c>GET /info</c> of the others, RAFS's type catalogue, and the historian's query service), or
-    /// the flow's own probe path. The target is reachable when every one of them answers.
+    /// the Wellbore DDMS, <c>GET /info</c> of the others, RAFS's type catalogue, the historian's query service, and Seismic
+    /// Store's status and the flow's subproject), or the flow's own probe path. The target is reachable when every one of
+    /// them answers.
     /// </summary>
     public async Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
     {
@@ -114,7 +118,19 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         var answered = new List<ProbeOutcome>(probes.Count);
         foreach (var probe in probes)
         {
-            var outcome = await RecordWriter.ProbeAsync(_client, probe, ct).ConfigureAwait(false);
+            var path = probe;
+            if (path.Contains(DdmsCatalog.PartitionToken, StringComparison.Ordinal))
+            {
+                // A Seismic Store tenant the flow names by its partition.
+                if (_client.Header(Documents.FlowMapper.PartitionHeader) is not { Length: > 0 } partition)
+                {
+                    return new ProbeOutcome(false, 0, $"the flow names no Seismic Store tenant and sends no {Documents.FlowMapper.PartitionHeader} to take it from", probe);
+                }
+
+                path = path.Replace(DdmsCatalog.PartitionToken, UrlPath.EscapeSegment(partition), StringComparison.Ordinal);
+            }
+
+            var outcome = await RecordWriter.ProbeAsync(_client, path, ct).ConfigureAwait(false);
             if (!outcome.Reachable)
             {
                 return outcome;
@@ -176,6 +192,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         DdmsShape.WellDeliveryV1 => _wellDelivery,
         DdmsShape.RafsV2 => _rafs,
         DdmsShape.ProductionTimeSeriesV1 => _timeSeries,
+        DdmsShape.SeismicStoreV3 => _seismic,
         _ => throw new InvalidOperationException($"The ddms route has no call pattern for the shape {paths.Shape}."),
     };
 

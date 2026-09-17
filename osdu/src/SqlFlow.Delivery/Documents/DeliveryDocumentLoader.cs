@@ -1537,6 +1537,13 @@ internal static partial class FlowMapper
                     + $"the platform both are under; say where the ingestion service is under it (usually {DdmsCatalog.UsualRoot(shape)}).");
             }
 
+            if (root is null && shape == DdmsShape.SeismicStoreV3)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {at}.root is required. A dataset's record is read and removed through Storage, so the flow's endpoint is the platform Seismic Store is under; "
+                    + $"say where Seismic Store is under it, version path included (usually {DdmsCatalog.UsualRoot(shape)}, or /seistore-svc/api/v3 on Azure).");
+            }
+
             if (root is null && registration is null && interfaceForm)
             {
                 throw new FlowValidationException(
@@ -1549,6 +1556,7 @@ internal static partial class FlowMapper
             var collections = registration is not null && ddms.Collections is null ? [] : MapDdmsCollections(ddms.Collections, shape, at, source);
             var settings = MapWellDelivery(ddms, shape, at, source);
             var timeSeries = MapTimeSeries(ddms, shape, at, source);
+            var seismic = MapSeismicStore(ddms, shape, at, source);
             foreach (var collection in collections)
             {
                 if (!servedBy.TryAdd(collection.EntityType, name))
@@ -1565,6 +1573,7 @@ internal static partial class FlowMapper
                 DeclaresCollections = ddms.Collections is not null,
                 WellDelivery = settings,
                 TimeSeries = timeSeries,
+                SeismicStore = seismic,
             });
         }
 
@@ -1588,7 +1597,7 @@ internal static partial class FlowMapper
     {
         if (shape != DdmsShape.WellDeliveryV1)
         {
-            var misplaced = new[] { ("mirror", ddms.Mirror is not null), ("provider", ddms.Provider is not null), ("concurrency", ddms.Concurrency is not null) }
+            var misplaced = new[] { ("mirror", ddms.Mirror is not null), ("provider", ddms.Provider is not null && shape != DdmsShape.SeismicStoreV3), ("concurrency", ddms.Concurrency is not null) }
                 .Where(k => k.Item2)
                 .Select(k => $"{at}.{k.Item1}")
                 .ToList();
@@ -1679,6 +1688,120 @@ internal static partial class FlowMapper
             SettleSeconds = settle,
             PollSeconds = poll,
             MaxRequestBytesPerRequest = bytes,
+        };
+    }
+
+    /// <summary>
+    /// The settings of a declared Seismic Store, or null for any other shape, which takes none of them
+    /// (osdu/specs/seismic-ddms/INTEGRATION.md section 9.3: the tenant, subproject and folder the datasets are registered in,
+    /// the provider and object store their files go to, the size of each object or part, and the read-only flag).
+    /// </summary>
+    private static SeismicStoreSettings? MapSeismicStore(DdmsYaml ddms, DdmsShape shape, string at, string source)
+    {
+        if (shape != DdmsShape.SeismicStoreV3)
+        {
+            var misplaced = new[]
+                {
+                    ("tenant", ddms.Tenant is not null), ("subproject", ddms.Subproject is not null), ("folder", ddms.Folder is not null),
+                    ("objectStore", ddms.ObjectStore is not null), ("region", ddms.Region is not null), ("chunkMiB", ddms.ChunkMiB is not null),
+                    ("readOnly", ddms.ReadOnly is not null),
+                }
+                .Where(k => k.Item2)
+                .Select(k => $"{at}.{k.Item1}")
+                .ToList();
+            if (misplaced.Count > 0)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {string.Join(", ", misplaced)} describe a Seismic Store, and {at} has the {DdmsCatalog.ShapeName(shape)} shape. Remove them, or declare shape: seismicStoreV3.");
+            }
+
+            return null;
+        }
+
+        var subproject = ddms.Subproject?.Trim();
+        if (string.IsNullOrEmpty(subproject))
+        {
+            throw new FlowValidationException($"{source}: {at}.subproject is required: the Seismic Store subproject the datasets are registered in, which an operator provisions.");
+        }
+
+        if (!DdmsCatalog.IsSubproject(subproject))
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.subproject '{subproject}' is not a Seismic Store subproject name: a lower-case letter, then lower-case letters, digits and '-', not ending in '-'.");
+        }
+
+        var tenant = string.IsNullOrWhiteSpace(ddms.Tenant) ? null : ddms.Tenant.Trim();
+        if (tenant is not null && !DdmsCatalog.IsSeismicTenant(tenant))
+        {
+            throw new FlowValidationException($"{source}: {at}.tenant '{tenant}' is not a Seismic Store tenant name (letters, digits, '_', '.' and '-'); on OSDU it is the data partition id.");
+        }
+
+        var folder = string.IsNullOrWhiteSpace(ddms.Folder) ? null : ddms.Folder.Trim().Trim('/');
+        if (folder is { Length: 0 })
+        {
+            folder = null;
+        }
+
+        if (folder is not null && !DdmsCatalog.IsSeismicFolder(folder))
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.folder '{ddms.Folder!.Trim()}' is not a Seismic Store folder: segments of letters, digits, '_', '.' and '-', separated by single slashes.");
+        }
+
+        DdmsProvider? provider = null;
+        if (ddms.Provider is not null)
+        {
+            provider = ParseEnum<DdmsProvider>(ddms.Provider, default, at + ".provider", source);
+            if (provider == DdmsProvider.Aws)
+            {
+                throw new FlowValidationException($"{source}: {at}.provider '{ddms.Provider}' is not a provider Seismic Store v3 runs on: azure, gc, anthos or ibm.");
+            }
+        }
+
+        string? objectStore = null;
+        if (!string.IsNullOrWhiteSpace(ddms.ObjectStore))
+        {
+            var written = ddms.ObjectStore.Trim();
+            if (!Uri.TryCreate(written, UriKind.Absolute, out var endpoint) || (endpoint.Scheme != Uri.UriSchemeHttps && endpoint.Scheme != Uri.UriSchemeHttp)
+                || endpoint.UserInfo.Length > 0 || endpoint.Query.Length > 0 || endpoint.Fragment.Length > 0)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {at}.objectStore '{written}' must be the object store's absolute http(s) address, without credentials, query or fragment (https://s3.example.com).");
+            }
+
+            objectStore = written.TrimEnd('/');
+        }
+
+        if (provider is DdmsProvider.Anthos or DdmsProvider.Ibm && objectStore is null)
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.objectStore is required on {ddms.Provider}: Seismic Store issues a key triple there for an S3 store it does not name (osdu/specs/seismic-ddms/INTEGRATION.md section 4.3).");
+        }
+
+        var region = string.IsNullOrWhiteSpace(ddms.Region) ? SeismicStoreSettings.DefaultRegion : ddms.Region.Trim();
+        if (region.Length > 64 || !region.All(c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c == '-'))
+        {
+            throw new FlowValidationException($"{source}: {at}.region '{region}' is not a region name (lower-case letters, digits and '-', such as us-east-1).");
+        }
+
+        var chunk = ddms.ChunkMiB ?? SeismicStoreSettings.DefaultChunkMiB;
+        if (chunk is < 0 or > SeismicStoreSettings.MaxChunkMiB)
+        {
+            throw new FlowValidationException(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{source}: {at}.chunkMiB must be between 0 and {SeismicStoreSettings.MaxChunkMiB}: the MiB of each object a file is cut into on Azure (0 keeps it whole), and of each part it goes up in."));
+        }
+
+        return new SeismicStoreSettings
+        {
+            Tenant = tenant,
+            Subproject = subproject,
+            Folder = folder,
+            Provider = provider,
+            ObjectStore = objectStore,
+            Region = region,
+            ChunkMiB = chunk,
+            ReadOnly = ddms.ReadOnly ?? false,
         };
     }
 
@@ -1779,6 +1902,12 @@ internal static partial class FlowMapper
                 continue;
             }
 
+            if (shape == DdmsShape.SeismicStoreV3)
+            {
+                collections.Add(MapSeismicCollection(entityType, value, entry, source));
+                continue;
+            }
+
             var declaredCollection = value ?? throw new FlowValidationException($"{source}: {entry} declares nothing; name at least the path the DDMS serves it under.");
             var segment = declaredCollection.Path?.Trim() ?? string.Empty;
             if (!DdmsCatalog.IsSegment(segment))
@@ -1840,6 +1969,33 @@ internal static partial class FlowMapper
         }
 
         return collection;
+    }
+
+    /// <summary>
+    /// A dataset type a declared Seismic Store registers datasets for: a <c>dataset--FileCollection.*</c> type, which always
+    /// keeps files. Its path only names it (the type after <c>dataset--FileCollection.</c>, lowercased, when left out),
+    /// since every dataset goes to the subproject whatever its type.
+    /// </summary>
+    private static DdmsCollectionEntry MapSeismicCollection(string entityType, DdmsCollectionYaml? declared, string entry, string source)
+    {
+        if (!entityType.StartsWith(DdmsCatalog.FileCollectionPrefix, StringComparison.OrdinalIgnoreCase) || entityType.Length == DdmsCatalog.FileCollectionPrefix.Length)
+        {
+            throw new FlowValidationException(
+                $"{source}: {entry} names a type Seismic Store registers no dataset for; a Seismic Store dataset's record is a {DdmsCatalog.FileCollectionPrefix}* record.");
+        }
+
+        var segment = declared?.Path?.Trim() is { Length: > 0 } path ? path : entityType[DdmsCatalog.FileCollectionPrefix.Length..].ToLowerInvariant();
+        if (!DdmsCatalog.IsSegment(segment))
+        {
+            throw new FlowValidationException($"{source}: {entry}.path '{segment}' must be a name of letters, digits, '.', '_' and '-', at most 100 characters.");
+        }
+
+        if (declared?.Bulk == false || declared?.Columns is not null || declared?.TypedContent is not null)
+        {
+            throw new FlowValidationException($"{source}: {entry} says what a dataset keeps, and a Seismic Store dataset always keeps its files; remove bulk, columns and typedContent.");
+        }
+
+        return new DdmsCollectionEntry(entityType, segment, Bulk: true);
     }
 
     private static ProtocolOptions MapOptions(ProtocolOptionsYaml? o, string source)

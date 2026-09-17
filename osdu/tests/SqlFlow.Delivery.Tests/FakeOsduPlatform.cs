@@ -13,10 +13,11 @@ namespace SqlFlow.Delivery.Tests;
 /// A stateful stand-in for the OSDU services the Stage 6 and 7 routes call, built from their pinned contracts and briefs:
 /// Storage, Search, Legal, the Dataset service with the staging locations each provider signs, the Workflow service with a
 /// scripted engine behind it (what each workflow writes, the status it ends in and the XCom entries it pushes), the
-/// Airflow REST API, and the Wellbore, Well Delivery, RAFS and Production historian DDMSs. Every request is recorded as
-/// <see cref="FakeHttpHandler"/> records them, so the contract harness checks them.
+/// Airflow REST API, the Wellbore, Well Delivery, RAFS and Production historian DDMSs, and Seismic Store with the object
+/// stores behind it (FakeOsduPlatform.Seismic.cs). Every request is recorded as <see cref="FakeHttpHandler"/> records
+/// them, so the contract harness checks them.
 /// </summary>
-public sealed class FakeOsduPlatform : HttpMessageHandler
+public sealed partial class FakeOsduPlatform : HttpMessageHandler
 {
     public const string Endpoint = "http://localhost";
 
@@ -295,6 +296,11 @@ public sealed class FakeOsduPlatform : HttpMessageHandler
         if (path.StartsWith(TimeSeriesQueryRoot + "/", StringComparison.Ordinal))
         {
             return TimeSeriesQuery(method, path[TimeSeriesQueryRoot.Length..], uri);
+        }
+
+        if (SeismicRoute(method, path, uri, body, bytes, request) is { } seismic)
+        {
+            return seismic;
         }
 
         if (path == "/api/search/v2/query_with_cursor" || path == "/api/search/v2/query")

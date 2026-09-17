@@ -33,6 +33,14 @@ public enum DdmsShape
     /// series version read back through the query service. Points have no delete.
     /// </summary>
     ProductionTimeSeriesV1,
+
+    /// <summary>
+    /// Seismic Store v3 (osdu/specs/seismic-ddms/INTEGRATION.md): a <c>dataset--FileCollection.*</c> record registered as
+    /// its dataset's <c>seismicmeta</c> under a write lock (<c>POST /dataset/tenant/{t}/subproject/{s}/dataset/{name}</c>),
+    /// its files uploaded to the object store with the credentials the service issues, and the dataset closed with its
+    /// file metadata (<c>PATCH ...?close=</c>). The record is a Storage record.
+    /// </summary>
+    SeismicStoreV3,
 }
 
 /// <summary>The cloud a DDMS deployment runs on, where the API cannot tell and its behaviour depends on it.</summary>
@@ -156,6 +164,49 @@ public sealed record TimeSeriesSettings
 }
 
 /// <summary>
+/// Where a Seismic Store v3 deployment keeps a flow's datasets, and how its files reach the object store behind it
+/// (osdu/specs/seismic-ddms/INTEGRATION.md sections 1, 4 and 9.3).
+/// </summary>
+public sealed record SeismicStoreSettings
+{
+    public const int DefaultChunkMiB = 32;
+
+    public const int MaxChunkMiB = 256;
+
+    public const string DefaultRegion = "us-east-1";
+
+    /// <summary>The tenant the datasets are registered under; null takes the flow's <c>data-partition-id</c>, which the tenant equals on OSDU.</summary>
+    public string? Tenant { get; init; }
+
+    /// <summary>The subproject the datasets are registered in, which an operator provisions.</summary>
+    public required string Subproject { get; init; }
+
+    /// <summary>The folder under the subproject the datasets are registered in (<c>seismic/raw</c>); null for the subproject's root.</summary>
+    public string? Folder { get; init; }
+
+    /// <summary>The cloud the deployment runs on, when the flow says; otherwise the <c>Service-Provider</c> the service answers with.</summary>
+    public DdmsProvider? Provider { get; init; }
+
+    /// <summary>
+    /// The object store the files go to where the service's credentials do not name it: the S3 endpoint on anthos, the COS
+    /// endpoint on IBM, or another Google Cloud Storage endpoint than <c>https://storage.googleapis.com</c>.
+    /// </summary>
+    public string? ObjectStore { get; init; }
+
+    /// <summary>The region S3 requests are signed for, on anthos and IBM.</summary>
+    public string Region { get; init; } = DefaultRegion;
+
+    /// <summary>
+    /// The size, in MiB, of each object a single file is cut into on Azure (0 keeps the file whole), and of each block or
+    /// part a file goes up in everywhere.
+    /// </summary>
+    public int ChunkMiB { get; init; } = DefaultChunkMiB;
+
+    /// <summary>Whether a delivered dataset is closed read-only; a later delivery of its files opens it again first.</summary>
+    public bool ReadOnly { get; init; }
+}
+
+/// <summary>
 /// A DDMS a flow delivers to: the name the flow gives it, where it is under the flow's endpoint (null when the endpoint
 /// is the DDMS itself, or an absolute URL when the Register service places it on another host), its call pattern and
 /// the collections it serves.
@@ -179,6 +230,9 @@ public sealed record DdmsService(string Name, string? Root, DdmsShape Shape, IRe
 
     /// <summary>The Production DDMS historian's query service and waits; null for every other shape.</summary>
     public TimeSeriesSettings? TimeSeries { get; init; }
+
+    /// <summary>Where a Seismic Store keeps the flow's datasets; null for every other shape.</summary>
+    public SeismicStoreSettings? SeismicStore { get; init; }
 
     /// <summary>Whether the registration still has to be read before the DDMS's root and collections are known.</summary>
     public bool AwaitsDiscovery => Registration is not null && !Discovered;
@@ -242,6 +296,15 @@ public static partial class DdmsCatalog
 
     /// <summary>The entity type whose records define the historian's series.</summary>
     public const string ProductionValues = "work-product-component--ProductionValues";
+
+    /// <summary>What every entity type a Seismic Store dataset is registered for starts with.</summary>
+    public const string FileCollectionPrefix = "dataset--FileCollection.";
+
+    /// <summary>Where Seismic Store v3 is usually deployed under the platform: the OSDU community and core-plus charts' prefix (Azure's is <c>/seistore-svc/api/v3</c>).</summary>
+    public const string UsualSeismicStoreRoot = "/api/seismic-store/v3";
+
+    /// <summary>The token a Seismic Store path takes the tenant in when the flow names none: the flow's <c>data-partition-id</c>.</summary>
+    public const string PartitionToken = "{partition}";
 
     /// <summary>
     /// The Wellbore DDMS v3's collections, as its pinned contract serves them (osdu/specs/wellbore-ddms/openapi.json and
@@ -342,6 +405,18 @@ public static partial class DdmsCatalog
         new(ProductionValues, "production-values", Bulk: true),
     ];
 
+    /// <summary>
+    /// The dataset types Seismic Store's clients and its v4 service know (osdu/specs/seismic-ddms/INTEGRATION.md sections
+    /// 2.3 and 8.3), each kept as bytes beside its record; a flow lists other <c>dataset--FileCollection.*</c> types itself.
+    /// </summary>
+    public static IReadOnlyList<DdmsCollectionEntry> SeismicStoreCollections { get; } =
+    [
+        new("dataset--FileCollection.SEGY", "segy", Bulk: true),
+        new("dataset--FileCollection.Slb.OpenZGY", "openzgy", Bulk: true),
+        new("dataset--FileCollection.Bluware.OpenVDS", "openvds", Bulk: true),
+        new("dataset--FileCollection.Generic", "generic", Bulk: true),
+    ];
+
     /// <summary>The Wellbore DDMS under <paramref name="root"/>, with the collections its contract serves.</summary>
     public static DdmsService WellboreDdms(string? root) => new(WellboreDdmsName, root, DdmsShape.WellboreDdmsV3, WellboreDdmsCollections);
 
@@ -352,6 +427,7 @@ public static partial class DdmsCatalog
         DdmsShape.WellDeliveryV1 => WellDeliveryCollections,
         DdmsShape.RafsV2 => RafsCollections,
         DdmsShape.ProductionTimeSeriesV1 => TimeSeriesCollections,
+        DdmsShape.SeismicStoreV3 => SeismicStoreCollections,
         _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "not a DDMS shape"),
     };
 
@@ -362,6 +438,7 @@ public static partial class DdmsCatalog
         DdmsShape.WellDeliveryV1 => "/api/well-delivery",
         DdmsShape.RafsV2 => "/api/rafs-ddms",
         DdmsShape.ProductionTimeSeriesV1 => "/api/pddms/ingest/v1",
+        DdmsShape.SeismicStoreV3 => UsualSeismicStoreRoot,
         _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "not a DDMS shape"),
     };
 
@@ -375,7 +452,9 @@ public static partial class DdmsCatalog
     /// <summary>
     /// The service descriptions a probe of <paramref name="service"/> asks, in order, below the endpoint. The Wellbore DDMS
     /// answers <c>/about</c>, the Well Delivery DDMS <c>/info</c>, RAFS <c>/info</c> without a token, then its type
-    /// catalogue, which checks the token and the partition, and the historian the <c>/info</c> of both its services.
+    /// catalogue, which checks the token and the partition, the historian the <c>/info</c> of both its services, and
+    /// Seismic Store its status, its status behind the token, and the flow's subproject, which checks the tenant, the
+    /// subproject, its legal tag and the caller's admin role (the tenant being the flow's partition when it names none).
     /// </summary>
     public static IReadOnlyList<string> ProbePaths(DdmsService service)
     {
@@ -387,8 +466,21 @@ public static partial class DdmsCatalog
             DdmsShape.WellDeliveryV1 => [root + WellDeliveryInfoPath],
             DdmsShape.RafsV2 => [root + RafsInfoPath, root + RafsAnalysisTypesPath],
             DdmsShape.ProductionTimeSeriesV1 => [root + TimeSeriesInfoPath, (service.TimeSeries?.QueryRoot ?? UsualTimeSeriesQueryRoot) + TimeSeriesInfoPath],
+            DdmsShape.SeismicStoreV3 => [root + "/svcstatus", root + "/svcstatus/access", SeismicSubprojectPath(service)],
             _ => throw new ArgumentOutOfRangeException(nameof(service), service.Shape, "not a DDMS shape"),
         };
+    }
+
+    /// <summary>
+    /// Where a Seismic Store serves the flow's subproject (<c>GET /subproject/tenant/{t}/subproject/{s}</c>), the tenant being
+    /// <see cref="PartitionToken"/> when the flow names none.
+    /// </summary>
+    public static string SeismicSubprojectPath(DdmsService service)
+    {
+        ArgumentNullException.ThrowIfNull(service);
+        var settings = service.SeismicStore
+            ?? throw new ArgumentException($"The DDMS '{service.Name}' has no Seismic Store settings.", nameof(service));
+        return $"{service.Root}/subproject/tenant/{settings.Tenant ?? PartitionToken}/subproject/{settings.Subproject}";
     }
 
     /// <summary>
@@ -418,6 +510,24 @@ public static partial class DdmsCatalog
     /// <summary>True for a collection path segment: letters, digits, '.', '_' and '-', at most 100 characters.</summary>
     public static bool IsSegment(string segment) => SegmentPattern().IsMatch(segment);
 
+    /// <summary>True for a Seismic Store subproject name (osdu/specs/seismic-ddms/openapi.yaml, subproject-create: <c>^[a-z][a-z\d\-]*[a-z\d]$</c>).</summary>
+    public static bool IsSubproject(string name) => SubprojectPattern().IsMatch(name);
+
+    /// <summary>
+    /// True for a Seismic Store dataset folder: segments of the characters a dataset path takes (<c>[/A-Za-z0-9_.-]</c>,
+    /// osdu/specs/seismic-ddms/INTEGRATION.md section 2.1), without leading, trailing or doubled slashes.
+    /// </summary>
+    public static bool IsSeismicFolder(string folder) => SeismicFolderPattern().IsMatch(folder);
+
+    /// <summary>True for a Seismic Store tenant name: the letters, digits, '_', '.' and '-' an OSDU data partition id takes.</summary>
+    public static bool IsSeismicTenant(string tenant) => SeismicNamePattern().IsMatch(tenant);
+
+    /// <summary>
+    /// True for a Seismic Store dataset name, which a record's key becomes: the characters a dataset path takes, without
+    /// a slash, since a name with one cannot be written as an <c>sd://</c> path.
+    /// </summary>
+    public static bool IsSeismicDataset(string name) => SeismicNamePattern().IsMatch(name);
+
     /// <summary>True for an id the Register service keeps a DDMS under (openapi register v1, Ddms.id: <c>^[A-Za-z0-9-]{2,50}</c>).</summary>
     public static bool IsRegistration(string id) => RegistrationPattern().IsMatch(id);
 
@@ -441,4 +551,13 @@ public static partial class DdmsCatalog
 
     [GeneratedRegex(@"^[A-Za-z0-9-]{2,50}\z")]
     private static partial Regex RegistrationPattern();
+
+    [GeneratedRegex(@"^[a-z][a-z\d\-]*[a-z\d]\z", RegexOptions.CultureInvariant)]
+    private static partial Regex SubprojectPattern();
+
+    [GeneratedRegex(@"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\z", RegexOptions.CultureInvariant)]
+    private static partial Regex SeismicFolderPattern();
+
+    [GeneratedRegex(@"^[A-Za-z0-9_.-]+\z", RegexOptions.CultureInvariant)]
+    private static partial Regex SeismicNamePattern();
 }

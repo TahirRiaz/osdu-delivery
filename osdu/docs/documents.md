@@ -306,21 +306,39 @@ target:
       settleSeconds: 60                  # how long a delivery reads accepted points back for (the default; 0 reads nothing back)
       pollSeconds: 5                     # the pause between two reads of points not served yet (the default)
       maxRequestBytes: 8000000           # the largest request the points go in (the default)
+    seismic:
+      root: /api/seismic-store/v3        # Seismic Store with its version path; required, the records going through Storage
+      shape: seismicStoreV3
+      subproject: seismic-raw            # required: the subproject the datasets are registered in
+      tenant: opendes                    # the tenant (the default: the flow's data-partition-id)
+      folder: surveys/north              # the folder the datasets go in (the default: the subproject's root)
+      provider: anthos                   # azure, gc, anthos or ibm (the default: the provider the service names)
+      objectStore: https://minio.example.com   # the S3 store on anthos and ibm, another Google endpoint on gc
+      region: us-east-1                  # the region S3 requests are signed for (the default)
+      chunkMiB: 32                       # each blob a file is cut into on Azure, and each part it goes up in (the default)
+      readOnly: false                    # whether a delivered dataset is closed read-only (the default)
 ```
 
 | Key | Meaning |
 | --- | --- |
 | `root` | Where the DDMS is under the endpoint: a path starting with `/`. Left out, the endpoint is the DDMS itself, which only a flow in the single form declaring that one DDMS and no `ddmsRoot` can say; every DDMS of a source with interfaces names its root or its registration. |
-| `shape` | The DDMS's call pattern: `wellboreDdmsV3` (the default), the Wellbore DDMS v3's `/ddms/v3/<collection>` calls; `wellDeliveryV1`, the Well Delivery DDMS's `/storage/v1/<type>` calls; `rafsV2`, the Rock and Fluid Sample DDMS's `/v2/<collection>` calls; `productionTimeSeriesV1`, the Production DDMS historian's `/production-values/<id>/timeseries` calls, beside Storage for its records. |
-| `collections` | The entity types (with their group) the DDMS serves, each with `path`, the collection's path segment; `bulk`, whether it keeps bulk data beside its records (default `false`); `columns`, what the bulk data's columns are checked against before they are sent: `unchecked` (the default), `curveIds`, `curveIdsAndWidths` or `trajectoryStations`, which only a bulk collection of a Wellbore DDMS takes; and `typedContent`, which says a RAFS content collection holds several content types, each under its own path segment (default `false`). A Well Delivery DDMS serves each type under the type itself, lowercased, so its collections name no `path` (or that one), and hold records alone. |
+| `shape` | The DDMS's call pattern: `wellboreDdmsV3` (the default), the Wellbore DDMS v3's `/ddms/v3/<collection>` calls; `wellDeliveryV1`, the Well Delivery DDMS's `/storage/v1/<type>` calls; `rafsV2`, the Rock and Fluid Sample DDMS's `/v2/<collection>` calls; `productionTimeSeriesV1`, the Production DDMS historian's `/production-values/<id>/timeseries` calls, beside Storage for its records; `seismicStoreV3`, Seismic Store v3's `/dataset/tenant/<tenant>/subproject/<subproject>/dataset/<name>` calls and the object store behind it, beside Storage for its records. |
+| `collections` | The entity types (with their group) the DDMS serves, each with `path`, the collection's path segment; `bulk`, whether it keeps bulk data beside its records (default `false`); `columns`, what the bulk data's columns are checked against before they are sent: `unchecked` (the default), `curveIds`, `curveIdsAndWidths` or `trajectoryStations`, which only a bulk collection of a Wellbore DDMS takes; and `typedContent`, which says a RAFS content collection holds several content types, each under its own path segment (default `false`). A Well Delivery DDMS serves each type under the type itself, lowercased, so its collections name no `path` (or that one), and hold records alone. A Seismic Store serves `dataset--FileCollection.*` types, each keeping files, so its collections take no `bulk: false`, `columns` or `typedContent`, and `path` only names the type (the part after `dataset--FileCollection.`, lowercased, when left out). |
 | `register` | The id the DDMS is registered under in the Register service (2 to 50 letters, digits and `-`), for a DDMS of the `wellboreDdmsV3` shape. What the flow leaves out is read from the registration when the flow's protocol is built: the root from the one server its interfaces' OpenAPI documents name, the collections from their retrieval operations (`x-ddms-retrieve-entity`), where a collection the shape knows by its path takes the shape's entity type and rules. `protocolOptions.registerPath` says where the registration is read (default `/api/register/v1/ddms/{id}` under the endpoint). A DDMS that declares both its root and its collections has nothing to read, so `register` is refused there. |
 | `mirror` | Well Delivery DDMS: whether the deployment copies every entity into Storage (`app.entity.storage`, on in every provider's chart, so `true` by default). The API cannot tell. The copy's id is kept on the record, and a removal takes the copy through Storage too, since the DDMS never deletes it. |
-| `provider` | Well Delivery DDMS: the provider the deployment runs on, which the API cannot tell either. On `ibm` an entity is never written again under a version it already has, since that store refuses the second save. |
+| `provider` | Well Delivery DDMS: the provider the deployment runs on, which the API cannot tell either. On `ibm` an entity is never written again under a version it already has, since that store refuses the second save. Seismic Store: `azure`, `gc`, `anthos` or `ibm`, which decides the object store the files go to and how; left out, it is the provider the service names in its `Service-Provider` header. |
 | `concurrency` | Well Delivery DDMS: how many writes one node sends to the deployment at once, 1 to 16 (default 1). The service's Mongo and Cosmos stores keep the collection of the current write in shared state, so writes of different types at once can land in each other's collection. |
 | `queryRoot` | Production DDMS historian: where its query service is under the endpoint (default `/api/pddms/query/v1`, its contract's server). Each accepted version of the points is read back there, and the probe asks its `/info`. |
 | `settleSeconds` | Production DDMS historian: how long a delivery reads the points it sent back before it leaves the record for its next try, 0 to 3600 (default 60). The ingestion service accepts points before they are stored, so a delivery counts once the query service serves them; 0 delivers on the acceptance alone. |
 | `pollSeconds` | Production DDMS historian: the pause between two reads of points the query service does not serve yet, 1 to 60 (default 5). |
 | `maxRequestBytes` | Production DDMS historian: the largest request body the points are sent in, 10000 to 64000000 (default 8000000, the limit the historian's documentation gives and has not verified). A declared `reliability.maxRequestBodyBytes` below it bounds the requests instead. |
+| `subproject` | Seismic Store, required: the subproject the datasets are registered in (a lower-case letter, then lower-case letters, digits and `-`). An operator provisions it; the route never creates one. |
+| `tenant` | Seismic Store: the tenant the datasets are registered under (letters, digits, `_`, `.` and `-`). Left out, it is the flow's `data-partition-id`, which the tenant equals on OSDU. |
+| `folder` | Seismic Store: the folder under the subproject the datasets are registered in, as segments of letters, digits, `_`, `.` and `-` (`surveys/north`; leading and trailing slashes are dropped). Left out, the subproject's root. |
+| `objectStore` | Seismic Store: the object store's absolute `http(s)` address, without credentials, query or fragment. Required on `anthos` and `ibm`, where the service issues a key triple for an S3 store it does not name; on `gc`, another endpoint than `https://storage.googleapis.com`. Azure's credential names its store. |
+| `region` | Seismic Store: the region S3 requests are signed for on `anthos` and `ibm` (default `us-east-1`). |
+| `chunkMiB` | Seismic Store: 0 to 256 (default 32). On Azure, a single file is cut into blobs of this size (0 keeps it one blob); everywhere, the size of each block, piece or part a file goes up in (32 MiB when 0). |
+| `readOnly` | Seismic Store: whether a delivered dataset is closed read-only (default `false`). A later delivery of its files lifts the flag, writes, and closes it read-only again. |
 
 The Well Delivery DDMS serves, by default, the entity types its brief lists
 ([../specs/well-delivery-ddms/INTEGRATION.md](../specs/well-delivery-ddms/INTEGRATION.md) section 4), in the groups the
@@ -367,6 +385,22 @@ more files:
 Values are sent as they are, in the series' `UnitOfMeasureID`: the historian converts nothing. A series keeps its points
 in one file, in increasing timestamp order with one value per timestamp, and every point is of its series' kind (an
 Integer series takes whole numbers only); a file that breaks a rule holds the record before anything is sent.
+
+Seismic Store registers a dataset for each `dataset--FileCollection.*` record
+([../specs/seismic-ddms/INTEGRATION.md](../specs/seismic-ddms/INTEGRATION.md)). Its DDMS serves, by default, the types
+Seismic Store's clients and its v4 service know: `dataset--FileCollection.` SEGY, Slb.OpenZGY, Bluware.OpenVDS and
+Generic; a flow lists others under `collections`. A record's dataset is `sd://<tenant>/<subproject>/<folder>/<key>`,
+where the key is the part of the record's id after its type and takes letters, digits, `_`, `.` and `-` only. The
+record is the dataset's `seismicmeta`, pointing at the dataset: `data.DatasetProperties.FileCollectionPath` is the
+folder (`sd://<tenant>/<subproject>/<folder>/`) and one `FileSourceInfos` entry names the dataset, its `FileSize` and
+the record's `data.TotalSize` being the bytes of the files; what the mapping renders there is replaced, its other
+`FileSourceInfos` fields kept. The record names its owners, viewers, a legal tag and a country, which Seismic Store
+would otherwise fill in with defaults.
+
+The record's `bulk` part holds the dataset's files. One file is written as Seismic Store's clients read it: on Azure
+cut into blobs `0` to `N-1` of `chunkMiB` each (one blob with `chunkMiB: 0`), with the file's MD5 up to each blob's end
+as its content MD5; elsewhere as one object `0`. Several files are each one object under its name, so no two share a
+name and none is `.` or `..`. A record delivered without its `bulk` part registers its dataset empty.
 
 A record goes to the DDMS serving its entity type: the DDMSs under `target.ddms`, then the Wellbore DDMS under
 `ddmsRoot` (or at the endpoint, as above). A record goes to one DDMS, so the loader refuses an entity type two declared

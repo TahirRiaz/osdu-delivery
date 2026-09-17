@@ -19,39 +19,49 @@ public sealed record DdmsRoute(DdmsService Service, DdmsCollectionEntry Collecti
     /// <summary>The token a historian read takes the series version the ingestion service answered in.</summary>
     public const string VersionToken = "{version}";
 
+    /// <summary>The token a Seismic Store dataset path takes the dataset's name (the record's key) in.</summary>
+    public const string DatasetToken = "{dataset}";
+
     /// <summary>
     /// The collection below the flow's endpoint: <c>/api/os-wellbore-ddms/ddms/v3/welllogs</c>,
     /// <c>/api/well-delivery/storage/v1/wellbore</c>, <c>/api/rafs-ddms/v2/samplesanalysis</c>,
     /// <c>/api/pddms/ingest/v1/production-values</c>.
     /// </summary>
-    public string CollectionPath => (Service.Root ?? string.Empty) + Service.Shape switch
+    public string CollectionPath => Service.Shape switch
     {
-        DdmsShape.WellboreDdmsV3 => DdmsCatalog.WellboreDdmsV3Prefix,
-        DdmsShape.WellDeliveryV1 => DdmsCatalog.WellDeliveryPrefix,
-        DdmsShape.RafsV2 => DdmsCatalog.RafsV2Prefix,
-        DdmsShape.ProductionTimeSeriesV1 => "/",
-        _ => throw new InvalidOperationException($"The DDMS '{Service.Name}' has the shape {Service.Shape}, which has no paths."),
-    } + Collection.Segment;
+        DdmsShape.SeismicStoreV3 => SeismicCollectionPath,
+        _ => (Service.Root ?? string.Empty) + Service.Shape switch
+        {
+            DdmsShape.WellboreDdmsV3 => DdmsCatalog.WellboreDdmsV3Prefix,
+            DdmsShape.WellDeliveryV1 => DdmsCatalog.WellDeliveryPrefix,
+            DdmsShape.RafsV2 => DdmsCatalog.RafsV2Prefix,
+            DdmsShape.ProductionTimeSeriesV1 => "/",
+            _ => throw new InvalidOperationException($"The DDMS '{Service.Name}' has the shape {Service.Shape}, which has no paths."),
+        } + Collection.Segment,
+    };
 
     /// <summary>
-    /// Where a record is written: its collection, or, for the historian, whose records are Storage records, the storage
-    /// service's array endpoint.
+    /// Whether the DDMS's records are Storage records, written, read and removed through Storage while the DDMS keeps
+    /// their data: the historian's and Seismic Store's.
     /// </summary>
-    public string RecordsPath => Service.Shape == DdmsShape.ProductionTimeSeriesV1 ? OsduRecordProtocol.DefaultRecordPath : CollectionPath;
+    public bool StorageRecords => Service.Shape is DdmsShape.ProductionTimeSeriesV1 or DdmsShape.SeismicStoreV3;
+
+    /// <summary>Where a record is written: its collection, or the storage service's array endpoint for a DDMS whose records are Storage records.</summary>
+    public string RecordsPath => StorageRecords ? OsduRecordProtocol.DefaultRecordPath : CollectionPath;
 
     /// <summary>
-    /// One record: read and verified here, and deleted here too except on the historian. The Well Delivery DDMS names it by
-    /// its entity id alone; the historian's records are read through Storage.
+    /// One record: read and verified here, and deleted here too unless it is a Storage record. The Well Delivery DDMS
+    /// names it by its entity id alone.
     /// </summary>
     public string RecordPath => Service.Shape switch
     {
         DdmsShape.WellDeliveryV1 => CollectionPath + "/" + EntityIdToken,
-        DdmsShape.ProductionTimeSeriesV1 => OsduRecordProtocol.DefaultVerifyPath,
+        _ when StorageRecords => OsduRecordProtocol.DefaultVerifyPath,
         _ => CollectionPath + "/{id}",
     };
 
-    /// <summary>Where a record is removed at the reversible scope: its DDMS's path, or storage's <c>:delete</c> for the historian's records.</summary>
-    public string DeletePath => Service.Shape == DdmsShape.ProductionTimeSeriesV1 ? OsduRecordProtocol.DefaultDeletePath : RecordPath;
+    /// <summary>Where a record is removed at the reversible scope: its DDMS's path, or storage's <c>:delete</c> for a Storage record.</summary>
+    public string DeletePath => StorageRecords ? OsduRecordProtocol.DefaultDeletePath : RecordPath;
 
     /// <summary>
     /// The whole bulk of a record, written at once (on the Wellbore DDMS, with <c>describe=true</c>, its description); on
@@ -62,8 +72,24 @@ public sealed record DdmsRoute(DdmsService Service, DdmsCollectionEntry Collecti
         DdmsShape.WellboreDdmsV3 => CollectionPath + "/{id}/data",
         DdmsShape.RafsV2 => CollectionPath + "/{id}/data" + (Collection.TypedContent ? "/" + ContentTypeToken : string.Empty),
         DdmsShape.ProductionTimeSeriesV1 => CollectionPath + "/{id}/timeseries",
+        DdmsShape.SeismicStoreV3 => CollectionPath + "/dataset/" + DatasetToken,
         _ => null,
     };
+
+    /// <summary>
+    /// Where a Seismic Store serves the datasets of the flow's subproject:
+    /// <c>/api/seismic-store/v3/dataset/tenant/{tenant}/subproject/{subproject}</c>, the tenant being
+    /// <see cref="DdmsCatalog.PartitionToken"/> when the flow names none.
+    /// </summary>
+    private string SeismicCollectionPath
+    {
+        get
+        {
+            var settings = Service.SeismicStore
+                ?? throw new InvalidOperationException($"The DDMS '{Service.Name}' has the seismicStoreV3 shape and no Seismic Store settings.");
+            return $"{Service.Root}/dataset/tenant/{settings.Tenant ?? DdmsCatalog.PartitionToken}/subproject/{settings.Subproject}";
+        }
+    }
 
     /// <summary>
     /// Where the historian's query service serves one version of one series of a record

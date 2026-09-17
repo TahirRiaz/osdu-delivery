@@ -210,7 +210,12 @@ The ddms route calls what the DDMS serving the records offers instead, and the t
 ([protocols.md](protocols.md#osduwelllog-the-ddms-route)): the Wellbore DDMS, the Well Delivery DDMS and RAFS remove a
 record with a `DELETE` of their own. The Production DDMS historian's records are Storage records and go through the
 three calls above; the historian has no delete for the points of their series, so those stay in the historian, and
-each removal's outcome says so.
+each removal's outcome says so. Seismic Store's dataset records are Storage records too. Seismic Store has no
+reversible delete, so the record scope leaves the dataset and its files in place, and the outcome says so. Removing
+everything deletes the dataset with its files, then purges the record. On a gc deployment that removal is refused,
+since one dataset's delete there removes the files of every dataset in its subproject; the target view reads
+`(refused: ...)` for it when the flow declares `provider: gc`, and the removal refuses it whenever the deployment says
+it runs there.
 
 A removal names its records by key or by filter. The filter form is resolved on the node when the removal runs,
 so "every record this run delivered" travels as the filter rather than as tens of thousands of ids, and covers

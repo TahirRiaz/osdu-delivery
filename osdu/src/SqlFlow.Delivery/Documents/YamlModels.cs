@@ -421,7 +421,7 @@ internal sealed class DdmsYaml
     /// <summary>Where the DDMS is under the endpoint (<c>/api/os-wellbore-ddms</c>); null when the endpoint is the DDMS.</summary>
     public string? Root { get; set; }
 
-    /// <summary>Its call pattern (<c>wellboreDdmsV3</c>, the default, <c>wellDeliveryV1</c>, <c>rafsV2</c> or <c>productionTimeSeriesV1</c>).</summary>
+    /// <summary>Its call pattern (<c>wellboreDdmsV3</c>, the default, <c>wellDeliveryV1</c>, <c>rafsV2</c>, <c>productionTimeSeriesV1</c> or <c>seismicStoreV3</c>).</summary>
     public string? Shape { get; set; }
 
     /// <summary>The id the DDMS is registered under in the Register service, to look up what the flow does not declare.</summary>
@@ -433,7 +433,7 @@ internal sealed class DdmsYaml
     /// <summary>Well Delivery DDMS: whether the deployment copies every entity into Storage. Default true.</summary>
     public bool? Mirror { get; set; }
 
-    /// <summary>Well Delivery DDMS: the provider the deployment runs on (azure, aws, gc, ibm).</summary>
+    /// <summary>Well Delivery DDMS and Seismic Store: the provider the deployment runs on (azure, aws, gc, anthos, ibm, as the shape takes them).</summary>
     public string? Provider { get; set; }
 
     /// <summary>Well Delivery DDMS: the writes one process sends to the deployment at a time. Default 1.</summary>
@@ -450,6 +450,27 @@ internal sealed class DdmsYaml
 
     /// <summary>Production DDMS historian: the largest request body points are sent in, in bytes. Default 8000000.</summary>
     public long? MaxRequestBytes { get; set; }
+
+    /// <summary>Seismic Store: the tenant the datasets are registered under. Default: the flow's <c>data-partition-id</c>.</summary>
+    public string? Tenant { get; set; }
+
+    /// <summary>Seismic Store: the subproject the datasets are registered in. Required.</summary>
+    public string? Subproject { get; set; }
+
+    /// <summary>Seismic Store: the folder under the subproject the datasets are registered in (<c>seismic/raw</c>). Default: the subproject's root.</summary>
+    public string? Folder { get; set; }
+
+    /// <summary>Seismic Store: the object store endpoint on anthos and IBM, or another Google Cloud Storage endpoint.</summary>
+    public string? ObjectStore { get; set; }
+
+    /// <summary>Seismic Store: the region S3 requests are signed for. Default us-east-1.</summary>
+    public string? Region { get; set; }
+
+    /// <summary>Seismic Store: the size in MiB of each object a single file is cut into on Azure (0 keeps it whole), and of each block or part. Default 32.</summary>
+    public int? ChunkMiB { get; set; }
+
+    /// <summary>Seismic Store: whether a delivered dataset is closed read-only. Default false.</summary>
+    public bool? ReadOnly { get; set; }
 }
 
 /// <summary>One collection of a declared DDMS.</summary>

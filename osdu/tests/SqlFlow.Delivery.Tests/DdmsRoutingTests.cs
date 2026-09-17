@@ -265,6 +265,71 @@ public sealed class DdmsRoutingTests
     }
 
     [Fact]
+    public void A_dataset_record_is_a_storage_record_whose_files_go_to_seismic_store()
+    {
+        var seismic = new DdmsService("seismic", "/api/seismic-store/v3", DdmsShape.SeismicStoreV3, DdmsCatalog.SeismicStoreCollections)
+        {
+            SeismicStore = new SeismicStoreSettings { Subproject = "raw" },
+        };
+        var routing = DdmsRouting.Of(Flow(ddms: [seismic, Rafs], interfaceName: "seismic"));
+        var segy = routing.For("dataset--FileCollection.SEGY");
+
+        Assert.Equal(DdmsShape.SeismicStoreV3, segy.Shape);
+        Assert.Equal("/api/storage/v2/records", segy.Records);
+        Assert.Equal("/api/storage/v2/records/{id}", segy.Record);
+        Assert.Equal("/api/storage/v2/records/{id}:delete", segy.Delete);
+        Assert.Equal("/api/seismic-store/v3/dataset/tenant/{partition}/subproject/raw/dataset/{dataset}", segy.Data);
+        Assert.Null(segy.Sessions);
+        Assert.Null(segy.SessionData);
+        Assert.Null(segy.Session);
+        Assert.True(segy.Bulk);
+        Assert.True(segy.Route!.StorageRecords);
+        Assert.Equal("/api/seismic-store/v3/dataset/tenant/{partition}/subproject/raw", segy.Route.CollectionPath);
+        Assert.Null(segy.Route.SeriesVersionPath);
+        Assert.Null(routing.Problem("dataset--FileCollection.Bluware.OpenVDS", sendsBulk: true));
+        Assert.Equal(
+            "dataset--FileCollection.SEGY records go to the segy collection of the DDMS 'seismic' (/api/seismic-store/v3).",
+            routing.Explain("osdu:wks:dataset--FileCollection.SEGY:1.1.0"));
+        Assert.Equal(
+            [
+                "/api/seismic-store/v3/svcstatus",
+                "/api/seismic-store/v3/svcstatus/access",
+                "/api/seismic-store/v3/subproject/tenant/{partition}/subproject/raw",
+                "/api/rafs-ddms/info",
+                "/api/rafs-ddms/v2/samplesanalysis/analysistypes",
+            ],
+            routing.ProbePaths);
+
+        // A tenant the flow names stands in the paths as it is; the partition stands in for it otherwise.
+        var tenant = DdmsRouting.Of(Flow(ddms: [seismic with { SeismicStore = new SeismicStoreSettings { Tenant = "osdu", Subproject = "raw" } }], interfaceName: "seismic"));
+        Assert.Equal("/api/seismic-store/v3/dataset/tenant/osdu/subproject/raw/dataset/{dataset}", tenant.For("dataset--FileCollection.SEGY").Data);
+        Assert.Contains("/api/seismic-store/v3/subproject/tenant/osdu/subproject/raw", tenant.ProbePaths);
+
+        // Seismic Store registers datasets alone; a trace data record goes elsewhere.
+        var unserved = Assert.Throws<DeliveryException>(() => routing.For("work-product-component--SeismicTraceData"));
+        Assert.StartsWith(
+            "targeting (interface 'seismic'): no DDMS this flow reaches serves work-product-component--SeismicTraceData: it reaches the DDMS 'seismic' (/api/seismic-store/v3), serving dataset--FileCollection.SEGY",
+            unserved.Message,
+            StringComparison.Ordinal);
+
+        // Paths named for a Wellbore DDMS facade are refused, and a Seismic Store without its settings has no paths.
+        var named = DdmsRouting.Of(Flow(new ProtocolOptions { RecordPath = "/records" }, [seismic], "seismic"));
+        Assert.Contains("whose shape (seismicStoreV3) says every call they take", Assert.Throws<DeliveryException>(() => named.For("dataset--FileCollection.SEGY")).Message, StringComparison.Ordinal);
+        var unset = DdmsRouting.Of(Flow(ddms: [seismic with { SeismicStore = null }], interfaceName: "seismic"));
+        Assert.Throws<InvalidOperationException>(() => unset.For("dataset--FileCollection.SEGY"));
+
+        // The record is removed through Storage; everything takes the dataset first, except on gc.
+        var endpoints = RemovalEndpoints.Of(Flow(ddms: [seismic], interfaceName: "seismic"), "osdu:wks:dataset--FileCollection.SEGY:1.1.0");
+        Assert.Equal(("/api/storage/v2/records/{id}:delete", "POST"), (endpoints.Record, endpoints.RecordMethod));
+        Assert.Equal("/api/storage/v2/records/{id}/versions", endpoints.History);
+        Assert.Equal(
+            "/api/seismic-store/v3/dataset/tenant/{partition}/subproject/raw/dataset/{dataset} (the dataset and its files), then /api/storage/v2/records/{id}",
+            endpoints.Everything);
+        var gc = seismic with { SeismicStore = new SeismicStoreSettings { Subproject = "raw", Provider = DdmsProvider.Gc } };
+        Assert.Equal(RemovalEndpoints.SeismicGcDeleteRefused, RemovalEndpoints.Of(Flow(ddms: [gc], interfaceName: "seismic"), "osdu:wks:dataset--FileCollection.SEGY:1.1.0").Everything);
+    }
+
+    [Fact]
     public void A_rafs_record_takes_its_content_under_its_type_where_the_collection_holds_several()
     {
         var routing = DdmsRouting.Of(Flow(ddms: [Rafs], interfaceName: "samples"));

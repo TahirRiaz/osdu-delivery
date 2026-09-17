@@ -239,6 +239,19 @@ public sealed class OsduHttpClient
     }
 
     /// <summary>
+    /// Sends a request the caller builds whole, to an object store a service handed out credentials for (a SAS, a scoped
+    /// bearer token, a key triple the caller signs with): neither the flow's auth nor its headers go with it, and the
+    /// reliability stack (rate limit, URL guard, retries, response cap) applies as to every request. <paramref name="build"/>
+    /// runs for every attempt, so a signature is made afresh each time. <paramref name="idempotent"/> null takes it from
+    /// the method.
+    /// </summary>
+    public Task<HttpFetchResult> SendAsIsAsync(Func<HttpRequestMessage> build, IReadOnlySet<int>? allowStatuses, bool? idempotent, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(build);
+        return _http.Data.SendAsync(build, allowStatuses, idempotent, ct);
+    }
+
+    /// <summary>
     /// Reads a file from a signed URL the service handed out (a dataset's retrieval instructions): the URL carries its own
     /// authorisation, so neither the flow's auth nor its headers go with it, since some object stores refuse a request
     /// that also carries a bearer (osdu/specs/workflows/INTEGRATION.md section 2.2.1). The body is capped at the flow's

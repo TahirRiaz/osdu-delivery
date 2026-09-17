@@ -193,6 +193,72 @@ public sealed class DdmsDocumentsTests
     }
 
     [Fact]
+    public void A_flow_declares_a_seismic_store_with_its_subproject_folder_and_object_store()
+    {
+        var flow = _loader.ParseFlow(Single("""
+              ddms:
+                seismic:
+                  root: /api/seismic-store/v3/
+                  shape: seismicStoreV3
+                  tenant: ' opendes '
+                  subproject: seismic-raw
+                  folder: /surveys/north/
+                  provider: anthos
+                  objectStore: https://minio.example.com:9000/
+                  region: eu-west-1
+                  chunkMiB: 8
+                  readOnly: true
+                  collections:
+                    dataset--FileCollection.SEGY:
+                    dataset--FileCollection.Bluware.OpenVDS: { path: vds, bulk: true }
+            """), "logs.yaml");
+
+        var seismic = flow.Target.Ddms.Single();
+        Assert.Equal(DdmsShape.SeismicStoreV3, seismic.Shape);
+        Assert.Equal("/api/seismic-store/v3", seismic.Root);
+        Assert.True(seismic.DeclaresCollections);
+        Assert.Equal(
+            ["dataset--FileCollection.SEGY:segy:True", "dataset--FileCollection.Bluware.OpenVDS:vds:True"],
+            seismic.Collections.Select(c => $"{c.EntityType}:{c.Segment}:{c.Bulk}"));
+        Assert.Equal(
+            new SeismicStoreSettings
+            {
+                Tenant = "opendes",
+                Subproject = "seismic-raw",
+                Folder = "surveys/north",
+                Provider = DdmsProvider.Anthos,
+                ObjectStore = "https://minio.example.com:9000",
+                Region = "eu-west-1",
+                ChunkMiB = 8,
+                ReadOnly = true,
+            },
+            seismic.SeismicStore);
+        Assert.Null(seismic.WellDelivery);
+        Assert.Null(seismic.TimeSeries);
+
+        // Without settings beyond the subproject, the tenant is the partition, the files go whole where the service says,
+        // in parts of 32 MiB, and the dataset types are the ones Seismic Store's clients know.
+        var defaults = _loader.ParseFlow(Single("""
+              ddms:
+                seismic: { root: /api/seismic-store/v3, shape: seismicStoreV3, subproject: seismic, folder: '/' }
+            """), "logs.yaml").Target.Ddms.Single();
+        Assert.Equal(new SeismicStoreSettings { Subproject = "seismic" }, defaults.SeismicStore);
+        Assert.Equal(("us-east-1", 32, false), (defaults.SeismicStore!.Region, defaults.SeismicStore.ChunkMiB, defaults.SeismicStore.ReadOnly));
+        Assert.Same(DdmsCatalog.SeismicStoreCollections, defaults.Collections);
+        Assert.Null(_loader.ParseFlow(Single("""
+              ddms:
+                rafs: { root: /api/rafs-ddms, shape: rafsV2 }
+            """), "logs.yaml").Target.Ddms.Single().SeismicStore);
+
+        // gc takes another Google endpoint, and azure and gc need none; chunkMiB 0 keeps a file whole on Azure.
+        var gc = _loader.ParseFlow(Single("""
+              ddms:
+                seismic: { root: /seistore-svc/api/v3, shape: seismicStoreV3, subproject: seismic, provider: gc, objectStore: 'http://gcs.local', chunkMiB: 0 }
+            """), "logs.yaml").Target.Ddms.Single().SeismicStore!;
+        Assert.Equal((DdmsProvider.Gc, "http://gcs.local", 0), (gc.Provider!.Value, gc.ObjectStore, gc.ChunkMiB));
+    }
+
+    [Fact]
     public void A_ddms_named_by_its_registration_leaves_what_it_does_not_declare_to_the_register_service()
     {
         var flow = _loader.ParseFlow(Single("""
@@ -292,6 +358,34 @@ public sealed class DdmsDocumentsTests
         { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1, maxRequestBytes: 64000001 }", "ddms", "", "target.ddms.h.maxRequestBytes must be between 10000 and 64000000" },
         { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1, queryRoot: api/query }", "ddms", "", "target.ddms.h.queryRoot 'api/query' must be a path under the endpoint starting with '/'" },
         { "  ddms:\n    h: { root: /h, shape: productionTimeSeriesV1, collections: { work-product-component--ProductionValues: { path: production-values, bulk: true } } }", "ddms", "", "target.ddms.h.collections lists collections, and the historian serves work-product-component--ProductionValues records alone, under production-values. Leave collections out." },
+        { "  ddms:\n    s: { shape: seismicStoreV3, subproject: seismic }", "ddms", "", "target.ddms.s.root is required. A dataset's record is read and removed through Storage, so the flow's endpoint is the platform Seismic Store is under; say where Seismic Store is under it, version path included (usually /api/seismic-store/v3, or /seistore-svc/api/v3 on Azure)." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3 }", "ddms", "", "target.ddms.s.subproject is required: the Seismic Store subproject the datasets are registered in, which an operator provisions." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: ' ' }", "ddms", "", "target.ddms.s.subproject is required" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: Seismic }", "ddms", "", "target.ddms.s.subproject 'Seismic' is not a Seismic Store subproject name: a lower-case letter, then lower-case letters, digits and '-', not ending in '-'." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, tenant: 'open des' }", "ddms", "", "target.ddms.s.tenant 'open des' is not a Seismic Store tenant name (letters, digits, '_', '.' and '-'); on OSDU it is the data partition id." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, folder: 'a//b' }", "ddms", "", "target.ddms.s.folder 'a//b' is not a Seismic Store folder: segments of letters, digits, '_', '.' and '-', separated by single slashes." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, folder: 'north sea' }", "ddms", "", "target.ddms.s.folder 'north sea' is not a Seismic Store folder" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, provider: aws }", "ddms", "", "target.ddms.s.provider 'aws' is not a provider Seismic Store v3 runs on: azure, gc, anthos or ibm." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, provider: moon }", "ddms", "", "'target.ddms.s.provider' value 'moon' is not one of azure, aws, gc, anthos, ibm" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, provider: ibm }", "ddms", "", "target.ddms.s.objectStore is required on ibm: Seismic Store issues a key triple there for an S3 store it does not name (osdu/specs/seismic-ddms/INTEGRATION.md section 4.3)." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, objectStore: 'minio:9000' }", "ddms", "", "target.ddms.s.objectStore 'minio:9000' must be the object store's absolute http(s) address, without credentials, query or fragment (https://s3.example.com)." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, objectStore: 'https://minio.example.com/?region=x' }", "ddms", "", "target.ddms.s.objectStore 'https://minio.example.com/?region=x' must be the object store's absolute http(s) address" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, objectStore: 'https://someone@minio.example.com' }", "ddms", "", "target.ddms.s.objectStore 'https://someone@minio.example.com' must be the object store's absolute http(s) address" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, objectStore: 'https://minio.example.com#x' }", "ddms", "", "target.ddms.s.objectStore 'https://minio.example.com#x' must be the object store's absolute http(s) address" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, region: EU_WEST }", "ddms", "", "target.ddms.s.region 'EU_WEST' is not a region name (lower-case letters, digits and '-', such as us-east-1)." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, chunkMiB: 257 }", "ddms", "", "target.ddms.s.chunkMiB must be between 0 and 256" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, chunkMiB: -1 }", "ddms", "", "target.ddms.s.chunkMiB must be between 0 and 256" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, register: sdms }", "ddms", "", "target.ddms.s.register reads a DDMS's collections from its Register service registration, which the route reads for DDMSs of the wellboreDdmsV3 shape" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, mirror: false }", "ddms", "", "target.ddms.s.mirror describe a Well Delivery DDMS deployment, and target.ddms.s has the seismicStoreV3 shape" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, settleSeconds: 5 }", "ddms", "", "target.ddms.s.settleSeconds describe the Production DDMS historian, and target.ddms.s has the seismicStoreV3 shape" },
+        { "  ddms:\n    w: { root: /w, subproject: seismic, readOnly: true }", "ddms", "", "target.ddms.w.subproject, target.ddms.w.readOnly describe a Seismic Store, and target.ddms.w has the wellboreDdmsV3 shape. Remove them, or declare shape: seismicStoreV3." },
+        { "  ddms:\n    r: { root: /r, shape: rafsV2, objectStore: 'https://s3.example.com', chunkMiB: 8 }", "ddms", "", "target.ddms.r.objectStore, target.ddms.r.chunkMiB describe a Seismic Store, and target.ddms.r has the rafsV2 shape" },
+        { "  ddms:\n    wd: { root: /wd, shape: wellDeliveryV1, provider: ibm, tenant: opendes }", "ddms", "", "target.ddms.wd.tenant describe a Seismic Store, and target.ddms.wd has the wellDeliveryV1 shape" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { work-product-component--SeismicTraceData: { path: traces } } }", "ddms", "", "target.ddms.s.collections.work-product-component--SeismicTraceData names a type Seismic Store registers no dataset for; a Seismic Store dataset's record is a dataset--FileCollection.* record." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { dataset--FileCollection.: {} } }", "ddms", "", "target.ddms.s.collections.dataset--FileCollection. names a type Seismic Store registers no dataset for" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { dataset--FileCollection.SEGY: { bulk: false } } }", "ddms", "", "target.ddms.s.collections.dataset--FileCollection.SEGY says what a dataset keeps, and a Seismic Store dataset always keeps its files; remove bulk, columns and typedContent." },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { dataset--FileCollection.SEGY: { columns: curveIds } } }", "ddms", "", "target.ddms.s.collections.dataset--FileCollection.SEGY says what a dataset keeps" },
+        { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { dataset--FileCollection.SEGY: { path: 'a/b' } } }", "ddms", "", "target.ddms.s.collections.dataset--FileCollection.SEGY.path 'a/b' must be a name of letters, digits, '.', '_' and '-', at most 100 characters." },
     };
 
     [Theory]

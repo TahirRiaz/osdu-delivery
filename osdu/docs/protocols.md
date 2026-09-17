@@ -7,7 +7,7 @@ code and parameterised by the flow, not an authorable step language.
 | Protocol | Services | Pattern | Batched |
 | --- | --- | --- | --- |
 | `osduRecord` | storage | One JSON document, upsert by client-supplied id, array endpoint. | up to `batchSize` records per request |
-| `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default), by the call pattern of its shape: the Wellbore DDMS v3, the Well Delivery DDMS, RAFS, the Production DDMS historian | Record, then, on a collection that keeps bulk data, its bulk data (a Wellbore DDMS session, RAFS's content tables, or the historian's points). | one record per request |
+| `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default), by the call pattern of its shape: the Wellbore DDMS v3, the Well Delivery DDMS, RAFS, the Production DDMS historian, Seismic Store | Record, then, on a collection that keeps bulk data, its bulk data (a Wellbore DDMS session, RAFS's content tables, the historian's points, or a Seismic Store dataset's files). | one record per request |
 | `osduFile` | file, storage | Signed upload URL per file, streamed upload, dataset registration, then the record with its dataset list. | the record write, up to `batchSize` |
 | `osduDataset` | dataset, storage | Staging location per record, upload the way its provider takes it, registration under the record's own id (or a dataset the record refers to), retrieval checked. | up to 20 registrations per request |
 | `osduManifest` | file, dataset, workflow, search, storage | Uploads, one manifest per batch handed to the ingestion workflow, inline or by reference, the run polled, the records read back. | one workflow run per batch of up to `batchSize` |
@@ -97,8 +97,8 @@ part without files.
 ## `osduWellLog`: the ddms route
 
 A record goes to the DDMS serving its entity type, and by the call pattern of that DDMS's shape: `wellboreDdmsV3`
-(described first, below), [`wellDeliveryV1`](#the-well-delivery-shape), [`rafsV2`](#the-rafs-shape) and
-[`productionTimeSeriesV1`](#the-production-historian-shape). The Wellbore
+(described first, below), [`wellDeliveryV1`](#the-well-delivery-shape), [`rafsV2`](#the-rafs-shape),
+[`productionTimeSeriesV1`](#the-production-historian-shape) and [`seismicStoreV3`](#the-seismic-store-shape). The Wellbore
 DDMS shape's calls, rules and deletes follow its pinned contract and its source at the same commit
 ([../specs/wellbore-ddms/INTEGRATION.md](../specs/wellbore-ddms/INTEGRATION.md)).
 
@@ -334,6 +334,73 @@ defines, behind an ingestion service and a query service
   the purge). The historian has no delete for points, so they stay; the outcome says so.
 - Probe: `GET {root}/info` and `GET {queryRoot}/info`.
 
+### The Seismic Store shape
+
+Seismic Store v3 keeps a dataset's files in the object store of the cloud it runs on, and the dataset's record in
+Storage ([../specs/seismic-ddms/INTEGRATION.md](../specs/seismic-ddms/INTEGRATION.md)).
+
+- Record: a Storage record, the dataset's `seismicmeta`, pointing at the dataset
+  ([documents.md](documents.md#the-ddmss-a-flow-delivers-to)). Checked before anything is sent: a kind of four parts
+  naming the collection's type, a `data` object, owners and viewers, a legal tag and a country, a key that can name a
+  dataset, a tenant name, and files that can be objects of one dataset.
+- Lock: the dataset is written under a write lock id, `W` and 32 letters and digits drawn from the record's delivery
+  key and the dataset's path, sent as `x-seismic-dms-lockid` and recorded as the step `lock` before its first use.
+  Every delivery of the record takes the same id, so Seismic Store answers a replay as the first call, and a lock an
+  earlier delivery left as this one's own; another flow delivering to the same dataset meets it as another writer's.
+- Register: a dataset the ledger does not know goes to
+  `POST {root}/dataset/tenant/{tenant}/subproject/{subproject}/dataset/{key}?path={folder}` with the record as
+  `seismicmeta` and its first legal tag as `ltag`; the registration takes the lock, and Seismic Store writes the record
+  to Storage. The step `register` returns where the files go (`seismicStore.location`, the service's `gcsurl`), the
+  provider the service names, `ctag`, `created_by` and the access policy. An answer of `{}` (a lock an earlier
+  registration kept without saving the dataset) is unlocked (`PUT .../unlock?path=`) and registered again. A 409 reads
+  the dataset (`GET ...?path=&translate-user-info=false`): one holding this record is taken over, one holding another
+  record or none holds the record, and one Seismic Store is deleting (its `status` `DELETE:...`) is tried again later.
+  A 423 is another writer's lock, and the record is tried again later.
+- Open: a dataset the ledger knows, one taken over, and one an earlier try registered are opened for writing
+  (`PUT .../lock?path=&openmode=write`) under the lock id, after the read-only flag is lifted (`PATCH` with
+  `{"readonly": false}`) where the flow sets `readOnly`. A dataset that is gone is registered again, at a new location;
+  a read-only one holds the record; a locked one is tried again later.
+- Files: credentials come from `GET {root}/utility/upload-connection-string?sdpath=sd://...` once per try, and are
+  asked for again when the store refuses them (401, 403, or S3's `ExpiredToken`), once for the request that failed. The
+  objects go as the provider's clients write them. Azure Blob Storage: under the SAS URL's container and folder, each
+  object blocks of `chunkMiB` and a block list carrying the file's MD5 up to the object's end, every request stating
+  the SAS's service version. Google Cloud Storage: a resumable upload per object, in pieces of `chunkMiB` rounded down
+  to a multiple of 256 KiB, what a session did not keep sent again, a piece whose answer is lost settled by asking the
+  session what it holds, and the object's `crc32c` compared with the bytes sent. S3 (anthos and ibm, at `objectStore`,
+  path-style): every request signed with SigV4 and `UNSIGNED-PAYLOAD`, each part with its `Content-MD5`, an object up
+  to the part size (at least 5 MiB) in one `PUT` and a larger one as a multipart upload, aborted when it fails. No
+  message and no step names a credential.
+- Steps: `upload` records how many objects landed, every 16 objects, so a later try reads past them (hashing them for
+  the file's MD5) and sends the rest; a different layout (another location, chunk size, provider or file) starts over.
+  Objects an earlier delivery left at the same location that this one no longer has are removed: the ones the ledger
+  recorded, or, for a dataset taken over on Azure, the blobs its file metadata counts beyond the new ones.
+- Close: `PATCH ...?path=&close={lock id}` with `filemetadata` `{type: GENERIC, size, nobjects, md5Checksum}` (the MD5
+  for a single file), `readonly`, and the record when no call wrote it yet. A record that changed while its files did
+  not is patched alone (`PATCH ...?path=` with `seismicmeta`), without a lock; a dataset gone from under it holds the
+  record. A record held after its try took the lock releases the lock (`PUT .../unlock?path=`), so the dataset is not
+  locked for the lock's day.
+- Version: read from Storage (`GET /api/storage/v2/records/{id}`), since Seismic Store does not return it. A record
+  Storage does not hold, or one still at the version the ledger holds after this delivery sent it, was not written by
+  Seismic Store (whose Storage writes can be turned off), and is written with `PUT /api/storage/v2/records`. A
+  delivery of files alone whose record Storage no longer holds holds the record.
+- Returned: `seismicStore.dataset`, `.location`, `.provider`, `.objects`, `.layout` (`chunks` or `files`), `.names`
+  (the files of a dataset of several), `.size`, `.md5`, `.store` (where the files went, without a credential), `.ctag`,
+  `.createdBy`, `.record` and `.accessPolicy`.
+- Verify: the record from Storage, then its dataset: one Seismic Store no longer holds, one holding another record and
+  one being deleted are drift, which a reconciling verify redelivers with the files.
+- Remove: the record scope soft-deletes the record in Storage and leaves the dataset and its files, since Seismic Store
+  has no reversible delete; the history scope purges the record's earlier versions. Everything deletes the dataset
+  with its files (`DELETE ...?path=`), then purges the record, which the dataset's delete leaves. On gc it is refused:
+  there, one dataset's delete removes the files of every dataset in the subproject (the brief's section 6.3); the
+  provider is the flow's, the one the record's delivery recorded, or the one the service names.
+- Probe: `GET {root}/svcstatus`, `GET {root}/svcstatus/access` and
+  `GET {root}/subproject/tenant/{tenant}/subproject/{subproject}` (the tenant being the flow's partition when it names
+  none), which checks the tenant, the subproject, its legal tag and the caller's admin role.
+- Limits: on Google Cloud Storage and S3 a file is one object, so a try that fails beyond the request retries sends it
+  again whole (a Google session is itself a credential, and an S3 upload is aborted); on Azure a try resumes at the
+  first blob that did not land. The work product component that refers to a dataset is an interface of its own on the
+  storage route.
+
 ## `osduFile`
 
 The files go first, then the record that references them (openapi file v2, storage v2).
@@ -435,8 +502,8 @@ the file service and every DDMS the flow reaches.
    has the DDMS's bulk link, and the `DDMSDatasets` entries the DDMS wrote, carried into its manifest from one batched
    storage read (`POST {verifyBatchPath}`, projected to `data.ExtensionProperties` and `data.DDMSDatasets`), since
    ingestion writes through storage, past the DDMS; a read that fails fails those records for the try. A new record's
-   manifest carries the link its DDMS gives a record it holds nothing for yet: the historian's link to its points, and
-   no Wellbore DDMS bulk link.
+   manifest carries the link its DDMS gives a record it holds nothing for yet: the historian's link to its points,
+   Seismic Store's link to its dataset, and no Wellbore DDMS bulk link.
 3. Once the run has written the record, its bulk data goes through its DDMS from the version the manifest wrote. A
    failure there leaves the record as the manifest wrote it; the next try resumes the manifest step's run rather than
    ingesting the record again, and sends the bulk data.

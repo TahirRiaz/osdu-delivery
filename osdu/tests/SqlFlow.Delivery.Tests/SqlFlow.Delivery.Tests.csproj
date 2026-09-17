@@ -14,6 +14,10 @@
     <!-- The ledger suites run the module's model on an in-memory SQLite database, so the ledger's semantics are
          exercised on every machine; the SQL Server suites cover the provider itself. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <!-- The fake S3 store checks every SigV4 signature the route makes with the AWS SDK's own signer (AWSSDK.Core, at the
+         AWSSDK.S3 version SQLFlow pins), so the route's signing is proven against AWS's implementation and not against
+         itself. Tests only. -->
+    <PackageReference Include="AWSSDK.S3" />
   </ItemGroup>
 
   <ItemGroup>
