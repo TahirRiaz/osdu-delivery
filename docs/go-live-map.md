@@ -105,10 +105,10 @@ Done when each item is fixed or accepted in writing, with tests for the guard.
 
 The project's rules are enforced by hand today (`.github/workflows/ci.yml`).
 
-- [ ] **CI-1** CI skips the SQL Server suites (`SQLFLOW_TEST_DB` is unset): add a SQL Server service container.
+- [x] **CI-1** CI skips the SQL Server suites (`SQLFLOW_TEST_DB` is unset): add a SQL Server service container.
 - [ ] **CI-2** The GUI end-to-end suite (Playwright, 6 specs) does not run in CI.
-- [ ] **CI-3** Zero warnings is a rule, but `TreatWarningsAsErrors` is false and CI does not pass `-warnaserror`.
-- [ ] **CI-4** OSDU migrations touching only the `osdu` schema is checked at runtime (`EnsureShape`); no test over the
+- [x] **CI-3** Zero warnings is a rule, but `TreatWarningsAsErrors` is false and CI does not pass `-warnaserror`.
+- [x] **CI-4** OSDU migrations touching only the `osdu` schema is checked at runtime (`EnsureShape`); no test over the
   generated migration scripts was found.
 - [ ] **CI-5** No image build, deployment, release tags or changelog entries; `deploy-prod.ps1` runs by hand.
 
@@ -124,7 +124,7 @@ What an operator needs once real data flows.
   Schedule the probe and alert on it.
 - [ ] **OPS-3** Availability: the control plane runs one replica (the dispatch lease). Decide whether that is acceptable
   and write down the recovery.
-- [ ] **OPS-4** Refresh the stale pages: the state in `osdu/README.md`, the deployables and size ceilings in
+- [x] **OPS-4** Refresh the stale pages: the state in `osdu/README.md`, the deployables and size ceilings in
   `osdu/docs/operations.md`, `osdu/docs/osdu-testing.md` from the drop era.
 - [ ] **OPS-5** Set the ledger's retention and backup policy (attempt pruning exists).
 
@@ -175,3 +175,4 @@ Each step protects the ones after it. Live runs happen only with an approved tes
 | Date | Items | Commit | What changed |
 | --- | --- | --- | --- |
 | 2026-09-17 | | `de0c6d5` | The map written; the `dspdm` route (stage 7) delivered before it. |
+| 2026-09-17 | SEC-1, SEC-2 | `7cbd4e6` | Resolved addresses and every redirect hop checked; private ranges only when the deployment lists them (`SQLFLOW_DELIVERY_PRIVATE_NETWORKS`). |

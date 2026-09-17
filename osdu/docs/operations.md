@@ -2,10 +2,11 @@
 
 ## Deployables
 
-The platform's own: the control plane (`src/SqlFlow.ControlPlane`) and compute nodes (`sqlflow worker`),
-plus the CLI on a workstation. The delivery domain adds no process. Nodes deliver; the control plane
-schedules, records and answers. See [../architecture.md](../architecture.md) and
-[../../deploy/README.md](../../deploy/README.md).
+Three hosts in `osdu/hosts`, each composing SQLFlow with the OSDU module: the control plane
+(`SqlFlow.Delivery.ControlPlane.Host`, one replica, which schedules, records and answers), the worker nodes
+(`SqlFlow.Delivery.Worker.Host`, scaled on the control plane's replica target, which deliver), and the CLI on a
+workstation (`SqlFlow.Delivery.Cli.Host`). The GUI is a static image. See [architecture.md](architecture.md) and
+[../deploy/README.md](../deploy/README.md).
 
 ## Configuration
 
@@ -389,7 +390,9 @@ See [../reference/cli/delivery.md](../reference/cli/delivery.md).
 
 ## Size ceilings
 
-Set `MaxRequestBodySize` on petrodb-api, the ingress limit and the APIM limit to one deliberate number, and
-derive the chunk cell limit in the preparing job from it ([design.md](design.md) section 14.3). A 413 holds
-the record here rather than creating a duplicate, but the ceiling still needs to be intentional. The control
-plane's own ceiling is `ControlPlane:MaxRequestBodyMegabytes`.
+Set the request body ceilings on the way to OSDU (the service's own server, the ingress, an API gateway) to one
+deliberate number, and declare it on the flows as `reliability.maxRequestBodyBytes`: a bulk data file or a request
+above it then holds its record before anything is sent, instead of failing after the record was written
+([protocols.md](protocols.md#the-bulk-ceilings); [design.md](design.md) section 14.3 has the history). A 413 also holds
+the record rather than creating a duplicate, but the ceiling still needs to be intentional, and the files the
+pre-ingestion side produces sized under it. The control plane's own ceiling is `ControlPlane:MaxRequestBodyMegabytes`.

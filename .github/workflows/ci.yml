@@ -44,14 +44,42 @@ jobs:
       - name: Restore
         run: dotnet restore OsduDelivery.sln
 
+      # Zero warnings is a project rule, so a warning fails the build. The SSH.NET advisory in vendored
+      # SQLFlow stays a warning until SQLFlow takes the fix (docs/go-live-map.md, SEC-4).
       - name: Build
-        run: dotnet build OsduDelivery.sln --no-restore -c Release
+        run: dotnet build OsduDelivery.sln --no-restore -c Release -warnaserror -warnnotaserror:NU1903
 
-      # SQLFlow's own suites and the OSDU module's suites, in one run over the solution. The
-      # DB-backed suites read SQLFLOW_TEST_DB and skip when it is unset or unreachable; CI does
-      # not set it, so they skip here on purpose. They are run against a real SQL Server locally.
+      # The DB-backed suites run against a SQL Server started for this job, whose password is made
+      # here and masked, so no credential lives in the repository. The database allows snapshot
+      # isolation, which the delivery chain reads under.
+      - name: Start SQL Server
+        run: |
+          password="Ci-$(openssl rand -hex 16)-Aa1"
+          echo "::add-mask::$password"
+          docker run --detach --name mssql --env ACCEPT_EULA=Y --env "MSSQL_SA_PASSWORD=$password" \
+            --publish 1433:1433 mcr.microsoft.com/mssql/server:2022-latest
+          ready=false
+          for attempt in $(seq 1 90); do
+            if docker exec --env "SQLCMDPASSWORD=$password" mssql \
+                 /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -Q "SELECT 1" > /dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            docker logs mssql
+            echo "SQL Server did not accept a connection in three minutes." >&2
+            exit 1
+          fi
+          docker exec --env "SQLCMDPASSWORD=$password" mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b \
+            -Q "CREATE DATABASE SqlFlowCi; ALTER DATABASE SqlFlowCi SET ALLOW_SNAPSHOT_ISOLATION ON;"
+          echo "SQLFLOW_TEST_DB=Server=localhost,1433;Database=SqlFlowCi;User ID=sa;Password=$password;TrustServerCertificate=True" >> "$GITHUB_ENV"
+
+      # SQLFlow's own suites and the OSDU module's suites, in one run over the solution, one
+      # project at a time: the DB-backed suites share the database above and migrate and seed it.
       - name: Test
-        run: dotnet test OsduDelivery.sln --no-build -c Release --verbosity normal
+        run: dotnet test OsduDelivery.sln --no-build -c Release -m:1 --verbosity normal
 
       - name: Install OSDU GUI dependencies
         working-directory: osdu/gui

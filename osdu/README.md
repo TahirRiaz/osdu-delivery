@@ -36,6 +36,9 @@ SQLFlow's own pre-ingestion and ingestion flows replace the way data used to arr
 
 ## State
 
-The code is as it was copied: it references the platform the previous implementation changed in place (the flow kind
-registry, run parameters, fan-out, the catalog model) and parts of the drop path listed above, so it does not build yet.
-Stage 2 of `docs/plan.md` wires it onto SQLFlow and the `osdu` schema; stage 4 replaces its drop input with ingestion tables.
+The module builds with SQLFlow and its suites pass: the delivery, ledger and route suites against fakes of the OSDU
+services, whose every request is checked against the service's pinned contract, and the SQL Server suites against a
+disposable database. The routes are tracked in [../docs/osdu-coverage-plan.md](../docs/osdu-coverage-plan.md). Nothing
+of this build has run against a live OSDU yet (stage 5 of [../docs/plan.md](../docs/plan.md)); what stands between it
+and production, and the order to close it in, is [../docs/go-live-map.md](../docs/go-live-map.md).
+[docs/osdu-testing.md](docs/osdu-testing.md) records the live runs of the previous implementation.

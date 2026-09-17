@@ -11,7 +11,8 @@ still missing. The runbook is in [operations.md](operations.md).
 > drop, drop-off and known-state mechanics named below no longer exist ([architecture.md](architecture.md)), and
 > neither does manual submission (records sent in the request, sections 2.8 to 2.10): records delivered by hand are files
 > placed where a pre flow reads them ([design.md](design.md) section 3.3). The live estate has to be driven again on the
-> new path before this page describes the current build.
+> new path before this page describes the current build. Where the current build stands, route by route, and the live
+> runs it still needs are in [the go-live map](../../docs/go-live-map.md).
 
 ## 1. How it is tested
 
@@ -273,29 +274,30 @@ registration call for row 19, and a well log rendered again with the corrected u
 
 ## 5. What the tests left in the partition
 
-Two records, as of the last entry in the action log on 2026-09-12. The drop notification run of section 2.11
-delivered both wellbores again at 10:33 UTC, and the log records no removal after it:
+No record is still live. The drop notification run of section 2.11 delivered two wellbores again at 10:33 UTC on
+2026-09-12 (`test:master-data--Wellbore:8caec6614b605fe6809175534f9c9a1c` and
+`test:master-data--Wellbore:250b474c3f1550c59dc7a11c81ca63c3`, both at version 1789209164941463). With the owner's
+approval they were soft-deleted on 2026-09-17, and a GET on each answered 404, as did one on a wellbore of section 2.8
+whose check had not been logged. `.sqlflow/live-e2e/test-data.md` lists every id the live tests created and its state;
+the action log beside it holds every call.
 
-- `test:master-data--Wellbore:8caec6614b605fe6809175534f9c9a1c` and
-  `test:master-data--Wellbore:250b474c3f1550c59dc7a11c81ca63c3`, both at version 1789209164941463.
+Everything this estate created was removed at a reversible scope (a soft delete, `POST /records/{id}:delete`, or the
+ledger's `record` scope) and then checked, and none of it resolves. OSDU can restore any of it, and a flow can send it
+again. It carried the run marker, and every write and the cleanup itself are in the action log:
 
-They are this estate's own logged ids, so they are removable at the reversible `record` scope, and the work that
-created them is not finished until they are removed and each one checked.
-
-Everything else this estate ever created was soft-deleted (reversible, `POST /records/{id}:delete`) and then
-checked, and none of it resolves, including the earlier versions of those same two wellbores. OSDU can restore
-any of it, and a drop can send it again. It carried the run marker, and every write and the cleanup itself are
-in the action log:
-
+- the four wellbores: the two above, and `test:master-data--Wellbore:94a321a3935358d6b059c613aaeb3a4c` and
+  `test:master-data--Wellbore:a67c8651d48d5cb4b303944c494a47b5`, which the records sent in the request (section 2.8)
+  created;
 - `test:work-product-component--WellLog:1f2c3bd61925503cad8694c176cd81b5` (L-1001),
   `test:work-product-component--WellLog:b1bf9310a1d65a1a83085d675c355c47` (L-1002) and
-  `test:work-product-component--WellLog:27d8b3f959b552758cacd54907871c49` (L-2001), with their bulk data versions;
-- `test:work-product-component--Document:cf34948ac9975026bcaf9edfda6ee755` (`e2e-document`) and
-  `test:work-product-component--Document:b57668a195ad5b129d8f4d51197e4ad8` (`e2e-file`);
-- the `dataset--File.Generic` records their files were registered as. A payload change registers a new dataset and
+  `test:work-product-component--WellLog:27d8b3f959b552758cacd54907871c49` (L-2001), removed at the ledger's `record`
+  scope (the Wellbore DDMS's logical delete);
+- the four documents: `test:work-product-component--Document:cf34948ac9975026bcaf9edfda6ee755` (`e2e-document`),
+  `test:work-product-component--Document:b57668a195ad5b129d8f4d51197e4ad8` (`e2e-file`), and the two that sections 2.9
+  and 2.10 created and removed within their own test;
+- the ten `dataset--File.Generic` records their files were registered as. A payload change registers a new dataset and
   leaves the earlier one in OSDU, as [protocols.md](protocols.md) describes.
 
-The records the later submission tests created (sections 2.8, 2.9 and 2.10) are not listed here because each was
-removed and checked within its own test: the inline-submission wellbore, both documents and the two
-`dataset--File.Generic` records registered for their files. The action log carries each creation and each
-verified removal.
+A soft delete does not remove everything. What stays is the bulk data of the three well logs, which the Wellbore DDMS
+keeps under its logical delete, and the files behind the ten `dataset--File.Generic` records, in the platform's file
+storage.

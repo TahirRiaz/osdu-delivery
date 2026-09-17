@@ -538,14 +538,23 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
 
     private static async Task CreateSchemasAsync(string connectionString, string preSchema, string ingSchema, CancellationToken ct)
     {
-        // SQLFlow's flows create tables, not schemas, and its ingestion stages rows in [raw]; all three are made here.
+        // SQLFlow's flows create a schema they find missing, but two first runs can both find it missing, and the second
+        // CREATE then fails. [raw], where ingestion stages its rows, is shared by every fixture on the database, so the
+        // schemas are made here before any flow runs, under an application lock that queues the fixtures starting together
+        // on a new database.
         await ExecuteAsync(
             connectionString,
             $"""
             SET QUOTED_IDENTIFIER ON;
+            SET XACT_ABORT ON;
+            BEGIN TRANSACTION;
+            DECLARE @granted int;
+            EXEC @granted = sys.sp_getapplock @Resource = N'SqlFlow.Delivery.Tests.schemas', @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 20000;
+            IF @granted < 0 THROW 50000, N'The chain fixture waited 20 seconds for another fixture to finish creating its schemas.', 1;
             IF SCHEMA_ID('{preSchema}') IS NULL EXEC(N'CREATE SCHEMA [{preSchema}]');
             IF SCHEMA_ID('{ingSchema}') IS NULL EXEC(N'CREATE SCHEMA [{ingSchema}]');
             IF SCHEMA_ID('raw') IS NULL EXEC(N'CREATE SCHEMA [raw]');
+            COMMIT TRANSACTION;
             """,
             ct).ConfigureAwait(false);
     }
