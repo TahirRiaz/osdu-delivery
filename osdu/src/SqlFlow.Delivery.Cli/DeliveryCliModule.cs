@@ -74,8 +74,10 @@ public sealed class DeliveryCliModule : ICliModule
         new CliVerb(
             "template",
             [
-                "sqlflow template capture --kind <kind> [--release <tag>]",
-                "                                   Save a kind's schema from the OSDU data definitions (newest release by default)",
+                "sqlflow template capture --kind <kind> [--release <tag>] [--out <file.json>]",
+                "                                   Save a kind's schema from the OSDU data definitions (newest release by",
+                "                                   default), and with --out write the bundled schema beside the mapping that",
+                "                                   pins it, so a repository can import it again without the network",
                 "sqlflow template import <schema.json> --kind <kind> [--release <tag>] | import --from-dir <dir> --kind <kind>",
                 "sqlflow template list | show --kind <kind> [--version <v>] | delete --kind <kind> --version <v>",
                 "                                   The templates in the module's database: the OSDU schemas mappings pin (needs --db)",
@@ -83,7 +85,7 @@ public sealed class DeliveryCliModule : ICliModule
             DeliveryVerbs.TemplateAsync)
         {
             Subcommands = ["capture", "import", "list", "show", "delete"],
-            ValueOptions = ["--release", "--version", "--from-dir"],
+            ValueOptions = ["--release", "--version", "--from-dir", "--out"],
         },
     ];
 

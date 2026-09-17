@@ -105,11 +105,22 @@ public sealed class LineageTests : IDisposable
 
         Assert.Empty(lineage.Warnings);
         Assert.Equal(
-            ["OsduSample.ing.Wellbore", "OsduSample.ing.WellLog"],
+            [
+                "OsduSample.ing.Wellbore", "OsduSample.ing.WellLog", "OsduSample.ing.WellboreTrajectory",
+                "OsduSample.ing.WellboreTrajectoryStation", "OsduSample.ing.Document",
+            ],
             lineage.Objects.Select(o => $"{o.Database}.{o.Schema}.{o.Name}").ToList());
         Assert.All(lineage.Objects, o => Assert.Equal(LineageRelation.Reads, o.Relation));
-        Assert.Contains(Samples.WellboreKind, Datasets(lineage, LineageRelation.Writes), StringComparison.Ordinal);
-        Assert.Contains(Samples.WellLogKind, Datasets(lineage, LineageRelation.Writes), StringComparison.Ordinal);
+        var writes = Datasets(lineage, LineageRelation.Writes);
+        Assert.Contains(Samples.WellboreKind, writes, StringComparison.Ordinal);
+        Assert.Contains(Samples.WellLogKind, writes, StringComparison.Ordinal);
+        Assert.Contains("work-product-component--Document", writes, StringComparison.Ordinal);
+
+        Assert.Contains("work-product-component--WellboreTrajectory", writes, StringComparison.Ordinal);
+
+        // The documents interface streams its files and the surveys their stations, so the source reads both folders.
+        Assert.Contains(lineage.Files, f => f.Location == "../data/document-files" && f.Relation == LineageRelation.Reads);
+        Assert.Contains(lineage.Files, f => f.Location == "../data/stations" && f.Relation == LineageRelation.Reads);
 
         // And the estate orders it after the ingestion flows that fill both of those tables.
         var (_, report) = Scan();
@@ -236,7 +247,11 @@ public sealed class LineageTests : IDisposable
         // Every file node is where the flows read and land it, relative to the checkout.
         var files = report.Objects.Where(o => o.Kind == LineageNodeKind.File).Select(o => o.Name).Order(StringComparer.Ordinal).ToList();
         Assert.Equal(
-            ["data/curves", "data/curves-meta", "data/wellbore", "data/wellbore-aliases", "data/welllog", "flows/samples/recall-welllog/out/metadata"],
+            [
+                "data/curves", "data/curves-meta", "data/document-files", "data/documents", "data/stations", "data/trajectory",
+                "data/trajectory-stations", "data/wellbore", "data/wellbore-aliases", "data/welllog",
+                "flows/samples/recall-welllog/out/metadata",
+            ],
             files);
 
         // One node per exact OSDU type written, one per pattern read, and one per cache type, each captioned by its system.

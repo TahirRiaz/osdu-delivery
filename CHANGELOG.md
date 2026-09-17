@@ -61,6 +61,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   from the ledger.
 - Delivery metrics on the meter `SqlFlow.Delivery`: settled tries per flow, route and outcome, and every HTTP call
   attempt with its result, duration and retries (`osdu/docs/operations.md`).
+- The sample estate covers three route types, each decided by what an interface declares: the source document now
+  delivers documents through the file service and directional surveys with their stations through the Wellbore DDMS,
+  beside the wellbores and well logs it already carried. Their schemas are the real ones, captured from the OSDU data
+  definitions; `sqlflow template capture --out <file>` writes the bundled schema beside the mapping that pins it, so a
+  repository carries what it pins and can import it again without the network.
+- `osdu/docs/test-matrix.md`: for every route type, DDMS shape and engine area, the suite that proves it, what that
+  proof rests on (a fake built from the service's own contract, or a real SQL Server), and what no suite proves.
 - Every view of a source is about one of its interfaces (`osdu/docs/operations.md`): the GUI carries an interface
   picker whose choice travels in the URL, a source's Delivery tab lists its interfaces in the order a run takes them
   with each one's route, what it waits for and its counts, and the probe, the release and every removal act on the

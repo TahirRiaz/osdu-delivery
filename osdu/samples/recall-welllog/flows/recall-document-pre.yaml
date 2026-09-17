@@ -1,0 +1,39 @@
+# Pre-ingestion: the document index into the pre layer.
+#
+# One row per document the source system holds, with the folder its file sits in and that file's content hash. The
+# files themselves are never landed here: they stay where the preparing side wrote them and the delivery streams them.
+name: recall-document-pre
+batch: recall
+
+source:
+  type: csv
+  location: ../data/documents
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_SAMPLE_DB}
+  schema: pre
+  table: Document
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: update_date, type: datetime2 }
+    - { name: doc_title, expr: "NULLIF(@ColName, '')", type: varchar(400) }
+    - { name: doc_description, expr: "NULLIF(@ColName, '')", type: varchar(2000) }
+    - { name: doc_folder, expr: "NULLIF(@ColName, '')", type: varchar(400) }
+    - { name: payload_hash, expr: "NULLIF(@ColName, '')", type: varchar(128) }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append

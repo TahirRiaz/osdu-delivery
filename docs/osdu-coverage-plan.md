@@ -285,7 +285,8 @@ Submissions tabs could not be opened at all. The trigger dialog names the interf
 and `sqlflow records show` read the same ledger from a terminal or a node, one interface at a time, the second printing
 a record's every try with its steps and errors, which no verb did before. A source's lineage carries every interface's
 reads and writes, so the estate orders it after everything any of them reads. The end-to-end suite covers a source of
-two interfaces through the GUI and the CLI, against a sample source document beside the single-form flows it mirrors.
+several interfaces through the GUI and the CLI, against a sample source document beside the single-form flows it
+mirrors.
 
 ### Stage 10: samples, documentation and verification
 
@@ -297,6 +298,24 @@ two interfaces through the GUI and the CLI, against a sample source document bes
 
 Done when the full suites pass, the live verification report lists what was verified live and what against contracts
 only, and every created OSDU id is removed.
+
+Status: the samples and the documentation are done; the live verification is not, and cannot start until a test list is
+approved (docs/live-wave-one.md, which lists every check, what it creates and how each id is removed).
+
+The sample estate is a runnable estate, not a fixture: its pre and ingestion flows load its files into SQL Server and
+its delivery flows plan and render against real templates and a real cache version. It now carries the shape a source
+takes beside the single-form flows it mirrors (`recall-source`, four interfaces), and between them they cover four kinds
+and three route types, each route decided by what the interface declares rather than named: master data and well logs
+through the storage service, directional surveys whose stations the Wellbore DDMS keeps, and documents whose content is
+a file registered through the file service. The schemas the new kinds pin are the real ones, captured from the OSDU data
+definitions (`sqlflow template capture --out` writes the bundled schema beside the mapping, so a repository carries what
+it pins and can import it again without the network). No sample renders a reference data kind or a dataset collection:
+the rules that would route them are covered by tests, the sample data is not there, and that is what the matrix says.
+
+The documentation is the document reference (`osdu/docs/documents.md`, every route type including the etp route), the
+protocol reference (`osdu/docs/protocols.md`), operations (`osdu/docs/operations.md`, the CLI, the GUI, removals and the
+runbook) and the ledger (`osdu/docs/ledger.md`); the test matrix is `osdu/docs/test-matrix.md`, which names, for every
+route type, DDMS shape and engine area, the suite that proves it, what that proof rests on, and what no suite proves.
 
 ## 4. How coverage is proven
 

@@ -1,10 +1,15 @@
 # Source: recall-source
 #
-# One source document delivering two interfaces (docs/interfaces-design.md): the wellbores the well logs refer to, and
-# the well logs themselves. Each interface has a ledger, a submission history, a watermark and a route of its own, and
-# the well logs run after the wellbores, so a run of the source is two waves. It reads the same ingestion tables the
-# single-form flows beside it read (recall-wellbore, recall-welllog), under ledgers of its own, so it never re-delivers
-# what those flows delivered: it is the shape a source takes, shown beside the shape it replaces.
+# One source document delivering four interfaces (docs/interfaces-design.md): the wellbores the well logs refer to, the
+# well logs, the directional surveys whose stations a DDMS keeps, and the documents whose content is a file. Each has a
+# ledger, a submission history, a watermark and a route of its own, and the surveys and the logs run after the
+# wellbores, so a run of the source is two waves. The wellbores and the logs read the same ingestion tables the
+# single-form flows beside them read (recall-wellbore, recall-welllog), under ledgers of their own, so they never
+# re-deliver what those flows delivered: it is the shape a source takes, shown beside the shape it replaces.
+#
+# Between them the four interfaces cover three route types, each decided by what the interface declares rather than
+# named: master data and well logs through the storage service, a work product component whose stations the Wellbore
+# DDMS keeps, and one whose content is a file, registered through the file service.
 flowType: delivery
 name: recall-source
 batch: recall
@@ -36,6 +41,10 @@ target:
   headers:
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
     data-partition-id: opendes
+  # Where the DDMSs are under the endpoint. An interface that declares bulk goes to the one serving its entity type.
+  ddms:
+    wellbore:
+      root: /api/os-wellbore-ddms
 
 reliability:
   concurrency: 8
@@ -61,3 +70,40 @@ interfaces:
       primaryKey: RecId
     mapping: WellLog@1.4.0
     after: [wellbores]
+
+  # A work product component whose bulk data a DDMS keeps: declaring `bulk` is what puts this interface on the ddms
+  # route, and the trajectory collection of the Wellbore DDMS is where its entity type goes.
+  trajectories:
+    record:
+      object: OsduSample.ing.WellboreTrajectory
+      key: [source_project, survey_id]
+      primaryKey: RecId
+    datasets:
+      stations:
+        object: OsduSample.ing.WellboreTrajectoryStation
+        join:
+          source_project: source_project
+          survey_id: survey_id
+        orderBy: [station_ordinal]
+    bulk:
+      root: ../data/stations
+      locationColumn: station_folder
+      pattern: "chunk_*.parquet"
+      hashColumn: payload_hash
+      chunkCountColumn: chunk_count
+    mapping: WellboreTrajectory@1.3.0
+    after: [wellbores]
+
+  # A work product component whose content is a file: declaring `files` is what puts this interface on the file route,
+  # which registers each file as a dataset and then writes the record naming them.
+  documents:
+    record:
+      object: OsduSample.ing.Document
+      key: [doc_id]
+      primaryKey: RecId
+    files:
+      root: ../data/document-files
+      locationColumn: doc_folder
+      pattern: "*.csv"
+      hashColumn: payload_hash
+    mapping: Document@1.0.0

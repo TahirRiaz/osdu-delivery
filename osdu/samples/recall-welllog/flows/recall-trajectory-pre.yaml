@@ -1,0 +1,41 @@
+# Pre-ingestion: the directional survey files into the pre layer.
+#
+# One row per survey. The station values themselves are never loaded: they stay in the parquet files under
+# ../data/stations, which the delivery streams to the wellbore DDMS as the survey's bulk data.
+name: recall-trajectory-pre
+batch: recall
+
+source:
+  type: csv
+  location: ../data/trajectory
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_SAMPLE_DB}
+  schema: pre
+  table: WellboreTrajectory
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: update_date, type: datetime2 }
+    - { name: chunk_count, type: int }
+    - { name: survey_version, type: varchar(50) }
+    - { name: survey_type, expr: "NULLIF(@ColName, '')", type: varchar(100) }
+    - { name: elev_meas_ref, expr: "NULLIF(@ColName, '')", type: varchar(100) }
+    - { name: station_folder, expr: "NULLIF(@ColName, '')", type: varchar(400) }
+    - { name: payload_hash, expr: "NULLIF(@ColName, '')", type: varchar(128) }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append

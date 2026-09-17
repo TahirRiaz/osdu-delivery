@@ -448,6 +448,21 @@ internal static class DeliveryVerbs
 
                 using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
                 var file = await DataDefinitions(http, engine.Time).FetchAsync(context.Arguments.GetOption("--release"), kind, ct).ConfigureAwait(false);
+
+                // The bundled schema can be written beside the mapping that pins it, which is what a repository carries
+                // so its templates can be imported again without reaching the data definitions (sqlflow template import).
+                if (context.Arguments.GetOption("--out") is { } outPath)
+                {
+                    var directory = Path.GetDirectoryName(Path.GetFullPath(outPath));
+                    if (!string.IsNullOrEmpty(directory))
+                    {
+                        Directory.CreateDirectory(directory);
+                    }
+
+                    await File.WriteAllTextAsync(outPath, CanonicalJson.Pretty(file.Schema.Root), ct).ConfigureAwait(false);
+                    context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Wrote the bundled schema of {kind} to {Path.GetFullPath(outPath)}"));
+                }
+
                 return Report(context, await store.SaveAsync(file.Schema, file.Origin, actor, ct).ConfigureAwait(false));
             }
 

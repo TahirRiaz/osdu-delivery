@@ -56,8 +56,20 @@ internal sealed partial class FakeEtpServer : IAsyncDisposable
     public IReadOnlyList<int> Served { get; set; } =
         [EtpProtocols.Core, EtpProtocols.Discovery, EtpProtocols.Store, EtpProtocols.DataArray, EtpProtocols.Transaction, EtpProtocols.Dataspace, EtpProtocols.DataspaceOsdu];
 
-    /// <summary>Every message the server received, in order, for a test to assert the sequence a route sends.</summary>
-    public IReadOnlyList<EtpFrame> Received => _received;
+    /// <summary>
+    /// Every message the server received, in order, for a test to assert the sequence a route sends. It is a snapshot:
+    /// the server is still receiving on its own thread while a test reads this.
+    /// </summary>
+    public IReadOnlyList<EtpFrame> Received
+    {
+        get
+        {
+            lock (_received)
+            {
+                return [.. _received];
+            }
+        }
+    }
 
     /// <summary>Set to answer the next message of a kind with this failure instead of handling it.</summary>
     public ConcurrentDictionary<string, ErrorInfo> FailNext { get; } = new(StringComparer.Ordinal);

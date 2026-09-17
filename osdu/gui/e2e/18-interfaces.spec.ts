@@ -17,6 +17,10 @@ test.describe.serial("interfaces", () => {
     await expect(interfaces).toBeVisible();
     await expect(interfaces.getByText("wellbores")).toBeVisible();
     await expect(interfaces.getByText("welllogs")).toBeVisible();
+    // The third interface declares files, so its route follows from that and is shown as the file route.
+    const documents = interfaces.getByTestId("table-row").filter({ hasText: "documents" });
+    await expect(documents).toContainText("Document@1.0.0");
+    await expect(documents).toContainText("file");
     // The well logs declare `after: [wellbores]`, so they run after them and the table says what each waits for.
     const logs = interfaces.getByTestId("table-row").filter({ hasText: "welllogs" });
     await expect(logs).toContainText("WellLog@1.4.0");

@@ -87,6 +87,12 @@ export const CHAIN = [
   "recall-wellbore-ing",
   "recall-wellbore-aliases-ing",
   "recall-wellbore",
+  "recall-document-pre",
+  "recall-document-ing",
+  "recall-trajectory-pre",
+  "recall-trajectory-stations-pre",
+  "recall-trajectory-ing",
+  "recall-trajectory-stations-ing",
   // The same estate in the shape a source takes: two interfaces, each with a ledger of its own. It is synced and read,
   // never run, so it adds a multi-interface source to the catalog without delivering anything twice.
   "recall-source",
@@ -103,6 +109,12 @@ export const LOADING_FLOWS = [
   "recall-welllog-curves-ing",
   "recall-wellbore-ing",
   "recall-wellbore-aliases-ing",
+  "recall-document-pre",
+  "recall-document-ing",
+  "recall-trajectory-pre",
+  "recall-trajectory-stations-pre",
+  "recall-trajectory-ing",
+  "recall-trajectory-stations-ing",
 ] as const;
 
 /**
