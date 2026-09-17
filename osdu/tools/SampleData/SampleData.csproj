@@ -15,6 +15,7 @@
   <ItemGroup>
     <!-- One definition of the sample data, shared with the suites that regenerate and check it. -->
     <Compile Include="..\..\tests\SqlFlow.Delivery.Tests\SampleWellLogs.cs" Link="SampleWellLogs.cs" />
+    <Compile Include="..\..\tests\SqlFlow.Delivery.Tests\PandasMetadata.cs" Link="PandasMetadata.cs" />
   </ItemGroup>
 
 </Project>

@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text;
-using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Hashing;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Storage;
@@ -228,11 +227,10 @@ public static class SampleWellLogs
         var path = Path.Combine(folder, ChunkFileName);
         var columns = log.Columns().Select(c => (c, typeof(double))).ToList();
         // The pandas entry is what a dataframe reader (and the wellbore DDMS) takes as the row labels, so a session of
-        // several chunks aggregates by depth rather than by position.
-        var metadata = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            [ParquetFiles.PandasMetadataKey] = new JsonObject { ["index_columns"] = new JsonArray(IndexCurveId) }.ToJsonString(),
-        };
+        // several chunks aggregates by depth rather than by position. A reader needs the whole entry: the index it
+        // names, and a descriptor for every column including that index. An entry missing either raises in the reader,
+        // and a bulk service then refuses the file as malformed rather than reading its rows.
+        var metadata = PandasMetadata.Stored(columns, IndexCurveId);
 
         await using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
         await ParquetFiles.WriteAsync(file, columns, log.Grid(), metadata, ct).ConfigureAwait(false);

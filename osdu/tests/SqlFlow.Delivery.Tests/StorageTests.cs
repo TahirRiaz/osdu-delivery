@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Core;
 using SqlFlow.Core.Model;
@@ -78,7 +79,7 @@ public class ParquetRowLabelTests
     [Fact]
     public async Task A_range_index_starts_where_its_metadata_says()
     {
-        // What pyarrow writes for a frame whose RangeIndex starts at 5 (to_parquet with index=None).
+        // The index part of what pyarrow writes for a frame whose RangeIndex starts at 5 (to_parquet with index=None).
         var shape = await ShapeAsync(Curves, 4, """{"index_columns": [{"kind": "range", "name": null, "start": 5, "stop": 9, "step": 1}]}""");
 
         Assert.Equal(new ParquetRowIndex(5, 8, ParquetRowIndexSource.Range), shape.RowIndex);
@@ -87,7 +88,7 @@ public class ParquetRowLabelTests
     [Fact]
     public async Task A_stored_index_column_gives_its_lowest_and_highest_label_and_is_not_a_curve()
     {
-        // What pyarrow writes for a frame with an explicit integer index (to_parquet with index=True).
+        // The index part of what pyarrow writes for a frame with an explicit integer index (to_parquet with index=True).
         var columns = new (string, Type)[] { ("MD", typeof(double)), ("GR", typeof(double)), ("__index_level_0__", typeof(long)) };
         var shape = await ShapeAsync(columns, 4, """{"index_columns": ["__index_level_0__"]}""", firstLabel: 5);
 
@@ -102,6 +103,87 @@ public class ParquetRowLabelTests
         Assert.Null((await ShapeAsync(Curves, 4, """{"index_columns": ["level_0", "level_1"]}""")).RowIndex);
         Assert.Null((await ShapeAsync(Curves, 4, """{"index_columns": ["__index_level_0__"]}""")).RowIndex);
         Assert.Null((await ShapeAsync(Curves, 4, "{ this is not json")).RowIndex);
+    }
+}
+
+/// <summary>
+/// What a dataframe reader needs of a file's pandas entry. A bulk service reads a chunk as a dataframe, so a file the
+/// reader raises on is refused as malformed whatever its rows hold, and the delivery says so before it sends one.
+/// </summary>
+public class ParquetPandasEntryTests
+{
+    private static readonly (string Name, Type ClrType)[] Curves = [("MD", typeof(double)), ("GR", typeof(double))];
+
+    private static Dictionary<string, string> Entry(string json)
+        => new(StringComparer.Ordinal) { [ParquetFiles.PandasMetadataKey] = json };
+
+    [Fact]
+    public void A_footer_with_no_pandas_entry_has_nothing_to_refuse()
+    {
+        Assert.Null(ParquetFiles.PandasDefect(new Dictionary<string, string>(StringComparer.Ordinal)));
+        Assert.Null(ParquetFiles.PandasDefect(Entry("  ")));
+    }
+
+    [Fact]
+    public void A_whole_entry_reads_whether_the_index_is_a_range_or_a_column()
+    {
+        Assert.Null(ParquetFiles.PandasDefect(PandasMetadata.Range(Curves, 0, 4)));
+        Assert.Null(ParquetFiles.PandasDefect(PandasMetadata.Stored(Curves, "MD")));
+    }
+
+    [Fact]
+    public void An_entry_without_the_column_descriptors_is_refused()
+    {
+        // pyarrow reads the descriptors before anything else: without them it raises KeyError('columns'), whatever the
+        // index says, and the service answers that the data is malformed.
+        Assert.Equal(
+            "its pandas metadata carries no 'columns' descriptors",
+            ParquetFiles.PandasDefect(Entry("""{"index_columns": ["MD"]}""")));
+        Assert.Equal(
+            "its pandas metadata carries no 'columns' descriptors",
+            ParquetFiles.PandasDefect(Entry("""{"index_columns": [{"kind": "range", "name": null, "start": 0, "stop": 4, "step": 1}]}""")));
+        Assert.Equal(
+            "its pandas metadata carries no 'columns' descriptors",
+            ParquetFiles.PandasDefect(Entry("""{"columns": {"MD": "float64"}}""")));
+    }
+
+    [Fact]
+    public void An_index_column_no_descriptor_names_is_refused()
+    {
+        // The reader lifts the index out of the frame by its descriptor: without one it raises KeyError on that name.
+        var json = PandasMetadata.Json([("GR", typeof(double))], new JsonArray("MD"));
+
+        Assert.Equal("its pandas metadata names 'MD' as the index without describing it in 'columns'", ParquetFiles.PandasDefect(Entry(json)));
+    }
+
+    [Fact]
+    public void An_entry_that_is_not_an_object_or_not_json_is_refused()
+    {
+        Assert.Equal("its pandas metadata is not valid JSON", ParquetFiles.PandasDefect(Entry("{ this is not json")));
+        Assert.Equal("its pandas metadata is not an object", ParquetFiles.PandasDefect(Entry("[]")));
+    }
+
+    [Fact]
+    public async Task The_shape_of_a_file_carries_what_its_pandas_entry_lacks()
+    {
+        var rows = new List<IReadOnlyDictionary<string, object?>>
+        {
+            new Dictionary<string, object?>(StringComparer.Ordinal) { ["MD"] = 1000.0, ["GR"] = 40.0 },
+        };
+
+        using var whole = new MemoryStream();
+        await ParquetFiles.WriteAsync(whole, Curves, rows, PandasMetadata.Stored(Curves, "MD"));
+        whole.Position = 0;
+        Assert.Null((await ParquetFiles.ReadShapeAsync(whole)).PandasDefect);
+
+        using var partial = new MemoryStream();
+        await ParquetFiles.WriteAsync(partial, Curves, rows, Entry("""{"index_columns": ["MD"]}"""));
+        partial.Position = 0;
+        var shape = await ParquetFiles.ReadShapeAsync(partial);
+
+        // The labels still read: what the file cannot do is become a frame.
+        Assert.Equal(new ParquetRowIndex(1000, 1000, ParquetRowIndexSource.Column), shape.RowIndex);
+        Assert.Equal("its pandas metadata carries no 'columns' descriptors", shape.PandasDefect);
     }
 }
 

@@ -20,6 +20,13 @@ public readonly record struct ParquetShape(long Rows, int Columns)
 
     /// <summary>The data columns, without a stored index column.</summary>
     public IReadOnlyList<string> ColumnNames { get; init; } = [];
+
+    /// <summary>
+    /// What a dataframe reader would refuse about the file's pandas metadata, or null when it would read it. A footer
+    /// with no pandas entry reads fine, with the rows numbered from zero; an entry that is there but incomplete does
+    /// not, and a bulk service that reads a chunk as a dataframe then refuses the whole upload as malformed.
+    /// </summary>
+    public string? PandasDefect { get; init; }
 }
 
 /// <summary>
@@ -140,7 +147,90 @@ public static class ParquetFiles
         {
             RowIndex = labelled && rows > 0 ? index.Labels(rows, low, high) : null,
             ColumnNames = fields.Where(f => !ReferenceEquals(f, indexField)).Select(f => f.Name).ToList(),
+            PandasDefect = PandasDefect(reader.CustomMetadata),
         };
+    }
+
+    /// <summary>
+    /// What a dataframe reader would refuse about a footer's pandas entry, or null when it would read it. Reading a
+    /// chunk as a dataframe is how a bulk service takes it, so a file this names is refused by the service rather than
+    /// ingested, whatever its rows hold.
+    /// <para>
+    /// The entry itself is optional: a file without one reads with its rows numbered from zero. An entry that is there
+    /// has to carry the <c>columns</c> descriptors and describe every stored column it names as the index. Without the
+    /// descriptors the reader cannot say what any column holds, and without the index's own descriptor it cannot lift
+    /// that column out of the frame; either way it raises instead of returning rows.
+    /// </para>
+    /// </summary>
+    public static string? PandasDefect(IReadOnlyDictionary<string, string> metadata)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        if (!metadata.TryGetValue(PandasMetadataKey, out var json) || string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return "its pandas metadata is not valid JSON";
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return "its pandas metadata is not an object";
+            }
+
+            if (!root.TryGetProperty("columns", out var columns) || columns.ValueKind != JsonValueKind.Array)
+            {
+                return "its pandas metadata carries no 'columns' descriptors";
+            }
+
+            if (!root.TryGetProperty("index_columns", out var index) || index.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            foreach (var entry in index.EnumerateArray())
+            {
+                // A range index is described where it stands; only a name refers to a column the file stores.
+                if (entry.ValueKind != JsonValueKind.String || entry.GetString() is not { } name || Describes(columns, name))
+                {
+                    continue;
+                }
+
+                return $"its pandas metadata names '{name}' as the index without describing it in 'columns'";
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>True when one of the pandas column descriptors is the named column's.</summary>
+    private static bool Describes(JsonElement columns, string name)
+    {
+        foreach (var descriptor in columns.EnumerateArray())
+        {
+            if (descriptor.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if ((descriptor.TryGetProperty("field_name", out var stored) && stored.ValueKind == JsonValueKind.String && stored.ValueEquals(name))
+                || (descriptor.TryGetProperty("name", out var label) && label.ValueKind == JsonValueKind.String && label.ValueEquals(name)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

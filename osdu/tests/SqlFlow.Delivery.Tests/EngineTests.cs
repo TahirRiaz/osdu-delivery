@@ -673,9 +673,9 @@ public class ProtocolTests
 
             var metadata = labels switch
             {
-                ChunkLabels.Continuing => Pandas($$"""{"index_columns": [{"kind": "range", "name": null, "start": {{(index * rowsPerChunk).ToString(culture)}}, "stop": {{((index + 1) * rowsPerChunk).ToString(culture)}}, "step": 1}]}"""),
-                ChunkLabels.CurvesSplit => Pandas($$"""{"index_columns": [{"kind": "range", "name": null, "start": 0, "stop": {{rowsPerChunk.ToString(culture)}}, "step": 1}]}"""),
-                ChunkLabels.OverlappingColumn => Pandas("""{"index_columns": ["__index_level_0__"]}"""),
+                ChunkLabels.Continuing => PandasMetadata.Range(names, index * rowsPerChunk, (index + 1) * rowsPerChunk),
+                ChunkLabels.CurvesSplit => PandasMetadata.Range(names, 0, rowsPerChunk),
+                ChunkLabels.OverlappingColumn => PandasMetadata.Stored(names, "__index_level_0__"),
                 _ => null,
             };
 
@@ -683,8 +683,6 @@ public class ProtocolTests
             SqlFlow.Delivery.Storage.ParquetFiles.WriteAsync(buffer, names, rows, metadata).GetAwaiter().GetResult();
             return buffer.ToArray();
         }
-
-        private static Dictionary<string, string> Pandas(string json) => new() { [SqlFlow.Delivery.Storage.ParquetFiles.PandasMetadataKey] = json };
     }
 }
 

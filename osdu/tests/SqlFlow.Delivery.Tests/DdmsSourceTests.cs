@@ -107,13 +107,11 @@ public sealed class DdmsSourceTests : IDisposable
         var rows = Enumerable.Range(0, 5)
             .Select(i => (IReadOnlyDictionary<string, object?>)columns.ToDictionary(c => c, c => (object?)(c == "MD" ? 1000.0 + i : 10.0 + i), StringComparer.Ordinal))
             .ToList();
-        var metadata = new Dictionary<string, string>
-        {
-            [ParquetFiles.PandasMetadataKey] = """{"index_columns": [{"kind": "range", "name": null, "start": 0, "stop": 5, "step": 1}]}""",
-        };
+        var names = columns.Select(c => (c, typeof(double))).ToList();
+        var metadata = PandasMetadata.Range(names, 0, 5);
         await using (var file = File.Create(Path.Combine(directory, "chunk_0000.parquet")))
         {
-            await ParquetFiles.WriteAsync(file, columns.Select(c => (c, typeof(double))).ToList(), rows, metadata);
+            await ParquetFiles.WriteAsync(file, names, rows, metadata);
         }
 
         var updated = _clock.GetUtcNow().UtcDateTime;

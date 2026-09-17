@@ -348,17 +348,14 @@ public sealed class ProtocolContractTests
 
         private static byte[] Bytes(int index)
         {
-            var culture = CultureInfo.InvariantCulture;
             var rows = new List<IReadOnlyDictionary<string, object?>>
             {
                 new Dictionary<string, object?>(StringComparer.Ordinal) { ["MD"] = (double)index, ["GR"] = 10.0 + index },
             };
-            var metadata = new Dictionary<string, string>
-            {
-                [ParquetFiles.PandasMetadataKey] = $$"""{"index_columns": [{"kind": "range", "name": null, "start": {{index.ToString(culture)}}, "stop": {{(index + 1).ToString(culture)}}, "step": 1}]}""",
-            };
+            (string Name, Type ClrType)[] names = [("MD", typeof(double)), ("GR", typeof(double))];
+            var metadata = PandasMetadata.Range(names, index, index + 1);
             using var buffer = new MemoryStream();
-            ParquetFiles.WriteAsync(buffer, [("MD", typeof(double)), ("GR", typeof(double))], rows, metadata).GetAwaiter().GetResult();
+            ParquetFiles.WriteAsync(buffer, names, rows, metadata).GetAwaiter().GetResult();
             return buffer.ToArray();
         }
     }

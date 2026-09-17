@@ -124,6 +124,23 @@ public sealed class DdmsRouteTests
     }
 
     [Fact]
+    public async Task Bulk_data_a_dataframe_reader_cannot_read_is_held_before_anything_is_sent()
+    {
+        var handler = new FakeHttpHandler();
+        var (client, runtime) = Client(handler);
+        using (runtime)
+        {
+            var held = await Assert.ThrowsAsync<RecordHeldException>(
+                () => Protocol(client).DeliverAsync(Work(LogId, Log(), true, true, new PartialPandasChunks("MD", "GR"))));
+
+            Assert.Contains("chunk 0 (chunk_0.parquet) carries pandas metadata a dataframe reader cannot read", held.Message, StringComparison.Ordinal);
+            Assert.Contains("carries no 'columns' descriptors", held.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Empty(handler.Calls);
+    }
+
+    [Fact]
     public async Task A_wellbore_goes_to_the_wellbores_collection_takes_no_bulk_data_and_purges_through_storage()
     {
         var handler = new FakeHttpHandler()
@@ -492,6 +509,31 @@ public sealed class DdmsRouteTests
     }
 
     /// <summary>Parquet chunks carrying the named columns, their rows continuing from chunk to chunk.</summary>
+    /// <summary>
+    /// One chunk whose pandas entry names its index but describes no columns, as a writer that assembled the entry by
+    /// hand leaves it. A dataframe reader raises on such a file, so a bulk service refuses the upload as malformed.
+    /// </summary>
+    internal sealed class PartialPandasChunks(params string[] columns) : IPayloadSource
+    {
+        public Task<IReadOnlyList<PayloadFile>> ListChunksAsync(CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<PayloadFile>>([new PayloadFile(0, "mem://chunk_0.parquet", Bytes().Length)]);
+
+        public Task<Stream> OpenAsync(PayloadFile chunk, CancellationToken ct = default)
+            => Task.FromResult<Stream>(new MemoryStream(Bytes(), writable: false));
+
+        private byte[] Bytes()
+        {
+            var row = columns.ToDictionary(c => c, c => (object?)1000.0, StringComparer.Ordinal);
+            var metadata = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [ParquetFiles.PandasMetadataKey] = """{"index_columns": ["MD"]}""",
+            };
+            using var buffer = new MemoryStream();
+            ParquetFiles.WriteAsync(buffer, columns.Select(c => (c, typeof(double))).ToList(), [row], metadata).GetAwaiter().GetResult();
+            return buffer.ToArray();
+        }
+    }
+
     internal sealed class ColumnChunks(int chunks, params string[] columns) : IPayloadSource
     {
         public Task<IReadOnlyList<PayloadFile>> ListChunksAsync(CancellationToken ct = default)
@@ -502,14 +544,11 @@ public sealed class DdmsRouteTests
 
         private byte[] Bytes(int index)
         {
-            var culture = CultureInfo.InvariantCulture;
             var row = columns.ToDictionary(c => c, c => (object?)(double)index, StringComparer.Ordinal);
-            var metadata = new Dictionary<string, string>
-            {
-                [ParquetFiles.PandasMetadataKey] = $$"""{"index_columns": [{"kind": "range", "name": null, "start": {{index.ToString(culture)}}, "stop": {{(index + 1).ToString(culture)}}, "step": 1}]}""",
-            };
+            var names = columns.Select(c => (c, typeof(double))).ToList();
+            var metadata = PandasMetadata.Range(names, index, index + 1);
             using var buffer = new MemoryStream();
-            ParquetFiles.WriteAsync(buffer, columns.Select(c => (c, typeof(double))).ToList(), [row], metadata).GetAwaiter().GetResult();
+            ParquetFiles.WriteAsync(buffer, names, [row], metadata).GetAwaiter().GetResult();
             return buffer.ToArray();
         }
     }

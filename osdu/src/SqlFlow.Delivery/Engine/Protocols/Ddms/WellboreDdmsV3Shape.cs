@@ -376,6 +376,11 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
             throw new RecordHeldException(conflict);
         }
 
+        if (session && WellboreDdmsRules.SessionReferenceProblem(paths.Columns, document, labels) is { } reference)
+        {
+            throw new RecordHeldException(reference);
+        }
+
         return measured.Select(m => m.Shape).ToList();
     }
 
@@ -569,11 +574,12 @@ internal static class ParquetPayloads
             throw;
         }
 
+        ParquetShape shape;
         await using (seekable.ConfigureAwait(false))
         {
             try
             {
-                return await ParquetFiles.ReadShapeAsync(seekable, ct).ConfigureAwait(false);
+                shape = await ParquetFiles.ReadShapeAsync(seekable, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -582,5 +588,16 @@ internal static class ParquetPayloads
                     ex);
             }
         }
+
+        if (shape.PandasDefect is { } defect)
+        {
+            // A bulk service reads a chunk as a dataframe. A file a dataframe reader raises on is refused as malformed
+            // whatever its rows hold, so the record is held here, where the reason can be read, rather than sent.
+            throw new RecordHeldException(
+                $"payload chunk {file.Index.ToString(CultureInfo.InvariantCulture)} ({Path.GetFileName(file.Path)}) "
+                + $"carries pandas metadata a dataframe reader cannot read, so the service would refuse the data as malformed: {defect}");
+        }
+
+        return shape;
     }
 }
