@@ -48,7 +48,8 @@ internal static class DeliveryRecordVerbs
         {
             "list" => await ListAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
             "show" => await ShowAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
-            _ => context.UsageError("say what to do with the records: list or show."),
+            "release" => await ReleaseAsync(context, ledger, engine, flowId, label, ct).ConfigureAwait(false),
+            _ => context.UsageError("say what to do with the records: list, show or release."),
         };
     }
 
@@ -189,6 +190,43 @@ internal static class DeliveryRecordVerbs
             }
         }
 
+        return 0;
+    }
+
+    /// <summary>
+    /// Releases the interface's blocked records back to pending: the held, the failed and the ones a removal marked
+    /// deleted. A record that still holds a rendered document is queued at once, and the rest are planned again by the
+    /// next run. Fixing what blocked them is the operator's job; this is the verb that says "try again".
+    /// </summary>
+    private static async Task<int> ReleaseAsync(
+        CliVerbContext context, ILedger ledger, EngineContext engine, Guid flowId, string label, CancellationToken ct)
+    {
+        var asked = context.Arguments.GetOptions("--key").ToList();
+        var keys = new List<DeliveryKey>(asked.Count);
+        foreach (var value in asked)
+        {
+            keys.Add(Guid.TryParse(value, CultureInfo.InvariantCulture, out var key)
+                ? new DeliveryKey(key)
+                : throw new FlowValidationException($"--key '{value}' is not a delivery key; 'records list' prints them."));
+        }
+
+        var released = await ledger.ReleaseAsync(flowId, keys.Count > 0 ? keys : null, engine.Time.GetUtcNow().UtcDateTime, ct)
+            .ConfigureAwait(false);
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["flow"] = label,
+                ["flowId"] = flowId.ToString(),
+                ["released"] = released,
+            }));
+            return 0;
+        }
+
+        var named = keys.Count > 0 ? $" of the {keys.Count.ToString(CultureInfo.InvariantCulture)} named" : string.Empty;
+        context.Out.WriteLine(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{label}: {released} record(s) released{named}. The ones that still hold a rendered document are queued now; the rest are planned again by the next run."));
         return 0;
     }
 

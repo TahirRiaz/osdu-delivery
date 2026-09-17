@@ -49,10 +49,13 @@ public sealed class DeliveryCliModule : ICliModule
                 "sqlflow records show <flow.yaml> --key <delivery key | source key> [--interface <name>] [--attempts <n>]",
                 "                                   One record with every try it took: what each sent, what the target",
                 "                                   answered step by step, and why it stopped (needs --db)",
+                "sqlflow records release <flow.yaml> [--interface <name>] [--key <delivery key>]...",
+                "                                   Release blocked records (held, failed, deleted) back to pending, all",
+                "                                   of them or the ones named, once their cause is fixed (needs --db)",
             ],
             DeliveryRecordVerbs.RecordsAsync)
         {
-            Subcommands = ["list", "show"],
+            Subcommands = ["list", "show", "release"],
             Flags = ["--contains"],
             ValueOptions = ["--interface", "--search", "--status", "--max", "--key", "--attempts"],
         },
