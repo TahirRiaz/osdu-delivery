@@ -8,7 +8,7 @@
 #   OsduDeliveryPre  what pre-ingestion lands from the source systems
 #   OsduDeliveryIng  the keyed ingestion tables the OSDU flows read, which is where the row volume is
 #
-#   docker compose up -d --build mssql controlplane gui
+#   docker compose up -d --build mssql dbinit controlplane gui
 #   # mint a node-scoped token from the control plane, put it in .env as SQLFLOW_NODE_TOKEN
 #   docker compose up -d --build worker
 #   docker compose up -d --scale worker=3        # more compute, no other change
@@ -81,6 +81,24 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # The chain's two data databases. The control plane creates its own catalog and the module's database on first
+  # start; SQLFlow creates schemas and tables inside a database but never a database, so these are created here, once.
+  # Running it again changes nothing.
+  dbinit:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    depends_on:
+      mssql:
+        condition: service_healthy
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in .env}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >-
+        /opt/mssql-tools18/bin/sqlcmd -S mssql -U sa -P "$$MSSQL_SA_PASSWORD" -C -b -Q
+        "IF DB_ID('OsduDeliveryPre') IS NULL CREATE DATABASE [OsduDeliveryPre];
+        IF DB_ID('OsduDeliveryIng') IS NULL CREATE DATABASE [OsduDeliveryIng];"
+    restart: "no"
+
   worker:
     build:
       context: ../../..
@@ -88,6 +106,8 @@ services:
     depends_on:
       mssql:
         condition: service_healthy
+      dbinit:
+        condition: service_completed_successfully
       controlplane:
         condition: service_healthy
     environment:

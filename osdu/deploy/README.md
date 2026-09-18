@@ -60,7 +60,7 @@ two steps:
 ```bash
 cd osdu/deploy/compose
 cp .env.example .env    # set the secrets
-docker compose up -d --build mssql controlplane gui
+docker compose up -d --build mssql dbinit controlplane gui
 # sign in as the admin, mint the token (POST /api/v1/me/tokens with scopes ["node"], or the GUI's token page),
 # put it in .env as SQLFLOW_NODE_TOKEN, then:
 docker compose up -d --build worker
@@ -70,7 +70,8 @@ docker compose up -d --scale worker=3   # more compute, nothing else changes
 GUI at <http://localhost:8081>, API at <http://localhost:5000>. Bootstrap provisioning creates the `SQLFlow`
 catalog and the `OSDUDelivery` module database (the compose file turns on `ControlPlane__Bootstrap__AllowCreate`;
 the default only migrates databases that already exist), applies SQLFlow's catalog migrations and then the OSDU
-module's, seeds roles, and creates the admin from `.env` on first start.
+module's, seeds roles, and creates the admin from `.env` on first start. The `dbinit` service creates the chain's
+two data databases, which nothing else creates: SQLFlow makes schemas and tables inside a database, never a database.
 
 ## Azure Container Apps: `bicep/`
 
