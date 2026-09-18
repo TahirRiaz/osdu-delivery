@@ -293,7 +293,10 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   to the OSDU cache page for what the cache holds and the changes waiting for approval.
 - **Audit trail** (Operate): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (Workspace): the mapping documents the repositories hold, each mapping with the template it pins and a
-  link to the Mapping builder.
+  link to the Mapping builder. A mapping opens on its Properties, a searchable grid of one row per property the mapping
+  fills: the target path in the template, the source value behind it (a dataset column, a cached field, or a static
+  value), the findBy lines a cache entry is found by, and the modifiers the value passes through. The YAML tab is the
+  document as written, and the Record shape tab draws the record the mapping renders.
 - **Templates**: browse the schemas OSDU publishes through a delivery flow's connection (a node runs the search and the
   fetch with the flow's credentials), look at one laid out as a template (every variable with its type, requiredness,
   relationships, unit context and OSDU's description), and save it; or import a bundled schema file. The saved
@@ -659,7 +662,6 @@ deleting a record, its submission, the cache version it was rendered against, or
 | `osdu.UpdateTag` | One cache change and how far its rollout has carried it. | Cache changes | **Never** by this tool. |
 | `osdu.Mapping`, `osdu.CacheDefinition`, `osdu.Interface` | The read model of what the repositories declare. | Documents | Maintained by the repository sync. An interface a repository no longer declares is kept, inactive, so its records still lead to their flow. |
 | `osdu.Template` | One saved schema version per kind and schema hash. | Saved versions | `DELETE /api/v1/delivery/templates` (author scope), refused with 409 while a synced mapping pins it. |
-| `osdu.RecordCount` | The indexed view the statistics are read from. | (a view) | Maintained by SQL Server inside every record write. |
 | `osdu.SchemaVersion` | One row: the module version, the last migration, when and by whom, and the minimum catalog migration. | Nothing | **Never.** |
 
 Two things grow without bound and have a path to prune: **attempts**, and the **captured log on an activity**. An
@@ -725,7 +727,7 @@ a pass that suddenly prunes far more than the last says a flow is retrying hard.
   one ahead of it stops the host by name. Restore the image that goes with the backup, or migrate forward. Never edit
   the version row.
 - **The catalog's own migration history.** `SchemaVersion.MinimumCatalogMigration` names the oldest SQLFlow catalog
-  migration the schema works with (`20260915212521_RunFanOutAndResult` for module version 1.7.0), and the hosts and
+  migration the schema works with (`20260915212521_RunFanOutAndResult` for module version 1.8.0), and the hosts and
   `sqlflow db status` refuse to run against a catalog older than it. A restore that pairs a new `osdu` schema with an
   old catalog is refused rather than half-working.
 - **`ALLOW_SNAPSHOT_ISOLATION` on the restored database.** The ledger reads under it. A restore from a backup keeps

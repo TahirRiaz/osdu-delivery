@@ -340,14 +340,10 @@ public class SqlServerLedgerTests
         Assert.Equal(2, stats.DeliveredLast24h);
         Assert.Equal(now.AddHours(-1), stats.LastDeliveredUtc);
 
-        // What the statistics read is the view, and it holds the flow's five records.
+        // The counts come from the records themselves: no maintained aggregate holds a second copy of them.
         await using var db = Database();
-        var viewed = await db.DeliveryRecordCounts
-            .FromSqlRaw("SELECT [FlowId], [Status], [LastVerifyOutcome], [DeliveredHour], [Records] FROM [osdu].[RecordCount] WITH (NOEXPAND)")
-            .Where(c => c.FlowId == _flow)
-            .ToListAsync();
-        Assert.Equal(5, viewed.Sum(c => c.Records));
-        Assert.Equal(4, viewed.Where(c => c.Status == "delivered").Sum(c => c.Records));
+        Assert.Equal(0L, await db.Database.SqlQuery<long>($"SELECT COUNT_BIG(*) AS [Value] FROM sys.views WHERE [name] = N'RecordCount' AND SCHEMA_NAME([schema_id]) = N'osdu'").SingleAsync());
+        Assert.Equal(5, await db.DeliveryRecords.CountAsync(r => r.FlowId == _flow));
     }
 
     [SkippableFact]

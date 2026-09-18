@@ -249,7 +249,7 @@ contributor declares reads of `record.object` and every dataset object so waves 
   - Migration history table: `[osdu].[__EFMigrationsHistory]`.
   - Entity class names stay `Delivery*` and move to namespace `SqlFlow.Delivery.Data`. Table names are unchanged apart from the schema.
 - **Initial migration.** One clean migration, `Migrations/<timestamp>_InitialOsduSchema.cs`, plus `.Designer.cs` and `OsduDbContextModelSnapshot.cs`. It creates every table below.
-  - It also creates the indexed view `[osdu].[RecordCount]` through `migrationBuilder.Sql` with the batches now in `DeliveryModel.IndexedViews`.
+  - It also created the indexed view `[osdu].[RecordCount]` through `migrationBuilder.Sql`. `RetireRecordCountView` (module version 1.8.0) removed it: SQL Server maintained it inside every record write, so a flow's nodes met on its few rows, and the statistics are counted from the records instead.
   - That replaces the runtime `CatalogIndexedView` creation and removes `IndexedViews` from the model class.
 - **SQLite tests.** They keep `EnsureCreated`, and the view is simply absent there, as today.
 

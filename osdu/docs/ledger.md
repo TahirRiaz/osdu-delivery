@@ -476,8 +476,10 @@ SQL Server:
   that grows with each try and differs between nodes; each is written so a second run does what the first would have.
   Anything else fails with the database's error.
 
-The statistics view is maintained in the transaction of every record write, so the writes of one flow meet on its few
-rows there. Each write holds them only until it commits, and every write above is short.
+Nothing else is maintained inside a record write. An indexed view once kept a flow's counts in a handful of rows and
+SQL Server maintained it in the transaction of every write to the record table, so every node delivering a flow met
+every other one on those rows: a serialization point that grew with the fleet rather than with the data. It is gone
+(`RetireRecordCountView`, module version 1.8.0), and the statistics are counted from the records.
 
 ## Indexes and search
 
@@ -499,7 +501,6 @@ Listings are index-backed so the GUI answers in milliseconds at any estate size:
 | `Record (CacheSetId, DeliveryKey, FlowId) WHERE CacheSetId IS NOT NULL` | a cache change's rollout, in key and then flow order from its cursor |
 | `Record (FlowId, SourceFileName, SourceRowNumber)`, global `(SourceFileName)` | "which records came from this file", inside one flow and across the estate |
 | `Record (FlowId, PlanRequestedUtc) WHERE PlanRequestedUtc IS NOT NULL` | the records the planner pages each run, so it stays as small as the backlog |
-| `RecordCount` indexed view `(FlowId, Status, LastVerifyOutcome, DeliveredHour)` | flow statistics, read from a few rows per flow (see [Statistics](#statistics)) |
 | `Attempt (FlowId, DeliveryKey, StartedUtc)`, `(SubmissionId, Outcome, Phase) INCLUDE (DeliveryKey)`, `(RunId, FlowId, DeliveryKey)`, `(StartedUtc)` | record timeline and the later attempt pruning looks for, the submission view and the counts a closing submission reads from the index alone, a run's records, pruning in start order |
 | `Activity (FlowId, StartedUtc)`, `(FlowId, DeliveryKey, StartedUtc)`, `(Kind, StartedUtc)`, `(Actor, StartedUtc)`, `(SubmissionId)`, `(RunId)` | the audit views and their filters, and one record's interventions |
 | `Run (SubmissionId)`, `Run (ResultSubmissionId)`, `Run (PipelineId, Operation)` | a submission's runs, a flow's runs by operation |
@@ -530,14 +531,15 @@ Every listing reads a bounded part of the ledger, however many records a flow ho
 ## Statistics
 
 A flow's statistics (`GET /api/v1/delivery/flows/{id}/stats`: the records by status, the drifted ones, the deliveries
-of the last 24 hours) are read on SQL Server from the `osdu.RecordCount` indexed view, which counts the flow's
-records by status, last verify outcome and the hour of their last delivery. SQL Server maintains the view in the
-transaction of every record write, so the counts are derived from the ledger, exact, and cost a few rows per flow at
-any volume. The deliveries of the last 24 hours add the view's whole hours inside the window to an index count of the
-part-hour the window opens in, which is exact to the tick and reads under an hour of deliveries. EF cannot declare an
-indexed view, so the module's migrations create it with SQL: the initial migration alongside the tables, and a later
-migration that changes the record table's key drops it first and creates it again after. The SQLite database the
-tests use has no indexed views and counts the records directly.
+of the last 24 hours) are counted from the records, through the record table's status indexes, on every database the
+module runs on. The counts are derived from the ledger and exact, as they have to be: nothing keeps a running total
+beside the records.
+
+They were read from an `osdu.RecordCount` indexed view until module version 1.8.0. It was maintained by SQL Server
+inside the transaction of every record write, which is what made it cheap to read and what made every node delivering
+one flow queue behind every other on the few rows holding that flow's counts. Reads then had to avoid those rows,
+which is why the ledger read under snapshot isolation and why the database had to allow it. Counting from the records
+costs a status index range per call and removes all of that.
 
 ## Retention
 
@@ -563,9 +565,6 @@ The ledger is the module's own schema: `osdu/src/SqlFlow.Delivery.Data/DeliveryE
 its EF migration, with its own history table (`[osdu].[__EFMigrationsHistory]`) and its own schema version
 (`[osdu].[SchemaVersion]`, which also records the minimum SQLFlow catalog migration it requires), so the ledger is
 upgraded in place without touching SQLFlow's catalog.
-
-The indexed view `[osdu].[RecordCount]` is created by the same migration as the tables it counts, and rebuilt by
-any migration that changes the record table's key.
 
 `LedgerPerFlow` (module version 1.2.0) keyed the record table by flow and delivery key. It gives every existing
 attempt the flow of its record (or of its submission, when the record is missing), claims the OSDU id of every record
@@ -609,6 +608,11 @@ waiters of an id when it lands. It adds a `Waiting` count to `osdu.Submission` a
 added empty, so an existing ledger takes the migration without a rewrite; the index is built over the record table,
 sized by its row count, and runs while no host is up.
 
+`RetireRecordCountView` (module version 1.8.0) drops the `osdu.RecordCount` indexed view. SQL Server maintained it
+inside the transaction of every write to the record table, and it grouped a flow into a handful of rows, so every node
+delivering that flow met every other one there. The statistics are counted from the records instead, and going back
+down recreates the view. It holds no data of its own, so nothing is lost either way.
+
 The ledger asks nothing of the database but its own schema. 1.5.0 to 1.7.0 read every listing, wait and claim in a
 snapshot transaction, so the database holding the `osdu` schema had to allow snapshot isolation, and one that did not
 stopped every node from claiming any work; that requirement is gone ([Many nodes, one table](#many-nodes-one-table)).
@@ -618,4 +622,4 @@ result sets, and a flow reads them as one instant unless it says otherwise ([doc
 The control plane applies pending migrations on start, and `sqlflow db migrate --db <ref>` does it by hand. Both
 hosts and `sqlflow db status` refuse to run against pending migrations, a database newer than the code, or a catalog
 older than the module requires, naming the migration or version. The SQLite database the tests use is created from
-the model directly and has no indexed view, so those suites count the records instead.
+the model directly, and counts the records exactly as SQL Server does.

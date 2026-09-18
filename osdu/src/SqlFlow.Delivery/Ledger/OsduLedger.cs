@@ -997,9 +997,7 @@ public sealed partial class OsduLedger : ILedger
     private static async Task<FlowStats> StatsAsync(OsduDbContext db, Guid flowId, DateTime nowUtc, CancellationToken ct)
     {
         var since = nowUtc.AddHours(-24);
-        var (byStatus, drifted, last24) = SqlServerLedgerBulk.Applies(db)
-            ? await CountFromViewAsync(db, flowId, since, ct).ConfigureAwait(false)
-            : await CountFromRecordsAsync(db, flowId, since, ct).ConfigureAwait(false);
+        var (byStatus, drifted, last24) = await CountFromRecordsAsync(db, flowId, since, ct).ConfigureAwait(false);
         var lastDelivered = await db.DeliveryRecords.Where(r => r.FlowId == flowId).MaxAsync(r => r.LastDeliveredUtc, ct).ConfigureAwait(false);
         var lastVerified = await db.DeliveryRecords.Where(r => r.FlowId == flowId).MaxAsync(r => r.LastVerifiedUtc, ct).ConfigureAwait(false);
         var submissions = await db.DeliverySubmissions.LongCountAsync(s => s.FlowId == flowId, ct).ConfigureAwait(false);
@@ -1024,45 +1022,11 @@ public sealed partial class OsduLedger : ILedger
         };
     }
 
-    private const string RecordCountSql =
-        "SELECT [FlowId], [Status], [LastVerifyOutcome], [DeliveredHour], [Records] FROM [" + DeliveryModel.SchemaName + "].[" + DeliveryModel.RecordCountView + "] WITH (NOEXPAND)";
-
     /// <summary>
-    /// A flow's counts from the <c>osdu.RecordCount</c> indexed view, which SQL Server maintains in the transaction of
-    /// every record write: a few rows per flow are read however many records the flow holds. The deliveries of the last
-    /// 24 hours are the view's whole hours inside the window plus an index count of the part-hour the window opens in,
-    /// so the count is exact to the tick and the index range it reads is under an hour of deliveries.
+    /// A flow's counts, from the records themselves through the status index. There is no maintained aggregate: one
+    /// kept the counts in a few rows per flow and was written inside the transaction of every record write, so every
+    /// node delivering a flow met every other one on those rows.
     /// </summary>
-    private static async Task<(Dictionary<string, long> ByStatus, long Drifted, long DeliveredSince)> CountFromViewAsync(
-        OsduDbContext db, Guid flowId, DateTime since, CancellationToken ct)
-    {
-        var counts = db.DeliveryRecordCounts.FromSqlRaw(RecordCountSql).Where(c => c.FlowId == flowId);
-        var byStatus = await counts
-            .GroupBy(c => c.Status)
-            .Select(g => new { Status = g.Key, Count = g.Sum(c => c.Records) })
-            .ToDictionaryAsync(c => c.Status, c => c.Count, StringComparer.Ordinal, ct)
-            .ConfigureAwait(false);
-        var drifted = await counts
-            .Where(c => c.LastVerifyOutcome == "drifted" || c.LastVerifyOutcome == "missing")
-            .SumAsync(c => c.Records, ct)
-            .ConfigureAwait(false);
-
-        var wholeHours = new DateTime(since.Ticks - (since.Ticks % TimeSpan.TicksPerHour), since.Kind);
-        if (wholeHours < since)
-        {
-            wholeHours = wholeHours.AddHours(1);
-        }
-
-        var inWholeHours = await counts.Where(c => c.DeliveredHour >= wholeHours).SumAsync(c => c.Records, ct).ConfigureAwait(false);
-        var inPartHour = wholeHours == since
-            ? 0
-            : await db.DeliveryRecords
-                .LongCountAsync(r => r.FlowId == flowId && r.LastDeliveredUtc >= since && r.LastDeliveredUtc < wholeHours, ct)
-                .ConfigureAwait(false);
-        return (byStatus, drifted, inWholeHours + inPartHour);
-    }
-
-    /// <summary>The same counts read from the records themselves, for a catalog without the indexed view (the SQLite test catalog).</summary>
     private static async Task<(Dictionary<string, long> ByStatus, long Drifted, long DeliveredSince)> CountFromRecordsAsync(
         OsduDbContext db, Guid flowId, DateTime since, CancellationToken ct)
     {

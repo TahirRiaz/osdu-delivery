@@ -294,26 +294,6 @@ public sealed class DeliveryAttempt
     public DateTime? SourceUpdatedUtc { get; set; }
 }
 
-/// <summary>
-/// One row of the <c>osdu.RecordCount</c> indexed view: how many of a flow's records share a status, a last verify
-/// outcome and the hour they were last delivered in. SQL Server maintains the view in the transaction of every record
-/// write, so a flow's statistics read a few rows however many records the flow holds. Read-only, created by the initial
-/// migration on SQL Server, and absent on SQLite.
-/// </summary>
-public sealed class DeliveryRecordCount
-{
-    public Guid FlowId { get; set; }
-
-    public string Status { get; set; } = string.Empty;
-
-    public string? LastVerifyOutcome { get; set; }
-
-    /// <summary>The hour <see cref="DeliveryRecord.LastDeliveredUtc"/> falls in, truncated; null for a record never delivered.</summary>
-    public DateTime? DeliveredHour { get; set; }
-
-    public long Records { get; set; }
-}
-
 /// <summary>One work batch of a submission: a file of rendered documents, claimed and drained as one unit.</summary>
 public sealed class DeliveryWorkBatch
 {
@@ -997,9 +977,6 @@ public static class DeliveryModel
 {
     public const string SchemaName = "osdu";
 
-    /// <summary>The indexed view that counts a flow's records (<see cref="DeliveryRecordCount"/>).</summary>
-    public const string RecordCountView = "RecordCount";
-
     /// <summary>
     /// The collation of the columns that key on an OSDU record id. OSDU ids are case-sensitive:
     /// <c>...UnitOfMeasure:ft</c> (the foot) and <c>...UnitOfMeasure:fT</c> (the femtotesla) are two records, and SQL
@@ -1138,15 +1115,6 @@ public static class DeliveryModel
             e.HasIndex(a => new { a.SubmissionId, a.Outcome, a.Phase }).IncludeProperties(a => a.DeliveryKey);
             // A run's records: the listing's run filter seeks the run and joins on the record without reading the attempt.
             e.HasIndex(a => new { a.RunId, a.FlowId, a.DeliveryKey });
-        });
-
-        modelBuilder.Entity<DeliveryRecordCount>(e =>
-        {
-            // Created by the initial migration on SQL Server: EF cannot declare an indexed view.
-            e.HasNoKey();
-            e.ToView(RecordCountView, SchemaName);
-            e.Property(c => c.Status).HasMaxLength(16);
-            e.Property(c => c.LastVerifyOutcome).HasMaxLength(16);
         });
 
         modelBuilder.Entity<DeliveryWorkBatch>(e =>
