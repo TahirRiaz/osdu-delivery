@@ -21,6 +21,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
 import { KindText } from "./KindText";
+import { MappingPropertiesView } from "./MappingPropertiesView";
 import { MappingShapeView } from "./MappingShapeView";
 
 const ALL = "all";
@@ -180,11 +181,19 @@ export default function DeliveryDocumentsPage() {
                   )}
                 </div>
                 {detail.mapping.message && <p className="text-[13px] text-destructive">{detail.mapping.message}</p>}
-                <Tabs defaultValue="yaml" className="min-h-0 flex-1">
+                <Tabs defaultValue="properties" className="min-h-0 flex-1">
                   <TabsList data-testid="delivery-mapping-tabs">
+                    <TabsTrigger value="properties" data-testid="delivery-mapping-tab-properties">Properties</TabsTrigger>
                     <TabsTrigger value="yaml" data-testid="delivery-mapping-tab-yaml">YAML</TabsTrigger>
                     <TabsTrigger value="shape" data-testid="delivery-mapping-tab-shape">Record shape</TabsTrigger>
                   </TabsList>
+                  <TabsContent value="properties" className="flex min-h-0 flex-col">
+                    <MappingPropertiesView
+                      yaml={detail.yaml}
+                      path={detail.mapping.relativePath}
+                      contentHash={detail.mapping.contentHash}
+                    />
+                  </TabsContent>
                   <TabsContent value="yaml" className="flex min-h-0 flex-col">
                     <CodeView value={detail.yaml} language="yaml" lsp={false} fill data-testid="delivery-mapping-yaml" />
                   </TabsContent>

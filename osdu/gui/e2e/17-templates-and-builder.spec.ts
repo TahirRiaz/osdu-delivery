@@ -384,6 +384,25 @@ test.describe.serial("templates and the mapping builder", () => {
     const detail = adminPage.getByTestId("delivery-mapping-detail");
     await expect(detail.getByTestId("delivery-mapping-template")).toContainText(WELLLOG_VERSION, { timeout: 15_000 });
 
+    // The properties open first: what fills every target, the cached record a cache entry is found by, and the modifiers.
+    const wellboreId = rowWith(adminPage, "delivery-mapping-properties-table", "delivery-mapping-property-osdu.data.WellboreID");
+    await expect(wellboreId).toContainText("cache.Wellbore.id", { timeout: 15_000 });
+    await expect(wellboreId).toContainText("cache.Wellbore.FacilityName = dataset.wellbore_uwi");
+    const logName = rowWith(adminPage, "delivery-mapping-properties-table", "delivery-mapping-property-osdu.data.Name");
+    await expect(logName).toContainText("dataset.log_name");
+    await expect(logName).toContainText("trim");
+    // A curve's business value is the one entry the mapping leaves optional, so a log without it still delivers.
+    const businessValue = rowWith(
+      adminPage, "delivery-mapping-properties-table", "delivery-mapping-property-osdu.data.Curves[].LogCurveBusinessValueID",
+    );
+    await expect(businessValue).toContainText("optional");
+
+    // The search answers what a source column reaches: the vertical measurement, and the unit it is found by.
+    await detail.getByTestId("delivery-mapping-properties-filter").fill("elev_meas_ref");
+    await expect(detail.getByTestId("delivery-mapping-properties-table").getByTestId("table-row")).toHaveCount(2);
+    await expect(detail.getByTestId("delivery-mapping-properties-count")).toContainText("2 of");
+    await detail.getByTestId("delivery-mapping-properties-filter-clear").click();
+
     // The record shape: the renderer's layout with placeholders, and the partition filled into the id once it is given.
     await detail.getByTestId("delivery-mapping-tab-shape").click();
     const shape = detail.getByTestId("delivery-mapping-shape-json");

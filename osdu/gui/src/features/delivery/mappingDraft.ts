@@ -1,8 +1,10 @@
 // The mapping builder's draft logic that needs no server: which inputs a variable takes, where an entry goes in the draft,
-// how a static value is edited, and the column names a draft already knows. The server writes the YAML and checks it.
+// how a static value is edited, how an entry reads as text, and the column names a draft already knows. The server writes
+// the YAML and checks it.
 
 import type {
-  DeliveryTemplateVariable, MappingDraft, MappingDraftEntry, MappingDraftInput, MappingDraftModifier, MappingDraftModifierKind,
+  DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftEntry, MappingDraftInput, MappingDraftModifier,
+  MappingDraftModifierKind,
 } from "../../api/delivery";
 
 /** The access and legal variables every record carries, which a mapping gives as static, non-empty lists of strings. */
@@ -158,6 +160,63 @@ export function entrySummary(entry: MappingDraftEntry): string {
       return `cache.${entry.cacheType ?? ""}.${entry.cacheField ?? ""}`;
     case "Static":
       return `static ${entry.static ?? ""}`;
+  }
+}
+
+/** Text a modifier or a findBy line quotes, so a separator that is a space or a comma is visible. */
+function quoted(text: string): string {
+  return text.includes("'") ? `"${text}"` : `'${text}'`;
+}
+
+/** One modifier in one short line, with the settings its kind carries: `split on ',', part 1`, `replace M to m`. */
+export function modifierText(modifier: MappingDraftModifier): string {
+  switch (modifier.kind) {
+    case "split":
+      return `split on ${quoted(modifier.separator ?? "")}, part ${modifier.part ?? 0}`;
+    case "replace":
+      return `replace ${(modifier.replacements ?? []).map((pair) => `${pair.from} to ${pair.to}`).join(", ")}`;
+    case "equals":
+      return `equals ${modifier.text ?? ""}`;
+    case "date":
+      return modifier.text === null || modifier.text === "" ? "date" : `date ${modifier.text}`;
+    case "number": {
+      const group = modifier.groupSeparator === null ? "" : `, group ${quoted(modifier.groupSeparator)}`;
+      return `number, decimal ${quoted(modifier.decimalSeparator ?? ".")}${group}`;
+    }
+    case "trim":
+    case "upper":
+    case "lower":
+      return modifier.kind;
+  }
+}
+
+/**
+ * The lookup an entry reads a cached record by, one line per findBy, as the YAML writes them:
+ * `cache.UnitOfMeasure.Code = dataset.elev_meas_ref`. Empty for an entry that reads no cache.
+ */
+export function lookupLines(entry: MappingDraftEntry): string[] {
+  if (entry.input !== "Cache") {
+    return [];
+  }
+
+  return entry.findBy.map((find) => {
+    const operand = find.literal !== null && find.literal.trim() !== "" ? quoted(find.literal) : `dataset.${find.column ?? ""}`;
+    return `cache.${entry.cacheType ?? ""}.${find.field} = ${operand}`;
+  });
+}
+
+/** An appliesWhen in one line, as the condition syntax reads it: `dataset.depth_coding is not empty`. */
+export function conditionText(condition: MappingDraftCondition): string {
+  const column = `dataset.${condition.column}`;
+  switch (condition.operator) {
+    case "isEmpty":
+      return `${column} is empty`;
+    case "isNotEmpty":
+      return `${column} is not empty`;
+    case "isNot":
+      return `${column} is not ${condition.text ?? ""}`;
+    case "is":
+      return `${column} is ${condition.text ?? ""}`;
   }
 }
 
