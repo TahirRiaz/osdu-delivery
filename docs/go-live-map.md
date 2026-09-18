@@ -146,13 +146,22 @@ What an operator needs once real data flows.
   ([../osdu/docs/operations.md](../osdu/docs/operations.md#metrics)).
 - [ ] **OPS-1b** Export the metrics and set the alerts: the exporter needs DEC-6 and the dependency approval of
   `osdu/docs/design.md` section 14.
-- [ ] **OPS-2** Health: `/health/live` and `/health/ready` exist; OSDU reachability is only the operator's probe.
-  Schedule the probe and alert on it.
-- [ ] **OPS-3** Availability: the control plane runs one replica (the dispatch lease). Decide whether that is acceptable
-  and write down the recovery.
+- [x] **OPS-2** Health: `/health/live` and `/health/ready` exist; OSDU reachability was only the operator's probe.
+  A scheduled probe now covers every active delivery flow, once per interface, through the same node operation the
+  operator's button queues; every probe is an activity in the audit trail and a count on `osdu_delivery.probes`, and
+  [../osdu/docs/operations.md](../osdu/docs/operations.md#watching-the-targets) says what to alert on. Off unless a
+  deployment turns it on, since a pass costs a live request per interface. Setting the alerts is OPS-1b's exporter.
+- [x] **OPS-3** Availability: the control plane runs one replica (the dispatch lease). What that costs, what breaks
+  while it is down, what a worker keeps doing, what the control plane heals by itself and what an operator then checks
+  are written down in [../osdu/docs/operations.md](../osdu/docs/operations.md#availability-and-recovery). Whether to
+  accept one replica or route the node protocol to the lease holder stays DEC-5.
 - [x] **OPS-4** Refresh the stale pages: the state in `osdu/README.md`, the deployables and size ceilings in
   `osdu/docs/operations.md`, `osdu/docs/osdu-testing.md` from the drop era.
-- [ ] **OPS-5** Set the ledger's retention and backup policy (attempt pruning exists).
+- [x] **OPS-5** Set the ledger's retention and backup policy: what every table of the `osdu` schema holds, what grows,
+  what may be pruned and what never may, what a backup must include and how to restore it
+  ([../osdu/docs/operations.md](../osdu/docs/operations.md#retention-and-backup),
+  [decisions/0005-ledger-retention.md](../osdu/docs/decisions/0005-ledger-retention.md)). The retention pass now also
+  clears the captured run log of settled activities, which was the schema's only column with no ceiling.
 
 Done when an on-call engineer can see, be alerted on and recover every failure the runbook lists.
 
@@ -218,3 +227,6 @@ Each step protects the ones after it. Live runs happen only with an approved tes
 | 2026-09-17 | BLD-4 (part) | | The sample estate gains documents (file route) and directional surveys (ddms route with bulk data) with their real captured schemas, `sqlflow template capture --out`, and `osdu/docs/test-matrix.md`. |
 | 2026-09-17 | BLD-3 | | Every view of a source is about one interface: the GUI's picker and interface listing, the trigger dialog's interfaces, `sqlflow records list|show`, the activities filter tested, and a source's lineage proven to carry every interface's reads and writes. |
 | 2026-09-17 | BLD-1 | `de40610` | The `etp` route: the module's own ETP 1.2 client (Avro codec from the pinned protocol, framing, session) and the route over it, against a fake ETP server on a real WebSocket. |
+| 2026-09-18 | LIVE-0, LIVE-1, BLD-4 | `d8403d1` | Wave one run against ADME 0.29, partition `dev`: the storage, file, manifest and ddms routes delivered and read back, verify and reconcile exercised, the refusals provoked, and all twelve ids removed with a 404 each. Six defects found and fixed (`2beff98`, `adf74d3`, `549580b`, `2a6b71e`, `a28a404`), three platform behaviours recorded. |
+| 2026-09-18 | OPS-3, OPS-5 | `7b7e131`, `8ce07bd` | What one control plane replica costs and how an operator recovers; the ledger's retention and backup policy, with the retention pass clearing the captured run log of settled activities. |
+| 2026-09-18 | OPS-2 | `cd6e13b` | A scheduled target probe: every active flow's OSDU asked whether it still answers, once per interface, recorded in the audit trail and counted, off unless a deployment asks for it. |
