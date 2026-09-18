@@ -11,7 +11,7 @@ running, is [Availability and recovery](#availability-and-recovery).
 
 ## Configuration
 
-Everything the platform already reads ([../environment-variables.md](../environment-variables.md)), plus:
+Everything the platform already reads ([environment-variables.md](environment-variables.md)), plus:
 
 | Setting | Where | Purpose |
 | --- | --- | --- |
@@ -362,7 +362,7 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 | `sqlflow template list \| show --kind <kind> [--version <v>] \| delete --kind <kind> --version <v>` | The saved templates, one laid out variable by variable, and deleting a version no synced mapping pins. Every `template` verb needs the catalog connection (`--db <ref>`). |
 | `sqlflow trigger --repo <r> --flow <f> [the same run options]` | Queue a run on the fleet. |
 
-See [../reference/cli/delivery.md](../reference/cli/delivery.md).
+See [reference/cli/delivery.md](reference/cli/delivery.md).
 
 ## Runbook
 

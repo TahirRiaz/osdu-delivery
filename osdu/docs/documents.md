@@ -1136,7 +1136,7 @@ declares, the versions they wrote and what each changed, the records of any vers
 sources a mapping reads them by, and the changes with their record counts and rollout progress. A cache flow's pipeline
 page lists the versions of the partition's cache on the Cache versions tab, and `sqlflow cache list <partition>` prints them. For work
 without an OSDU platform, `sqlflow cache import <cache.yaml> --from-dir <dir>` merges type files into the flow's
-partition as that flow's capture ([cli/delivery.md](../reference/cli/delivery.md#cache)).
+partition as that flow's capture ([cli/delivery.md](reference/cli/delivery.md#cache)).
 
 ### The partition cache
 
