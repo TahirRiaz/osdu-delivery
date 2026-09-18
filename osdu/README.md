@@ -38,7 +38,12 @@ SQLFlow's own pre-ingestion and ingestion flows replace the way data used to arr
 
 The module builds with SQLFlow and its suites pass: the delivery, ledger and route suites against fakes of the OSDU
 services, whose every request is checked against the service's pinned contract, and the SQL Server suites against a
-disposable database. The routes are tracked in [../docs/osdu-coverage-plan.md](../docs/osdu-coverage-plan.md). Nothing
-of this build has run against a live OSDU yet (stage 5 of [../docs/plan.md](../docs/plan.md)); what stands between it
-and production, and the order to close it in, is [../docs/go-live-map.md](../docs/go-live-map.md).
-[docs/osdu-testing.md](docs/osdu-testing.md) records the live runs of the previous implementation.
+disposable database. The routes are tracked in [../docs/osdu-coverage-plan.md](../docs/osdu-coverage-plan.md).
+
+This build has run against a live OSDU: on 2026-09-17 against Azure Data Manager for Energy 0.29, partition `dev`, the
+storage, file, manifest and ddms routes each delivered and were read back, verify and reconcile were exercised, and
+every id created was removed at the reversible scope. What that proved, what it did not, and the defects it found are
+in [docs/osdu-testing.md](docs/osdu-testing.md) section 0, which also keeps the record of the previous
+implementation's runs. What stands between this build and production, and the order to close it in, is
+[../docs/go-live-map.md](../docs/go-live-map.md): what is left there waits on a decision, or on services that
+deployment does not run.
