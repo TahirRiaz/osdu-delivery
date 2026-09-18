@@ -15,6 +15,9 @@ namespace SqlFlow.Delivery.Templates;
 /// </summary>
 public static class TemplateSources
 {
+    /// <summary>How deep <see cref="DeclaresData(JsonObject)"/> follows nested <c>allOf</c> branches.</summary>
+    private const int MaxAllOfDepth = 8;
+
     /// <summary>Bundles a kind's schema from a local checkout of the OSDU data definitions (the repository's <c>Generated</c> folder).</summary>
     public static async Task<SchemaSnapshot> FromDirectoryAsync(string dataRoot, string kind, TimeProvider time, CancellationToken ct = default)
     {
@@ -42,6 +45,19 @@ public static class TemplateSources
         ArgumentException.ThrowIfNullOrWhiteSpace(where);
         RequireKind(kind);
         return Validated(kind, ParseObject(json, where), capturedUtc, where);
+    }
+
+    /// <summary>
+    /// Whether the schema declares the <c>data</c> property every OSDU record carries, itself or in an <c>allOf</c> branch
+    /// it holds. This is the rule <see cref="Validated"/> enforces on a bundled schema, asked of a file that is not bundled
+    /// yet, so a branch that is a <c>$ref</c> to another file is left alone: a published record schema declares <c>data</c>
+    /// in its own file, and the files it refers to are what sits under <c>data</c>, not what declares it. The abstract
+    /// building blocks, the manifest and the content schemas declare none, so no template can be laid out from them.
+    /// </summary>
+    public static bool DeclaresData(JsonObject schema)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        return DeclaresData(schema, depth: 0);
     }
 
     /// <summary>
@@ -110,6 +126,18 @@ public static class TemplateSources
         {
             throw new FlowValidationException($"Kind '{kind}' must be 'authority:source:entityType:major.minor.patch'.");
         }
+    }
+
+    private static bool DeclaresData(JsonObject schema, int depth)
+    {
+        if (schema["properties"] is JsonObject properties && properties["data"] is not null)
+        {
+            return true;
+        }
+
+        // A published schema nests one allOf at most; the bound keeps a hand-made file from walking a deep tree of them.
+        return depth < MaxAllOfDepth && schema["allOf"] is JsonArray branches
+            && branches.OfType<JsonObject>().Any(branch => DeclaresData(branch, depth + 1));
     }
 
     private static async Task<JsonObject> ReadCheckoutFileAsync(string root, string path, CancellationToken ct)

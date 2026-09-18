@@ -92,8 +92,8 @@ public sealed class DataDefinitionsException : DeliveryException
 /// unpacked under <see cref="CacheDirectory"/>, and from then on every file of it is read from disk, across restarts. The
 /// release list is kept on disk beside it, read again from the repository when it is older than the freshness given, and
 /// on demand by <see cref="SyncAsync"/>. A release's <c>Generated/SchemaStatus.json</c> lists every kind it publishes, and
-/// a kind's schema is its file under <c>Generated</c>, bundled with every file it refers to exactly as a local checkout
-/// bundles (<see cref="TemplateSources.FromDirectoryAsync"/>).
+/// a kind's schema is the file under <c>Generated</c> that declares the kind, bundled with every file it refers to exactly
+/// as a local checkout bundles (<see cref="TemplateSources.FromDirectoryAsync"/>).
 /// </summary>
 public sealed class OsduDataDefinitions
 {
@@ -137,7 +137,7 @@ public sealed class OsduDataDefinitions
     private readonly TimeSpan _freshness;
     private readonly TimeSpan _downloadTimeout;
     private readonly TimeProvider _time;
-    private readonly ConcurrentDictionary<string, DataDefinitionsIndex> _indexes = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ReleaseSchemas> _indexes = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _files = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Lazy<Task>> _downloads = new(StringComparer.Ordinal);
     private ReleaseList? _releases;
@@ -274,6 +274,15 @@ public sealed class OsduDataDefinitions
 
     /// <summary>Every record schema the release publishes (the newest release when none is named).</summary>
     public async Task<DataDefinitionsIndex> IndexAsync(string? release, CancellationToken ct = default)
+        => (await ReadReleaseAsync(release, ct).ConfigureAwait(false)).Index;
+
+    /// <summary>
+    /// The release read whole and kept: every kind it holds a schema file for, and the record schemas among them, which is
+    /// what the index is. A template is laid out from a record schema, so a kind the release publishes but holds no record
+    /// schema for (the abstract building blocks, the manifest, and the content schemas, which describe what sits inside a
+    /// record rather than a record) is not in the index: it could never be browsed, generated from, or compared.
+    /// </summary>
+    private async Task<ReleaseSchemas> ReadReleaseAsync(string? release, CancellationToken ct)
     {
         var chosen = await ReleaseAsync(release, ct).ConfigureAwait(false);
         if (_indexes.TryGetValue(chosen.Commit, out var cached))
@@ -287,23 +296,18 @@ public sealed class OsduDataDefinitions
             throw new DataDefinitionsException($"{what} is not the object of kinds and their statuses a release index is.", notFound: false);
         }
 
+        var files = await ScanAsync(chosen, ct).ConfigureAwait(false);
         var schemas = new List<DataDefinitionsSchema>();
         foreach (var (kind, status) in statuses)
         {
-            if (!FlowMapper.IsRecordKind(kind))
+            if (!FlowMapper.IsRecordKind(kind) || !files.TryGetValue(kind, out var file) || !file.IsRecord)
             {
                 continue;
             }
 
-            // Abstract schemas and the manifest are the building blocks of records, not records a mapping fills.
             var parts = kind.Split(':');
-            if (!parts[2].Contains("--", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
             var text = status is JsonValue value && value.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s : null;
-            schemas.Add(new DataDefinitionsSchema(kind, parts[2], parts[3], text, SchemaBundler.KindPath(kind)));
+            schemas.Add(new DataDefinitionsSchema(kind, parts[2], parts[3], text, file.Path));
         }
 
         schemas.Sort((a, b) =>
@@ -312,14 +316,14 @@ public sealed class OsduDataDefinitions
             return byType != 0 ? byType : CompareVersions(b.Version, a.Version);
         });
 
-        var index = new DataDefinitionsIndex(chosen, schemas);
+        var read = new ReleaseSchemas(new DataDefinitionsIndex(chosen, schemas), files);
         if (_indexes.Count >= MaxCachedIndexes)
         {
             _indexes.Clear();
         }
 
-        _indexes[chosen.Commit] = index;
-        return index;
+        _indexes[chosen.Commit] = read;
+        return read;
     }
 
     /// <summary>
@@ -331,8 +335,9 @@ public sealed class OsduDataDefinitions
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
         var wanted = kind.Trim();
         TemplateSources.RequireKind(wanted);
-        var chosen = await ReleaseAsync(release, ct).ConfigureAwait(false);
-        var path = SchemaBundler.KindPath(wanted);
+        var read = await ReadReleaseAsync(release, ct).ConfigureAwait(false);
+        var chosen = read.Index.Release;
+        var path = PathOf(read, wanted);
         var files = new List<string>();
         var bundled = await SchemaBundler.BundleTreeAsync(path, (file, token) => ReadSchemaFileAsync(chosen, file, files, token), ct).ConfigureAwait(false);
 
@@ -360,8 +365,9 @@ public sealed class OsduDataDefinitions
             return new ImportedSchema(TemplateSources.Validated(wanted, root, _time.GetUtcNow(), where), null, []);
         }
 
-        var chosen = await ReleaseAsync(release, ct).ConfigureAwait(false);
-        var path = SchemaBundler.KindPath(wanted);
+        var read = await ReadReleaseAsync(release, ct).ConfigureAwait(false);
+        var chosen = read.Index.Release;
+        var path = PathOf(read, wanted);
         var files = new List<string>();
         var bundled = await SchemaBundler.BundleTreeAsync(path, root, (file, token) => ReadSchemaFileAsync(chosen, file, files, token), ct).ConfigureAwait(false);
         var schema = TemplateSources.Validated(wanted, bundled, _time.GetUtcNow(), $"{where} with its references from {chosen.Name}");
@@ -400,11 +406,11 @@ public sealed class OsduDataDefinitions
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
         var wanted = kind.Trim();
         TemplateSources.RequireKind(wanted);
-        var index = await IndexAsync(release, ct).ConfigureAwait(false);
-        var path = SchemaBundler.KindPath(wanted);
-        var text = await ReadFileAsync(index.Release, path, ct).ConfigureAwait(false);
-        var status = index.Schemas.FirstOrDefault(s => string.Equals(s.Kind, wanted, StringComparison.Ordinal))?.Status;
-        return new DataDefinitionsPublishedFile(index.Release, path, status, text);
+        var read = await ReadReleaseAsync(release, ct).ConfigureAwait(false);
+        var path = PathOf(read, wanted);
+        var text = await ReadFileAsync(read.Index.Release, path, ct).ConfigureAwait(false);
+        var status = read.Index.Schemas.FirstOrDefault(s => string.Equals(s.Kind, wanted, StringComparison.Ordinal))?.Status;
+        return new DataDefinitionsPublishedFile(read.Index.Release, path, status, text);
     }
 
     private async Task<IReadOnlyList<DataDefinitionsRelease>> ReleasesAsync(bool reread, CancellationToken ct)
@@ -590,6 +596,85 @@ public sealed class OsduDataDefinitions
         var what = $"{TreeRoot}/{file} at {release.Name}";
         return Parse(await ReadFileAsync(release, file, ct).ConfigureAwait(false), what) as JsonObject
             ?? throw new DataDefinitionsException($"{what} is not a JSON object.", notFound: false);
+    }
+
+    /// <summary>
+    /// Where the release keeps a kind's schema file, under <see cref="TreeRoot"/>. A kind the release holds no file for
+    /// keeps the path its entity group names, so the file that was looked for is the file the error names.
+    /// </summary>
+    private static string PathOf(ReleaseSchemas read, string kind)
+        => read.Files.TryGetValue(kind, out var file) ? file.Path : SchemaBundler.KindPath(kind);
+
+    /// <summary>
+    /// Every kind the release holds a schema file for: where the file sits under <see cref="TreeRoot"/>, and whether it is
+    /// a record schema a template can be laid out from. The tree, not the kind, says where a schema is: a release files the
+    /// generic kinds (<c>osdu:wks:dataset--GenericDataset:1.0.0</c> and its four siblings) under <c>manifest/</c>, where
+    /// their entity group would have them under <c>dataset/</c> and the rest. A file that is not valid JSON, is not an
+    /// object, or declares no kind of the shape a record carries is no kind's schema here and is left out, and so is one
+    /// larger than a schema file may be; asking for such a kind by name still reads its file and reports what is wrong
+    /// with it.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, TreeFile>> ScanAsync(DataDefinitionsRelease release, CancellationToken ct)
+    {
+        await EnsureLocalAsync(release, ct).ConfigureAwait(false);
+        var root = Path.Combine(ReleaseDirectory(release), TreeRoot);
+        var what = $"{TreeRoot} at {release.Name}";
+        List<string> paths;
+        try
+        {
+            paths = Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new DataDefinitionsException($"{what} could not be read from the local copy at {CacheDirectory}: {ex.Message}", notFound: false, ex);
+        }
+
+        // Ordinal order, so which file a kind is read from never depends on how a file system lists a folder.
+        paths.Sort(StringComparer.Ordinal);
+        var found = new Dictionary<string, TreeFile>(StringComparer.Ordinal);
+        foreach (var file in paths)
+        {
+            ct.ThrowIfCancellationRequested();
+            string text;
+            try
+            {
+                if (new FileInfo(file).Length > MaxFileBytes)
+                {
+                    continue;
+                }
+
+                text = (await File.ReadAllTextAsync(file, ct).ConfigureAwait(false)).TrimStart('﻿');
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new DataDefinitionsException($"{what} could not be read from the local copy at {CacheDirectory}: {ex.Message}", notFound: false, ex);
+            }
+
+            JsonNode? node;
+            try
+            {
+                node = JsonNode.Parse(text);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            if (node is not JsonObject schema || Text(schema, "x-osdu-schema-source") is not { } kind || !FlowMapper.IsRecordKind(kind))
+            {
+                continue;
+            }
+
+            var path = Path.GetRelativePath(root, file).Replace(Path.DirectorySeparatorChar, '/');
+
+            // Two files declaring one kind: the one the kind's own entity group names wins, and otherwise the first read.
+            if (!found.ContainsKey(kind) || string.Equals(path, SchemaBundler.KindPath(kind), StringComparison.Ordinal))
+            {
+                found[kind] = new TreeFile(path, TemplateSources.DeclaresData(schema));
+            }
+        }
+
+        return found;
     }
 
     /// <summary>Makes sure the release is in the local copy; readers of a release being downloaded wait for the one download.</summary>
@@ -901,6 +986,15 @@ public sealed class OsduDataDefinitions
 
     private static Uri WithTrailingSlash(Uri url)
         => url.AbsoluteUri.EndsWith('/') ? url : new Uri(url.AbsoluteUri + "/");
+
+    /// <summary>
+    /// A release as it has been read and kept: the record schemas it publishes, which is its index, and where every kind it
+    /// holds a schema file for keeps that file.
+    /// </summary>
+    private sealed record ReleaseSchemas(DataDefinitionsIndex Index, IReadOnlyDictionary<string, TreeFile> Files);
+
+    /// <summary>One kind's schema file in a release: its path under <see cref="TreeRoot"/>, and whether it is a record schema.</summary>
+    private sealed record TreeFile(string Path, bool IsRecord);
 
     private sealed record ReleaseList(IReadOnlyList<DataDefinitionsRelease> Releases, DateTimeOffset ReadUtc);
 

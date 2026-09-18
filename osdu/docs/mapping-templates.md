@@ -22,7 +22,12 @@ template:
 
 - **Browse OSDU.** The canonical OSDU schemas are the OSDU data definitions, the Open Group's public repository at
   <https://community.opengroup.org/osdu/data/data-definitions>. Pick one of its releases (a version tag; the newest is
-  the default) and search the record kinds it publishes, which its `Generated/SchemaStatus.json` lists. The control
+  the default) and search the record kinds it publishes. Its `Generated/SchemaStatus.json` lists every kind of the
+  release, and the list holds the record schemas among them, the kinds a template can be laid out from: the abstract
+  building blocks, the manifest and the content schemas (which describe what sits inside a record rather than a record)
+  declare no `data` and are left out. A kind's schema is the file that declares it in its `x-osdu-schema-source`,
+  wherever the release keeps it, which is not always the folder the kind's entity group names: the generic kinds
+  (`osdu:wks:dataset--GenericDataset:1.0.0` and its four siblings) live under `manifest/`. The control
   plane keeps a local copy of the repository on disk: the first time a release is read, its whole `Generated` folder is
   downloaded as one archive and unpacked, and every file of it is read from disk from then on, across restarts. The
   release list is kept beside it, read again when it is older than `ControlPlane:SchemaRepository:RefreshMinutes` (a

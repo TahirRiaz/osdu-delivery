@@ -21,13 +21,43 @@ public sealed class OsduDataDefinitionsTests : IDisposable
     private const string ReleaseCommit = "99f8fc88d8ad838b5738ac5ad92ac643538b5766";
     private const string NextCommit = "31f0000000000000000000000000000000000031";
     private const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
+    private const string GenericKind = "osdu:wks:dataset--GenericDataset:1.0.0";
+    private const string ContentKind = "osdu:wks:content--SeismicHistogram:1.0.0";
 
-    /// <summary>The v0.30.0 release's Generated folder, reduced to a Wellbore schema and the abstract schemas it refers to.</summary>
+    /// <summary>
+    /// The v0.30.0 release's Generated folder, reduced to a Wellbore schema and the abstract schemas it refers to, with the
+    /// three shapes a release's index holds besides a record schema of its own folder: a building block (the access control
+    /// list), a content schema, which describes what sits inside a record and declares no data of its own, and a generic
+    /// kind, whose file a release keeps under manifest/ rather than under the folder its entity group names.
+    /// </summary>
     private static readonly Dictionary<string, string> Tree = new(StringComparer.Ordinal)
     {
         ["SchemaStatus.json"] = """
             { "osdu:wks:AbstractAccessControlList:1.0.0": "PUBLISHED", "osdu:wks:master-data--Wellbore:1.0.0": "PUBLISHED",
-              "osdu:wks:master-data--Wellbore:1.3.0": "PUBLISHED", "osdu:wks:master-data--Well:1.2.0": "DEVELOPMENT", "osdu:wks:Manifest:1.0.0": "PUBLISHED" }
+              "osdu:wks:master-data--Wellbore:1.3.0": "PUBLISHED", "osdu:wks:master-data--Well:1.2.0": "DEVELOPMENT", "osdu:wks:Manifest:1.0.0": "PUBLISHED",
+              "osdu:wks:content--SeismicHistogram:1.0.0": "PUBLISHED", "osdu:wks:dataset--GenericDataset:1.0.0": "PUBLISHED" }
+            """,
+        ["master-data/Well.1.2.0.json"] = """
+            { "x-osdu-schema-source": "osdu:wks:master-data--Well:1.2.0", "type": "object",
+              "properties": { "data": { "$ref": "../abstract/AbstractFacility.1.1.0.json" } } }
+            """,
+        ["content/SeismicHistogram.1.0.0.json"] = """
+            { "x-osdu-schema-source": "osdu:wks:content--SeismicHistogram:1.0.0", "type": "object",
+              "allOf": [ { "$ref": "../abstract/AbstractContent.1.0.0.json" },
+                         { "type": "object", "properties": { "SeismicRecordID": { "type": "string" } } } ] }
+            """,
+        ["manifest/GenericDataset.1.0.0.json"] = """
+            { "x-osdu-schema-source": "osdu:wks:dataset--GenericDataset:1.0.0", "type": "object",
+              "properties": {
+                "acl": { "$ref": "../abstract/AbstractAccessControlList.1.0.0.json" },
+                "data": { "type": "object", "properties": { "Name": { "type": "string" } } } } }
+            """,
+        ["abstract/AbstractContent.1.0.0.json"] = """
+            { "type": "object", "properties": { "Name": { "type": "string" } } }
+            """,
+        ["master-data/Wellbore.1.0.0.json"] = """
+            { "x-osdu-schema-source": "osdu:wks:master-data--Wellbore:1.0.0", "type": "object",
+              "properties": { "data": { "$ref": "../abstract/AbstractFacility.1.1.0.json" } } }
             """,
         ["master-data/Wellbore.1.3.0.json"] = """
             { "$id": "https://schema.osdu.opengroup.org/json/master-data/Wellbore.1.3.0.json", "x-osdu-schema-source": "osdu:wks:master-data--Wellbore:1.3.0", "type": "object",
@@ -46,6 +76,10 @@ public sealed class OsduDataDefinitionsTests : IDisposable
     private static readonly Dictionary<string, string> OlderTree = new(StringComparer.Ordinal)
     {
         ["SchemaStatus.json"] = """{ "osdu:wks:master-data--Well:1.0.0": "DEVELOPMENT" }""",
+        ["master-data/Well.1.0.0.json"] = """
+            { "x-osdu-schema-source": "osdu:wks:master-data--Well:1.0.0", "type": "object",
+              "properties": { "data": { "type": "object", "properties": { "FacilityName": { "type": "string" } } } } }
+            """,
     };
 
     private readonly string _cache = Samples.NewTempDirectory();
@@ -91,9 +125,12 @@ public sealed class OsduDataDefinitionsTests : IDisposable
         var index = await definitions.IndexAsync(release: null);
         Assert.Equal("v0.30.0", index.Release.Name);
 
-        // Abstract building blocks and the manifest are not records a mapping fills, so the index leaves them out.
-        Assert.Equal(["osdu:wks:master-data--Well:1.2.0", "osdu:wks:master-data--Wellbore:1.3.0", "osdu:wks:master-data--Wellbore:1.0.0"], index.Schemas.Select(s => s.Kind));
-        var wellbore = index.Schemas[1];
+        // Only the kinds a template can be laid out from: the abstract building blocks, the manifest and the content
+        // schema are not records a mapping fills, and the generic kind is, at the file the release keeps it in.
+        Assert.Equal(
+            [GenericKind, "osdu:wks:master-data--Well:1.2.0", "osdu:wks:master-data--Wellbore:1.3.0", "osdu:wks:master-data--Wellbore:1.0.0"],
+            index.Schemas.Select(s => s.Kind));
+        var wellbore = index.Schemas.Single(s => s.Kind == WellboreKind);
         Assert.Equal(("master-data--Wellbore", "1.3.0", "PUBLISHED", "master-data/Wellbore.1.3.0.json"), (wellbore.EntityType, wellbore.Version, wellbore.Status, wellbore.Path));
         Assert.Equal(
             "https://community.opengroup.org/osdu/data/data-definitions/-/blob/v0.30.0/Generated/master-data/Wellbore.1.3.0.json",
@@ -132,6 +169,39 @@ public sealed class OsduDataDefinitionsTests : IDisposable
         }
 
         Assert.Equal(file.Schema.Version, (await TemplateSources.FromDirectoryAsync(root, WellboreKind, clock)).Version);
+    }
+
+    [Fact]
+    public async Task A_kind_is_read_from_the_file_that_declares_it_and_what_is_not_a_record_schema_is_left_out_of_the_index()
+    {
+        var repository = new Repository();
+        using var http = repository.Client();
+        var definitions = Definitions(http, Timeout.InfiniteTimeSpan);
+        var index = await definitions.IndexAsync("v0.30.0");
+
+        // A generic kind: its entity group says dataset/, and the release keeps it under manifest/, which is where it is read
+        // from, listed at, linked to, and bundled from.
+        var generic = index.Schemas.Single(s => s.Kind == GenericKind);
+        Assert.Equal("manifest/GenericDataset.1.0.0.json", generic.Path);
+        Assert.Equal(
+            "https://community.opengroup.org/osdu/data/data-definitions/-/blob/v0.30.0/Generated/manifest/GenericDataset.1.0.0.json",
+            definitions.FileWebUrl(index.Release, generic.Path).AbsoluteUri);
+
+        var file = await definitions.FetchAsync("v0.30.0", GenericKind);
+        Assert.Equal("manifest/GenericDataset.1.0.0.json", file.Path);
+        Assert.Equal(["manifest/GenericDataset.1.0.0.json", "abstract/AbstractAccessControlList.1.0.0.json"], file.Files);
+        Assert.NotNull(OsduTemplate.From(file.Schema).Find(TemplatePath.TryParse("osdu.data.Name", out var name, out _) ? name! : throw new InvalidOperationException()));
+
+        var published = await definitions.PublishedFileAsync("v0.30.0", GenericKind);
+        Assert.Equal(("manifest/GenericDataset.1.0.0.json", "PUBLISHED"), (published.Path, published.Status));
+
+        // A content schema describes what sits inside a record, so it is in no index and no template is laid out from it.
+        Assert.DoesNotContain(index.Schemas, s => s.Kind == ContentKind);
+        var content = await Assert.ThrowsAsync<DeliveryException>(() => definitions.FetchAsync("v0.30.0", ContentKind));
+        Assert.Contains(
+            "Generated/content/SeismicHistogram.1.0.0.json at v0.30.0: the schema declares no 'data' property",
+            content.Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]
