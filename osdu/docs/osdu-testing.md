@@ -38,7 +38,7 @@ Read with one info call per service, which is what decides which routes could be
 | --- | --- |
 | storage 0.29.4, search 0.29.2, legal 0.28.1, entitlements 0.29.3, schema 0.29.1, file 0.29.1, dataset 0.29.1, workflow 0.29.1 (with `Osdu_ingest` and `Osdu_ingest_by_reference` registered), indexer 0.29.1, notification 0.29.2, register 0.29.3, unit 0.29.2, CRS catalog and conversion 0.29.2, Wellbore DDMS 0.29 under `/api/os-wellbore-ddms`, Seismic Store v3, Rock and Fluid Samples DDMS 0.2.0 | Well Delivery DDMS, Reservoir DDMS (so no ETP), Production DSPDM, Production TimeSeries, Reservoir Management DDMS, External Data Services, secret, policy |
 
-The app registration used has no `users.datalake.admins` entitlement, so no purge was possible and none was wanted.
+The app registration the flows authenticate with does not hold `service.storage.admin`, so the `history` and `everything` scopes could not be used and were not wanted: this wave removes at the reversible scope only (the go-live map's LIVE-3 is what those scopes wait for).
 
 ### 0.2 The checks and what they proved
 
@@ -57,7 +57,7 @@ The app registration used has no `users.datalake.admins` entitlement, so no purg
 | 11 | Manifest route | Passed. The file was uploaded and registered, search saw the dataset after 20 seconds, one manifest was sent to `Osdu_ingest`, the run finished after three polls (58 seconds end to end), and the record was read back. |
 | 12 | Verify and drift | Passed, and found a deployment behaviour (0.4). Three well logs and the manifest document matched; both wellbores were reported drifted with the observed and expected versions. |
 | 13 | Reconcile | Passed. With `verify.reconcile: true` the two drifted records were queued, redelivered as new versions of the same ids, and a forced verify then answered 2 match, 0 drifted. |
-| 14 | Known state | Not applicable. The known-state operation this check was written for does not exist in this build ([design.md](design.md) section 7.5 records its removal); what it checked is now what verify does, which check 12 covers. |
+| 14 | Known state | Not applicable. The known-state operation this check was written for does not exist in this build ([design.md](design.md) section 6.7 records its removal); what it checked is now what verify does, which check 12 covers. |
 | 15 | Removal and proof | Passed. Twelve ids soft-deleted, each proven gone. |
 
 The ledger is the evidence, not this page: the wellbore flow's four submissions read
