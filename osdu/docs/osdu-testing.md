@@ -1,18 +1,109 @@
 # OSDU testing: what is done and what is missing
 
-The state of OSDU Delivery's testing against OSDU on 2026-09-12: what has been proven against a live OSDU platform,
-what the automated suites cover without one, which defects the live runs found and how they were fixed, and what is
-still missing. The runbook is in [operations.md](operations.md).
+What OSDU Delivery has been proven to do against a live OSDU platform, what the automated suites cover without one,
+which defects the live runs found and how they were fixed, and what is still missing. The runbook is in
+[operations.md](operations.md).
 
-> **This is a record of runs made on 2026-09-12**, against the implementation as it stood then, when a flow read a
-> prepared drop. It is kept as the evidence of what those runs proved about the protocols, change detection, verify,
-> the interventions and the recovery paths, none of which this change touches. The input is not the same: data now
-> arrives through SQLFlow's pre-ingestion and ingestion flows and the OSDU flow reads the ingestion tables, so the
-> drop, drop-off and known-state mechanics named below no longer exist ([architecture.md](architecture.md)), and
-> neither does manual submission (records sent in the request, sections 2.8 to 2.10): records delivered by hand are files
-> placed where a pre flow reads them ([design.md](design.md) section 3.3). The live estate has to be driven again on the
-> new path before this page describes the current build. Where the current build stands, route by route, and the live
-> runs it still needs are in [the go-live map](../../docs/go-live-map.md).
+Two live waves are recorded here. **Section 0 is the wave of 2026-09-17 against the current build**, where data reaches
+OSDU through SQLFlow's pre-ingestion and ingestion flows. **Sections 1 to 6 are the wave of 2026-09-12**, against the
+implementation as it stood then, when a flow read a prepared drop.
+
+> **Sections 1 to 6 are a record of runs made on 2026-09-12.** They are kept as the evidence of what those runs proved
+> about the protocols, change detection, verify, the interventions and the recovery paths. The input is not the same:
+> the drop, drop-off and known-state mechanics named below no longer exist ([architecture.md](architecture.md)), and
+> neither does manual submission (records sent in the request, sections 2.8 to 2.10): records delivered by hand are
+> files placed where a pre flow reads them ([design.md](design.md) section 3.3). Where the current build stands, route
+> by route, is in [the go-live map](../../docs/go-live-map.md).
+
+## 0. The live wave of 2026-09-17, on the current build
+
+The current build, where data reaches OSDU through SQLFlow's pre-ingestion and ingestion flows, was run against a live
+platform on 2026-09-17 (UTC): **Azure Data Manager for Energy, release 0.29, data partition `dev`**. The checks, the
+ids each would create and how each would be removed were written out in [live-wave-one.md](../../docs/live-wave-one.md)
+and approved before anything was sent. The estate is the sample estate (`osdu/samples/recall-welllog`) rebuilt into the
+git-ignored `.sqlflow/live-e2e/repo` with the deployment's own partition, access groups and legal tag, and every record
+it wrote carried `tags.RunMarker = ODLIVE20260918`.
+
+Everything it created was removed the same night: twelve records, each soft-deleted through
+`POST /api/storage/v2/records/{id}:delete` (204) with a GET that answered 404, then a search of the partition for the
+run marker returning 0 results, and a forced verify of every flow reporting its records missing. Nothing was purged.
+The ids, their history and what a soft delete leaves behind are in `.sqlflow/live-e2e/test-data.md`; every call is in
+`.sqlflow/live-e2e/actions.log`.
+
+### 0.1 What the deployment serves
+
+Read with one info call per service, which is what decides which routes could be exercised at all:
+
+| Serving | Not serving (404) |
+| --- | --- |
+| storage 0.29.4, search 0.29.2, legal 0.28.1, entitlements 0.29.3, schema 0.29.1, file 0.29.1, dataset 0.29.1, workflow 0.29.1 (with `Osdu_ingest` and `Osdu_ingest_by_reference` registered), indexer 0.29.1, notification 0.29.2, register 0.29.3, unit 0.29.2, CRS catalog and conversion 0.29.2, Wellbore DDMS 0.29 under `/api/os-wellbore-ddms`, Seismic Store v3, Rock and Fluid Samples DDMS 0.2.0 | Well Delivery DDMS, Reservoir DDMS (so no ETP), Production DSPDM, Production TimeSeries, Reservoir Management DDMS, External Data Services, secret, policy |
+
+The app registration used has no `users.datalake.admins` entitlement, so no purge was possible and none was wanted.
+
+### 0.2 The checks and what they proved
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | Reachability, per flow | Passed. Every target probe answered. |
+| 2 | Cache refresh from the partition | Passed after a fix (0.3). The cache flow captured the reference types the mappings read. |
+| 3 | Storage route, first delivery | Passed. Two `master-data--Wellbore` records written in one batch. |
+| 4 | Storage route, unchanged re-run | Passed. Nothing sent. |
+| 5 | Storage route, one revision | Passed. One record's description changed: that record sent, the other skipped. |
+| 6 | DDMS route, metadata and bulk | Passed after a fix (0.3, twice). Three well logs in the Wellbore DDMS, each with its parquet chunk; the bulk read back with the fixture's own values (9, 5 and 4 rows, indexed by MD). |
+| 7 | DDMS route, payload only | Passed. New curve values on one log: that log alone was sent, as a new bulk version of the same id, and the service returned the new values. |
+| 8 | DDMS route, a session | Passed after a fix (0.3). One log's bulk as two chunks (5 and 4 rows), committed as one version through a session, and the committed-rows check confirmed nine rows. |
+| 9 | DDMS route, refusals | Passed. Two chunks numbering rows from zero were held in 0.07s with no call; two chunks carrying the depth as the frame index were held in 0.08s with no call; a chunk whose depth repeated a value was refused by the service ("The reference curve 'MD' should not contains duplicated values.") and the record held with that message. |
+| 10 | File route, four stages | Passed after a fix (0.3). Two documents: each file uploaded, registered as a `dataset--File.Generic`, then the record naming it; an unchanged re-run sent nothing; a description-only change took a new record version and registered no dataset; a changed file was uploaded and registered as a new dataset. |
+| 11 | Manifest route | Passed. The file was uploaded and registered, search saw the dataset after 20 seconds, one manifest was sent to `Osdu_ingest`, the run finished after three polls (58 seconds end to end), and the record was read back. |
+| 12 | Verify and drift | Passed, and found a deployment behaviour (0.4). Three well logs and the manifest document matched; both wellbores were reported drifted with the observed and expected versions. |
+| 13 | Reconcile | Passed. With `verify.reconcile: true` the two drifted records were queued, redelivered as new versions of the same ids, and a forced verify then answered 2 match, 0 drifted. |
+| 14 | Known state | Not applicable. The known-state operation this check was written for does not exist in this build ([design.md](design.md) section 7.5 records its removal); what it checked is now what verify does, which check 12 covers. |
+| 15 | Removal and proof | Passed. Twelve ids soft-deleted, each proven gone. |
+
+Two route types were not exercised: the `dataset` route (no sample estate delivers through the Dataset service) and the
+`workflow`, `dspdm` and `etp` routes (this deployment serves none of the services behind them). The trajectory
+interface of the sample source was not delivered either: its ids were outside the approved list.
+
+### 0.3 The defects the wave found, and what was done about them
+
+Each is fixed, with the suites that now hold it.
+
+| What broke | Cause | Fix |
+| --- | --- | --- |
+| The cache capture kept only the first page of every reference type | A search cursor is documented as null when the paging is done; this deployment answers with the same cursor handle while the pages behind it advance and then run dry, so a capture that stopped on a repeated cursor stopped immediately | A capture ends a type when its pages stop bringing anything new (`SnapshotBuilder`, commit "Take a cache capture to the end of a type on a service that keeps its cursor") |
+| Every well log's bulk upload answered `422 Bulk error: Unprocessable data` | The sample chunks carried a partial pandas entry (`{"index_columns":["MD"]}` with no column descriptors). A bulk service reads a chunk as a dataframe, and that entry raises in the reader before any row is read | The sample estate and the fixtures write the whole entry, and the preflight now holds a chunk a dataframe reader cannot read, naming what is missing (commit "Hold a bulk chunk a dataframe reader cannot read, and write chunks it can") |
+| A session of two chunks uploaded both and then failed the commit with `422 reference curve 'MD' do not cover the entire bulk` | A session's commit requires the reference curve to be one of the bulk's columns; a chunk carrying it as the dataframe's row index is accepted and then refused at commit. A whole-bulk write of the same file is taken, so the rule is the session's alone. It is in neither the pinned contract nor the service's source | The preflight holds such a record before it opens a session, and the integration notes carry the observation (commit "Hold a session whose chunks do not carry the reference curve as a column") |
+| The well logs could not be delivered at all at first | The flow named no DDMS root, and this deployment serves the Wellbore DDMS under `/api/os-wellbore-ddms` | The live estate's flow names the root. Nothing in the product changed: a deployment's roots belong in its documents |
+| Held records could not be sent again from a node | The GUI could release held records; the CLI could not | `sqlflow records release` (commit "Release a flow's blocked records from the command line") |
+| The source document's wellbores and welllogs interfaces held every record on a preflight error | Both named mappings that repeat the rows of a child dataset and declared no datasets | Both interfaces declare their dataset, and a suite now checks every committed delivery document of the estate against the mapping it names (commit "Declare the child datasets the sample source's mappings repeat") |
+
+### 0.4 What the platform does that an operator has to know
+
+- **It enriches master data after a write.** Within a second of our write, both wellbore records took another version,
+  written by the platform's own identity, adding `data.TechnicalAssuranceTypeID` (a
+  `reference-data--TechnicalAssuranceType:Unsuitable:` reference). A verify then reports drift on every delivered
+  master-data record, correctly: the version really moved and the record's content really changed. Naming that key
+  under the flow's `protocolOptions.preserveDataKeys` carries the platform's value into every update, and a verify then
+  reads it as another system's write rather than drift. The live estate's wellbore flow now does this.
+- **A soft delete is enough, and it is visible immediately.** Each `:delete` answered 204 and the following GET
+  answered 404, with no wait. The search index dropped the records too: a query for the run marker returned nothing
+  minutes later.
+- **The Wellbore DDMS keeps bulk data behind a logically deleted record.** The three well logs' curve data is still in
+  the DDMS after their records were soft-deleted, as the inventory records.
+- **`Osdu_ingest` runs in about half a minute** on this deployment for a one-record manifest, after search takes about
+  twenty seconds to see the registered dataset.
+
+### 0.5 What this wave does not prove
+
+- That the `dataset`, `workflow`, `dspdm` and `etp` routes work against a live service. The first has no sample estate;
+  the other three have no service on this deployment. They stand on their suites and the pinned contracts.
+- That the other DDMS shapes (Well Delivery, RAFS, Seismic Store, Reservoir Management, the production historian)
+  behave as their contracts say. Seismic Store and RAFS are served here and were not exercised: no sample estate
+  delivers to them, and their ids were not in the approved list.
+- Anything about scale. The wave moved twelve records and a few kilobytes of bulk data. What the engine does at volume
+  is covered by the SQL Server suites, not by this.
+- The deployed hosting: this wave was driven by the CLI host from a workstation, not by the container images.
+
 
 ## 1. How it is tested
 
@@ -223,6 +314,10 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 | 19 | A registration whose answer never reached the ledger left a dataset record with nothing referencing it, because the step was marked only after the service answered. | The step is marked with its landing-zone path before the request, and a try that finds the mark asks which dataset that path became and takes it over. | 215bee2 |
 
 ## 4. What is missing
+
+> As of the 2026-09-12 wave. What the current build still lacks live proof for is in section 0.5, and some of the rows
+> below have since been answered: the preflight now checks every chunk's columns against the record's declared curves,
+> and a session of several chunks was committed live on 2026-09-17.
 
 ### 4.1 Needs access or a decision
 

@@ -14,7 +14,17 @@ Two kinds of proof appear here, and they are not the same thing:
   against a real SQL Server, not a stub.
 
 Nothing here proves that a deployment's own OSDU agrees with its contract. That is what the live waves are for
-(`docs/go-live-map.md`, LIVE-1 to LIVE-5).
+(`docs/go-live-map.md`, LIVE-1 to LIVE-5). Wave one ran on 2026-09-17 against ADME 0.29: the storage, file, manifest
+and ddms routes each delivered live and were read back ([osdu-testing.md](osdu-testing.md) section 0). The rows below
+say what the suites prove; the live column says which of them a live platform has also answered for.
+
+| Route | Proven live | Where |
+| --- | --- | --- |
+| `storage` | Yes, on 2026-09-17 | Two wellbores, a revision, a verify, a reconcile |
+| `file` | Yes, on 2026-09-17 | Two documents, their datasets, a metadata-only change and a payload change |
+| `manifest` | Yes, on 2026-09-17 | One document through `Osdu_ingest` |
+| `ddms` (`wellboreDdmsV3`, well logs) | Yes, on 2026-09-17 | Three logs with bulk data, a bulk-only change, a two-chunk session, three refusals |
+| `dataset`, `workflow`, `dspdm`, `etp`, the other DDMS shapes | No | No sample estate, or the deployment serves no such service |
 
 ## Route types
 

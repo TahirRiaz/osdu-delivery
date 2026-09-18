@@ -41,6 +41,7 @@
     <Compile Include="..\SqlFlow.Delivery.Tests\TestSupport.cs" Link="Fixtures\TestSupport.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\MemoryIngestionTables.cs" Link="Fixtures\MemoryIngestionTables.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\SampleWellLogs.cs" Link="Fixtures\SampleWellLogs.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\PandasMetadata.cs" Link="Fixtures\PandasMetadata.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\SampleEstate.cs" Link="Fixtures\SampleEstate.cs" />
   </ItemGroup>
 

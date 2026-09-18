@@ -54,11 +54,20 @@ The five workstreams run side by side; the order of work below says what goes fi
 The largest gap. The suites prove the routes do what their contracts and the services' code say; only a live run proves
 the deployment agrees. Every live run needs a test list approved first (`CLAUDE.md`).
 
-- [ ] **LIVE-0** Confirm the deployment facts the briefs leave open: which DDMSs run on the target (DSPDM, Reservoir
+- [x] **LIVE-0** Confirm the deployment facts the briefs leave open: which DDMSs run on the target (DSPDM, Reservoir
   Management, Seismic v3 or v4, Well Delivery), their gateway paths, whether Airflow's REST API is reachable, which
   workflows each partition registers, and what the Register service lists.
-- [ ] **LIVE-1** Wave one: re-verify the four routes the previous build proved (storage, file, manifest inline, Wellbore
+  Done on 2026-09-17 against ADME 0.29, partition `dev`: the platform services, the Wellbore DDMS under
+  `/api/os-wellbore-ddms`, Seismic Store v3 and the Rock and Fluid Samples DDMS answer; Well Delivery, Reservoir
+  (so ETP), DSPDM, Production TimeSeries, Reservoir Management, EDS, secret and policy answer 404. The workflow service
+  registers `Osdu_ingest` and `Osdu_ingest_by_reference`
+  ([osdu-testing.md](../osdu/docs/osdu-testing.md) section 0.1).
+- [x] **LIVE-1** Wave one: re-verify the four routes the previous build proved (storage, file, manifest inline, Wellbore
   DDMS well logs) on the current build.
+  Done on 2026-09-17: checks 1 to 13 and 15 passed (check 14 covered a known-state operation this build does not have),
+  the storage, file, manifest and ddms routes each delivered and read back, and all twelve ids were soft-deleted with a
+  404 each. It found six defects, all fixed, and three deployment behaviours worth knowing
+  ([osdu-testing.md](../osdu/docs/osdu-testing.md) section 0).
 - [ ] **LIVE-2** Wave two: every other route and shape, EDS, DSPDM and ETP, each following its cleanup decision.
 - [ ] **LIVE-3** The `history` and `everything` scopes, which never ran live: the app registration lacks
   `service.storage.admin`.
@@ -84,10 +93,11 @@ Closes coverage plan stages 7 to 10.
   history from the CLI. The GUI names the interface every view is about (a multi-interface source's Records and
   Submissions tabs could not be opened before), lists a source's interfaces in run order, and lets a run name the
   interfaces it takes; `sqlflow records list|show` reads the ledger and a record's every try from a terminal.
-- [ ] **BLD-4** Stage 10: a sample estate across the kinds matrix, the test matrix, the docs. The estate now carries a
+- [x] **BLD-4** Stage 10: a sample estate across the kinds matrix, the test matrix, the docs. The estate carries a
   source of four interfaces over three route types (storage, ddms with bulk data, file) and four kinds, the schemas
   captured from the OSDU data definitions, and `osdu/docs/test-matrix.md` says what every suite proves and what none
-  does. What remains is the live verification and its report, which LIVE-1 blocks.
+  does. The live verification ran on 2026-09-17 (LIVE-1) and its report is
+  [osdu-testing.md](../osdu/docs/osdu-testing.md) section 0.
 
 Done when the coverage plan marks stages 7 to 10 done, each with its tests.
 
