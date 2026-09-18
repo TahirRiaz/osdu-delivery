@@ -147,11 +147,16 @@ interface SidePickerProps {
   testId: string;
 }
 
+/**
+ * One side of the comparison: the release, and the version of the kind in it. Each picker says which of the two it is,
+ * because the release and the schema version both look like a dotted version and two sides on one release would
+ * otherwise read as the same schema.
+ */
 function SidePicker({ caption, side, kind, releases, versions, loading, onChange, testId }: SidePickerProps) {
   return (
-    <div className="flex min-w-0 flex-col gap-1.5">
-      <Label className="text-xs font-normal text-muted-foreground">{caption}</Label>
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-end gap-2">
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <Label className="text-xs font-normal text-muted-foreground">{`${caption} release`}</Label>
         <Select value={side.release} onValueChange={(release) => onChange({ release, kind: side.kind })}>
           <SelectTrigger size="sm" className="h-8 w-32" data-testid={`${testId}-release`} aria-label={`${caption} release`}>
             <SelectValue placeholder={side.release} />
@@ -162,8 +167,11 @@ function SidePicker({ caption, side, kind, releases, versions, loading, onChange
             ))}
           </SelectContent>
         </Select>
+      </div>
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <Label className="text-xs font-normal text-muted-foreground">{`${caption} schema version`}</Label>
         <Select value={kind ?? ""} onValueChange={(next) => onChange({ release: side.release, kind: next })} disabled={versions.length === 0}>
-          <SelectTrigger size="sm" className="h-8 w-44" data-testid={`${testId}-version`} aria-label={`${caption} version`}>
+          <SelectTrigger size="sm" className="h-8 w-44" data-testid={`${testId}-version`} aria-label={`${caption} schema version`}>
             <SelectValue placeholder={loading ? "Loading versions" : "Not in this release"} />
           </SelectTrigger>
           <SelectContent>
@@ -180,6 +188,28 @@ function SidePicker({ caption, side, kind, releases, versions, loading, onChange
       </div>
     </div>
   );
+}
+
+/**
+ * What the two sides actually are, in words, so a comparison is never read as one thing when it is another: the axis
+ * that differs is the one the sentence leads with, and two sides that are the same version of the same release say so.
+ */
+function comparingText(fromRelease: string, fromVersion: string, toRelease: string, toVersion: string): string {
+  const sameRelease = fromRelease === toRelease;
+  const sameVersion = fromVersion === toVersion;
+  if (sameRelease && sameVersion) {
+    return `Both sides are schema version ${fromVersion} from release ${fromRelease}.`;
+  }
+
+  if (sameRelease) {
+    return `Comparing schema versions ${fromVersion} and ${toVersion}, both from release ${fromRelease}.`;
+  }
+
+  if (sameVersion) {
+    return `Comparing schema version ${fromVersion} as releases ${fromRelease} and ${toRelease} publish it.`;
+  }
+
+  return `Comparing schema version ${fromVersion} from release ${fromRelease} with ${toVersion} from release ${toRelease}.`;
 }
 
 /** A removed stretch struck through on red, an added one on green, and unchanged text quiet so the edits carry the eye. */
@@ -533,6 +563,8 @@ export function TemplateCompareSheet({ start, onClose }: TemplateCompareSheetPro
   };
 
   const releaseList = releases.data?.releases ?? [];
+  const fromVersion = left.versions.find((schema) => schema.kind === left.kind)?.version ?? null;
+  const toVersion = right.versions.find((schema) => schema.kind === right.kind)?.version ?? null;
   const data = comparison.data;
   // A shared schema picked for another pair of versions falls back to the kind's own file when this pair has no such difference.
   const shownShared = data?.referencedFiles.find((file) => file.name === pickedFile) ?? null;
@@ -550,7 +582,7 @@ export function TemplateCompareSheet({ start, onClose }: TemplateCompareSheetPro
           </SheetDescription>
         </SheetHeader>
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
-          <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-wrap items-end gap-4">
             <SidePicker
               caption="From"
               side={{ release: from.release, kind: left.kind ?? from.kind }}
@@ -581,6 +613,12 @@ export function TemplateCompareSheet({ start, onClose }: TemplateCompareSheetPro
               testId="templates-compare-to"
             />
           </div>
+
+          {fromVersion !== null && toVersion !== null && (
+            <p className="text-[13px] text-muted-foreground" data-testid="templates-compare-comparing">
+              {comparingText(from.release, fromVersion, to.release, toVersion)}
+            </p>
+          )}
 
           {releases.isError && <ProblemView error={releases.error} testId="templates-compare-error" />}
           {left.index.isError && <ProblemView error={left.index.error} testId="templates-compare-error" />}

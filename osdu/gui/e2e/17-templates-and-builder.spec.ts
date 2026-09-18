@@ -273,6 +273,14 @@ test.describe.serial("templates and the mapping builder", () => {
       await expect(sheet.getByTestId("templates-compare-from-version")).toContainText("1.0.0", { timeout: 15_000 });
       await expect(sheet.getByTestId("templates-compare-to-version")).toContainText("1.3.0");
 
+      // Each picker says whether it is the release or the schema version, and a line says what the two sides are, so
+      // two versions of one release are never read as the same schema.
+      await expect(sheet.getByText("From release", { exact: true })).toBeVisible();
+      await expect(sheet.getByText("From schema version", { exact: true })).toBeVisible();
+      // The release the compare opened on is whichever the data definitions publish newest, so only its shape is asserted.
+      await expect(sheet.getByTestId("templates-compare-comparing"))
+        .toHaveText(/^Comparing schema versions 1\.0\.0 and 1\.3\.0, both from release v[\d.]+\.$/);
+
       // The verdict first, then every variable that differs, with what it means for a mapping of the older version.
       await expect(sheet.getByTestId("templates-compare-count-breaking")).toHaveText("1 breaking", { timeout: 15_000 });
       await expect(sheet.getByTestId("templates-compare-count-additive")).toHaveText("1 additive");
