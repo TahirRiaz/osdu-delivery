@@ -299,8 +299,14 @@ mirrors.
 Done when the full suites pass, the live verification report lists what was verified live and what against contracts
 only, and every created OSDU id is removed.
 
-Status: the samples and the documentation are done; the live verification is not, and cannot start until a test list is
-approved (docs/live-wave-one.md, which lists every check, what it creates and how each id is removed).
+Status: done. The samples and the documentation were done first; the live verification ran on 2026-09-17 against the
+approved list (docs/live-wave-one.md) on Azure Data Manager for Energy 0.29, partition `dev`. The storage, file,
+manifest and ddms routes each delivered live and were read back, verify and reconcile were exercised, the refusals were
+provoked, and all twelve ids created were removed at the reversible scope with a GET answering 404 for each. The report
+is `osdu/docs/osdu-testing.md` section 0: what it proved, the six defects it found and what was done about them, three
+platform behaviours an operator has to know, and what it does not prove. The routes no live service on that deployment
+could answer for (`dataset`, `workflow`, `dspdm`, `etp`) stand on their suites and the pinned contracts, and the matrix
+says so.
 
 The sample estate is a runnable estate, not a fixture: its pre and ingestion flows load its files into SQL Server and
 its delivery flows plan and render against real templates and a real cache version. It now carries the shape a source
