@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using SqlFlow.Delivery.Telemetry;
 using SqlFlow.Cli.Hosting;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Engine;
@@ -106,5 +107,13 @@ public sealed class DeliveryCliModule : ICliModule
         services.Services.AddDeliveryKind();
         services.Services.AddDeliveryLedger();
         services.Services.AddScoped(provider => provider.GetRequiredService<Microsoft.EntityFrameworkCore.IDbContextFactory<OsduDbContext>>().CreateDbContext());
+
+        // A node runs for as long as the pod does, so its metrics are worth exporting; a one-shot command ends before
+        // the first export and exports nothing by design. The node takes these settings from its environment, as it
+        // takes every other one, and the provider lives with the container and flushes when it stops.
+        if (services.Scope == CliServiceScope.Worker)
+        {
+            services.Services.AddNodeMetricsExport(TelemetryOptions.FromEnvironment(Environment.GetEnvironmentVariable));
+        }
     }
 }

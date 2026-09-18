@@ -29,6 +29,7 @@
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Lineage\SqlFlow.Lineage.csproj" />
     <ProjectReference Include="..\..\src\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
     <ProjectReference Include="..\..\src\SqlFlow.Delivery.Data\SqlFlow.Delivery.Data.csproj" />
+    <ProjectReference Include="..\..\src\SqlFlow.Delivery.Telemetry\SqlFlow.Delivery.Telemetry.csproj" />
   </ItemGroup>
 
   <ItemGroup>

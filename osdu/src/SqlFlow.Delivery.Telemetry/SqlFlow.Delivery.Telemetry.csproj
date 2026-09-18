@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>SqlFlow.Delivery.Telemetry</RootNamespace>
+    <Description>Where OSDU Delivery's metrics go: the OpenTelemetry export a deployment turns on, to any OTLP backend, to Azure Monitor, or to the console.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The exporters a deployment chooses between. OTLP is the standard one, and reaches any backend that speaks it
+         (a collector, Grafana, Datadog, Honeycomb, Dynatrace); Azure Monitor is the one this product's own deployment
+         runs on; the console is for a node an operator is watching. All are the projects' own packages, Apache-2.0
+         (OpenTelemetry) and MIT (Azure). -->
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" />
+    <PackageReference Include="Azure.Monitor.OpenTelemetry.Exporter" />
+  </ItemGroup>
+
+</Project>

@@ -12,6 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.ControlPlane\SqlFlow.ControlPlane.csproj" />
     <ProjectReference Include="..\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
+    <ProjectReference Include="..\SqlFlow.Delivery.Telemetry\SqlFlow.Delivery.Telemetry.csproj" />
     <ProjectReference Include="..\SqlFlow.Delivery.Data\SqlFlow.Delivery.Data.csproj" />
   </ItemGroup>
 

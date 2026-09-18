@@ -22,6 +22,11 @@ Everything the platform already reads ([environment-variables.md](environment-va
 | `Osdu:TargetProbe:Enabled` | control plane | Runs the scheduled target probe ([Watching the targets](#watching-the-targets)). Off by default: a pass costs a token exchange and a request against a live OSDU for every interface it covers. The operator's Probe target button is there either way. |
 | `Osdu:TargetProbe:IntervalMinutes` | control plane | Minutes between passes. Default 15, and refused below 5, which is the floor the cost of a pass sets. |
 | `Osdu:TargetProbe:Pipelines` | control plane | The delivery flows to probe, by pipeline name, comma separated. Empty means every active delivery pipeline; a name no active delivery pipeline carries is named in the pass's log rather than quietly probing nothing. |
+| `Osdu:Telemetry:Exporter` | control plane | Where the metrics go: `none` (default), `otlp`, `azuremonitor` or `console` ([Metrics](#metrics)). The meters publish either way; this decides whether the measurements leave the process. |
+| `Osdu:Telemetry:OtlpEndpoint` / `:OtlpProtocol` / `:OtlpHeadersRef` | control plane | The collector or backend OTLP reaches (`http://collector:4317` for `grpc`, `http://collector:4318/v1/metrics` for `httpprotobuf`), and the headers a hosted backend takes its API key in, as a `${env:...}` or `${keyvault:...}` reference. Left out, the exporter reads the standard `OTEL_EXPORTER_OTLP_*` variables. |
+| `Osdu:Telemetry:AzureMonitorConnectionRef` | control plane | The Azure Monitor connection string, as a reference; required when the exporter is `azuremonitor`. |
+| `Osdu:Telemetry:ExportSeconds` / `:ServiceName` / `:ServiceInstanceId` | control plane | How often the metrics are sent (default 60, never under 5), and what a backend groups them under (default `osdu-delivery`, and the machine name). |
+| `OSDU_TELEMETRY_EXPORTER` and `OSDU_TELEMETRY_*` | nodes | The same settings for a node, which takes every setting from its environment: `_OTLP_ENDPOINT`, `_OTLP_PROTOCOL`, `_OTLP_HEADERS`, `_AZURE_MONITOR_CONNECTION`, `_EXPORT_SECONDS`, `_SERVICE_NAME`, `_SERVICE_INSTANCE`. A one-shot CLI command exports nothing: it ends before the first export. |
 | `Osdu:TargetProbe:SettleSeconds` / `:MaxPerPass` | control plane | How long a pass waits for the probes it queued before moving on (default 60, 0 not to wait; whatever has not come back is recorded by the next pass), and how many interfaces one pass probes across every flow (default 200, the rest on the passes after it once the estate is narrowed). |
 | `Osdu:Database:Connection` / `SQLFLOW_OSDU_DB` | nodes (and the CLI) | The `osdu` module database, as a `${env:...}` or `${keyvault:...}` reference. A node opens no catalog connection, so this is how it reaches the ledger, the templates and the caches; the login needs rights on schema `osdu` alone. A literal secret is refused at startup. |
 | Repository layout | flow repositories | `mappings/` next to the flows (or named under `render.mappings`), and the cache flows (`flowType: cache`) that fill the partition caches the mappings read, committed and synced. The templates the mappings pin and every version of every cache live in the catalog, never in the repository; nothing writes to the repository. |
@@ -427,9 +432,23 @@ The engine publishes its telemetry on the .NET metrics API, under the meter `Sql
 | `osdu_delivery.probes` | probe | `flow`, `interface`, `outcome` | Target probes settled: `reachable`, `unreachable` (the service refused the call or did not answer), `error` (the probe could not run at all) or `cancelled`. Counted whether a schedule or an operator asked for it. |
 
 They are rates to watch and alert on. The delivered, pending, held and failed counts the GUI and the CLI show are read
-from the ledger, never from these. On a node, `dotnet-counters monitor --counters SqlFlow.Delivery -p <pid>` reads them.
-No exporter is wired yet: which backend receives them is a decision ([../../docs/go-live-map.md](../../docs/go-live-map.md),
-DEC-6), and the exporter package it needs goes through the dependency approval of [design.md](design.md) section 14.
+from the ledger, never from these. On a node, `dotnet-counters monitor --counters SqlFlow.Delivery -p <pid>` reads them
+whatever else is configured.
+
+**Where they go** is `Osdu:Telemetry:Exporter` (see [Configuration](#configuration)), and nothing leaves the process
+until a deployment names one:
+
+| Exporter | What it is for |
+| --- | --- |
+| `none` (default) | The metrics stay in the process, where `dotnet-counters` and any in-process listener read them. |
+| `otlp` | The standard protocol: an OpenTelemetry collector, or any backend that speaks it directly (Grafana, Datadog, Honeycomb, Dynatrace, New Relic). This is the one that fits a deployment whose telemetry already goes somewhere. |
+| `azuremonitor` | Application Insights, through Azure Monitor's own exporter, which is what this product's own Azure deployment runs on. |
+| `console` | The process's own output, for a node an operator is watching. |
+
+The exporter runs in the control plane and on every node, under one service name and one instance id, so a backend can
+tell two replicas apart and add them up. A setting that carries a secret (the OTLP headers, the Azure Monitor connection
+string) is a `${env:...}` or `${keyvault:...}` reference the host resolves, never a value in a configuration file, and a
+reference with no resolver is refused at startup rather than exported to the wrong place.
 
 Once they are exported, alert on a rising share of `held` or `failed` outcomes per flow, on `5xx`, `transport` and
 `timeout` results per host, and on any `refused` result, which is a URL the guard would not let a node reach. A rising

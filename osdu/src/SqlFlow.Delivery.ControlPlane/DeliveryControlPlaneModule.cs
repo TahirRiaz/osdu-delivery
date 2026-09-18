@@ -5,6 +5,7 @@ using SqlFlow.ControlPlane.Hosting;
 using SqlFlow.Delivery.ControlPlane.Api;
 using SqlFlow.Delivery.ControlPlane.Background;
 using SqlFlow.Delivery.ControlPlane.Configuration;
+using SqlFlow.Delivery.Telemetry;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Hosting;
@@ -36,6 +37,7 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         var rollout = services.AddOptions<CacheRolloutOptions>(CacheRolloutOptions.SectionName, options => options.Validate());
         var repository = services.AddOptions<SchemaRepositoryOptions>(SchemaRepositoryOptions.SectionName, options => options.Validate());
         var probe = services.AddOptions<TargetProbeOptions>(TargetProbeOptions.SectionName, options => options.Validate());
+        var telemetry = services.AddOptions<TelemetryOptions>(TelemetryOptions.SectionName, options => options.Validate());
 
         // The module's database: the osdu schema in the catalog's own database unless the deployment gives it one of its
         // own. Bootstrap migrates it after the catalog, and readiness stays red until it verifies against this build.
@@ -87,6 +89,10 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         {
             services.AddHostedService<ScheduledTargetProbeService>();
         }
+
+        // Where the metrics go, when a deployment says anywhere. The meters publish either way, so this changes only
+        // whether the measurements leave the process (osdu/docs/operations.md, "Metrics").
+        services.Services.AddDeliveryMetricsExport(telemetry);
     }
 
     public void MapEndpoints(ControlPlaneModuleEndpoints endpoints)

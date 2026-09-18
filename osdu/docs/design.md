@@ -979,6 +979,11 @@ The direct dependency set of the solution after the strip:
   `Azure.Storage.Blobs`, `Azure.Security.KeyVault.Secrets`
 - Third-party, all MIT and mainstream: `Parquet.Net`, `YamlDotNet`, `Cronos`, `MailKit` (the SMTP channel of
   the notification service; the Graph and Slack channels are plain HTTP), `LibGit2Sharp` (git materialisation)
+- Telemetry, in `SqlFlow.Delivery.Telemetry` alone and loaded only by the hosts: `OpenTelemetry.Extensions.Hosting`,
+  `OpenTelemetry.Exporter.OpenTelemetryProtocol` and `OpenTelemetry.Exporter.Console` (the OpenTelemetry project's own,
+  Apache-2.0), and `Azure.Monitor.OpenTelemetry.Exporter` (Microsoft, MIT). They carry the module's metrics where a
+  deployment says and nowhere by default (`osdu/docs/operations.md`, "Metrics"); the delivery path itself references
+  none of them, and the meters are the runtime's own either way.
 
 ### 14.2 What was kept out
 
