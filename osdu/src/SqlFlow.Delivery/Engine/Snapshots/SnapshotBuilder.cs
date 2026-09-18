@@ -218,7 +218,6 @@ public sealed partial class SnapshotBuilder
         var barren = 0;
         var coverage = typeSpec.Fields.ToDictionary(f => f.Name, _ => 0, StringComparer.OrdinalIgnoreCase);
         string? cursor = null;
-        string? previousCursor = null;
         var finished = false;
         try
         {
@@ -270,7 +269,6 @@ public sealed partial class SnapshotBuilder
                     }
                 }
 
-                previousCursor = cursor;
                 cursor = page["cursor"] is JsonValue value && value.TryGetValue<string>(out var next) ? next : null;
 
                 // The search service hands back a cursor for the page after the last one too, and that page is
