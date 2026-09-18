@@ -45,6 +45,80 @@ public sealed class CacheRolloutOptions
 }
 
 /// <summary>
+/// The scheduled target probe (section <c>Osdu:TargetProbe</c>): how often the deployment asks every active delivery
+/// flow's OSDU whether it still answers with that flow's credentials, so an operator and an alert see a target go away
+/// without anyone pressing "Probe target".
+/// <para>Off by default, and deliberately so: one probe is a token exchange and a request against a live OSDU, for every
+/// interface of every active delivery flow, every interval. Switch it on where that cost is understood, and use
+/// <see cref="Pipelines"/> to narrow it to the flows that matter.</para>
+/// </summary>
+public sealed class TargetProbeOptions
+{
+    /// <summary>The configuration section the control plane module binds this from.</summary>
+    public const string SectionName = "Osdu:TargetProbe";
+
+    /// <summary>The floor under <see cref="IntervalMinutes"/>: below this the probes cost more than they tell.</summary>
+    public const int MinimumIntervalMinutes = 5;
+
+    /// <summary>Runs the scheduled probe. Off by default, since every pass reaches a live OSDU.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>Minutes between passes. Default 15, and never below <see cref="MinimumIntervalMinutes"/>.</summary>
+    public int IntervalMinutes { get; set; } = 15;
+
+    /// <summary>
+    /// Seconds a pass waits for the probes it just queued to come back from the nodes before it moves on. A probe that
+    /// has not come back by then is recorded by the next pass instead, so this only decides how quickly an outcome
+    /// shows up, never whether it is recorded. Zero waits not at all. Default 60.
+    /// </summary>
+    public int SettleSeconds { get; set; } = 60;
+
+    /// <summary>Interfaces probed in one pass, across every flow. Default 200.</summary>
+    public int MaxPerPass { get; set; } = 200;
+
+    /// <summary>
+    /// The delivery flows to probe, by pipeline name, comma separated. Empty means every active delivery pipeline. A
+    /// name no active delivery pipeline carries is reported in the pass's log rather than silently probing nothing.
+    /// </summary>
+    public string? Pipelines { get; set; }
+
+    /// <summary>The flows <see cref="Pipelines"/> names, trimmed and deduplicated; empty for every active delivery pipeline.</summary>
+    public IReadOnlyList<string> PipelineNames()
+        => string.IsNullOrWhiteSpace(Pipelines)
+            ? []
+            : Pipelines.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+    /// <exception cref="InvalidOperationException">A setting is outside its range; the message names it.</exception>
+    public void Validate()
+    {
+        if (IntervalMinutes < MinimumIntervalMinutes || IntervalMinutes > 1440)
+        {
+            throw new InvalidOperationException(
+                $"{SectionName}:IntervalMinutes must be between {MinimumIntervalMinutes} and 1440 (a day): every pass costs a token " +
+                "exchange and a request against a live OSDU for each interface of each active delivery flow.");
+        }
+
+        if (SettleSeconds is < 0 or > 300)
+        {
+            throw new InvalidOperationException($"{SectionName}:SettleSeconds must be between 0 and 300.");
+        }
+
+        if (MaxPerPass is < 1 or > 1000)
+        {
+            throw new InvalidOperationException($"{SectionName}:MaxPerPass must be between 1 and 1000.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(Pipelines) && PipelineNames().Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"{SectionName}:Pipelines names no flow. Leave it empty to probe every active delivery pipeline, or list the pipeline names, comma separated.");
+        }
+    }
+}
+
+/// <summary>
 /// The OSDU data definitions the Templates page browses (section <c>Osdu:SchemaRepository</c>): the Open Group's
 /// public repository of OSDU schemas, read through its GitLab API into a local copy on disk, one release at a time. The
 /// defaults are the public repository; point both URLs at a mirror of it when the control plane cannot reach

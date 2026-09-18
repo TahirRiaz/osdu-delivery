@@ -1548,8 +1548,19 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        return await EnqueueOperationAsync(db, dispatcher, flow, ProbeTargetOperation.OperationName, new Dictionary<string, string>(StringComparer.Ordinal), user, ct).ConfigureAwait(false);
+        return await QueueProbeAsync(db, dispatcher, flow, RequestActor.Label(user), RequestActor.Of(user), ct).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Queues one interface's target probe on a node: the one path an operator's "Probe target" and the scheduled probe
+    /// (<see cref="Background.ScheduledTargetProbeService"/>) both take, so what a schedule reports is what a button
+    /// reports. <paramref name="actor"/> is the label the node records the task under (<c>user:alice</c>,
+    /// <c>service:schedule</c>), <paramref name="requestedBy"/> who asked, for the task row's audit.
+    /// </summary>
+    internal static Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> QueueProbeAsync(
+        CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, string actor, string? requestedBy, CancellationToken ct)
+        => EnqueueOperationAsync(
+            db, dispatcher, flow, ProbeTargetOperation.OperationName, new Dictionary<string, string>(StringComparer.Ordinal), actor, requestedBy, ct);
 
     /// <summary>
     /// The ledger's retention pass: everything the <c>osdu</c> schema grows without bound and a delivered record does not
@@ -1770,9 +1781,18 @@ public static class DeliveryEndpoints
 
     /// <summary>Queues a target-side operation for a node: the flow file's location rides along, every credential
     /// stays a reference the node resolves.</summary>
-    internal static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> EnqueueOperationAsync(
+    internal static Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> EnqueueOperationAsync(
         CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, string operation, IReadOnlyDictionary<string, string> arguments,
         ClaimsPrincipal user, CancellationToken ct)
+        => EnqueueOperationAsync(db, dispatcher, flow, operation, arguments, RequestActor.Label(user), RequestActor.Of(user), ct);
+
+    /// <summary>
+    /// The same, for a caller that is not a request: the actor label and the requester are given rather than read from a
+    /// principal, so the scheduled work of the module queues a node operation exactly as an endpoint does.
+    /// </summary>
+    internal static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> EnqueueOperationAsync(
+        CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, string operation, IReadOnlyDictionary<string, string> arguments,
+        string actor, string? requestedBy, CancellationToken ct)
     {
         var rootPath = await db.Repos.AsNoTracking().Where(r => r.Id == flow.Pipeline.RepoId).Select(r => r.RootPath).FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(rootPath))
@@ -1786,7 +1806,7 @@ public static class DeliveryEndpoints
         {
             ["repoRoot"] = rootPath,
             ["relativePath"] = flow.Pipeline.RelativePath,
-            ["actor"] = RequestActor.Label(user),
+            ["actor"] = actor,
         };
         if (flow.Flow.Interface is { } interfaceName)
         {
@@ -1806,7 +1826,7 @@ public static class DeliveryEndpoints
         payload.Validate([operation]);
         var taskId = await dispatcher.EnqueueComputeTaskAsync(
             db,
-            new ComputeTaskEnqueueRequest(operation, flow.Pipeline.Name, FlowDefinition.FlowTypeName, payload.ToJson(), RequestedBy: RequestActor.Of(user)),
+            new ComputeTaskEnqueueRequest(operation, flow.Pipeline.Name, FlowDefinition.FlowTypeName, payload.ToJson(), RequestedBy: requestedBy),
             ct).ConfigureAwait(false);
         return TypedResults.Accepted($"/api/v1/compute/tasks/{taskId}", new ComputeTaskAccepted(taskId, RunStatuses.Queued));
     }

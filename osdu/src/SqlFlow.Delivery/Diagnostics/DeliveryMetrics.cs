@@ -32,6 +32,9 @@ public static class DeliveryMetrics
     private static readonly Counter<long> Retries = Meter.CreateCounter<long>(
         "osdu_delivery.http.retries", "{retry}", "HTTP calls repeated after a passing failure, by method, host and the failure that caused it.");
 
+    private static readonly Counter<long> Probes = Meter.CreateCounter<long>(
+        "osdu_delivery.probes", "{probe}", "Target probes settled, by flow, interface and outcome (reachable, unreachable, error, cancelled).");
+
     /// <summary>Counts a settled delivery try of one record: <paramref name="outcome"/> is delivered, unchanged, retry, held or failed.</summary>
     public static void RecordSettled(string flow, string route, string outcome, TimeSpan duration)
     {
@@ -72,6 +75,15 @@ public static class DeliveryMetrics
     /// <summary>Counts a call about to be repeated after <paramref name="reason"/> (a status code, <c>transport</c> or <c>timeout</c>).</summary>
     public static void RequestRetried(string method, string host, string reason)
         => Retries.Add(1, new TagList { { "method", method }, { "host", host }, { "reason", reason } });
+
+    /// <summary>
+    /// Counts a settled target probe of one interface: <paramref name="outcome"/> is <c>reachable</c>, <c>unreachable</c>
+    /// (the service answered a refusal or nothing at all), <c>error</c> (the probe itself could not run) or
+    /// <c>cancelled</c>. <paramref name="flow"/> is the interface's ledger label, as on the counters above;
+    /// <paramref name="interface"/> is its name, empty for a flow in the single form.
+    /// </summary>
+    public static void ProbeSettled(string flow, string? @interface, string outcome)
+        => Probes.Add(1, new TagList { { "flow", flow }, { "interface", @interface ?? string.Empty }, { "outcome", outcome } });
 
     /// <summary>The status class a status code falls in: <c>2xx</c>, <c>3xx</c>, <c>4xx</c>, <c>5xx</c>.</summary>
     public static string StatusClass(int status) => status switch

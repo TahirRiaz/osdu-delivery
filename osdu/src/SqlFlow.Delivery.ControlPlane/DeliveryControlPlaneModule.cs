@@ -16,8 +16,8 @@ namespace SqlFlow.Delivery.ControlPlane;
 /// The OSDU module as a control plane composes it: the delivery, retrieval and cache flow kinds with their executors and
 /// compute operations, the ledger over the module's own database (schema <c>osdu</c>), the mapping and cache documents the
 /// repository sync reconciles beside the flows, the OSDU data definitions the Templates page browses, the background work
-/// that carries approved cache changes out, the delivery search category, and every delivery endpoint on the control
-/// plane's own authenticated route groups.
+/// that carries approved cache changes out and the scheduled target probe, the delivery search category, and every
+/// delivery endpoint on the control plane's own authenticated route groups.
 /// </summary>
 /// <remarks>
 /// A host passes this to <c>ControlPlaneHost.RunAsync</c>; nothing else about the control plane changes. Every service
@@ -35,6 +35,7 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         var database = services.AddOptions<OsduDatabaseOptions>(OsduDatabaseOptions.SectionName);
         var rollout = services.AddOptions<CacheRolloutOptions>(CacheRolloutOptions.SectionName, options => options.Validate());
         var repository = services.AddOptions<SchemaRepositoryOptions>(SchemaRepositoryOptions.SectionName, options => options.Validate());
+        var probe = services.AddOptions<TargetProbeOptions>(TargetProbeOptions.SectionName, options => options.Validate());
 
         // The module's database: the osdu schema in the catalog's own database unless the deployment gives it one of its
         // own. Bootstrap migrates it after the catalog, and readiness stays red until it verifies against this build.
@@ -78,6 +79,13 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         if (rollout.Enabled)
         {
             services.AddHostedService<CacheUpdateRolloutService>();
+        }
+
+        // Asking every flow's OSDU whether it still answers costs a token exchange and a live request per interface, so
+        // the schedule runs only where a deployment has asked for it; the operator's probe button is always there.
+        if (probe.Enabled)
+        {
+            services.AddHostedService<ScheduledTargetProbeService>();
         }
     }
 

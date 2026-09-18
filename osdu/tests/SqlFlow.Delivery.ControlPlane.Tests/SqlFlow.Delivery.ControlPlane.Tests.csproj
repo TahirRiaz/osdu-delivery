@@ -43,6 +43,7 @@
     <Compile Include="..\SqlFlow.Delivery.Tests\SampleWellLogs.cs" Link="Fixtures\SampleWellLogs.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\PandasMetadata.cs" Link="Fixtures\PandasMetadata.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\SampleEstate.cs" Link="Fixtures\SampleEstate.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\MetricsCapture.cs" Link="Fixtures\MetricsCapture.cs" />
   </ItemGroup>
 
   <ItemGroup>

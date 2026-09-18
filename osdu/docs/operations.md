@@ -19,6 +19,10 @@ Everything the platform already reads ([../environment-variables.md](../environm
 | `SQLFLOW_DELIVERY_ALLOW_LOOPBACK` | nodes, the CLI | `true` lets a flow target `localhost` (local OSDU stubs, tests). Off by default: the URL guard refuses loopback and private targets. |
 | `SQLFLOW_DELIVERY_PRIVATE_NETWORKS` | nodes, the CLI | The private ranges (CIDR, comma separated) a flow may reach: an OSDU, its storage accounts or a proxy behind a private endpoint. Empty by default: every private address is refused, whether a URL names it or a host name resolves to it. Link-local and cloud metadata addresses are never reachable. |
 | `ControlPlane:MaxRequestBodyMegabytes` | control plane | The API's request body ceiling, set on purpose rather than left at Kestrel's default. Default 64. |
+| `Osdu:TargetProbe:Enabled` | control plane | Runs the scheduled target probe ([Watching the targets](#watching-the-targets)). Off by default: a pass costs a token exchange and a request against a live OSDU for every interface it covers. The operator's Probe target button is there either way. |
+| `Osdu:TargetProbe:IntervalMinutes` | control plane | Minutes between passes. Default 15, and refused below 5, which is the floor the cost of a pass sets. |
+| `Osdu:TargetProbe:Pipelines` | control plane | The delivery flows to probe, by pipeline name, comma separated. Empty means every active delivery pipeline; a name no active delivery pipeline carries is named in the pass's log rather than quietly probing nothing. |
+| `Osdu:TargetProbe:SettleSeconds` / `:MaxPerPass` | control plane | How long a pass waits for the probes it queued before moving on (default 60, 0 not to wait; whatever has not come back is recorded by the next pass), and how many interfaces one pass probes across every flow (default 200, the rest on the passes after it once the estate is narrowed). |
 | `Osdu:Database:Connection` / `SQLFLOW_OSDU_DB` | nodes (and the CLI) | The `osdu` module database, as a `${env:...}` or `${keyvault:...}` reference. A node opens no catalog connection, so this is how it reaches the ledger, the templates and the caches; the login needs rights on schema `osdu` alone. A literal secret is refused at startup. |
 | Repository layout | flow repositories | `mappings/` next to the flows (or named under `render.mappings`), and the cache flows (`flowType: cache`) that fill the partition caches the mappings read, committed and synced. The templates the mappings pin and every version of every cache live in the catalog, never in the repository; nothing writes to the repository. |
 
@@ -420,6 +424,7 @@ The engine publishes its telemetry on the .NET metrics API, under the meter `Sql
 | `osdu_delivery.http.requests` | request | `method`, `host`, `result` | Call attempts to OSDU services and their storage, each counted once. `result` is the answer's status class, `2xx` to `5xx`, or what ended the attempt otherwise: `transport`, `timeout`, `refused` (the URL guard), `cancelled` (the node stopped waiting) or `error` (anything else, such as a redirect loop). |
 | `osdu_delivery.http.request.duration` | s | `method`, `host`, `result` | How long an attempt took, its redirects and response body included, the wait before the next attempt not. |
 | `osdu_delivery.http.retries` | retry | `method`, `host`, `reason` | Calls repeated after a passing failure: a status code, `transport` or `timeout`. |
+| `osdu_delivery.probes` | probe | `flow`, `interface`, `outcome` | Target probes settled: `reachable`, `unreachable` (the service refused the call or did not answer), `error` (the probe could not run at all) or `cancelled`. Counted whether a schedule or an operator asked for it. |
 
 They are rates to watch and alert on. The delivered, pending, held and failed counts the GUI and the CLI show are read
 from the ledger, never from these. On a node, `dotnet-counters monitor --counters SqlFlow.Delivery -p <pid>` reads them.
@@ -430,6 +435,40 @@ Once they are exported, alert on a rising share of `held` or `failed` outcomes p
 `timeout` results per host, and on any `refused` result, which is a URL the guard would not let a node reach. A rising
 `waiting` share says an estate is delivering children faster than the records they refer to; the flow's waiting count
 in the GUI says whether they are moving.
+
+## Watching the targets
+
+A delivery flow's target is an OSDU that can stop answering for reasons no run reveals until one is due: a rotated
+secret, a revoked entitlement, a gateway path that moved, a service taken down for maintenance. The GUI's **Probe
+target** asks one interface's target whether it still answers under that flow's own credentials, and the same question
+can be put on a schedule so nobody has to press it.
+
+The schedule is off unless a deployment turns it on, and deliberately so: a pass costs a token exchange and one request
+against a live OSDU for every interface it covers. Configuration is under `Osdu:TargetProbe` (see
+[Configuration](#configuration)): `Enabled`, `IntervalMinutes` (default 15, never under 5), `Pipelines` to narrow it to
+the flows that matter, `MaxPerPass` to bound one pass of a large estate, and `SettleSeconds` for how long a pass waits
+for what it queued.
+
+What a pass does, in order:
+
+1. **Settles what is still open.** Every probe an earlier pass, or an earlier life of the host, left running is found
+   again from the ledger, not from memory: a probe whose task has finished is recorded with its outcome, and one whose
+   task the queue no longer holds is recorded as an error rather than left open forever. A restart loses nothing.
+2. **Queues this pass's probes**, once per interface of each flow it covers, through the same path the operator's
+   button takes (`delivery-probe` on a node, under the flow's own credentials), so a schedule and a button report the
+   same thing. The task and the activity are recorded under the actor `service:schedule`.
+3. **Waits up to `SettleSeconds`** for them, and records whatever has come back. The rest is settled by the next pass.
+
+Every probe, scheduled or not, is an activity of kind `probe` in the ledger's audit trail, so the last result per flow
+and interface is on the flow's Activity tab and in `sqlflow` alongside every other operator action, with who asked and
+when. Each settled probe is also counted on `osdu_delivery.probes` (see [Metrics](#metrics)).
+
+What to alert on: any `unreachable` outcome for a flow that is supposed to be delivering, and a run of `error`
+outcomes, which says the probes themselves are not getting through (no node is taking the tasks, the flow file is not
+on the node, a credential will not resolve) rather than anything about the OSDU.
+
+A probe writes nothing to OSDU: it reads what the route's own probe path reads, which is the service's health or
+version endpoint under the flow's target.
 
 ## Availability and recovery
 
