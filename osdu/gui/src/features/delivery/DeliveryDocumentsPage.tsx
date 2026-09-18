@@ -151,7 +151,15 @@ export default function DeliveryDocumentsPage() {
       </div>
 
       <Sheet open={selected !== null} onOpenChange={(open) => { if (!open) { setSelected(null); } }}>
-        <SheetContent className="w-full gap-0 sm:max-w-5xl" data-testid="delivery-mapping-detail">
+        {/*
+          * As wide as the window leaves once the workbench's menu is kept clear: the 48px activity bar, and the side
+          * bar at the widest it resizes to (420px). It never reaches the menu whatever width the side bar is dragged
+          * to, and never falls below 48rem, so a window too narrow to hold both still opens a sheet worth reading.
+          */}
+        <SheetContent
+          className="w-full gap-0 sm:max-w-[max(48rem,calc(100vw_-_468px))]"
+          data-testid="delivery-mapping-detail"
+        >
           <SheetHeader>
             <SheetTitle>{detail?.mapping.reference ?? "Mapping"}</SheetTitle>
             <SheetDescription>

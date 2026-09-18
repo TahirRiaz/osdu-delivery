@@ -293,10 +293,14 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   to the OSDU cache page for what the cache holds and the changes waiting for approval.
 - **Audit trail** (Operate): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (Workspace): the mapping documents the repositories hold, each mapping with the template it pins and a
-  link to the Mapping builder. A mapping opens on its Properties, a searchable grid of one row per property the mapping
-  fills: the target path in the template, the source value behind it (a dataset column, a cached field, or a static
-  value), the findBy lines a cache entry is found by, and the modifiers the value passes through. The YAML tab is the
-  document as written, and the Record shape tab draws the record the mapping renders.
+  link to the Mapping builder. A mapping opens on its Properties, a searchable list of one line per property the
+  mapping fills, read the way the renderer reads it: the value's origin (a dataset column, a cached field with the
+  lookup it is found by, a repeater or a static value), what is done to it, then the property in the template it lands
+  on. A line opens the property as the pipeline that fills it: every line the lookup tries in order, the modifiers as
+  the steps they are (drawn inside the lookup for a cache entry, since they change the value compared rather than the
+  cached field), and the condition that decides whether the value is written at all. The filter matches the whole
+  line, so a source column name answers which properties it reaches as directly as a path answers what fills it. The
+  YAML tab is the document as written, and the Record shape tab draws the record the mapping renders.
 - **Templates**: browse the schemas OSDU publishes through a delivery flow's connection (a node runs the search and the
   fetch with the flow's credentials), look at one laid out as a template (every variable with its type, requiredness,
   relationships, unit context and OSDU's description), and save it; or import a bundled schema file. The saved

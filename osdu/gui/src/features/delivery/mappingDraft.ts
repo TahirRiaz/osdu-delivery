@@ -3,8 +3,8 @@
 // the YAML and checks it.
 
 import type {
-  DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftEntry, MappingDraftInput, MappingDraftModifier,
-  MappingDraftModifierKind,
+  DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftEntry, MappingDraftFind, MappingDraftInput,
+  MappingDraftModifier, MappingDraftModifierKind,
 } from "../../api/delivery";
 
 /** The access and legal variables every record carries, which a mapping gives as static, non-empty lists of strings. */
@@ -190,19 +190,41 @@ export function modifierText(modifier: MappingDraftModifier): string {
   }
 }
 
+/** The value one findBy compares: a dataset column, or a fixed text. */
+function operandOf(find: MappingDraftFind): string {
+  return find.literal !== null && find.literal.trim() !== "" ? quoted(find.literal) : `dataset.${find.column ?? ""}`;
+}
+
 /**
  * The lookup an entry reads a cached record by, one line per findBy, as the YAML writes them:
  * `cache.UnitOfMeasure.Code = dataset.elev_meas_ref`. Empty for an entry that reads no cache.
  */
 export function lookupLines(entry: MappingDraftEntry): string[] {
+  return entry.input !== "Cache" ? [] : entry.findBy.map((find) => `cache.${entry.cacheType ?? ""}.${find.field} = ${operandOf(find)}`);
+}
+
+/**
+ * The lookup as one phrase, the way the renderer words it: the fields that compare the same value run together, and
+ * the phrases after the first read as alternatives. `Code/Name/id = dataset.elev_meas_ref`, and empty for an entry
+ * that reads no cache. The cached type is left out: the entry's source already names it.
+ */
+export function lookupText(entry: MappingDraftEntry): string {
   if (entry.input !== "Cache") {
-    return [];
+    return "";
   }
 
-  return entry.findBy.map((find) => {
-    const operand = find.literal !== null && find.literal.trim() !== "" ? quoted(find.literal) : `dataset.${find.column ?? ""}`;
-    return `cache.${entry.cacheType ?? ""}.${find.field} = ${operand}`;
-  });
+  const groups: { fields: string[]; operand: string }[] = [];
+  for (const find of entry.findBy) {
+    const operand = operandOf(find);
+    const last = groups.at(-1);
+    if (last !== undefined && last.operand === operand) {
+      last.fields.push(find.field);
+    } else {
+      groups.push({ fields: [find.field], operand });
+    }
+  }
+
+  return groups.map((group) => `${group.fields.join("/")} = ${group.operand}`).join(" or ");
 }
 
 /** An appliesWhen in one line, as the condition syntax reads it: `dataset.depth_coding is not empty`. */

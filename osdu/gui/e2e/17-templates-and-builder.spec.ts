@@ -384,10 +384,9 @@ test.describe.serial("templates and the mapping builder", () => {
     const detail = adminPage.getByTestId("delivery-mapping-detail");
     await expect(detail.getByTestId("delivery-mapping-template")).toContainText(WELLLOG_VERSION, { timeout: 15_000 });
 
-    // The properties open first: what fills every target, the cached record a cache entry is found by, and the modifiers.
+    // The properties open first, each row reading from the value's origin to the target it lands on.
     const wellboreId = rowWith(adminPage, "delivery-mapping-properties-table", "delivery-mapping-property-osdu.data.WellboreID");
-    await expect(wellboreId).toContainText("cache.Wellbore.id", { timeout: 15_000 });
-    await expect(wellboreId).toContainText("cache.Wellbore.FacilityName = dataset.wellbore_uwi");
+    await expect(wellboreId).toContainText("cache.Wellbore.id by FacilityName = dataset.wellbore_uwi", { timeout: 15_000 });
     const logName = rowWith(adminPage, "delivery-mapping-properties-table", "delivery-mapping-property-osdu.data.Name");
     await expect(logName).toContainText("dataset.log_name");
     await expect(logName).toContainText("trim");
@@ -401,6 +400,25 @@ test.describe.serial("templates and the mapping builder", () => {
     await detail.getByTestId("delivery-mapping-properties-filter").fill("elev_meas_ref");
     await expect(detail.getByTestId("delivery-mapping-properties-table").getByTestId("table-row")).toHaveCount(2);
     await expect(detail.getByTestId("delivery-mapping-properties-count")).toContainText("2 of");
+
+    // A property opens on the detail the row has no width for: every line the lookup tries, and the modifiers in order.
+    await rowWith(
+      adminPage,
+      "delivery-mapping-properties-table",
+      "delivery-mapping-property-osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID",
+    ).click();
+    const property = adminPage.getByTestId("delivery-mapping-property-detail");
+    await expect(property.getByTestId("delivery-mapping-property-detail-source")).toContainText("cache.UnitOfMeasure.id");
+    await expect(property.getByTestId("delivery-mapping-property-detail-lookup"))
+      .toContainText("cache.UnitOfMeasure.Code = dataset.elev_meas_ref");
+    const modifiers = property.getByTestId("delivery-mapping-property-detail-modifiers");
+    await expect(modifiers).toContainText("split on ' ', part 2");
+    await expect(modifiers).toContainText("replace M to m, FT to ft");
+    // The modifiers of a cache entry change the value the lookup compares, which is the one thing a reader gets wrong.
+    await expect(modifiers).toContainText("the value the lookup compares");
+    await property.getByRole("button", { name: "Close" }).click();
+    await expect(property).toBeHidden();
+
     await detail.getByTestId("delivery-mapping-properties-filter-clear").click();
 
     // The record shape: the renderer's layout with placeholders, and the partition filled into the id once it is given.
