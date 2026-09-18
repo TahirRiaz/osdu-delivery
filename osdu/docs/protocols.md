@@ -197,8 +197,14 @@ DDMS shape's calls, rules and deletes follow its pinned contract and its source 
   committed a log of five rows). So before a session opens, every parquet chunk's labels are read from its footer
   (a stored index column's statistics, a pandas `RangeIndex`, or the rows numbered from zero when the file carries no
   pandas metadata), and two chunks that give the same labels to different rows hold the record, naming both files.
-  Chunks with exactly the same labels and different curves (a log whose curves were split) go together. After the
-  commit, `GET {dataPath}?describe=true` reads the bulk back: fewer rows or columns than the chunks carried holds the
+  Chunks with exactly the same labels and different curves (a log whose curves were split) go together. A session's
+  chunks also have to carry the collection's reference curve (`data.ReferenceCurveID`, or the measured-depth station of
+  a trajectory) as a bulk column: the service takes every chunk that carries it as the dataframe's row index and then
+  refuses the commit ("reference curve 'MD' do not cover the entire bulk"), so the record is held before the session is
+  opened. A whole-bulk write of the same file is accepted, so the rule is the session's alone (seen live on ADME 0.29;
+  `osdu/specs/wellbore-ddms/INTEGRATION.md` section 3.3). Whatever the chunk is, a parquet file whose pandas entry
+  names an index but describes no columns is held too: no dataframe reader can read it, so the service would refuse
+  the upload as malformed. After the commit, `GET {dataPath}?describe=true` reads the bulk back: fewer rows or columns than the chunks carried holds the
   record, naming both counts, and step `payload` returns `rows`. A target that cannot describe its bulk leaves the
   delivery unchecked with a warning, and a JSON payload is not measured, because the payload itself is never parsed.
 - The commit is a PATCH and is never resent blind, so its outcome can be unclear: the connection went, a gateway
