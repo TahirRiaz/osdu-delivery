@@ -46,9 +46,15 @@ All of SQLFlow's metadata is one database. What is separated is the source data,
 - A node always needs that connection, pointed at whichever database holds the schema, because a node opens no catalog
   connection at all. Without it a node validates and plans but delivers nothing. Two deployments never mounted it (the
   k8s worker manifest named the secret and mounted nothing; the bicep estate left it to `workerFlowEnv`); both do now.
-- Whichever database holds the `osdu` schema is allowed snapshot isolation once (Azure SQL Database allows it by
-  default): `ALTER DATABASE [SQLFlow] SET ALLOW_SNAPSHOT_ISOLATION ON;` The product creates that database itself under
-  `Bootstrap:AllowCreate` and does not run this; the run-time error names the exact statement.
+- The metadata database needs no setting of its own. Until 2026-09-18 the ledger read every listing, wait and claim in
+  a snapshot transaction, so that database had to allow snapshot isolation, and one that did not stopped every node from
+  claiming any work while `/health/ready` still reported 200. That requirement is gone (`a476eed`), and so is the
+  `osdu.RecordCount` indexed view that caused the contention it was hiding (`3434b82`, `RetireRecordCountView`, module
+  version 1.8.0): SQL Server maintained the view inside the transaction of every record write, so a flow's nodes all met
+  on its few count rows. Statistics are counted from the records now, by one path on every database, and a record and
+  its lease are read in one statement. What still wants snapshot isolation is the **source** database a flow reads,
+  where a record and its child rows come back as several result sets, and that one is per-flow
+  (`isolation: readCommitted`).
 - The repository sync was the one place that wrote the module's rows inside the catalog's transaction. It now asks where
   they are (`ModuleDatabase.IsReachableOn`): in one database they still ride the sync's transaction, in two they are
   written and committed on the module's connection, and the reconciliation is repeatable from the repository so the next
