@@ -74,13 +74,13 @@ Every model change ships with its migration, so the ledger can be upgraded in pr
 SQLFlow's catalog. The hosts and `sqlflow db status` refuse to run against pending OSDU migrations, a database
 newer than the code, or a catalog older than the module requires, and name the migration or version.
 
-The module database is either a database of its own (`OSDUDelivery` in the shipped deployments) or the catalog's
-own, and the connection reference decides which: given one, the control plane migrates, verifies and reads that
-database; given none, the `osdu` schema sits in the catalog database and the control plane reaches it on the
-catalog connection. Both are supported, and an estate cannot move between them by changing the setting after the
-first migrate. Two databases is the shape to prefer where the ledger grows with the records rather than with the
-metadata, and the shape Azure SQL forces, since no statement there reaches across two databases: the one place
-that wrote module rows inside the catalog's own transaction, the repository sync, asks where the rows are
+The `osdu` schema sits in the catalog's own database, which is what the shipped deployments do: all of the
+metadata in one database, with the module's tables a schema beside SQLFlow's rather than a database apart. The
+control plane then reaches them on the catalog connection. An estate that has to keep them in two databases gives
+the module a connection of its own, and the control plane migrates, verifies and reads that database instead;
+on Azure SQL that is the only way to separate them, since no statement there reaches across two databases. Both
+are supported, and an estate cannot move between them by changing the setting after the first migrate. The one
+place that wrote module rows inside the catalog's own transaction, the repository sync, asks where the rows are
 (`ModuleDatabase.IsReachableOn`) and commits its own work when they are elsewhere, reconciling idempotently from
 the repository so the next sync settles what a failure left behind.
 

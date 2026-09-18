@@ -157,8 +157,8 @@ param sqlServerName string = 'osdu-sql-${uniqueString(resourceGroup().id)}'
 @description('Name of SQLFlow\'s catalog database on that server: the metadata engine, holding pipelines, runs, schedules, lineage, sources and users.')
 param catalogDatabaseName string = 'SQLFlow'
 
-@description('Name of the OSDU Delivery module\'s database (schema `osdu`): the record ledger, mappings, templates and the OSDU cache. A database of its own by default, since an Azure SQL database cannot reach another in one statement and the ledger grows with the records, not the metadata. Name the catalog database here to keep both in one.')
-param osduDatabaseName string = 'OSDUDelivery'
+@description('Name of the database holding the OSDU Delivery module\'s `osdu` schema: the record ledger, mappings, templates and the OSDU cache. The catalog\'s database by default, so all of the metadata is in one. Name another database to keep the module\'s schema apart, which an estate does when it must (an Azure SQL database cannot reach another in one statement); a second database is then created for it, and the choice cannot be changed after the first migrate.')
+param osduDatabaseName string = catalogDatabaseName
 
 @description('Name of the database pre-ingestion flows land raw source files in, reachable from flow YAML as \${env:SQLFLOW_CONN_PRE}.')
 param preDatabaseName string = 'OsduDeliveryPre'

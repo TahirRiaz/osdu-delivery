@@ -116,10 +116,10 @@ IF @sql <> N'' EXEC sp_executesql @sql;`,
 
 test.describe.serial("seed the estate via repo source sync", () => {
   // The delivery ledger reads under snapshot isolation, so its reads and writes never wait on each other, and a
-  // database does not allow that until someone says so: the operations guide has an operator run this once per estate.
-  // The suite is this estate's operator, and the module's database is one the control plane creates at startup, so
-  // this is the first thing that runs against it. Running it again changes nothing.
-  test("allow snapshot isolation on the module's database", () => {
+  // database does not allow that until someone says so: the operations guide has an operator run this once, on
+  // whichever database holds the `osdu` schema. The suite is this estate's operator, and the control plane creates
+  // that database at startup, so this is the first thing that runs against it. Running it again changes nothing.
+  test("allow snapshot isolation where the osdu schema is", () => {
     allowSnapshotIsolation(fixtureMeta().osduDb);
   });
 

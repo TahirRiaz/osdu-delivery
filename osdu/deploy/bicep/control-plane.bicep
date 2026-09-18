@@ -174,8 +174,8 @@ var baseEnv = [
     name: 'SQLFLOW_CATALOG_DB'
     secretRef: 'catalog-db'
   }
-  // The delivery module's database, which startup migrates and verifies after the catalog. Naming the catalog's
-  // own connection here keeps the `osdu` schema in the catalog database instead.
+  // Where the delivery module's `osdu` schema is, which startup migrates and verifies after the catalog. This is
+  // the catalog's own database unless the estate separated them, and the secret is built to match.
   {
     name: 'SQLFLOW_OSDU_DB'
     secretRef: 'osdu-db'

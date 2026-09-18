@@ -51,8 +51,8 @@ spec:
             - name: SQLFLOW_GIT_TOKEN
               valueFrom:
                 secretKeyRef: { name: osdu-delivery-secrets, key: git-token }
-            # The delivery ledger, per record, as the run plans and delivers: the module's database, whether that is
-            # one of its own or the catalog's.
+            # The delivery ledger, per record, as the run plans and delivers. This is the metadata database, the
+            # same one the control plane's catalog is in, reached with a login of this tier's own.
             - name: SQLFLOW_OSDU_DB
               valueFrom:
                 secretKeyRef: { name: osdu-delivery-secrets, key: osdu-module-connection }

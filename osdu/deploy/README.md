@@ -30,22 +30,24 @@ and environment-variable names stay `SqlFlow.*` and `SQLFLOW_*`, as the project'
 - **Nodes** poll the control plane for work over the node protocol, authenticated with a personal access token
   minted with the `node` scope. A node opens **no catalog connection**: the run's definition, its YAML, its
   lineage context and its live trace all travel over that protocol.
-- **The databases of an estate**, each named for what it holds and each able to sit on its own server (on Azure
-  SQL it has to: no statement there reaches across two databases):
+- **The databases of an estate.** All of SQLFlow's metadata is one database, and the source data, which is where
+  the volume is, passes through two of its own:
 
   | Database | Holds | Grows with |
   | --- | --- | --- |
-  | `SQLFlow` | SQLFlow's catalog, the metadata engine: pipelines, runs, schedules, lineage, sources, users | the estate's activity |
-  | `OSDUDelivery` | the delivery module, schema `osdu`: the record ledger, mappings, templates, OSDU caches | every record ever delivered |
+  | `SQLFlow` | the metadata: SQLFlow's catalog schema (pipelines, runs, schedules, lineage, sources, users) and the delivery module's `osdu` schema beside it (the record ledger, mappings, templates, OSDU caches) | the estate's activity, and every record ever delivered |
   | `OsduDeliveryPre` | what pre-ingestion lands from the source systems | the source data |
   | `OsduDeliveryIng` | the keyed ingestion tables the OSDU flows read | the source data |
 
-  The module's database is named by `SQLFLOW_OSDU_DB` (or `Osdu:Database:Connection`), on the control plane,
-  which migrates and verifies it after the catalog, and on every node. Leave it unset and the `osdu` schema
-  sits in the catalog's own database, which is the smaller estate and fully supported; it cannot be moved by
-  changing the setting afterwards, so choose before the first migrate. The ledger reads under snapshot isolation,
-  so whichever database holds the `osdu` schema is allowed it once (Azure SQL Database allows it by default):
-  `ALTER DATABASE [OSDUDelivery] SET ALLOW_SNAPSHOT_ISOLATION ON;`
+  The two schemas of the metadata database stay separate things: their own EF contexts, their own migration
+  histories, their own versions, and no foreign key between them. That is what lets an estate that has to keep
+  them in two databases do so: name that database in `SQLFLOW_OSDU_DB` (or `Osdu:Database:Connection`), on the
+  control plane and on every node, and the module's rows are written and committed there instead. An estate on
+  Azure SQL that wants them apart has no other option, since no statement there reaches across two databases.
+  The choice cannot be changed by editing the setting afterwards, so make it before the first migrate.
+
+  The ledger reads under snapshot isolation, so whichever database holds the `osdu` schema is allowed it once
+  (Azure SQL Database allows it by default): `ALTER DATABASE [SQLFlow] SET ALLOW_SNAPSHOT_ISOLATION ON;`
 - **The OSDU ledger on a node.** The delivery engine reads and writes the `osdu` schema per record while it plans
   and delivers, and a node opens no catalog connection, so a node without the module's connection validates and
   plans but delivers nothing. See [../docs/environment-variables.md](../docs/environment-variables.md).
@@ -70,10 +72,10 @@ docker compose up -d --scale worker=3   # more compute, nothing else changes
 ```
 
 GUI at <http://localhost:8081>, API at <http://localhost:5000>. Bootstrap provisioning creates the `SQLFlow`
-catalog and the `OSDUDelivery` module database (the compose file turns on `ControlPlane__Bootstrap__AllowCreate`;
-the default only migrates databases that already exist), applies SQLFlow's catalog migrations and then the OSDU
-module's, seeds roles, and creates the admin from `.env` on first start. The `dbinit` service creates the chain's
-two data databases, which nothing else creates: SQLFlow makes schemas and tables inside a database, never a database.
+metadata database (the compose file turns on `ControlPlane__Bootstrap__AllowCreate`; the default only migrates a
+database that already exists), applies SQLFlow's catalog migrations and then the OSDU module's beside them, seeds
+roles, and creates the admin from `.env` on first start. The `dbinit` service creates the chain's two data
+databases, which nothing else creates: SQLFlow makes schemas and tables inside a database, never a database.
 
 ## Azure Container Apps: `bicep/`
 
@@ -83,7 +85,7 @@ editing a template.
 
 | Template | Deploys |
 | --- | --- |
-| `main.bicep` | The full estate: Log Analytics and the Container Apps environment, a Key Vault holding every secret, the Azure SQL catalog (`SQLFlow`) with the module's database (`OSDUDelivery`) and the pre and ingestion databases, and the three apps below. |
+| `main.bicep` | The full estate: Log Analytics and the Container Apps environment, a Key Vault holding every secret, the Azure SQL metadata database (`SQLFlow`) and the pre and ingestion databases, and the three apps below. |
 | `control-plane.bicep` | The API as an always-on Container App. `main.bicep` runs it API-only; standalone it also hosts the in-process worker. |
 | `worker.bicep` | One worker pool: no ingress, scaled 0..N on the control plane's replica target by the built-in KEDA metrics-api scaler, authenticated with the node token. One deployment per pool. |
 | `gui.bicep` | The SPA behind its own ingress. |
@@ -118,7 +120,7 @@ Sign in at the `guiUrl` output with the bootstrap admin, then mint a node-scoped
   (`-p name=osdu-delivery-worker-<pool> pool=<pool>`).
 - **Secrets live in Key Vault, read by managed identity**: no secret value appears in the templates or app
   configuration, and the same identities resolve `${keyvault:...}` references at run time
-  (`SQLFLOW_AZURE_AUTH=mi`). The module database connection and the pre and ingestion connections are wired for
+  (`SQLFLOW_AZURE_AUTH=mi`). The `osdu` schema's connection and the pre and ingestion connections are wired for
   free under their fixed names, on both tiers. The OSDU credentials a pool's flows use are added via
   `workerFlowEnv`, one `{ name, secretName }` entry per reference naming a secret created in the vault out of
   band, so no credential passes through the template. The deploying principal needs to create role assignments
@@ -164,9 +166,9 @@ The layout and the reasoning behind it:
   `GET /api/v1/node/scale-target?pool=<name>` with the node token and scales the matching Deployment;
   `minReplicaCount: 0` means an idle pool costs nothing. Copy `worker-pool.yaml` per pool (set
   `SQLFLOW_WORKER_POOL` and the URL's `?pool=`).
-- **Secrets stay on the tier that uses them**: the control plane gets the catalog and module connections and JWT
-  material; nodes get a node token, the git token, the module database connection, the pre and ingestion
-  connections and every `${env:...}` reference their pool's flows use, and never the catalog connection. Nothing data-plane
+- **Secrets stay on the tier that uses them**: the control plane gets the metadata connection and JWT material;
+  nodes get a node token, the git token, a connection to the `osdu` schema of their own, the pre and ingestion
+  connections and every `${env:...}` reference their pool's flows use, and never the catalog's own credential. Nothing data-plane
   ever passes through the control plane.
 
 ## Scale-in must not sever a delivery

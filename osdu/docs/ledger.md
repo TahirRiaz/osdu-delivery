@@ -5,13 +5,14 @@ what OSDU holds, what is waiting, and everything that ever happened to it. Every
 is answered from here, and every answer is index-backed.
 
 The `osdu` schema is the module's own: its own EF context (`OsduDbContext`), its own migration history and its own
-schema version, with no foreign keys into SQLFlow's tables ([architecture.md](architecture.md)). It lives in a
-database of its own (`OSDUDelivery` in the shipped deployments), which is what keeps a ledger that grows with every
-record delivered off the metadata engine and what Azure SQL needs, or in the catalog's own database, where one
-backup covers both. A run row and the attempts it produced are joined by id either way, never by a foreign key, so
-nothing here depends on the two being in one database; with two, a restore has to bring both to the same instant.
-The control plane reaches the module database through its connection reference, or on the catalog's connection when
-there is none; a node, which opens no catalog connection at all, always reaches it through the reference.
+schema version, with no foreign keys into SQLFlow's tables ([architecture.md](architecture.md)). It lives in the
+catalog's database, beside SQLFlow's own schema, which is what the shipped deployments do: one metadata database,
+one backup, and a run row joined to the attempts it produced by id. Because that join is by id and never by a
+foreign key, nothing here depends on the two being in one database, and an estate that has to keep them apart can
+give the module a database of its own (`SQLFLOW_OSDU_DB`), which is the only way to separate them on Azure SQL; a
+restore then has to bring both to the same instant.
+The control plane reaches the schema on the catalog's connection, or through the module's reference when the
+estate gave it one; a node, which opens no catalog connection at all, always reaches it through the reference.
 
 ## Tables
 

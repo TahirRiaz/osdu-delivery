@@ -5,8 +5,9 @@ import { defineConfig, devices } from "@playwright/test";
 // "@playwright/test" to its directory; that resolves to the CommonJS entry, and every named import from it fails.
 //
 // The e2e suite spins up EVERYTHING itself:
-//  1. the OSDU Delivery control plane host (dotnet), pointed at dedicated local test databases; bootstrap provisioning
-//     applies SQLFlow's and the OSDU module's migrations, seeds roles, and creates the e2e admin the tests sign in with;
+//  1. the OSDU Delivery control plane host (dotnet), pointed at a dedicated local test metadata database; bootstrap
+//     provisioning applies SQLFlow's catalog migrations and the OSDU module's beside them, seeds roles, and creates the
+//     e2e admin the tests sign in with. The chain's source and ingestion tables are a database of their own;
 //  2. the GUI dev server, pointed at that control plane via VITE_API_BASE_URL (which wins in dev mode).
 // Requirements on the machine: a SQL Server the suite may create a database on, sqlcmd, and the .NET SDK, same as the
 // DB-backed xUnit suites. The default connection uses integrated security on a local server; SQLFLOW_E2E_CATALOG_DB
@@ -83,12 +84,14 @@ export const E2E = {
   adminUsername: "e2e-admin",
   adminPassword: "e2e-admin-password-123456",
   bootstrapSecret: "e2e-bootstrap-secret-0123456789-PADDING",
-  // SQLFlow's own catalog: the metadata engine. Pipelines, runs, schedules, lineage, sources, users.
+  // The metadata database: SQLFlow's catalog schema (pipelines, runs, schedules, lineage, sources, users) and the
+  // delivery module's osdu schema beside it (the ledger, the mappings, the templates and the partition caches).
   catalogDb,
-  // The OSDU Delivery module's database (schema osdu): the delivery ledger, the mappings, the templates and the
-  // partition caches. A database of its own here because that is the shape an estate takes when the two are separated,
-  // which on Azure SQL they usually are: the control plane provisions and migrates it like any module database.
-  osduDb: process.env.SQLFLOW_E2E_OSDU_DB ?? inDatabase(catalogDb, "OSDUDelivery_E2E"),
+  // Where the module's osdu schema is. The catalog's database, which is the shape the product ships and the one every
+  // spec here runs against; SQLFLOW_E2E_OSDU_DB points the suite at an estate that keeps it apart instead, which is
+  // what an estate on Azure SQL has to do. A node is given this connection either way, since a node opens no catalog
+  // connection at all.
+  osduDb: process.env.SQLFLOW_E2E_OSDU_DB ?? catalogDb,
   // Where the chain's source and ingestion tables live, which is where the volume is in a real estate. The pre and
   // ingestion flows create their own schemas in it; the seed spec creates the database itself.
   sampleDb: process.env.SQLFLOW_E2E_SAMPLE_DB ?? inDatabase(catalogDb, "OsduSample_E2E"),
@@ -131,10 +134,14 @@ export default defineConfig({
         // password, and a literal secret never goes into configuration.
         ControlPlane__Catalog__ConnectionReference: "${env:SQLFLOW_E2E_CATALOG_CONNECTION}",
         SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,
-        // The module's own database, as a reference for the same reason. Bootstrap creates and migrates it beside the
-        // catalog, and nothing the module writes reaches the catalog's database.
-        Osdu__Database__Connection: "${env:SQLFLOW_E2E_OSDU_CONNECTION}",
-        SQLFLOW_E2E_OSDU_CONNECTION: E2E.osduDb,
+        // The module is given no connection of its own, which is what puts its osdu schema in the catalog's database:
+        // the shipped shape, and the one the host has to keep working. Only an estate that separated them declares it.
+        ...(process.env.SQLFLOW_E2E_OSDU_DB
+          ? {
+            Osdu__Database__Connection: "${env:SQLFLOW_E2E_OSDU_CONNECTION}",
+            SQLFLOW_E2E_OSDU_CONNECTION: E2E.osduDb,
+          }
+          : {}),
         // The sample flows read their ingestion tables through this reference. Without it a plan cannot open the tables
         // the seed loaded, and every delivery run fails on a connection it cannot resolve.
         OSDU_SAMPLE_DB: E2E.sampleDb,

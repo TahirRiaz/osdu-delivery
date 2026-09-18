@@ -34,7 +34,7 @@ passes through the control plane.
 
 | Variable | Meaning |
 | --- | --- |
-| `SQLFLOW_CATALOG_DB` | SQLFlow's catalog connection string, the metadata engine (`SQLFlow` in the shipped deployments). Also accepted as `ControlPlane:Catalog:ConnectionReference`, which may itself be a `${keyvault:...}` reference. The OSDU module's `osdu` schema lives in this same database only when the module declares no connection of its own. |
+| `SQLFLOW_CATALOG_DB` | The metadata connection string (`SQLFlow` in the shipped deployments): SQLFlow's catalog schema, and the OSDU module's `osdu` schema beside it. Also accepted as `ControlPlane:Catalog:ConnectionReference`, which may itself be a `${keyvault:...}` reference. The module's schema is elsewhere only when the module declares a connection of its own. |
 | `SQLFLOW_GIT_TOKEN`, `SQLFLOW_GIT_USERNAME` | The credential managed sync fetches private flow repositories with, when a repo source declares no reference of its own. The username is for hosts that pair the token with one (Bitbucket app passwords, `x-token-auth`); GitHub needs the token alone. |
 | `SQLFLOW_AZURE_AUTH` | How the process authenticates to Azure for Key Vault and storage: `default`, `cli`, `managedidentity` (`mi`), `serviceprincipal` (`sp`). The standard `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` family applies exactly as the Azure SDK defines it. |
 
