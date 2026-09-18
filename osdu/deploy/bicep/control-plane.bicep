@@ -34,6 +34,9 @@ param keyVaultName string
 @description('Key Vault secret name for the catalog ADO.NET connection string.')
 param catalogConnectionSecretName string = 'osdu-delivery-catalog-db'
 
+@description('Key Vault secret name for the OSDU Delivery module database connection string, which startup migrates and verifies after the catalog. Point it at a secret holding the catalog connection to keep the `osdu` schema in the catalog database.')
+param osduConnectionSecretName string = 'osdu-delivery-osdu-db'
+
 @description('Key Vault secret name for the JWT signing key (must decode to at least 32 bytes).')
 param jwtSigningKeySecretName string = 'osdu-delivery-jwt-signing-key'
 
@@ -137,6 +140,11 @@ var baseSecrets = [
     identity: identity.id
   }
   {
+    name: 'osdu-db'
+    keyVaultUrl: '${vaultUri}secrets/${osduConnectionSecretName}'
+    identity: identity.id
+  }
+  {
     name: 'jwt-signing-key'
     keyVaultUrl: '${vaultUri}secrets/${jwtSigningKeySecretName}'
     identity: identity.id
@@ -161,10 +169,16 @@ var gitTokenSecrets = empty(gitTokenSecretName) ? [] : [
 
 var baseEnv = [
   // The catalog connection; the control plane's default ConnectionReference (${env:SQLFLOW_CATALOG_DB}) reads
-  // exactly this variable, and the OSDU module's database falls back to it, so no further config is needed.
+  // exactly this variable.
   {
     name: 'SQLFLOW_CATALOG_DB'
     secretRef: 'catalog-db'
+  }
+  // The delivery module's database, which startup migrates and verifies after the catalog. Naming the catalog's
+  // own connection here keeps the `osdu` schema in the catalog database instead.
+  {
+    name: 'SQLFLOW_OSDU_DB'
+    secretRef: 'osdu-db'
   }
   // Resolve ${keyvault:...}/cloud-storage credentials at run time via this managed identity.
   {

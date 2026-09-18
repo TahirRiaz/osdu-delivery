@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "16694521199184838602"
+      "templateHash": "164318496059127185"
     }
   },
   "parameters": {
@@ -271,9 +271,16 @@
     },
     "catalogDatabaseName": {
       "type": "string",
-      "defaultValue": "OsduDeliveryCatalog",
+      "defaultValue": "SQLFlow",
       "metadata": {
-        "description": "Name of the catalog database on that server. It also holds the OSDU module's `osdu` schema: the ledger, mappings, templates and the OSDU cache."
+        "description": "Name of SQLFlow's catalog database on that server: the metadata engine, holding pipelines, runs, schedules, lineage, sources and users."
+      }
+    },
+    "osduDatabaseName": {
+      "type": "string",
+      "defaultValue": "OSDUDelivery",
+      "metadata": {
+        "description": "Name of the OSDU Delivery module's database (schema `osdu`): the record ledger, mappings, templates and the OSDU cache. A database of its own by default, since an Azure SQL database cannot reach another in one statement and the ledger grows with the records, not the metadata. Name the catalog database here to keep both in one."
       }
     },
     "preDatabaseName": {
@@ -313,6 +320,7 @@
   },
   "variables": {
     "catalogConnectionSecretName": "osdu-delivery-catalog-db",
+    "osduConnectionSecretName": "osdu-delivery-osdu-db",
     "preConnectionSecretName": "osdu-delivery-pre-db",
     "ingestionConnectionSecretName": "osdu-delivery-ing-db",
     "jwtSigningKeySecretName": "osdu-delivery-jwt-signing-key",
@@ -323,6 +331,10 @@
     "entraSignInAudience": "[if(empty(parameters('azureAdAdditionalAllowedTenantIds')), 'AzureADMyOrg', 'AzureADMultipleOrgs')]",
     "effectiveAzureAdAllowedTenantIds": "[if(parameters('provisionEntraApp'), concat(createArray(subscription().tenantId), parameters('azureAdAdditionalAllowedTenantIds')), parameters('azureAdAllowedTenantIds'))]",
     "builtInFlowEnv": [
+      {
+        "name": "SQLFLOW_OSDU_DB",
+        "secretName": "[variables('osduConnectionSecretName')]"
+      },
       {
         "name": "SQLFLOW_CONN_PRE",
         "secretName": "[variables('preConnectionSecretName')]"
@@ -421,6 +433,20 @@
       ]
     },
     {
+      "condition": "[and(empty(parameters('existingSqlServer')), not(equals(parameters('osduDatabaseName'), parameters('catalogDatabaseName'))))]",
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2023-08-01-preview",
+      "name": "[format('{0}/{1}', parameters('sqlServerName'), parameters('osduDatabaseName'))]",
+      "location": "[parameters('location')]",
+      "sku": "[parameters('sqlDatabaseSku')]",
+      "properties": {
+        "collation": "SQL_Latin1_General_CP1_CI_AS"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', parameters('sqlServerName'))]"
+      ]
+    },
+    {
       "condition": "[empty(parameters('existingSqlServer'))]",
       "type": "Microsoft.Sql/servers/databases",
       "apiVersion": "2023-08-01-preview",
@@ -454,6 +480,18 @@
       "name": "[format('{0}/{1}', parameters('keyVaultName'), variables('catalogConnectionSecretName'))]",
       "properties": {
         "value": "[format('Server=tcp:{0};Initial Catalog={1};User ID={2};Password={3};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30', if(empty(parameters('existingSqlServer')), format('{0},1433', reference(resourceId('Microsoft.Sql/servers', parameters('sqlServerName')), '2023-08-01-preview').fullyQualifiedDomainName), if(contains(parameters('existingSqlServer'), ','), parameters('existingSqlServer'), format('{0},1433', parameters('existingSqlServer')))), parameters('catalogDatabaseName'), parameters('sqlAdminLogin'), variables('quotedSqlAdminPassword'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+        "[resourceId('Microsoft.Sql/servers', parameters('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), variables('osduConnectionSecretName'))]",
+      "properties": {
+        "value": "[format('Server=tcp:{0};Initial Catalog={1};User ID={2};Password={3};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30', if(empty(parameters('existingSqlServer')), format('{0},1433', reference(resourceId('Microsoft.Sql/servers', parameters('sqlServerName')), '2023-08-01-preview').fullyQualifiedDomainName), if(contains(parameters('existingSqlServer'), ','), parameters('existingSqlServer'), format('{0},1433', parameters('existingSqlServer')))), parameters('osduDatabaseName'), parameters('sqlAdminLogin'), variables('quotedSqlAdminPassword'))]"
       },
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
@@ -739,6 +777,9 @@
           "catalogConnectionSecretName": {
             "value": "[variables('catalogConnectionSecretName')]"
           },
+          "osduConnectionSecretName": {
+            "value": "[variables('osduConnectionSecretName')]"
+          },
           "jwtSigningKeySecretName": {
             "value": "[variables('jwtSigningKeySecretName')]"
           },
@@ -787,7 +828,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "2916491046498085574"
+              "templateHash": "7008462985697445909"
             }
           },
           "parameters": {
@@ -828,6 +869,13 @@
               "defaultValue": "osdu-delivery-catalog-db",
               "metadata": {
                 "description": "Key Vault secret name for the catalog ADO.NET connection string."
+              }
+            },
+            "osduConnectionSecretName": {
+              "type": "string",
+              "defaultValue": "osdu-delivery-osdu-db",
+              "metadata": {
+                "description": "Key Vault secret name for the OSDU Delivery module database connection string, which startup migrates and verifies after the catalog. Point it at a secret holding the catalog connection to keep the `osdu` schema in the catalog database."
               }
             },
             "jwtSigningKeySecretName": {
@@ -989,6 +1037,11 @@
                 "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
               },
               {
+                "name": "osdu-db",
+                "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('osduConnectionSecretName'))]",
+                "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+              },
+              {
                 "name": "jwt-signing-key",
                 "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('jwtSigningKeySecretName'))]",
                 "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
@@ -1070,7 +1123,7 @@
                         "cpu": "[json('0.5')]",
                         "memory": "1.0Gi"
                       },
-                      "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('corsEnv'), variables('proxyEnv'), variables('entraEnv'))]",
+                      "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_OSDU_DB', 'secretRef', 'osdu-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('corsEnv'), variables('proxyEnv'), variables('entraEnv'))]",
                       "probes": [
                         {
                           "type": "Liveness",
@@ -1138,6 +1191,8 @@
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('jwtSigningKeySecretName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
         "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.Sql/servers/databases', parameters('sqlServerName'), parameters('osduDatabaseName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('osduConnectionSecretName'))]",
         "[resourceId('Microsoft.Sql/servers/firewallRules', parameters('sqlServerName'), 'AllowAllWindowsAzureIps')]"
       ]
     },

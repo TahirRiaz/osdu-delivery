@@ -6,9 +6,9 @@
 # over the node protocol.
 #
 # The delivery engine reads and writes the `osdu` ledger per record while it plans and delivers, and a node has no
-# catalog connection, so the module database needs a connection reference of its own on this tier: the
-# osdu-module-connection secret below, mounted under the variable the worker host declares for it
-# (osdu/docs/environment-variables.md).
+# catalog connection, so the module database is reached through a connection of its own on this tier: the
+# osdu-module-connection secret, mounted below as SQLFLOW_OSDU_DB (osdu/docs/environment-variables.md). Without it a
+# node validates and plans but delivers nothing, because a delivery is written to the ledger record by record.
 #
 # Requires KEDA installed in the cluster (https://keda.sh): the metrics-api scaler reads the pool's replica target
 # from the control plane (GET /api/v1/node/scale-target), authenticated with the same node token the nodes use,
@@ -51,6 +51,11 @@ spec:
             - name: SQLFLOW_GIT_TOKEN
               valueFrom:
                 secretKeyRef: { name: osdu-delivery-secrets, key: git-token }
+            # The delivery ledger, per record, as the run plans and delivers: the module's database, whether that is
+            # one of its own or the catalog's.
+            - name: SQLFLOW_OSDU_DB
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: osdu-module-connection }
             # The private ranges (CIDR, comma separated) the delivery engine may reach, when the OSDU, its storage or
             # a proxy resolves to a private address. Empty reaches public addresses only; loopback, link-local and
             # cloud metadata addresses are never reachable.

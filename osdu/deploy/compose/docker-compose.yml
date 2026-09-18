@@ -1,6 +1,12 @@
-# The full OSDU Delivery stack for local and parity deployments: SQL Server (the catalog with the OSDU module's
-# `osdu` schema, plus the pre and ingestion databases the delivery chain uses), the control plane, one scalable
-# node, and the GUI. Copy .env.example to .env and set the secrets first.
+# The full OSDU Delivery stack for local and parity deployments: SQL Server, the control plane, one scalable node,
+# and the GUI. Copy .env.example to .env and set the secrets first.
+#
+# Four databases, each named for what it holds, because they grow at different rates and an estate often keeps
+# them apart (on Azure SQL it has to: there is no cross-database statement there):
+#   SQLFlow          SQLFlow's catalog, the metadata engine: pipelines, runs, schedules, lineage, sources, users
+#   OSDUDelivery     the delivery module (schema `osdu`): the record ledger, mappings, templates and caches
+#   OsduDeliveryPre  what pre-ingestion lands from the source systems
+#   OsduDeliveryIng  the keyed ingestion tables the OSDU flows read, which is where the row volume is
 #
 #   docker compose up -d --build mssql controlplane gui
 #   # mint a node-scoped token from the control plane, put it in .env as SQLFLOW_NODE_TOKEN
@@ -47,9 +53,13 @@ services:
       mssql:
         condition: service_healthy
     environment:
-      # The catalog, which also holds the OSDU module's `osdu` schema: startup applies SQLFlow's migrations and
-      # then the module's.
-      ControlPlane__Catalog__ConnectionReference: "Server=mssql;Database=OsduDeliveryCatalog;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      # SQLFlow's catalog: startup applies SQLFlow's migrations to it.
+      ControlPlane__Catalog__ConnectionReference: "Server=mssql;Database=SQLFlow;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      # The delivery module's own database, which a host reads from Osdu:Database:Connection or, as here, from this
+      # variable. Startup creates it (Bootstrap:AllowCreate below) and applies the module's migrations to its `osdu`
+      # schema, then verifies it against this build. Leave it out and the schema goes in the catalog's database
+      # instead, which is the smaller estate and still supported.
+      SQLFLOW_OSDU_DB: "Server=mssql;Database=OSDUDelivery;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
       ControlPlane__Jwt__SigningKey: ${SQLFLOW_JWT_SIGNING_KEY:?set SQLFLOW_JWT_SIGNING_KEY in .env}
       ControlPlane__Jwt__BootstrapSecret: ${SQLFLOW_BOOTSTRAP_SECRET:?set SQLFLOW_BOOTSTRAP_SECRET in .env}
       ControlPlane__Bootstrap__AdminUsername: ${SQLFLOW_ADMIN_USERNAME:-admin}
@@ -88,8 +98,8 @@ services:
       SQLFLOW_URL: http://controlplane:8080
       SQLFLOW_TOKEN: ${SQLFLOW_NODE_TOKEN:?mint a node-scoped token from the control plane and set SQLFLOW_NODE_TOKEN in .env}
       # The delivery engine reads and writes the `osdu` ledger per record while it plans and delivers, and a node
-      # has no catalog connection, so the module database needs a connection reference of its own here. Set it
-      # under the variable the worker host declares for it (osdu/docs/environment-variables.md).
+      # has no catalog connection, so the module database is reached through its own reference here.
+      SQLFLOW_OSDU_DB: "Server=mssql;Database=OSDUDelivery;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
       # The databases the delivery chain uses: pre-ingestion lands source files in the first, the ingestion flow
       # loads the keyed tables into the second, and the OSDU flow reads those tables.
       SQLFLOW_CONN_PRE: "Server=mssql;Database=OsduDeliveryPre;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"

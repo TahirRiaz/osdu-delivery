@@ -31,11 +31,15 @@ spec:
           ports:
             - containerPort: 8080
           env:
-            # The catalog, which also holds the OSDU module's `osdu` schema: the module database falls back to
-            # the catalog connection, so this tier needs no second connection string.
+            # SQLFlow's catalog: pipelines, runs, schedules, lineage, sources and users.
             - name: ControlPlane__Catalog__ConnectionReference
               valueFrom:
                 secretKeyRef: { name: osdu-delivery-secrets, key: catalog-connection }
+            # The delivery module's database, which startup migrates and verifies after the catalog. Point this at
+            # the catalog's database to keep the `osdu` schema there instead; leave it out and it goes there anyway.
+            - name: SQLFLOW_OSDU_DB
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: osdu-module-connection }
             - name: ControlPlane__Jwt__SigningKey
               valueFrom:
                 secretKeyRef: { name: osdu-delivery-secrets, key: jwt-signing-key }

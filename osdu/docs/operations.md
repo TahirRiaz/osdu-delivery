@@ -35,7 +35,7 @@ Everything the platform already reads ([environment-variables.md](environment-va
 | `Osdu:Telemetry:ExportSeconds` / `:ServiceName` / `:ServiceInstanceId` | control plane | How often the metrics are sent (default 60, never under 5), and what a backend groups them under (default `osdu-delivery`, and the machine name). |
 | `OSDU_TELEMETRY_EXPORTER` and `OSDU_TELEMETRY_*` | nodes | The same settings for a node, which takes every setting from its environment: `_OTLP_ENDPOINT`, `_OTLP_PROTOCOL`, `_OTLP_HEADERS`, `_AZURE_MONITOR_CONNECTION`, `_EXPORT_SECONDS`, `_SERVICE_NAME`, `_SERVICE_INSTANCE`. A one-shot CLI command exports nothing: it ends before the first export. |
 | `Osdu:TargetProbe:SettleSeconds` / `:MaxPerPass` | control plane | How long a pass waits for the probes it queued before moving on (default 60, 0 not to wait; whatever has not come back is recorded by the next pass), and how many interfaces one pass probes across every flow (default 200, the rest on the passes after it once the estate is narrowed). |
-| `Osdu:Database:Connection` / `SQLFLOW_OSDU_DB` | nodes (and the CLI) | The `osdu` module database, as a `${env:...}` or `${keyvault:...}` reference. A node opens no catalog connection, so this is how it reaches the ledger, the templates and the caches; the login needs rights on schema `osdu` alone. A literal secret is refused at startup. |
+| `Osdu:Database:Connection` / `SQLFLOW_OSDU_DB` | every tier | The module database (`OSDUDelivery` in the shipped deployments: the ledger, the mappings, the templates and the caches), as a `${env:...}` or `${keyvault:...}` reference; the login needs rights on schema `osdu` alone, and a literal secret is refused at startup. The control plane migrates and verifies it after the catalog. A node opens no catalog connection at all, so without this a node validates and plans but delivers nothing. Left unset, the `osdu` schema is the catalog database's; which of the two an estate is cannot be changed by the setting afterwards, so choose before the first migrate. |
 | Repository layout | flow repositories | `mappings/` next to the flows (or named under `render.mappings`), and the cache flows (`flowType: cache`) that fill the partition caches the mappings read, committed and synced. The templates the mappings pin and every version of every cache live in the catalog, never in the repository; nothing writes to the repository. |
 
 ## First deployment
@@ -45,10 +45,10 @@ Everything the platform already reads ([environment-variables.md](environment-va
    (`source.work`), and read/write on the retrieval locations. A node opens no catalog connection, so it also
    needs the `osdu` module database connection of its own (`SQLFLOW_OSDU_DB`), with rights on schema `osdu`
    alone ([../architecture.md](architecture.md)).
-2. Provision the databases: the control plane applies SQLFlow's and the module's migrations on start, or
-   `sqlflow db migrate --db <ref>`. The ledger's `osdu` schema comes with it. The ledger reads under snapshot
-   isolation, so allow it once on the database that holds the `osdu` schema (Azure SQL Database allows it by
-   default): `ALTER DATABASE [<database>] SET ALLOW_SNAPSHOT_ISOLATION ON;`
+2. Provision the databases: the control plane applies SQLFlow's migrations to the catalog and the module's to the
+   module database on start, or `sqlflow db migrate --db <ref>`. The ledger's `osdu` schema comes with it. The
+   ledger reads under snapshot isolation, so allow it once on the database that holds the `osdu` schema (Azure SQL
+   Database allows it by default): `ALTER DATABASE [<database>] SET ALLOW_SNAPSHOT_ISOLATION ON;`
    ([ledger.md](ledger.md#provisioning)).
 3. Save the template the mapping pins into the catalog:
 

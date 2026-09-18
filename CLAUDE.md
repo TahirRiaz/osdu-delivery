@@ -30,7 +30,7 @@
 - `[osdu].[SchemaVersion]` records the module's schema version, the last migration applied, when and by whom, and the minimum SQLFlow catalog migration it requires. The hosts and `sqlflow db status` refuse to run against pending OSDU migrations, a database newer than the code, or a SQLFlow catalog older than required, and name the migration or version in the message.
 - No foreign keys and no EF navigations from `osdu` into SQLFlow's tables. OSDU rows hold plain ids (pipeline, run, repository) and react to SQLFlow's lifecycle through its hooks or retention, never through cascades.
 - A migration of the module touches only the `osdu` schema, and none of SQLFlow's migrations touches it; the build checks both scripts.
-- Work that must commit together with SQLFlow's catalog (a repository sync writing mappings, a run queued with its submission) joins the catalog's connection and transaction instead of opening a second one.
+- Work that must commit together with SQLFlow's catalog (a repository sync writing mappings, a run queued with its submission) joins the catalog's connection and transaction instead of opening a second one, whenever the module's rows are reachable there (`ModuleDatabase.IsReachableOn`). Given a database of its own, which Azure SQL allows no statement to reach across, it commits its own work on its own connection and is written to be repeatable, so the next run settles what a failure left behind.
 
 ## Traceability Is The Product
 

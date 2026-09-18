@@ -74,9 +74,19 @@ Every model change ships with its migration, so the ledger can be upgraded in pr
 SQLFlow's catalog. The hosts and `sqlflow db status` refuse to run against pending OSDU migrations, a database
 newer than the code, or a catalog older than the module requires, and name the migration or version.
 
-On the control plane the module database rides on the catalog connection. **A compute node opens no catalog
-connection at all** (it speaks only the node protocol), so there the module database needs a connection reference
-of its own: see [environment-variables.md](environment-variables.md).
+The module database is either a database of its own (`OSDUDelivery` in the shipped deployments) or the catalog's
+own, and the connection reference decides which: given one, the control plane migrates, verifies and reads that
+database; given none, the `osdu` schema sits in the catalog database and the control plane reaches it on the
+catalog connection. Both are supported, and an estate cannot move between them by changing the setting after the
+first migrate. Two databases is the shape to prefer where the ledger grows with the records rather than with the
+metadata, and the shape Azure SQL forces, since no statement there reaches across two databases: the one place
+that wrote module rows inside the catalog's own transaction, the repository sync, asks where the rows are
+(`ModuleDatabase.IsReachableOn`) and commits its own work when they are elsewhere, reconciling idempotently from
+the repository so the next sync settles what a failure left behind.
+
+**A compute node opens no catalog connection at all** (it speaks only the node protocol), so a node always needs
+the module's connection reference, whichever shape the estate is: see
+[environment-variables.md](environment-variables.md). Without it a node validates and plans but delivers nothing.
 
 ## A delivery run
 

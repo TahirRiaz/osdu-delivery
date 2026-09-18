@@ -225,15 +225,16 @@ contributor declares reads of `record.object` and every dataset object so waves 
   - Every OSDU Delivery host reads one option: section `Osdu:Database:Connection`, environment variable `SQLFLOW_OSDU_DB`.
   - It holds a `${env:NAME}` or `${keyvault:NAME}` reference, resolved through `ISecretResolver` at first use.
   - A literal secret is refused at startup, with a message naming the option and never echoing the value.
-- **One database, two logins.**
-  - The `osdu` schema lives in the catalog database. This is required by the CLAUDE.md rule that work committing with the catalog (a run queued with its submission) joins the catalog's transaction.
-  - The control plane opens `OsduDbContext` on the catalog's `DbConnection` and enlists in its transaction (`Database.UseTransaction`).
+- **One database or two, and a login per tier.**
+  - Given no connection of its own, the `osdu` schema lives in the catalog database, and work that commits with the catalog (the repository sync's mapping, cache and interface rows) joins the catalog's transaction.
+  - Given one, it lives in a database of its own, which is the shape Azure SQL forces (no cross-database statement, and often another server). The repository sync then commits its own work on the module's connection and reconciles idempotently from the repository, so a sync that fails after that commit is settled by the next one.
+  - The control plane opens `OsduDbContext` on the catalog's `DbConnection` and enlists in its transaction (`Database.UseTransaction`) when the module's rows are reachable there (`ModuleDatabase.IsReachableOn`), and on the module's own connection when they are not.
   - Nodes connect with a separate login that can only reach schema `osdu`: `GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON SCHEMA::osdu`, nothing on SQLFlow's schemas.
   - The operations guide documents the grant. `sqlflow db status` on a node reports the `osdu` schema version it sees.
 - **Composition** (`osdu/src/SqlFlow.Delivery/Engine/DeliveryServices.cs`).
   - `AddDeliveryLedger(Func<IServiceProvider, Func<OsduDbContext>?> contexts)` replaces the `CatalogDbContext` factory.
   - `DeliveryLedgerSource` opens `OsduLedger`, `OsduTemplateStore` and `OsduCacheStore` over `OsduDbContext`.
-  - On a node the factory comes from the configured reference; on the control plane it comes from the catalog connection.
+  - On a node the factory comes from the configured reference; on the control plane from the reference when there is one, and from the catalog connection otherwise.
   - Without a configuration, a host still validates documents, and every ledger operation fails with: "This host has no osdu database connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB); the delivery ledger, templates and caches are unavailable."
 - **Version check.** Both hosts check `[osdu].[SchemaVersion]` at startup through the module database extension point. They refuse to run when migrations are pending, when the database is newer than the code, or when the catalog migration is older than `MinimumCatalogMigration`. The message names the migration or version.
 - **Fan-out on nodes.** Fan-out needs the run queue, which lives in SQLFlow's catalog, and nodes have no catalog connection. So `IFanOutDispatcher` on a node is implemented over the fan-out run group extension of the node protocol (`SqlFlow.Dispatch`), not over `CatalogDbContext`.

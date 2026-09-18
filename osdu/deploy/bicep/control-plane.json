@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "2916491046498085574"
+      "templateHash": "7008462985697445909"
     }
   },
   "parameters": {
@@ -46,6 +46,13 @@
       "defaultValue": "osdu-delivery-catalog-db",
       "metadata": {
         "description": "Key Vault secret name for the catalog ADO.NET connection string."
+      }
+    },
+    "osduConnectionSecretName": {
+      "type": "string",
+      "defaultValue": "osdu-delivery-osdu-db",
+      "metadata": {
+        "description": "Key Vault secret name for the OSDU Delivery module database connection string, which startup migrates and verifies after the catalog. Point it at a secret holding the catalog connection to keep the `osdu` schema in the catalog database."
       }
     },
     "jwtSigningKeySecretName": {
@@ -207,6 +214,11 @@
         "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
       },
       {
+        "name": "osdu-db",
+        "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('osduConnectionSecretName'))]",
+        "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+      },
+      {
         "name": "jwt-signing-key",
         "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('jwtSigningKeySecretName'))]",
         "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
@@ -288,7 +300,7 @@
                 "cpu": "[json('0.5')]",
                 "memory": "1.0Gi"
               },
-              "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('corsEnv'), variables('proxyEnv'), variables('entraEnv'))]",
+              "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_OSDU_DB', 'secretRef', 'osdu-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('corsEnv'), variables('proxyEnv'), variables('entraEnv'))]",
               "probes": [
                 {
                   "type": "Liveness",

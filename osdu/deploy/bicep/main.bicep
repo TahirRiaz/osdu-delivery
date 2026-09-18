@@ -154,8 +154,11 @@ param keyVaultName string = 'osdu-kv-${uniqueString(resourceGroup().id)}'
 @description('Azure SQL logical server name (globally unique, lowercase).')
 param sqlServerName string = 'osdu-sql-${uniqueString(resourceGroup().id)}'
 
-@description('Name of the catalog database on that server. It also holds the OSDU module\'s `osdu` schema: the ledger, mappings, templates and the OSDU cache.')
-param catalogDatabaseName string = 'OsduDeliveryCatalog'
+@description('Name of SQLFlow\'s catalog database on that server: the metadata engine, holding pipelines, runs, schedules, lineage, sources and users.')
+param catalogDatabaseName string = 'SQLFlow'
+
+@description('Name of the OSDU Delivery module\'s database (schema `osdu`): the record ledger, mappings, templates and the OSDU cache. A database of its own by default, since an Azure SQL database cannot reach another in one statement and the ledger grows with the records, not the metadata. Name the catalog database here to keep both in one.')
+param osduDatabaseName string = 'OSDUDelivery'
 
 @description('Name of the database pre-ingestion flows land raw source files in, reachable from flow YAML as \${env:SQLFLOW_CONN_PRE}.')
 param preDatabaseName string = 'OsduDeliveryPre'
@@ -177,6 +180,7 @@ param dataDatabaseSku object = {
 
 // Secret names shared with the per-tier templates (their defaults match these).
 var catalogConnectionSecretName = 'osdu-delivery-catalog-db'
+var osduConnectionSecretName = 'osdu-delivery-osdu-db'
 var preConnectionSecretName = 'osdu-delivery-pre-db'
 var ingestionConnectionSecretName = 'osdu-delivery-ing-db'
 var jwtSigningKeySecretName = 'osdu-delivery-jwt-signing-key'
@@ -259,6 +263,17 @@ resource catalogDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = 
   }
 }
 
+// The delivery module's own database, created only when it is not the catalog's.
+resource osduDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = if (empty(existingSqlServer) && osduDatabaseName != catalogDatabaseName) {
+  parent: sqlServer
+  name: osduDatabaseName
+  location: location
+  sku: sqlDatabaseSku
+  properties: {
+    collation: 'SQL_Latin1_General_CP1_CI_AS'
+  }
+}
+
 // The two data databases the delivery chain has: pre stages the landed source files, ing holds the keyed
 // ingestion tables the OSDU flow reads. Like the catalog they are only created when this template creates the
 // server; on an existing server they are provisioned out of band and only their connection secrets are wired here.
@@ -294,6 +309,7 @@ var sqlServerAddress = empty(existingSqlServer)
 // is quoted (embedded single quotes doubled) so any complex value survives ADO.NET parsing.
 var quotedSqlAdminPassword = '\'${replace(sqlAdminPassword, '\'', '\'\'')}\''
 var catalogConnectionString = 'Server=tcp:${sqlServerAddress};Initial Catalog=${catalogDatabaseName};User ID=${sqlAdminLogin};Password=${quotedSqlAdminPassword};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
+var osduConnectionString = 'Server=tcp:${sqlServerAddress};Initial Catalog=${osduDatabaseName};User ID=${sqlAdminLogin};Password=${quotedSqlAdminPassword};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
 var preConnectionString = 'Server=tcp:${sqlServerAddress};Initial Catalog=${preDatabaseName};User ID=${sqlAdminLogin};Password=${quotedSqlAdminPassword};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
 var ingestionConnectionString = 'Server=tcp:${sqlServerAddress};Initial Catalog=${ingestionDatabaseName};User ID=${sqlAdminLogin};Password=${quotedSqlAdminPassword};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
 
@@ -302,6 +318,14 @@ resource catalogDbSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   name: catalogConnectionSecretName
   properties: {
     value: catalogConnectionString
+  }
+}
+
+resource osduDbSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: osduConnectionSecretName
+  properties: {
+    value: osduConnectionString
   }
 }
 
@@ -393,6 +417,7 @@ module controlPlane 'control-plane.bicep' = {
     image: controlPlaneImage
     keyVaultName: keyVault.name
     catalogConnectionSecretName: catalogConnectionSecretName
+    osduConnectionSecretName: osduConnectionSecretName
     jwtSigningKeySecretName: jwtSigningKeySecretName
     // Compute belongs to the worker app; the API replica does API + scheduler + sync work only.
     workerEnabled: false
@@ -415,18 +440,25 @@ module controlPlane 'control-plane.bicep' = {
   // The app reads these vault secrets at creation and migrates the catalog and the OSDU module at startup.
   dependsOn: [
     catalogDbSecret
+    osduDbSecret
     jwtSigningKeySecret
     adminPasswordSecret
     gitTokenSecret
     catalogDatabase
+    osduDatabase
     sqlAllowAzureServices
   ]
 }
 
-// The two data databases are wired under fixed names in every estate, so a flow document referencing
-// ${env:SQLFLOW_CONN_PRE} or ${env:SQLFLOW_CONN_DWH} moves from test to prod unchanged. Caller-supplied
-// references follow, and must not reuse these two names.
+// What every node reads under fixed names, so a flow document referencing ${env:SQLFLOW_CONN_PRE} or
+// ${env:SQLFLOW_CONN_DWH} moves from test to prod unchanged, and the ledger is reachable wherever the module's
+// database is. A node opens no catalog connection, so without SQLFLOW_OSDU_DB it validates and plans but
+// delivers nothing. Caller-supplied references follow, and must not reuse these three names.
 var builtInFlowEnv = [
+  {
+    name: 'SQLFLOW_OSDU_DB'
+    secretName: osduConnectionSecretName
+  }
   {
     name: 'SQLFLOW_CONN_PRE'
     secretName: preConnectionSecretName

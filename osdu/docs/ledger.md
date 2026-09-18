@@ -4,11 +4,14 @@ The ledger is the system ([design.md](design.md) section 7): the tables in the `
 what OSDU holds, what is waiting, and everything that ever happened to it. Everything an operator or a dashboard asks
 is answered from here, and every answer is index-backed.
 
-The `osdu` schema lives in the same database as the platform's catalog, so one backup covers both and a run row and
-the attempts it produced are joined by id, but it is the module's own: its own EF context (`OsduDbContext`), its own
-migration history and its own schema version, with no foreign keys into SQLFlow's tables
-([architecture.md](architecture.md)). The control plane reaches it on the catalog's connection; a node, which opens
-no catalog connection at all, reaches it through a connection reference of its own.
+The `osdu` schema is the module's own: its own EF context (`OsduDbContext`), its own migration history and its own
+schema version, with no foreign keys into SQLFlow's tables ([architecture.md](architecture.md)). It lives in a
+database of its own (`OSDUDelivery` in the shipped deployments), which is what keeps a ledger that grows with every
+record delivered off the metadata engine and what Azure SQL needs, or in the catalog's own database, where one
+backup covers both. A run row and the attempts it produced are joined by id either way, never by a foreign key, so
+nothing here depends on the two being in one database; with two, a restore has to bring both to the same instant.
+The control plane reaches the module database through its connection reference, or on the catalog's connection when
+there is none; a node, which opens no catalog connection at all, always reaches it through the reference.
 
 ## Tables
 

@@ -64,6 +64,7 @@ Each of these lets a host add something of its own without SQLFlow knowing what 
 | `7773685` | A host brands the product the control plane and the CLI name (`ProductBranding`). |
 | `fba2ca6` | A host builds its GUI from SQLFlow's workbench with modules of its own (the GUI module registry and bootstrap). |
 | `3561809` | A host module declares its own database, migrated, reported and verified alongside the catalog (`ModuleDatabase`), so a module's schema upgrades without touching SQLFlow's. |
+| `a1742b2`, `f299024` | A module asks whether its rows are reachable on a host's connection (`ModuleDatabase.IsReachableOn`), which is what decides whether it may share the host's transaction. A sync extension whose tables are in a database of its own cannot: Azure SQL has no cross-database statement, and the two databases may not share a server. The `ICatalogSyncExtension` contract says what each kind of extension must then do. |
 
 ### Flow kinds
 

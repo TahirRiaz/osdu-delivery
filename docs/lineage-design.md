@@ -12,7 +12,7 @@ robust, and the tests that hold it.
 
 ## 1. What was missing
 
-Checked against the synced e2e catalog (`SqlFlowCatalogE2EOsdu`) and the lineage graph page on 2026-09-16.
+Checked against the synced e2e catalog (`SQLFlow_E2E`, then named `SqlFlowCatalogE2EOsdu`) and the lineage graph page on 2026-09-16.
 
 1. **Delivery flows were dead ends.** A delivery flow declared only the ingestion tables it reads
    (`DeliveryLineage.DeclaredObjects`). Nothing downstream of it existed, so the graph ended at `recall-welllog` and
