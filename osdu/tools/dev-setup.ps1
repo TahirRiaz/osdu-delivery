@@ -1,20 +1,58 @@
-# Rebuilds .sqlflow\env for local dev, reading the live values straight from Azure.
+﻿# Rebuilds .sqlflow\env for local dev, reading an estate's values straight from Azure.
 #
-#   powershell -ExecutionPolicy Bypass -File osdu\tools\dev-setup.ps1
+#   powershell -ExecutionPolicy Bypass -File osdu\tools\dev-setup.ps1 -ResourceGroup <rg> -ControlPlaneApp <app> -WorkerApp <app>
 #
-# Run this once, and again whenever a connection string or key rotates in the estate. It needs
+# Run this once, and again whenever a connection string or key rotates in that estate. It needs
 # 'az login' with access to the resource group.
+#
+# WHAT THIS PUTS ON YOUR MACHINE: the estate's catalog connection, its JWT signing key (which mints
+# tokens that estate accepts), its git token, and the pre and ingestion database connections, all in
+# cleartext in the git-ignored .sqlflow\env. Everything you then run locally acts on those real
+# databases. Point it at a development estate of its own where there is one; the production estate
+# needs -IUnderstandThisIsProduction, so that it is a decision each time rather than the default
+# (go-live map SEC-3, DEC-7).
 #
 # WHY IT READS CONTAINER APP SECRETS, NOT KEY VAULT: the Key Vault copies of these connection
 # strings have gone stale in both host and password before, naming a managed instance that no
 # longer exists. Using them gets a connection that fails with a misleading "transient failure ...
 # consider EnableRetryOnFailure" error. The container apps' own secrets are what the running system
 # uses, so they are the only trustworthy source.
+[CmdletBinding()]
+param(
+    # The estate to read. The defaults are the production estate, which is why naming it is not enough on its own.
+    [string]$ResourceGroup = "datawarehouse-west-rg-prod-v2",
+    [string]$ControlPlaneApp = "sqlflow-v3-control-plane",
+    [string]$WorkerApp = "sqlflow-v3-worker",
+    # Required when the estate named above is a production one: the acknowledgement that its credentials
+    # and its data are what this machine will be working with.
+    [switch]$IUnderstandThisIsProduction,
+    # Overwrites an existing .sqlflow\env. Without it an existing file is left alone, so a working local
+    # setup is never replaced by a run meant for another estate.
+    [switch]$Force
+)
+
 $ErrorActionPreference = "Stop"
 
-$rg = "datawarehouse-west-rg-prod-v2"
-$app = "sqlflow-v3-control-plane"
-$worker = "sqlflow-v3-worker"
+$rg = $ResourceGroup
+$app = $ControlPlaneApp
+$worker = $WorkerApp
+
+# A name with 'prod' in it is the production estate until someone says otherwise. The check is on the
+# name because the name is what an operator reads before pressing enter.
+$looksLikeProduction = ($rg -match "prod") -or ($app -match "prod") -or ($worker -match "prod")
+if ($looksLikeProduction -and -not $IUnderstandThisIsProduction) {
+    Write-Error @"
+'$rg' looks like the production estate, and this script would copy its catalog connection, its JWT
+signing key, its git token and its database connections onto this machine in cleartext, after which
+everything you run locally acts on the real databases.
+
+Point it at a development estate:
+    -ResourceGroup <dev-rg> -ControlPlaneApp <dev-app> -WorkerApp <dev-worker>
+
+or say that production is what you mean:
+    -IUnderstandThisIsProduction
+"@
+}
 # The SPA app registration backing the GUI's Microsoft sign-in button, looked up by display name.
 $entraAppName = "OSDU Delivery GUI"
 # osdu\tools -> osdu -> the repository root.
@@ -132,9 +170,15 @@ SQLFLOW_GIT_USERNAME=x-bitbucket-api-token-auth
 SQLFLOW_GIT_TOKEN=$git
 "@
 
+if ((Test-Path $envPath) -and -not $Force) {
+    Write-Error "$envPath already exists. Re-run with -Force to replace it, after checking which estate it is for."
+}
+
 Set-Content -Path $envPath -Value $content -Encoding utf8
 Write-Host "Wrote $envPath"
 Write-Host ""
+Write-Host "  Estate:   $rg ($app, $worker)$(if ($looksLikeProduction) { '  [PRODUCTION]' })"
 Write-Host "  Catalog:  $(($catalog -split ';' | Where-Object { $_ -match '^(Server|Database|Initial Catalog)=' }) -join '; ')"
+Write-Host "  On this machine now: the catalog connection, the JWT signing key, the git token, and the pre and ingestion connections."
 Write-Host ""
 Write-Host "Next:  dev.bat"
