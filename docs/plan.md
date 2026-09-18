@@ -136,6 +136,12 @@ suite passes.
 Closes when: records are delivered and verified in the live partition, cleanup is confirmed, and the documentation matches the
 code.
 
+**Closed on 2026-09-17.** The sample chain ran against Azure Data Manager for Energy 0.29, partition `dev`: the pre and
+ingestion flows loaded the tables, the storage, file, manifest and ddms routes delivered and were read back, verify and
+reconcile were exercised, and the twelve ids created were removed at the reversible scope with a GET answering 404 for
+each. Every call is in `.sqlflow/live-e2e/actions.log` and every id in `.sqlflow/live-e2e/test-data.md`; the report is
+[../osdu/docs/osdu-testing.md](../osdu/docs/osdu-testing.md) section 0.
+
 ## What moves from the previous implementation
 
 | Area | Verdict |
