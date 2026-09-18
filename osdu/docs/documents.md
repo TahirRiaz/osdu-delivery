@@ -518,6 +518,12 @@ them from the version OSDU holds, and a version whose only changes are in them i
 ([protocols.md](protocols.md#osdurecord)). A job is stopped by delivering it with `ActiveIndicator: false`, not by removing
 it.
 
+A platform can write into a record the same way. Azure Data Manager for Energy adds `data.TechnicalAssuranceTypeID` to a
+master-data record within a second of the record being written, under its own identity, so the record takes a version
+nobody asked for and a verify reports drift on every delivery (seen live on release 0.29,
+[osdu-testing.md](osdu-testing.md) section 0.4). Naming that key under the flow's `preserveDataKeys` is the answer: the
+update carries the platform's value forward, and the verify reads the version as another system's rather than as drift.
+
 ### The Reservoir DDMS
 
 The Reservoir DDMS keeps RESQML, WITSML and PRODML content as Energistics data objects in dataspaces of its own store,
