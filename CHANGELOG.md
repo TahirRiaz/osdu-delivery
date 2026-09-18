@@ -92,12 +92,34 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   not hold and holds a record that would write a dangling reference.
 - `docs/go-live-map.md`, the checklist from here to production, and an inventory of every id a live OSDU test creates,
   with the rule that no live test runs without approval (`CLAUDE.md`).
+- A scheduled target probe: every active delivery flow's OSDU is asked whether it still answers, once per interface,
+  through the same node operation the operator's "Probe target" queues. Each probe is an activity of kind `probe` in
+  the audit trail and a count on `osdu_delivery.probes`; a pass settles what an earlier pass or an earlier life of the
+  host left open, so no probe stays open and a restart loses nothing. Off unless `Osdu:TargetProbe:Enabled` says
+  otherwise, because a pass costs a token exchange and a live request per interface.
+- `sqlflow records release`: an operator on a node releases a flow's held, failed and removal-marked records back to
+  pending, the whole interface or the keys given, without a control plane to reach.
+- What one control plane replica costs and how an operator recovers from its absence, and the ledger's retention and
+  backup policy: what every table of the `osdu` schema holds, what grows, what may be pruned and what never may
+  (`osdu/docs/operations.md`, `osdu/docs/decisions/0005-ledger-retention.md`). The retention pass now clears the
+  captured run log of settled activities as well as aging out attempts, and answers both counts.
 - Generic extension points in the vendored SQLFlow, each in a `sqlflow:` commit: a registered flow kind describes its
   files and datasets in lineage (anchored at the flow's folder, bounded to the catalog's widths, and swept once no
   declaration names them), a flow's file selection is read from its stored definition, a search contributor can
   assert the result contract, and a link can set the pipelines page's repo and kind filters.
 
 ### Changed
+
+- The current build has been run against a live OSDU: Azure Data Manager for Energy 0.29, partition `dev`, on
+  2026-09-17. The storage, file, manifest and ddms routes each delivered and were read back, verify and reconcile were
+  exercised, and every id created was removed at the reversible scope with a GET answering 404
+  (`osdu/docs/osdu-testing.md` section 0). Six defects it found are fixed: a cache capture now ends a reference type
+  when its pages stop bringing anything new (this deployment hands back the same search cursor for every page); a bulk
+  chunk whose pandas entry no dataframe reader can read is held before it is sent, and the sample estate and every
+  fixture write the whole entry; a session whose chunks carry the reference curve as the row index rather than as a
+  column is held before the session is opened, because the service accepts every chunk and then refuses the commit; and
+  the sample source's wellbores and welllogs interfaces declare the child datasets their mappings repeat, with a suite
+  that reads every committed delivery document and checks it against the mapping it names.
 
 - Data reaches OSDU through SQLFlow's own flows: a pre-ingestion flow lands the source files, an ingestion flow
   loads the keyed ingestion tables, and the OSDU flow reads those tables and delivers. Lineage orders the three.
