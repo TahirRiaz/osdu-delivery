@@ -9,6 +9,12 @@ workstation (`SqlFlow.Delivery.Cli.Host`). The GUI is a static image. See [archi
 [../deploy/README.md](../deploy/README.md). Why the control plane is one replica, and what to do when it is not
 running, is [Availability and recovery](#availability-and-recovery).
 
+Images are built by CI on every push and published when the repository names a registry: set the `IMAGE_REGISTRY`
+variable (`ghcr.io/<owner>`, `<name>.azurecr.io`, `docker.io/<org>` or a private mirror) and, for anything but
+`ghcr.io`, the `REGISTRY_USERNAME` and `REGISTRY_PASSWORD` secrets. Every push to `main` publishes the commit sha and
+`latest`; a `v*` tag publishes the version as well, so a deployment can name an exact build and a rollback has
+something to name. With no registry named, CI builds and starts the images as before and publishes nothing.
+
 ## Configuration
 
 Everything the platform already reads ([environment-variables.md](environment-variables.md)), plus:

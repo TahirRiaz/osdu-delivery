@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
 
@@ -249,3 +250,70 @@ jobs:
             echo "The GUI image did not serve its pages with the runtime configuration it was given." >&2
             exit 1
           fi
+
+  publish:
+    # The images CI just built and started, pushed to the registry the repository names. Off until it names one: set
+    # the IMAGE_REGISTRY variable and this job runs, leave it unset and CI behaves exactly as before. Any registry that
+    # speaks the Docker protocol works, which is why the registry is a variable rather than a choice made here:
+    #   IMAGE_REGISTRY = ghcr.io/<owner> | <name>.azurecr.io | docker.io/<org> | a private mirror
+    # ghcr.io signs in with the workflow's own token; every other registry uses the REGISTRY_USERNAME and
+    # REGISTRY_PASSWORD secrets (for Azure Container Registry, a token or a service principal).
+    #
+    # What is pushed: the commit sha always, 'latest' from main, and the version when the ref is a v* tag, so a
+    # deployment can name an exact build and a rollback has something to name.
+    needs: [ build-test, images ]
+    if: github.event_name == 'push' && vars.IMAGE_REGISTRY != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Sign in to the registry
+        env:
+          REGISTRY: ${{ vars.IMAGE_REGISTRY }}
+          USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          host="${REGISTRY%%/*}"
+          if [ "$host" = "ghcr.io" ] && [ -z "$USERNAME" ]; then
+            echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          elif [ -n "$USERNAME" ] && [ -n "$PASSWORD" ]; then
+            echo "$PASSWORD" | docker login "$host" --username "$USERNAME" --password-stdin
+          else
+            echo "IMAGE_REGISTRY is '$REGISTRY' and no REGISTRY_USERNAME/REGISTRY_PASSWORD secrets are set." >&2
+            echo "Set them, or point IMAGE_REGISTRY at ghcr.io/<owner>, which signs in with this workflow's own token." >&2
+            exit 1
+          fi
+
+      - name: Build and push the three images
+        env:
+          REGISTRY: ${{ vars.IMAGE_REGISTRY }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          version=""
+          case "$REF" in
+            refs/tags/v*) version="${REF#refs/tags/}" ;;
+          esac
+
+          for image in control-plane worker gui; do
+            repository="${REGISTRY}/osdu-delivery-${image}"
+            tags="--tag ${repository}:${SHA}"
+            if [ "$REF" = "refs/heads/main" ]; then
+              tags="$tags --tag ${repository}:latest"
+            fi
+            if [ -n "$version" ]; then
+              tags="$tags --tag ${repository}:${version}"
+            fi
+
+            # Built again rather than reloaded: the images job proves they build and start, this one produces what is
+            # pushed, from the same Dockerfile and the same commit.
+            docker build -f "osdu/deploy/docker/${image}.Dockerfile" $tags .
+            docker push --all-tags "$repository"
+            echo "pushed ${repository} (${SHA}${version:+, $version})"
+          done

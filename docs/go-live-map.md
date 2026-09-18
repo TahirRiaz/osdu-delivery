@@ -131,7 +131,11 @@ The project's rules are enforced by hand today (`.github/workflows/ci.yml`).
   generated migration scripts was found.
 - [x] **CI-5a** No image build and no changelog entries: CI now builds the three images, starts the control plane
   image against a SQL Server of its own and the GUI image, and `CHANGELOG.md` covers the work since it was written.
-- [ ] **CI-5b** No published images, release tags or deployment from CI; `deploy-prod.ps1` runs by hand. Needs DEC-9.
+- [x] **CI-5b** No published images or release tags from CI; `deploy-prod.ps1` ran by hand. CI now publishes the three
+  images to whatever registry the repository names (`IMAGE_REGISTRY`, with `REGISTRY_USERNAME` and `REGISTRY_PASSWORD`,
+  or the workflow's own token for `ghcr.io`), tagged with the commit sha, `latest` from `main` and the version on a
+  `v*` tag. It stays dormant until a registry is named, so DEC-9 is now which registry and which sign-in, not whether
+  the pipeline can publish at all. Deploying from CI still waits on that decision.
 
 Done when a change cannot merge without every suite, the end-to-end run and a warning-free build. Work goes to `main`
 directly (`CLAUDE.md`), so CI reports on a change after it lands; stopping one before it lands needs pull requests and
