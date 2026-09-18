@@ -36,7 +36,16 @@ Read with one info call per service, which is what decides which routes could be
 
 | Serving | Not serving (404) |
 | --- | --- |
-| storage 0.29.4, search 0.29.2, legal 0.28.1, entitlements 0.29.3, schema 0.29.1, file 0.29.1, dataset 0.29.1, workflow 0.29.1 (with `Osdu_ingest` and `Osdu_ingest_by_reference` registered), indexer 0.29.1, notification 0.29.2, register 0.29.3, unit 0.29.2, CRS catalog and conversion 0.29.2, Wellbore DDMS 0.29 under `/api/os-wellbore-ddms`, Seismic Store v3, Rock and Fluid Samples DDMS 0.2.0 | Well Delivery DDMS, Reservoir DDMS (so no ETP), Production DSPDM, Production TimeSeries, Reservoir Management DDMS, External Data Services, secret, policy |
+| storage 0.29.4, search 0.29.2, legal 0.28.1, entitlements 0.29.3, schema 0.29.1, file 0.29.1, dataset 0.29.1, workflow 0.29.1 (with `Osdu_ingest`, `Osdu_ingest_by_reference`, `csv-parser`, the two SEG-Y conversions and the three EDS DAGs registered), indexer 0.29.1, notification 0.29.2, register 0.29.3, unit 0.29.2, CRS catalog and conversion 0.29.2, Wellbore DDMS 0.29 under `/api/os-wellbore-ddms`, Seismic Store v3, Rock and Fluid Samples DDMS 0.2.0, **Reservoir DDMS with its ETP 1.2 server** (`/api/reservoir-ddms/v2/`, `wss://.../api/reservoir-ddms-etp/v2/`) | Well Delivery DDMS, Production DSPDM, Production TimeSeries, Reservoir Management DDMS, External Data Services (eds-dms) |
+
+> **Corrected on 2026-09-18.** The first listing asked every service for `/info` or `/about` and read a 404 as
+> absence. The Reservoir DDMS has neither path: asked at the path its own spec documents, its ETP server answers
+> `GET /api/reservoir-ddms-etp/v2/.well-known/etp-server-capabilities?GetVersions=true` with
+> `["etp12.energistics.org"]` and its capabilities record ("OSDU Reservoir DDMS ETP-1.2 Server", M26), and
+> `/api/reservoir-ddms/v2/` serves Swagger. The five services above were then re-probed at every prefix their specs
+> and this module use, and each answered with the gateway's own "no route" body rather than an application's, so
+> their absence is established rather than assumed. Seismic Store is deployed and answered **403 User not
+> authorized** to a tenant read with these credentials, which is an entitlement rather than an absence.
 
 The app registration the flows authenticate with does not hold `service.storage.admin`, so the `history` and `everything` scopes could not be used and were not wanted: this wave removes at the reversible scope only (the go-live map's LIVE-3 is what those scopes wait for).
 
@@ -106,8 +115,11 @@ Each is fixed, with the suites that now hold it.
 
 ### 0.5 What this wave does not prove
 
-- That the `dataset`, `workflow`, `dspdm` and `etp` routes work against a live service. The first has no sample estate;
-  the other three have no service on this deployment. They stand on their suites and the pinned contracts.
+- That the `dataset`, `workflow` and `etp` routes work against a live service. Each has a service on this deployment
+  (the Dataset service answers with an Azure provider and a signed URL; `csv-parser` and `Osdu_ingest_by_reference`
+  are registered; the Reservoir DDMS runs its ETP 1.2 server), and what they lack is a flow in the sample estate and
+  an approved test list. The `dspdm` route has no service here. All of them stand on their suites and the pinned
+  contracts.
 - That the other DDMS shapes (Well Delivery, RAFS, Seismic Store, Reservoir Management, the production historian)
   behave as their contracts say. Seismic Store and RAFS are served here and were not exercised: no sample estate
   delivers to them, and their ids were not in the approved list.

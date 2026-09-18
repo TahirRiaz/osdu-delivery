@@ -57,18 +57,26 @@ the deployment agrees. Every live run needs a test list approved first (`CLAUDE.
 - [x] **LIVE-0** Confirm the deployment facts the briefs leave open: which DDMSs run on the target (DSPDM, Reservoir
   Management, Seismic v3 or v4, Well Delivery), their gateway paths, whether Airflow's REST API is reachable, which
   workflows each partition registers, and what the Register service lists.
-  Done on 2026-09-17 against ADME 0.29, partition `dev`: the platform services, the Wellbore DDMS under
-  `/api/os-wellbore-ddms`, Seismic Store v3 and the Rock and Fluid Samples DDMS answer; Well Delivery, Reservoir
-  (so ETP), DSPDM, Production TimeSeries, Reservoir Management, EDS, secret and policy answer 404. The workflow service
-  registers `Osdu_ingest` and `Osdu_ingest_by_reference`
-  ([osdu-testing.md](../osdu/docs/osdu-testing.md) section 0.1).
+  Done on 2026-09-17 against ADME 0.29, partition `dev`, and corrected on 2026-09-18: the platform services, the
+  Wellbore DDMS under `/api/os-wellbore-ddms`, Seismic Store v3, the Rock and Fluid Samples DDMS and the **Reservoir
+  DDMS with its ETP 1.2 server** answer; Well Delivery, DSPDM, Production TimeSeries, Reservoir Management and eds-dms
+  are not routed at all, at any prefix their specs or this module use. Seismic Store answers 403 to these credentials,
+  which is an entitlement rather than an absence. The workflow service registers `Osdu_ingest`,
+  `Osdu_ingest_by_reference`, `csv-parser`, two SEG-Y conversions and three EDS DAGs
+  ([osdu-testing.md](../osdu/docs/osdu-testing.md) section 0.1). The first listing asked each service for `/info` or
+  `/about` and read the Reservoir DDMS's 404 as absence; it has neither path.
 - [x] **LIVE-1** Wave one: re-verify the four routes the previous build proved (storage, file, manifest inline, Wellbore
   DDMS well logs) on the current build.
   Done on 2026-09-17: checks 1 to 13 and 15 passed (check 14 covered a known-state operation this build does not have),
   the storage, file, manifest and ddms routes each delivered and read back, and all twelve ids were soft-deleted with a
   404 each. It found six defects, all fixed, and three deployment behaviours worth knowing
   ([osdu-testing.md](../osdu/docs/osdu-testing.md) section 0).
-- [ ] **LIVE-2** Wave two: every other route and shape, EDS, DSPDM and ETP, each following its cleanup decision.
+- [ ] **LIVE-2** Wave two: every other route and shape, each following its cleanup decision. What `dev` could serve
+  today, once a test list is approved: the `dataset` route (the Dataset service answers with an Azure provider), the
+  `workflow` route (`csv-parser` is registered), the manifest route's by-reference form
+  (`Osdu_ingest_by_reference`), the `rafsV2` shape, and the `etp` route (the Reservoir DDMS runs its ETP 1.2 server
+  there). Seismic Store needs an entitlement these credentials lack (403). Well Delivery, DSPDM, the historian,
+  Reservoir Management and eds-dms need a deployment that runs them.
 - [ ] **LIVE-3** The `history` and `everything` scopes, which never ran live: the app registration lacks
   `service.storage.admin`.
 - [ ] **LIVE-4** The deployed hosts end to end: `${keyvault:}` references, managed identity, the control plane and worker
