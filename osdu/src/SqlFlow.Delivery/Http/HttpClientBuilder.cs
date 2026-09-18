@@ -18,6 +18,13 @@ public static class HttpClientBuilder
 {
     private static readonly string UserAgent = $"sqlflow-delivery/{Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.1"}";
 
+    /// <summary>The environment switch that lets a flow of this deployment turn TLS verification off.</summary>
+    public const string AllowInsecureTlsVariable = "SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS";
+
+    /// <summary>Whether a flow may turn TLS verification off in this process (the switch above, read at each build).</summary>
+    public static bool InsecureTlsAllowed
+        => Environment.GetEnvironmentVariable(AllowInsecureTlsVariable) is { } value && value.Equals("true", StringComparison.OrdinalIgnoreCase);
+
     public static HttpClient Build(FlowReliability reliability, NetworkPolicy network)
     {
         ArgumentNullException.ThrowIfNull(reliability);
@@ -37,8 +44,20 @@ public static class HttpClientBuilder
 
         if (!reliability.VerifyTls)
         {
-            // Deliberate opt-in gated behind the flow's explicit verifyTls: false, for targets with a self-signed or
-            // enterprise-internal certificate.
+            // A flow asking for an unverified certificate is not enough on its own: a document is a repository file, and
+            // one that turned verification off would otherwise take every node that ran it off TLS without the
+            // deployment agreeing. The deployment agrees by setting the switch, as it does for loopback and private
+            // ranges; without it the run is refused here rather than sent over a connection nobody checked.
+            if (!InsecureTlsAllowed)
+            {
+                throw new UrlRefusedException(
+                    "This flow declares reliability.verifyTls: false, and this deployment verifies every certificate. "
+                    + $"A deployment that has to reach a target with a self-signed or enterprise-internal certificate sets {AllowInsecureTlsVariable}=true "
+                    + "on the nodes that reach it; the honest fix is to trust the issuing authority on those nodes instead.");
+            }
+
+            // Deliberate opt-in, gated behind the flow's explicit verifyTls: false and the deployment's switch, for
+            // targets with a self-signed or enterprise-internal certificate.
 #pragma warning disable CA5359
             handler.SslOptions.RemoteCertificateValidationCallback = static (_, _, _, _) => true;
 #pragma warning restore CA5359

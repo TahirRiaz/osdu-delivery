@@ -166,7 +166,7 @@ reliability:
   skipStatusCodes: [409]           # statuses that hold a record instead of retrying
   timeoutSeconds: 100
   rateLimitRps: 0                  # 0 = unlimited
-  verifyTls: true
+  verifyTls: true                 # false needs SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS=true on the node too, or the run is refused
   urlAllowlist: []                 # SSRF allowlist; *.suffix wildcards; checked on every redirect too
   maxResponseBytes: 67108864
   maxRequestBodyBytes: 0           # the target's declared request body ceiling; a bigger chunk holds the record (0 = not declared)

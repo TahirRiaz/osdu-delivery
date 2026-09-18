@@ -128,6 +128,34 @@ public sealed class NetworkPolicyTests
         Assert.Equal("GET /probe HTTP/1.1", await serve);
     }
 
+    [Fact]
+    public void A_flow_that_turns_tls_verification_off_needs_the_deployment_to_allow_it()
+    {
+        var insecure = new FlowReliability { VerifyTls = false };
+        var original = Environment.GetEnvironmentVariable(HttpClientBuilder.AllowInsecureTlsVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(HttpClientBuilder.AllowInsecureTlsVariable, null);
+            var refused = Assert.Throws<UrlRefusedException>(() => HttpClientBuilder.Build(insecure, new NetworkPolicy()));
+            Assert.Contains("reliability.verifyTls: false", refused.Message, StringComparison.Ordinal);
+            Assert.Contains(HttpClientBuilder.AllowInsecureTlsVariable, refused.Message, StringComparison.Ordinal);
+
+            // The deployment agrees, as it does for loopback and private ranges, and the client is built.
+            Environment.SetEnvironmentVariable(HttpClientBuilder.AllowInsecureTlsVariable, "true");
+            using var built = HttpClientBuilder.Build(insecure, new NetworkPolicy());
+            Assert.NotNull(built);
+
+            // A flow that verifies needs no switch at all.
+            Environment.SetEnvironmentVariable(HttpClientBuilder.AllowInsecureTlsVariable, null);
+            using var verifying = HttpClientBuilder.Build(new FlowReliability(), new NetworkPolicy());
+            Assert.NotNull(verifying);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(HttpClientBuilder.AllowInsecureTlsVariable, original);
+        }
+    }
+
     /// <summary>Answers one request with 200 and returns its request line.</summary>
     private static async Task<string> ServeOnceAsync(TcpListener listener)
     {
