@@ -205,10 +205,10 @@ public sealed class FlowRuntime : IDisposable
 
         var mapping = Mappings.Load(Flow.Render.Mapping);
         var templates = _context.Templates ?? throw new FlowValidationException(
-            $"{KeyPaths.Where(Flow)}: a source's interfaces are ordered by the relationships in the templates their mappings pin, and templates live in the catalog, which this host was started without. Start it with the catalog connection (--db, or the catalog variable).");
+            $"{KeyPaths.Where(Flow)}: a source's interfaces are ordered by the relationships in the templates their mappings pin, and templates live in the module's database, which this host was started without. Start it with the module's connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB), or with --db when the catalog's database holds the osdu schema.");
         var schema = await templates.LoadAsync(mapping.Template, ct).ConfigureAwait(false)
             ?? throw new FlowValidationException(
-                $"{KeyPaths.Where(Flow)}: mapping {mapping.Reference} pins template {mapping.Template}, which is not saved in the catalog. Save it on the Templates page, or with 'sqlflow template import'.");
+                $"{KeyPaths.Where(Flow)}: mapping {mapping.Reference} pins template {mapping.Template}, which is not saved. Save it on the Templates page, or with 'sqlflow template import'.");
         return InterfaceSchemas.Describe(name, mapping, Templates.OsduTemplate.From(schema));
     }
 

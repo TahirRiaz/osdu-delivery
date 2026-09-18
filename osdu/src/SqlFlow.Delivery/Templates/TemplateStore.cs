@@ -103,7 +103,7 @@ public sealed class OsduTemplateStore : ITemplateStore
         if (!string.Equals(schema.Version, reference.Version, StringComparison.Ordinal))
         {
             throw new DeliveryException(
-                $"The template {reference} is damaged in the catalog: its stored schema hashes to version {schema.Version}. Delete that version and save the schema again.");
+                $"The template {reference} is damaged: its stored schema hashes to version {schema.Version}. Delete that version and save the schema again.");
         }
 
         _loaded[reference] = schema;

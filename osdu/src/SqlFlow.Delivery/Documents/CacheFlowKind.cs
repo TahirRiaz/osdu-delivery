@@ -14,7 +14,7 @@ namespace SqlFlow.Delivery.Documents;
 /// </summary>
 public sealed record CacheFlowDocument : RegisteredFlowDocument
 {
-    /// <summary>What the pipeline row shows as a cache flow's target: the versions a refresh writes live in the catalog.</summary>
+    /// <summary>What the pipeline row shows as a cache flow's target: the versions a refresh writes live in the module database.</summary>
     public const string CatalogTarget = "catalog";
 
     public required CacheDefinition Flow { get; init; }
@@ -53,7 +53,7 @@ public sealed class CacheFlowKind : IFlowDocumentKind
 
     public string FlowType => CacheDefinition.FlowTypeName;
 
-    public string Description => "capture the reference and master data of OSDU kinds into a versioned cache in the catalog, which delivery flows render against";
+    public string Description => "capture the reference and master data of OSDU kinds into a versioned cache in the module database, which delivery flows render against";
 
     public IReadOnlyList<FlowKindOperation> Operations { get; } =
     [

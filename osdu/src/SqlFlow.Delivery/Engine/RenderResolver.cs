@@ -45,12 +45,12 @@ public sealed class RenderResolver
         if (_templates is null)
         {
             throw new FlowValidationException(
-                $"{where}: mapping {mapping.Reference} fills template {mapping.Template}, and templates live in the catalog, which this host was started without. Start it with the catalog connection (--db, or the catalog variable).");
+                $"{where}: mapping {mapping.Reference} fills template {mapping.Template}, and templates live in the module's database, which this host was started without. Start it with the module's connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB), or with --db when the catalog's database holds the osdu schema.");
         }
 
         var schema = await _templates.LoadAsync(mapping.Template, ct).ConfigureAwait(false)
             ?? throw new FlowValidationException(
-                $"{where}: mapping {mapping.Reference} pins template {mapping.Template}, which is not saved in the catalog. Save it on the Templates page, or with 'sqlflow template import'.");
+                $"{where}: mapping {mapping.Reference} pins template {mapping.Template}, which is not saved. Save it on the Templates page, or with 'sqlflow template import'.");
 
         var (references, scope) = await CacheAsync(flow, mapping, where, ct).ConfigureAwait(false);
 
@@ -100,7 +100,7 @@ public sealed class RenderResolver
         if (_cache is null)
         {
             throw new FlowValidationException(
-                $"{where}: mapping {mapping.Reference} reads the cache of partition '{scope}', and caches live in the catalog, which this host was started without. Start it with the catalog connection (--db, or the catalog variable).");
+                $"{where}: mapping {mapping.Reference} reads the cache of partition '{scope}', and caches live in the module's database, which this host was started without. Start it with the module's connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB), or with --db when the catalog's database holds the osdu schema.");
         }
 
         var version = flow.Render.CacheVersion;

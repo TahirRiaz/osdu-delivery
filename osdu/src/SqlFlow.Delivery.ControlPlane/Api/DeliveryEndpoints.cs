@@ -470,7 +470,7 @@ public static class DeliveryEndpoints
                 var schema = engine.Templates is { } templates ? await templates.LoadAsync(mapping.Template, ct).ConfigureAwait(false) : null;
                 if (schema is null)
                 {
-                    return (InterfaceOrder.Plan(names, declared, []), $"Mapping {mapping.Reference} of interface '{flow.Interface}' pins template {mapping.Template}, which is not saved in the catalog, so only after: orders the interfaces.");
+                    return (InterfaceOrder.Plan(names, declared, []), $"Mapping {mapping.Reference} of interface '{flow.Interface}' pins template {mapping.Template}, which is not saved, so only after: orders the interfaces.");
                 }
 
                 schemas.Add(InterfaceSchemas.Describe(flow.Interface ?? string.Empty, mapping, OsduTemplate.From(schema)));

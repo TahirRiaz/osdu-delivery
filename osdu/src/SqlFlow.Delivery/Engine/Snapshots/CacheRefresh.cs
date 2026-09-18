@@ -39,7 +39,7 @@ public sealed class CacheRefresher
         ArgumentNullException.ThrowIfNull(values);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         var store = _context.Cache ?? throw new DeliveryException(
-            $"Cache flow '{flow.Name}' writes into the cache of its partition in the catalog, which this host was started without. Run it through the control plane or a node, or start the CLI with the catalog connection (--db, or the catalog variable).");
+            $"Cache flow '{flow.Name}' writes into the cache of its partition, which lives in the module's database, and this host was started without it. Run it through the control plane or a node, or start the CLI with the module's connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB), or with --db when the catalog's database holds the osdu schema.");
         var scope = flow.Scope;
         var declaration = await store.DeclarationAsync(scope, ct).ConfigureAwait(false);
         declaration.ThrowOnConflicts(flow.Name, flow.Types);

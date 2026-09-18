@@ -77,7 +77,7 @@ public abstract class DeliveryOperation : IComputeOperation
     }
 
     protected ILedger RequireLedger()
-        => _context.Ledger ?? throw new SqlFlowException($"The '{Name}' operation needs the ledger, which lives in the catalog database this node was started without.");
+        => _context.Ledger ?? throw new SqlFlowException($"The '{Name}' operation needs the ledger, which lives in the module's database this node was started without (Osdu:Database:Connection or SQLFLOW_OSDU_DB).");
 
     protected static string Actor(ComputeTaskPayload payload)
         => payload.Argument("actor") ?? "unknown";
