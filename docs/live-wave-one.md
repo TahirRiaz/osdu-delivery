@@ -1,5 +1,13 @@
 # Live wave one: the test list to approve
 
+> **Ran on 2026-09-17**, approved by the user for the dev environment (Azure Data Manager for Energy 0.29, partition
+> `dev`). Checks 1 to 13 and 15 passed; check 14 covered a known-state operation this build does not have. Twelve ids
+> were created and all twelve removed at the reversible scope the same night, each with a GET answering 404, and a
+> search for the run marker returned nothing. What it proved, the defects it found and what it does not prove are in
+> [../osdu/docs/osdu-testing.md](../osdu/docs/osdu-testing.md) section 0; the ids are in `.sqlflow/live-e2e/test-data.md`.
+> The page below is kept as the list that was approved.
+
+
 The four routes the previous build proved live have never run against a live OSDU on the current build
 ([go-live-map.md](go-live-map.md), LIVE-1). This is the list of checks that would prove them again, written out so it
 can be approved, amended or refused before anything is sent. **Nothing here runs until you approve it**, and an
