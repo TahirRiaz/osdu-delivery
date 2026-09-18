@@ -33,12 +33,14 @@ test.describe.serial("lineage", () => {
 
     const wellLog = named("osdu-type", WELL_LOG);
     expect(wellLog, `no ${WELL_LOG} among ${datasets.map((d) => d.name).join(", ")}`).toBeDefined();
-    expect([wellLog!.namespace, wellLog!.group, wellLog!.writers]).toEqual(["opendes", "work-product-component", 1]);
+    // Two flows deliver well logs: recall-welllog in the single form, and the welllogs interface of recall-source.
+    expect([wellLog!.namespace, wellLog!.group, wellLog!.writers]).toEqual(["opendes", "work-product-component", 2]);
 
     const wellbore = named("osdu-type", WELLBORE);
     expect(wellbore).toBeDefined();
-    // The wellbore flow writes it; the cache flow and the metadata sync read it back through their wildcard kinds.
-    expect(wellbore!.writers).toBe(1);
+    // recall-wellbore and the wellbores interface of recall-source write it; the cache flow and the metadata sync
+    // read it back through their wildcard kinds.
+    expect(wellbore!.writers).toBe(2);
     expect(wellbore!.readers).toBeGreaterThanOrEqual(2);
 
     const units = named("osdu-cache", "UnitOfMeasure");

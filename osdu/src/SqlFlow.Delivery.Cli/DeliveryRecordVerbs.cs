@@ -80,7 +80,9 @@ internal static class DeliveryRecordVerbs
         context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{label}: {records.Count} record(s)"));
         if (records.Count == 0)
         {
-            context.Out.WriteLine("  none. A flow's records appear once its first submission has been planned.");
+            context.Out.WriteLine(
+                "  none. A flow's records appear once a submission has staged them: an intake or a deliver run does that, "
+                + "while a plan run reports what it would do and stages nothing.");
             return 0;
         }
 

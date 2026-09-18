@@ -28,9 +28,34 @@ function cli(...args: string[]): string {
     {
       encoding: "utf8",
       timeout: 300_000,
-      env: { ...process.env, OSDU_SAMPLE_DB: fixtureMeta().sampleDb, SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb },
+      env: {
+        ...process.env,
+        OSDU_SAMPLE_DB: fixtureMeta().sampleDb,
+        SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,
+        // The flow's target, as references it resolves but never uses: an intake reaches no OSDU (the fixture turns
+        // the legal check off), and an address nothing listens on is what a run that tried to send would meet.
+        PETRODB_URL: "http://127.0.0.1:9",
+        OSDU_TOKEN_URL: "http://127.0.0.1:9/token",
+        OSDU_CLIENT_ID: "the-e2e-authenticates-with-nothing",
+        OSDU_CLIENT_SECRET: "the-e2e-authenticates-with-nothing",
+        OSDU_SCOPE: "the-e2e-authenticates-with-nothing",
+        APIM_KEY: "the-e2e-authenticates-with-nothing",
+      },
     },
   );
+}
+
+/**
+ * The JSON document in what the CLI printed. `dotnet run` builds the host on its way and prints what that says first,
+ * so the document is taken from its first brace rather than from the first byte of the output.
+ */
+function json<T>(output: string): T {
+  const start = output.indexOf("{");
+  if (start < 0) {
+    throw new Error(`no JSON in the CLI's output: ${output.slice(0, 400)}`);
+  }
+
+  return JSON.parse(output.slice(start, output.lastIndexOf("}") + 1)) as T;
 }
 
 /** What the CLI said when it refused: the command must fail, and its reason is what the test is about. */
@@ -50,11 +75,16 @@ test.describe.serial("records from the CLI", () => {
     test.setTimeout(600_000);
     const flow = `${fixtureMeta().repoDir}/flows/recall-welllog.yaml`;
 
-    const listed = JSON.parse(cli("records", "list", flow, "--json")) as {
+    // Records reach the ledger when a submission is planned, which is what an intake does: it renders and stages every
+    // record of the scope and sends nothing. A plan run reports what it would do and stages nothing, so the earlier
+    // specs' plan leaves the ledger empty by design.
+    expect(cli("run", flow, "--operation", "intake", "--set", "logSource=STAT_COMP")).toContain("record(s)");
+
+    const listed = json<{
       flow: string;
       flowId: string;
       records: { deliveryKey: string; sourceKey: string; status: string; targetId: string | null }[];
-    };
+    }>(cli("records", "list", flow, "--json"));
     expect(listed.flow).toBe("recall-welllog");
     expect(listed.records.length).toBeGreaterThan(0);
     const first = listed.records[0];
@@ -63,9 +93,9 @@ test.describe.serial("records from the CLI", () => {
     expect(first.targetId).toContain("work-product-component--WellLog");
 
     // The source key is what an operator holds, so it finds the record as surely as the delivery key does.
-    const shown = JSON.parse(cli("records", "show", flow, "--key", first.sourceKey, "--json")) as {
+    const shown = json<{
       record: { deliveryKey: string; sourceKey: string; status: string; attempts: unknown[] };
-    };
+    }>(cli("records", "show", flow, "--key", first.sourceKey, "--json"));
     expect(shown.record.deliveryKey).toBe(first.deliveryKey);
     expect(shown.record.sourceKey).toBe(first.sourceKey);
     expect(Array.isArray(shown.record.attempts)).toBe(true);
@@ -79,13 +109,10 @@ test.describe.serial("records from the CLI", () => {
     const flow = `${fixtureMeta().repoDir}/flows/recall-source.yaml`;
 
     // A source delivers several interfaces, so a command that names none cannot tell which ledger it means.
-    expect(cliRefusal("records", "list", flow)).toMatch(/delivers 2 interfaces/);
+    expect(cliRefusal("records", "list", flow)).toMatch(/delivers 4 interfaces/);
     expect(cliRefusal("records", "list", flow, "--interface", "nope")).toMatch(/has no interface 'nope'/);
 
-    const listed = JSON.parse(cli("records", "list", flow, "--interface", "wellbores", "--json")) as {
-      flow: string;
-      records: unknown[];
-    };
+    const listed = json<{ flow: string; records: unknown[] }>(cli("records", "list", flow, "--interface", "wellbores", "--json"));
     expect(listed.flow).toBe("recall-source / wellbores");
     // The source's own ledgers are its own: nothing is read from the single-form flows beside it.
     expect(listed.records).toHaveLength(0);

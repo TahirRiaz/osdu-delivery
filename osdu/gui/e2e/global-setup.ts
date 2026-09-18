@@ -41,7 +41,10 @@ export default function globalSetup(): void {
   const sampleDatabase = databaseOf(E2E.sampleDb);
   for (const flow of CHAIN) {
     const shipped = readFileSync(join(samplesDir, "flows", `${flow}.yaml`), "utf8");
-    writeFileSync(join(repoDir, "flows", `${flow}.yaml`), inSampleDatabase(withoutSchedule(shipped, flow), flow, sampleDatabase));
+    writeFileSync(
+      join(repoDir, "flows", `${flow}.yaml`),
+      withoutTheLegalCheck(inSampleDatabase(withoutSchedule(shipped, flow), flow, sampleDatabase)),
+    );
   }
 
   // The cache flow comes along without its schedule. The suite never refreshes it (that would need an OSDU target): the
@@ -129,6 +132,18 @@ function withoutSchedule(yaml: string, flow: string): string {
   }
 
   return stripped;
+}
+
+/**
+ * A flow whose runs ask no legal service. Every run this suite triggers stops short of OSDU: a plan never opens the
+ * target, and an intake, which is how records reach the ledger without anything being sent, would otherwise ask the
+ * legal service about the mapping's tags before it plans. The check is what the target is for, so turning it off here
+ * is what keeps the suite off the network; a flow that declares no protocolOptions is left as it is, because no spec
+ * intakes one.
+ */
+function withoutTheLegalCheck(yaml: string): string {
+  return yaml.replace(/^( *)protocolOptions: *$/m, (line, indent: string) => `${line}
+${indent}  validateLegalTags: false`);
 }
 
 /** The database the shipped ingestion and delivery flows name their tables in. */
