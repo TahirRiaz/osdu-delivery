@@ -116,6 +116,32 @@ Each is fixed, with the suites that now hold it.
 - The deployed hosting: this wave was driven by the CLI host from a workstation, not by the container images.
 
 
+### 0.6 The suites on this build
+
+Run on 2026-09-18, after the wave's fixes, against a real SQL Server (nothing environment-gated was skipped in the
+module's own suites):
+
+| Suite | Result |
+| --- | --- |
+| `osdu/tests/SqlFlow.Delivery.Tests` | 1744 passed, 0 skipped |
+| `osdu/tests/SqlFlow.Delivery.ControlPlane.Tests` | 28 passed, 0 skipped |
+| `sqlflow/tests/SqlFlow.Core.Tests` | 4999 passed, 226 skipped (environment-gated) |
+| `sqlflow/tests/SqlFlow.ControlPlane.Tests` | 570 passed, 3 skipped (foreign engines) |
+| `sqlflow/tests/SqlFlow.Dispatch.Tests` | 62 passed |
+| `sqlflow/tests/SqlFlow.Acquire.Tests` | 124 passed |
+| `sqlflow/tests/SqlFlow.Copy.Tests` | 37 passed |
+| `sqlflow/tests/SqlFlow.Sftp.Tests` | 13 passed |
+| `sqlflow/tests/SqlFlow.Translate.Tests` | 39 passed |
+| `sqlflow/tests/SqlFlow.SlackBot.Tests` | 26 passed |
+| GUI end to end (`osdu/gui`, `npm run e2e`) | 28 passed |
+| `osdu/gui` `npm run lint`, `npm run build` | clean |
+| `dotnet build OsduDelivery.sln -t:Rebuild` | 0 errors, and no warning other than the known `NU1903` SSH.NET advisories |
+
+Three end-to-end specs were corrected on the way: the estate gained a source of four interfaces the day before, so two
+flows now write each of the well log and wellbore types (the lineage spec counted one writer), an interface's name
+appears in more than one row of the interfaces table (a locator matched four elements), and the CLI spec parsed the
+whole of `dotnet run`'s output as JSON. None of the three was the product being wrong.
+
 ## 1. How it is tested
 
 Testing runs at three levels.
