@@ -542,7 +542,10 @@ It deletes 4,000 attempts per statement, oldest first, each statement its own sh
 history never holds a long lock on the table every drain appends to, and never enough row locks for SQL Server to lock
 the whole table instead; an attempt goes only when a later attempt of the same record exists, which is one seek of the
 record's timeline.
-Activities are small and kept; partition either table by time in the model if volume demands it (see
+The same pass clears the captured run log of settled activities past the cut-off, and answers both counts
+(`attemptsPruned`, `activityLogsCleared`): a run log is up to 200,000 characters written once per run, which grows
+without bound, while the audit row itself, its flow, kind, actor, times, parameters, outcome and summary, is never
+deleted. Partition either table by time in the model if volume demands it (see
 [decisions/0005-ledger-retention.md](decisions/0005-ledger-retention.md)).
 
 For the analytical view, snapshot the tables into Delta when one is needed. The ledger is a live status store, not a

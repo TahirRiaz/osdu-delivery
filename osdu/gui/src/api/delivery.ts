@@ -554,7 +554,10 @@ export interface DeliveryRedeliverResult {
 }
 
 export interface DeliveryPruneResult {
+  /** Delivery tries deleted; the latest try of every record is always kept. */
   attemptsPruned: number;
+  /** Activities whose captured run log was cleared. The audit row itself is never deleted. */
+  activityLogsCleared: number;
 }
 
 export interface DeliveryRecordListQuery extends PageQuery {
