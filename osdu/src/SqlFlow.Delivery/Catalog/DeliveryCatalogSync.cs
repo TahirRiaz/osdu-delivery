@@ -97,7 +97,9 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     /// rows in a database of the module's own are written on that database's connection, under a transaction of this
     /// sync's own when it writes (<see cref="ModuleDatabase.IsReachableOn"/>).
     /// </summary>
+    /// <param name="context">The catalog's context, as the repository sync hands it to the extension.</param>
     /// <param name="write">Whether the caller writes, which is what an isolated database needs its own transaction for.</param>
+    /// <param name="ct">Cancels the open.</param>
     private async Task<ModuleWork> OpenAsync(CatalogDbContext context, bool write, CancellationToken ct)
     {
         var host = context.Database.GetDbConnection();
