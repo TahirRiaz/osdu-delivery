@@ -19,6 +19,7 @@
 - **SQLFlow's standards apply inside `sqlflow/`.** A catalog change ships with its EF Core migration, the SQLFlow solution builds with zero warnings, SQLFlow's existing flow kinds keep their behaviour, and SQLFlow's own suites pass, with new tests for each extension point.
 - **Updates.** SQLFlow improvements come in with `git subtree pull --prefix=sqlflow --squash B:/SQLFlowV3 main`, as one reviewable commit. Conflicts can only arise in the files that carry this project's extension points; resolve them keeping both SQLFlow's change and the extension point.
 - `tools/check-vendored-sqlflow.sh` names the SQLFlow commit `sqlflow/` was vendored from, lists every file changed here since, and fails when a commit mixes `sqlflow/` with other paths or when a line added to `sqlflow/` mentions OSDU or the delivery module. It must pass before work is handed back.
+- **Every change to `sqlflow/` is recorded in [docs/sqlflow-changes.md](docs/sqlflow-changes.md)**: what it is, why it was made, and whether it is an extension point or a fix upstream wants regardless. A new `sqlflow:` commit adds its row there.
 
 ## The OSDU Database Schema, Migrations And Version
 

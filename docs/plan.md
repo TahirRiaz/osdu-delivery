@@ -160,6 +160,8 @@ each. Every call is in `.sqlflow/live-e2e/actions.log` and every id in `.sqlflow
 2. Resolve any conflict in the files that carry this project's extension points, keeping SQLFlow's change and the extension
    point.
 3. `tools/check-vendored-sqlflow.sh`, then build `OsduDelivery.sln` clean and run SQLFlow's and the OSDU suites.
+4. [sqlflow-changes.md](sqlflow-changes.md) is the inventory of what this project changed in `sqlflow/`, and says
+   which changes upstream should take and where a conflict can arise.
 
 ## Risks
 

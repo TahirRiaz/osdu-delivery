@@ -1,0 +1,103 @@
+# What this project changed in SQLFlow
+
+`sqlflow/` is a squashed git subtree of SQLFlow, vendored at commit
+**`fb8d5a64518b355bbb4f563ab6319ea74e6d3fe6`** (`a738c4d` here). This page is the inventory of every change made to it
+since, why each was made, and which of them upstream should take. It is written for whoever carries these back to
+`B:\SQLFlowV3`, or resolves a conflict during the next `git subtree pull`.
+
+`tools/check-vendored-sqlflow.sh` lists the changed files and fails a commit that mixes `sqlflow/` with anything else,
+or that adds a line mentioning OSDU inside it. This page says what the changes are.
+
+## The rules these changes follow
+
+From `CLAUDE.md`, and every change below keeps to them:
+
+- **Generic only.** A change to `sqlflow/` is an extension point any module could use, or a fix to something that is
+  wrong for every user of SQLFlow. No OSDU code, name, table or wording goes into it; the OSDU side of every extension
+  point lives in `osdu/`.
+- **Its own commits.** A commit that changes `sqlflow/` touches nothing outside it, and its subject starts with
+  `sqlflow:`. The OSDU work that uses an extension point is a separate commit.
+- **SQLFlow's standards apply inside it.** A catalog change ships with its EF Core migration, the solution builds with
+  zero warnings, SQLFlow's existing flow kinds keep their behaviour, and its own suites pass, with new tests for each
+  extension point.
+
+## 1. Fixes upstream wants regardless of this project
+
+These are not extension points. They are defects or debts in SQLFlow that any user of it has, found while building on
+it, and they are the ones to carry upstream first.
+
+| Commit | What was wrong | What it does now |
+| --- | --- | --- |
+| `05d6729` | The CLI took an option it did not know for a flag, and read the token after it as a positional argument. `sqlflow run flow.yaml --interface documents` ran the whole source and said nothing: the narrowing was silently lost. | Every option SQLFlow's verbs read is declared, value-taking ones beside flags, and a command carrying one that neither SQLFlow nor the module verb it names would read is refused, with the nearest declared option suggested. `CliOptionInventoryTests` reads the CLI's own sources and fails when a verb starts reading an option that is in neither set. |
+| `477f2cd` | `SSH.NET` 2024.2.0 carries GHSA-q939-rpr3-3284 (high severity). NuGet reported NU1903 on every build of `SqlFlow.Acquire` and `SqlFlow.Sftp`, and through them on anything referencing them, so every build had a standing warning to ignore. | Pinned at 2026.0.0, which needs no code change; both projects build clean and their suites pass unchanged. |
+| `21ef3bf` | The eight `Microsoft.Extensions.*` and `System.Diagnostics.DiagnosticSource` pins sat at 10.0.9 while the servicing band had moved to 10.0.12, so a host adding any library built against the current band could not restore (`NU1109`). | The pins move together, on one current band. |
+| `97a88c1` | An HTTP status failure carried no `Retry-After`, so a caller that wanted to honour a service's own wait had nothing to honour. | `HttpStatusException` carries the wait the service asked for. |
+| `1616141` | Lineage recorded a flow's file locations as machine paths under the node's cache, so the same estate produced different nodes on different machines. | File locations are anchored at the declaring document's folder and made repository-relative. |
+| `d81a817` | A declared file or dataset longer than the catalog's column silently failed the sync. | Declared files and datasets are bounded to the catalog's widths. |
+| `ce119f2` | Nodes for files and datasets no declaration named any more were never removed, so a graph kept growing. | The sync sweeps them, and only the ones the syncing repository let go of (migration `SweepOrphanFileNodes`). |
+| `1dfc15f` | The run group companion had no caller left. | Removed. |
+
+### Test determinism
+
+Five suites failed on timing or on each other rather than on the code. Each is a fix upstream benefits from, because the
+same races are there for anyone running the suites in parallel or at the wrong moment of the day.
+
+| Commit | What raced |
+| --- | --- |
+| `a5d3e00` | The database integration tests, when run in parallel against one server. |
+| `eefbb04` | The assertion store test deleted other integration tests' assertions. |
+| `f39459c` | The kind-arguments trigger test raced the host's in-process worker. |
+| `0e924f0` | The sync extension tests left lineage objects another test's sync swept up. |
+| `fe71d0e` | The notification digest clamp test asked for "today" and expected a clamp to now; between 00:00 and 00:05 UTC, today so far is shorter than the smallest period a digest may cover, so the endpoint refused it and the test failed for a reason other than the one it checks. |
+
+## 2. The extension points this project needed
+
+Each of these lets a host add something of its own without SQLFlow knowing what it is. The OSDU side of each lives in
+`osdu/` and is named here only to say what the point is for.
+
+### Composition
+
+| Commit | The extension point |
+| --- | --- |
+| `a96d215` | A host composes the control plane and the CLI with modules of its own (`IControlPlaneModule`, `ICliModule`, `ControlPlaneHost`, `CliHost`). |
+| `7773685` | A host brands the product the control plane and the CLI name (`ProductBranding`). |
+| `fba2ca6` | A host builds its GUI from SQLFlow's workbench with modules of its own (the GUI module registry and bootstrap). |
+| `3561809` | A host module declares its own database, migrated, reported and verified alongside the catalog (`ModuleDatabase`), so a module's schema upgrades without touching SQLFlow's. |
+
+### Flow kinds
+
+| Commit | The extension point |
+| --- | --- |
+| `cf1af16` | A host registers flow kinds, companion documents and executors with the loader (`IFlowDocumentKind`, `ICompanionDocumentKind`, `IFlowDocumentExecutor`). |
+| `6bcb15c` | The envelope's lifecycle (active, description, schedule) is stamped onto documents of a registered kind, so they behave like built-in ones in the catalog. |
+| `879305b` | A run or schedule carries a registered kind's operation, values and payload, and who asked for it (`RunParameters`, `FlowKindOperation`, migration `RunKindArgumentsAndRequester`). |
+| `85438d5` | A host module registers compute operations beside the built-in datasource ones (`IComputeOperation`). |
+| `d054a9c` | A running flow fans its work out to member runs over the node protocol, and a registered kind's run result is recorded (`IRunFanOut`, migration `RunFanOutAndResult`). |
+| `350342b` | The pipelines filter offers the flow kinds registered modules add. |
+| `0b503c7` | A flow's file selection is read from its stored definition rather than re-read from disk. |
+
+### The catalog, lineage and search
+
+| Commit | The extension point |
+| --- | --- |
+| `876e5a9` | A host module reconciles its own documents inside the repository sync transaction (`ICatalogSyncExtension`), so a module's rows commit with the catalog's. |
+| `4076a5c` | A caller enqueues a run group and commits its own rows in the same transaction. |
+| `2dbfb54` | A registered flow kind declares the database objects it reads and writes, so lineage orders it in waves with everything else. |
+| `d2cbd3a` | A registered flow kind describes its files and datasets in lineage (node kind `Dataset`, `GET /lineage/datasets`, migration `RequestLineageRecompute`). |
+| `d70d00f` | A host module adds a search category beside the built-in catalog surfaces (`ISearchContributor`). |
+| `0677c69` | A search contributor asserts the result contract, so a broken contributor is caught at startup rather than in a search. |
+| `929e535` | A link sets the pipelines page's repo and kind filters. |
+| `774401a` | The caller of an attributed write is named through one public rule a host module can use (`RequestActor`). |
+
+## 3. Taking these upstream
+
+1. The fixes in section 1 stand alone: each is one commit against `sqlflow/`, with its tests, and none depends on
+   anything in `osdu/`.
+2. The extension points in section 2 are additive. SQLFlow's own flow kinds and endpoints keep their behaviour, and
+   every point has tests in `sqlflow/tests` that exercise it with a probe module rather than with this project's.
+3. Four catalog migrations came with them: `RunKindArgumentsAndRequester`, `RunFanOutAndResult`,
+   `RequestLineageRecompute` and `SweepOrphanFileNodes`. They are SQLFlow's own, in SQLFlow's schema.
+
+When SQLFlow is pulled in again (`git subtree pull --prefix=sqlflow --squash B:/SQLFlowV3 main`), a conflict can only
+arise in the files that carry the points above. Resolve it keeping both SQLFlow's change and the extension point, then
+run `tools/check-vendored-sqlflow.sh`, build the solution clean, and run SQLFlow's suites and this project's.
