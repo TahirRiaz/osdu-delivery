@@ -77,7 +77,8 @@ jobs:
           docker exec --env "SQLCMDPASSWORD=$password" mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b \
             -Q "CREATE DATABASE SqlFlowCi; ALTER DATABASE SqlFlowCi SET ALLOW_SNAPSHOT_ISOLATION ON;"
           echo "SQLFLOW_TEST_DB=Server=localhost,1433;Database=SqlFlowCi;User ID=sa;Password=$password;TrustServerCertificate=True" >> "$GITHUB_ENV"
-          echo "SQLFLOW_E2E_CATALOG_DB=Server=localhost,1433;Database=SqlFlowE2E;User ID=sa;Password=$password;TrustServerCertificate=True" >> "$GITHUB_ENV"
+          # The suite derives the module and sample databases from this one: same server, same login.
+          echo "SQLFLOW_E2E_CATALOG_DB=Server=localhost,1433;Database=SQLFlow_E2E;User ID=sa;Password=$password;TrustServerCertificate=True" >> "$GITHUB_ENV"
 
       # SQLFlow's own suites and the OSDU module's suites, in one run over the solution, one
       # project at a time: the DB-backed suites share the database above and migrate and seed it.
@@ -189,9 +190,10 @@ jobs:
           fi
 
           # The catalog connection and the admin password reach the host as values of the variables
-          # its references name, never as literals in its configuration.
+          # its references name, never as literals in its configuration. No module database connection is
+          # given, so this run is the estate that keeps the `osdu` schema in the catalog's own database.
           docker run --detach --name control-plane --network images --publish 8080:8080 \
-            --env "SQLFLOW_CATALOG_DB=Server=mssql,1433;Database=OsduDeliveryImage;User ID=sa;Password=$sa_password;TrustServerCertificate=True" \
+            --env "SQLFLOW_CATALOG_DB=Server=mssql,1433;Database=SQLFlow_Image;User ID=sa;Password=$sa_password;TrustServerCertificate=True" \
             --env "ControlPlane__Jwt__SigningKey=$signing_key" \
             --env "ControlPlane__Jwt__BootstrapSecret=$bootstrap_secret" \
             --env ControlPlane__Bootstrap__AllowCreate=true \
