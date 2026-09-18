@@ -60,7 +60,11 @@ public static class DeliveryServices
         services.AddSingleton<IFlowDocumentKind, DeliveryFlowKind>();
         services.AddSingleton<IFlowDocumentKind, RetrievalFlowKind>();
         services.AddSingleton<IFlowDocumentKind, CacheFlowKind>();
-        services.AddSingleton<ICatalogSyncExtension, DeliveryCatalogSync>();
+        // The repository sync's delivery half. It is given the module database when the host registered one, since
+        // that is what decides whether its rows can ride the catalog's transaction or need a connection of their own.
+        services.AddSingleton<ICatalogSyncExtension>(sp => new DeliveryCatalogSync(
+            sp.GetRequiredService<DeliveryDocumentLoader>(),
+            sp.GetService<IDbContextFactory<OsduDbContext>>()));
 
         // Protocols and the completion callback. The logging listener is always on; hosts add their own (a live
         // feed, metrics, a webhook) by registering more IDeliveryListener instances.

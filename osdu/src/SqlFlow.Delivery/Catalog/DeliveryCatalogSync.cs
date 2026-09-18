@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using SqlFlow.Catalog;
+using SqlFlow.Catalog.Modules;
 using SqlFlow.Core;
 using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.Data;
@@ -18,7 +19,14 @@ namespace SqlFlow.Delivery.Catalog;
 /// delivery flow (<c>flowType: delivery</c>) become rows of the <c>osdu</c> schema, so the GUI lists what a flow renders
 /// with, what each cache holds and which pipeline keeps a ledger, without opening the repository. Rows are keyed by repository and reference; a document that disappears from the tree loses its row. The
 /// sync only reads the repository: the versions of a cache are written by the runs of its cache flow, never by the sync.
-/// The rows commit with the sync: the <c>osdu</c> context opens on the catalog context's connection and joins its transaction.
+/// <para>
+/// Where those rows are written depends on where the module database is. In the default estate it is the catalog's own
+/// database, and the <c>osdu</c> context opens on the catalog context's connection and joins its transaction, so the
+/// rows commit or roll back with the sync. Given a database of its own, which on Azure SQL means no cross-database
+/// statement and possibly another server, the context opens on the module's own connection and commits its own
+/// transaction. The reconciliation is the same either way, and is written to be repeatable from what the repository
+/// holds, so rows that commit while the sync then fails are settled by the next sync rather than left wrong.
+/// </para>
 /// </summary>
 public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 {
@@ -35,11 +43,18 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     private const int MaxTemplateVersionLength = 64;
 
     private readonly DeliveryDocumentLoader _documents;
+    private readonly IDbContextFactory<OsduDbContext>? _module;
 
-    public DeliveryCatalogSync(DeliveryDocumentLoader documents)
+    /// <summary>
+    /// The sync over <paramref name="documents"/>, writing the module's rows wherever <paramref name="module"/> opens
+    /// them. A host that registered no module database of its own passes none, and the rows are then the catalog
+    /// database's own, which is where the <c>osdu</c> schema sits unless a deployment gives the module a database.
+    /// </summary>
+    public DeliveryCatalogSync(DeliveryDocumentLoader documents, IDbContextFactory<OsduDbContext>? module = null)
     {
         ArgumentNullException.ThrowIfNull(documents);
         _documents = documents;
+        _module = module;
     }
 
     public async Task<CatalogSyncExtensionResult> SyncAsync(
@@ -48,13 +63,16 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentNullException.ThrowIfNull(warnings);
-        var transaction = context.Database.CurrentTransaction
-            ?? throw new InvalidOperationException(
-                $"The repository sync of repository {repoId:D} called the delivery extension outside its transaction, so the mapping and cache rows could not commit with the sync.");
+        if (context.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                $"The repository sync of repository {repoId:D} called the delivery extension outside its transaction, so the rows it writes beside the catalog's could not commit with them.");
+        }
 
-        await using var osdu = new OsduDbContext(OsduDbContext.SqlServerOptions(context.Database.GetDbConnection()));
-        await osdu.Database.UseTransactionAsync(transaction.GetDbTransaction(), ct).ConfigureAwait(false);
-        return await ReconcileAsync(osdu, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
+        await using var work = await OpenAsync(context, write: true, ct).ConfigureAwait(false);
+        var result = await ReconcileAsync(work.Context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
+        await work.CommitAsync(ct).ConfigureAwait(false);
+        return result;
     }
 
     /// <summary>
@@ -69,13 +87,71 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
-        await using var osdu = new OsduDbContext(OsduDbContext.SqlServerOptions(context.Database.GetDbConnection()));
+        await using var work = await OpenAsync(context, write: false, ct).ConfigureAwait(false);
+        return await MappingsChangedAsync(work.Context, repoId, root, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The module context this sync works through, and the transaction it is responsible for. Where the module's rows
+    /// are decides: rows reachable on the catalog's connection are written there and join the sync's transaction, and
+    /// rows in a database of the module's own are written on that database's connection, under a transaction of this
+    /// sync's own when it writes (<see cref="ModuleDatabase.IsReachableOn"/>).
+    /// </summary>
+    /// <param name="write">Whether the caller writes, which is what an isolated database needs its own transaction for.</param>
+    private async Task<ModuleWork> OpenAsync(CatalogDbContext context, bool write, CancellationToken ct)
+    {
+        var host = context.Database.GetDbConnection();
+        if (_module is not null)
+        {
+            var isolated = await _module.CreateDbContextAsync(ct).ConfigureAwait(false);
+            if (!ModuleDatabase.IsReachableOn(host, isolated.Database.GetConnectionString()))
+            {
+                // Its own database, which on Azure SQL is also its own server: no statement here may reach across, so
+                // the rows are written and committed on the module's connection. The reconciliation is repeatable from
+                // what the repository holds, so a sync that fails after this commit is settled by the next one.
+                try
+                {
+                    var own = write ? await isolated.Database.BeginTransactionAsync(ct).ConfigureAwait(false) : null;
+                    return new ModuleWork(isolated, own);
+                }
+                catch
+                {
+                    await isolated.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
+            }
+
+            await isolated.DisposeAsync().ConfigureAwait(false);
+        }
+
+        var osdu = new OsduDbContext(OsduDbContext.SqlServerOptions(host));
         if (context.Database.CurrentTransaction is { } transaction)
         {
             await osdu.Database.UseTransactionAsync(transaction.GetDbTransaction(), ct).ConfigureAwait(false);
         }
 
-        return await MappingsChangedAsync(osdu, repoId, root, ct).ConfigureAwait(false);
+        return new ModuleWork(osdu, own: null);
+    }
+
+    /// <summary>
+    /// The module context a sync reconciles through, with the transaction it owns: none when the rows ride the
+    /// catalog's transaction, its own when they cannot. Disposing without committing rolls its own transaction back.
+    /// </summary>
+    private sealed class ModuleWork(OsduDbContext context, IDbContextTransaction? own) : IAsyncDisposable
+    {
+        public OsduDbContext Context { get; } = context;
+
+        public Task CommitAsync(CancellationToken ct) => own is null ? Task.CompletedTask : own.CommitAsync(ct);
+
+        public async ValueTask DisposeAsync()
+        {
+            if (own is not null)
+            {
+                await own.DisposeAsync().ConfigureAwait(false);
+            }
+
+            await Context.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     /// <summary>
