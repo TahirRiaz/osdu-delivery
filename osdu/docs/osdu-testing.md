@@ -60,6 +60,17 @@ The app registration used has no `users.datalake.admins` entitlement, so no purg
 | 14 | Known state | Not applicable. The known-state operation this check was written for does not exist in this build ([design.md](design.md) section 7.5 records its removal); what it checked is now what verify does, which check 12 covers. |
 | 15 | Removal and proof | Passed. Twelve ids soft-deleted, each proven gone. |
 
+The ledger is the evidence, not this page: the wellbore flow's four submissions read
+
+| Received (UTC) | Records | Planned | Delivered | Unchanged | Check |
+| --- | --- | --- | --- | --- | --- |
+| 22:41:16 | 2 | 2 | 2 | 0 | 3, the first delivery |
+| 22:41:39 | 2 | 0 | 0 | 2 | 4, the unchanged re-run |
+| 22:42:01 | 2 | 1 | 1 | 1 | 5, one revision |
+| 23:45:23 | 2 | 2 | 2 | 0 | 13, the reconcile |
+
+and every record's attempts, with what each step sent and what the service returned, are in the ledger beside them.
+
 Two route types were not exercised: the `dataset` route (no sample estate delivers through the Dataset service) and the
 `workflow`, `dspdm` and `etp` routes (this deployment serves none of the services behind them). The trajectory
 interface of the sample source was not delivered either: its ids were outside the approved list.
