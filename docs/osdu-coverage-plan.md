@@ -1,7 +1,11 @@
 # OSDU coverage plan: every kind, every DDMS, one delivery engine
 
-Status: in progress. This plan is executed stage by stage; each stage lands with its tests, its documentation and its
-migration (where it changes the module's model), builds with zero warnings, and is committed on its own.
+Status: every stage is done. The plan was executed stage by stage; each stage landed with its tests, its
+documentation and its migration (where it changed the module's model), built with zero warnings, and was committed on
+its own. Stage 10's live verification ran on 2026-09-17 against Azure Data Manager for Energy 0.29, partition `dev`
+(the report is [../osdu/docs/osdu-testing.md](../osdu/docs/osdu-testing.md) section 0). The routes that deployment
+serves no service for stand on their suites and the pinned contracts, which is what the test matrix says of each; the
+live waves that would answer for them are LIVE-2 to LIVE-5 of [go-live-map.md](go-live-map.md).
 
 The architecture is [interfaces-design.md](interfaces-design.md). This document is the inventory of what is missing
 and the order it is built in.
@@ -204,7 +208,7 @@ One call pattern per service the briefs identify, each with its contract tests:
 Done when each has a route test end to end against a fake of its service built from its contract, and the kinds it
 serves resolve to it.
 
-Status: in progress. A DDMS that takes an OSDU record and keeps data of its own for it is a shape of the `ddms` route,
+Status: done. A DDMS that takes an OSDU record and keeps data of its own for it is a shape of the `ddms` route,
 found by the record's entity type under `target.ddms`; one whose unit is not an OSDU record is a route type of its own
 (docs/interfaces-design.md section 5.10). Built: the Well Delivery DDMS (`wellDeliveryV1`: an entity per write under a
 version recorded first, references given the versions the DDMS holds, content rewritten in place, the Storage copy
