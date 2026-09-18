@@ -43,7 +43,9 @@ and environment-variable names stay `SqlFlow.*` and `SQLFLOW_*`, as the project'
   The module's database is named by `SQLFLOW_OSDU_DB` (or `Osdu:Database:Connection`), on the control plane,
   which migrates and verifies it after the catalog, and on every node. Leave it unset and the `osdu` schema
   sits in the catalog's own database, which is the smaller estate and fully supported; it cannot be moved by
-  changing the setting afterwards, so choose before the first migrate.
+  changing the setting afterwards, so choose before the first migrate. The ledger reads under snapshot isolation,
+  so whichever database holds the `osdu` schema is allowed it once (Azure SQL Database allows it by default):
+  `ALTER DATABASE [OSDUDelivery] SET ALLOW_SNAPSHOT_ISOLATION ON;`
 - **The OSDU ledger on a node.** The delivery engine reads and writes the `osdu` schema per record while it plans
   and delivers, and a node opens no catalog connection, so a node without the module's connection validates and
   plans but delivers nothing. See [../docs/environment-variables.md](../docs/environment-variables.md).

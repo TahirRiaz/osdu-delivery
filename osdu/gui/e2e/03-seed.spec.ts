@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { E2E, hostRun } from "../playwright.config";
-import { connectionParts, connectionValue, LOADING_FLOWS } from "./global-setup";
+import { E2E, connectionParts, connectionValue, hostRun } from "../playwright.config";
+import { LOADING_FLOWS } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
 // Seeds the estate THROUGH the product: saves the templates the sample mappings pin, imports the sample references as the
@@ -13,28 +13,29 @@ import { adminSession, expect, test } from "./helpers";
 /** The OSDU module's folder: the sample estate and the hosts live beside the GUI. */
 const moduleRoot = join(import.meta.dirname, "..", "..");
 
-function fixtureMeta(): { repoDir: string; headSha: string; sampleDb: string } {
+function fixtureMeta(): { repoDir: string; headSha: string; sampleDb: string; osduDb: string } {
   const metaPath = join(import.meta.dirname, ".fixtures", "meta.json");
-  return JSON.parse(readFileSync(metaPath, "utf8")) as { repoDir: string; headSha: string; sampleDb: string };
+  return JSON.parse(readFileSync(metaPath, "utf8")) as { repoDir: string; headSha: string; sampleDb: string; osduDb: string };
 }
 
 /** The ingestion tables the chain loads, each keyed by the identity column the delivery flows page and fan out by. */
 const INGESTION_TABLES = ["WellLog", "WellLogCurve", "Wellbore", "WellboreAlias"] as const;
 
 /**
- * Runs one batch against the sample database. sqlcmd is used because the suite already needs a local SQL Server; the
- * password, when the connection string carries one, travels in SQLCMDPASSWORD so it never appears on a command line.
+ * Runs one batch against the database a connection string names, or against master beside it. sqlcmd is used because
+ * the suite already needs a local SQL Server; the password, when the connection string carries one, travels in
+ * SQLCMDPASSWORD so it never appears on a command line.
  */
-function sampleSql(connectionString: string, query: string, what: string): void {
+function sampleSql(connectionString: string, query: string, what: string, onMaster = false): void {
   const parts = connectionParts(connectionString);
   const pick = (...keys: string[]) => connectionValue(parts, ...keys);
   const server = pick("server", "data source", "address", "addr");
   const database = pick("database", "initial catalog");
   if (!server || !database) {
-    throw new Error(`The sample database connection string names no server or no database, so the suite cannot ${what}.`);
+    throw new Error(`The connection string names no server or no database, so the suite cannot ${what}.`);
   }
 
-  const args = ["-S", server, "-d", database, "-b", "-I", "-Q", query];
+  const args = ["-S", server, "-d", onMaster ? "master" : database, "-b", "-I", "-Q", query];
   const env: NodeJS.ProcessEnv = { ...process.env };
   const user = pick("user id", "uid", "user");
   if (user) {
@@ -57,6 +58,32 @@ function sampleSql(connectionString: string, query: string, what: string): void 
       { cause: error },
     );
   }
+}
+
+/**
+ * Creates the sample database when it is not there yet. It holds the chain's source and ingestion tables, not the
+ * catalog's or the module's rows, so nothing else provisions it: the control plane creates its catalog and the module's
+ * database, and a pre flow creates schemas and tables but never a database. Creating it again does nothing.
+ */
+function ensureSampleDatabase(connectionString: string): void {
+  const database = connectionValue(connectionParts(connectionString), "database", "initial catalog");
+  if (!database) {
+    throw new Error("The e2e sample database connection string names no database, so the suite cannot create it.");
+  }
+
+  // EXECUTE takes literals and variables and no function call, so the name goes through a variable and sp_executesql.
+  const quoted = database.replace(/'/g, "''");
+  sampleSql(
+    connectionString,
+    `DECLARE @name sysname = N'${quoted}';
+IF DB_ID(@name) IS NULL
+BEGIN
+  DECLARE @sql nvarchar(max) = N'CREATE DATABASE ' + QUOTENAME(@name);
+  EXEC sp_executesql @sql;
+END`,
+    "create the sample database",
+    true,
+  );
 }
 
 /**
@@ -88,8 +115,16 @@ IF @sql <> N'' EXEC sp_executesql @sql;`,
 }
 
 test.describe.serial("seed the estate via repo source sync", () => {
-  // Templates live in the catalog, not the repository, so the ones the sample mappings pin are saved first: every plan
-  // the later specs run renders against them.
+  // The delivery ledger reads under snapshot isolation, so its reads and writes never wait on each other, and a
+  // database does not allow that until someone says so: the operations guide has an operator run this once per estate.
+  // The suite is this estate's operator, and the module's database is one the control plane creates at startup, so
+  // this is the first thing that runs against it. Running it again changes nothing.
+  test("allow snapshot isolation on the module's database", () => {
+    allowSnapshotIsolation(fixtureMeta().osduDb);
+  });
+
+  // Templates live in the module's database, not the repository, so the ones the sample mappings pin are saved first:
+  // every plan the later specs run renders against them.
   test("save the templates the sample mappings pin", async ({ request }) => {
     const session = await adminSession(request);
     const templates = [
@@ -128,7 +163,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
         "--db", "${env:SQLFLOW_E2E_CACHE_DB}",
         "--json",
       ],
-      { encoding: "utf8", timeout: 400_000, env: { ...process.env, SQLFLOW_E2E_CACHE_DB: E2E.catalogDb } },
+      { encoding: "utf8", timeout: 400_000, env: { ...process.env, SQLFLOW_E2E_CACHE_DB: E2E.catalogDb, SQLFLOW_OSDU_DB: E2E.osduDb } },
     );
     expect(output).toContain("osdu-reference-cache");
   });
@@ -140,13 +175,14 @@ test.describe.serial("seed the estate via repo source sync", () => {
   test("load the sample ingestion tables by running the chain", () => {
     test.setTimeout(900_000);
     const meta = fixtureMeta();
+    ensureSampleDatabase(meta.sampleDb);
     allowSnapshotIsolation(meta.sampleDb);
     replaceTablesWithoutIdentityKey(meta.sampleDb);
     for (const flow of LOADING_FLOWS) {
       const output = execFileSync(
         "dotnet",
         [...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--", "run", `${meta.repoDir}/flows/${flow}.yaml`],
-        { encoding: "utf8", timeout: 600_000, env: { ...process.env, OSDU_SAMPLE_DB: meta.sampleDb } },
+        { encoding: "utf8", timeout: 600_000, env: { ...process.env, OSDU_SAMPLE_DB: meta.sampleDb, SQLFLOW_OSDU_DB: meta.osduDb } },
       );
       expect(output, `${flow} reported nothing`).not.toBe("");
     }

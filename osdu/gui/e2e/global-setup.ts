@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { E2E } from "../playwright.config";
+import { E2E, databaseOf } from "../playwright.config";
 
 /**
  * Builds the e2e fixture: a real local git repository holding the sample delivery estate, which the suite registers as a
@@ -37,7 +37,8 @@ export default function globalSetup(): void {
   // real run against the sample's OSDU target whenever a suite crossed its cron, and the specs expect flows that join no
   // schedule. The ingestion and delivery flows name their tables in OsduSample, while the pre flows write wherever
   // OSDU_SAMPLE_DB points; unless both name the same database, lineage never links a pre flow to what reads it, and the
-  // waves the chain runs in are wrong.
+  // waves the chain runs in are wrong. That database is neither the catalog nor the module's: source data is the
+  // volume in an estate, and it has a database of its own.
   const sampleDatabase = databaseOf(E2E.sampleDb);
   for (const flow of CHAIN) {
     const shipped = readFileSync(join(samplesDir, "flows", `${flow}.yaml`), "utf8");
@@ -70,7 +71,7 @@ export default function globalSetup(): void {
   // synced sha from a previous suite run never satisfies the seed assertions.
   writeFileSync(
     join(fixturesDir, "meta.json"),
-    JSON.stringify({ repoDir: repoDir.replace(/\\/g, "/"), headSha, sampleDb: E2E.sampleDb }, null, 2),
+    JSON.stringify({ repoDir: repoDir.replace(/\\/g, "/"), headSha, sampleDb: E2E.sampleDb, osduDb: E2E.osduDb }, null, 2),
   );
 
   if (!existsSync(join(repoDir, ".git"))) {
@@ -168,32 +169,4 @@ function inSampleDatabase(yaml: string, flow: string, database: string): string 
   }
 
   return rewritten;
-}
-
-/** The keywords of a SQL Server connection string, lower-cased, each with its last value. */
-export function connectionParts(connectionString: string): Map<string, string> {
-  const parts = new Map<string, string>();
-  for (const pair of connectionString.split(";")) {
-    const at = pair.indexOf("=");
-    if (at > 0) {
-      parts.set(pair.slice(0, at).trim().toLowerCase(), pair.slice(at + 1).trim());
-    }
-  }
-
-  return parts;
-}
-
-/** The first non-empty value among the keys given, the synonyms a connection string may use for one setting. */
-export function connectionValue(parts: Map<string, string>, ...keys: string[]): string | undefined {
-  return keys.map((key) => parts.get(key)).find((value) => value !== undefined && value !== "");
-}
-
-/** The database a connection string names; the chain's flows read three-part names, so one is required. */
-function databaseOf(connectionString: string): string {
-  const database = connectionValue(connectionParts(connectionString), "database", "initial catalog");
-  if (!database) {
-    throw new Error("The e2e sample database connection string names no database, and the chain's flows read three-part names. Add Database=<name>.");
-  }
-
-  return database;
 }

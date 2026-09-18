@@ -11,9 +11,9 @@ import { expect, test } from "./helpers";
 /** The OSDU module's folder: the sample estate and the hosts live beside the GUI. */
 const moduleRoot = join(import.meta.dirname, "..", "..");
 
-function fixtureMeta(): { repoDir: string; headSha: string; sampleDb: string } {
+function fixtureMeta(): { repoDir: string; headSha: string; sampleDb: string; osduDb: string } {
   return JSON.parse(readFileSync(join(import.meta.dirname, ".fixtures", "meta.json"), "utf8")) as {
-    repoDir: string; headSha: string; sampleDb: string;
+    repoDir: string; headSha: string; sampleDb: string; osduDb: string;
   };
 }
 
@@ -32,6 +32,9 @@ function cli(...args: string[]): string {
         ...process.env,
         OSDU_SAMPLE_DB: fixtureMeta().sampleDb,
         SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,
+        // The ledger these commands read is the module's database, which is not the catalog's: a node reaches it
+        // through exactly this reference, and so does a command run beside one.
+        SQLFLOW_OSDU_DB: E2E.osduDb,
         // The flow's target, as references it resolves but never uses: an intake reaches no OSDU (the fixture turns
         // the legal check off), and an address nothing listens on is what a run that tried to send would meet.
         PETRODB_URL: "http://127.0.0.1:9",
