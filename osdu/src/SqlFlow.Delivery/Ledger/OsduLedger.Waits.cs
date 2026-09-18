@@ -45,17 +45,16 @@ public sealed partial class OsduLedger
         var waiting = StatusText.Of(RecordStatus.Waiting);
         var take = Math.Clamp(max, 1, 1000);
         return await ReadAsync(
-            async db => await WithLeasesAsync(
-                db,
-                (await db.DeliveryRecords
-                    .Where(r => r.WaitingFor != null && r.WaitingFor == targetId && r.Status == waiting)
-                    .OrderByDescending(r => r.UpdatedUtc)
-                    .Take(take)
-                    .ToListAsync(ct)
-                    .ConfigureAwait(false))
-                    .Where(r => string.Equals(r.WaitingFor, targetId, StringComparison.Ordinal))
-                    .ToList(),
-                ct).ConfigureAwait(false),
+            // The ordinal check is the database's case-insensitive match narrowed to the id asked for.
+            async db => ToStates(
+                (await ReadLeasedAsync(
+                    db,
+                    db.DeliveryRecords
+                        .Where(r => r.WaitingFor != null && r.WaitingFor == targetId && r.Status == waiting)
+                        .OrderByDescending(r => r.UpdatedUtc)
+                        .Take(take),
+                    ct).ConfigureAwait(false))
+                    .Where(x => string.Equals(x.Record.WaitingFor, targetId, StringComparison.Ordinal))),
             ct).ConfigureAwait(false);
     }
 
@@ -81,18 +80,17 @@ public sealed partial class OsduLedger
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
         var take = Math.Clamp(max, 1, 100);
         return await ReadAsync(
-            async db => await WithLeasesAsync(
-                db,
-                (await db.DeliveryRecords
-                    .Where(r => r.TargetId != null && r.TargetId == targetId)
-                    .OrderBy(r => r.ClaimedTargetId == null)
-                    .ThenBy(r => r.FlowId)
-                    .Take(take)
-                    .ToListAsync(ct)
-                    .ConfigureAwait(false))
-                    .Where(r => string.Equals(r.TargetId, targetId, StringComparison.Ordinal))
-                    .ToList(),
-                ct).ConfigureAwait(false),
+            // The ordinal check is the database's case-insensitive match narrowed to the id asked for.
+            async db => ToStates(
+                (await ReadLeasedAsync(
+                    db,
+                    db.DeliveryRecords
+                        .Where(r => r.TargetId != null && r.TargetId == targetId)
+                        .OrderBy(r => r.ClaimedTargetId == null)
+                        .ThenBy(r => r.FlowId)
+                        .Take(take),
+                    ct).ConfigureAwait(false))
+                    .Where(x => string.Equals(x.Record.TargetId, targetId, StringComparison.Ordinal))),
             ct).ConfigureAwait(false);
     }
 

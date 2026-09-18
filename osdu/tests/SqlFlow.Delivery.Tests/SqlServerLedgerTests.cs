@@ -761,84 +761,49 @@ public class SqlServerLedgerTests
         Assert.Equal(("mh-newer", "9:0:10"), (kept!.PendingMetadataHash, kept.PendingDocumentRef));
     }
 
+    /// <summary>
+    /// A writer holding one record does not hold up a reader of another, and no read ever shows uncommitted work. That
+    /// is what the table's indexes buy, every one of them ending in the table's key so a statement locks no record it
+    /// does not write. The ledger takes no isolation level of its own for this: its own writes are short and capped at
+    /// a thousand rows, so a reader that does want a row a writer holds waits for one chunked transaction, not for a
+    /// database setting to have been turned on.
+    /// </summary>
     [SkippableFact]
-    public async Task Ledger_reads_see_the_last_committed_state_without_waiting_for_a_writer_that_holds_the_rows_on_sql_server()
+    public async Task A_writer_holding_one_record_does_not_hold_up_a_read_of_another_on_sql_server()
     {
         var ledger = await LedgerAsync(_clock);
         var s1 = Guid.NewGuid();
         await ledger.UpsertPendingAsync(_flow, [Work("held", s1, "0:0:10", "mh", Now), Work("other", s1, "0:10:10", "mh", Now)]);
-        await ledger.AddWorkBatchAsync(new WorkBatchState { SubmissionId = s1, FlowId = _flow, Index = 0, Location = "work/" + _run, RecordCount = 2, CreatedUtc = Now });
 
-        // Another session changes the records, the batch and the flow's leases, and keeps its transaction open.
+        // Another session changes one record of the flow and keeps its transaction open.
         await using var writer = new SqlConnection(ConnectionString.Value);
         await writer.OpenAsync();
         await using var transaction = (SqlTransaction)await writer.BeginTransactionAsync();
         await using (var write = writer.CreateCommand())
         {
             write.Transaction = transaction;
-            write.CommandText = """
-                UPDATE [osdu].[Record] SET [LastError] = N'uncommitted', [Status] = N'failed' WHERE [FlowId] = @flow;
-                UPDATE [osdu].[WorkBatch] SET [Status] = N'failed' WHERE [SubmissionId] = @submission;
-                INSERT INTO [osdu].[Lease] ([Token], [FlowId], [Owner], [AcquiredUtc], [ExpiresUtc]) VALUES (@token, @flow, N'uncommitted', @now, @now);
-                """;
+            write.CommandText = "UPDATE [osdu].[Record] SET [LastError] = N'uncommitted', [Status] = N'failed' WHERE [FlowId] = @flow AND [DeliveryKey] = @key;";
             write.Parameters.Add(new SqlParameter("@flow", System.Data.SqlDbType.UniqueIdentifier) { Value = _flow });
-            write.Parameters.Add(new SqlParameter("@submission", System.Data.SqlDbType.UniqueIdentifier) { Value = s1 });
-            write.Parameters.Add(new SqlParameter("@token", System.Data.SqlDbType.NVarChar, 200) { Value = "uncommitted/" + _run });
-            write.Parameters.Add(new SqlParameter("@now", System.Data.SqlDbType.DateTime2) { Value = Now.AddMinutes(-1) });
-            Assert.Equal(4, await write.ExecuteNonQueryAsync());
+            write.Parameters.Add(new SqlParameter("@key", System.Data.SqlDbType.UniqueIdentifier) { Value = Key("held").Value });
+            Assert.Equal(1, await write.ExecuteNonQueryAsync());
         }
 
         try
         {
-            // A read that waited would see the writer's rows only after it commits; the writer never does.
+            // The record the writer does not hold is read without waiting for it.
             using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            var record = await ledger.GetRecordAsync(_flow, Key("held"), patience.Token);
-            Assert.Equal((RecordStatus.Pending, (string?)null), (record!.Status, record.LastError));
-            Assert.Equal(2, (await ledger.ListAsync(_flow, new RecordQuery(), patience.Token)).Count);
-            Assert.Equal(2, await ledger.CountAsync(_flow, s1, RecordStatus.Pending, patience.Token));
-            Assert.True(await ledger.HasPendingAsync(_flow, s1, Now, patience.Token));
-            Assert.Equal(WorkBatchStatus.Queued, Assert.Single(await ledger.ListWorkBatchesAsync(s1, 10, 0, patience.Token)).Status);
-            Assert.Null(await ledger.NextLeaseExpiryAsync(_flow, null, patience.Token));
+            var other = await ledger.GetRecordAsync(_flow, Key("other"), patience.Token);
+            Assert.Equal((RecordStatus.Pending, (string?)null), (other!.Status, other.LastError));
 
-            // The measure is live: a read committed read of the same row does wait for the writer.
-            await using var reader = new SqlConnection(ConnectionString.Value);
-            await reader.OpenAsync();
-            await using var read = reader.CreateCommand();
-            read.CommandText = "SET LOCK_TIMEOUT 200; SELECT [LastError] FROM [osdu].[Record] WHERE [FlowId] = @flow AND [DeliveryKey] = @key;";
-            read.Parameters.Add(new SqlParameter("@flow", System.Data.SqlDbType.UniqueIdentifier) { Value = _flow });
-            read.Parameters.Add(new SqlParameter("@key", System.Data.SqlDbType.UniqueIdentifier) { Value = Key("held").Value });
-            Assert.Equal(1222, (await Assert.ThrowsAsync<SqlException>(() => read.ExecuteScalarAsync())).Number);
+            // And the writer's work is invisible until it commits: it never does.
+            await transaction.RollbackAsync();
+            var held = await ledger.GetRecordAsync(_flow, Key("held"), patience.Token);
+            Assert.Equal((RecordStatus.Pending, (string?)null), (held!.Status, held.LastError));
         }
-        finally
+        catch (Exception) when (transaction.Connection is not null)
         {
             await transaction.RollbackAsync();
-        }
-    }
-
-    [SkippableFact]
-    public async Task A_pooled_connection_that_served_a_ledger_read_goes_back_to_read_committed_on_sql_server()
-    {
-        await LedgerAsync(_clock);
-
-        // One connection in a pool of this test's own, so the connection the ledger read on is the one checked after.
-        var pooled = new SqlConnectionStringBuilder(ConnectionString.Value) { MaxPoolSize = 1, ApplicationName = "osdu-ledger-isolation-" + _run }.ConnectionString;
-        var ledger = new OsduLedger(() => new OsduDbContext(OsduDbContext.SqlServerOptions(pooled)), _clock);
-        var s1 = Guid.NewGuid();
-        await ledger.UpsertPendingAsync(_flow, [Work("isolation", s1, "0:0:10", "mh", Now)]);
-        try
-        {
-            Assert.NotNull(await ledger.GetRecordAsync(_flow, Key("isolation")));
-
-            await using var connection = new SqlConnection(pooled);
-            await connection.OpenAsync();
-            await using var command = connection.CreateCommand();
-            command.CommandText = "SELECT [transaction_isolation_level] FROM sys.dm_exec_sessions WHERE [session_id] = @@SPID;";
-            Assert.Equal((short)2, Convert.ToInt16(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture));
-        }
-        finally
-        {
-            await using var connection = new SqlConnection(pooled);
-            SqlConnection.ClearPool(connection);
+            throw;
         }
     }
 

@@ -170,7 +170,7 @@ public sealed partial class OsduLedger : ILedger
         foreach (var chunk in keys.Select(k => k.Value).Distinct().Chunk(ChunkSize))
         {
             var states = await ReadAsync(
-                async db => await WithLeasesAsync(db, await db.DeliveryRecords.Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey)).ToListAsync(ct).ConfigureAwait(false), ct).ConfigureAwait(false),
+                async db => ToStates(await ReadLeasedAsync(db, db.DeliveryRecords.Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey)), ct).ConfigureAwait(false)),
                 ct).ConfigureAwait(false);
             foreach (var state in states)
             {
@@ -184,7 +184,7 @@ public sealed partial class OsduLedger : ILedger
     public async Task<RecordState?> GetRecordAsync(Guid flowId, DeliveryKey key, CancellationToken ct = default)
     {
         var states = await ReadAsync(
-            async db => await WithLeasesAsync(db, await db.DeliveryRecords.Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value).Take(1).ToListAsync(ct).ConfigureAwait(false), ct).ConfigureAwait(false),
+            async db => ToStates(await ReadLeasedAsync(db, db.DeliveryRecords.Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value).Take(1), ct).ConfigureAwait(false)),
             ct).ConfigureAwait(false);
         return states.Count == 0 ? null : states[0];
     }
@@ -775,14 +775,12 @@ public sealed partial class OsduLedger : ILedger
                 var rows = await MatchingAsync(db, flowId, query, RecordListing.CountLimit, ct).ConfigureAwait(false);
 
                 // Ties broken by key: a bulk write stamps a whole batch with one update time, and the pages must still partition it.
-                var list = await rows
+                var page = rows
                     .OrderByDescending(r => r.UpdatedUtc)
                     .ThenByDescending(r => r.DeliveryKey)
                     .Skip(query.Offset)
-                    .Take(Math.Clamp(query.Max, 1, 1000))
-                    .ToListAsync(ct)
-                    .ConfigureAwait(false);
-                return await WithLeasesAsync(db, list, ct).ConfigureAwait(false);
+                    .Take(Math.Clamp(query.Max, 1, 1000));
+                return ToStates(await ReadLeasedAsync(db, page, ct).ConfigureAwait(false));
             },
             ct).ConfigureAwait(false);
     }
@@ -834,13 +832,11 @@ public sealed partial class OsduLedger : ILedger
         return await ReadAsync(
             async db =>
             {
-                var rows = await LookupFilter(db, term, RecordListing.LookupCandidateLimit)
+                var page = LookupFilter(db, term, RecordListing.LookupCandidateLimit)
                     .OrderByDescending(r => r.UpdatedUtc)
                     .ThenByDescending(r => r.DeliveryKey)
-                    .Take(Math.Clamp(max, 1, 200))
-                    .ToListAsync(ct)
-                    .ConfigureAwait(false);
-                return await WithLeasesAsync(db, rows, ct).ConfigureAwait(false);
+                    .Take(Math.Clamp(max, 1, 200));
+                return ToStates(await ReadLeasedAsync(db, page, ct).ConfigureAwait(false));
             },
             ct).ConfigureAwait(false);
     }

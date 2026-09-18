@@ -46,10 +46,11 @@ Everything the platform already reads ([environment-variables.md](environment-va
    needs the `osdu` module database connection of its own (`SQLFLOW_OSDU_DB`), with rights on schema `osdu`
    alone ([../architecture.md](architecture.md)).
 2. Provision the databases: the control plane applies SQLFlow's migrations to the catalog and the module's to the
-   module database on start, or `sqlflow db migrate --db <ref>`. The ledger's `osdu` schema comes with it. The
-   ledger reads under snapshot isolation, so allow it once on the database that holds the `osdu` schema (Azure SQL
-   Database allows it by default): `ALTER DATABASE [<database>] SET ALLOW_SNAPSHOT_ISOLATION ON;`
-   ([ledger.md](ledger.md#provisioning)).
+   module database on start, or `sqlflow db migrate --db <ref>`. The ledger's `osdu` schema comes with it, and asks
+   nothing else of the database. The **source** database a flow reads is allowed snapshot isolation once, so a
+   record and its child rows are read as one instant (Azure SQL Database allows it by default):
+   `ALTER DATABASE [<database>] SET ALLOW_SNAPSHOT_ISOLATION ON;` A flow that cannot have it declares
+   `isolation: readCommitted` ([ledger.md](ledger.md#provisioning)).
 3. Save the template the mapping pins into the catalog:
 
    ```bash
@@ -390,7 +391,7 @@ See [reference/cli/delivery.md](reference/cli/delivery.md).
 | Records show `delivering` while the run's trace says they were sent | The run's trace: `batch.progress` for the batch | Expected while the batch runs: a worker applies what it sent to the records at each renewal of its lease and when the batch closes, so the records trail the trace by at most one renewal. The attempts are there at once. |
 | A run fails: `source.record.primaryKey` names a column that is not an identity column, or not the table's primary key | The error names the table and what the column lacks, with the statement that adds the key | A table SQLFlow created before its ing flow set `target.identityColumn` has no identity key (or a plain `RecId` column the setting added and nothing fills). Stop the table's loads, drop that plain column, run the `ALTER TABLE ... ADD [RecId] bigint IDENTITY(1, 1) NOT NULL CONSTRAINT ... PRIMARY KEY CLUSTERED` from the message (it rewrites the table), and run again ([documents.md](documents.md#the-identity-primary-key)). |
 | A flow fails to load: `reliability.fanOut` needs `source.record.primaryKey` | The error names the flow file | Name the record table's identity primary key under `source.record.primaryKey`, or set `fanOut: 0`. |
-| A run fails: the database does not allow snapshot isolation | The error names the database and the statement | Run the `ALTER DATABASE ... SET ALLOW_SNAPSHOT_ISOLATION ON` it names, once, and run again. Nothing was claimed. |
+| A run fails: the source database does not allow snapshot isolation | The error names the database and the statement | Run the `ALTER DATABASE ... SET ALLOW_SNAPSHOT_ISOLATION ON` it names, once, or declare `isolation: readCommitted` on the flow, and run again. Nothing was claimed. |
 | A verify run reports drift | The Records tab with Drifted only | Decide whether the edit in OSDU was legitimate. Redeliver the record, or set `verify.reconcile: true` so verify runs queue redelivery. A newer version that changed only data keys other systems write (the flow's `preserveDataKeys`, or the run state External Data Services writes on a data job after a fetch) is not drift: the verify says so, on every route that writes records through storage or a manifest (all but ddms and fileAndDdms). |
 | Records held with `... already holds row N with ..., which this record did not write` | The record's last error names the business object, the row and its key | Look at the row in DSPDM. If the flow is to maintain rows loaded before it, set `target.dspdm.existingRows: update` and Release; otherwise remove the row or correct the key in the source, then Release ([documents.md](documents.md#the-production-ddms-core-service)). |
 | Records held with `the row cannot be saved in ...` or `DSPDM refused the row: ...` | The record's last error names each attribute and why | Fix the source rows or the mapping (attribute names, types, lengths, mandatory attributes), then Release. |

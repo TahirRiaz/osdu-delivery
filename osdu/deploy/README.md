@@ -46,8 +46,9 @@ and environment-variable names stay `SqlFlow.*` and `SQLFLOW_*`, as the project'
   Azure SQL that wants them apart has no other option, since no statement there reaches across two databases.
   The choice cannot be changed by editing the setting afterwards, so make it before the first migrate.
 
-  The ledger reads under snapshot isolation, so whichever database holds the `osdu` schema is allowed it once
-  (Azure SQL Database allows it by default): `ALTER DATABASE [SQLFlow] SET ALLOW_SNAPSHOT_ISOLATION ON;`
+  The metadata database needs no setting of its own. The **source** database a flow reads is allowed snapshot
+  isolation once, so a record and its child rows are read as one instant (Azure SQL Database allows it by
+  default): `ALTER DATABASE [OsduDeliveryIng] SET ALLOW_SNAPSHOT_ISOLATION ON;`
 - **The OSDU ledger on a node.** The delivery engine reads and writes the `osdu` schema per record while it plans
   and delivers, and a node opens no catalog connection, so a node without the module's connection validates and
   plans but delivers nothing. See [../docs/environment-variables.md](../docs/environment-variables.md).

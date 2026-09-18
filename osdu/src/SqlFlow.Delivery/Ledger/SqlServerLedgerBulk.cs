@@ -576,20 +576,6 @@ internal static class SqlServerLedgerBulk
         return keys;
     }
 
-    /// <summary>Whether a read failed because the database does not allow snapshot isolation (3951, 3952).</summary>
-    internal static bool IsSnapshotRefused(Exception ex)
-    {
-        for (var current = ex; current is not null; current = current.InnerException)
-        {
-            if (current is SqlException sql && sql.Errors.Cast<SqlError>().Any(e => e.Number is 3951 or 3952))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private static async Task<T> InTransactionAsync<T>(OsduDbContext db, Func<SqlConnection, SqlTransaction, Task<T>> work, CancellationToken ct)
     {
         var strategy = db.Database.CreateExecutionStrategy();

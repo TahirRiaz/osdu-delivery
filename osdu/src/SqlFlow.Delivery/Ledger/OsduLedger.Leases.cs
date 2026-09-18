@@ -1,8 +1,5 @@
-using System.Data;
 using System.Globalization;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using SqlFlow.Delivery.Data;
 
 namespace SqlFlow.Delivery.Ledger;
@@ -754,82 +751,38 @@ public sealed partial class OsduLedger
         return rows.Select(r => ToState(r) with { LeaseExpiresUtc = lease.ExpiresUtc }).ToList();
     }
 
-    /// <summary>The records as the ledger holds them, each leased one with the expiry of its lease.</summary>
-    private static async Task<IReadOnlyList<RecordState>> WithLeasesAsync(OsduDbContext db, IReadOnlyList<DeliveryRecord> rows, CancellationToken ct)
-    {
-        var tokens = rows.Select(r => r.LeaseOwner).OfType<string>().Distinct(StringComparer.Ordinal).ToList();
-        var expiries = new Dictionary<string, DateTime>(StringComparer.Ordinal);
-        foreach (var chunk in tokens.Chunk(LookupChunk))
-        {
-            var wanted = chunk.ToList();
-            foreach (var lease in await db.DeliveryLeases.Where(l => wanted.Contains(l.Token)).Select(l => new { l.Token, l.ExpiresUtc }).ToListAsync(ct).ConfigureAwait(false))
-            {
-                expiries[lease.Token] = lease.ExpiresUtc;
-            }
-        }
-
-        return rows.Select(r => ToState(r) with
-        {
-            LeaseExpiresUtc = r.LeaseOwner is { } token && expiries.TryGetValue(token, out var expires) ? expires : null,
-        }).ToList();
-    }
+    /// <summary>A record as the ledger holds it, with the expiry of the lease that holds it, if any.</summary>
+    private sealed record Leased(DeliveryRecord Record, DateTime? LeaseExpiresUtc);
 
     /// <summary>
-    /// Runs a read under snapshot isolation on SQL Server: it sees what was committed when it started, and it neither
-    /// waits for a writer nor holds one up. The connection is set back to read committed before it returns to the pool,
-    /// so no write that later takes it runs under snapshot isolation.
+    /// The records a query matches, each leased one carrying its lease's expiry, in ONE statement: the expiry is a
+    /// correlated lookup inside the same query. Reading the records and then their leases would be two statements, and
+    /// a lease closing between them leaves a record showing as delivering with an expiry it no longer has.
+    /// </summary>
+    private static Task<List<Leased>> ReadLeasedAsync(OsduDbContext db, IQueryable<DeliveryRecord> rows, CancellationToken ct)
+        => rows
+            .Select(r => new Leased(
+                r,
+                db.DeliveryLeases.Where(l => l.Token == r.LeaseOwner).Select(l => (DateTime?)l.ExpiresUtc).FirstOrDefault()))
+            .ToListAsync(ct);
+
+    /// <summary>What a caller sees: the ledger's record state, carrying the lease expiry read with it.</summary>
+    private static IReadOnlyList<RecordState> ToStates(IEnumerable<Leased> rows)
+        => rows.Select(r => ToState(r.Record) with { LeaseExpiresUtc = r.LeaseExpiresUtc }).ToList();
+
+    /// <summary>
+    /// Opens a context for one read, untracked. A read takes no transaction of its own: while a worker delivers it
+    /// writes its lease row and the append-only event and attempt tables, never the record table, which changes only
+    /// when a lease is claimed, checkpointed, closed or recovered, a thousand rows to a short transaction. A read that
+    /// needs a record and its lease together asks for both in one statement (<see cref="ReadLeasedAsync"/>), so nothing
+    /// here depends on the database allowing snapshot isolation.
     /// </summary>
     private async Task<T> ReadAsync<T>(Func<OsduDbContext, Task<T>> read, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         await using var db = Open();
         db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
-        if (!SqlServerLedgerBulk.Applies(db))
-        {
-            return await read(db).ConfigureAwait(false);
-        }
-
-        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
-        try
-        {
-            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Snapshot, ct).ConfigureAwait(false);
-            var result = await read(db).ConfigureAwait(false);
-            await tx.CommitAsync(ct).ConfigureAwait(false);
-            return result;
-        }
-        catch (Exception ex) when (SqlServerLedgerBulk.IsSnapshotRefused(ex))
-        {
-            var database = db.Database.GetDbConnection().Database;
-            throw new DeliveryException(
-                $"The delivery ledger reads under snapshot isolation, so its reads and writes never wait on each other, and database '{database}' does not allow it. "
-                + $"Allow it once with ALTER DATABASE [{database}] SET ALLOW_SNAPSHOT_ISOLATION ON.",
-                ex);
-        }
-        finally
-        {
-            await ResetIsolationAsync(db).ConfigureAwait(false);
-            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
-        }
-    }
-
-    private static async Task ResetIsolationAsync(OsduDbContext db)
-    {
-        var connection = (SqlConnection)db.Database.GetDbConnection();
-        if (connection.State != ConnectionState.Open)
-        {
-            return;
-        }
-
-        try
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED;";
-            await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
-        {
-            // A connection that cannot be set back must not serve a write: the pool opens fresh ones instead.
-            SqlConnection.ClearPool(connection);
-        }
+        return await read(db).ConfigureAwait(false);
     }
 
     private static string NewToken(string owner)

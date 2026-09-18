@@ -464,12 +464,13 @@ SQL Server:
   keys interleave, do not wait on each other. A record another staging inserted after the slice looked is refused by
   the table's key; the slice is rolled back and runs again, finds the record and compares its work with it, so newer
   work is never overwritten. The claim check is one seek of the claim index per record.
-- **Reads never wait on writes.** Every read of the ledger (a worker's, the planner's, the GUI's, the API's and the
-  CLI's) runs in a snapshot transaction: it sees what was committed when it started and takes no shared locks, so it
-  neither waits for a writer nor holds one up. The connection is set back to read committed before it returns to the
-  pool, so no write runs under snapshot isolation. The database must allow it ([Provisioning](#provisioning)). The
-  claim's reads are also answered from `(FlowId, Status, NextAttemptUtc)` and
-  `(FlowId, LastSubmissionId, Status, NextAttemptUtc)` alone.
+- **Reads meet the writers rarely, and need no isolation level of their own.** A worker writing its lease row and
+  appending to the event and attempt tables never touches the record table, so the reads above (a worker's, the
+  planner's, the GUI's, the API's and the CLI's) meet only the short, chunked transactions of a claim, a checkpoint,
+  a close or a recovery. The claim's reads are answered from `(FlowId, Status, NextAttemptUtc)` and
+  `(FlowId, LastSubmissionId, Status, NextAttemptUtc)` alone. A read that needs a record and the lease holding it
+  asks for both in one statement, so a lease closing mid-read cannot show a record as delivering with an expiry it
+  no longer has.
 - **A deadlock victim runs again.** SQL Server ends a deadlock by rolling one statement back. A staging slice, an
   append, an application slice, a claim and a lease statement are each run again, up to five times, after a short wait
   that grows with each try and differs between nodes; each is written so a second run does what the first would have.
@@ -608,19 +609,11 @@ waiters of an id when it lands. It adds a `Waiting` count to `osdu.Submission` a
 added empty, so an existing ledger takes the migration without a rewrite; the index is built over the record table,
 sized by its row count, and runs while no host is up.
 
-From 1.5.0 the ledger reads under snapshot isolation ([Many nodes, one table](#many-nodes-one-table)), so the database
-that holds the `osdu` schema must allow it. Allow it once:
-
-```sql
-ALTER DATABASE [<database>] SET ALLOW_SNAPSHOT_ISOLATION ON;
-```
-
-Azure SQL Database allows it by default; a SQL Server database does not until it is set. The migration leaves the
-setting to the operator because it covers the whole database, SQLFlow's catalog included: while it is on, every update
-and delete in the database keeps the row's previous version in `tempdb` for as long as a snapshot transaction may read
-it, and a row changed meanwhile carries 14 more bytes. The ledger's snapshot reads are short, so the versions are kept
-briefly. A ledger whose database does not allow it refuses its first read, before it claims any work, with an error
-that names the database and the statement above.
+The ledger asks nothing of the database but its own schema. 1.5.0 to 1.7.0 read every listing, wait and claim in a
+snapshot transaction, so the database holding the `osdu` schema had to allow snapshot isolation, and one that did not
+stopped every node from claiming any work; that requirement is gone ([Many nodes, one table](#many-nodes-one-table)).
+The **source** database a delivery flow reads is a different matter: a record and its child rows come back as several
+result sets, and a flow reads them as one instant unless it says otherwise ([documents.md](documents.md), `isolation`).
 
 The control plane applies pending migrations on start, and `sqlflow db migrate --db <ref>` does it by hand. Both
 hosts and `sqlflow db status` refuse to run against pending migrations, a database newer than the code, or a catalog

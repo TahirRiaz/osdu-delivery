@@ -255,23 +255,35 @@ public sealed class SqlServerLedgerMigrationTests
             "SELECT COUNT_BIG(*) FROM sys.tables WHERE [name] IN (N'Lease', N'RecordEvent') AND SCHEMA_NAME([schema_id]) = N'osdu';"));
     }
 
+    /// <summary>
+    /// The ledger asks nothing of the database beyond its own schema. It used to read every listing, wait and claim in
+    /// a snapshot transaction, so a database that did not allow snapshot isolation stopped every node from claiming any
+    /// work at all: a setting the product never set and never checked, on a database the control plane creates itself.
+    /// A worker writes the record table only when it claims, checkpoints, closes or recovers a lease, and a record and
+    /// its lease are read in one statement, so the reads need no isolation level of their own.
+    /// </summary>
     [SkippableFact]
-    public async Task A_ledger_database_that_does_not_allow_snapshot_isolation_is_named_before_any_work_is_claimed()
+    public async Task A_ledger_claims_delivers_and_lists_on_a_database_that_does_not_allow_snapshot_isolation()
     {
         await using var database = await ScratchDatabase.CreateAsync();
         await database.MigrateAsync(null);
+        Assert.Equal(0L, await database.ScalarAsync(
+            $"SELECT COUNT_BIG(*) FROM sys.databases WHERE [name] = N'{database.Name}' AND [snapshot_isolation_state] = 1;"));
+
         var ledger = new OsduLedger(database.Context, TimeProvider.System);
-        Assert.Equal(1, (await ledger.UpsertPendingAsync(Logs, [Pending(Logs, Guid.NewGuid(), "opendes:work-product-component--WellLog:s")])).Staged);
+        var key = Guid.NewGuid();
+        Assert.Equal(1, (await ledger.UpsertPendingAsync(Logs, [Pending(Logs, key, "opendes:work-product-component--WellLog:s")])).Staged);
 
-        var refused = await Assert.ThrowsAsync<DeliveryException>(() => ledger.ClaimAsync(Logs, null, "w1", 10, TimeSpan.FromMinutes(5), Now));
-        Assert.Contains($"ALTER DATABASE [{database.Name}] SET ALLOW_SNAPSHOT_ISOLATION ON", refused.Message, StringComparison.Ordinal);
-        await Assert.ThrowsAsync<DeliveryException>(() => ledger.ClaimWorkBatchAsync(Logs, null, "w1", TimeSpan.FromMinutes(5), Now));
-        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Lease];"));
-        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Record] WHERE [Status] <> N'pending' OR [AttemptCount] <> 0;"));
+        // The claim is the read path that used to fail first, before a node took any work.
+        var claimed = await ledger.ClaimAsync(Logs, null, "w1", 10, TimeSpan.FromMinutes(5), Now);
+        Assert.Single(claimed.Records);
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Lease];"));
 
-        // Allowed once, the same ledger claims the record.
-        await database.AllowSnapshotAsync();
-        Assert.Single((await ledger.ClaimAsync(Logs, null, "w1", 10, TimeSpan.FromMinutes(5), Now)).Records);
+        // And the listing reads the record with the expiry of the lease that holds it, in one statement.
+        var listed = await ledger.GetRecordAsync(Logs, new DeliveryKey(key));
+        Assert.NotNull(listed);
+        Assert.Equal(RecordStatus.Delivering, listed.Status);
+        Assert.NotNull(listed.LeaseExpiresUtc);
     }
 
     [SkippableFact]
