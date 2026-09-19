@@ -81,7 +81,7 @@ public sealed class DeliveryPlatformTests
 
     /// <summary>The sample estate's wellbore mapping, as the mapping builder writes one into a proposal.</summary>
     private static string SampleMapping()
-        => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "samples", "mappings", "Wellbore@1.0.0.yaml"));
+        => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "samples", "wells", "mappings", "Wellbore@1.0.0.yaml"));
 
     private static CatalogRun Project(string json)
     {
@@ -95,7 +95,7 @@ public sealed class DeliveryPlatformTests
         {
           "schemaVersion": 1,
           "runId": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-          "flowName": "recall-wellbore",
+          "flowName": "wells-wellbore",
           "flowKind": "{{flowKind}}",
           "success": true,
           "writtenUtc": "2026-09-16T09:00:00Z",

@@ -13,16 +13,16 @@ This page covers the estate verbs as they are used against OSDU flows.
 
 ```bash
 # the hourly deliver for one log source, now
-sqlflow trigger --repo recall --flow recall-welllog --set logSource=STAT_COMP
+sqlflow trigger --repo wells --flow wells-welllog --set logSource=STAT_COMP
 
 # plan it instead: render and compare, change nothing, and follow the trace
-sqlflow trigger --repo recall --flow recall-welllog --operation plan --set logSource=STAT_COMP --follow
+sqlflow trigger --repo wells --flow wells-welllog --operation plan --set logSource=STAT_COMP --follow
 
 # refresh a partition's OSDU cache
-sqlflow trigger --repo recall --flow osdu-reference-cache
+sqlflow trigger --repo wells --flow osdu-cache
 
 # what would be enqueued, without enqueuing it
-sqlflow trigger --repo recall --flow recall-welllog --preview
+sqlflow trigger --repo wells --flow wells-welllog --preview
 ```
 
 `trigger` enqueues one flow. `--repo` (a name or id) and `--flow` are required; `--pool` routes the run to a node
@@ -44,7 +44,7 @@ fire runs.
 ## Following what happened
 
 ```bash
-sqlflow runs list --kind delivery --status failed --repo recall
+sqlflow runs list --kind delivery --status failed --repo wells
 sqlflow runs show <runId>              # the header: parameters, counts, error
 sqlflow runs trace <runId> --follow    # the trace as text, live
 sqlflow runs cancel <runId>
@@ -58,10 +58,10 @@ the `pre` and `ing` flows feeding them.
 ## The estate
 
 ```bash
-sqlflow pipelines list --repo recall --kind delivery
+sqlflow pipelines list --repo wells --kind delivery
 sqlflow pipelines show <id> --yaml
-sqlflow schedules create --repo recall --flow recall-welllog --cron "0 * * * *" --operation deliver
-sqlflow schedules create --repo recall --flow recall-welllog --cron "0 3 * * *" --operation verify
+sqlflow schedules create --repo wells --flow wells-welllog --cron "0 * * * *" --operation deliver
+sqlflow schedules create --repo wells --flow wells-welllog --cron "0 3 * * *" --operation verify
 sqlflow repos sync recall
 sqlflow search <term>
 ```

@@ -49,12 +49,14 @@
   <ItemGroup>
     <!-- The sample estate the submission and template suites run against, copied next to the binaries so the suites
          work wherever the build output lands. The data files come too: a submission lands its records beside them. -->
-    <Content Include="..\..\samples\recall-welllog\flows\**" Link="samples\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\recall-welllog\mappings\**" Link="samples\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\recall-welllog\templates\**" Link="samples\templates\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\recall-welllog\caches\**" Link="samples\caches\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\recall-welllog\references\**" Link="samples\references\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\recall-welllog\data\**" Link="samples\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\wells\flows\**" Link="samples\wells\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\wells\mappings\**" Link="samples\wells\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\wells\cache\**" Link="samples\wells\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\wells\data\**" Link="samples\wells\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Beside the source folder, not inside it: a template and a cache both live in the module's database, so neither
+         is repository content. These files stand in for what a capture against OSDU would have written. -->
+    <Content Include="..\..\samples\templates\**" Link="samples\templates\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\cache-records\**" Link="samples\cache-records\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -77,17 +77,17 @@ Removed: `location`, `manifest`, `records`, `scopes`, path-template `payloads`, 
 `manualSubmission`, `manualSubmissionFileRoots`, `sql`, `replica`, and (since the removal above) `submissions`.
 Mappings are unchanged.
 
-### 1.2 `osdu/samples/recall-welllog/flows/recall-welllog.yaml`
+### 1.2 `osdu/samples/wells/flows/wells-welllog.yaml`
 
 ```yaml
 flowType: delivery
-name: recall-welllog
-batch: recall
+name: wells-welllog
+batch: wells
 
 parameters:
   logSource:
     required: true
-    description: The Recall log source (STAT_COMP, STAT_CPI, STAT_CORE, STAT_ILT, STAT_PLT, STAT_PRESS).
+    description: The log source (STAT_COMP, STAT_CPI, STAT_CORE, STAT_ILT, STAT_PLT, STAT_PRESS).
 
 source:
   connection: ${env:OSDU_SAMPLE_DB}
@@ -121,14 +121,14 @@ in the current sample, with the schedule carrying `values: { logSource: STAT_COM
 
 ### 1.3 Pre and ing flows
 
-- `recall-welllog-pre`: csv from `../data/welllog` (`srcFile: "*.csv"`) into `pre.WellLog`, `schema.evolve: widen`,
+- `wells-welllog-pre`: csv from `../data/welllog` (`srcFile: "*.csv"`) into `pre.WellLog`, `schema.evolve: widen`,
   `transform.inferTypes` with typed `log_run`, `log_version`, `update_date` (`datetime2`), `chunk_count` (`int`),
   `incremental.dateColumn: FileDate_DW`, `load.mode: append`.
-- `recall-welllog-curves-pre`: csv from `../data/curves-meta` into `pre.WellLogCurve`, typed `curve_ordinal`,
+- `wells-welllog-curves-pre`: csv from `../data/curves-meta` into `pre.WellLogCurve`, typed `curve_ordinal`,
   `curve_version`, `business_value` (`NULLIF(@ColName, '')`).
-- `recall-welllog-ing`: `OsduSample.pre.v_WellLog` into `OsduSample.ing.WellLog`, `keyColumns: [source_project, log_id]`,
+- `wells-welllog-ing`: `OsduSample.pre.v_WellLog` into `OsduSample.ing.WellLog`, `keyColumns: [source_project, log_id]`,
   `incremental.columns: [FileDate_DW]`, `systemColumns.insertedDate/updatedDate: true`.
-- `recall-welllog-curves-ing`: `OsduSample.pre.v_WellLogCurve` into `OsduSample.ing.WellLogCurve`,
+- `wells-welllog-curves-ing`: `OsduSample.pre.v_WellLogCurve` into `OsduSample.ing.WellLogCurve`,
   `keyColumns: [source_project, log_id, curve_id]`.
 - `OsduSample` is the Initial Catalog of `${env:OSDU_SAMPLE_DB}`; SQL Server suites generate these files with the test
   database's name.
@@ -146,8 +146,8 @@ in the current sample, with the schedule carrying `values: { logSource: STAT_COM
 
 ### 1.5 Wellbore chain
 
-`recall-wellbore-pre`, `recall-wellbore-aliases-pre`, `recall-wellbore-ing` (`keyColumns: [facility_name]`),
-`recall-wellbore-aliases-ing` (`[facility_name, alias_name]`) and `recall-wellbore` (record `OsduSample.ing.Wellbore`,
+`wells-wellbore-pre`, `wells-wellbore-aliases-pre`, `wells-wellbore-ing` (`keyColumns: [facility_name]`),
+`wells-wellbore-aliases-ing` (`[facility_name, alias_name]`) and `wells-wellbore` (record `OsduSample.ing.Wellbore`,
 dataset `aliases` joined on `facility_name`, `protocol: osduRecord`).
 
 ## 2. Planning over the ingestion tables

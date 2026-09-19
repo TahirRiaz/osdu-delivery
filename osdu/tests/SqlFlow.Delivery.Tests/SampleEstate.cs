@@ -18,25 +18,25 @@ public static class SampleEstate
     /// <summary>The parameter values a run of the sample flow carries.</summary>
     public static IReadOnlyDictionary<string, string> Values { get; } = new Dictionary<string, string>(StringComparer.Ordinal)
     {
-        ["logSource"] = SampleWellLogs.LogName,
+        ["logSource"] = SampleWellLogs.LogSource,
     };
 
     /// <summary>The delivery key of the sample log at <paramref name="index"/>, as the mapping derives it.</summary>
     public static DeliveryKey Key(int index) => SampleWellLogs.Logs()[index].Key;
 
     /// <summary>The sample logs, in the order the estate holds them.</summary>
-    public static IReadOnlyList<SampleLog> Logs(string logName = SampleWellLogs.LogName) => SampleWellLogs.Logs(logName);
+    public static IReadOnlyList<SampleLog> Logs(string logSource = SampleWellLogs.LogSource) => SampleWellLogs.Logs(logSource);
 
     /// <summary>
     /// Builds the estate: writes each log's payload files under <paramref name="root"/> and fills the ingestion tables
     /// with the record and curve rows, stamped with the update time and the origin the pre and ing flows would have left.
     /// </summary>
     public static async Task<MemoryIngestionTables> BuildAsync(
-        string root, DateTime updatedUtc, string logName = SampleWellLogs.LogName, TimeProvider? time = null, CancellationToken ct = default)
+        string root, DateTime updatedUtc, string logSource = SampleWellLogs.LogSource, TimeProvider? time = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         var tables = new MemoryIngestionTables(time);
-        var logs = SampleWellLogs.Logs(logName);
+        var logs = SampleWellLogs.Logs(logSource);
         for (var i = 0; i < logs.Count; i++)
         {
             var log = logs[i];
@@ -60,9 +60,8 @@ public static class SampleEstate
                 ["source_project"] = log.SourceProject,
                 ["log_id"] = log.LogId,
                 ["wellbore_uwi"] = log.WellboreUwi,
-                ["log_name"] = log.LogName,
+                ["log_source"] = log.LogSource,
                 ["log_run"] = log.LogRun,
-                ["log_source"] = log.SourceProject,
                 ["index_min"] = log.IndexMin,
                 ["index_max"] = log.IndexMax,
                 ["index_increment"] = log.IndexIncrement,

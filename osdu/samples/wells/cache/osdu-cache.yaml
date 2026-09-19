@@ -1,0 +1,66 @@
+# Cache flow: osdu-cache
+#
+# What this flow caches (docs/delivery/design.md section 6.2): the OSDU reference and master data the WellLog,
+# WellboreTrajectory and Wellbore mappings resolve against, and which paths of each record are kept. Add a type or a path here, and the next
+# refresh captures it. A run of this flow (the refresh operation; the schedule below runs one nightly) searches OSDU for
+# every declared type and merges what it finds into the cache of its partition (data-partition-id below) in the catalog,
+# which writes a new version when anything changed and records the flow and the run that wrote it. A partition has one
+# cache: every cache flow searching it adds to the same records, stored once, and every delivery flow delivering to it
+# reads them. The versions are listed on the GUI's OSDU cache page and by 'sqlflow cache list opendes'; nothing is
+# written back to this repository.
+#
+# The cache itself is never kept in this repository: this document defines it, and a run captures it into the
+# module database. For work without an OSDU platform to capture from, the sample type files in osdu/samples/cache-records
+# hold a small version of the same cache:
+#   sqlflow cache import cache/osdu-cache.yaml --from-dir <osdu/samples/cache-records> --db <conn-ref>
+flowType: cache
+name: osdu-cache
+batch: wells
+
+source:
+  endpoint: ${env:PETRODB_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  headers:
+    Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
+    data-partition-id: opendes
+
+# A changed cached value rewrites the documents built from it. By default (onChange: auto) the affected records are tagged
+# and the next run delivers them. Where a change should be looked at first, onChange: approve (here for every type, or on
+# one type) holds the affected records until someone approves the update on the OSDU cache page.
+
+types:
+  - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+    name: UnitOfMeasure
+    fields: [data.Code, data.Name, data.ID]
+  - kind: "osdu:wks:reference-data--LogCurveBusinessValue:*"
+    name: LogCurveBusinessValue
+    fields: [data.Code, data.Name]
+  - kind: "osdu:wks:reference-data--VerticalMeasurementType:*"
+    name: VerticalMeasurementType
+    fields: [data.Code, data.Name]
+  - kind: "osdu:wks:reference-data--TrajectoryStationPropertyType:*"
+    name: TrajectoryStationPropertyType
+    fields: [data.Code, data.Name]
+  - kind: "osdu:wks:master-data--Wellbore:*"
+    name: Wellbore
+    fields:
+      - data.FacilityName
+      # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a drop
+      # naming a wellbore by any one of them resolves to the same record.
+      - path: data.NameAlias.AliasName
+        as: Alias
+
+reliability:
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+
+# Nightly, well before the hourly delivery runs, so a delivery renders against a cache captured the same day.
+schedule:
+  cron: "0 2 * * *"

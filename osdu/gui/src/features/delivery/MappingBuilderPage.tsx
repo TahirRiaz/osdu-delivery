@@ -479,7 +479,7 @@ export default function MappingBuilderPage() {
                 <Input
                   id="mapping-builder-system"
                   className="h-8 font-mono"
-                  placeholder="recall"
+                  placeholder="wells"
                   value={system}
                   onChange={(event) => setSystem(event.target.value)}
                   data-testid="mapping-builder-system"
@@ -571,7 +571,7 @@ export default function MappingBuilderPage() {
                 <Input
                   id="mapping-builder-label"
                   className="h-8 font-mono"
-                  placeholder="{dataset.wellbore_uwi} / {dataset.log_name}"
+                  placeholder="{dataset.wellbore_uwi} / {dataset.log_source}"
                   value={draft.label ?? ""}
                   onChange={(event) => {
                     const value = event.target.value;

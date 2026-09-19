@@ -20,7 +20,7 @@ public sealed record SampleLog(
     string SourceProject,
     string LogId,
     string WellboreUwi,
-    string LogName,
+    string LogSource,
     string LogRun,
     string LogVersion,
     string LogPass,
@@ -111,13 +111,13 @@ public sealed record SampleWellbore(string FacilityName, string? Description, st
 public static class SampleWellLogs
 {
     /// <summary>The source system the delivery keys are derived under, matching the sample mappings' <c>dataset.system</c>.</summary>
-    public const string System = "recall";
+    public const string System = "wells";
 
     /// <summary>The index curve, whose values are the depths the other curves are sampled at.</summary>
     public const string IndexCurveId = "MD";
 
     /// <summary>The log source the sample flow's schedule fires for, and the scope its records sit in.</summary>
-    public const string LogName = "STAT_COMP";
+    public const string LogSource = "STAT_COMP";
 
     /// <summary>The payload files of one log; the sample writes one chunk per log.</summary>
     public const string ChunkFileName = "chunk_00000.parquet";
@@ -126,10 +126,10 @@ public static class SampleWellLogs
     public static readonly DateTime UpdatedUtc = new(2026, 9, 1, 6, 30, 0, DateTimeKind.Utc);
 
     /// <summary>The logging runs of the sample estate, in the order their file lists them.</summary>
-    public static IReadOnlyList<SampleLog> Logs(string logName = LogName) =>
+    public static IReadOnlyList<SampleLog> Logs(string logSource = LogSource) =>
     [
         new SampleLog(
-            "NO_15_9", "L-1001", "OSDU-DEV-1-A", logName, "1", "1", "MAIN,REPEAT", "SLB", "NO_15_9:L-1001,extra",
+            "NO_15_9", "L-1001", "OSDU-DEV-1-A", logSource, "1", "1", "MAIN,REPEAT", "SLB", "NO_15_9:L-1001,extra",
             "REGULAR", "23.5 M", "M", 1000, 1004, 0.5, UpdatedUtc,
             [
                 new SampleCurve(IndexCurveId, "M", "Measured depth", null, 1000, 0.5),
@@ -137,14 +137,14 @@ public static class SampleWellLogs
                 new SampleCurve("RHOB", "G/CM3", "Bulk density", "HIGH", 2.31, 0.004),
             ]),
         new SampleLog(
-            "NO_15_9", "L-1002", "OSDU-DEV-1-A", logName, "2", "1", "MAIN", "SLB", "NO_15_9:L-1002",
+            "NO_15_9", "L-1002", "OSDU-DEV-1-A", logSource, "2", "1", "MAIN", "SLB", "NO_15_9:L-1002",
             "REGULAR", "23.5 M", "M", 1010, 1012, 0.5, UpdatedUtc,
             [
                 new SampleCurve(IndexCurveId, "M", "Measured depth", null, 1010, 0.5),
                 new SampleCurve("GR", "GAPI", "Gamma ray", "MEDIUM", 51.8, -0.25),
             ]),
         new SampleLog(
-            "NO_16_2", "L-2001", "OSDU-DEV-1-B", logName, "1", "2", "MAIN", "BHGE", "NO_16_2:L-2001",
+            "NO_16_2", "L-2001", "OSDU-DEV-1-B", logSource, "1", "2", "MAIN", "BHGE", "NO_16_2:L-2001",
             "DISCRETE", "18 FT", "FT", 1500, 1501.5, 0.5, UpdatedUtc,
             [
                 new SampleCurve(IndexCurveId, "FT", "Measured depth", null, 1500, 0.5),
@@ -162,7 +162,7 @@ public static class SampleWellLogs
     /// <summary>The columns of the well log file the pre flow reads, in the order it writes them.</summary>
     public static IReadOnlyList<string> LogColumns { get; } =
     [
-        "source_project", "log_id", "wellbore_uwi", "log_name", "log_run", "log_source", "index_min", "index_max",
+        "source_project", "log_id", "wellbore_uwi", "log_source", "log_run", "index_min", "index_max",
         "index_increment", "index_unit", "depth_coding", "elev_meas_ref", "creator", "log_version", "log_pass",
         "native_uid", "update_date", "curve_folder", "payload_hash", "chunk_count",
     ];
@@ -185,10 +185,10 @@ public static class SampleWellLogs
     /// and one parquet chunk per log under <c>curves/&lt;project&gt;/&lt;log&gt;</c>. Writing it again produces exactly
     /// the same bytes, so the committed files and a freshly generated estate compare equal.
     /// </summary>
-    public static async Task WriteAsync(string dataRoot, string logName = LogName, CancellationToken ct = default)
+    public static async Task WriteAsync(string dataRoot, string logSource = LogSource, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
-        var logs = Logs(logName);
+        var logs = Logs(logSource);
         await WriteCsvAsync(Path.Combine(dataRoot, "welllog", "welllog_20260901.csv"), LogColumns, logs.Select(LogRow).ToList(), ct).ConfigureAwait(false);
         await WriteCsvAsync(Path.Combine(dataRoot, "curves-meta", "welllog_curves_20260901.csv"), CurveColumns, logs.SelectMany(CurveRows).ToList(), ct).ConfigureAwait(false);
         await WriteCsvAsync(
@@ -246,9 +246,8 @@ public static class SampleWellLogs
             ["source_project"] = log.SourceProject,
             ["log_id"] = log.LogId,
             ["wellbore_uwi"] = log.WellboreUwi,
-            ["log_name"] = log.LogName,
+            ["log_source"] = log.LogSource,
             ["log_run"] = log.LogRun,
-            ["log_source"] = log.SourceProject,
             ["index_min"] = Number(log.IndexMin),
             ["index_max"] = Number(log.IndexMax),
             ["index_increment"] = Number(log.IndexIncrement),

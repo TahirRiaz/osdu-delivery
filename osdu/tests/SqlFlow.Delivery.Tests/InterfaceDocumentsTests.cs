@@ -212,9 +212,9 @@ public sealed class InterfaceDocumentsTests
         Assert.Null(flow.Interface);
         Assert.Null(flow.AdoptedLedger);
         Assert.Null(flow.RouteReason);
-        Assert.Equal("recall-welllog", flow.Label);
-        Assert.Equal("recall-welllog", flow.LedgerName);
-        Assert.Equal(FlowId.Of("recall-welllog"), flow.Id);
+        Assert.Equal("wells-welllog", flow.Label);
+        Assert.Equal("wells-welllog", flow.LedgerName);
+        Assert.Equal(FlowId.Of("wells-welllog"), flow.Id);
         Assert.Same(flow, source.Interface(null));
         Assert.Empty(source.Names);
         Assert.Equal(new FlowFailWhen(), flow.FailWhen);
@@ -231,17 +231,17 @@ public sealed class InterfaceDocumentsTests
     {
         var source = _loader.ParseSource(Source(Wells + """
               logs:
-                ledger: recall-welllog
+                ledger: wells-welllog
                 record: { object: Petrel.ing.WellLog, key: [uwi, log_id] }
                 mapping: WellLog@1.4.0
             """), "petrel.yaml");
 
         var logs = source.Interface("logs");
-        Assert.Equal("recall-welllog", logs.AdoptedLedger);
-        Assert.Equal("recall-welllog", logs.LedgerName);
+        Assert.Equal("wells-welllog", logs.AdoptedLedger);
+        Assert.Equal("wells-welllog", logs.LedgerName);
         Assert.Equal("petrel/logs", logs.Label);
-        Assert.Equal(FlowId.Of("recall-welllog"), logs.Id);
-        Assert.Same(logs, source.ByFlowId(FlowId.Of("recall-welllog")));
+        Assert.Equal(FlowId.Of("wells-welllog"), logs.Id);
+        Assert.Same(logs, source.ByFlowId(FlowId.Of("wells-welllog")));
         Assert.Null(source.ByFlowId(FlowId.Of("petrel/logs")));
     }
 
@@ -410,7 +410,7 @@ public sealed class InterfaceDocumentsTests
         var refused = Assert.Throws<FlowValidationException>(() => _loader.ParseSource(yaml, "petrel.yaml"));
         Assert.Contains("characters; the ledger records a flow under at most 200", refused.Message, StringComparison.Ordinal);
 
-        var single = File.ReadAllText(Samples.WellboreFlowFile).ReplaceLineEndings("\n").Replace("name: recall-wellbore\n", $"name: {new string('w', 201)}\n", StringComparison.Ordinal);
+        var single = File.ReadAllText(Samples.WellboreFlowFile).ReplaceLineEndings("\n").Replace("name: wells-wellbore\n", $"name: {new string('w', 201)}\n", StringComparison.Ordinal);
         Assert.Contains("name is 201 characters", Assert.Throws<FlowValidationException>(() => _loader.ParseSource(single, "wellbore.yaml")).Message, StringComparison.Ordinal);
     }
 

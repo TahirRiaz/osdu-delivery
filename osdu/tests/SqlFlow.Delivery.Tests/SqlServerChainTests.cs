@@ -67,7 +67,7 @@ public class SqlServerChainTests
         // run of a flow is actually in.
         var order = await EnqueueChainAndRunIngestionAsync(estate);
         Assert.Equal(
-            [estate.Rename("recall-welllog-curves-pre"), estate.Rename("recall-welllog-pre")],
+            [estate.Rename("wells-welllog-curves-pre"), estate.Rename("wells-welllog-pre")],
             order.Where(m => m.Wave == 0).Select(m => m.FlowName).OrderBy(n => n, StringComparer.Ordinal).ToList());
         Assert.Equal(estate.DeliveryFlowName, order.Single(m => m.Wave == 2).FlowName);
 
@@ -674,7 +674,7 @@ public class SqlServerChainTests
                   aliases: { object: {{Table("WellboreAlias")}}, join: { facility_name: facility_name }, orderBy: [alias_name] }
                 mapping: Wellbore@1.0.0
               welllogs:
-                record: { object: {{Table("WellLog")}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_name: logSource } }
+                record: { object: {{Table("WellLog")}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
                   curves: { object: {{Table("WellLogCurve")}}, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 bulk: { root: ../data/curves, locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
@@ -776,11 +776,11 @@ public class SqlServerChainTests
             return wave!.Wave;
         }
 
-        var pre = WaveOf("recall-welllog-pre");
-        var curvesPre = WaveOf("recall-welllog-curves-pre");
-        var ing = WaveOf("recall-welllog-ing");
-        var curvesIng = WaveOf("recall-welllog-curves-ing");
-        var delivery = WaveOf("recall-welllog");
+        var pre = WaveOf("wells-welllog-pre");
+        var curvesPre = WaveOf("wells-welllog-curves-pre");
+        var ing = WaveOf("wells-welllog-ing");
+        var curvesIng = WaveOf("wells-welllog-curves-ing");
+        var delivery = WaveOf("wells-welllog");
 
         Assert.True(pre < ing, $"the pre flow must run before the ingestion flow that reads its view; waves: {Describe(waves)}");
         Assert.True(curvesPre < curvesIng, $"the curve pre flow must run before its ingestion flow; waves: {Describe(waves)}");
@@ -898,7 +898,7 @@ public class SqlServerChainTests
             foreach (var (flowName, _) in queued)
             {
                 var name = shipped[flowName];
-                if (name != "recall-welllog")
+                if (name != "wells-welllog")
                 {
                     await estate.RunFlowAsync(name);
                 }
@@ -918,11 +918,11 @@ public class SqlServerChainTests
     /// <summary>The chain's members: the flow as the repository names it, its kind, and the wave lineage puts it in.</summary>
     private static IReadOnlyList<(string Name, string Kind, int Wave)> Chain() =>
     [
-        ("recall-welllog-pre", "file", 0),
-        ("recall-welllog-curves-pre", "file", 0),
-        ("recall-welllog-ing", "ing", 1),
-        ("recall-welllog-curves-ing", "ing", 1),
-        ("recall-welllog", FlowDefinition.FlowTypeName, 2),
+        ("wells-welllog-pre", "file", 0),
+        ("wells-welllog-curves-pre", "file", 0),
+        ("wells-welllog-ing", "ing", 1),
+        ("wells-welllog-curves-ing", "ing", 1),
+        ("wells-welllog", FlowDefinition.FlowTypeName, 2),
     ];
 
     /// <summary>

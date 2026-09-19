@@ -12,11 +12,13 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The sample delivery estate (<c>osdu/samples/recall-welllog</c>) copied to a temp repository, for the API tests that
+/// The sample delivery estate (<c>osdu/samples/wells</c>) copied to a temp repository, for the API tests that
 /// need a real flow: the two OSDU flows with the pre and ing chains that feed them, the mappings they render with, and
-/// the data folders the pre flows read. What the flows render with lives in the module's database (the templates
-/// and the partition cache), so a test saves those rather than inventing a second estate that would drift from the real
-/// one. This mirrors what the engine suite and the GUI e2e fixture do, for the same reason.
+/// the drop-off folder the pre flows read. The copy keeps the shape a repository has, one folder per source, so a path
+/// the catalog records here is the path it would record for a customer's repo. What the flows render with lives in the
+/// module's database (the templates and the partition cache), so a test saves those rather than inventing a second
+/// estate that would drift from the real one. This mirrors what the engine suite and the GUI e2e fixture do, for the
+/// same reason.
 /// </summary>
 internal static class SampleEstate
 {
@@ -24,10 +26,10 @@ internal static class SampleEstate
     public const string LogSource = "STAT_COMP";
 
     /// <summary>The well log flow of the sample estate, which streams payload files beside its documents.</summary>
-    public const string FlowName = "recall-welllog";
+    public const string FlowName = "wells-welllog";
 
     /// <summary>The wellbore master data flow, which streams no payload files.</summary>
-    public const string WellboreFlowName = "recall-wellbore";
+    public const string WellboreFlowName = "wells-wellbore";
 
     /// <summary>The mapping the wellbore flow pins, and the template version it fills.</summary>
     public const string WellboreMapping = "Wellbore@1.0.0";
@@ -44,8 +46,18 @@ internal static class SampleEstate
         ("osdu:wks:work-product-component--WellboreTrajectory:1.3.0", "osdu_wks_work-product-component--WellboreTrajectory_1.3.0.json"),
     ];
 
-    /// <summary>The parts of the estate a run needs: the documents, what they render with, and the data folders.</summary>
-    private static readonly string[] Parts = ["flows", "caches", "mappings", "references", "templates", "data"];
+    /// <summary>
+    /// The folder the source occupies in a repository. A repository is laid out per source: one top-level folder, which
+    /// the catalog and the GUI read as a project, holding everything that source needs.
+    /// </summary>
+    public const string SourceFolder = "wells";
+
+    /// <summary>
+    /// What the source folder holds, and so what a copy of the estate is made of: the documents, what they render with,
+    /// and the drop-off folder. Neither the templates nor the cache records are among them, because neither is
+    /// repository content: both live in the module's database, and the repository holds only what declares them.
+    /// </summary>
+    private static readonly string[] Parts = ["flows", "cache", "mappings", "data"];
 
     /// <summary>
     /// Copies the estate into <paramref name="destination"/> and returns it. Nothing about the flows is rewritten: what
@@ -55,10 +67,10 @@ internal static class SampleEstate
     public static string CopyTo(string destination)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
-        var source = Locate();
+        var source = SourceRoot();
         foreach (var part in Parts)
         {
-            CopyDirectory(Path.Combine(source, part), Path.Combine(destination, part));
+            CopyDirectory(Path.Combine(source, part), Path.Combine(destination, SourceFolder, part));
         }
 
         return destination;
@@ -69,17 +81,25 @@ internal static class SampleEstate
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
-        return File.ReadAllText(Path.Combine(root, "flows", flowName + ".yaml"));
+        return File.ReadAllText(Path.Combine(root, SourceFolder, "flows", flowName + ".yaml"));
     }
 
-    /// <summary>The repo-relative path of a flow document, as the catalog records it.</summary>
-    public static string FlowPath(string flowName) => "flows/" + flowName + ".yaml";
+    /// <summary>The repo-relative path of a flow document, as the catalog records it: under the folder of its source.</summary>
+    public static string FlowPath(string flowName) => SourceFolder + "/flows/" + flowName + ".yaml";
+
+    /// <summary>A mapping document of a copied estate (<c>Name@version</c>), at the path the copy put it.</summary>
+    public static string MappingIn(string root, string reference)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+        return Path.Combine(root, SourceFolder, "mappings", reference + ".yaml");
+    }
 
     /// <summary>A sample mapping document (<c>Name@version</c>) as the repository holds it.</summary>
     public static string MappingYaml(string reference)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-        return File.ReadAllText(Path.Combine(Locate(), "mappings", reference + ".yaml"));
+        return File.ReadAllText(Path.Combine(SourceRoot(), "mappings", reference + ".yaml"));
     }
 
     /// <summary>
@@ -138,11 +158,12 @@ internal static class SampleEstate
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         await MigrateModuleAsync(connectionString);
-        var root = Locate();
-        var flow = new DeliveryDocumentLoader().LoadCache(Path.Combine(root, "caches", "osdu-reference-cache.yaml"));
+        var flow = new DeliveryDocumentLoader().LoadCache(Path.Combine(SourceRoot(), "cache", "osdu-cache.yaml"));
         var store = new OsduCacheStore(() => Context(connectionString));
         var builder = new SnapshotBuilder(store, flow.Scope, flow.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
-        await builder.ImportDirectoryAsync(Path.Combine(root, "references"), flow.Types, new CacheCapture(null, "tests", "sample files"));
+        // The flow document is all a repository holds about a cache; the records that stand in for a capture sit
+        // beside the source folders, because the cache itself belongs to the database.
+        await builder.ImportDirectoryAsync(Path.Combine(Locate(), "cache-records"), flow.Types, new CacheCapture(null, "tests", "sample files"));
     }
 
     /// <summary>A context over the module's schema in the catalog database the suite was given.</summary>
@@ -152,9 +173,13 @@ internal static class SampleEstate
         return new OsduDbContext(OsduDbContext.SqlServerOptions(connectionString));
     }
 
+    /// <summary>The source's own folder inside the samples directory: everything a repository sync would read.</summary>
+    private static string SourceRoot() => Path.Combine(Locate(), SourceFolder);
+
     /// <summary>
-    /// The estate as the build copied it next to the test binaries. It is copied rather than read out of the
-    /// repository so the suite works wherever the build output lands, which walking up from the binaries does not.
+    /// The samples directory as the build copied it next to the test binaries: the source folders, and the bundled
+    /// schemas beside them. It is copied rather than read out of the repository so the suite works wherever the build
+    /// output lands, which walking up from the binaries does not.
     /// </summary>
     private static string Locate()
     {

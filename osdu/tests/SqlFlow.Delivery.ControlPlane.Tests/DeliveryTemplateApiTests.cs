@@ -44,7 +44,11 @@ public sealed class DeliveryTemplateApiTests
 
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
+    /// <summary>The samples directory beside the binaries: the source folders, and the bundled schemas beside them.</summary>
     private static string SampleRoot => Path.Combine(AppContext.BaseDirectory, "samples");
+
+    /// <summary>The sample source's own folder, which is what a repository sync would read.</summary>
+    private static string SampleSource => Path.Combine(SampleRoot, SampleEstate.SourceFolder);
 
     [SkippableFact]
     public async Task A_template_is_saved_once_by_a_signed_in_caller_and_read_as_variables_and_as_its_schema()
@@ -199,7 +203,7 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal(scope, described.Scope);
             var filler = Assert.Single(described.Flows);
             Assert.Equal(cacheFlowName, filler.Name);
-            Assert.Equal("caches/" + cacheFlowName + ".yaml", filler.RelativePath);
+            Assert.Equal("cache/" + cacheFlowName + ".yaml", filler.RelativePath);
             Assert.Equal(ReferenceVersion, described.Current!.Version);
             Assert.Equal("tests", described.Current.CapturedBy);
             Assert.Equal(cacheFlowName, described.Current.Flow);
@@ -221,7 +225,7 @@ public sealed class DeliveryTemplateApiTests
 
             var draft = await ReadAsync<MappingDraft>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/draft", new
             {
-                scope,kind = WellLogKind, version = WellLogVersion, name = "WellLog", mappingVersion = "9.0.0", system = "recall",
+                scope,kind = WellLogKind, version = WellLogVersion, name = "WellLog", mappingVersion = "9.0.0", system = "wells",
             }));
             var prefilled = Assert.Single(draft.Entries, e => e.Target == "osdu.data.WellboreID");
             Assert.True(prefilled.Prefilled);
@@ -229,7 +233,7 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal("FacilityName", Assert.Single(prefilled.FindBy).Field);
 
             // The sample mapping, opened in the builder and written back, passes the check against the seeded cache.
-            var sample = await File.ReadAllTextAsync(Path.Combine(SampleRoot, "mappings", "WellLog@1.4.0.yaml"));
+            var sample = await File.ReadAllTextAsync(Path.Combine(SampleSource, "mappings", "WellLog@1.4.0.yaml"));
             var parsed = await ReadAsync<DeliveryMappingParseResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/parse", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml" }));
             Assert.Empty(parsed.Issues);
             Assert.NotNull(parsed.Draft);
@@ -243,7 +247,7 @@ public sealed class DeliveryTemplateApiTests
             var shape = await ReadAsync<DeliveryMappingShapeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/shape", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml", parameters }));
             Assert.Empty(shape.Issues);
             Assert.NotNull(shape.Record);
-            Assert.Equal("opendes:work-product-component--WellLog:<delivery key from recall, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
+            Assert.Equal("opendes:work-product-component--WellLog:<delivery key from wells, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
             Assert.Equal("<string from dataset.curves.curve_id>", shape.Record["data"]!["Curves"]![0]!["CurveID"]!.GetValue<string>());
             Assert.Equal("opendes", Assert.Single(shape.Parameters).Value);
 
@@ -285,12 +289,12 @@ public sealed class DeliveryTemplateApiTests
         var repoName = "cp_caches_" + suffix;
         var repoId = FlowIdentity.FromName(repoName);
         var root = Path.Combine(Path.GetTempPath(), "sqlflow_cp_caches_" + suffix);
-        Directory.CreateDirectory(Path.Combine(root, "caches"));
-        await File.WriteAllTextAsync(Path.Combine(root, "caches", "a.yaml"), CacheFlowYaml(projectA, shared, """
+        Directory.CreateDirectory(Path.Combine(root, "cache"));
+        await File.WriteAllTextAsync(Path.Combine(root, "cache", "a.yaml"), CacheFlowYaml(projectA, shared, """
               - kind: osdu:wks:master-data--Wellbore:1.0.0
                 fields: [data.FacilityName]
             """));
-        await File.WriteAllTextAsync(Path.Combine(root, "caches", "b.yaml"), CacheFlowYaml(projectB, shared, """
+        await File.WriteAllTextAsync(Path.Combine(root, "cache", "b.yaml"), CacheFlowYaml(projectB, shared, """
               - kind: osdu:wks:master-data--Wellbore:1.0.0
                 onChange: approve
                 fields:
@@ -300,7 +304,7 @@ public sealed class DeliveryTemplateApiTests
               - kind: osdu:wks:reference-data--UnitOfMeasure:1.0.0
                 fields: [data.Code]
             """));
-        await File.WriteAllTextAsync(Path.Combine(root, "caches", "c.yaml"), CacheFlowYaml(projectC, single, """
+        await File.WriteAllTextAsync(Path.Combine(root, "cache", "c.yaml"), CacheFlowYaml(projectC, single, """
               - kind: osdu:wks:reference-data--UnitOfMeasure:1.0.0
                 fields: [data.Code]
             """));
@@ -334,7 +338,7 @@ public sealed class DeliveryTemplateApiTests
             var partition = Assert.Single(listed, c => c.Scope == shared);
             Assert.Equal([projectA, projectB], partition.Flows.Select(f => f.Name));
             Assert.All(partition.Flows, f => Assert.Equal((repoId, repoName, "https://osdu.example.test"), (f.RepoId, f.RepoName, f.Endpoint)));
-            Assert.Equal(["caches/a.yaml", "caches/b.yaml"], partition.Flows.Select(f => f.RelativePath));
+            Assert.Equal(["cache/a.yaml", "cache/b.yaml"], partition.Flows.Select(f => f.RelativePath));
             Assert.Equal(["UnitOfMeasure", "Wellbore"], partition.Flows[1].Types);
             Assert.Null(partition.Current);
             Assert.Equal(0, partition.Versions);
@@ -570,7 +574,7 @@ public sealed class DeliveryTemplateApiTests
         var types = new List<ReferenceType>();
         foreach (var (type, declared) in fields)
         {
-            var file = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(SampleRoot, "references", type + ".json")))!.AsObject();
+            var file = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(SampleRoot, "cache-records", type + ".json")))!.AsObject();
             var entityType = file["entityType"]!.GetValue<string>();
             osdu.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
             {
@@ -579,7 +583,7 @@ public sealed class DeliveryTemplateApiTests
                 FlowName = cacheFlowName,
                 Scope = scope,
                 Endpoint = "https://osdu.example.test",
-                RelativePath = "caches/" + cacheFlowName + ".yaml",
+                RelativePath = "cache/" + cacheFlowName + ".yaml",
                 Name = type,
                 EntityType = entityType,
                 Kind = "osdu:wks:" + entityType + ":*",
@@ -642,7 +646,8 @@ public sealed class DeliveryTemplateApiTests
             .WithCatalog(cs)
             .WithModules(new DeliveryControlPlaneModule())
             .WithSetting("ControlPlane:Worker:Enabled", "false")
-            .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
+            .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+;
 
     /// <summary>Provisions the catalog and the module's schema: what a control plane's bootstrap does before it serves.</summary>
     private static async Task ProvisionAsync(string cs)

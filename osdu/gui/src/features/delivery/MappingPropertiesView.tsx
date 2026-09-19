@@ -22,7 +22,7 @@ interface PropertyRow {
   target: string;
   /** Where the value comes from, which decides what the rest of the entry means. */
   input: MappingDraftInput;
-  /** The value's origin: `dataset.log_name`, `cache.Wellbore.id`, `rows of dataset.curves`, `static "MD"`. */
+  /** The value's origin: `dataset.log_source`, `cache.Wellbore.id`, `rows of dataset.curves`, `static "MD"`. */
   source: string;
   /** The origin without the word that names its kind, for a view that says the kind itself. */
   sourceValue: string;

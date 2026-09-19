@@ -7,11 +7,11 @@ Everything below is taken from the sample estate:
 
 | Input | File | What it decides |
 | --- | --- | --- |
-| The ingestion tables | `OsduSample.ing.WellLog` and `OsduSample.ing.WellLogCurve`, loaded by `recall-welllog-pre` and `recall-welllog-ing` from `samples/recall-welllog/data` | The values: one row per log, one row per curve. |
-| The mapping | `samples/recall-welllog/mappings/WellLog@1.4.0.yaml` | Which template variable each entry fills, and where its value comes from: a source column, the OSDU cache, or a static value. |
-| The flow | `samples/recall-welllog/flows/recall-welllog.yaml` | Which mapping to use, the data partition, and where the record is sent. |
-| The OSDU cache | `samples/recall-welllog/caches/osdu-reference-cache.yaml`, captured into the catalog by its runs (or imported from `samples/recall-welllog/references`) | The OSDU ids that reference properties resolve to (units, wellbores, business values). |
-| The template | `samples/recall-welllog/templates/osdu_wks_work-product-component--WellLog_1.4.0.json`, saved in the catalog as template version `26a3c3441882db4f` | The types and structure. It is the file 1 schema. |
+| The ingestion tables | `OsduSample.ing.WellLog` and `OsduSample.ing.WellLogCurve`, loaded by `wells-welllog-pre` and `wells-welllog-ing` from `samples/wells/data` | The values: one row per log, one row per curve. |
+| The mapping | `samples/wells/mappings/WellLog@1.4.0.yaml` | Which template variable each entry fills, and where its value comes from: a source column, the OSDU cache, or a static value. |
+| The flow | `samples/wells/flows/wells-welllog.yaml` | Which mapping to use, the data partition, and where the record is sent. |
+| The OSDU cache | `samples/wells/cache/osdu-cache.yaml`, captured into the catalog by its runs (or imported from `samples/cache-records`) | The OSDU ids that reference properties resolve to (units, wellbores, business values). |
+| The template | `samples/templates/osdu_wks_work-product-component--WellLog_1.4.0.json`, saved in the catalog as template version `26a3c3441882db4f` | The types and structure. It is the file 1 schema. |
 
 ## How a value gets from the ingestion tables into the record
 
@@ -52,7 +52,7 @@ The example values are for log `L-1001` in the sample estate.
 
 | Property | Status | How it is filled | L-1001 |
 | --- | --- | --- | --- |
-| `id` | Engine | `{dataPartition}:work-product-component--WellLog:{key}`. The partition is the flow's `render.parameters.dataPartition`. The key is a UUIDv5 over the source system `recall` (`dataset.system`) and the values of the `dataset.key` columns, `source_project` and `log_id`. The same log always gets the same id. | `opendes:work-product-component--WellLog:ac3a5843e5cc5e7e9ecf83fc05872909` |
+| `id` | Engine | `{dataPartition}:work-product-component--WellLog:{key}`. The partition is the flow's `render.parameters.dataPartition`. The key is a UUIDv5 over the source system `recall` (`dataset.system`) and the values of the `dataset.key` columns, `source_project` and `log_id`. The same log always gets the same id. | `opendes:work-product-component--WellLog:ea10870200ce5404ac1b49154b070e74` |
 | `kind` | Engine | The template's kind, `template.kind` in the mapping. | `osdu:wks:work-product-component--WellLog:1.4.0` |
 | `version` | OSDU | Assigned by OSDU on each write. The ledger records the version OSDU returns. | |
 | `acl` | Static | `osdu.acl.owners` and `osdu.acl.viewers`, each a `static` list. | owners `data.default.owners@opendes.dataservices.energy`, viewers `data.default.viewers@opendes.dataservices.energy` |
@@ -90,7 +90,7 @@ does nothing for this kind.
 
 | Property | Status | Entry | Modifiers | L-1001 |
 | --- | --- | --- | --- | --- |
-| `Name` | Mapped | `source: dataset.log_name` | `trim` | `"STAT_COMP"` |
+| `Name` | Mapped | `source: dataset.log_source` | `trim` | `"STAT_COMP"` |
 
 The other ten are not filled: `AuthorIDs`, `BusinessActivities`, `CreationDateTime`, `Description`, `GeoContexts`,
 `LineageAssertions`, `SpatialArea`, `SpatialPoint`, `SubmitterName` and `Tags`.
@@ -206,7 +206,7 @@ sampling.
 
 ```json
 {
-  "id": "opendes:work-product-component--WellLog:ac3a5843e5cc5e7e9ecf83fc05872909",
+  "id": "opendes:work-product-component--WellLog:ea10870200ce5404ac1b49154b070e74",
   "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
   "acl": {
     "owners": ["data.default.owners@opendes.dataservices.energy"],
@@ -301,7 +301,7 @@ its shape) and cannot know what a column means, so these are for a person to jud
    metres. The curves are not affected, because each declares `DepthUnit`.
 6. **`SamplingInterval` is written for irregular logs.** The schema says it is not set when sampling is not regular.
    `appliesWhen: dataset.depth_coding is REGULAR` on the entry would leave it out for such logs.
-7. **`Name` does not tell logs apart.** Its entry reads `dataset.log_name`, and every log of the `STAT_COMP` source has
+7. **`Name` does not tell logs apart.** Its entry reads `dataset.log_source`, and every log of the `STAT_COMP` source has
    the name `STAT_COMP`.
 8. **`VerticalMeasurementTypeID` is always kelly bushing.** The source does not say what the elevation is measured from.
    The preflight gate checks only that the static id exists in the OSDU cache, which holds `KellyBushing`, not that it

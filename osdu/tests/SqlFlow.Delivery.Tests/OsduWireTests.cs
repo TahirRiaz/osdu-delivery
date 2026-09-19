@@ -442,7 +442,7 @@ public class WellboreDdmsRootTests
           record:
             object: OsduSample.ing.WellLog
             key: [log_id]
-            scope: { log_name: logSource }
+            scope: { log_source: logSource }
           payloads:
             curves:
               root: curves/{logSource}
@@ -570,7 +570,7 @@ public class LegalTagCheckTests
           record:
             object: OsduSample.ing.WellLog
             key: [log_id]
-            scope: { log_name: logSource }
+            scope: { log_source: logSource }
           work: work/{logSource}
         render:
           mapping: WellLog@1.4.0
@@ -611,7 +611,7 @@ public class SkipDuplicatesOptionTests
           record:
             object: OsduSample.ing.WellLog
             key: [log_id]
-            scope: { log_name: logSource }
+            scope: { log_source: logSource }
           work: work/{logSource}
         render:
           mapping: WellLog@1.4.0

@@ -35,26 +35,35 @@ replica.
 | `osdu/src/SqlFlow.Delivery.Cli` | `sqlflow check`, `sqlflow cache` and `sqlflow template`. |
 | `osdu/hosts` | The control plane, node and CLI hosts that compose SQLFlow with the module and its branding. |
 | `osdu/gui` | The delivery overview, the flow tabs (stats, records, submissions; retrievals for a retrieval flow), the record page, the submission page with its batches, the audit trail, mappings, the OSDU cache page, templates and the mapping builder. |
-| `osdu/samples/recall-welllog` | A complete sample estate: the pre, ingestion and OSDU flows, the mappings, the cache flow its mappings read (`caches/`), the bundled schemas its templates are saved from (`templates/`), and sample cache records to import for work without OSDU (`references/`). |
+| `osdu/samples/wells` | A complete sample estate, laid out the way a repository is: one folder for the wells source, holding the pre, ingestion and OSDU flows (`flows/`), the mappings (`mappings/`), the document that defines the cache its mappings read (`cache/osdu-cache.yaml`), and the drop-off folder the pre flows read (`data/`). |
+| `osdu/samples/cache-records` | Sample records for that cache, one file per cached type, to import for work without an OSDU platform. Beside the source folders, never inside one: a cache lives in the module's database, captured there by a run, so a repository holds the flow document and nothing else about it. |
+| `osdu/samples/templates` | The bundled OSDU schemas the suites and the e2e seed save as templates. They sit beside the source folders, not inside one: a template is a catalog object captured from OSDU's schema service through the Templates page, never a file a repository sync reads. |
 | `osdu/tests` | The module's suites: the domain suites, and the delivery submission and template API suites. |
 | `osdu/deploy` | The container images, and the compose, Kubernetes and Azure Container Apps assets. |
 
 ## A flow's repository
 
 An OSDU flow lives in a git repository the control plane syncs, next to what it renders with and the flows that
-feed it:
+feed it. The repository is laid out one folder per source, and that folder is what the catalog and the GUI call a
+project:
 
 ```text
 repo/
-  flows/recall-welllog-pre.yaml      the pre-ingestion flow: lands the source files
-  flows/recall-welllog-ing.yaml      the ingestion flow: loads the keyed ingestion table
-  flows/recall-welllog.yaml          flowType: delivery; reads those tables and delivers
-  mappings/WellLog@1.4.0.yaml        documentType: mapping, pinned by name and version
-  caches/osdu-reference-cache.yaml   flowType: cache: the OSDU types it caches for its partition
+  wells/                           one source: everything it needs, and nothing the product writes
+    flows/wells-welllog-pre.yaml   the pre-ingestion flow: lands the source files
+    flows/wells-welllog-ing.yaml   the ingestion flow: loads the keyed ingestion table
+    flows/wells-welllog.yaml       flowType: delivery; reads those tables and delivers
+    mappings/WellLog@1.4.0.yaml    documentType: mapping, pinned by name and version
+    cache/osdu-cache.yaml          flowType: cache: the OSDU types it caches for its partition
+    data/welllog/                  the drop-off point the pre flow reads
 ```
 
+The repository is the developers', and the product only reads it. Templates and cache versions are not in it: both
+live in the module's database, saved through the Templates page or captured by a run of a cache flow. What a
+repository holds about either is the document that declares it.
+
 The delivery flow finds `mappings/` by walking up from its own file, or names it under `render.mappings`. A cache
-flow can sit anywhere in the tree; the sample keeps it under `caches/`. The sync projects every flow as a
+flow can sit anywhere in the tree; the sample keeps it under `cache/`. The sync projects every flow as a
 pipeline, and the mappings and the types each cache flow declares as read models the GUI lists. Lineage orders the
 flows in waves, so the OSDU flow runs after the ingestion table it reads has been loaded, and shows the OSDU type each
 delivery flow writes and the cache types it reads ([documents.md](documents.md#lineage)).

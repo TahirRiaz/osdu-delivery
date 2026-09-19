@@ -41,7 +41,7 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
             record: { object: Petrel.ing.Wellbore, key: [facility_name] }
             mapping: Wellbore@1.0.0
           logs:
-            ledger: recall-welllog
+            ledger: wells-welllog
             record: { object: Petrel.ing.WellLog, key: [uwi, log_id] }
             files: { root: ../data/logs, locationColumn: log_folder, hashColumn: log_hash }
             mapping: WellLog@1.4.0
@@ -74,7 +74,7 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
     public async Task Every_interface_of_every_delivery_flow_is_described_with_the_ledger_it_keeps()
     {
         Write("flows/petrel.yaml", Source);
-        Write("flows/recall-wellbore.yaml", File.ReadAllText(Samples.WellboreFlowFile));
+        Write("flows/wells-wellbore.yaml", File.ReadAllText(Samples.WellboreFlowFile));
         Write("mappings/Wellbore@1.0.0.yaml", File.ReadAllText(Path.Combine(Samples.Mappings, "Wellbore@1.0.0.yaml")));
 
         var (warnings, result) = await SyncAsync();
@@ -91,14 +91,14 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
         Assert.True(wellbores.Active);
 
         var logs = rows.Single(r => r.Interface == "logs");
-        Assert.Equal((1, "file", FlowId.Of("recall-welllog"), "recall-welllog"), (logs.Ordinal, logs.Route, logs.LedgerFlowId, logs.LedgerName));
+        Assert.Equal((1, "file", FlowId.Of("wells-welllog"), "wells-welllog"), (logs.Ordinal, logs.Route, logs.LedgerFlowId, logs.LedgerName));
         // The repository holds no WellLog mapping, so its kind is not known yet.
         Assert.Equal(string.Empty, logs.Kind);
         Assert.Equal(["wellbores"], JsonSerializer.Deserialize<string[]>(logs.AfterJson)!);
 
         // A flow in the single form is one row with no interface name, keeping the ledger of its own name.
-        var single = rows.Single(r => r.FlowName == "recall-wellbore");
-        Assert.Equal((string.Empty, FlowId.Of("recall-wellbore"), "storage"), (single.Interface, single.LedgerFlowId, single.Route));
+        var single = rows.Single(r => r.FlowName == "wells-wellbore");
+        Assert.Equal((string.Empty, FlowId.Of("wells-wellbore"), "storage"), (single.Interface, single.LedgerFlowId, single.Route));
         Assert.Null(single.RouteReason);
         Assert.True(result.Added >= 3);
 
@@ -109,8 +109,8 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
         Assert.True((await RowsAsync()).All(r => r.LastSeenUtc == new DateTime(2026, 9, 16, 13, 0, 0, DateTimeKind.Utc)));
 
         await using var db = _module.CreateDbContext();
-        var keeping = await DeliveryInterfaceCatalog.KeepingAsync(db, FlowId.Of("recall-welllog"), CancellationToken.None);
-        Assert.Equal(new InterfaceLocation(_repo, "petrel", "logs", FlowId.Of("recall-welllog"), "recall-welllog", true), Assert.Single(keeping));
+        var keeping = await DeliveryInterfaceCatalog.KeepingAsync(db, FlowId.Of("wells-welllog"), CancellationToken.None);
+        Assert.Equal(new InterfaceLocation(_repo, "petrel", "logs", FlowId.Of("wells-welllog"), "wells-welllog", true), Assert.Single(keeping));
         Assert.Equal(["wellbores", "logs"], (await DeliveryInterfaceCatalog.OfFlowAsync(db, _repo, "petrel", CancellationToken.None)).Select(i => i.Interface));
     }
 
@@ -131,7 +131,7 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
         await using (var db = _module.CreateDbContext())
         {
             // Its records still lead to their flow, and the flow's own listing leaves it out.
-            var keeping = Assert.Single(await DeliveryInterfaceCatalog.KeepingAsync(db, FlowId.Of("recall-welllog"), CancellationToken.None));
+            var keeping = Assert.Single(await DeliveryInterfaceCatalog.KeepingAsync(db, FlowId.Of("wells-welllog"), CancellationToken.None));
             Assert.False(keeping.Active);
             Assert.Equal(["wellbores"], (await DeliveryInterfaceCatalog.OfFlowAsync(db, _repo, "petrel", CancellationToken.None)).Select(i => i.Interface));
         }
@@ -154,16 +154,16 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
     public async Task A_ledger_kept_by_two_flows_is_reported_and_a_document_that_does_not_parse_describes_nothing()
     {
         Write("flows/petrel.yaml", Source);
-        Write("flows/recall-welllog.yaml", File.ReadAllText(Samples.Flow));
+        Write("flows/wells-welllog.yaml", File.ReadAllText(Samples.Flow));
         Write("flows/broken.yaml", "flowType: delivery\nname: broken\n");
         Write("flows/zz-again.yaml", Source.Replace("wellbores:", "cores:", StringComparison.Ordinal).Replace("after: [wellbores]", "after: [cores]", StringComparison.Ordinal));
 
         var (warnings, result) = await SyncAsync();
 
         Assert.Contains(warnings, w => w.StartsWith("flows/zz-again.yaml: delivery flow 'petrel' is already declared by flows/petrel.yaml", StringComparison.Ordinal));
-        var shared = Assert.Single(warnings, w => w.Contains("the ledger 'recall-welllog' is kept by", StringComparison.Ordinal));
+        var shared = Assert.Single(warnings, w => w.Contains("the ledger 'wells-welllog' is kept by", StringComparison.Ordinal));
         Assert.Contains("interface 'logs' of flow 'petrel'", shared, StringComparison.Ordinal);
-        Assert.Contains("flow 'recall-welllog'", shared, StringComparison.Ordinal);
+        Assert.Contains("flow 'wells-welllog'", shared, StringComparison.Ordinal);
         Assert.Equal(1, result.Invalid);
         var rows = await RowsAsync();
         Assert.DoesNotContain(rows, r => r.FlowName == "broken");

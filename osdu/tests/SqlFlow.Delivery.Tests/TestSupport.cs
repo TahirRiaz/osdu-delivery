@@ -96,7 +96,7 @@ public sealed class SqliteOsdu : IDisposable
                 FlowName = flowName,
                 Scope = scope,
                 Endpoint = "https://osdu.example.test",
-                RelativePath = "caches/" + flowName + ".yaml",
+                RelativePath = "cache/" + flowName + ".yaml",
                 Name = type.Name,
                 EntityType = type.EntityType,
                 Kind = type.Kind,
@@ -522,32 +522,52 @@ public static class Samples
     /// <summary>The connection reference the suites give a flow whose source is the in-memory ingestion tables.</summary>
     public const string MemoryConnection = "mem://ingestion";
 
+    /// <summary>
+    /// The samples directory as the repository lays it out: a folder per source, and beside them the bundled schemas
+    /// that are not repository content at all (see <see cref="TemplateFiles"/>).
+    /// </summary>
     public static string Root => Path.Combine(AppContext.BaseDirectory, "samples");
 
-    public static string Mappings => Path.Combine(Root, "mappings");
+    /// <summary>
+    /// The wells source: one folder holding its flows, the mappings they pin, the cache they resolve against and the
+    /// drop-off folder the pre-ingestion flows read. A repository is laid out per source, so this is what a sync sees
+    /// as one project.
+    /// </summary>
+    public static string Source => Path.Combine(Root, "wells");
 
-    /// <summary>The bundled OSDU schemas the sample mappings pin, as a template import reads them.</summary>
+    public static string Mappings => Path.Combine(Source, "mappings");
+
+    /// <summary>
+    /// The bundled OSDU schemas the sample mappings pin, as a template import reads them. They sit beside the source
+    /// folders rather than inside one, because a template is a catalog object captured from OSDU's schema service, not
+    /// a file a repository sync reads; these copies exist so a suite can save templates with no OSDU to capture from.
+    /// </summary>
     public static string TemplateFiles => Path.Combine(Root, "templates");
 
-    public static string Flow => Path.Combine(Root, "flows", "recall-welllog.yaml");
+    public static string Flow => Path.Combine(Source, "flows", "wells-welllog.yaml");
 
     /// <summary>The wellbore master-data flow of the sample estate.</summary>
-    public static string WellboreFlowFile => Path.Combine(Root, "flows", "recall-wellbore.yaml");
+    public static string WellboreFlowFile => Path.Combine(Source, "flows", "wells-wellbore.yaml");
 
     /// <summary>The sample cache flow: what the sample cache holds.</summary>
-    public static string CacheFlow => Path.Combine(Root, "caches", "osdu-reference-cache.yaml");
+    public static string CacheFlow => Path.Combine(Source, "cache", "osdu-cache.yaml");
 
-    /// <summary>The sample cache records, one file per cached type.</summary>
-    public static string References => Path.Combine(Root, "references");
+    /// <summary>
+    /// The sample cache records, one file per cached type. They sit beside the source folders rather than inside one,
+    /// for the same reason <see cref="TemplateFiles"/> does: a cache lives in the module's database, captured there by
+    /// a run of the flow that defines it, so a repository holds that flow document and nothing else about the cache.
+    /// These files exist so a suite can fill a cache with no OSDU platform to capture from.
+    /// </summary>
+    public static string CacheRecords => Path.Combine(Root, "cache-records");
 
-    /// <summary>The sample data the pre-ingestion flows read and the payload files the delivery streams.</summary>
-    public static string Data => Path.Combine(Root, "data");
+    /// <summary>The source's drop-off folder: the files the pre-ingestion flows read and the payloads the delivery streams.</summary>
+    public static string Data => Path.Combine(Source, "data");
 
     /// <summary>The partition the sample flows search and deliver to, whose cache the sample delivery flow reads.</summary>
     public const string SampleCacheScope = "opendes";
 
     /// <summary>The name of the sample cache flow, which fills the cache of <see cref="SampleCacheScope"/>.</summary>
-    public const string SampleCacheFlowName = "osdu-reference-cache";
+    public const string SampleCacheFlowName = "osdu-cache";
 
     /// <summary>When the sample cache records were captured: the version label the sample cache is imported under.</summary>
     public static readonly DateTimeOffset SampleCacheCaptured = new(2026, 9, 8, 21, 27, 27, TimeSpan.Zero);
@@ -588,7 +608,7 @@ public static class Samples
         ArgumentNullException.ThrowIfNull(store);
         var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
         var builder = new SnapshotBuilder(store, flow.Scope, flow.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());
-        var write = await builder.ImportDirectoryAsync(References, flow.Types, new CacheCapture(null, "tests", "sample files"));
+        var write = await builder.ImportDirectoryAsync(CacheRecords, flow.Types, new CacheCapture(null, "tests", "sample files"));
         return (await store.LoadAsync(flow.Scope, write.Snapshot.Version))!;
     }
 

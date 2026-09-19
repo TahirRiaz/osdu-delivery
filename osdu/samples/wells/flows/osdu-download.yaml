@@ -1,0 +1,43 @@
+# Flow: osdu-download
+#
+# The bulk download (docs/delivery/design.md section 15). It pages OSDU's search index into files on the lake: the
+# reference and master data the WellLog and WellboreTrajectory mappings match units, curve business values, vertical
+# measurement types, trajectory station property types and wellbores by, landed as the records the index holds.
+# This is a download to files, and nothing reads it back. What the mappings resolve against is the cache, which
+# ../cache/osdu-cache.yaml defines and whose own refresh runs capture into the catalog directly.
+flowType: retrieval
+name: osdu-download
+batch: wells
+
+source:
+  endpoint: ${env:PETRODB_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  headers:
+    Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
+    data-partition-id: opendes
+  kinds:
+    - "osdu:wks:reference-data--UnitOfMeasure:*"
+    - "osdu:wks:reference-data--LogCurveBusinessValue:*"
+    - "osdu:wks:reference-data--VerticalMeasurementType:*"
+    - "osdu:wks:reference-data--TrajectoryStationPropertyType:*"
+    - "osdu:wks:master-data--Wellbore:*"
+
+target:
+  # The records as the index holds them.
+  location: samples/wells/out/metadata
+
+reliability:
+  concurrency: 4
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+
+# Nightly, at the same hour the cache of this partition is refreshed, though the two runs are independent.
+schedule:
+  cron: "0 2 * * *"

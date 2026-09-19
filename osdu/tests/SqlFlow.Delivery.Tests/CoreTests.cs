@@ -61,24 +61,24 @@ public class DeterministicGuidTests
     [Fact]
     public void Delivery_key_is_deterministic_and_separator_safe()
     {
-        var a = DeliveryKey.Derive("recall", ["NO_15_9", "L-1001"]);
-        var b = DeliveryKey.Derive("Recall ", ["NO_15_9", "L-1001"]);
+        var a = DeliveryKey.Derive("wells", ["NO_15_9", "L-1001"]);
+        var b = DeliveryKey.Derive("Wells ", ["NO_15_9", "L-1001"]);
         Assert.Equal(a, b);
-        Assert.NotEqual(DeliveryKey.Derive("recall", ["a|b", "c"]), DeliveryKey.Derive("recall", ["a", "b|c"]));
+        Assert.NotEqual(DeliveryKey.Derive("wells", ["a|b", "c"]), DeliveryKey.Derive("wells", ["a", "b|c"]));
         Assert.Equal('5', a.ToString()[14]);
     }
 
     [Fact]
     public void Flow_id_ignores_case_and_whitespace()
     {
-        Assert.Equal(FlowId.Of("recall-welllog"), FlowId.Of(" Recall-WellLog "));
+        Assert.Equal(FlowId.Of("wells-welllog"), FlowId.Of(" Wells-WellLog "));
         Assert.NotEqual(FlowId.Of("a"), FlowId.Of("b"));
     }
 
     [Fact]
     public void Target_id_uses_the_key_without_hyphens()
     {
-        var key = DeliveryKey.Derive("recall", ["x"]);
+        var key = DeliveryKey.Derive("wells", ["x"]);
         var id = TargetId.Compose("dev", "work-product-component--WellLog", key);
         Assert.StartsWith("dev:work-product-component--WellLog:", id, StringComparison.Ordinal);
         Assert.DoesNotContain("-", id[(id.LastIndexOf(':') + 1)..], StringComparison.Ordinal);

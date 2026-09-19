@@ -104,12 +104,12 @@ version: 1.4.0
 template:
   kind: osdu:wks:work-product-component--WellLog:1.4.0
   version: 26a3c3441882db4f
-description: Recall well logs, one record per logging run.
+description: Well logs, one record per logging run.
 
 dataset:
-  system: recall
+  system: wells
   key: [dataset.source_project, dataset.log_id]
-  label: "{dataset.wellbore_uwi} / {dataset.log_name} / run {dataset.log_run} ({dataset.log_id})"
+  label: "{dataset.wellbore_uwi} / {dataset.log_source} / run {dataset.log_run} ({dataset.log_id})"
 
 parameters:
   dataPartition: { required: true }
@@ -119,7 +119,7 @@ mappings:
     static: [data.default.owners@opendes.dataservices.energy]
 
   - target: osdu.data.Name
-    source: dataset.log_name
+    source: dataset.log_source
     modifiers: [trim]
 
   - target: osdu.data.SamplingInterval

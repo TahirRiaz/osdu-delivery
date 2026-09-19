@@ -106,7 +106,7 @@ public sealed class DeliveryModuleDatabaseTests
         // The lineage check reads the mapping rows the sync wrote, which are a database and a connection away.
         Assert.False(await ChangedAsync(estate, repository.Root));
 
-        var mapping = Path.Combine(repository.Root, "mappings", "Wellbore@1.0.0.yaml");
+        var mapping = SampleEstate.MappingIn(repository.Root, "Wellbore@1.0.0");
         await File.AppendAllTextAsync(mapping, Environment.NewLine + "# a comment the last sync did not see" + Environment.NewLine);
 
         Assert.True(await ChangedAsync(estate, repository.Root));

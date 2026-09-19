@@ -5,7 +5,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The estate in <c>osdu/samples/recall-welllog</c> as an operator runs it. Every delivery document there is read the
+/// The estate in <c>osdu/samples/wells</c> as an operator runs it. Every delivery document there is read the
 /// way a run reads it, and each flow is checked against the mapping it names: a mapping repeats the rows of a child
 /// dataset, and a flow that does not declare that dataset cannot plan a single record. The suites that exercise the
 /// estate build their own tables, so only a check of the committed documents catches a flow and a mapping that have
@@ -19,7 +19,7 @@ public sealed class SampleEstateDocumentsTests
     public static TheoryData<string> Documents()
     {
         var data = new TheoryData<string>();
-        foreach (var file in Directory.EnumerateFiles(Path.Combine(Samples.Root, "flows"), "*.yaml").OrderBy(f => f, StringComparer.Ordinal))
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(Samples.Source, "flows"), "*.yaml").OrderBy(f => f, StringComparer.Ordinal))
         {
             if (File.ReadAllText(file).Contains("flowType: delivery", StringComparison.Ordinal))
             {
@@ -34,7 +34,7 @@ public sealed class SampleEstateDocumentsTests
     [MemberData(nameof(Documents))]
     public void Every_interface_declares_the_child_datasets_its_mapping_repeats(string document)
     {
-        var path = Path.Combine(Samples.Root, "flows", document);
+        var path = Path.Combine(Samples.Source, "flows", document);
         var source = _loader.ParseSource(File.ReadAllText(path), document);
 
         foreach (var flow in source.Interfaces)
@@ -55,7 +55,7 @@ public sealed class SampleEstateDocumentsTests
     [MemberData(nameof(Documents))]
     public void Every_interface_reads_only_columns_of_a_dataset_it_declares(string document)
     {
-        var path = Path.Combine(Samples.Root, "flows", document);
+        var path = Path.Combine(Samples.Source, "flows", document);
         var source = _loader.ParseSource(File.ReadAllText(path), document);
 
         foreach (var flow in source.Interfaces)

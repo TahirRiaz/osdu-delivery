@@ -57,7 +57,7 @@ public class MappingBuilderTests
         var template = OsduTemplate.From(Samples.SampleTemplate(Samples.WellLogKind));
         var cache = (await SampleCacheAsync()).Types.Select(t => new CachedTypeInfo(t.Name, t.EntityType, t.FieldNames)).ToList();
 
-        var draft = MappingBuilder.Draft(template, cache, "WellLog", "2.0.0", "recall");
+        var draft = MappingBuilder.Draft(template, cache, "WellLog", "2.0.0", "wells");
 
         Assert.Equal(new TemplateReference(template.Kind, template.Version), new TemplateReference(draft.TemplateKind, draft.TemplateVersion));
         Assert.Equal(MappingBuilder.EnvelopeTargets, draft.Entries.Take(4).Select(e => e.Target));

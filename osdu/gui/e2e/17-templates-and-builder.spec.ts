@@ -96,7 +96,7 @@ test.describe.serial("templates and the mapping builder", () => {
     await openTemplates(adminPage);
     await adminPage.getByTestId("templates-tab-import").click();
 
-    const schema = readFileSync(join(import.meta.dirname, "..", "..", "samples", "recall-welllog", "templates", WELLBORE_FILE), "utf8");
+    const schema = readFileSync(join(import.meta.dirname, "..", "..", "samples", "templates", WELLBORE_FILE), "utf8");
     // The kind is asked for until the schema names its own, and then it is read from the schema.
     await expect(adminPage.getByTestId("templates-import-kind")).toBeVisible();
     await adminPage.getByTestId("templates-import-json").fill(schema);
@@ -116,7 +116,7 @@ test.describe.serial("templates and the mapping builder", () => {
     await openTemplates(adminPage);
     await adminPage.getByTestId("templates-tab-import").click();
 
-    const schema = readFileSync(join(import.meta.dirname, "..", "..", "samples", "recall-welllog", "templates", WELLBORE_FILE), "utf8");
+    const schema = readFileSync(join(import.meta.dirname, "..", "..", "samples", "templates", WELLBORE_FILE), "utf8");
     await adminPage.getByTestId("templates-import-json").fill(schema);
     await adminPage.getByTestId("templates-import-save-now").click();
 
@@ -132,7 +132,7 @@ test.describe.serial("templates and the mapping builder", () => {
     const schemas = /\/api\/v1\/delivery\/templates\/osdu\/schemas(\?|$)/;
     const schema = /\/api\/v1\/delivery\/templates\/osdu\/schema(\?|$)/;
     const wellboreSchema: unknown = JSON.parse(
-      readFileSync(join(import.meta.dirname, "..", "..", "samples", "recall-welllog", "templates", WELLBORE_FILE), "utf8"),
+      readFileSync(join(import.meta.dirname, "..", "..", "samples", "templates", WELLBORE_FILE), "utf8"),
     );
     const asked: string[] = [];
     const sync = /\/api\/v1\/delivery\/templates\/osdu\/sync$/;
@@ -355,7 +355,7 @@ test.describe.serial("templates and the mapping builder", () => {
     // The name starts as the template's entity; this draft takes its own, so it is never taken for the synced mapping.
     await expect(adminPage.getByTestId("mapping-builder-name")).toHaveValue("WellLog");
     await adminPage.getByTestId("mapping-builder-name").fill("WellLogDraft");
-    await adminPage.getByTestId("mapping-builder-system").fill("recall");
+    await adminPage.getByTestId("mapping-builder-system").fill("wells");
     await adminPage.getByTestId("mapping-builder-start").click();
 
     // A well log points at its wellbore, which the cache holds, so that entry starts filled from the cache.
@@ -388,7 +388,7 @@ test.describe.serial("templates and the mapping builder", () => {
     const wellboreId = rowWith(adminPage, "delivery-mapping-properties-table", "delivery-mapping-property-osdu.data.WellboreID");
     await expect(wellboreId).toContainText("cache.Wellbore.id by FacilityName = dataset.wellbore_uwi", { timeout: 15_000 });
     const logName = rowWith(adminPage, "delivery-mapping-properties-table", "delivery-mapping-property-osdu.data.Name");
-    await expect(logName).toContainText("dataset.log_name");
+    await expect(logName).toContainText("dataset.log_source");
     await expect(logName).toContainText("trim");
     // A curve's business value is the one entry the mapping leaves optional, so a log without it still delivers.
     const businessValue = rowWith(
@@ -425,7 +425,7 @@ test.describe.serial("templates and the mapping builder", () => {
     await detail.getByTestId("delivery-mapping-tab-shape").click();
     const shape = detail.getByTestId("delivery-mapping-shape-json");
     // The editor draws only the lines in view, so the check reads the id on the first lines rather than a deeper field.
-    await expect(shape).toContainText("<delivery key from recall", { timeout: 15_000 });
+    await expect(shape).toContainText("<delivery key from wells", { timeout: 15_000 });
     await detail.getByTestId("delivery-mapping-shape-parameter-dataPartition").fill("opendes");
     await expect(shape).toContainText("opendes:work-product-component--WellLog:", { timeout: 15_000 });
 

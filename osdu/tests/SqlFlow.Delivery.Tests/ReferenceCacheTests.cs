@@ -33,7 +33,7 @@ public class ReferenceCacheTests
                   { "AliasName": "1/1-A", "AliasNameTypeID": "opendes:reference-data--AliasNameType:Short:" },
                   { "AliasName": "WELL A" }
                 ],
-                "Tags": { "source": "recall" }
+                "Tags": { "source": "wells" }
               }
             }
             """);
@@ -41,7 +41,7 @@ public class ReferenceCacheTests
         Assert.Equal("NO 1/1-A", Assert.Single(JsonPathReader.SelectNodes(hit, "data.FacilityName")).GetValue<string>());
         Assert.Equal(["1/1-A", "WELL A"], JsonPathReader.SelectNodes(hit, "data.NameAlias.AliasName").Select(n => n.GetValue<string>()));
         Assert.Equal("1/1-A", Assert.Single(JsonPathReader.SelectNodes(hit, "data.NameAlias[0].AliasName")).GetValue<string>());
-        Assert.Equal("recall", Assert.Single(JsonPathReader.SelectNodes(hit, "data.Tags.source")).GetValue<string>());
+        Assert.Equal("wells", Assert.Single(JsonPathReader.SelectNodes(hit, "data.Tags.source")).GetValue<string>());
         Assert.Empty(JsonPathReader.SelectNodes(hit, "data.NotThere"));
     }
 
@@ -151,7 +151,7 @@ public class ReferenceCacheTests
                 ["FacilityName"] = ReferenceValue.Of("NO 1/1-A"),
                 ["Alias"] = ReferenceValue.From(JsonNode.Parse("""["1/1-A", "WELL A"]""")!),
                 ["Depth"] = ReferenceValue.From(JsonValue.Create(1234.5)),
-                ["Tags"] = ReferenceValue.From(JsonNode.Parse("""{ "source": "recall" }""")!),
+                ["Tags"] = ReferenceValue.From(JsonNode.Parse("""{ "source": "wells" }""")!),
             }),
         ]);
 
@@ -159,7 +159,7 @@ public class ReferenceCacheTests
         var item = Assert.Single(round.Items);
         Assert.Equal(["1/1-A", "WELL A"], item.Select("Alias")!.Terms);
         Assert.Equal("1234.5", item.Select("Depth")!.Text);
-        Assert.Equal("recall", item.Select("Tags.source")!.Text);
+        Assert.Equal("wells", item.Select("Tags.source")!.Text);
         Assert.Equal("dev:master-data--Wellbore:1", round.Value(item, "id")!.Text);
     }
 
@@ -213,13 +213,13 @@ public class ReferenceCacheTests
     private static CacheDefinition CacheFlow(string types, string extra = "") => new DeliveryDocumentLoader().ParseCache(
         """
         flowType: cache
-        name: osdu-reference-cache
+        name: osdu-cache
         source:
           endpoint: https://osdu.example.com
           headers: { data-partition-id: opendes }
 
         """ + extra + "\ntypes:\n" + types + "\n",
-        "caches/osdu-reference-cache.yaml");
+        "cache/osdu-cache.yaml");
 
     [Fact]
     public void A_cache_flow_reads_paths_written_either_way()
@@ -293,7 +293,7 @@ public class ReferenceCacheTests
             """,
             "onChange: approve\n");
 
-        Assert.Equal("osdu-reference-cache", cache.Name);
+        Assert.Equal("osdu-cache", cache.Name);
         Assert.Equal("opendes", cache.Scope);
         Assert.Equal("https://osdu.example.com", cache.Source.Endpoint);
         var wellbore = cache.Types[0];
@@ -378,7 +378,7 @@ public class ReferenceCacheTests
               - kind: osdu:wks:master-data--Wellbore:1.0.0
                 fields: [data.FacilityName]
             """,
-            "caches/env-cache.yaml");
+            "cache/env-cache.yaml");
         Assert.Equal("${env:OSDU_PARTITION}", referenced.Scope);
 
         var makeCurrent = Assert.Throws<FlowValidationException>(() => CacheFlow(
@@ -400,7 +400,7 @@ public class ReferenceCacheTests
               - kind: osdu:wks:master-data--Wellbore:1.0.0
                 fields: [data.FacilityName]
             """,
-            "caches/bad-partition.yaml"));
+            "cache/bad-partition.yaml"));
         Assert.Contains("data-partition-id 'open/des' is neither a partition id", slashed.Message, StringComparison.Ordinal);
     }
 
@@ -416,7 +416,7 @@ public class ReferenceCacheTests
 
         // A flow still naming a cache is refused: the cache it reads is its partition's, whatever it names.
         var named = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
-            sample.Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.4.0\n  cache: osdu-reference-cache", StringComparison.Ordinal), "flow.yaml"));
+            sample.Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.4.0\n  cache: osdu-cache", StringComparison.Ordinal), "flow.yaml"));
         Assert.Contains("render.cache is not a setting any more", named.Message, StringComparison.Ordinal);
     }
 

@@ -199,14 +199,14 @@ public sealed class WellboreDdmsRulesTests
               "ExtensionProperties":{"wdms":{"bulkURI":"urn:wdms-1:uuid:38f0438e-71b8-4806-924b-9753796a77c1"}},
               "DDMSDatasets":["urn://wdms-1/uuid:38f0438e-71b8-4806-924b-9753796a77c1","urn://uuid:00000000-0000-0000-0000-000000000001","dev:dataset--File.Generic:f:"]}}
             """);
-        var document = TestSchema.Doc("""{"data":{"Name":"GR","ExtensionProperties":{"source":"recall"},"DDMSDatasets":["dev:dataset--File.Generic:g:"]}}""");
+        var document = TestSchema.Doc("""{"data":{"Name":"GR","ExtensionProperties":{"source":"wells"},"DDMSDatasets":["dev:dataset--File.Generic:g:"]}}""");
 
         Assert.Equal("urn:wdms-1:uuid:38f0438e-71b8-4806-924b-9753796a77c1", WellboreDdmsBulkLink.Of(stored));
         Assert.True(WellboreDdmsBulkLink.Carry(stored, document));
         Assert.Equal("urn:wdms-1:uuid:38f0438e-71b8-4806-924b-9753796a77c1", WellboreDdmsBulkLink.Of(document));
 
         // What the mapping rendered under ExtensionProperties stays; only the DDMS's own dataset entries are added.
-        Assert.Equal("recall", (string?)document["data"]!["ExtensionProperties"]!["source"]);
+        Assert.Equal("wells", (string?)document["data"]!["ExtensionProperties"]!["source"]);
         Assert.Equal(
             ["dev:dataset--File.Generic:g:", "urn://wdms-1/uuid:38f0438e-71b8-4806-924b-9753796a77c1", "urn://uuid:00000000-0000-0000-0000-000000000001"],
             document["data"]!["DDMSDatasets"]!.AsArray().Select(n => (string?)n).ToList());

@@ -1,6 +1,6 @@
 # Test templates
 
-Schemas the suites save as templates beside the sample estate's own (`osdu/samples/recall-welllog/templates`), for the
+Schemas the suites save as templates beside the sample estate's own (`osdu/samples/templates`), for the
 cases the sample estate does not carry.
 
 | File | Kind | Template version | Origin |

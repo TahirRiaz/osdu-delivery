@@ -20,7 +20,7 @@ public class YamlDocumentLoaderTests
           record:
             object: OsduSample.ing.WellLog
             key: [source_project, log_id]
-            scope: { log_name: logSource }
+            scope: { log_source: logSource }
           datasets:
             curves:
               object: OsduSample.ing.WellLogCurve
@@ -110,7 +110,7 @@ public class YamlDocumentLoaderTests
     {
         var loader = new DeliveryDocumentLoader();
         var flow = loader.LoadFlow(Samples.Flow);
-        Assert.Equal("recall-welllog", flow.Name);
+        Assert.Equal("wells-welllog", flow.Name);
         Assert.Equal(DeliveryProtocol.OsduWellLog, flow.Target.Protocol);
         Assert.Equal("WellLog", flow.Render.MappingName);
         Assert.Equal("1.4.0", flow.Render.MappingVersion);
@@ -121,7 +121,7 @@ public class YamlDocumentLoaderTests
         Assert.Equal("OsduSample.ing.WellLog", flow.Source.Record.Object);
         Assert.Equal(["source_project", "log_id"], flow.Source.Record.Key);
         Assert.Equal("RecId", flow.Source.Record.PrimaryKey);
-        Assert.Equal("logSource", flow.Source.Record.Scope["log_name"]);
+        Assert.Equal("logSource", flow.Source.Record.Scope["log_source"]);
         Assert.Equal("OsduSample.ing.WellLogCurve", flow.Source.Datasets["curves"].Object);
         Assert.Equal("source_project", flow.Source.Datasets["curves"].Join["source_project"]);
         Assert.Equal(["curve_ordinal"], flow.Source.Datasets["curves"].OrderBy);
@@ -328,7 +328,7 @@ public class YamlDocumentLoaderTests
         Assert.EndsWith(Path.Combine("work", "STAT_COMP"), work, StringComparison.Ordinal);
 
         // The scope predicate: the column the run filters on, carrying the value of the parameter bound to it.
-        Assert.Equal("STAT_COMP", FlowParameters.ScopeValues(flow, values)["log_name"]);
+        Assert.Equal("STAT_COMP", FlowParameters.ScopeValues(flow, values)["log_source"]);
 
         // A parameter value that would climb out of a declared location is refused, because those locations bound
         // what a run may read and write.

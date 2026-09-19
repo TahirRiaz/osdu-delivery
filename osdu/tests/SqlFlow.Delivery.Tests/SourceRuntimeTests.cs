@@ -111,7 +111,7 @@ public sealed class SourceRuntimeTests : IDisposable
     }
 
     /// <summary>
-    /// The recall source: its wellbores, the well logs waiting for them, and optionally an archive of wellbores read from a
+    /// The wells source: its wellbores, the well logs waiting for them, and optionally an archive of wellbores read from a
     /// table of its own and waiting for nothing. <paramref name="wellbores"/> is a YAML fragment the wellbores interface adds.
     /// </summary>
     private string SourceYaml(
@@ -131,7 +131,7 @@ public sealed class SourceRuntimeTests : IDisposable
             : string.Empty;
         return ($$"""
             flowType: delivery
-            name: recall
+            name: wells
             parameters:
               logSource: { required: true }
             source:
@@ -161,7 +161,7 @@ public sealed class SourceRuntimeTests : IDisposable
                 mapping: {{wellboreMapping}}
                 {{wellbores}}
               welllogs:
-                record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_name: logSource } }
+                record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
                   curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
@@ -174,7 +174,7 @@ public sealed class SourceRuntimeTests : IDisposable
     /// <summary>The source, loaded from a file under the test's root, as a node reads it.</summary>
     private SourceDefinition Load(string yaml)
     {
-        var path = Path.Combine(_root, "flows", "recall.yaml");
+        var path = Path.Combine(_root, "flows", "wells.yaml");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, yaml);
         return new DeliveryDocumentLoader().LoadSource(path);
@@ -268,7 +268,7 @@ public sealed class SourceRuntimeTests : IDisposable
 
         Assert.True(result.Success, result.Error);
         var outcome = Outcome(result);
-        Assert.Equal("recall", outcome.Source);
+        Assert.Equal("wells", outcome.Source);
         Assert.Equal(2, outcome.Completed);
         Assert.Equal(0, outcome.Stopped + outcome.Skipped);
         Assert.Equal(5, outcome.Delivered);
@@ -278,7 +278,7 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.Equal(("wellbores", 1, "storage", InterfaceStates.Completed), (wellbores.Interface, wellbores.Wave, wellbores.Route, wellbores.State));
         Assert.Equal(("welllogs", 2, "ddms", InterfaceStates.Completed), (welllogs.Interface, welllogs.Wave, welllogs.Route, welllogs.State));
         Assert.Equal(["wellbores"], welllogs.WaitsFor);
-        Assert.Equal(FlowId.Of("recall/welllogs"), welllogs.FlowId);
+        Assert.Equal(FlowId.Of("wells/welllogs"), welllogs.FlowId);
         Assert.Equal(3, Assert.IsType<DeliverOutcome>(welllogs.Result).Delivered);
         Assert.Equal(2, Assert.IsType<DeliverOutcome>(wellbores.Result).Delivered);
 
@@ -287,16 +287,16 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.Equal(3, _protocols["welllogs"].Deliveries.Count);
         var trace = _events.Events.Where(e => e.Kind.StartsWith("interface.", StringComparison.Ordinal)).Select(e => $"{e.Kind} {e.Interface}").ToList();
         Assert.Equal(["interface.started wellbores", "interface.completed wellbores", "interface.started welllogs", "interface.completed welllogs"], trace);
-        Assert.All(_events.Events.Where(e => e.Kind.StartsWith("record.", StringComparison.Ordinal)), e => Assert.Equal($"recall/{e.Interface}", e.FlowName));
+        Assert.All(_events.Events.Where(e => e.Kind.StartsWith("record.", StringComparison.Ordinal)), e => Assert.Equal($"wells/{e.Interface}", e.FlowName));
 
         // The ledger keeps each interface apart, with the flow and interface as the name its rows carry.
         var ledger = engine.Ledger!;
-        Assert.Equal(2, (await ledger.StatsAsync(FlowId.Of("recall/wellbores"), _clock.GetUtcNow().UtcDateTime)).Delivered);
-        Assert.Equal(3, (await ledger.StatsAsync(FlowId.Of("recall/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
-        var submissions = await ledger.ListSubmissionsAsync(FlowId.Of("recall/welllogs"), 10);
-        Assert.Equal("recall/welllogs", Assert.Single(submissions).FlowName);
-        var activities = await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = FlowId.Of("recall/wellbores"), Max = 10 });
-        Assert.All(activities, a => Assert.Equal("recall/wellbores", a.FlowName));
+        Assert.Equal(2, (await ledger.StatsAsync(FlowId.Of("wells/wellbores"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+        Assert.Equal(3, (await ledger.StatsAsync(FlowId.Of("wells/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+        var submissions = await ledger.ListSubmissionsAsync(FlowId.Of("wells/welllogs"), 10);
+        Assert.Equal("wells/welllogs", Assert.Single(submissions).FlowName);
+        var activities = await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = FlowId.Of("wells/wellbores"), Max = 10 });
+        Assert.All(activities, a => Assert.Equal("wells/wellbores", a.FlowName));
 
         // The run's artifact says what each interface did.
         var artifact = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(result.RunDirectory!, "run.json"))).RootElement;
@@ -326,14 +326,14 @@ public sealed class SourceRuntimeTests : IDisposable
 
         Assert.False(result.Success);
         Assert.IsType<OperationFailure>(result.Result);
-        Assert.Contains("The preflight of 'recall' found 3 problem(s), so nothing was planned or sent", result.Error, StringComparison.Ordinal);
+        Assert.Contains("The preflight of 'wells' found 3 problem(s), so nothing was planned or sent", result.Error, StringComparison.Ordinal);
         Assert.Contains("interface 'welllogs':", result.Error, StringComparison.Ordinal);
         Assert.Contains("WellLog@9.9.9", result.Error, StringComparison.Ordinal);
-        Assert.Contains("interface 'wellbores': Flow 'recall/wellbores': the table OsduSample.ing.Wellbore", result.Error, StringComparison.Ordinal);
+        Assert.Contains("interface 'wellbores': Flow 'wells/wellbores': the table OsduSample.ing.Wellbore", result.Error, StringComparison.Ordinal);
         Assert.Contains("interface 'wellbores': the storage route's service is failing (HTTP 503) at /about", result.Error, StringComparison.Ordinal);
         Assert.Empty(_protocols["wellbores"].Deliveries);
         Assert.Empty(_protocols["welllogs"].Deliveries);
-        Assert.Empty(await engine.Ledger!.ListSubmissionsAsync(FlowId.Of("recall/wellbores"), 10));
+        Assert.Empty(await engine.Ledger!.ListSubmissionsAsync(FlowId.Of("wells/wellbores"), 10));
         Assert.DoesNotContain(_events.Events, e => e.Kind.StartsWith("interface.", StringComparison.Ordinal));
     }
 
@@ -364,7 +364,7 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.Contains(_events.Events, e => e.Kind == "interface.skipped" && e.Interface == "welllogs");
 
         // The tries that failed are the records' own; nothing was held or failed for good.
-        var wellbores = await engine.Ledger!.ListAsync(FlowId.Of("recall/wellbores"), new RecordQuery { Max = 10 });
+        var wellbores = await engine.Ledger!.ListAsync(FlowId.Of("wells/wellbores"), new RecordQuery { Max = 10 });
         Assert.All(wellbores, r => Assert.Equal(RecordStatus.Pending, r.Status));
 
         // Once the service is back and the retries are due, the next run finishes the wellbores and then the well logs.
@@ -373,7 +373,7 @@ public sealed class SourceRuntimeTests : IDisposable
         var again = await RunAsync(engine, source);
         Assert.True(again.Success, again.Error);
         Assert.All(Outcome(again).Interfaces, i => Assert.Equal(InterfaceStates.Completed, i.State));
-        Assert.Equal(2, (await engine.Ledger.StatsAsync(FlowId.Of("recall/wellbores"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+        Assert.Equal(2, (await engine.Ledger.StatsAsync(FlowId.Of("wells/wellbores"), _clock.GetUtcNow().UtcDateTime)).Delivered);
         Assert.Equal(3, _protocols["welllogs"].Deliveries.Count);
         Assert.Equal(2, _protocols["archive"].Deliveries.Count);
     }
@@ -402,7 +402,7 @@ public sealed class SourceRuntimeTests : IDisposable
 
         var unknown = await RunAsync(engine, source, payload: new DeliveryRunPayload { Interfaces = ["cores"] });
         Assert.False(unknown.Success);
-        Assert.Contains("Flow 'recall' has no interface 'cores'; it declares wellbores, welllogs, archive.", unknown.Error, StringComparison.Ordinal);
+        Assert.Contains("Flow 'wells' has no interface 'cores'; it declares wellbores, welllogs, archive.", unknown.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -441,7 +441,7 @@ public sealed class SourceRuntimeTests : IDisposable
         var refused = await RunAsync(engine, Load(SourceYaml(archive: true, wellboreMapping: "Sidetrack@1.0.0", archiveMapping: "Sidetrack@1.0.0", mappingsDirectory: mappings)));
 
         Assert.False(refused.Success);
-        Assert.Contains("The preflight of 'recall' found 1 problem(s), so nothing was planned or sent", refused.Error, StringComparison.Ordinal);
+        Assert.Contains("The preflight of 'wells' found 1 problem(s), so nothing was planned or sent", refused.Error, StringComparison.Ordinal);
         Assert.Contains("the order of the interfaces: The interfaces wellbores -> archive -> wellbores wait for each other", refused.Error, StringComparison.Ordinal);
         Assert.Contains("wellbores: osdu.data.KickOffWellbore refers to master-data--Wellbore, which archive delivers", refused.Error, StringComparison.Ordinal);
         Assert.Contains("Name the interface that waits for the other with after:", refused.Error, StringComparison.Ordinal);
@@ -530,7 +530,7 @@ public sealed class SourceRuntimeTests : IDisposable
         var elsewhere = await RunAsync(
             engine, source, DeliveryOperations.Drain, new DeliveryRunPayload { SubmissionId = submission, Interface = "wellbores" });
         Assert.False(elsewhere.Success);
-        Assert.Contains($"Submission {submission:D} belongs to flow 'recall/welllogs', not 'recall/wellbores'.", elsewhere.Error, StringComparison.Ordinal);
+        Assert.Contains($"Submission {submission:D} belongs to flow 'wells/welllogs', not 'wells/wellbores'.", elsewhere.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -549,7 +549,7 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.All(members.Enqueued, member => Assert.Equal("welllogs", member.Payload.Interface));
         Assert.Contains(members.Enqueued, member => member.Operation == DeliveryOperations.Intake);
         Assert.Contains(members.Enqueued, member => member.Operation == DeliveryOperations.Drain);
-        Assert.Equal(3, (await engine.Ledger!.StatsAsync(FlowId.Of("recall/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+        Assert.Equal(3, (await engine.Ledger!.StatsAsync(FlowId.Of("wells/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
     }
 
     [Fact]
@@ -565,7 +565,7 @@ public sealed class SourceRuntimeTests : IDisposable
 
         Assert.False(result.Success);
         Assert.IsType<OperationFailure>(result.Result);
-        Assert.Contains("'recall-welllog' stopped: an outage: 2 records in a row could not reach the service", result.Error, StringComparison.Ordinal);
+        Assert.Contains("'wells-welllog' stopped: an outage: 2 records in a row could not reach the service", result.Error, StringComparison.Ordinal);
         Assert.Contains("the next run carries on from there", result.Error, StringComparison.Ordinal);
 
         // The two tries that failed are charged; the record the stop reached before it was sent is handed back untried.

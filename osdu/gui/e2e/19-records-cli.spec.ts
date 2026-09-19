@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E, hostRun } from "../playwright.config";
+import { FixtureMeta } from "./global-setup";
 import { expect, test } from "./helpers";
 
 // A record's history where an operator already is. The GUI and the API have shown a record's attempts from the start;
@@ -11,10 +12,8 @@ import { expect, test } from "./helpers";
 /** The OSDU module's folder: the sample estate and the hosts live beside the GUI. */
 const moduleRoot = join(import.meta.dirname, "..", "..");
 
-function fixtureMeta(): { repoDir: string; headSha: string; sampleDb: string; osduDb: string } {
-  return JSON.parse(readFileSync(join(import.meta.dirname, ".fixtures", "meta.json"), "utf8")) as {
-    repoDir: string; headSha: string; sampleDb: string; osduDb: string;
-  };
+function fixtureMeta(): FixtureMeta {
+  return JSON.parse(readFileSync(join(import.meta.dirname, ".fixtures", "meta.json"), "utf8")) as FixtureMeta;
 }
 
 /**
@@ -76,7 +75,7 @@ function cliRefusal(...args: string[]): string {
 test.describe.serial("records from the CLI", () => {
   test("the ledger's records and one record's attempts are readable from the command line", () => {
     test.setTimeout(600_000);
-    const flow = `${fixtureMeta().repoDir}/flows/recall-welllog.yaml`;
+    const flow = `${fixtureMeta().sourceDir}/flows/wells-welllog.yaml`;
 
     // Records reach the ledger when a submission is planned, which is what an intake does: it renders and stages every
     // record of the scope and sends nothing. A plan run reports what it would do and stages nothing, so the earlier
@@ -88,7 +87,7 @@ test.describe.serial("records from the CLI", () => {
       flowId: string;
       records: { deliveryKey: string; sourceKey: string; status: string; targetId: string | null }[];
     }>(cli("records", "list", flow, "--json"));
-    expect(listed.flow).toBe("recall-welllog");
+    expect(listed.flow).toBe("wells-welllog");
     expect(listed.records.length).toBeGreaterThan(0);
     const first = listed.records[0];
     expect(first.deliveryKey).toMatch(/^[0-9a-f]{32}$/);
@@ -109,14 +108,14 @@ test.describe.serial("records from the CLI", () => {
   });
 
   test("a source is read one interface at a time, and an unknown interface says which there are", () => {
-    const flow = `${fixtureMeta().repoDir}/flows/recall-source.yaml`;
+    const flow = `${fixtureMeta().sourceDir}/flows/wells-source.yaml`;
 
     // A source delivers several interfaces, so a command that names none cannot tell which ledger it means.
     expect(cliRefusal("records", "list", flow)).toMatch(/delivers 4 interfaces/);
     expect(cliRefusal("records", "list", flow, "--interface", "nope")).toMatch(/has no interface 'nope'/);
 
     const listed = json<{ flow: string; records: unknown[] }>(cli("records", "list", flow, "--interface", "wellbores", "--json"));
-    expect(listed.flow).toBe("recall-source / wellbores");
+    expect(listed.flow).toBe("wells-source / wellbores");
     // The source's own ledgers are its own: nothing is read from the single-form flows beside it.
     expect(listed.records).toHaveLength(0);
   });

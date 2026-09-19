@@ -1,0 +1,38 @@
+# Pre-ingestion: the curve metadata files into the pre layer.
+#
+# One row per curve of a logging run (docs/stage4-design.md section 1.3). The curve values themselves are never loaded:
+# they stay in the parquet files under ../data/curves, which the delivery streams to the wellbore DDMS.
+name: wells-welllog-curves-pre
+batch: wells
+
+source:
+  type: csv
+  location: ../data/curves-meta
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_SAMPLE_DB}
+  schema: pre
+  table: WellLogCurve
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: curve_ordinal, type: int }
+    - { name: curve_version, type: varchar(50) }
+    # A depth curve carries no business value, and an empty cell is the absence of one rather than the empty string.
+    - { name: business_value, expr: "NULLIF(@ColName, '')", type: varchar(100) }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append

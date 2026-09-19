@@ -90,6 +90,7 @@ Each of these lets a host add something of its own without SQLFlow knowing what 
 | `0677c69` | A search contributor asserts the result contract, so a broken contributor is caught at startup rather than in a search. |
 | `929e535` | A link sets the pipelines page's repo and kind filters. |
 | `774401a` | The caller of an attributed write is named through one public rule a host module can use (`RequestActor`). |
+| `f217fe1` | A repository's contents read as the folder tree they are, at any depth, instead of one flat list per top-level folder. A project's card renders through the shared workbench tree primitive (`components/Tree.tsx`), which gained an optional `testId` on a row; `features/pipelines/folderTree.ts` builds the tree from repo-relative paths. It matters to any repository laid out with folders inside a project, which is every repository that groups a source's flows, mappings and data together. |
 
 ## 3. Taking these upstream
 

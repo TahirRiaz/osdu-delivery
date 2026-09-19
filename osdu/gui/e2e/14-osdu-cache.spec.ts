@@ -1,11 +1,10 @@
+import { CACHE, SOURCE } from "./global-setup";
 import { expect, test } from "./helpers";
 
 // The OSDU cache page: the header names the cache and the file that defines it, a summary row says which version is
 // read and what it holds, and the records, versions, changes and definition are tabs, with a searchable type picker in
 // the tab bar. Runs after the seed (03), so the fixture repo is synced, its cache flow declares
-// five types (none asking for approval), and the sample references were imported through the CLI as the first version.
-
-const CACHE = "osdu-reference-cache";
+// five types (none asking for approval), and the sample records were imported through the CLI as the first version.
 
 /** The partition the sample cache flow fills, and so the cache the page shows. */
 const PARTITION = "opendes";
@@ -16,7 +15,7 @@ test.describe.serial("osdu cache", () => {
     await expect(adminPage.getByTestId("page-delivery-cache")).toBeVisible();
 
     await expect(adminPage.getByTestId("delivery-cache-name")).toHaveText(PARTITION, { timeout: 30_000 });
-    await expect(adminPage.getByTestId("delivery-cache-defined-in")).toHaveText(`caches/${CACHE}.yaml`);
+    await expect(adminPage.getByTestId("delivery-cache-defined-in")).toHaveText(`${SOURCE}/cache/${CACHE}.yaml`);
 
     // The summary: the version deliveries read, how much it holds, how it is refreshed, and that changes need no one.
     await expect(adminPage.getByTestId("delivery-cache-current-value")).toHaveText(/\d{8}T\d{6}Z/);
@@ -46,7 +45,7 @@ test.describe.serial("osdu cache", () => {
   test("the definition tab reads back the file, and the header opens its YAML and refreshes it", async ({ adminPage }) => {
     await adminPage.goto("/delivery/cache?tab=definition");
     const definition = adminPage.getByTestId("delivery-cache-definition");
-    await expect(definition).toContainText(`caches/${CACHE}.yaml`, { timeout: 30_000 });
+    await expect(definition).toContainText(`${SOURCE}/cache/${CACHE}.yaml`, { timeout: 30_000 });
     await expect(definition).toContainText("goes out on the next run");
     const rows = definition.getByTestId("delivery-cache-definition-types").getByTestId("table-row");
     await expect(rows).toHaveCount(5);
@@ -73,14 +72,15 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("delivery-cache-files").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
     await expect(adminPage.getByTestId("filter-kind")).toHaveText(/cache/);
-    // One repo fills the partition, so the link scopes to it too, and a single repo lists its project folders collapsed.
-    const folder = adminPage.getByTestId("repo-project").filter({ hasText: "caches" });
+    // One repo fills the partition, so the link scopes to it too, and a single repo lists its project folders
+    // collapsed. The repository is laid out per source, so that is the one project the cache flow lives under.
+    const folder = adminPage.getByTestId("repo-project").filter({ hasText: SOURCE });
     await expect(folder).toHaveCount(1, { timeout: 30_000 });
     await expect(adminPage.getByTestId("repo-project")).toHaveCount(1);
-    await folder.getByText("caches", { exact: true }).click();
-    const cacheRow = adminPage.getByTestId("table-row").filter({ hasText: CACHE });
+    await folder.getByText(SOURCE, { exact: true }).click();
+    const cacheRow = adminPage.getByTestId("repo-pipeline").filter({ hasText: CACHE });
     await expect(cacheRow.first()).toBeVisible({ timeout: 30_000 });
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" })).toHaveCount(0);
+    await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog" })).toHaveCount(0);
     await cacheRow.first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
     await adminPage.getByTestId("pipeline-tab-yaml").click();

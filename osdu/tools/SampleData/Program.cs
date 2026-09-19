@@ -15,7 +15,7 @@ public static class Program
         ArgumentNullException.ThrowIfNull(args);
         var root = args.Length > 0
             ? Path.GetFullPath(args[0])
-            : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "samples", "recall-welllog", "data"));
+            : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "samples", "wells", "data"));
 
         try
         {

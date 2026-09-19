@@ -92,17 +92,17 @@ say what the suites prove; the live column says which of them a live platform ha
 
 ## The sample estate
 
-`osdu/samples/recall-welllog` is a runnable estate rather than a fixture: the pre and ingestion flows load its files
+`osdu/samples/wells` is a runnable estate rather than a fixture: the pre and ingestion flows load its files
 into SQL Server, and the delivery flows plan and render against real templates and a real cache version. It covers four
 kinds and three route types:
 
 | Interface or flow | Kind | Route |
 | --- | --- | --- |
-| `recall-wellbore`, `recall-source/wellbores` | `master-data--Wellbore` | storage |
-| `recall-welllog` | `work-product-component--WellLog` | ddms (well logs, with bulk data) |
-| `recall-source/welllogs` | `work-product-component--WellLog` | storage |
-| `recall-source/trajectories` | `work-product-component--WellboreTrajectory` | ddms (trajectories, with bulk data) |
-| `recall-source/documents` | `work-product-component--Document` | file |
+| `wells-wellbore`, `wells-source/wellbores` | `master-data--Wellbore` | storage |
+| `wells-welllog` | `work-product-component--WellLog` | ddms (well logs, with bulk data) |
+| `wells-source/welllogs` | `work-product-component--WellLog` | storage |
+| `wells-source/trajectories` | `work-product-component--WellboreTrajectory` | ddms (trajectories, with bulk data) |
+| `wells-source/documents` | `work-product-component--Document` | file |
 
 The GUI's end-to-end suite runs that estate through the product: the repository is synced, the templates saved, the
 cache imported, the chain run, a plan executed, and the source read one interface at a time through the GUI and the

@@ -7,7 +7,7 @@ are a parse error. Every validation failure names the file.
 
 ```yaml
 flowType: delivery                 # required discriminator
-name: recall-welllog               # required; the flow id is derived from it
+name: wells-welllog               # required; the flow id is derived from it
 
 parameters:                        # optional; {name} tokens usable in source.work and each payload root
   logSource: { required: true, default: null, description: ... }
@@ -696,7 +696,7 @@ own name. A type that is better managed on its own, or delivered again often, ca
 
 ```yaml
 flowType: delivery
-name: recall                          # the source: one pipeline in the catalog, one schedule, one run
+name: wells                          # the source: one pipeline in the catalog, one schedule, one run
 parameters:
   logSource: { required: true }
 schedule: { cron: "0 * * * *", values: { logSource: STAT_COMP } }
@@ -704,7 +704,7 @@ schedule: { cron: "0 * * * *", values: { logSource: STAT_COMP } }
 source:                               # shared by every interface
   connection: ${env:OSDU_SAMPLE_DB}
   lastModified: update_date
-  work: ../.work/recall/{logSource}
+  work: ../.work/wells/{logSource}
 render:
   parameters: { dataPartition: opendes }
 target:
@@ -721,14 +721,14 @@ failWhen: { failedPercent: 20 }       # every interface's stop rules, unless it 
 
 interfaces:
   wellbores:
-    ledger: recall-wellbore           # keep the ledger of the flow this interface replaces
+    ledger: wells-wellbore           # keep the ledger of the flow this interface replaces
     record: { object: OsduSample.ing.Wellbore, key: [facility_name], primaryKey: RecId }
     datasets:
       aliases: { object: OsduSample.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
     mapping: Wellbore@1.0.0
   welllogs:
-    ledger: recall-welllog
-    record: { object: OsduSample.ing.WellLog, key: [source_project, log_id], primaryKey: RecId, scope: { log_name: logSource } }
+    ledger: wells-welllog
+    record: { object: OsduSample.ing.WellLog, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
     datasets:
       curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
     bulk: { root: ../data/curves, locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
@@ -899,7 +899,7 @@ not run by then, is refused.
 ### Ledger identity
 
 Every interface keeps a ledger of its own: its records, submissions, watermark, OSDU id claims and statistics are
-kept under the flow id derived from `<flow>/<interface>` (as the ledger records it, `recall/welllogs`; ids ignore case).
+kept under the flow id derived from `<flow>/<interface>` (as the ledger records it, `wells/welllogs`; ids ignore case).
 A document without interfaces keeps the flow id of its own name.
 
 `ledger: <name>` keeps the ledger of an existing flow instead, so consolidating single-kind flows into one source loses
@@ -1039,12 +1039,12 @@ The reference and master data the mappings resolve against ([design.md](design.m
 one place what is cached is defined: the OSDU platform to search, the types to cache, and for each type the paths of a
 record to keep. It fills the cache of the partition its `source.headers.data-partition-id` names, and a delivery flow
 reads the cache of the partition it delivers to ([The partition cache](#the-partition-cache)). The sample estate's
-cache flow, `samples/recall-welllog/caches/osdu-reference-cache.yaml`, fills partition `opendes`:
+cache flow, `samples/wells/cache/osdu-cache.yaml`, fills partition `opendes`:
 
 ```yaml
 flowType: cache
-name: osdu-reference-cache
-batch: recall
+name: osdu-cache
+batch: wells
 
 source:
   endpoint: ${env:PETRODB_URL}
@@ -1198,12 +1198,12 @@ version: 1.4.0                     # part of the render context; the file is map
 template:
   kind: osdu:wks:work-product-component--WellLog:1.4.0   # authority:source:entityType:major.minor.patch
   version: 26a3c3441882db4f        # the saved template version: 16 hexadecimal characters
-description: Recall well logs, one record per logging run.
+description: Well logs, one record per logging run.
 
 dataset:
-  system: recall                   # enters the delivery key
+  system: wells                   # enters the delivery key
   key: [dataset.source_project, dataset.log_id]          # the columns the delivery key, and so the OSDU id, is derived from
-  label: "{dataset.wellbore_uwi} / {dataset.log_name}"   # display and search only; never in the record
+  label: "{dataset.wellbore_uwi} / {dataset.log_source}"   # display and search only; never in the record
 
 parameters:                        # what the mapping accepts from the flow; values enter the render context
   dataPartition: { required: true }  # always declared: ids are minted in it, so letters, digits, _ - . only
@@ -1220,7 +1220,7 @@ mappings:
   - target: osdu.tags.DeliveredBy  # a key under an object with free keys
     static: osdu-delivery
   - target: osdu.data.Name
-    source: dataset.log_name       # a column of the dataset's row
+    source: dataset.log_source       # a column of the dataset's row
     modifiers: [trim]
   - target: osdu.data.WellboreID
     source: cache.Wellbore.id      # the id of the cached record findBy selects

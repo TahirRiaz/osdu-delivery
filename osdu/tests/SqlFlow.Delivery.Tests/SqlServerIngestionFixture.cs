@@ -35,18 +35,23 @@ namespace SqlFlow.Delivery.Tests;
 public sealed class SqlServerIngestionFixture : IAsyncDisposable
 {
     /// <summary>The estate parts copied next to the generated flows; the data folders are written per test instead.</summary>
-    private static readonly string[] CopiedParts = ["mappings", "templates", "caches", "references"];
+    /// <summary>
+    /// What the fixture copies out of the source folder as it is: the mappings the flows pin, and the cache flow with
+    /// the sample records beside it. Templates are not among them, being catalog objects the fixture saves from
+    /// <see cref="Samples.TemplateFiles"/> rather than files an estate carries.
+    /// </summary>
+    private static readonly string[] CopiedParts = ["mappings", "cache"];
 
     /// <summary>The flow documents of the well log chain, by the name they carry in the repository.</summary>
     private static readonly string[] ChainDocuments =
     [
-        "recall-welllog-pre", "recall-welllog-curves-pre", "recall-welllog-ing", "recall-welllog-curves-ing", "recall-welllog",
+        "wells-welllog-pre", "wells-welllog-curves-pre", "wells-welllog-ing", "wells-welllog-curves-ing", "wells-welllog",
     ];
 
     /// <summary>The flows that load the wellbore tables, generated for a fixture that asks for them.</summary>
     private static readonly string[] WellboreChainDocuments =
     [
-        "recall-wellbore-pre", "recall-wellbore-aliases-pre", "recall-wellbore-ing", "recall-wellbore-aliases-ing",
+        "wells-wellbore-pre", "wells-wellbore-aliases-pre", "wells-wellbore-ing", "wells-wellbore-aliases-ing",
     ];
 
     /// <summary>
@@ -194,8 +199,8 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>The name a shipped flow of either chain carries in an estate generated with <paramref name="suffix"/>.</summary>
     private static string Rename(string shippedName, string suffix)
         => shippedName
-            .Replace("recall-welllog", "rw" + suffix, StringComparison.Ordinal)
-            .Replace("recall-wellbore", "wb" + suffix, StringComparison.Ordinal);
+            .Replace("wells-welllog", "rw" + suffix, StringComparison.Ordinal)
+            .Replace("wells-wellbore", "wb" + suffix, StringComparison.Ordinal);
 
     /// <summary>
     /// Refuses the suite when the database it needs is not there, naming what to set. The SQL Server chain runs against a
@@ -287,10 +292,10 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// </summary>
     public async Task RunIngestionChainAsync(CancellationToken ct = default)
     {
-        await RunFlowAsync("recall-welllog-pre", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("recall-welllog-curves-pre", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("recall-welllog-ing", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("recall-welllog-curves-ing", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("wells-welllog-pre", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("wells-welllog-curves-pre", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("wells-welllog-ing", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("wells-welllog-curves-ing", ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -318,14 +323,14 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>Runs the OSDU flow's <c>deliver</c> operation through the document executor, with this run's values.</summary>
     public Task<DocumentRunOutcome> DeliverAsync(Guid? runId = null, CancellationToken ct = default)
         => RunFlowAsync(
-            "recall-welllog",
+            "wells-welllog",
             new RunParameters { Operation = DeliveryOperations.Deliver, Values = SampleEstate.Values },
             runId ?? Guid.NewGuid(),
             ct);
 
     /// <summary>The OSDU flow as its generated document declares it, loaded through the module's own loader.</summary>
     public FlowDefinition DeliveryFlow()
-        => _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("recall-welllog"));
+        => _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("wells-welllog"));
 
     /// <summary>Writes the well log metadata file the first pre flow reads; naming a new file lands a new batch of rows.</summary>
     public Task WriteLogFileAsync(string fileName, IReadOnlyList<SampleLog> logs, CancellationToken ct = default)
@@ -603,15 +608,15 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     }
 
     /// <summary>
-    /// Writes this fixture's estate: the shipped mappings, templates, caches and reference records as they are, the five
+    /// Writes this fixture's estate: the shipped mappings and the cache with its sample records as they are, the five
     /// chain documents rewritten for this database (and, when asked for, the four flows that load the wellbore tables), and
-    /// the empty data folders the pre flows read.
+    /// the empty drop-off folders the pre flows read.
     /// </summary>
     internal static void GenerateEstate(string root, string databaseName, string suffix, string variable, int fanOut, int batchRecords, bool wellboreChain = false)
     {
         foreach (var part in CopiedParts)
         {
-            CopyDirectory(Path.Combine(Samples.Root, part), Path.Combine(root, part));
+            CopyDirectory(Path.Combine(Samples.Source, part), Path.Combine(root, part));
         }
 
         foreach (var folder in new[] { "welllog", "curves-meta", "curves", "wellbore", "wellbore-aliases" })
@@ -624,7 +629,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         {
             // The repository is checked out with whatever line endings the platform writes, so every document is read as
             // one normalized text; the rewrites below are line based and would otherwise match nothing.
-            var shipped = File.ReadAllText(Path.Combine(Samples.Root, "flows", name + ".yaml")).ReplaceLineEndings("\n");
+            var shipped = File.ReadAllText(Path.Combine(Samples.Source, "flows", name + ".yaml")).ReplaceLineEndings("\n");
             var generated = Generate(shipped, name, databaseName, suffix, variable, fanOut, batchRecords);
             File.WriteAllText(Path.Combine(root, "flows", Rename(name, suffix) + ".yaml"), generated);
         }
@@ -644,7 +649,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             text = Replace(text, "\n  schema: pre\n", $"\n  schema: pre_{suffix}\n", name);
         }
 
-        if (name == "recall-welllog")
+        if (name == "wells-welllog")
         {
             text = Replace(text, ShippedTarget, LocalTarget, name);
             if (fanOut > 0)

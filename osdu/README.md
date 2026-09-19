@@ -21,7 +21,8 @@ the committed tree (no build output, no local files).
 | `tests/SqlFlow.Delivery.Tests/` | The delivery domain suites |
 | `tests/SqlFlow.Delivery.ControlPlane.Tests/` | The module, plan run, record origin and template API suites, and the sample estate they use |
 | `docs/` | `docs/delivery/` and `docs/reference/cli/delivery.md` |
-| `samples/recall-welllog/` | The sample estate: flows, mappings, the cache flow, bundled templates, reference records |
+| `samples/wells/` | The sample estate, laid out the way a repository is: one folder for the wells source, holding its flows, mappings, cache flow with its sample records, and drop-off folder |
+| `samples/templates/` | The bundled OSDU schemas the suites and the e2e seed save as templates, beside the source folders rather than inside one: a template is a catalog object, not repository content |
 
 ## What was left behind, and why
 
@@ -33,7 +34,7 @@ SQLFlow's own pre-ingestion and ingestion flows replace the way data used to arr
 - the SQL Server source extraction into drops (`Engine/SqlSource/`), which an ingestion flow provides;
 - inline drops, replica slices and origins, and known-state publishing;
 - the drop-off area (endpoints, retention service, GUI page, API tests) and the submit-a-drop dialog;
-- the sample drops (`samples/recall-welllog/out/`) and the sample drop generator (`tools/SampleDrop`);
+- the sample drops (`samples/wells-welllog/out/`) and the sample drop generator (`tools/SampleDrop`);
 - the tests and documents of all of the above.
 
 ## State

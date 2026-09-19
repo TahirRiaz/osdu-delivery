@@ -314,7 +314,7 @@ says so.
 
 The sample estate is a runnable estate, not a fixture: its pre and ingestion flows load its files into SQL Server and
 its delivery flows plan and render against real templates and a real cache version. It now carries the shape a source
-takes beside the single-form flows it mirrors (`recall-source`, four interfaces), and between them they cover four kinds
+takes beside the single-form flows it mirrors (`wells-source`, four interfaces), and between them they cover four kinds
 and three route types, each route decided by what the interface declares rather than named: master data and well logs
 through the storage service, directional surveys whose stations the Wellbore DDMS keeps, and documents whose content is
 a file registered through the file service. The schemas the new kinds pin are the real ones, captured from the OSDU data

@@ -360,7 +360,7 @@ public class FileProtocolTests
         var (client, runtime, _) = Client(handler);
         using (runtime)
         {
-            var options = new ProtocolOptions { WorkflowPollSeconds = 1, WorkflowPayload = new Dictionary<string, string>(StringComparer.Ordinal) { ["Source"] = "recall" } };
+            var options = new ProtocolOptions { WorkflowPollSeconds = 1, WorkflowPayload = new Dictionary<string, string>(StringComparer.Ordinal) { ["Source"] = "wells" } };
             var protocol = new OsduManifestProtocol(client, options, Samples.Logger<OsduManifestProtocol>());
             var works = new[] { Work(true, true, 1, reported: reported), Work(true, true, 1, id: OtherId, reported: reported) };
             var outcomes = await protocol.DeliverBatchAsync(works);
@@ -386,7 +386,7 @@ public class FileProtocolTests
             var context = body["executionContext"]!.AsObject();
             Assert.Equal("osdu-delivery", context["Payload"]!["AppKey"]!.GetValue<string>());
             Assert.Equal("dev", context["Payload"]!["data-partition-id"]!.GetValue<string>());
-            Assert.Equal("recall", context["Payload"]!["Source"]!.GetValue<string>());
+            Assert.Equal("wells", context["Payload"]!["Source"]!.GetValue<string>());
             var manifest = context["manifest"]!.AsObject();
             Assert.Equal("osdu:wks:Manifest:1.0.0", manifest["kind"]!.GetValue<string>());
             Assert.False(manifest.ContainsKey("MasterData"));

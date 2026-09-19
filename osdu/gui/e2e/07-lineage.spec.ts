@@ -33,12 +33,12 @@ test.describe.serial("lineage", () => {
 
     const wellLog = named("osdu-type", WELL_LOG);
     expect(wellLog, `no ${WELL_LOG} among ${datasets.map((d) => d.name).join(", ")}`).toBeDefined();
-    // Two flows deliver well logs: recall-welllog in the single form, and the welllogs interface of recall-source.
+    // Two flows deliver well logs: wells-welllog in the single form, and the welllogs interface of wells-source.
     expect([wellLog!.namespace, wellLog!.group, wellLog!.writers]).toEqual(["opendes", "work-product-component", 2]);
 
     const wellbore = named("osdu-type", WELLBORE);
     expect(wellbore).toBeDefined();
-    // recall-wellbore and the wellbores interface of recall-source write it; the cache flow and the metadata sync
+    // wells-wellbore and the wellbores interface of wells-source write it; the cache flow and the download
     // read it back through their wildcard kinds.
     expect(wellbore!.writers).toBe(2);
     expect(wellbore!.readers).toBeGreaterThanOrEqual(2);
@@ -60,7 +60,7 @@ test.describe.serial("lineage", () => {
     await expect(details.getByText("osdu type", { exact: true })).toBeVisible();
     await details.getByTestId("catalog-tab-pipelines").click();
     const provenance = adminPage.getByTestId("catalog-file-provenance");
-    await expect(provenance.getByText("recall-welllog", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(provenance.getByText("wells-welllog", { exact: true })).toBeVisible({ timeout: 30_000 });
 
     await details.getByTestId("search-open-graph").click();
     await adminPage.getByTestId("lineage-jump-option").first().click();
@@ -68,7 +68,7 @@ test.describe.serial("lineage", () => {
     await expect(graph).toBeVisible();
     await expect(graph.getByText(WELL_LOG, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     await expect(graph.getByText(/^osdu type · opendes\.work-product-component/).first()).toBeVisible();
-    await expect(graph.getByText("recall-welllog", { exact: true }).first()).toBeVisible();
+    await expect(graph.getByText("wells-welllog", { exact: true }).first()).toBeVisible();
   });
 
   test("the catalog tree groups datasets by system, partition and group", async ({ adminPage }) => {

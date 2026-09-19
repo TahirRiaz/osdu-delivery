@@ -80,7 +80,7 @@ public sealed class DdmsSourceTests : IDisposable
                 bulk: { root: '{{root}}/stations', locationColumn: station_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: WellboreTrajectory@1.3.0
               welllogs:
-                record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_name: logSource } }
+                record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
                   curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
@@ -219,14 +219,14 @@ public sealed class DdmsSourceTests : IDisposable
         var logs = Assert.IsType<DeliverOutcome>(outcome.Interfaces[1].Result);
         var reasons = (await engine.Ledger!.GetRecordsAsync(
                 FlowId.Of("surveys/trajectories"),
-                [DeliveryKey.Derive("recall", ["NO_15_9", "T-1001"]), DeliveryKey.Derive("recall", ["NO_15_9", "T-1002"])]))
+                [DeliveryKey.Derive("wells", ["NO_15_9", "T-1001"]), DeliveryKey.Derive("wells", ["NO_15_9", "T-1002"])]))
             .Values.Select(r => $"{r.SourceKey}: {r.Status} {r.LastError}");
         Assert.True((surveys.Delivered, surveys.Held) == (1L, 1L), string.Join(" | ", reasons));
         Assert.Equal(3, logs.Delivered);
 
         // Each record went to the collection serving its entity type, record first and its bulk data after it.
         string Call(FakeHttpHandler.Request c) => c.Method + " " + c.Uri.AbsolutePath;
-        var surveyId = "opendes:work-product-component--WellboreTrajectory:" + DeliveryKey.Derive("recall", ["NO_15_9", "T-1001"]).Value.ToString("N");
+        var surveyId = "opendes:work-product-component--WellboreTrajectory:" + DeliveryKey.Derive("wells", ["NO_15_9", "T-1001"]).Value.ToString("N");
         var trajectoryCalls = handler.Calls.Select(Call).Where(c => c.Contains("/wellboretrajectories", StringComparison.Ordinal)).ToList();
         Assert.Equal(
             [
@@ -256,7 +256,7 @@ public sealed class DdmsSourceTests : IDisposable
         var trajectoryLedger = FlowId.Of("surveys/trajectories");
         var stats = await ledger.StatsAsync(trajectoryLedger, _clock.GetUtcNow().UtcDateTime);
         Assert.Equal((1L, 1L), (stats.Delivered, stats.Held));
-        var heldKey = DeliveryKey.Derive("recall", ["NO_15_9", "T-1002"]);
+        var heldKey = DeliveryKey.Derive("wells", ["NO_15_9", "T-1002"]);
         var held = (await ledger.GetRecordsAsync(trajectoryLedger, [heldKey]))[heldKey];
         Assert.Contains("the bulk column(s) AZI match no data.AvailableTrajectoryStationProperties[].Name", held.LastError, StringComparison.Ordinal);
         Assert.Equal(3, (await ledger.StatsAsync(FlowId.Of("surveys/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);

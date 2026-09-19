@@ -14,7 +14,7 @@ fills each one.
 | Inherits from | `osdu:wks:AbstractWPCGroupType:1.2.0` |
 | Supported file formats | WITSML, DLIS, LIS, LAS2, LAS3, csv |
 | JSON Schema dialect | `http://json-schema.org/draft-07/schema#` |
-| Source file | `samples/recall-welllog/templates/osdu_wks_work-product-component--WellLog_1.4.0.json` |
+| Source file | `samples/templates/osdu_wks_work-product-component--WellLog_1.4.0.json` |
 | Template version | `26a3c3441882db4f`, the hash of the file's content; the schema was captured 2026-09-07T22:37:02Z |
 
 The source file is the schema as the OSDU schema service serves it, with one mechanical change made when it was

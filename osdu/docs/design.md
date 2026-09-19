@@ -698,7 +698,7 @@ source:
   record:
     object: OsduSample.ing.WellLog
     key: [source_project, log_id]
-    scope: { log_name: logSource }
+    scope: { log_source: logSource }
   datasets:
     curves:
       object: OsduSample.ing.WellLogCurve

@@ -40,7 +40,7 @@ the ones the previous runs used, on the current build:
 | `recall-welllog` | `ddms` (Wellbore DDMS well logs) | 3 `work-product-component--WellLog` and their bulk data |
 | `e2e-file` | `file` | 1 `work-product-component--Document` with one CSV |
 | `e2e-document` | `manifest` | 1 `work-product-component--Document` with one CSV, through `Osdu_ingest` |
-| `osdu-reference-cache` | cache | Reads reference data from the partition; creates nothing |
+| `osdu-cache` | cache | Reads reference data from the partition; creates nothing |
 
 Every record carries the run marker in a data property, so the estate can be found again even if the log were lost.
 Every id is appended to `.sqlflow/live-e2e/actions.log` before the call that creates it and again with what came back,

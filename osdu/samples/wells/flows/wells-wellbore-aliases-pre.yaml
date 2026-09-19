@@ -1,0 +1,35 @@
+# Pre-ingestion: the wellbore alias files into the pre layer.
+#
+# One row per alternative name of a wellbore (docs/stage4-design.md section 1.5); the delivery renders one NameAliases
+# item per row.
+name: wells-wellbore-aliases-pre
+batch: wells
+
+source:
+  type: csv
+  location: ../data/wellbore-aliases
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_SAMPLE_DB}
+  schema: pre
+  table: WellboreAlias
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: alias_name, type: varchar(200) }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append

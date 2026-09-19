@@ -511,8 +511,8 @@ that did not complete. A record can be redelivered or released on its own, as to
 
 - A flow without `interfaces` is a source with one interface; its ledger identity stays `FlowId.Of(<flow>)`, so
   existing ledgers, OSDU id claims and history carry on unchanged.
-- The sample estate becomes one source file, `recall.yaml`, whose `wellbores` and `welllogs` interfaces adopt the
-  ledgers of `recall-wellbore` and `recall-welllog` with `ledger:`.
+- The sample estate becomes one source file, `wells.yaml`, whose `wellbores` and `welllogs` interfaces adopt the
+  ledgers of `wells-wellbore` and `wells-welllog` with `ledger:`.
 - `target.protocol` keeps working in the single form: `osduRecord` is `storage`, `osduFile` is `file`,
   `osduManifest` is `manifest`, `osduWellLog` is `ddms` with the well log collection.
 - The GUI, API and CLI gain the interface as a filter and the source as a roll-up; the record routes keep their

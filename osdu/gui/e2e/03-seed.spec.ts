@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E, connectionParts, connectionValue, hostRun } from "../playwright.config";
-import { LOADING_FLOWS } from "./global-setup";
+import { CACHE, FixtureMeta, LOADING_FLOWS, SOURCE } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
-// Seeds the estate THROUGH the product: saves the templates the sample mappings pin, imports the sample references as the
+// Seeds the estate THROUGH the product: saves the templates the sample mappings pin, imports the sample cache records as the
 // cache's first version, registers the fixture git repo as a source from the Repos page in the GUI, then watches the
 // control plane's managed sync pull it and the pipelines appear in the catalog. Everything after this spec runs against
 // real synced data.
@@ -13,9 +13,9 @@ import { adminSession, expect, test } from "./helpers";
 /** The OSDU module's folder: the sample estate and the hosts live beside the GUI. */
 const moduleRoot = join(import.meta.dirname, "..", "..");
 
-function fixtureMeta(): { repoDir: string; headSha: string; sampleDb: string; osduDb: string } {
+function fixtureMeta(): FixtureMeta {
   const metaPath = join(import.meta.dirname, ".fixtures", "meta.json");
-  return JSON.parse(readFileSync(metaPath, "utf8")) as { repoDir: string; headSha: string; sampleDb: string; osduDb: string };
+  return JSON.parse(readFileSync(metaPath, "utf8")) as FixtureMeta;
 }
 
 /** The ingestion tables the chain loads, each keyed by the identity column the delivery flows page and fan out by. */
@@ -127,7 +127,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
     ];
     for (const template of templates) {
       const schema: unknown = JSON.parse(
-        readFileSync(join(moduleRoot, "samples", "recall-welllog", "templates", template.file), "utf8"),
+        readFileSync(join(moduleRoot, "samples", "templates", template.file), "utf8"),
       );
       const response = await request.post(`${E2E.apiBaseUrl}/api/v1/delivery/templates`, {
         headers: { Authorization: `Bearer ${session.token}` },
@@ -140,24 +140,26 @@ test.describe.serial("seed the estate via repo source sync", () => {
     }
   });
 
-  // Cache versions live in the catalog too. A refresh would search the sample's OSDU target, so the suite imports the
-  // sample reference files as the cache's first version through the OSDU Delivery CLI host, the offline path an operator
-  // uses. Importing the same files again writes nothing, so a rerun against the same catalog keeps one version.
-  test("import the sample references as the first version of the cache", () => {
+  // A cache lives in the module database, never in the repository. A refresh would search the sample's OSDU target, so
+  // the suite imports the sample cache records as the cache's first version through the OSDU Delivery CLI host, the
+  // offline path an operator uses. Importing the same files again writes nothing, so a rerun keeps one version.
+  test("import the sample cache records as the first version of the cache", () => {
     test.setTimeout(420_000);
     const meta = fixtureMeta();
     const output = execFileSync(
       "dotnet",
       [
         ...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--",
-        "cache", "import", `${meta.repoDir}/caches/osdu-reference-cache.yaml`,
-        "--from-dir", `${meta.repoDir}/references`,
+        "cache", "import", `${meta.sourceDir}/cache/${CACHE}.yaml`,
+        // The records are not repository content: a cache lives in the module's database, so the sample records that
+        // stand in for a capture sit beside the estate rather than inside the source that reads the cache.
+        "--from-dir", join(moduleRoot, "samples", "cache-records"),
         "--db", "${env:SQLFLOW_E2E_CACHE_DB}",
         "--json",
       ],
       { encoding: "utf8", timeout: 400_000, env: { ...process.env, SQLFLOW_E2E_CACHE_DB: E2E.catalogDb, SQLFLOW_OSDU_DB: E2E.osduDb } },
     );
-    expect(output).toContain("osdu-reference-cache");
+    expect(output).toContain("osdu-cache");
   });
 
   // A delivery flow reads its records from ingestion tables, which the chain that fills them creates: the pre flows land
@@ -173,7 +175,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
     for (const flow of LOADING_FLOWS) {
       const output = execFileSync(
         "dotnet",
-        [...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--", "run", `${meta.repoDir}/flows/${flow}.yaml`],
+        [...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--", "run", `${meta.sourceDir}/flows/${flow}.yaml`],
         { encoding: "utf8", timeout: 600_000, env: { ...process.env, OSDU_SAMPLE_DB: meta.sampleDb, SQLFLOW_OSDU_DB: meta.osduDb } },
       );
       expect(output, `${flow} reported nothing`).not.toBe("");
@@ -201,8 +203,8 @@ test.describe.serial("seed the estate via repo source sync", () => {
   test("the synced pipeline appears in the catalog", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
-    await adminPage.getByTestId("filter-name").fill("recall-welllog");
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" });
+    await adminPage.getByTestId("filter-name").fill("wells-welllog");
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "wells-welllog" });
     await expect(row.first()).toBeVisible({ timeout: 60_000 });
   });
 
@@ -213,8 +215,13 @@ test.describe.serial("seed the estate via repo source sync", () => {
     await expect(row.first()).toBeVisible({ timeout: 30_000 });
     await row.first().click();
     await expect(adminPage.getByTestId("page-repo-detail")).toBeVisible();
+    // The repository is laid out per source, and a project is a top-level folder, so the estate is one project named
+    // after the source rather than one per kind of file it holds.
+    const projects = adminPage.getByTestId("repo-project");
+    await expect(projects).toHaveCount(1, { timeout: 30_000 });
+    await expect(projects.first()).toContainText(SOURCE);
     // The project accordions start collapsed; a search opens the matching one and surfaces the flow row.
-    await adminPage.getByTestId("repo-pipeline-search").fill("recall-welllog");
-    await expect(adminPage.getByTestId("table-row").filter({ hasText: "recall-welllog" }).first()).toBeVisible();
+    await adminPage.getByTestId("repo-pipeline-search").fill("wells-welllog");
+    await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog" }).first()).toBeVisible();
   });
 });

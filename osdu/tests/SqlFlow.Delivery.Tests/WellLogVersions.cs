@@ -75,7 +75,7 @@ internal static class WellLogVersions
         ArgumentNullException.ThrowIfNull(caches);
         var directory = Path.Combine(root, "references-" + partition);
         Directory.CreateDirectory(directory);
-        foreach (var file in Directory.EnumerateFiles(Samples.References, "*.json"))
+        foreach (var file in Directory.EnumerateFiles(Samples.CacheRecords, "*.json"))
         {
             var text = File.ReadAllText(file);
             Assert.Contains(Samples.SampleCacheScope + ":", text, StringComparison.Ordinal);
@@ -95,7 +95,7 @@ internal static class WellLogVersions
     private static string NextMappingDocument(string partition)
     {
         var text = File.ReadAllText(Path.Combine(Samples.Mappings, CurrentMapping + ".yaml")).ReplaceLineEndings("\n");
-        text = Replace(text, "# Mapping: Recall well logs into the WellLog 1.4.0 template", "# Mapping: Recall well logs into the WellLog 1.5.0 template", 1);
+        text = Replace(text, "# Mapping: Well logs into the WellLog 1.4.0 template", "# Mapping: Well logs into the WellLog 1.5.0 template", 1);
         text = Replace(text, "\nversion: 1.4.0\n", "\nversion: 1.5.0\n", 1);
         text = Replace(text, $"  kind: {CurrentKind}\n  version: {CurrentTemplateVersion}\n", $"  kind: {NextKind}\n  version: {NextTemplateVersion}\n", 1);
         text = Replace(text, $"\"kind\": \"{CurrentKind}\"", $"\"kind\": \"{NextKind}\"", 2);

@@ -21,7 +21,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// </summary>
 public sealed class DeliveryRetentionApiTests
 {
-    private const string FlowName = "recall-retention";
+    private const string FlowName = "wells-retention";
 
     [Fact]
     public async Task Pruning_needs_the_admin_scope_and_a_cut_off_of_at_least_a_day()

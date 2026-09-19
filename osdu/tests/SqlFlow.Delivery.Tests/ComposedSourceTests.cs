@@ -74,7 +74,7 @@ public sealed class ComposedSourceTests : IDisposable
               retry: { attempts: 1 }
             interfaces:
               welllogs:
-                record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_name: logSource } }
+                record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
                   curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 files: { root: '{{root}}/las', locationColumn: las_folder, pattern: "*.las", hashColumn: las_hash }

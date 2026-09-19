@@ -89,7 +89,7 @@ public sealed record MappingParameter
     public string? Description { get; init; }
 }
 
-/// <summary>A column of the dataset's row (<c>dataset.log_name</c>) or of a child dataset's row (<c>dataset.curves.curve_id</c>).</summary>
+/// <summary>A column of the dataset's row (<c>dataset.log_source</c>) or of a child dataset's row (<c>dataset.curves.curve_id</c>).</summary>
 public sealed record DatasetColumn(string? Child, string Column)
 {
     public const string Prefix = "dataset";

@@ -20,7 +20,7 @@ implementation as it stood then, when a flow read a prepared drop.
 The current build, where data reaches OSDU through SQLFlow's pre-ingestion and ingestion flows, was run against a live
 platform on 2026-09-17 (UTC): **Azure Data Manager for Energy, release 0.29, data partition `dev`**. The checks, the
 ids each would create and how each would be removed were written out in [live-wave-one.md](../../docs/live-wave-one.md)
-and approved before anything was sent. The estate is the sample estate (`osdu/samples/recall-welllog`) rebuilt into the
+and approved before anything was sent. The estate is the sample estate (`osdu/samples/recall`) rebuilt into the
 git-ignored `.sqlflow/live-e2e/repo` with the deployment's own partition, access groups and legal tag, and every record
 it wrote carried `tags.RunMarker = ODLIVE20260918`.
 

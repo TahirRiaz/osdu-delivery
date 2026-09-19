@@ -11,9 +11,15 @@ import { E2E, databaseOf } from "../playwright.config";
  *
  * The estate is the whole chain, not the delivery flows alone: a record reaches a delivery flow through its ingestion
  * tables, which the pre and ingestion flows load from the sample files. The seed spec runs those flows through the CLI
- * host, so the tables a plan reads are made the way production makes them. The templates the mappings pin and the cache
- * versions live in the catalog rather than the repository, so the seed spec saves the templates through the API and
- * imports the reference files as the cache's first version.
+ * host, so the tables a plan reads are made the way production makes them.
+ *
+ * The repository is laid out per source: one top-level folder for the source, holding its flows, the mappings they pin,
+ * the cache they resolve against and the drop-off folder the pre flows load from. That folder is what the catalog and
+ * the GUI call a project, so the Repos page shows one project per source.
+ *
+ * Templates are not repository content. They are catalog objects, captured from OSDU's schema service through the
+ * Templates page, so the seed spec saves the bundled schemas in `osdu/samples/templates` through the API instead. Cache
+ * versions are catalog objects too, so the seed spec imports the sample records as the cache's first version.
  *
  * Runs use the plan operation, which renders records against the templates, the cache and the ledger without touching an
  * OSDU target.
@@ -22,15 +28,21 @@ export default function globalSetup(): void {
   const here = import.meta.dirname;
   const fixturesDir = resolve(here, ".fixtures");
   const repoDir = join(fixturesDir, "e2e-repo");
-  const samplesDir = resolve(here, "..", "..", "samples", "recall-welllog");
+  const samplesDir = resolve(here, "..", "..", "samples", "wells");
+
+  // The repository holds one folder per source, which is what the catalog and the GUI call a project: everything the
+  // wells source needs (its flows, the mappings they pin, the cache they read and the drop-off folder the pre flows
+  // load from) sits under `wells/`, and a second source would be a folder beside it rather than more files mixed into
+  // the same `flows/` and `mappings/`.
+  const sourceDir = join(repoDir, SOURCE);
 
   rmSync(repoDir, { recursive: true, force: true });
-  mkdirSync(join(repoDir, "flows"), { recursive: true });
+  mkdirSync(join(sourceDir, "flows"), { recursive: true });
 
-  // The mappings the flows pin, the reference records the cache is imported from, and the sample files the pre flows
-  // read. The data folders are what makes the chain runnable: without them a pre flow has nothing to land.
-  for (const part of ["mappings", "references", "data"]) {
-    cpSync(join(samplesDir, part), join(repoDir, part), { recursive: true });
+  // The mappings the flows pin and the sample files the pre flows read. The data folder is the source's drop-off point:
+  // it is what makes the chain runnable, because without it a pre flow has nothing to land.
+  for (const part of ["mappings", "data"]) {
+    cpSync(join(samplesDir, part), join(sourceDir, part), { recursive: true });
   }
 
   // Every flow of the estate, each without its schedule and with its tables in the sample database. A fire would be a
@@ -43,17 +55,19 @@ export default function globalSetup(): void {
   for (const flow of CHAIN) {
     const shipped = readFileSync(join(samplesDir, "flows", `${flow}.yaml`), "utf8");
     writeFileSync(
-      join(repoDir, "flows", `${flow}.yaml`),
+      join(sourceDir, "flows", `${flow}.yaml`),
       withoutTheLegalCheck(inSampleDatabase(withoutSchedule(shipped, flow), flow, sampleDatabase)),
     );
   }
 
-  // The cache flow comes along without its schedule. The suite never refreshes it (that would need an OSDU target): the
-  // repository sync projects what it declares, and the seed spec imports the sample references as its first version.
-  mkdirSync(join(repoDir, "caches"), { recursive: true });
+  // The document that defines the cache the source's mappings resolve against, under the source that needs it. That
+  // document is the whole of what a repository holds about a cache: the cache itself lives in the module's database,
+  // captured there by a run. The flow comes along without its schedule, because the suite never refreshes it (that
+  // would need an OSDU target), and the seed spec imports the sample records from osdu/samples as its first version.
+  mkdirSync(join(sourceDir, "cache"), { recursive: true });
   writeFileSync(
-    join(repoDir, "caches", "osdu-reference-cache.yaml"),
-    withoutSchedule(readFileSync(join(samplesDir, "caches", "osdu-reference-cache.yaml"), "utf8"), "osdu-reference-cache"),
+    join(sourceDir, "cache", `${CACHE}.yaml`),
+    withoutSchedule(readFileSync(join(samplesDir, "cache", `${CACHE}.yaml`), "utf8"), CACHE),
   );
 
   const git = (...args: string[]) =>
@@ -63,15 +77,21 @@ export default function globalSetup(): void {
   git("config", "user.email", "e2e@sqlflow.test");
   git("config", "user.name", "OSDU Delivery E2E");
   git("add", "-A");
-  git("commit", "-m", "e2e fixture: the recall delivery estate");
+  git("commit", "-m", "e2e fixture: the wells delivery estate");
   const headSha = git("rev-parse", "HEAD");
 
-  // Tests read the repo path, the exact commit to expect and the database the chain loads into from this meta file
-  // (globalSetup runs in a separate process from the specs). Waiting on THIS sha makes re-runs deterministic: a stale
-  // synced sha from a previous suite run never satisfies the seed assertions.
+  // Tests read the repo path, the source folder inside it, the exact commit to expect and the database the chain loads
+  // into from this meta file (globalSetup runs in a separate process from the specs). Waiting on THIS sha makes re-runs
+  // deterministic: a stale synced sha from a previous suite run never satisfies the seed assertions.
   writeFileSync(
     join(fixturesDir, "meta.json"),
-    JSON.stringify({ repoDir: repoDir.replace(/\\/g, "/"), headSha, sampleDb: E2E.sampleDb, osduDb: E2E.osduDb }, null, 2),
+    JSON.stringify({
+      repoDir: repoDir.replace(/\\/g, "/"),
+      sourceDir: sourceDir.replace(/\\/g, "/"),
+      headSha,
+      sampleDb: E2E.sampleDb,
+      osduDb: E2E.osduDb,
+    }, null, 2),
   );
 
   if (!existsSync(join(repoDir, ".git"))) {
@@ -79,46 +99,68 @@ export default function globalSetup(): void {
   }
 }
 
+/**
+ * The source the fixture estate belongs to, and the folder it occupies in the repository. Every file of the estate
+ * lives under it, so the catalog and the GUI see one project named after the source rather than a repository whose top
+ * level is a pile of file kinds.
+ */
+export const SOURCE = "wells";
+
+/** The cache the source's mappings resolve against: the flow file `<SOURCE>/cache/<CACHE>.yaml`, and the folder of sample records beside it. */
+export const CACHE = "osdu-cache";
+
+/** What globalSetup leaves behind for the specs, which run in a process of their own and so cannot be told directly. */
+export interface FixtureMeta {
+  /** The fixture git repository, which the suite registers as a repo source. */
+  repoDir: string;
+  /** The source's folder inside it (`<repoDir>/<SOURCE>`): where its flows, mappings, cache and data are. */
+  sourceDir: string;
+  /** The commit the sync has to reach before the seed assertions hold. */
+  headSha: string;
+  sampleDb: string;
+  osduDb: string;
+}
+
 /** The delivery flows of the fixture estate, and the pre and ingestion flows that fill the tables they read. */
 export const CHAIN = [
-  "recall-welllog-pre",
-  "recall-welllog-curves-pre",
-  "recall-welllog-ing",
-  "recall-welllog-curves-ing",
-  "recall-welllog",
-  "recall-wellbore-pre",
-  "recall-wellbore-aliases-pre",
-  "recall-wellbore-ing",
-  "recall-wellbore-aliases-ing",
-  "recall-wellbore",
-  "recall-document-pre",
-  "recall-document-ing",
-  "recall-trajectory-pre",
-  "recall-trajectory-stations-pre",
-  "recall-trajectory-ing",
-  "recall-trajectory-stations-ing",
+  "wells-welllog-pre",
+  "wells-welllog-curves-pre",
+  "wells-welllog-ing",
+  "wells-welllog-curves-ing",
+  "wells-welllog",
+  "wells-wellbore-pre",
+  "wells-wellbore-aliases-pre",
+  "wells-wellbore-ing",
+  "wells-wellbore-aliases-ing",
+  "wells-wellbore",
+  "wells-document-pre",
+  "wells-document-ing",
+  "wells-trajectory-pre",
+  "wells-trajectory-stations-pre",
+  "wells-trajectory-ing",
+  "wells-trajectory-stations-ing",
   // The same estate in the shape a source takes: two interfaces, each with a ledger of its own. It is synced and read,
   // never run, so it adds a multi-interface source to the catalog without delivering anything twice.
-  "recall-source",
-  "osdu-cache-sync",
+  "wells-source",
+  "osdu-download",
 ] as const;
 
 /** The flows that load the ingestion tables, in the order they have to run: the pre flows land files, the ing flows key them. */
 export const LOADING_FLOWS = [
-  "recall-welllog-pre",
-  "recall-welllog-curves-pre",
-  "recall-wellbore-pre",
-  "recall-wellbore-aliases-pre",
-  "recall-welllog-ing",
-  "recall-welllog-curves-ing",
-  "recall-wellbore-ing",
-  "recall-wellbore-aliases-ing",
-  "recall-document-pre",
-  "recall-document-ing",
-  "recall-trajectory-pre",
-  "recall-trajectory-stations-pre",
-  "recall-trajectory-ing",
-  "recall-trajectory-stations-ing",
+  "wells-welllog-pre",
+  "wells-welllog-curves-pre",
+  "wells-wellbore-pre",
+  "wells-wellbore-aliases-pre",
+  "wells-welllog-ing",
+  "wells-welllog-curves-ing",
+  "wells-wellbore-ing",
+  "wells-wellbore-aliases-ing",
+  "wells-document-pre",
+  "wells-document-ing",
+  "wells-trajectory-pre",
+  "wells-trajectory-stations-pre",
+  "wells-trajectory-ing",
+  "wells-trajectory-stations-ing",
 ] as const;
 
 /**

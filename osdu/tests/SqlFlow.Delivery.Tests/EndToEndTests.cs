@@ -111,7 +111,7 @@ public class EndToEndTests : IDisposable
         {
             // The wellbore the sample well logs refer to is another flow's record of this ledger, queued and not yet
             // delivered: the well logs point at a record that is not in OSDU.
-            var wellboreFlow = FlowId.Of("recall-wellbore");
+            var wellboreFlow = FlowId.Of("wells-wellbore");
             const string WellboreId = "opendes:master-data--Wellbore:OSDU-DEV-1-A";
             var wellbore = new DeliveryKey(Guid.NewGuid());
             var submission = Guid.NewGuid();
@@ -119,7 +119,7 @@ public class EndToEndTests : IDisposable
             {
                 SubmissionId = submission,
                 FlowId = wellboreFlow,
-                FlowName = "recall-wellbore",
+                FlowName = "wells-wellbore",
                 MappingReference = "Wellbore@1.3.0",
                 RenderContext = "{}",
                 SourceConnection = "${env:OSDU_SAMPLE_DB}",
@@ -634,9 +634,9 @@ public class EndToEndTests : IDisposable
         template:
           kind: osdu:wks:master-data--Wellbore:1.3.0
           version: 58d6bdbd9d066a06
-        description: The wellbore each Recall well log was run in, one record per log row.
+        description: The wellbore each well log was run in, one record per log row.
         dataset:
-          system: recall
+          system: wells
           key: [dataset.source_project, dataset.log_id]
           label: "{dataset.wellbore_uwi} ({dataset.log_id})"
         parameters:
@@ -664,7 +664,7 @@ public class EndToEndTests : IDisposable
         File.WriteAllText(Path.Combine(mappings, "LogWellbore@1.0.0.yaml"), LogWellboreMapping);
         return flow with
         {
-            Name = "recall-welllog-wellbores",
+            Name = "wells-welllog-wellbores",
             Render = flow.Render with { Mapping = "LogWellbore@1.0.0", MappingsDirectory = mappings },
             Target = flow.Target with { Protocol = DeliveryProtocol.OsduRecord },
         };
@@ -742,7 +742,7 @@ public class EndToEndTests : IDisposable
     {
         var tables = await EstateAsync();
         var (logs, logProtocol, ledger) = await RuntimeAsync(tables);
-        var (copy, copyProtocol, _) = await RuntimeAsync(tables, flow => flow with { Name = "recall-welllog-copy" });
+        var (copy, copyProtocol, _) = await RuntimeAsync(tables, flow => flow with { Name = "wells-welllog-copy" });
         using (logs)
         using (copy)
         {
@@ -761,7 +761,7 @@ public class EndToEndTests : IDisposable
                 Assert.Equal(RecordStatus.Held, held!.Status);
                 Assert.True(held.Blocked);
                 Assert.Null(held.TargetId);
-                Assert.Contains("already claimed by flow 'recall-welllog'", held.LastError, StringComparison.Ordinal);
+                Assert.Contains("already claimed by flow 'wells-welllog'", held.LastError, StringComparison.Ordinal);
                 Assert.Equal(SampleEstate.FileName, held.PendingSourceFileName);
                 var attempt = Assert.Single(await ledger.ListAttemptsAsync(copy.Flow.Id, SampleEstate.Key(i), 10));
                 Assert.Equal((AttemptOutcome.Held, "render"), (attempt.Outcome, attempt.Phase));

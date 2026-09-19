@@ -1,0 +1,4 @@
+source_project,log_id,wellbore_uwi,log_source,log_run,index_min,index_max,index_increment,index_unit,depth_coding,elev_meas_ref,creator,log_version,log_pass,native_uid,update_date,curve_folder,payload_hash,chunk_count
+NO_15_9,L-1001,OSDU-DEV-1-A,STAT_COMP,1,1000,1004,0.5,M,REGULAR,23.5 M,SLB,1,"MAIN,REPEAT","NO_15_9:L-1001,extra",2026-09-01 06:30:00,NO_15_9/L-1001,fa47e1ba74c3ac95e891944471e78d003cd9c5a2790a6cd225e9b2763c75f440,1
+NO_15_9,L-1002,OSDU-DEV-1-A,STAT_COMP,2,1010,1012,0.5,M,REGULAR,23.5 M,SLB,1,MAIN,NO_15_9:L-1002,2026-09-01 06:30:00,NO_15_9/L-1002,52a908318e81ae41941eea9abf0d351ba07a53a8d617f995f5772a9029c5f7cf,1
+NO_16_2,L-2001,OSDU-DEV-1-B,STAT_COMP,1,1500,1501.5,0.5,FT,DISCRETE,18 FT,BHGE,2,MAIN,NO_16_2:L-2001,2026-09-01 06:30:00,NO_16_2/L-2001,331cf627c89b821527aa0d153b0c75d8df1611acd227f8733e7629dd0d0a7de2,1

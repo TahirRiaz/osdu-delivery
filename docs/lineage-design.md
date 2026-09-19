@@ -15,9 +15,9 @@ robust, and the tests that hold it.
 Checked against the synced e2e catalog (`SQLFlow_E2E`, then named `SqlFlowCatalogE2EOsdu`) and the lineage graph page on 2026-09-16.
 
 1. **Delivery flows were dead ends.** A delivery flow declared only the ingestion tables it reads
-   (`DeliveryLineage.DeclaredObjects`). Nothing downstream of it existed, so the graph ended at `recall-welllog` and
-   `recall-wellbore`.
-2. **Cache and retrieval flows floated.** `osdu-reference-cache` and `osdu-cache-sync` declared nothing, so they had no
+   (`DeliveryLineage.DeclaredObjects`). Nothing downstream of it existed, so the graph ended at `wells-welllog` and
+   `wells-wellbore`.
+2. **Cache and retrieval flows floated.** `osdu-cache` and `osdu-download` declared nothing, so they had no
    edges and sat alone in the first wave.
 3. **A registered kind could declare database tables only.** `RegisteredFlowDocument.DeclaredObjects` takes a connection
    reference and a three-part name. SQLFlow's own flows show HTTP endpoints and file locations as file nodes (an
@@ -74,21 +74,21 @@ resolves a secret or an environment variable.
 ## 4. How the graph reads for the sample estate
 
 ```text
-data/welllog ──► recall-welllog-pre ──► pre.WellLog, pre.v_WellLog ──► recall-welllog-ing ──► ing.WellLog ─┐
-data/curves-meta ──► recall-welllog-curves-pre ──► ... ──► recall-welllog-curves-ing ──► ing.WellLogCurve ─┤
+data/welllog ──► wells-welllog-pre ──► pre.WellLog, pre.v_WellLog ──► wells-welllog-ing ──► ing.WellLog ─┐
+data/curves-meta ──► wells-welllog-curves-pre ──► ... ──► wells-welllog-curves-ing ──► ing.WellLogCurve ─┤
 data/curves (payload files) ────────────────────────────────────────────────────────────────────────────────┤
 osdu cache: UnitOfMeasure, LogCurveBusinessValue, VerticalMeasurementType, Wellbore ──────────────────────────┤
                                                                                                              ▼
-                                                                                                    recall-welllog
+                                                                                                    wells-welllog
                                                                                                              │
                                                                     osdu type: work-product-component--WellLog:1.4.0
 
-data/wellbore ──► recall-wellbore-pre ──► ... ──► recall-wellbore ──► osdu type: master-data--Wellbore:1.3.0
+data/wellbore ──► wells-wellbore-pre ──► ... ──► wells-wellbore ──► osdu type: master-data--Wellbore:1.3.0
                                                                                   │
                           osdu type patterns (reference-data--UnitOfMeasure:*, master-data--Wellbore:*, ...)
                                                                                   ▼
-                                                         osdu-reference-cache ──► osdu cache types ──► recall-welllog
-                                                         osdu-cache-sync ──► out/metadata (files)
+                                                         osdu-cache ──► osdu cache types ──► wells-welllog
+                                                         osdu-download ──► out/metadata (files)
 ```
 
 ## 5. Wildcard kinds
@@ -218,7 +218,7 @@ file nodes earlier syncs had already left behind without an edge (the machine-pa
   cache flow naming it with a literal URL are two platforms to lineage.
 - **A retrieval flow's relative `target.location`** is resolved by the runner against the process's working directory,
   not the flow file. Lineage places it relative to the flow file, as every other location of the module is resolved, and
-  the sync warns about every such flow. The sample's `samples/recall-welllog/out/metadata` predates this repository's
+  the sync warns about every such flow. The sample's `samples/wells/out/metadata` predates this repository's
   layout; changing the runner or the sample's location is a decision for the owner of the flow.
 - **Payload files** are placed at the payload root; the per-record folder under it is only known when a record is read.
 

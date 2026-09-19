@@ -73,7 +73,7 @@ Given a folder, `validate` checks every document under it and exits 0 only when 
 the CI gate for a flow repository:
 
 ```bash
-sqlflow validate osdu/samples/recall-welllog
+sqlflow validate osdu/samples/wells
 ```
 
 `--json` turns stdout into a `{file, ok, kind, name, error}` report array, so a CI step can gate on it
