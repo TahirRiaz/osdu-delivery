@@ -1,5 +1,6 @@
 import {
-  DatabaseZap, FileCode2, GitCompare, LayoutTemplate, PackageCheck, PackageSearch, PencilRuler, ScrollText, ShieldCheck, Workflow,
+  DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, PackageCheck, PackageSearch, PencilRuler, ScrollText,
+  ShieldCheck, Workflow,
 } from "lucide-react";
 import type { RunSummary } from "@/api/types";
 import type { Column } from "@/components/DataTable";
@@ -41,6 +42,9 @@ const RecordSearchHits = lazyRoute(
   "RecordSearchHits",
   () => import("./features/delivery/RecordSearchHits").then((loaded) => ({ default: loaded.RecordSearchHits })),
 );
+
+/** The module's own navigation group: one home for every surface this product adds. */
+const OSDU_GROUP = "osdu";
 
 /** SQLFlow's pipeline tabs that describe its own flows' data (view columns, processed files), not these kinds. */
 const HIDDEN_PIPELINE_TABS = ["transforms", "files"];
@@ -149,14 +153,20 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/mappings/build", component: MappingBuilderPage },
     { path: "/delivery/cache", component: DeliveryCachePage },
   ],
+  // Everything this product adds is one group of its own, rather than seven entries threaded through the platform's
+  // generic ones. It sits straight after Operate, and its entries read in the order the work is done: what has been
+  // delivered, one record, who did what, then the documents a delivery is built from.
+  navGroups: [
+    { id: OSDU_GROUP, label: "OSDU", icon: Layers, after: "operate" },
+  ],
   navItems: [
-    { group: "operate", label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery", after: "/" },
-    { group: "operate", label: "Records", to: "/delivery/records", icon: PackageSearch, testId: "nav-delivery-records", after: "/delivery" },
-    { group: "operate", label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity", after: "/runs" },
-    { group: "workspace", label: "Mappings", to: "/delivery/documents", icon: FileCode2, testId: "nav-delivery-documents", after: "/pipelines" },
-    { group: "workspace", label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates", after: "/delivery/documents" },
-    { group: "workspace", label: "Mapping builder", to: "/delivery/mappings/build", icon: PencilRuler, testId: "nav-delivery-mapping-builder", after: "/delivery/templates" },
-    { group: "workspace", label: "OSDU cache", to: "/delivery/cache", icon: DatabaseZap, testId: "nav-delivery-cache", after: "/delivery/mappings/build" },
+    { group: OSDU_GROUP, label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery" },
+    { group: OSDU_GROUP, label: "Records", to: "/delivery/records", icon: PackageSearch, testId: "nav-delivery-records" },
+    { group: OSDU_GROUP, label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity" },
+    { group: OSDU_GROUP, label: "Mappings", to: "/delivery/documents", icon: FileCode2, testId: "nav-delivery-documents" },
+    { group: OSDU_GROUP, label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates" },
+    { group: OSDU_GROUP, label: "Mapping builder", to: "/delivery/mappings/build", icon: PencilRuler, testId: "nav-delivery-mapping-builder" },
+    { group: OSDU_GROUP, label: "Cache", to: "/delivery/cache", icon: DatabaseZap, testId: "nav-delivery-cache" },
   ],
   detailTitles: [
     { pattern: /^\/delivery\/records\/[^/]+/, title: () => "Record" },

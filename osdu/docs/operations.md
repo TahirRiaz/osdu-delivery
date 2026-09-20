@@ -272,9 +272,14 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 
 ## The GUI
 
-- **Delivery** (Operate): every delivery flow with delivered versus total, pending, held, failed, drifted, and
+Everything this product adds sits in one navigation group, **OSDU**, straight after the platform's Operate group:
+Delivery, Records, Audit trail, Mappings, Templates, Mapping builder and Cache. The platform's own groups (Operate,
+Workspace, Tools, Explore) hold only its generic surfaces, so a delivery flow's own page is still reached through
+Pipelines like any other flow.
+
+- **Delivery** (OSDU): every delivery flow with delivered versus total, pending, held, failed, drifted, and
   its last submission, and a field that opens Records looked up for whatever is typed into it.
-- **Records** (Operate): where an operator starts from what they hold rather than from a flow. Any value a record is
+- **Records** (OSDU): where an operator starts from what they hold rather than from a flow. Any value a record is
   known by lists the records that start with it, across every flow: a wellbore id or a well name the mapping declares
   in `dataset.identity`, the source key or one of its key columns, a word of the label, the OSDU id or its own part,
   and the ingestion file the record came from. A delivery key lands on that record, and a status narrows the list.
@@ -331,8 +336,8 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 - **A cache flow's page** (Pipelines): the Cache versions tab names the partition the flow fills and how many other
   cache flows fill it too, and lists every version of that partition's cache with the flow that wrote each, with a link
   to the OSDU cache page for what the cache holds and the changes waiting for approval.
-- **Audit trail** (Operate): every run and intervention across flows, by actor, with parameters and log.
-- **Mappings** (Workspace): the mapping documents the repositories hold, each mapping with the template it pins and a
+- **Audit trail** (OSDU): every run and intervention across flows, by actor, with parameters and log.
+- **Mappings** (OSDU): the mapping documents the repositories hold, each mapping with the template it pins and a
   link to the Mapping builder. A mapping opens on its Properties, a searchable list of one line per property the
   mapping fills, read the way the renderer reads it: the value's origin (a dataset column, a cached field with the
   lookup it is found by, a repeater or a static value), what is done to it, then the property in the template it lands
@@ -353,7 +358,7 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   entry takes its value from the dataset, a repeater, the cache or a static value, with its modifiers, condition and
   required flag, and the YAML and its checks against the template and the cache's current version follow every edit. The mapping is copied, or proposed to the repository as a pull request through the proposal endpoint
   (`POST /api/v1/repos/sources/{id}/proposals`). An existing synced mapping opens with its entries filled in.
-- **OSDU cache** (Workspace): the reference and master data every delivered document is built from, one cache per OSDU
+- **Cache** (OSDU): the reference and master data every delivered document is built from, one cache per OSDU
   partition. The header names the partition and the cache flow file that fills it (or how many flows fill it, with
   every file on hover), with Cache files and Refresh now. Cache files opens Pipelines filtered to the cache flows
   (`?kind=cache`, and `?repo=` when one repository holds every flow filling the partition), since a partition can be
