@@ -14,6 +14,43 @@ public sealed record DeliveryRecordHitDto(
     string Status, DateTime? LastDeliveredUtc, DateTime UpdatedUtc, string? Interface = null);
 
 /// <summary>
+/// How a record the ledger found is described to a reader that holds no flow: the Records page's lookup and the combined
+/// search read the same ledger lookup and name the record the same way, so this is the one place a hit is built.
+/// </summary>
+internal static class DeliveryRecordHits
+{
+    /// <summary>The records as hits, each with the pipeline and interface its ledger belongs to, in the order given.</summary>
+    public static async Task<IReadOnlyList<DeliveryRecordHitDto>> DescribeAsync(
+        CatalogDbContext catalog, OsduDbContext osdu, IReadOnlyList<RecordState> records, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(osdu);
+        ArgumentNullException.ThrowIfNull(records);
+        if (records.Count == 0)
+        {
+            return [];
+        }
+
+        var pipelines = await DeliveryPipelines.ForLedgersAsync(catalog, osdu, records.Select(r => r.FlowId).Distinct().ToList(), ct).ConfigureAwait(false);
+        return records.Select(record => Describe(record, pipelines.GetValueOrDefault(record.FlowId))).ToList();
+    }
+
+    /// <summary>One record as a hit; a record whose flow no synced repository holds any more is named by its ledger alone.</summary>
+    public static DeliveryRecordHitDto Describe(RecordState record, LedgerPipeline? found)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        return new DeliveryRecordHitDto(
+            record.DeliveryKey.Value, record.FlowId, found?.Pipeline.Name, found?.Pipeline.Id, record.SourceKey,
+            record.Label, record.TargetId, record.Status.ToString().ToLowerInvariant(), record.LastDeliveredUtc, record.UpdatedUtc,
+            found is { Interface.Length: > 0 } ? found.Interface : null);
+    }
+
+    /// <summary>How a hit names where it belongs: the pipeline, and the interface of a source.</summary>
+    public static string? Named(LedgerPipeline? found)
+        => found is null ? null : found.Interface.Length == 0 ? found.Pipeline.Name : $"{found.Pipeline.Name}/{found.Interface}";
+}
+
+/// <summary>
 /// The <c>records</c> category the module adds to the control plane's search: a delivery key lands on one record, and an
 /// OSDU id, a source key, a label or an origin file name lists the records that start with it, across every flow. The
 /// lookup is the ledger's own indexed one, so it answers in milliseconds at production volume and counts no further than
@@ -56,38 +93,30 @@ public sealed class RecordSearchContributor : ISearchContributor
         var skip = (request.Page - 1) * request.PageSize;
         var found = skip >= RecordListing.LookupCandidateLimit
             ? []
-            : await _ledger.LookupAsync(request.Phrase, take, ct).ConfigureAwait(false);
+            : await _ledger.LookupAsync(request.Phrase, take, null, ct).ConfigureAwait(false);
         var page = found.Skip(skip).Take(request.PageSize).ToList();
 
         // Fewer hits than asked for means no identity index ran into its bound, so that count is exact.
         var total = found.Count < take
             ? new BoundedCount(found.Count, Exact: true)
-            : await _ledger.CountLookupAsync(request.Phrase, RecordListing.LookupCandidateLimit, ct).ConfigureAwait(false);
+            : await _ledger.CountLookupAsync(request.Phrase, RecordListing.LookupCandidateLimit, null, ct).ConfigureAwait(false);
 
-        var pipelines = await DeliveryPipelines.ForLedgersAsync(_catalog, _osdu, page.Select(r => r.FlowId).ToList(), ct).ConfigureAwait(false);
+        var pipelines = await DeliveryPipelines.ForLedgersAsync(_catalog, _osdu, page.Select(r => r.FlowId).Distinct().ToList(), ct).ConfigureAwait(false);
         var items = page
             .Select(record =>
             {
-                var known = pipelines.TryGetValue(record.FlowId, out var found);
-                var name = known ? Named(found!) : null;
+                var pipeline = pipelines.GetValueOrDefault(record.FlowId);
                 // A record is its flow and its key: the same row read by two flows is two hits, each with its own page.
                 var path = DeliveryRecordRoutes.Path(record.FlowId, record.DeliveryKey.Value);
                 return new SearchHitDto(
                     path,
                     record.Label ?? record.SourceKey,
-                    name,
+                    DeliveryRecordHits.Named(pipeline),
                     "/delivery/records/" + path,
-                    new DeliveryRecordHitDto(
-                        record.DeliveryKey.Value, record.FlowId, known ? found!.Pipeline.Name : null, known ? found!.Pipeline.Id : null, record.SourceKey,
-                        record.Label, record.TargetId, record.Status.ToString().ToLowerInvariant(), record.LastDeliveredUtc, record.UpdatedUtc,
-                        known && found!.Interface.Length > 0 ? found.Interface : null));
+                    DeliveryRecordHits.Describe(record, pipeline));
             })
             .ToList();
 
         return new SearchContribution(items, total.Count, !total.Exact);
     }
-
-    /// <summary>How a hit names where it belongs: the pipeline, and the interface of a source.</summary>
-    private static string Named(LedgerPipeline found)
-        => found.Interface.Length == 0 ? found.Pipeline.Name : $"{found.Pipeline.Name}/{found.Interface}";
 }

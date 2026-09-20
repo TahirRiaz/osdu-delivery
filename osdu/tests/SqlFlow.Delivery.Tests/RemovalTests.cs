@@ -605,6 +605,7 @@ public class RemovalContractTests
     public void A_listing_filter_survives_the_trip_to_the_node()
     {
         var submission = Guid.NewGuid();
+        var deliveredBy = Guid.NewGuid();
         var run = Guid.NewGuid();
         var query = new RecordQuery
         {
@@ -612,6 +613,7 @@ public class RemovalContractTests
             Search = "STAT",
             Mode = SearchMode.Contains,
             SubmissionId = submission,
+            DeliveredBySubmissionId = deliveredBy,
             RunId = run,
             Drifted = true,
         };
@@ -622,6 +624,7 @@ public class RemovalContractTests
         Assert.Equal("STAT", back.Search);
         Assert.Equal(SearchMode.Contains, back.Mode);
         Assert.Equal(submission, back.SubmissionId);
+        Assert.Equal(deliveredBy, back.DeliveredBySubmissionId);
         Assert.Equal(run, back.RunId);
         Assert.True(back.Drifted);
     }
@@ -633,6 +636,7 @@ public class RemovalContractTests
         Assert.Null(back.Status);
         Assert.Null(back.Search);
         Assert.Null(back.SubmissionId);
+        Assert.Null(back.DeliveredBySubmissionId);
         Assert.Null(back.RunId);
         Assert.False(back.Drifted);
         Assert.Equal(SearchMode.Prefix, back.Mode);

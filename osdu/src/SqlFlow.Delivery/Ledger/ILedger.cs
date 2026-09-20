@@ -860,8 +860,19 @@ public sealed record RecordQuery
 
     public SearchMode Mode { get; init; } = SearchMode.Prefix;
 
-    /// <summary>Only records touched by this submission.</summary>
+    /// <summary>
+    /// Only records whose last submission is this one: the one that last planned them, whether it delivered them or
+    /// found them unchanged. A later submission that touches a record moves it on, so this is "what the submission
+    /// left behind", not "what it delivered"; for that, see <see cref="DeliveredBySubmissionId"/>.
+    /// </summary>
     public Guid? SubmissionId { get; init; }
+
+    /// <summary>
+    /// Only records this submission delivered, resolved through the delivered attempts it wrote. A record keeps that
+    /// attempt however many submissions touch it afterwards, so this is the set an operator means by "the batch we
+    /// ran": what it put into OSDU, findable and removable after the records have moved on.
+    /// </summary>
+    public Guid? DeliveredBySubmissionId { get; init; }
 
     /// <summary>
     /// Only records the given platform run touched, resolved through the attempts that run wrote. Records carry no
@@ -1232,11 +1243,11 @@ public interface ILedger
     /// <summary>Records matching a lookup across every flow: an exact delivery key (one record per flow that reads the
     /// row), or a prefix over the OSDU id, the source key, the label and the origin file name. At most
     /// <see cref="RecordListing.LookupCandidateLimit"/> candidates are read from each identity index, and the most recently
-    /// updated of them are returned.</summary>
-    Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, CancellationToken ct = default);
+    /// updated of them are returned. With <paramref name="status"/>, only the candidates in that state.</summary>
+    Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, RecordStatus? status = null, CancellationToken ct = default);
 
     /// <summary>How many records a lookup matches, counting no further than <paramref name="limit"/>.</summary>
-    Task<BoundedCount> CountLookupAsync(string term, int limit, CancellationToken ct = default);
+    Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, CancellationToken ct = default);
 
     /// <summary>Delivered records due for the drift pass, oldest verification first.</summary>
     Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default);

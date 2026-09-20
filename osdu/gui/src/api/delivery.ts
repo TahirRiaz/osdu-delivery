@@ -235,6 +235,8 @@ export interface DeliveryRecordHit {
   status: string;
   lastDeliveredUtc: string | null;
   updatedUtc: string;
+  /** The interface of a source the record belongs to; null for a flow in the single form. */
+  interface?: string | null;
 }
 
 /** One step of a delivery try: what it did, how long it took, what the target answered. */
@@ -568,11 +570,21 @@ export interface DeliveryRecordListQuery extends PageQuery {
   /** "contains" for the slower substring match; prefix by default. */
   mode?: "prefix" | "contains";
   status?: DeliveryRecordStatus;
+  /** Only records this submission last planned, delivered or found unchanged; a later submission moves them on. */
   submissionId?: string;
+  /** Only records this submission delivered, which stay its own however many submissions touch them afterwards. */
+  deliveredBy?: string;
   /** Only records the given platform run touched, resolved through that run's attempts. */
   runId?: string;
   /** Only delivered records whose last verify found drift or a missing record. */
   drifted?: boolean;
+}
+
+/** What the Records page asks the ledger for: a term over every flow, and a custody state to narrow it to. */
+export interface DeliveryRecordLookupQuery extends PageQuery {
+  /** A delivery key, or the start of an OSDU id, a source key, a label or an ingestion file name. */
+  search: string;
+  status?: DeliveryRecordStatus;
 }
 
 /**
@@ -640,6 +652,8 @@ export interface DeliveryRecordFilter {
   search?: string;
   mode?: "prefix" | "contains";
   submissionId?: string;
+  /** The records a submission delivered: what "remove the batch we ran" acts on. */
+  deliveredBy?: string;
   runId?: string;
   drifted?: boolean;
 }
@@ -1100,6 +1114,13 @@ export const deliveryApi = {
   interfaces: (pipelineId: string) => get<DeliveryInterface[]>(`/api/v1/delivery/flows/${pipelineId}/interfaces`),
   records: (pipelineId: string, query: DeliveryRecordListQuery = {}) =>
     get<PagedResult<DeliveryRecord>>(`/api/v1/delivery/flows/${pipelineId}/records`, query as QueryParams),
+  /**
+   * A record by what an operator holds, across every flow: a delivery key lands on the record of every flow reading
+   * that row; anything else is a prefix over the OSDU id, the source key, the label and the ingestion file name. The
+   * ledger's indexed lookup, so it answers at production volume and counts no further than its candidate bound.
+   */
+  lookupRecords: (query: DeliveryRecordLookupQuery) =>
+    get<PagedResult<DeliveryRecordHit>>("/api/v1/delivery/records", query as unknown as QueryParams),
   /** A flow's submissions, newest first. */
   submissions: (pipelineId: string, max?: number, interfaceName?: string | null) =>
     get<DeliverySubmission[]>(`/api/v1/delivery/flows/${pipelineId}/submissions`, {

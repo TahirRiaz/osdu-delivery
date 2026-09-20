@@ -312,6 +312,9 @@ public sealed class RemovalFilter
 
     public Guid? SubmissionId { get; set; }
 
+    /// <summary>The submission whose delivered records the removal is aimed at: what the batch put into OSDU.</summary>
+    public Guid? DeliveredBySubmissionId { get; set; }
+
     public Guid? RunId { get; set; }
 
     public bool Drifted { get; set; }
@@ -334,6 +337,7 @@ public sealed class RemovalFilter
             Search = string.IsNullOrWhiteSpace(filter.Search) ? null : filter.Search.Trim(),
             Mode = string.Equals(filter.Mode, "contains", StringComparison.OrdinalIgnoreCase) ? SearchMode.Contains : SearchMode.Prefix,
             SubmissionId = filter.SubmissionId,
+            DeliveredBySubmissionId = filter.DeliveredBySubmissionId,
             RunId = filter.RunId,
             Drifted = filter.Drifted,
         };
@@ -349,6 +353,7 @@ public sealed class RemovalFilter
                 Search = query.Search,
                 Mode = query.Mode == SearchMode.Contains ? "contains" : "prefix",
                 SubmissionId = query.SubmissionId,
+                DeliveredBySubmissionId = query.DeliveredBySubmissionId,
                 RunId = query.RunId,
                 Drifted = query.Drifted,
             },

@@ -826,13 +826,13 @@ public sealed partial class OsduLedger : ILedger
         return keys.Select(k => new DeliveryKey(k)).ToList();
     }
 
-    public async Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, RecordStatus? status = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
         return await ReadAsync(
             async db =>
             {
-                var page = LookupFilter(db, term, RecordListing.LookupCandidateLimit)
+                var page = LookupFilter(db, term, RecordListing.LookupCandidateLimit, status)
                     .OrderByDescending(r => r.UpdatedUtc)
                     .ThenByDescending(r => r.DeliveryKey)
                     .Take(Math.Clamp(max, 1, 200));
@@ -841,11 +841,11 @@ public sealed partial class OsduLedger : ILedger
             ct).ConfigureAwait(false);
     }
 
-    public async Task<BoundedCount> CountLookupAsync(string term, int limit, CancellationToken ct = default)
+    public async Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        var count = await ReadAsync(db => LookupFilter(db, term, limit).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
+        var count = await ReadAsync(db => LookupFilter(db, term, limit, status).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
         return new BoundedCount(count, Exact: count < limit);
     }
 
@@ -854,20 +854,25 @@ public sealed partial class OsduLedger : ILedger
     /// else is a prefix over the identity columns across every flow, at most <paramref name="candidates"/> from each
     /// column's own index. A candidate is a record, flow and key together, so a match in one flow never brings in another
     /// flow's record of the same row, and the records are read by joining from the few candidates to the primary key, so
-    /// the read stays the size of the candidates however many records the ledger holds.
+    /// the read stays the size of the candidates however many records the ledger holds. A status narrows the candidates
+    /// after they are found, so it costs nothing more than reading them: the identity indexes are what bound the read.
     /// </summary>
-    private static IQueryable<DeliveryRecord> LookupFilter(OsduDbContext db, string term, int candidates)
+    private static IQueryable<DeliveryRecord> LookupFilter(OsduDbContext db, string term, int candidates, RecordStatus? status)
     {
         var t = term.Trim();
         var rows = db.DeliveryRecords.AsNoTracking();
-        if (Guid.TryParse(t, out var key))
+        var found = Guid.TryParse(t, out var key)
+            ? rows.Where(r => r.DeliveryKey == key)
+            : PrefixRecordCandidates(rows, t, candidates)
+                .Distinct()
+                .Join(rows, m => new { m.FlowId, m.DeliveryKey }, r => new { r.FlowId, r.DeliveryKey }, (_, r) => r);
+        if (status is { } wanted)
         {
-            return rows.Where(r => r.DeliveryKey == key);
+            var text = StatusText.Of(wanted);
+            found = found.Where(r => r.Status == text);
         }
 
-        return PrefixRecordCandidates(rows, t, candidates)
-            .Distinct()
-            .Join(rows, m => new { m.FlowId, m.DeliveryKey }, r => new { r.FlowId, r.DeliveryKey }, (_, r) => r);
+        return found;
     }
 
     /// <summary>
@@ -930,6 +935,17 @@ public sealed partial class OsduLedger : ILedger
             rows = rows.Where(r => touched.Contains(r.DeliveryKey));
         }
 
+        if (query.DeliveredBySubmissionId is { } deliveredBy)
+        {
+            // The attempt table is indexed on (SubmissionId, Outcome, Phase) with the key included, so the records a
+            // submission delivered are a seek of that index whatever the submission was: a semi-join, not a scan.
+            var delivered = StatusText.Of(AttemptOutcome.Delivered);
+            var sent = db.DeliveryAttempts.AsNoTracking()
+                .Where(a => a.SubmissionId == deliveredBy && a.Outcome == delivered && a.FlowId == flowId)
+                .Select(a => a.DeliveryKey);
+            rows = rows.Where(r => sent.Contains(r.DeliveryKey));
+        }
+
         if (query.Drifted)
         {
             rows = rows.Where(r => r.LastVerifyOutcome == "drifted" || r.LastVerifyOutcome == "missing");
@@ -945,7 +961,8 @@ public sealed partial class OsduLedger : ILedger
 
     /// <summary>Whether the listing has a filter besides its search.</summary>
     private static bool Narrows(RecordQuery query)
-        => query.Status is not null || query.SubmissionId is not null || query.RunId is not null || query.Drifted || query.EverDelivered is not null;
+        => query.Status is not null || query.SubmissionId is not null || query.DeliveredBySubmissionId is not null || query.RunId is not null
+            || query.Drifted || query.EverDelivered is not null;
 
     /// <summary>The listing's search term when it is a prefix search: not empty, not a delivery key, not a contains search.</summary>
     private static string? PrefixTerm(RecordQuery query)

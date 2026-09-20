@@ -150,6 +150,90 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_submission_s_delivered_records_stay_its_own_after_later_submissions_move_them_on()
+    {
+        var s1 = Guid.NewGuid();
+        var s2 = Guid.NewGuid();
+        var a = DeliveryKey.Derive("test", ["a"]);
+        var b = DeliveryKey.Derive("test", ["b"]);
+        var c = DeliveryKey.Derive("test", ["c"]);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1), Pending("b", s1), Pending("c", s1)]);
+
+        // The first batch delivers a and b and fails on c.
+        var claimed = (await Ledger.ClaimAsync(_flow, s1, "w1", 10, TimeSpan.FromMinutes(5), Now)).Records;
+        Assert.Equal(3, claimed.Count);
+        foreach (var record in claimed)
+        {
+            var delivered = record.DeliveryKey != c;
+            await Ledger.CompleteAsync(_flow, new RecordCompletion
+            {
+                DeliveryKey = record.DeliveryKey,
+                Status = delivered ? RecordStatus.Delivered : RecordStatus.Failed,
+                Promote = delivered,
+                TargetId = record.TargetId,
+                TargetVersion = delivered ? 1 : null,
+                Error = delivered ? null : "500 from the target",
+                Attempt = new AttemptRecord
+                {
+                    DeliveryKey = record.DeliveryKey,
+                    SubmissionId = s1,
+                    Worker = "w1",
+                    StartedUtc = Now,
+                    CompletedUtc = Now,
+                    Outcome = delivered ? AttemptOutcome.Delivered : AttemptOutcome.Failed,
+                    Phase = "metadata+payload",
+                    TargetVersion = delivered ? 1 : null,
+                    Error = delivered ? null : "500 from the target",
+                },
+            });
+        }
+
+        // A later batch finds a unchanged and delivers b again: both now belong to it as their last submission.
+        await Ledger.MarkSkippedAsync(_flow, [new SkippedRecord { DeliveryKey = a, Kind = SkipKind.Unchanged, Reason = "unchanged" }], s2);
+        await Ledger.UpsertPendingAsync(_flow, [Pending("b", s2)]);
+        var again = Assert.Single((await Ledger.ClaimAsync(_flow, s2, "w2", 10, TimeSpan.FromMinutes(5), Now)).Records);
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
+        {
+            DeliveryKey = again.DeliveryKey,
+            Status = RecordStatus.Delivered,
+            Promote = true,
+            TargetId = again.TargetId,
+            TargetVersion = 2,
+            Attempt = new AttemptRecord
+            {
+                DeliveryKey = again.DeliveryKey, SubmissionId = s2, Worker = "w2", StartedUtc = Now, CompletedUtc = Now,
+                Outcome = AttemptOutcome.Delivered, Phase = "metadata+payload", TargetVersion = 2,
+            },
+        });
+        Assert.Equal(s2, (await Ledger.GetRecordAsync(_flow, a))!.LastSubmissionId);
+        Assert.Equal(s2, (await Ledger.GetRecordAsync(_flow, b))!.LastSubmissionId);
+
+        // "The records of the first submission" has moved on to what it left behind: only the failure is still its own.
+        var lastPlannedBy1 = new RecordQuery { SubmissionId = s1 };
+        Assert.Equal([c], (await Ledger.ListAsync(_flow, lastPlannedBy1)).Select(r => r.DeliveryKey).ToList());
+
+        // What the first batch delivered is still what it delivered, whatever happened to the records since; the
+        // failure it never got into OSDU is not part of it, and the listing, the count and the removal's keys agree.
+        var deliveredBy1 = new RecordQuery { DeliveredBySubmissionId = s1 };
+        var sent = (await Ledger.ListAsync(_flow, deliveredBy1)).Select(r => r.DeliveryKey).OrderBy(k => k.Value).ToList();
+        Assert.Equal(new[] { a, b }.OrderBy(k => k.Value).ToList(), sent);
+        Assert.Equal(new BoundedCount(2, Exact: true), await Ledger.CountAsync(_flow, deliveredBy1, 10));
+        Assert.Equal(sent, (await Ledger.ListKeysAsync(_flow, deliveredBy1, 10)).OrderBy(k => k.Value).ToList());
+        Assert.Equal([b], (await Ledger.ListAsync(_flow, new RecordQuery { DeliveredBySubmissionId = s2 })).Select(r => r.DeliveryKey).ToList());
+        Assert.Empty(await Ledger.ListAsync(_flow, new RecordQuery { DeliveredBySubmissionId = Guid.NewGuid() }));
+
+        // The filter composes with the rest of the listing, the way a removal aimed at part of a batch needs it to.
+        Assert.Equal([a], (await Ledger.ListAsync(_flow, deliveredBy1 with { Search = "a" })).Select(r => r.DeliveryKey).ToList());
+        Assert.Empty(await Ledger.ListAsync(_flow, deliveredBy1 with { Status = RecordStatus.Failed }));
+
+        // The lookup across every flow narrows to a custody state without leaving its identity indexes.
+        Assert.Equal(3, (await Ledger.LookupAsync("dev:x:", 10)).Count);
+        Assert.Equal([c], (await Ledger.LookupAsync("dev:x:", 10, RecordStatus.Failed)).Select(r => r.DeliveryKey).ToList());
+        Assert.Equal(new BoundedCount(1, Exact: true), await Ledger.CountLookupAsync("dev:x:", 10, RecordStatus.Failed));
+        Assert.Equal(new BoundedCount(2, Exact: true), await Ledger.CountLookupAsync("dev:x:", 10, RecordStatus.Delivered));
+    }
+
+    [Fact]
     public async Task Claim_leases_pending_records_once_and_complete_promotes_pending_state()
     {
         var submission = Guid.NewGuid();

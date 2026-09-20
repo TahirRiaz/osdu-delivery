@@ -254,9 +254,13 @@ public sealed record DeliveryTargetDto(
     Guid PipelineId, string FlowName, string Endpoint, string? DataPartition, string Protocol, string AuthType,
     string RecordPath, string HistoryPath, string EverythingPath, string? Interface = null, string? Ddms = null, string RecordMethod = "POST");
 
-/// <summary>The listing a removal is aimed at, the same filter the records list is built from.</summary>
+/// <summary>
+/// The listing a removal is aimed at, the same filter the records list is built from. <c>SubmissionId</c> names the
+/// records a submission last planned; <c>DeliveredBy</c> names the records a submission delivered, which stay its
+/// however many submissions touch them afterwards: the set "the batch we ran" means.
+/// </summary>
 public sealed record DeliveryRecordFilterDto(
-    string? Status, string? Search, string? Mode, Guid? SubmissionId, Guid? RunId, bool Drifted = false);
+    string? Status, string? Search, string? Mode, Guid? SubmissionId, Guid? RunId, bool Drifted = false, Guid? DeliveredBy = null);
 
 /// <summary>
 /// A removal of one or many records. <c>scope</c> is record, history or everything. The records are named either
@@ -317,6 +321,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/flows/{pipelineId:guid}/stats", GetStatsAsync).WithName("GetDeliveryFlowStats");
         delivery.MapGet("/flows/{pipelineId:guid}/interfaces", ListInterfacesAsync).WithName("ListDeliveryInterfaces");
         delivery.MapGet("/flows/{pipelineId:guid}/records", ListRecordsAsync).WithName("ListDeliveryRecords");
+        delivery.MapGet("/records", LookupRecordsAsync).WithName("LookupDeliveryRecords");
         delivery.MapGet("/flows/{pipelineId:guid}/target", GetTargetAsync).WithName("GetDeliveryTarget");
         delivery.MapGet("/flows/{pipelineId:guid}/submissions", ListSubmissionsAsync).WithName("ListDeliverySubmissions");
         delivery.MapGet("/flows/{pipelineId:guid}/retrievals", ListRetrievalsAsync).WithName("ListDeliveryRetrievals");
@@ -505,8 +510,8 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<PagedResult<DeliveryRecordDto>>, ProblemHttpResult>> ListRecordsAsync(
-        Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, Guid? runId, bool? drifted, int? page, int? pageSize, [FromQuery(Name = "interface")] string? interfaceName,
-        CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, Guid? runId, bool? drifted, Guid? deliveredBy, int? page, int? pageSize,
+        [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
         if (flow is null)
@@ -514,7 +519,7 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(status, search, mode, submissionId, runId, drifted == true));
+        var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(status, search, mode, submissionId, runId, drifted == true, deliveredBy));
         if (query is null)
         {
             return invalid!;
@@ -565,9 +570,52 @@ public static class DeliveryEndpoints
             Search = string.IsNullOrWhiteSpace(filter.Search) ? null : filter.Search.Trim(),
             Mode = string.Equals(filter.Mode, "contains", StringComparison.OrdinalIgnoreCase) ? SearchMode.Contains : SearchMode.Prefix,
             SubmissionId = filter.SubmissionId,
+            DeliveredBySubmissionId = filter.DeliveredBy,
             RunId = filter.RunId,
             Drifted = filter.Drifted,
         }, null);
+    }
+
+    /// <summary>
+    /// A record by what an operator holds, across every flow: the Records page's lookup. A delivery key lands on the
+    /// record of every flow reading that row; anything else is a prefix over the OSDU id, the source key, the label and
+    /// the ingestion file name, narrowed to one custody state when asked. It is the ledger's own indexed lookup, the one
+    /// the combined search reads, so it answers in milliseconds at production volume and counts no further than its
+    /// candidate bound; a page past that bound is empty rather than a scan, and the phrase has to be narrowed instead.
+    /// </summary>
+    private static async Task<Results<Ok<PagedResult<DeliveryRecordHitDto>>, ProblemHttpResult>> LookupRecordsAsync(
+        string? search, string? status, int? page, int? pageSize, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
+    {
+        var term = search?.Trim();
+        if (string.IsNullOrEmpty(term))
+        {
+            return TypedResults.Problem(
+                detail: "search names what to look for: a delivery key, or the start of an OSDU id, a source key, a label or an ingestion file name.",
+                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
+        }
+
+        var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(status, null, null, null, null));
+        if (query is null)
+        {
+            return invalid!;
+        }
+
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        var wanted = (long)p * size;
+        var take = (int)Math.Min(wanted, RecordListing.LookupCandidateLimit);
+        var skip = (p - 1) * size;
+        var found = skip >= RecordListing.LookupCandidateLimit
+            ? []
+            : await ledger.LookupAsync(term, take, query.Status, ct).ConfigureAwait(false);
+        var items = found.Skip(skip).Take(size).ToList();
+
+        // Fewer hits than asked for means no identity index ran into its bound, so that count is exact.
+        var total = found.Count < take
+            ? new BoundedCount(found.Count, Exact: true)
+            : await ledger.CountLookupAsync(term, RecordListing.LookupCandidateLimit, query.Status, ct).ConfigureAwait(false);
+
+        var hits = await DeliveryRecordHits.DescribeAsync(db, osdu, items, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<DeliveryRecordHitDto>(hits, p, size, total.Count, TotalCapped: !total.Exact));
     }
 
     private static async Task<Results<Ok<DeliveryTargetDto>, ProblemHttpResult>> GetTargetAsync(
