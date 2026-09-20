@@ -213,13 +213,13 @@ public class ReferenceCacheTests
     private static CacheDefinition CacheFlow(string types, string extra = "") => new DeliveryDocumentLoader().ParseCache(
         """
         flowType: cache
-        name: osdu-cache
+        name: wells-osdu-00-reference-cache
         source:
           endpoint: https://osdu.example.com
           headers: { data-partition-id: opendes }
 
         """ + extra + "\ntypes:\n" + types + "\n",
-        "cache/osdu-cache.yaml");
+        "cache/wells-osdu-00-reference-cache.yaml");
 
     [Fact]
     public void A_cache_flow_reads_paths_written_either_way()
@@ -293,7 +293,7 @@ public class ReferenceCacheTests
             """,
             "onChange: approve\n");
 
-        Assert.Equal("osdu-cache", cache.Name);
+        Assert.Equal("wells-osdu-00-reference-cache", cache.Name);
         Assert.Equal("opendes", cache.Scope);
         Assert.Equal("https://osdu.example.com", cache.Source.Endpoint);
         var wellbore = cache.Types[0];
@@ -416,7 +416,7 @@ public class ReferenceCacheTests
 
         // A flow still naming a cache is refused: the cache it reads is its partition's, whatever it names.
         var named = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
-            sample.Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.4.0\n  cache: osdu-cache", StringComparison.Ordinal), "flow.yaml"));
+            sample.Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.4.0\n  cache: wells-osdu-00-reference-cache", StringComparison.Ordinal), "flow.yaml"));
         Assert.Contains("render.cache is not a setting any more", named.Message, StringComparison.Ordinal);
     }
 

@@ -25,7 +25,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
     /// <summary>The partition the WellLog 1.5.0 pipeline delivers to, beside the sample partition the 1.4.0 pipeline uses.</summary>
     private const string NextPartition = "opendes-next";
 
-    private const string CurrentFlowName = "wells-welllog";
+    private const string CurrentFlowName = "wells-welllog-03-header-delivery";
 
     private const string NextFlowName = "wells-welllog-next";
 

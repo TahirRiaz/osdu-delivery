@@ -7,10 +7,10 @@ Everything below is taken from the sample estate:
 
 | Input | File | What it decides |
 | --- | --- | --- |
-| The ingestion tables | `OsduSample.ing.WellLog` and `OsduSample.ing.WellLogCurve`, loaded by `wells-welllog-pre` and `wells-welllog-ing` from `samples/wells/data` | The values: one row per log, one row per curve. |
+| The ingestion tables | `OsduSample.ing.WellLog` and `OsduSample.ing.WellLogCurve`, loaded by `wells-welllog-01-header-pre` and `wells-welllog-02-header-ing` from `samples/wells/data` | The values: one row per log, one row per curve. |
 | The mapping | `samples/wells/mappings/WellLog@1.4.0.yaml` | Which template variable each entry fills, and where its value comes from: a source column, the OSDU cache, or a static value. |
-| The flow | `samples/wells/flows/wells-welllog.yaml` | Which mapping to use, the data partition, and where the record is sent. |
-| The OSDU cache | `samples/wells/cache/osdu-cache.yaml`, captured into the catalog by its runs (or imported from `samples/cache-records`) | The OSDU ids that reference properties resolve to (units, wellbores, business values). |
+| The flow | `samples/wells/flows/wells-welllog-03-header-delivery.yaml` | Which mapping to use, the data partition, and where the record is sent. |
+| The OSDU cache | `samples/wells/cache/wells-osdu-00-reference-cache.yaml`, captured into the catalog by its runs (or imported from `samples/cache-records`) | The OSDU ids that reference properties resolve to (units, wellbores, business values). |
 | The template | `samples/templates/osdu_wks_work-product-component--WellLog_1.4.0.json`, saved in the catalog as template version `26a3c3441882db4f` | The types and structure. It is the file 1 schema. |
 
 ## How a value gets from the ingestion tables into the record

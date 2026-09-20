@@ -195,7 +195,7 @@ public sealed class DeliveryModuleTests
         using var sqlite = new SqliteOsdu();
         using var catalog = new SqliteCatalog();
         var ledger = sqlite.Ledger();
-        var flowName = "wells-wellbore";
+        var flowName = "wells-wellbore-03-header-delivery";
         var flowId = FlowId.Of(flowName);
         var pipelineId = Guid.NewGuid();
         var repoId = Guid.NewGuid();
@@ -207,7 +207,7 @@ public sealed class DeliveryModuleTests
                 RepoId = repoId,
                 Name = flowName,
                 Kind = FlowDefinition.FlowTypeName,
-                RelativePath = "flows/wells-wellbore.yaml",
+                RelativePath = "flows/wells-wellbore-03-header-delivery.yaml",
                 ContentHash = new string('0', 64),
                 Yaml = "flowType: delivery",
                 DefinitionJson = "{}",
@@ -232,7 +232,7 @@ public sealed class DeliveryModuleTests
                 Route = "storage",
                 MappingReference = SampleEstate.WellboreMapping + "@1.0.0",
                 RecordObject = "[Wells].[ing].[Wellbore]",
-                RelativePath = "flows/wells-wellbore.yaml",
+                RelativePath = "flows/wells-wellbore-03-header-delivery.yaml",
                 FirstSeenUtc = DateTime.UtcNow,
                 LastSeenUtc = DateTime.UtcNow,
             });

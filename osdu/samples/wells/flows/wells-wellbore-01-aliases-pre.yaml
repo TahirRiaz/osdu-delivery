@@ -2,7 +2,7 @@
 #
 # One row per alternative name of a wellbore (docs/stage4-design.md section 1.5); the delivery renders one NameAliases
 # item per row.
-name: wells-wellbore-aliases-pre
+name: wells-wellbore-01-aliases-pre
 batch: wells
 
 source:

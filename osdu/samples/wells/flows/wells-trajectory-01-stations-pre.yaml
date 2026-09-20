@@ -2,7 +2,7 @@
 #
 # One row per station property a survey carries (measured depth, inclination, azimuth). The values of each property are
 # a column of the survey's parquet chunks under ../data/stations, named as the property is named here.
-name: wells-trajectory-stations-pre
+name: wells-trajectory-01-stations-pre
 batch: wells
 
 source:

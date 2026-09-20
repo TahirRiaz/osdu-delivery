@@ -109,7 +109,7 @@ public sealed class LineageTests : IDisposable
         // One document, two interfaces: the graph has to carry each interface's own table and its own OSDU type, so a
         // source is ordered after everything any of its interfaces reads, and shows as writing everything they write
         // (docs/interfaces-design.md section 9).
-        var lineage = Describe("flows/wells-source.yaml");
+        var lineage = Describe("flows/wells-source-03-interfaces-delivery.yaml");
 
         Assert.Empty(lineage.Warnings);
         Assert.Equal(
@@ -133,14 +133,14 @@ public sealed class LineageTests : IDisposable
 
         // And the estate orders it after the ingestion flows that fill both of those tables.
         var (_, report) = Scan();
-        Assert.True(WaveOf(report, "wells-wellbore-ing") < WaveOf(report, "wells-source"));
-        Assert.True(WaveOf(report, "wells-welllog-ing") < WaveOf(report, "wells-source"));
+        Assert.True(WaveOf(report, "wells-wellbore-02-header-ing") < WaveOf(report, "wells-source-03-interfaces-delivery"));
+        Assert.True(WaveOf(report, "wells-welllog-02-header-ing") < WaveOf(report, "wells-source-03-interfaces-delivery"));
     }
 
     [Fact]
     public void A_delivery_flow_reads_its_tables_payload_files_and_cache_types_and_writes_its_mappings_type()
     {
-        var lineage = Describe("flows/wells-welllog.yaml");
+        var lineage = Describe("flows/wells-welllog-03-header-delivery.yaml");
 
         Assert.Empty(lineage.Warnings);
         Assert.Equal(
@@ -164,7 +164,7 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_record_only_delivery_flow_reads_no_payload_files()
     {
-        var lineage = Describe("flows/wells-wellbore.yaml");
+        var lineage = Describe("flows/wells-wellbore-03-header-delivery.yaml");
 
         Assert.Empty(lineage.Warnings);
         Assert.Empty(lineage.Files);
@@ -174,10 +174,10 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_file_protocol_flow_also_writes_the_dataset_kind_it_registers_files_as()
     {
-        Rewrite("flows/wells-welllog.yaml", "protocol: osduWellLog", "protocol: osduFile");
-        Rewrite("flows/wells-welllog.yaml", "    sessionThresholdChunks: 1\n", "    datasetKind: osdu:wks:dataset--File.Generic:1.0.0\n");
+        Rewrite("flows/wells-welllog-03-header-delivery.yaml", "protocol: osduWellLog", "protocol: osduFile");
+        Rewrite("flows/wells-welllog-03-header-delivery.yaml", "    sessionThresholdChunks: 1\n", "    datasetKind: osdu:wks:dataset--File.Generic:1.0.0\n");
 
-        var lineage = Describe("flows/wells-welllog.yaml");
+        var lineage = Describe("flows/wells-welllog-03-header-delivery.yaml");
 
         Assert.Empty(lineage.Warnings);
         Assert.Equal(
@@ -188,7 +188,7 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_cache_flow_reads_its_kinds_and_writes_its_partitions_cache_types()
     {
-        var lineage = Describe("cache/osdu-cache.yaml");
+        var lineage = Describe("cache/wells-osdu-00-reference-cache.yaml");
 
         Assert.Empty(lineage.Warnings);
         Assert.Empty(lineage.Objects);
@@ -207,7 +207,7 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_retrieval_flow_reads_its_kinds_and_lands_record_files_and_a_manifest()
     {
-        var lineage = Describe("flows/osdu-download.yaml");
+        var lineage = Describe("flows/wells-osdu-04-metadata-retrieval.yaml");
 
         Assert.Equal(
             "osdu-type/opendes/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/opendes/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
@@ -228,10 +228,10 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_gzipped_retrieval_to_a_storage_uri_lands_gzipped_files_without_a_warning()
     {
-        Rewrite("flows/osdu-download.yaml", "location: samples/wells/out/metadata",
+        Rewrite("flows/wells-osdu-04-metadata-retrieval.yaml", "location: samples/wells/out/metadata",
             "location: https://lake.dfs.core.windows.net/raw/osdu/{date}\n  compression: gzip");
 
-        var lineage = Describe("flows/osdu-download.yaml");
+        var lineage = Describe("flows/wells-osdu-04-metadata-retrieval.yaml");
 
         Assert.Empty(lineage.Warnings);
         Assert.Equal("part-*.jsonl.gz", lineage.Files[0].FilePattern);
@@ -243,15 +243,15 @@ public sealed class LineageTests : IDisposable
         var (collected, report) = Scan();
 
         Assert.Empty(report.ExecutionPlan.Unordered);
-        Assert.True(WaveOf(report, "wells-welllog-pre") < WaveOf(report, "wells-welllog-ing"));
-        Assert.True(WaveOf(report, "wells-welllog-ing") < WaveOf(report, "wells-welllog"));
-        Assert.True(WaveOf(report, "wells-welllog-curves-ing") < WaveOf(report, "wells-welllog"));
-        Assert.True(WaveOf(report, "wells-wellbore-ing") < WaveOf(report, "wells-wellbore"));
+        Assert.True(WaveOf(report, "wells-welllog-01-header-pre") < WaveOf(report, "wells-welllog-02-header-ing"));
+        Assert.True(WaveOf(report, "wells-welllog-02-header-ing") < WaveOf(report, "wells-welllog-03-header-delivery"));
+        Assert.True(WaveOf(report, "wells-welllog-02-curves-ing") < WaveOf(report, "wells-welllog-03-header-delivery"));
+        Assert.True(WaveOf(report, "wells-wellbore-02-header-ing") < WaveOf(report, "wells-wellbore-03-header-delivery"));
 
         // The cache captures the wellbores the wellbore flow delivers, and the well log flow renders against that cache.
-        Assert.True(WaveOf(report, "wells-wellbore") < WaveOf(report, "osdu-cache"));
-        Assert.True(WaveOf(report, "osdu-cache") < WaveOf(report, "wells-welllog"));
-        Assert.True(WaveOf(report, "wells-wellbore") < WaveOf(report, "osdu-download"));
+        Assert.True(WaveOf(report, "wells-wellbore-03-header-delivery") < WaveOf(report, "wells-osdu-00-reference-cache"));
+        Assert.True(WaveOf(report, "wells-osdu-00-reference-cache") < WaveOf(report, "wells-welllog-03-header-delivery"));
+        Assert.True(WaveOf(report, "wells-wellbore-03-header-delivery") < WaveOf(report, "wells-osdu-04-metadata-retrieval"));
 
         // Every file node is where the flows read and land it, relative to the checkout.
         var files = report.Objects.Where(o => o.Kind == LineageNodeKind.File).Select(o => o.Name).Order(StringComparer.Ordinal).ToList();
@@ -271,11 +271,11 @@ public sealed class LineageTests : IDisposable
         Assert.Contains(CacheKey("Wellbore"), types.Keys);
         Assert.Equal("osdu-type", ServerIdentity.DatasetSystem(TypeKey(Samples.WellLogKind)));
 
-        Assert.Contains(report.Edges, e => e.Flow == "wells-welllog" && e.Relation == LineageRelation.Writes && e.ObjectKey == TypeKey(Samples.WellLogKind));
-        Assert.Contains(report.Edges, e => e.Flow == "wells-welllog" && e.Relation == LineageRelation.Reads && e.ObjectKey == CacheKey("UnitOfMeasure"));
-        Assert.Contains(report.Edges, e => e.Flow == "osdu-cache" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));
-        Assert.Contains(report.Edges, e => e.Flow == "osdu-download" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));
-        Assert.DoesNotContain(report.Edges, e => e.Flow == "osdu-cache" && e.ObjectKey == TypeKey(Samples.WellLogKind));
+        Assert.Contains(report.Edges, e => e.Flow == "wells-welllog-03-header-delivery" && e.Relation == LineageRelation.Writes && e.ObjectKey == TypeKey(Samples.WellLogKind));
+        Assert.Contains(report.Edges, e => e.Flow == "wells-welllog-03-header-delivery" && e.Relation == LineageRelation.Reads && e.ObjectKey == CacheKey("UnitOfMeasure"));
+        Assert.Contains(report.Edges, e => e.Flow == "wells-osdu-00-reference-cache" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));
+        Assert.Contains(report.Edges, e => e.Flow == "wells-osdu-04-metadata-retrieval" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));
+        Assert.DoesNotContain(report.Edges, e => e.Flow == "wells-osdu-00-reference-cache" && e.ObjectKey == TypeKey(Samples.WellLogKind));
 
         // The only thing the scan has to say about the module's flows is where the retrieval's files may land.
         Assert.Single(collected.Warnings, w => w.Contains("flow '", StringComparison.Ordinal) && w.Contains("lineage", StringComparison.Ordinal));
@@ -286,11 +286,11 @@ public sealed class LineageTests : IDisposable
     {
         File.Delete(PathOf("mappings/WellLog@1.4.0.yaml"));
 
-        var lineage = Describe("flows/wells-welllog.yaml");
+        var lineage = Describe("flows/wells-welllog-03-header-delivery.yaml");
 
         var warning = Assert.Single(lineage.Warnings);
         Assert.Equal(
-            "delivery flow 'wells-welllog' shows no OSDU type in lineage: mapping 'WellLog@1.4.0' could not be read (Mapping 'WellLog@1.4.0' was not found under '"
+            "delivery flow 'wells-welllog-03-header-delivery' shows no OSDU type in lineage: mapping 'WellLog@1.4.0' could not be read (Mapping 'WellLog@1.4.0' was not found under '"
             + InRepo("mappings")
             + "'. Expected one of: WellLog@1.4.0.yaml, WellLog@1.4.0.yml, 1.4.0.yaml, 1.4.0.yml.).",
             warning);
@@ -299,8 +299,8 @@ public sealed class LineageTests : IDisposable
         Assert.Single(lineage.Files);
 
         var (collected, report) = Scan();
-        Assert.Contains(collected.Warnings, w => w == InRepo("flows/wells-welllog.yaml") + ": " + warning);
-        Assert.True(WaveOf(report, "wells-welllog-ing") < WaveOf(report, "wells-welllog"));
+        Assert.Contains(collected.Warnings, w => w == InRepo("flows/wells-welllog-03-header-delivery.yaml") + ": " + warning);
+        Assert.True(WaveOf(report, "wells-welllog-02-header-ing") < WaveOf(report, "wells-welllog-03-header-delivery"));
     }
 
     [Fact]
@@ -308,11 +308,11 @@ public sealed class LineageTests : IDisposable
     {
         File.WriteAllText(PathOf("mappings/WellLog@1.4.0.yaml"), "documentType: mapping\nname: WellLog\nversion: [\n");
 
-        var lineage = Describe("flows/wells-welllog.yaml");
+        var lineage = Describe("flows/wells-welllog-03-header-delivery.yaml");
 
         var warning = Assert.Single(lineage.Warnings);
         Assert.StartsWith(
-            "delivery flow 'wells-welllog' shows no OSDU type in lineage: mapping 'WellLog@1.4.0' could not be read ("
+            "delivery flow 'wells-welllog-03-header-delivery' shows no OSDU type in lineage: mapping 'WellLog@1.4.0' could not be read ("
             + InRepo("mappings/WellLog@1.4.0.yaml"),
             warning,
             StringComparison.Ordinal);
@@ -325,7 +325,7 @@ public sealed class LineageTests : IDisposable
     {
         Rewrite("mappings/WellLog@1.4.0.yaml", "version: 1.4.0", "version: 1.4.1");
 
-        var warning = Assert.Single(Describe("flows/wells-welllog.yaml").Warnings);
+        var warning = Assert.Single(Describe("flows/wells-welllog-03-header-delivery.yaml").Warnings);
 
         Assert.Contains(InRepo("mappings/WellLog@1.4.0.yaml") + ": declares 'WellLog@1.4.1' but is filed as 'WellLog@1.4.0'", warning, StringComparison.Ordinal);
     }
@@ -334,12 +334,12 @@ public sealed class LineageTests : IDisposable
     public void A_mappings_directory_outside_the_checkout_is_never_read()
     {
         // Three steps up from the flow's folder (<checkout>/wells/flows) is past the checkout itself.
-        Rewrite("flows/wells-welllog.yaml", "  mapping: WellLog@1.4.0\n", "  mapping: WellLog@1.4.0\n  mappings: ../../../outside/mappings\n");
+        Rewrite("flows/wells-welllog-03-header-delivery.yaml", "  mapping: WellLog@1.4.0\n", "  mapping: WellLog@1.4.0\n  mappings: ../../../outside/mappings\n");
 
-        var warning = Assert.Single(Describe("flows/wells-welllog.yaml").Warnings);
+        var warning = Assert.Single(Describe("flows/wells-welllog-03-header-delivery.yaml").Warnings);
 
         Assert.Equal(
-            "delivery flow 'wells-welllog' shows no OSDU type in lineage: render.mappings '../../../outside/mappings' lies outside the repository, so mapping 'WellLog@1.4.0' is not read.",
+            "delivery flow 'wells-welllog-03-header-delivery' shows no OSDU type in lineage: render.mappings '../../../outside/mappings' lies outside the repository, so mapping 'WellLog@1.4.0' is not read.",
             warning);
     }
 
@@ -351,7 +351,7 @@ public sealed class LineageTests : IDisposable
         var checkout = Path.Combine(parent, "repo");
         Copy(PathOf("flows"), Path.Combine(checkout, "flows"));
         Copy(PathOf("mappings"), Path.Combine(parent, "mappings"));
-        var path = Path.Combine(checkout, "flows", "wells-welllog.yaml");
+        var path = Path.Combine(checkout, "flows", "wells-welllog-03-header-delivery.yaml");
         var document = Assert.IsAssignableFrom<RegisteredFlowDocument>(Loader().LoadFile(path));
 
         var lineage = document.DescribeLineage(new RegisteredLineageContext(path, checkout));
@@ -364,9 +364,9 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_mapping_reference_naming_a_path_is_refused_before_any_file_is_read()
     {
-        Rewrite("flows/wells-welllog.yaml", "mapping: WellLog@1.4.0", "mapping: ../mappings/WellLog@1.4.0");
+        Rewrite("flows/wells-welllog-03-header-delivery.yaml", "mapping: WellLog@1.4.0", "mapping: ../mappings/WellLog@1.4.0");
 
-        var warning = Assert.Single(Describe("flows/wells-welllog.yaml").Warnings);
+        var warning = Assert.Single(Describe("flows/wells-welllog-03-header-delivery.yaml").Warnings);
         Assert.Contains("Mapping reference '../mappings/WellLog@1.4.0' names a path", warning, StringComparison.Ordinal);
 
         var catalog = new MappingCatalog(PathOf("mappings"), new DeliveryDocumentLoader());
@@ -378,13 +378,13 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_flow_whose_partition_names_no_cache_keeps_its_tables_and_files_and_says_why_it_has_no_osdu_nodes()
     {
-        Rewrite("flows/wells-welllog.yaml", "    data-partition-id: opendes\n", "    data-partition-id: \"open des\"\n");
+        Rewrite("flows/wells-welllog-03-header-delivery.yaml", "    data-partition-id: opendes\n", "    data-partition-id: \"open des\"\n");
 
-        var lineage = Describe("flows/wells-welllog.yaml");
+        var lineage = Describe("flows/wells-welllog-03-header-delivery.yaml");
 
         var warning = Assert.Single(lineage.Warnings);
         Assert.StartsWith(
-            "delivery flow 'wells-welllog' shows no OSDU node in lineage: target.headers: data-partition-id 'open des' is neither a partition id",
+            "delivery flow 'wells-welllog-03-header-delivery' shows no OSDU node in lineage: target.headers: data-partition-id 'open des' is neither a partition id",
             warning,
             StringComparison.Ordinal);
         Assert.Empty(lineage.Datasets);
@@ -395,15 +395,15 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_partition_reference_stays_its_text_and_a_literal_endpoint_is_identified_by_hash()
     {
-        Rewrite("cache/osdu-cache.yaml", "  endpoint: ${env:PETRODB_URL}", "  endpoint: https://osdu.example.com");
-        Rewrite("cache/osdu-cache.yaml", "data-partition-id: opendes", "data-partition-id: ${env:OSDU_PARTITION}");
+        Rewrite("cache/wells-osdu-00-reference-cache.yaml", "  endpoint: ${env:PETRODB_URL}", "  endpoint: https://osdu.example.com");
+        Rewrite("cache/wells-osdu-00-reference-cache.yaml", "data-partition-id: opendes", "data-partition-id: ${env:OSDU_PARTITION}");
 
-        var lineage = Describe("cache/osdu-cache.yaml");
+        var lineage = Describe("cache/wells-osdu-00-reference-cache.yaml");
 
         Assert.Empty(lineage.Warnings);
         Assert.All(lineage.Datasets, d => Assert.Equal("${env:OSDU_PARTITION}", d.Namespace));
         var (collected, report) = Scan();
-        Assert.Contains(collected.Facts, f => f.Flow == "osdu-cache" && f.ServerRef.StartsWith("dataset:osdu-type:inline:", StringComparison.Ordinal));
+        Assert.Contains(collected.Facts, f => f.Flow == "wells-osdu-00-reference-cache" && f.ServerRef.StartsWith("dataset:osdu-type:inline:", StringComparison.Ordinal));
         Assert.DoesNotContain(collected.Facts, f => f.ServerRef.Contains("example.com", StringComparison.Ordinal));
         Assert.DoesNotContain(report.Objects, o => o.Key.Contains("example.com", StringComparison.Ordinal));
     }

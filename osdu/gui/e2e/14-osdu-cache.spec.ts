@@ -80,7 +80,7 @@ test.describe.serial("osdu cache", () => {
     await folder.getByText(SOURCE, { exact: true }).click();
     const cacheRow = adminPage.getByTestId("repo-pipeline").filter({ hasText: CACHE });
     await expect(cacheRow.first()).toBeVisible({ timeout: 30_000 });
-    await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog" })).toHaveCount(0);
+    await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog-03-header-delivery" })).toHaveCount(0);
     await cacheRow.first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
     await adminPage.getByTestId("pipeline-tab-yaml").click();

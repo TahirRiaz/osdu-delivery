@@ -715,7 +715,7 @@ public class DeliverRunScopeTests
         Assert.Equal(RedeliverScope.Metadata, Of(logs, "Record"));
         Assert.Equal(RedeliverScope.Metadata, Of(logs, "Metadata"));
         Assert.Equal(
-            "'wells-welllog' is delivered by the ddms route, which sends the record and its bulk data, so a redelivery of 'files' has nothing to send; name one of all, record, bulk, metadata, payload.",
+            "'wells-welllog-03-header-delivery' is delivered by the ddms route, which sends the record and its bulk data, so a redelivery of 'files' has nothing to send; name one of all, record, bulk, metadata, payload.",
             Assert.Throws<DeliveryException>(() => Of(logs, RedeliverScopes.Files)).Message);
 
         // The file route sends the record and its files.
@@ -726,7 +726,7 @@ public class DeliverRunScopeTests
         Assert.Equal(RedeliverScope.Metadata, Of(wellbores, RedeliverScopes.Record));
         Assert.Equal(RedeliverScope.All, Of(wellbores, RedeliverScopes.All));
         Assert.Contains(
-            "'wells-wellbore' is delivered by the storage route, which sends the record alone, so a redelivery of 'payload' has nothing to send; name one of all, record, metadata.",
+            "'wells-wellbore-03-header-delivery' is delivered by the storage route, which sends the record alone, so a redelivery of 'payload' has nothing to send; name one of all, record, metadata.",
             Assert.Throws<DeliveryException>(() => Of(wellbores, RedeliverScopes.Payload)).Message,
             StringComparison.Ordinal);
 
@@ -766,7 +766,7 @@ public class DeliverOutcomeTests
     {
         SubmissionId = Guid.NewGuid(),
         FlowId = Guid.NewGuid(),
-        FlowName = "wells-welllog",
+        FlowName = "wells-welllog-03-header-delivery",
         MappingReference = "WellLog@1.4.0",
         RenderContext = "{}",
         SourceObject = Source,

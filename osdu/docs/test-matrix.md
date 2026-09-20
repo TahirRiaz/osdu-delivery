@@ -98,11 +98,11 @@ kinds and three route types:
 
 | Interface or flow | Kind | Route |
 | --- | --- | --- |
-| `wells-wellbore`, `wells-source/wellbores` | `master-data--Wellbore` | storage |
-| `wells-welllog` | `work-product-component--WellLog` | ddms (well logs, with bulk data) |
-| `wells-source/welllogs` | `work-product-component--WellLog` | storage |
-| `wells-source/trajectories` | `work-product-component--WellboreTrajectory` | ddms (trajectories, with bulk data) |
-| `wells-source/documents` | `work-product-component--Document` | file |
+| `wells-wellbore-03-header-delivery`, `wells-source-03-interfaces-delivery/wellbores` | `master-data--Wellbore` | storage |
+| `wells-welllog-03-header-delivery` | `work-product-component--WellLog` | ddms (well logs, with bulk data) |
+| `wells-source-03-interfaces-delivery/welllogs` | `work-product-component--WellLog` | storage |
+| `wells-source-03-interfaces-delivery/trajectories` | `work-product-component--WellboreTrajectory` | ddms (trajectories, with bulk data) |
+| `wells-source-03-interfaces-delivery/documents` | `work-product-component--Document` | file |
 
 The GUI's end-to-end suite runs that estate through the product: the repository is synced, the templates saved, the
 cache imported, the chain run, a plan executed, and the source read one interface at a time through the GUI and the

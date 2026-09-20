@@ -110,7 +110,7 @@ public class YamlDocumentLoaderTests
     {
         var loader = new DeliveryDocumentLoader();
         var flow = loader.LoadFlow(Samples.Flow);
-        Assert.Equal("wells-welllog", flow.Name);
+        Assert.Equal("wells-welllog-03-header-delivery", flow.Name);
         Assert.Equal(DeliveryProtocol.OsduWellLog, flow.Target.Protocol);
         Assert.Equal("WellLog", flow.Render.MappingName);
         Assert.Equal("1.4.0", flow.Render.MappingVersion);

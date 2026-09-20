@@ -1,10 +1,10 @@
-# Flow: wells-wellbore
+# Flow: wells-wellbore-03-header-delivery
 #
 # The wellbore master data the well logs reference (docs/stage4-design.md section 1.5). It reads the ingestion tables
 # the wellbore chain loads, renders each row with the Wellbore mapping and delivers the records through the plain
 # storage protocol: no payload files, so nothing is streamed beside the document.
 flowType: delivery
-name: wells-wellbore
+name: wells-wellbore-03-header-delivery
 batch: wells
 
 source:

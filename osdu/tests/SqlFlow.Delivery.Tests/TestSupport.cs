@@ -544,13 +544,13 @@ public static class Samples
     /// </summary>
     public static string TemplateFiles => Path.Combine(Root, "templates");
 
-    public static string Flow => Path.Combine(Source, "flows", "wells-welllog.yaml");
+    public static string Flow => Path.Combine(Source, "flows", "wells-welllog-03-header-delivery.yaml");
 
     /// <summary>The wellbore master-data flow of the sample estate.</summary>
-    public static string WellboreFlowFile => Path.Combine(Source, "flows", "wells-wellbore.yaml");
+    public static string WellboreFlowFile => Path.Combine(Source, "flows", "wells-wellbore-03-header-delivery.yaml");
 
     /// <summary>The sample cache flow: what the sample cache holds.</summary>
-    public static string CacheFlow => Path.Combine(Source, "cache", "osdu-cache.yaml");
+    public static string CacheFlow => Path.Combine(Source, "cache", "wells-osdu-00-reference-cache.yaml");
 
     /// <summary>
     /// The sample cache records, one file per cached type. They sit beside the source folders rather than inside one,
@@ -567,7 +567,7 @@ public static class Samples
     public const string SampleCacheScope = "opendes";
 
     /// <summary>The name of the sample cache flow, which fills the cache of <see cref="SampleCacheScope"/>.</summary>
-    public const string SampleCacheFlowName = "osdu-cache";
+    public const string SampleCacheFlowName = "wells-osdu-00-reference-cache";
 
     /// <summary>When the sample cache records were captured: the version label the sample cache is imported under.</summary>
     public static readonly DateTimeOffset SampleCacheCaptured = new(2026, 9, 8, 21, 27, 27, TimeSpan.Zero);

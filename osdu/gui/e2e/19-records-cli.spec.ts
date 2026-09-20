@@ -75,7 +75,7 @@ function cliRefusal(...args: string[]): string {
 test.describe.serial("records from the CLI", () => {
   test("the ledger's records and one record's attempts are readable from the command line", () => {
     test.setTimeout(600_000);
-    const flow = `${fixtureMeta().sourceDir}/flows/wells-welllog.yaml`;
+    const flow = `${fixtureMeta().sourceDir}/flows/wells-welllog-03-header-delivery.yaml`;
 
     // Records reach the ledger when a submission is planned, which is what an intake does: it renders and stages every
     // record of the scope and sends nothing. A plan run reports what it would do and stages nothing, so the earlier
@@ -87,7 +87,7 @@ test.describe.serial("records from the CLI", () => {
       flowId: string;
       records: { deliveryKey: string; sourceKey: string; status: string; targetId: string | null }[];
     }>(cli("records", "list", flow, "--json"));
-    expect(listed.flow).toBe("wells-welllog");
+    expect(listed.flow).toBe("wells-welllog-03-header-delivery");
     expect(listed.records.length).toBeGreaterThan(0);
     const first = listed.records[0];
     expect(first.deliveryKey).toMatch(/^[0-9a-f]{32}$/);
@@ -108,14 +108,14 @@ test.describe.serial("records from the CLI", () => {
   });
 
   test("a source is read one interface at a time, and an unknown interface says which there are", () => {
-    const flow = `${fixtureMeta().sourceDir}/flows/wells-source.yaml`;
+    const flow = `${fixtureMeta().sourceDir}/flows/wells-source-03-interfaces-delivery.yaml`;
 
     // A source delivers several interfaces, so a command that names none cannot tell which ledger it means.
     expect(cliRefusal("records", "list", flow)).toMatch(/delivers 4 interfaces/);
     expect(cliRefusal("records", "list", flow, "--interface", "nope")).toMatch(/has no interface 'nope'/);
 
     const listed = json<{ flow: string; records: unknown[] }>(cli("records", "list", flow, "--interface", "wellbores", "--json"));
-    expect(listed.flow).toBe("wells-source / wellbores");
+    expect(listed.flow).toBe("wells-source-03-interfaces-delivery / wellbores");
     // The source's own ledgers are its own: nothing is read from the single-form flows beside it.
     expect(listed.records).toHaveLength(0);
   });

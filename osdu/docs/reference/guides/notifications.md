@@ -34,7 +34,7 @@ schedules and records history identically but generates no notification events a
 
 ```yaml
 flowType: delivery
-name: wells-welllog
+name: wells-welllog-03-header-delivery
 lifecycle: development   # remove (or set to production) when the flow goes live
 ```
 

@@ -95,7 +95,7 @@ public sealed class DeliveryPlatformTests
         {
           "schemaVersion": 1,
           "runId": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-          "flowName": "wells-wellbore",
+          "flowName": "wells-wellbore-03-header-delivery",
           "flowKind": "{{flowKind}}",
           "success": true,
           "writtenUtc": "2026-09-16T09:00:00Z",

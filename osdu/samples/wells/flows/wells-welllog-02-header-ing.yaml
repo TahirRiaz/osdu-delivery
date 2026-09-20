@@ -4,7 +4,7 @@
 # columns saying when the row last changed and which file it came from. The OSDU flow windows on UpdatedDate_DW and
 # traces every delivered record back to FileName_DW and RowNumber_DW (docs/stage4-design.md section 1.3).
 flowType: ing
-name: wells-welllog-ing
+name: wells-welllog-02-header-ing
 batch: wells
 
 connections:

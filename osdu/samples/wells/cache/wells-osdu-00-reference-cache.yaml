@@ -1,4 +1,4 @@
-# Cache flow: osdu-cache
+# Cache flow: wells-osdu-00-reference-cache
 #
 # What this flow caches (docs/delivery/design.md section 6.2): the OSDU reference and master data the WellLog,
 # WellboreTrajectory and Wellbore mappings resolve against, and which paths of each record are kept. Add a type or a path here, and the next
@@ -12,9 +12,9 @@
 # The cache itself is never kept in this repository: this document defines it, and a run captures it into the
 # module database. For work without an OSDU platform to capture from, the sample type files in osdu/samples/cache-records
 # hold a small version of the same cache:
-#   sqlflow cache import cache/osdu-cache.yaml --from-dir <osdu/samples/cache-records> --db <conn-ref>
+#   sqlflow cache import cache/wells-osdu-00-reference-cache.yaml --from-dir <osdu/samples/cache-records> --db <conn-ref>
 flowType: cache
-name: osdu-cache
+name: wells-osdu-00-reference-cache
 batch: wells
 
 source:

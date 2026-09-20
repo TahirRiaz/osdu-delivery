@@ -2,7 +2,7 @@
 #
 # One row per curve of a logging run (docs/stage4-design.md section 1.3). The curve values themselves are never loaded:
 # they stay in the parquet files under ../data/curves, which the delivery streams to the wellbore DDMS.
-name: wells-welllog-curves-pre
+name: wells-welllog-01-curves-pre
 batch: wells
 
 source:

@@ -1,17 +1,17 @@
-# Source: wells-source
+# Source: wells-source-03-interfaces-delivery
 #
 # One source document delivering four interfaces (docs/interfaces-design.md): the wellbores the well logs refer to, the
 # well logs, the directional surveys whose stations a DDMS keeps, and the documents whose content is a file. Each has a
 # ledger, a submission history, a watermark and a route of its own, and the surveys and the logs run after the
 # wellbores, so a run of the source is two waves. The wellbores and the logs read the same ingestion tables the
-# single-form flows beside them read (wells-wellbore, wells-welllog), under ledgers of their own, so they never
+# single-form flows beside them read (wells-wellbore-03-header-delivery, wells-welllog-03-header-delivery), under ledgers of their own, so they never
 # re-deliver what those flows delivered: it is the shape a source takes, shown beside the shape it replaces.
 #
 # Between them the four interfaces cover three route types, each decided by what the interface declares rather than
 # named: master data and well logs through the storage service, a work product component whose stations the Wellbore
 # DDMS keeps, and one whose content is a file, registered through the file service.
 flowType: delivery
-name: wells-source
+name: wells-source-03-interfaces-delivery
 batch: wells
 
 parameters:
@@ -22,7 +22,7 @@ parameters:
 source:
   connection: ${env:OSDU_SAMPLE_DB}
   lastModified: update_date
-  work: ../.work/wells-source
+  work: ../.work/wells-source-03-interfaces-delivery
 
 render:
   parameters:

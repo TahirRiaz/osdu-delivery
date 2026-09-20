@@ -4,7 +4,7 @@
 # "stations", ordered by station_ordinal, and renders one item per row into the record's
 # AvailableTrajectoryStationProperties array.
 flowType: ing
-name: wells-trajectory-stations-ing
+name: wells-trajectory-02-stations-ing
 batch: wells
 
 connections:

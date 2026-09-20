@@ -7,7 +7,7 @@ are a parse error. Every validation failure names the file.
 
 ```yaml
 flowType: delivery                 # required discriminator
-name: wells-welllog               # required; the flow id is derived from it
+name: wells-welllog-03-header-delivery               # required; the flow id is derived from it
 
 parameters:                        # optional; {name} tokens usable in source.work and each payload root
   logSource: { required: true, default: null, description: ... }
@@ -721,13 +721,13 @@ failWhen: { failedPercent: 20 }       # every interface's stop rules, unless it 
 
 interfaces:
   wellbores:
-    ledger: wells-wellbore           # keep the ledger of the flow this interface replaces
+    ledger: wells-wellbore-03-header-delivery           # keep the ledger of the flow this interface replaces
     record: { object: OsduSample.ing.Wellbore, key: [facility_name], primaryKey: RecId }
     datasets:
       aliases: { object: OsduSample.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
     mapping: Wellbore@1.0.0
   welllogs:
-    ledger: wells-welllog
+    ledger: wells-welllog-03-header-delivery
     record: { object: OsduSample.ing.WellLog, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
     datasets:
       curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
@@ -1039,11 +1039,11 @@ The reference and master data the mappings resolve against ([design.md](design.m
 one place what is cached is defined: the OSDU platform to search, the types to cache, and for each type the paths of a
 record to keep. It fills the cache of the partition its `source.headers.data-partition-id` names, and a delivery flow
 reads the cache of the partition it delivers to ([The partition cache](#the-partition-cache)). The sample estate's
-cache flow, `samples/wells/cache/osdu-cache.yaml`, fills partition `opendes`:
+cache flow, `samples/wells/cache/wells-osdu-00-reference-cache.yaml`, fills partition `opendes`:
 
 ```yaml
 flowType: cache
-name: osdu-cache
+name: wells-osdu-00-reference-cache
 batch: wells
 
 source:

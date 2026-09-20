@@ -1,6 +1,6 @@
-# Ingestion: the typed alias view into the keyed child table the OSDU flow joins to each wellbore.
+# Ingestion: the typed document view into the keyed ingestion table the OSDU flow reads.
 flowType: ing
-name: wells-wellbore-aliases-ing
+name: wells-document-02-header-ing
 batch: wells
 
 connections:
@@ -8,17 +8,17 @@ connections:
 
 source:
   server: sample
-  object: OsduSample.pre.v_WellboreAlias
+  object: OsduSample.pre.v_Document
 
 target:
   server: sample
-  object: OsduSample.ing.WellboreAlias
+  object: OsduSample.ing.Document
   # The identity primary key every ingestion table carries: the clustered key the other indexes point at, and the
   # column the OSDU flow pages and fans out by (source.record.primaryKey).
   identityColumn: RecId
 
 load:
-  keyColumns: [facility_name, alias_name]
+  keyColumns: [doc_id]
 
 systemColumns:
   insertedDate: true

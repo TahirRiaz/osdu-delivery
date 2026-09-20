@@ -45,13 +45,13 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>The flow documents of the well log chain, by the name they carry in the repository.</summary>
     private static readonly string[] ChainDocuments =
     [
-        "wells-welllog-pre", "wells-welllog-curves-pre", "wells-welllog-ing", "wells-welllog-curves-ing", "wells-welllog",
+        "wells-welllog-01-header-pre", "wells-welllog-01-curves-pre", "wells-welllog-02-header-ing", "wells-welllog-02-curves-ing", "wells-welllog-03-header-delivery",
     ];
 
     /// <summary>The flows that load the wellbore tables, generated for a fixture that asks for them.</summary>
     private static readonly string[] WellboreChainDocuments =
     [
-        "wells-wellbore-pre", "wells-wellbore-aliases-pre", "wells-wellbore-ing", "wells-wellbore-aliases-ing",
+        "wells-wellbore-01-header-pre", "wells-wellbore-01-aliases-pre", "wells-wellbore-02-header-ing", "wells-wellbore-02-aliases-ing",
     ];
 
     /// <summary>
@@ -199,8 +199,8 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>The name a shipped flow of either chain carries in an estate generated with <paramref name="suffix"/>.</summary>
     private static string Rename(string shippedName, string suffix)
         => shippedName
-            .Replace("wells-welllog", "rw" + suffix, StringComparison.Ordinal)
-            .Replace("wells-wellbore", "wb" + suffix, StringComparison.Ordinal);
+            .Replace("wells-welllog-03-header-delivery", "rw" + suffix, StringComparison.Ordinal)
+            .Replace("wells-wellbore-03-header-delivery", "wb" + suffix, StringComparison.Ordinal);
 
     /// <summary>
     /// Refuses the suite when the database it needs is not there, naming what to set. The SQL Server chain runs against a
@@ -292,10 +292,10 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// </summary>
     public async Task RunIngestionChainAsync(CancellationToken ct = default)
     {
-        await RunFlowAsync("wells-welllog-pre", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("wells-welllog-curves-pre", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("wells-welllog-ing", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("wells-welllog-curves-ing", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("wells-welllog-01-header-pre", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("wells-welllog-01-curves-pre", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("wells-welllog-02-header-ing", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("wells-welllog-02-curves-ing", ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -323,14 +323,14 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>Runs the OSDU flow's <c>deliver</c> operation through the document executor, with this run's values.</summary>
     public Task<DocumentRunOutcome> DeliverAsync(Guid? runId = null, CancellationToken ct = default)
         => RunFlowAsync(
-            "wells-welllog",
+            "wells-welllog-03-header-delivery",
             new RunParameters { Operation = DeliveryOperations.Deliver, Values = SampleEstate.Values },
             runId ?? Guid.NewGuid(),
             ct);
 
     /// <summary>The OSDU flow as its generated document declares it, loaded through the module's own loader.</summary>
     public FlowDefinition DeliveryFlow()
-        => _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("wells-welllog"));
+        => _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("wells-welllog-03-header-delivery"));
 
     /// <summary>Writes the well log metadata file the first pre flow reads; naming a new file lands a new batch of rows.</summary>
     public Task WriteLogFileAsync(string fileName, IReadOnlyList<SampleLog> logs, CancellationToken ct = default)
@@ -649,7 +649,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             text = Replace(text, "\n  schema: pre\n", $"\n  schema: pre_{suffix}\n", name);
         }
 
-        if (name == "wells-welllog")
+        if (name == "wells-welllog-03-header-delivery")
         {
             text = Replace(text, ShippedTarget, LocalTarget, name);
             if (fanOut > 0)

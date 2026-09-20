@@ -1,15 +1,15 @@
-# Flow: wells-welllog
+# Flow: wells-welllog-03-header-delivery
 #
 # The operational document (docs/delivery/design.md section 9.2, docs/stage4-design.md section 1). One flow with a
 # parameter replaces six near-identical job blocks that differed only by a log source string. The records come from the
-# ingestion tables SQLFlow's own pre and ing flows load (wells-welllog-pre, wells-welllog-ing and the curve pair beside
+# ingestion tables SQLFlow's own pre and ing flows load (wells-welllog-01-header-pre, wells-welllog-02-header-ing and the curve pair beside
 # them): this flow reads what changed there, renders it and delivers it. Nothing here changes what a document is: only
 # render.* enters the content hash, and the mapping it names is pinned. The mapping the flow renders with lives next to it
 # in this repository (../mappings); the template it fills lives in the module's database, and so does the cache it reads:
 # the cache of the partition it delivers to (target.headers.data-partition-id), filled by every cache flow of that
-# partition, such as ../cache/osdu-cache.yaml. The platform schedules the runs.
+# partition, such as ../cache/wells-osdu-00-reference-cache.yaml. The platform schedules the runs.
 flowType: delivery
-name: wells-welllog
+name: wells-welllog-03-header-delivery
 batch: wells
 
 parameters:

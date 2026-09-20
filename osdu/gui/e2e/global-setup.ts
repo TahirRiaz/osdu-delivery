@@ -107,7 +107,7 @@ export default function globalSetup(): void {
 export const SOURCE = "wells";
 
 /** The cache the source's mappings resolve against: the flow file `<SOURCE>/cache/<CACHE>.yaml`, and the folder of sample records beside it. */
-export const CACHE = "osdu-cache";
+export const CACHE = "wells-osdu-00-reference-cache";
 
 /** What globalSetup leaves behind for the specs, which run in a process of their own and so cannot be told directly. */
 export interface FixtureMeta {
@@ -123,44 +123,44 @@ export interface FixtureMeta {
 
 /** The delivery flows of the fixture estate, and the pre and ingestion flows that fill the tables they read. */
 export const CHAIN = [
-  "wells-welllog-pre",
-  "wells-welllog-curves-pre",
-  "wells-welllog-ing",
-  "wells-welllog-curves-ing",
-  "wells-welllog",
-  "wells-wellbore-pre",
-  "wells-wellbore-aliases-pre",
-  "wells-wellbore-ing",
-  "wells-wellbore-aliases-ing",
-  "wells-wellbore",
-  "wells-document-pre",
-  "wells-document-ing",
-  "wells-trajectory-pre",
-  "wells-trajectory-stations-pre",
-  "wells-trajectory-ing",
-  "wells-trajectory-stations-ing",
+  "wells-welllog-01-header-pre",
+  "wells-welllog-01-curves-pre",
+  "wells-welllog-02-header-ing",
+  "wells-welllog-02-curves-ing",
+  "wells-welllog-03-header-delivery",
+  "wells-wellbore-01-header-pre",
+  "wells-wellbore-01-aliases-pre",
+  "wells-wellbore-02-header-ing",
+  "wells-wellbore-02-aliases-ing",
+  "wells-wellbore-03-header-delivery",
+  "wells-document-01-header-pre",
+  "wells-document-02-header-ing",
+  "wells-trajectory-01-header-pre",
+  "wells-trajectory-01-stations-pre",
+  "wells-trajectory-02-header-ing",
+  "wells-trajectory-02-stations-ing",
   // The same estate in the shape a source takes: two interfaces, each with a ledger of its own. It is synced and read,
   // never run, so it adds a multi-interface source to the catalog without delivering anything twice.
-  "wells-source",
-  "osdu-download",
+  "wells-source-03-interfaces-delivery",
+  "wells-osdu-04-metadata-retrieval",
 ] as const;
 
 /** The flows that load the ingestion tables, in the order they have to run: the pre flows land files, the ing flows key them. */
 export const LOADING_FLOWS = [
-  "wells-welllog-pre",
-  "wells-welllog-curves-pre",
-  "wells-wellbore-pre",
-  "wells-wellbore-aliases-pre",
-  "wells-welllog-ing",
-  "wells-welllog-curves-ing",
-  "wells-wellbore-ing",
-  "wells-wellbore-aliases-ing",
-  "wells-document-pre",
-  "wells-document-ing",
-  "wells-trajectory-pre",
-  "wells-trajectory-stations-pre",
-  "wells-trajectory-ing",
-  "wells-trajectory-stations-ing",
+  "wells-welllog-01-header-pre",
+  "wells-welllog-01-curves-pre",
+  "wells-wellbore-01-header-pre",
+  "wells-wellbore-01-aliases-pre",
+  "wells-welllog-02-header-ing",
+  "wells-welllog-02-curves-ing",
+  "wells-wellbore-02-header-ing",
+  "wells-wellbore-02-aliases-ing",
+  "wells-document-01-header-pre",
+  "wells-document-02-header-ing",
+  "wells-trajectory-01-header-pre",
+  "wells-trajectory-01-stations-pre",
+  "wells-trajectory-02-header-ing",
+  "wells-trajectory-02-stations-ing",
 ] as const;
 
 /**

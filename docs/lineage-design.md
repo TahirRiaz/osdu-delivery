@@ -15,9 +15,9 @@ robust, and the tests that hold it.
 Checked against the synced e2e catalog (`SQLFlow_E2E`, then named `SqlFlowCatalogE2EOsdu`) and the lineage graph page on 2026-09-16.
 
 1. **Delivery flows were dead ends.** A delivery flow declared only the ingestion tables it reads
-   (`DeliveryLineage.DeclaredObjects`). Nothing downstream of it existed, so the graph ended at `wells-welllog` and
-   `wells-wellbore`.
-2. **Cache and retrieval flows floated.** `osdu-cache` and `osdu-download` declared nothing, so they had no
+   (`DeliveryLineage.DeclaredObjects`). Nothing downstream of it existed, so the graph ended at `wells-welllog-03-header-delivery` and
+   `wells-wellbore-03-header-delivery`.
+2. **Cache and retrieval flows floated.** `wells-osdu-00-reference-cache` and `wells-osdu-04-metadata-retrieval` declared nothing, so they had no
    edges and sat alone in the first wave.
 3. **A registered kind could declare database tables only.** `RegisteredFlowDocument.DeclaredObjects` takes a connection
    reference and a three-part name. SQLFlow's own flows show HTTP endpoints and file locations as file nodes (an
@@ -73,22 +73,25 @@ resolves a secret or an environment variable.
 
 ## 4. How the graph reads for the sample estate
 
-```text
-data/welllog ──► wells-welllog-pre ──► pre.WellLog, pre.v_WellLog ──► wells-welllog-ing ──► ing.WellLog ─┐
-data/curves-meta ──► wells-welllog-curves-pre ──► ... ──► wells-welllog-curves-ing ──► ing.WellLogCurve ─┤
-data/curves (payload files) ────────────────────────────────────────────────────────────────────────────────┤
-osdu cache: UnitOfMeasure, LogCurveBusinessValue, VerticalMeasurementType, Wellbore ──────────────────────────┤
-                                                                                                             ▼
-                                                                                                    wells-welllog
-                                                                                                             │
-                                                                    osdu type: work-product-component--WellLog:1.4.0
+Each delivery flow is listed with everything it reads, and every chain is read right to left: a drop-off folder
+lands through `01`, is keyed by `02`, and is delivered by `03`.
 
-data/wellbore ──► wells-wellbore-pre ──► ... ──► wells-wellbore ──► osdu type: master-data--Wellbore:1.3.0
-                                                                                  │
-                          osdu type patterns (reference-data--UnitOfMeasure:*, master-data--Wellbore:*, ...)
-                                                                                  ▼
-                                                         osdu-cache ──► osdu cache types ──► wells-welllog
-                                                         osdu-download ──► out/metadata (files)
+```text
+wells-welllog-03-header-delivery ──► osdu type: work-product-component--WellLog:1.4.0
+  ing.WellLog       ◄── wells-welllog-02-header-ing ◄── pre.WellLog, pre.v_WellLog ◄── wells-welllog-01-header-pre ◄── data/welllog
+  ing.WellLogCurve  ◄── wells-welllog-02-curves-ing ◄── ...                        ◄── wells-welllog-01-curves-pre ◄── data/curves-meta
+  data/curves (payload files, read at delivery rather than landed)
+  osdu cache: UnitOfMeasure, LogCurveBusinessValue, VerticalMeasurementType, Wellbore
+
+wells-wellbore-03-header-delivery ──► osdu type: master-data--Wellbore:1.3.0
+  ing.Wellbore      ◄── wells-wellbore-02-header-ing  ◄── ... ◄── wells-wellbore-01-header-pre  ◄── data/wellbore
+  ing.WellboreAlias ◄── wells-wellbore-02-aliases-ing ◄── ... ◄── wells-wellbore-01-aliases-pre ◄── data/wellbore-aliases
+
+wells-osdu-00-reference-cache ──► osdu cache types, which wells-welllog-03-header-delivery reads
+  osdu type patterns (reference-data--UnitOfMeasure:*, master-data--Wellbore:*, ...)
+
+wells-osdu-04-metadata-retrieval ──► out/metadata (files)
+  the same osdu type patterns
 ```
 
 ## 5. Wildcard kinds

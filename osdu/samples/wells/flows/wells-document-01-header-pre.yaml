@@ -2,7 +2,7 @@
 #
 # One row per document the source system holds, with the folder its file sits in and that file's content hash. The
 # files themselves are never landed here: they stay where the preparing side wrote them and the delivery streams them.
-name: wells-document-pre
+name: wells-document-01-header-pre
 batch: wells
 
 source:

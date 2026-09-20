@@ -143,10 +143,10 @@ rather than half-applied.
 
 ```bash
 # plan one log source, forcing past the change gates
-sqlflow run flows/wells-welllog.yaml --operation plan --set logSource=STAT_COMP --payload '{"force":true}'
+sqlflow run flows/wells-welllog-03-header-delivery.yaml --operation plan --set logSource=STAT_COMP --payload '{"force":true}'
 
 # drain the pending batches of one submission
-sqlflow trigger --repo wells --flow wells-welllog --operation drain --payload @submission.json
+sqlflow trigger --repo wells --flow wells-welllog-03-header-delivery --operation drain --payload @submission.json
 
 # deliver two interfaces of a source, and nothing else of it
 sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interfaces":["wellbores","welllogs"]}'

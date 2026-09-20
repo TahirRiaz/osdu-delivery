@@ -68,22 +68,22 @@ Everything the platform already reads ([environment-variables.md](environment-va
    that fills the partition the delivery flow delivers to (the `data-partition-id` both declare, `opendes` in the
    sample) appears as a pipeline of kind `cache`, and the partition's cache on the OSDU cache page, with no version yet.
 5. Capture the cache: run the cache flow with the refresh operation (Refresh now on the OSDU cache page, the Trigger
-   run dialog on its pipeline, or `sqlflow run cache/osdu-cache.yaml --db <ref>` on a workstation), then
+   run dialog on its pipeline, or `sqlflow run cache/wells-osdu-00-reference-cache.yaml --db <ref>` on a workstation), then
    check the delivery flow against its template and the cache version it now reads:
 
    ```bash
-   sqlflow check flows/wells-welllog.yaml --set logSource=STAT_COMP --db <ref>
+   sqlflow check flows/wells-welllog-03-header-delivery.yaml --set logSource=STAT_COMP --db <ref>
    ```
 
    The refresh searches the endpoint the cache flow declares, with the cache flow's own credentials, and merges what it
    found into the cache of its partition, writing that cache's first version into the catalog; the newest version is
    always the current one. Without access to OSDU,
-   `sqlflow cache import cache/osdu-cache.yaml --from-dir <dir> --db <ref>` merges type files into the
+   `sqlflow cache import cache/wells-osdu-00-reference-cache.yaml --from-dir <dir> --db <ref>` merges type files into the
    partition's cache instead. `sqlflow cache list opendes --db <ref>` lists the versions. The cache flow's `schedule` keeps the cache refreshed ahead of the deliveries.
 6. Load the ingestion tables and plan before anything touches OSDU: run the pre-ingestion flow and then the
    ingestion flow beside the OSDU flow (lineage puts them in that order, so triggering the chain runs them in
    waves), then trigger the OSDU flow with operation `plan` and the flow parameters (the GUI's Trigger run
-   dialog, or `sqlflow run flows/wells-welllog.yaml --operation plan --set logSource=STAT_COMP`).
+   dialog, or `sqlflow run flows/wells-welllog-03-header-delivery.yaml --operation plan --set logSource=STAT_COMP`).
 7. Deliver the canary log source (a run with operation `deliver`), then the rest. Put the hourly deliver on
    a schedule.
 

@@ -688,7 +688,7 @@ between the generator and production.
 
 ```yaml
 flowType: delivery
-name: recall-welllog
+name: wells-welllog-03-header-delivery
 
 parameters:
   logSource: { required: true }

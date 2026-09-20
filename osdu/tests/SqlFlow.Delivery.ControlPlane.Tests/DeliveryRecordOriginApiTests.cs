@@ -22,7 +22,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// </summary>
 public sealed class DeliveryRecordOriginApiTests
 {
-    private const string FlowName = "wells-wellbore";
+    private const string FlowName = "wells-wellbore-03-header-delivery";
 
     private const string OriginFile = "wellbore_20260901.csv";
 

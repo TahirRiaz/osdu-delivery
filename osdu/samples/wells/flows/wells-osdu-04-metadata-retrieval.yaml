@@ -1,12 +1,12 @@
-# Flow: osdu-download
+# Flow: wells-osdu-04-metadata-retrieval
 #
 # The bulk download (docs/delivery/design.md section 15). It pages OSDU's search index into files on the lake: the
 # reference and master data the WellLog and WellboreTrajectory mappings match units, curve business values, vertical
 # measurement types, trajectory station property types and wellbores by, landed as the records the index holds.
 # This is a download to files, and nothing reads it back. What the mappings resolve against is the cache, which
-# ../cache/osdu-cache.yaml defines and whose own refresh runs capture into the catalog directly.
+# ../cache/wells-osdu-00-reference-cache.yaml defines and whose own refresh runs capture into the catalog directly.
 flowType: retrieval
-name: osdu-download
+name: wells-osdu-04-metadata-retrieval
 batch: wells
 
 source:

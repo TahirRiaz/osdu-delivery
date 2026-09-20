@@ -2,7 +2,7 @@
 #
 # One row per survey. The station values themselves are never loaded: they stay in the parquet files under
 # ../data/stations, which the delivery streams to the wellbore DDMS as the survey's bulk data.
-name: wells-trajectory-pre
+name: wells-trajectory-01-header-pre
 batch: wells
 
 source:

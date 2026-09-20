@@ -7,11 +7,11 @@ the same reason those do: so a suite or a first-time setup can fill a cache with
 
 One file per cached type, named after the type, holding its entity type and its records (each an `id` and the values
 the cache flow captures). The set has to match what the cache flow declares, type by type and path by path. These
-files answer to `wells/cache/osdu-cache.yaml`, which is the document that defines the cache and the only
+files answer to `wells/cache/wells-osdu-00-reference-cache.yaml`, which is the document that defines the cache and the only
 part of it a repository holds.
 
 ```bash
-sqlflow cache import wells/cache/osdu-cache.yaml --from-dir <this folder> --db <conn-ref>
+sqlflow cache import wells/cache/wells-osdu-00-reference-cache.yaml --from-dir <this folder> --db <conn-ref>
 ```
 
 merges them into the cache of partition `opendes`, the partition the cache flow fills, as that flow's capture, exactly

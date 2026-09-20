@@ -71,7 +71,7 @@ public class DeterministicGuidTests
     [Fact]
     public void Flow_id_ignores_case_and_whitespace()
     {
-        Assert.Equal(FlowId.Of("wells-welllog"), FlowId.Of(" Wells-WellLog "));
+        Assert.Equal(FlowId.Of("wells-welllog-03-header-delivery"), FlowId.Of(" Wells-WellLog-03-Header-Delivery "));
         Assert.NotEqual(FlowId.Of("a"), FlowId.Of("b"));
     }
 

@@ -49,9 +49,9 @@ public sealed class SqlServerLedgerMigrationTests
 
     private static readonly DateTime Now = new(2026, 9, 16, 12, 0, 0, DateTimeKind.Utc);
 
-    private static readonly Guid Logs = FlowId.Of("wells-welllog");
+    private static readonly Guid Logs = FlowId.Of("wells-welllog-03-header-delivery");
 
-    private static readonly Guid Wellbores = FlowId.Of("wells-wellbore");
+    private static readonly Guid Wellbores = FlowId.Of("wells-wellbore-03-header-delivery");
 
     [SkippableFact]
     public async Task An_existing_ledger_is_keyed_per_flow_with_every_attempt_claim_and_cursor_placed()
@@ -70,7 +70,7 @@ public sealed class SqlServerLedgerMigrationTests
             INSERT INTO [osdu].[Submission] ([SubmissionId], [FlowId], [FlowName], [MappingReference], [RenderContext], [ParametersJson], [RecordCount],
                 [BatchCount], [Slices], [Status], [ReceivedUtc], [Planned], [SkippedUnchanged], [AwaitingApproval], [SkippedStale], [UnchangedAtPush],
                 [Blocked], [Delivered], [Held], [Failed], [Untracked], [Kind], [SourceConnection], [SourceObject])
-            VALUES (@submission, @logs, N'wells-welllog', N'WellLog@1.4.0', N'{}', N'{}', 3, 1, 1, N'completed', @now, 2, 0, 0, 0, 0, 0, 1, 1, 0, 0,
+            VALUES (@submission, @logs, N'wells-welllog-03-header-delivery', N'WellLog@1.4.0', N'{}', N'{}', 3, 1, 1, N'completed', @now, 2, 0, 0, 0, 0, 0, 1, 1, 0, 0,
                 N'incremental', N'${env:OSDU_SAMPLE_DB}', N'OsduSample.ing.WellLog');
             INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [MappingName], [Status], [AttemptCount], [PendingMetadata], [PendingPayload],
                 [Blocked], [CreatedUtc], [UpdatedUtc], [TargetId], [LastDeliveredUtc], [PendingDocumentRef], [LastSubmissionId])
@@ -84,7 +84,7 @@ public sealed class SqlServerLedgerMigrationTests
                 (@held, NULL, N'intake', @now, @now, N'held', N'render'),
                 (@unrecorded, @submission, N'w', @now, @now, N'failed', N'none');
             INSERT INTO [osdu].[Activity] ([FlowId], [FlowName], [Kind], [Actor], [StartedUtc], [Outcome], [DeliveryKey])
-            VALUES (@logs, N'wells-welllog', N'release', N'user:tahir', @now, N'completed', @delivered);
+            VALUES (@logs, N'wells-welllog-03-header-delivery', N'release', N'user:tahir', @now, N'completed', @delivered);
             INSERT INTO [osdu].[UpdateTag] ([Kind], [Scope], [TypeName], [ItemId], [Path], [Change], [ToVersion], [Mode], [Status], [SetIds],
                 [AffectedRecords], [Processed], [DetectedUtc], [Cursor])
             VALUES (N'cache', N'opendes', N'Wellbore', N'opendes:master-data--Wellbore:x', N'Name', N'changed', N'v2', N'auto', N'rolling', N'1', 3, 1, @now, @held);
@@ -121,7 +121,7 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal((1, 0), (second.Staged, second.Conflicts.Count));
         var third = FlowId.Of("wells-welllog-copy");
         var conflict = Assert.Single((await ledger.UpsertPendingAsync(third, [Pending(third, delivered, "opendes:work-product-component--WellLog:a")])).Conflicts);
-        Assert.Equal((Logs, "wells-welllog"), (conflict.OwnerFlowId, conflict.OwnerFlowName));
+        Assert.Equal((Logs, "wells-welllog-03-header-delivery"), (conflict.OwnerFlowId, conflict.OwnerFlowName));
         Assert.Equal(2, (await ledger.LookupAsync(delivered.ToString(), 10)).Count);
 
         // Back down is refused while two flows hold records of one key, because the earlier ledger keeps one per key.

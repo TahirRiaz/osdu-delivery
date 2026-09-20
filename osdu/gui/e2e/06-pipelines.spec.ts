@@ -7,8 +7,8 @@ test.describe.serial("pipelines", () => {
   test("pipeline detail shows the delivery, records, YAML, definition, runs and schedules tabs", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     // The folder tree starts collapsed; a search expands it and surfaces the flow row.
-    await adminPage.getByTestId("filter-name").fill("wells-welllog");
-    await adminPage.getByTestId("table-row").filter({ hasText: "wells-welllog" }).first().click();
+    await adminPage.getByTestId("filter-name").fill("wells-welllog-03-header-delivery");
+    await adminPage.getByTestId("table-row").filter({ hasText: "wells-welllog-03-header-delivery" }).first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
 
     const tabs = adminPage.getByTestId("pipeline-tabs");
@@ -22,7 +22,7 @@ test.describe.serial("pipelines", () => {
     await tabs.getByRole("tab", { name: /yaml/i }).click();
     await expect(adminPage.getByTestId("pipeline-yaml")).toBeVisible();
     // Monaco renders the synced document: the flow name from the fixture YAML is on screen.
-    await expect(adminPage.getByTestId("pipeline-yaml").getByText("wells-welllog").first())
+    await expect(adminPage.getByTestId("pipeline-yaml").getByText("wells-welllog-03-header-delivery").first())
       .toBeVisible({ timeout: 30_000 });
 
     await tabs.getByRole("tab", { name: /definition/i }).click();

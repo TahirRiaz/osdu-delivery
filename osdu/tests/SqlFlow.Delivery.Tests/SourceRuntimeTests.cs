@@ -565,7 +565,7 @@ public sealed class SourceRuntimeTests : IDisposable
 
         Assert.False(result.Success);
         Assert.IsType<OperationFailure>(result.Result);
-        Assert.Contains("'wells-welllog' stopped: an outage: 2 records in a row could not reach the service", result.Error, StringComparison.Ordinal);
+        Assert.Contains("'wells-welllog-03-header-delivery' stopped: an outage: 2 records in a row could not reach the service", result.Error, StringComparison.Ordinal);
         Assert.Contains("the next run carries on from there", result.Error, StringComparison.Ordinal);
 
         // The two tries that failed are charged; the record the stop reached before it was sent is handed back untried.

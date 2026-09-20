@@ -159,7 +159,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
       ],
       { encoding: "utf8", timeout: 400_000, env: { ...process.env, SQLFLOW_E2E_CACHE_DB: E2E.catalogDb, SQLFLOW_OSDU_DB: E2E.osduDb } },
     );
-    expect(output).toContain("osdu-cache");
+    expect(output).toContain("wells-osdu-00-reference-cache");
   });
 
   // A delivery flow reads its records from ingestion tables, which the chain that fills them creates: the pre flows land
@@ -203,8 +203,8 @@ test.describe.serial("seed the estate via repo source sync", () => {
   test("the synced pipeline appears in the catalog", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
-    await adminPage.getByTestId("filter-name").fill("wells-welllog");
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "wells-welllog" });
+    await adminPage.getByTestId("filter-name").fill("wells-welllog-03-header-delivery");
+    const row = adminPage.getByTestId("table-row").filter({ hasText: "wells-welllog-03-header-delivery" });
     await expect(row.first()).toBeVisible({ timeout: 60_000 });
   });
 
@@ -221,7 +221,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
     await expect(projects).toHaveCount(1, { timeout: 30_000 });
     await expect(projects.first()).toContainText(SOURCE);
     // The project accordions start collapsed; a search opens the matching one and surfaces the flow row.
-    await adminPage.getByTestId("repo-pipeline-search").fill("wells-welllog");
-    await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog" }).first()).toBeVisible();
+    await adminPage.getByTestId("repo-pipeline-search").fill("wells-welllog-03-header-delivery");
+    await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog-03-header-delivery" }).first()).toBeVisible();
   });
 });

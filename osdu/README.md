@@ -34,7 +34,7 @@ SQLFlow's own pre-ingestion and ingestion flows replace the way data used to arr
 - the SQL Server source extraction into drops (`Engine/SqlSource/`), which an ingestion flow provides;
 - inline drops, replica slices and origins, and known-state publishing;
 - the drop-off area (endpoints, retention service, GUI page, API tests) and the submit-a-drop dialog;
-- the sample drops (`samples/wells-welllog/out/`) and the sample drop generator (`tools/SampleDrop`);
+- the sample drops (`samples/wells-welllog-03-header-delivery/out/`) and the sample drop generator (`tools/SampleDrop`);
 - the tests and documents of all of the above.
 
 ## State

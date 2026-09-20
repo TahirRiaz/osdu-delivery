@@ -26,10 +26,10 @@ internal static class SampleEstate
     public const string LogSource = "STAT_COMP";
 
     /// <summary>The well log flow of the sample estate, which streams payload files beside its documents.</summary>
-    public const string FlowName = "wells-welllog";
+    public const string FlowName = "wells-welllog-03-header-delivery";
 
     /// <summary>The wellbore master data flow, which streams no payload files.</summary>
-    public const string WellboreFlowName = "wells-wellbore";
+    public const string WellboreFlowName = "wells-wellbore-03-header-delivery";
 
     /// <summary>The mapping the wellbore flow pins, and the template version it fills.</summary>
     public const string WellboreMapping = "Wellbore@1.0.0";
@@ -158,7 +158,7 @@ internal static class SampleEstate
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         await MigrateModuleAsync(connectionString);
-        var flow = new DeliveryDocumentLoader().LoadCache(Path.Combine(SourceRoot(), "cache", "osdu-cache.yaml"));
+        var flow = new DeliveryDocumentLoader().LoadCache(Path.Combine(SourceRoot(), "cache", "wells-osdu-00-reference-cache.yaml"));
         var store = new OsduCacheStore(() => Context(connectionString));
         var builder = new SnapshotBuilder(store, flow.Scope, flow.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
         // The flow document is all a repository holds about a cache; the records that stand in for a capture sit

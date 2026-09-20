@@ -19,7 +19,7 @@ test.describe.serial("runs", () => {
     await adminPage.getByRole("option", { name: "e2e-repo" }).click();
     await adminPage.getByTestId("trigger-flow").fill("wells");
     // Exactly: the estate holds the pre and ingestion flows too, whose names start with the delivery flow's.
-    await adminPage.getByRole("option", { name: "wells-welllog", exact: true }).click();
+    await adminPage.getByRole("option", { name: "wells-welllog-03-header-delivery", exact: true }).click();
     // The flow declares logSource as required: it fills the scope predicate the plan reads the ingestion table with.
     await adminPage.getByTestId("trigger-operation").click();
     await adminPage.getByRole("option", { name: /^Plan/ }).click();

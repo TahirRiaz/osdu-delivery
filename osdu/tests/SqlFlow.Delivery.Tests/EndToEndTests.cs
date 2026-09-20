@@ -111,7 +111,7 @@ public class EndToEndTests : IDisposable
         {
             // The wellbore the sample well logs refer to is another flow's record of this ledger, queued and not yet
             // delivered: the well logs point at a record that is not in OSDU.
-            var wellboreFlow = FlowId.Of("wells-wellbore");
+            var wellboreFlow = FlowId.Of("wells-wellbore-03-header-delivery");
             const string WellboreId = "opendes:master-data--Wellbore:OSDU-DEV-1-A";
             var wellbore = new DeliveryKey(Guid.NewGuid());
             var submission = Guid.NewGuid();
@@ -119,7 +119,7 @@ public class EndToEndTests : IDisposable
             {
                 SubmissionId = submission,
                 FlowId = wellboreFlow,
-                FlowName = "wells-wellbore",
+                FlowName = "wells-wellbore-03-header-delivery",
                 MappingReference = "Wellbore@1.3.0",
                 RenderContext = "{}",
                 SourceConnection = "${env:OSDU_SAMPLE_DB}",
@@ -761,7 +761,7 @@ public class EndToEndTests : IDisposable
                 Assert.Equal(RecordStatus.Held, held!.Status);
                 Assert.True(held.Blocked);
                 Assert.Null(held.TargetId);
-                Assert.Contains("already claimed by flow 'wells-welllog'", held.LastError, StringComparison.Ordinal);
+                Assert.Contains("already claimed by flow 'wells-welllog-03-header-delivery'", held.LastError, StringComparison.Ordinal);
                 Assert.Equal(SampleEstate.FileName, held.PendingSourceFileName);
                 var attempt = Assert.Single(await ledger.ListAttemptsAsync(copy.Flow.Id, SampleEstate.Key(i), 10));
                 Assert.Equal((AttemptOutcome.Held, "render"), (attempt.Outcome, attempt.Phase));
