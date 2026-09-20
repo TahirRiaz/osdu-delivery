@@ -78,6 +78,11 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         // record's page finds its flow without waiting for its repository's next sync.
         services.AddHostedService<InterfaceCatalogBackfillService>();
 
+        // The records a ledger held before the identity index existed are indexed in the background, so looking a
+        // record up by a wellbore id or a file name answers for the whole ledger, not only for what has been planned
+        // since. Records staged from now on write their own rows as they are staged.
+        services.AddHostedService<RecordIdentityBackfillService>();
+
         if (rollout.Enabled)
         {
             services.AddHostedService<CacheUpdateRolloutService>();

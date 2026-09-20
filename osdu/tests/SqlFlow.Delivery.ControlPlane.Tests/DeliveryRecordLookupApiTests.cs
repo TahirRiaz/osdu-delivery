@@ -97,12 +97,14 @@ public sealed class DeliveryRecordLookupApiTests
             Assert.Equal("delivered", hitA.GetProperty("status").GetString());
             Assert.Equal($"opendes:master-data--Wellbore:{marker}-A", hitA.GetProperty("targetId").GetString());
 
-            // The OSDU id, the ingestion file name and the delivery key itself find a record too. The file name is the
-            // origin of what was delivered, which a record is given when a delivery promotes it: the held record was
-            // staged from the same file but never landed, so the file finds the delivered one alone.
+            // The OSDU id, the ingestion file name and the delivery key itself find a record too. A file finds every
+            // record built from it, landed or not: an operator asking "what came out of this file" means all of them,
+            // and the held one is exactly what they are looking for.
             Assert.Equal(1, (await LookupAsync(client, token, $"search=opendes:master-data--Well:{marker}")).GetProperty("total").GetInt64());
             var byFile = await LookupAsync(client, token, $"search={marker}_wellbores");
-            Assert.Equal(delivered.Value, Assert.Single(byFile.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
+            Assert.Equal(2, byFile.GetProperty("total").GetInt64());
+            Assert.Contains(byFile.GetProperty("items").EnumerateArray(), h => h.GetProperty("deliveryKey").GetGuid() == delivered.Value);
+            Assert.Contains(byFile.GetProperty("items").EnumerateArray(), h => h.GetProperty("deliveryKey").GetGuid() == held.Value);
             var byDeliveryKey = await LookupAsync(client, token, $"search={held.Value:D}");
             Assert.Equal(held.Value, Assert.Single(byDeliveryKey.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
 
@@ -126,6 +128,7 @@ public sealed class DeliveryRecordLookupApiTests
         {
             await using var osdu = SampleEstate.Context(cs);
             var keys = new[] { delivered.Value, held.Value, elsewhere.Value };
+            await osdu.DeliveryRecordIdentities.Where(i => keys.Contains(i.DeliveryKey)).ExecuteDeleteAsync();
             await osdu.DeliveryAttempts.Where(a => keys.Contains(a.DeliveryKey)).ExecuteDeleteAsync();
             await osdu.DeliveryRecords.Where(r => keys.Contains(r.DeliveryKey)).ExecuteDeleteAsync();
         }

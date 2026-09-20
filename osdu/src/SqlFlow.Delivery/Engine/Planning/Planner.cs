@@ -28,6 +28,12 @@ public sealed record PlanEntry
 
     public string? Label { get; init; }
 
+    /// <summary>
+    /// The values of the mapping's <c>dataset.identity</c> columns for the row: what an operator holds when they look
+    /// the record up. The ledger indexes them; they never enter the record.
+    /// </summary>
+    public IReadOnlyList<string> Identities { get; init; } = [];
+
     public string? TargetId { get; init; }
 
     public required PlannedAction Action { get; init; }
@@ -517,18 +523,18 @@ public sealed class Planner
         var gatedSets = header.GatedCacheSets;
         var ordered = flow.Source.LastModified is not null;
         var fileWatermark = (payload is not null || parts is not null) && flow.Change.PayloadDetect == ChangeDetection.LastModified;
-        var keyed = new List<(SourceRecord Record, DeliveryKey? Key, string SourceKey, string? Label)>(batch.Count);
+        var keyed = new List<(SourceRecord Record, DeliveryKey? Key, string SourceKey, string? Label, IReadOnlyList<string> Identities)>(batch.Count);
         foreach (var record in batch)
         {
             var key = renderer.DeriveKey(record.Row, out var values);
-            keyed.Add((record, key, SourceKey.Display(resolved.Mapping.Dataset.System, values), renderer.Label(record.Row)));
+            keyed.Add((record, key, SourceKey.Display(resolved.Mapping.Dataset.System, values), renderer.Label(record.Row), renderer.Identities(record.Row)));
         }
 
         var existing = _ledger is null
             ? new Dictionary<DeliveryKey, RecordState>()
             : await _ledger.GetRecordsAsync(flow.Id, keyed.Where(k => k.Key is not null).Select(k => k.Key!.Value), ct).ConfigureAwait(false);
 
-        foreach (var (record, key, sourceKey, label) in keyed)
+        foreach (var (record, key, sourceKey, label, identities) in keyed)
         {
             ct.ThrowIfCancellationRequested();
             if (key is null)
@@ -539,6 +545,7 @@ public sealed class Planner
                     SourceKey = sourceKey,
                     SourceKeyJson = record.SourceKeyJson,
                     Label = label,
+                    Identities = identities,
                     Origin = record.Origin,
                     Action = PlannedAction.Hold,
                     Reason = "dataset key incomplete: every key column must be non-empty",
@@ -557,6 +564,7 @@ public sealed class Planner
                 SourceKey = sourceKey,
                 SourceKeyJson = record.SourceKeyJson,
                 Label = label,
+                Identities = identities,
                 TargetId = state?.TargetId,
                 Existing = state,
                 Action = PlannedAction.Hold,

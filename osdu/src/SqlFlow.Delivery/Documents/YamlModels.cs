@@ -810,6 +810,8 @@ internal sealed class MappingDatasetYaml
     public List<string>? Key { get; set; }
 
     public string? Label { get; set; }
+
+    public List<string>? Identity { get; set; }
 }
 
 internal sealed class MappingEntryYaml

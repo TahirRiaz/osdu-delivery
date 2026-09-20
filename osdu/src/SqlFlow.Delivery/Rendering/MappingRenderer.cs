@@ -3,6 +3,7 @@ using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Json;
+using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 using ContentHash = SqlFlow.Delivery.Hashing.ContentHash;
@@ -162,6 +163,31 @@ public sealed class MappingRenderer
             _mapping.Dataset.Label,
             m => row.GetString(m.Groups["column"].Value[(DatasetColumn.Prefix.Length + 1)..]) ?? string.Empty).Trim();
         return label.Length == 0 ? null : label.Length <= 400 ? label : label[..400];
+    }
+
+    /// <summary>
+    /// The values of the mapping's <c>dataset.identity</c> columns for a row: what an operator holds when they come
+    /// looking for the record. Search only, like the label: the values are indexed by the ledger and never enter the
+    /// record or its hash. Empty values are left out, since nothing is found by them.
+    /// </summary>
+    public IReadOnlyList<string> Identities(SourceRow row)
+    {
+        ArgumentNullException.ThrowIfNull(row);
+        if (_mapping.Dataset.Identity.Count == 0)
+        {
+            return [];
+        }
+
+        var values = new List<string>(_mapping.Dataset.Identity.Count);
+        foreach (var column in _mapping.Dataset.Identity)
+        {
+            if (row.GetString(column) is { } value && value.Trim() is { Length: > 0 } trimmed)
+            {
+                values.Add(trimmed.Length <= RecordIdentityLimits.MaxTokenLength ? trimmed : trimmed[..RecordIdentityLimits.MaxTokenLength]);
+            }
+        }
+
+        return values;
     }
 
     /// <summary>Derives the delivery key from a row without rendering anything else.</summary>

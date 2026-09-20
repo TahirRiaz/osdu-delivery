@@ -206,6 +206,12 @@ public sealed record RecordState
     /// <summary>Human-readable label from the mapping's identity.label template (for search and display only).</summary>
     public string? Label { get; init; }
 
+    /// <summary>
+    /// The values of the columns the mapping declares as identities (<c>dataset.identity</c>): a wellbore id, a well
+    /// name, whatever an operator holds when they come looking. Search only, never part of the record.
+    /// </summary>
+    public IReadOnlyList<string> Identities { get; init; } = [];
+
     public required string MappingName { get; init; }
 
     /// <summary>The render context of the last delivered document, canonical JSON.</summary>

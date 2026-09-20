@@ -13,6 +13,17 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A record is found by what an operator holds, and its page shows the whole chain.** The ledger keeps an identity
+  index (`osdu.RecordIdentity`, migration `RecordIdentityIndex`, module version 1.9.0): one row per value a record is
+  known by, folded for comparison and kept as written for display, covering the columns a mapping declares as
+  identities (`dataset.identity`), the source key and its columns, the words of the label, the OSDU id and its own
+  part, and the ingestion file. One seek answers any of them across every flow, and each hit says which value matched
+  and what it is. A staging rewrites a record's rows as a set, so a record is found by what it is now; records held
+  before the index existed are filled in by a background pass.
+- **The record's journey spans pre-ingestion, ingestion and OSDU.** `GET
+  /api/v1/delivery/records/{flowId}/{key}/chain` names the runs that handled the record's ingestion file, read from
+  the platform's own record of processed files, so the milestone strip and the timeline show where a row is in the
+  whole estate rather than only in the delivery ledger. A file no run recorded says so instead of showing a blank.
 - **Records** (Operate) in the GUI: a record is found from what an operator holds (a source key, a label, an OSDU
   id, a delivery key or an ingestion file name) across every flow, narrowed by status, without knowing which flow
   delivered it; the Delivery page carries the same field. The API behind it is
@@ -27,7 +38,6 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   removal resolves it. The records filter gained `deliveredBy` for that set (`?delivered=` on a flow's Records
   tab), beside `submissionId`, which names the records a submission last planned and which a later submission
   moves on; the submission's page links to both sets.
-
 - The repository shape: SQLFlow vendored under `sqlflow/` as a squashed git subtree, everything OSDU Delivery adds
   under `osdu/`, and `OsduDelivery.sln` building both. `tools/check-vendored-sqlflow.sh` names the SQLFlow commit
   `sqlflow/` was vendored from, lists every file changed here since, and fails when a commit mixes `sqlflow/` with

@@ -20,6 +20,9 @@ dataset:
   key: [dataset.source_project, dataset.log_id]
   # Display and search only, never in the record: find a wellbore's logs by name in the GUI and the ledger.
   label: "{dataset.wellbore_uwi} / {dataset.log_source} / run {dataset.log_run} ({dataset.log_id})"
+  # What an operator holds when they come looking for this record: the ledger indexes each value, so the record is
+  # found by a wellbore id or a log id from the Records page without knowing which flow delivered it.
+  identity: [dataset.wellbore_uwi, dataset.log_id]
 
 parameters:
   dataPartition:

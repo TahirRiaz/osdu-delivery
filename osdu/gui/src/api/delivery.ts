@@ -239,6 +239,14 @@ export interface DeliveryRecordHit {
   updatedUtc: string;
   /** The interface of a source the record belongs to; null for a flow in the single form. */
   interface?: string | null;
+  /** The record's own values the term matched, and what each is; absent when the term was a delivery key. */
+  matched?: DeliveryRecordMatch[] | null;
+}
+
+/** One value of a record a lookup matched: the value as it was read, and what it is (identity, key, label, osdu, file). */
+export interface DeliveryRecordMatch {
+  value: string;
+  kind: string;
 }
 
 /** One step of a delivery try: what it did, how long it took, what the target answered. */
@@ -580,6 +588,43 @@ export interface DeliveryRecordListQuery extends PageQuery {
   runId?: string;
   /** Only delivered records whose last verify found drift or a missing record. */
   drifted?: boolean;
+}
+
+/**
+ * One run that handled the file a record came from: which flow, of which kind, when it ran and how it ended. The stage
+ * is the estate's own vocabulary (pre-ingestion, ingestion), derived from the flow's kind.
+ */
+export interface DeliveryChainStage {
+  stage: string;
+  runId: string;
+  pipelineId: string;
+  flowName: string;
+  flowKind: string;
+  wave: number;
+  status: string;
+  success: boolean;
+  ranUtc: string;
+  durationSeconds: number | null;
+  fileName: string;
+  filePath: string | null;
+  rows: number;
+  sizeBytes: number;
+  fileModifiedUtc: string | null;
+  error: string | null;
+}
+
+/**
+ * Where a record is in the whole chain: the ingestion file it came from, the row of it, and every run that handled that
+ * file through pre-ingestion and ingestion. `fileKnown` is false when the ledger holds no file for the record, or when
+ * no run in the catalog recorded one of that name; `note` then says which.
+ */
+export interface DeliveryRecordChain {
+  fileName: string | null;
+  rowNumber: number | null;
+  rowUpdatedUtc: string | null;
+  stages: DeliveryChainStage[];
+  fileKnown: boolean;
+  note: string | null;
 }
 
 /** What the Records page asks the ledger for: a term over every flow, and a custody state to narrow it to. */
@@ -1136,6 +1181,8 @@ export const deliveryApi = {
     get<DeliveryAttempt[]>(`${recordApiPath(record)}/attempts`, max ? { max } : {}),
   recordActivities: (record: DeliveryRecordRef, max?: number) =>
     get<DeliveryActivity[]>(`${recordApiPath(record)}/activities`, max ? { max } : {}),
+  /** Where the record is in the whole chain: the runs that carried its file through pre-ingestion and ingestion. */
+  recordChain: (record: DeliveryRecordRef) => get<DeliveryRecordChain>(`${recordApiPath(record)}/chain`),
   submission: (submissionId: string) => get<DeliverySubmissionDetail>(`/api/v1/delivery/submissions/${submissionId}`),
   submissionAttempts: (submissionId: string, max?: number) =>
     get<DeliveryAttempt[]>(`/api/v1/delivery/submissions/${submissionId}/attempts`, max ? { max } : {}),

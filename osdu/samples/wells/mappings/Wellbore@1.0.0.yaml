@@ -16,6 +16,8 @@ dataset:
   # (design.md section 5.1). Both halves derive the same delivery key from it with no coordination.
   key: [dataset.facility_name]
   label: "{dataset.facility_name}"
+  # The names an operator holds a wellbore by, indexed by the ledger for the Records page.
+  identity: [dataset.facility_name]
 
 parameters:
   dataPartition:

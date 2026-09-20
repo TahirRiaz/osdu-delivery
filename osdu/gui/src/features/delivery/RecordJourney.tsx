@@ -1,8 +1,8 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
-  CheckCircle2, CircleDashed, Eraser, FileInput, Hourglass, Inbox, PauseCircle, RotateCcw, ScanSearch, Send, ShieldCheck,
-  Trash2, Unlock, UserRoundCog, XCircle, type LucideIcon,
+  CheckCircle2, CircleDashed, Database, Eraser, FileInput, Hourglass, Inbox, PauseCircle, RotateCcw, ScanSearch, Send,
+  ShieldCheck, Trash2, Unlock, UserRoundCog, XCircle, type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
-import type { DeliveryActivity, DeliveryAttempt, DeliveryRecord } from "../../api/delivery";
+import type { DeliveryActivity, DeliveryAttempt, DeliveryChainStage, DeliveryRecord, DeliveryRecordChain } from "../../api/delivery";
 
 type Tone = "success" | "destructive" | "warning" | "info" | "muted";
 
@@ -113,12 +113,71 @@ function attemptDuration(attempt: DeliveryAttempt): string | null {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
+/** How long a run took, for a chain stage's detail line. */
+function runDuration(seconds: number | null): string | null {
+  if (seconds === null || !Number.isFinite(seconds)) {
+    return null;
+  }
+
+  return seconds < 1 ? `${Math.round(seconds * 1000)} ms` : seconds < 90 ? `${seconds.toFixed(1)} s` : `${(seconds / 60).toFixed(1)} min`;
+}
+
+/** The stage's icon and tone: where in the chain it is, and whether that run ended well. */
+function chainShape(stage: DeliveryChainStage): { icon: LucideIcon; tone: Tone } {
+  const tone: Tone = stage.success ? "success" : stage.status === "running" || stage.status === "queued" ? "info" : "destructive";
+  return { icon: stage.stage === "ingestion" ? Database : FileInput, tone };
+}
+
+/**
+ * The runs that carried the record's file through the estate before it reached the delivery ledger: pre-ingestion
+ * landing the file, ingestion loading it into the table the delivery flow reads. They are facts from the platform's
+ * own record of processed files, so they take their place in the same timeline as everything else.
+ */
+function chainEvents(chain: DeliveryRecordChain | undefined): JourneyEvent[] {
+  if (chain === undefined) {
+    return [];
+  }
+
+  return chain.stages.map((stage) => {
+    const { icon, tone } = chainShape(stage);
+    const duration = runDuration(stage.durationSeconds);
+    return {
+      id: `chain-${stage.runId}-${stage.stage}`,
+      at: stage.ranUtc,
+      title: stage.stage === "ingestion"
+        ? `Ingested: ${stage.flowName} loaded the file into its table`
+        : stage.stage === "pre-ingestion"
+          ? `Landed: ${stage.flowName} took the file in`
+          : `${stage.flowName} handled the file`,
+      detail: (
+        <div className="flex flex-col gap-0.5">
+          <Detail parts={[
+            <span key="f"><Mono>{stage.fileName}</Mono></span>,
+            stage.rows > 0 && `${stage.rows.toLocaleString()} row${stage.rows === 1 ? "" : "s"}`,
+            duration !== null && `took ${duration}`,
+            !stage.success && `ended ${stage.status}`,
+            <RunRef key="r" runId={stage.runId} />,
+            <RouterLink key="p" to={`/pipelines/${stage.pipelineId}`} className="text-[12px] text-primary hover:underline">the flow</RouterLink>,
+          ]} />
+          {stage.error !== null && <span className="text-[12px] text-destructive">{stage.error}</span>}
+        </div>
+      ),
+      tone,
+      icon,
+      order: 0,
+      testId: `journey-chain-${stage.stage}`,
+    } satisfies JourneyEvent;
+  });
+}
+
 /**
  * Every dated fact the ledger holds about the record, as one ordered story: when the row was received, when the record
  * entered the ledger, every dispatch with its outcome, every intervention with who asked for it, and what OSDU holds now.
  */
-function buildEvents(record: DeliveryRecord, attempts: DeliveryAttempt[], activities: DeliveryActivity[]): JourneyEvent[] {
-  const events: JourneyEvent[] = [];
+function buildEvents(
+  record: DeliveryRecord, attempts: DeliveryAttempt[], activities: DeliveryActivity[], chain: DeliveryRecordChain | undefined,
+): JourneyEvent[] {
+  const events: JourneyEvent[] = chainEvents(chain);
 
   if (record.sourceUpdatedUtc !== null) {
     events.push({
@@ -267,12 +326,33 @@ function buildEvents(record: DeliveryRecord, attempts: DeliveryAttempt[], activi
   });
 }
 
-/** The answers an operator came for, in one strip: received, planned, dispatched, landed, verified, removed. */
-function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[]): SummaryCell[] {
+/**
+ * The answers an operator came for, in one strip, in the order the estate moves a row: landed in pre-ingestion, loaded
+ * by ingestion, planned into the ledger, dispatched, landed in OSDU, verified, removed.
+ */
+function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[], chain: DeliveryRecordChain | undefined): SummaryCell[] {
   const dispatched = attempts.filter((a) => a.outcome === "delivered" || a.outcome === "failed" || a.outcome === "held");
   const failed = dispatched.filter((a) => a.outcome === "failed").length;
   const removed = attempts.find((a) => a.outcome === "deleted");
+  const pre = chain?.stages.find((s) => s.stage === "pre-ingestion");
+  const ing = chain?.stages.find((s) => s.stage === "ingestion");
   const cells: SummaryCell[] = [
+    {
+      label: "Pre-ingestion",
+      value: pre === undefined ? (chain === undefined ? "-" : "not recorded") : <RelativeTime value={pre.ranUtc} />,
+      caption: pre === undefined
+        ? (chain?.fileName ?? "no file recorded")
+        : `${pre.flowName}${pre.success ? "" : ` (${pre.status})`}`,
+      tone: pre !== undefined && !pre.success ? "destructive" : undefined,
+      testId: "milestone-pre",
+    },
+    {
+      label: "Ingestion",
+      value: ing === undefined ? (chain === undefined ? "-" : "not recorded") : <RelativeTime value={ing.ranUtc} />,
+      caption: ing === undefined ? "no ingestion run recorded for this file" : `${ing.flowName}${ing.success ? "" : ` (${ing.status})`}`,
+      tone: ing !== undefined && !ing.success ? "destructive" : undefined,
+      testId: "milestone-ing",
+    },
     {
       label: "Received",
       value: <RelativeTime value={record.sourceUpdatedUtc ?? record.pendingSourceUpdatedUtc} />,
@@ -327,16 +407,18 @@ function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[]): Summar
  * answered, every intervention and who asked for it, and where it stands. The strip on top answers the questions an
  * operator arrives with; the timeline under it is the evidence, oldest first, folded in the middle when it is long.
  */
-export function RecordJourney({ record, attempts, activities }: {
+export function RecordJourney({ record, attempts, activities, chain }: {
   record: DeliveryRecord;
   attempts: DeliveryAttempt[] | undefined;
   activities: DeliveryActivity[] | undefined;
+  /** The runs that carried the record's file through the estate; undefined while they are being read. */
+  chain: DeliveryRecordChain | undefined;
 }) {
   const [unfolded, setUnfolded] = useState(false);
   const loaded = attempts !== undefined && activities !== undefined;
   const events = useMemo(
-    () => (loaded ? buildEvents(record, attempts, activities) : []),
-    [loaded, record, attempts, activities]);
+    () => (loaded ? buildEvents(record, attempts, activities, chain) : []),
+    [loaded, record, attempts, activities, chain]);
 
   const folded = !unfolded && events.length > FOLD_ABOVE;
   const shown = folded ? [...events.slice(0, FOLD_HEAD), ...events.slice(events.length - FOLD_TAIL)] : events;
@@ -347,14 +429,15 @@ export function RecordJourney({ record, attempts, activities }: {
       <div className="flex flex-wrap items-baseline gap-2">
         <h2 className="text-[13px] font-medium">Journey</h2>
         <span className="text-[12px] text-muted-foreground">
-          what the ledger holds about this record, from the row that was received to what OSDU holds now
+          where this record has been: the file that arrived, the runs that carried it through pre-ingestion and
+          ingestion, and everything the delivery ledger then did with it
         </span>
       </div>
       {!loaded
         ? <Skeleton className="h-24 w-full rounded-md" />
         : (
           <>
-            <SummaryStrip cells={milestones(record, attempts)} data-testid="record-milestones" />
+            <SummaryStrip cells={milestones(record, attempts, chain)} data-testid="record-milestones" />
             <ol className="flex flex-col" data-testid="record-journey-events">
               {shown.map((event, index) => {
                 const Icon = event.icon;
@@ -390,6 +473,9 @@ export function RecordJourney({ record, attempts, activities }: {
               <div>
                 <Button variant="ghost" size="sm" className="h-7" onClick={() => setUnfolded(false)}>Fold the middle away</Button>
               </div>
+            )}
+            {chain !== undefined && !chain.fileKnown && chain.note !== null && (
+              <p className="text-[12px] text-muted-foreground" data-testid="record-chain-note">{chain.note}</p>
             )}
             {record.blocked && (
               <Badge variant="secondary" className="w-fit bg-warning/15 text-warning">

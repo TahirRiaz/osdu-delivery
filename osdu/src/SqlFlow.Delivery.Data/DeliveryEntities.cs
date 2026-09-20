@@ -365,6 +365,28 @@ public sealed class DeliveryLease
 }
 
 /// <summary>
+/// One value a record is findable by: a wellbore id, a well name, a key value, the OSDU id or its trailing part, a word
+/// of the label, or the ingestion file it came from. The token is folded to upper case, so a lookup compares folded
+/// terms and one index answers "starts with" for every identifier an operator may hold, across every flow. Rows belong
+/// to their record: they are rewritten whenever its identity changes, and deleted with it.
+/// </summary>
+public sealed class DeliveryRecordIdentity
+{
+    public Guid FlowId { get; set; }
+
+    public Guid DeliveryKey { get; set; }
+
+    /// <summary>The value folded to upper case: what a lookup seeks.</summary>
+    public string Token { get; set; } = string.Empty;
+
+    /// <summary>The value as it was read, for showing beside a hit.</summary>
+    public string Display { get; set; } = string.Empty;
+
+    /// <summary>Where the token came from: identity, key, label, osdu or file, as the ledger's identity kinds name them.</summary>
+    public string Kind { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// What a worker appended while it delivered under a lease, not yet applied to the record: a step that completed, or the
 /// outcome of a try. Rows are only ever added. The lease applies them to their records when the worker checkpoints or
 /// closes it, or when the lease is recovered, and deletes them in the same transaction, so each is applied once. The
@@ -993,6 +1015,13 @@ public static class DeliveryModel
     /// <summary>The longest lease token, and the longest worker name a lease records as its owner.</summary>
     public const int MaxLeaseTokenLength = 200;
 
+    /// <summary>
+    /// The longest identity token, and the longest display value beside it: 200 characters keep the
+    /// (token, flow, key) primary key well under SQL Server's 1700-byte limit for a nonclustered index key, and a
+    /// longer value is still found by its start. The ledger's <c>RecordIdentityLimits.MaxTokenLength</c> is this.
+    /// </summary>
+    public const int MaxIdentityTokenLength = 200;
+
     /// <param name="modelBuilder">The model being built.</param>
     /// <param name="sqlServer">Whether the model is for SQL Server, the provider whose default collation folds case.</param>
     public static void Configure(ModelBuilder modelBuilder, bool sqlServer)
@@ -1093,6 +1122,22 @@ public static class DeliveryModel
             // The records waiting for an id, released when the record holding that id lands: the filter keeps the index
             // as small as what is waiting, so the release every settle runs costs a seek.
             e.HasIndex(r => r.WaitingFor).HasFilter("[WaitingFor] IS NOT NULL");
+        });
+
+        modelBuilder.Entity<DeliveryRecordIdentity>(e =>
+        {
+            e.ToTable("RecordIdentity", SchemaName);
+            // One row per token per record: the token first, so the row is written and read by what it identifies.
+            e.HasKey(i => new { i.Token, i.FlowId, i.DeliveryKey });
+            e.Property(i => i.Token).HasMaxLength(MaxIdentityTokenLength).IsRequired();
+            e.Property(i => i.Display).HasMaxLength(MaxIdentityTokenLength).IsRequired();
+            e.Property(i => i.Kind).HasMaxLength(16).IsRequired();
+
+            // The lookup: any identifier an operator holds, as a prefix, across every flow. The primary key answers it,
+            // and the record it names is read by joining to the record's own key.
+            //
+            // The other direction: a record's own tokens, to rewrite or delete them when its identity changes.
+            e.HasIndex(i => new { i.FlowId, i.DeliveryKey });
         });
 
         modelBuilder.Entity<DeliveryAttempt>(e =>

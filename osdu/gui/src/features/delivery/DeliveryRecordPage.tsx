@@ -185,6 +185,13 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     queryFn: () => deliveryApi.recordActivities(ref, 200),
     refetchInterval: 10000,
   });
+  // Where the record has been before the ledger: the runs that carried its file through pre-ingestion and ingestion.
+  // They are past runs of other flows, so they are read once rather than polled.
+  const chain = useQuery({
+    queryKey: ["delivery", "record", flowId, deliveryKey, "chain"],
+    queryFn: () => deliveryApi.recordChain(ref),
+    staleTime: 60000,
+  });
   const task = useComputeTask(taskId);
   useTabTitle(query.data ? (query.data.record.label ?? query.data.record.sourceKey) : undefined);
 
@@ -381,7 +388,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
         <DetailPair label="Updated"><RelativeTime value={record.updatedUtc} absolute /></DetailPair>
       </DetailHeaderCard>
 
-      <RecordJourney record={record} attempts={attempts.data} activities={activities.data} />
+      <RecordJourney record={record} attempts={attempts.data} activities={activities.data} chain={chain.data} />
 
       {taskId !== null && (
         <Card className="gap-2 rounded-lg p-3" data-testid="record-task">

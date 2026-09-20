@@ -20,6 +20,8 @@ dataset:
   # The delivery key is UUIDv5 over (source system, source project, survey id): one record per survey.
   key: [dataset.source_project, dataset.survey_id]
   label: "{dataset.wellbore_uwi} / {dataset.survey_name} ({dataset.survey_id})"
+  # The wellbore and survey an operator holds this trajectory by, indexed by the ledger for the Records page.
+  identity: [dataset.wellbore_uwi, dataset.survey_id]
 
 parameters:
   dataPartition:

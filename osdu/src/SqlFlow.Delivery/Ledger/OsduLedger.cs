@@ -33,6 +33,12 @@ public sealed partial class OsduLedger : ILedger
 
     private const int ChunkSize = 500;
 
+    /// <summary>
+    /// Records whose identity tokens are rewritten in one statement round. It is smaller than a record chunk because
+    /// each record carries up to <see cref="RecordIdentityLimits.MaxPerRecord"/> rows of its own.
+    /// </summary>
+    private const int IdentityChunk = 100;
+
     private readonly Func<OsduDbContext> _factory;
     private readonly TimeProvider _time;
 
@@ -202,7 +208,9 @@ public sealed partial class OsduLedger : ILedger
         await using var db = Open();
         if (SqlServerLedgerBulk.Applies(db))
         {
-            return await SqlServerLedgerBulk.UpsertPendingAsync(db, flowId, records, WriteSlice, now, ct).ConfigureAwait(false);
+            var bulk = await SqlServerLedgerBulk.UpsertPendingAsync(db, flowId, records, WriteSlice, now, ct).ConfigureAwait(false);
+            await WriteIdentitiesAsync(db, flowId, Staged(records, bulk), ct).ConfigureAwait(false);
+            return bulk;
         }
 
         var delivering = StatusText.Of(RecordStatus.Delivering);
@@ -301,8 +309,160 @@ public sealed partial class OsduLedger : ILedger
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
 
-        return new PendingStaging(staged, refused, conflicts);
+        var result = new PendingStaging(staged, refused, conflicts);
+        await WriteIdentitiesAsync(db, flowId, Staged(records, result), ct).ConfigureAwait(false);
+        return result;
     }
+
+    /// <summary>
+    /// The records a staging actually wrote: every record it was given except the ones it refused as older and the ones
+    /// whose OSDU id another flow holds. Only those have a row to be findable by.
+    /// </summary>
+    private static IReadOnlyList<RecordState> Staged(IReadOnlyList<RecordState> records, PendingStaging result)
+    {
+        if (result.Refused.Count == 0 && result.Conflicts.Count == 0)
+        {
+            return records;
+        }
+
+        var skipped = result.Refused.Select(k => k.Value).Concat(result.Conflicts.Select(c => c.DeliveryKey.Value)).ToHashSet();
+        return records.Where(r => !skipped.Contains(r.DeliveryKey.Value)).ToList();
+    }
+
+    /// <summary>
+    /// Rewrites the identity tokens of the records given: what an operator can find each by, from the values the record
+    /// was staged with (the mapping's declared identities, its key values, its label, its OSDU id, its ingestion file).
+    /// A record's tokens are replaced as a set, so a staging that renames or re-keys a record leaves nothing stale
+    /// behind, and staging the same record again writes the same rows.
+    /// </summary>
+    private static async Task WriteIdentitiesAsync(OsduDbContext db, Guid flowId, IReadOnlyList<RecordState> records, CancellationToken ct)
+    {
+        if (records.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var chunk in records.Chunk(IdentityChunk))
+        {
+            ct.ThrowIfCancellationRequested();
+            var keys = chunk.Select(r => r.DeliveryKey.Value).ToArray();
+            var wanted = new List<DeliveryRecordIdentity>(chunk.Length * 4);
+            foreach (var record in chunk)
+            {
+                foreach (var token in TokensOf(record))
+                {
+                    wanted.Add(new DeliveryRecordIdentity
+                    {
+                        FlowId = flowId,
+                        DeliveryKey = record.DeliveryKey.Value,
+                        Token = token.Token,
+                        Display = token.Display,
+                        Kind = RecordIdentities.Text(token.Kind),
+                    });
+                }
+            }
+
+            var held = await db.DeliveryRecordIdentities
+                .Where(i => i.FlowId == flowId && keys.Contains(i.DeliveryKey))
+                .ToListAsync(ct).ConfigureAwait(false);
+            var by = (DeliveryRecordIdentity row) => (row.DeliveryKey, row.Token);
+            var keep = wanted.ToDictionary(by);
+            foreach (var row in held)
+            {
+                if (keep.Remove(by(row), out var still))
+                {
+                    // The same token, whose display or kind may have moved (a label word that is now a declared identity).
+                    row.Display = still.Display;
+                    row.Kind = still.Kind;
+                }
+                else
+                {
+                    db.DeliveryRecordIdentities.Remove(row);
+                }
+            }
+
+            db.DeliveryRecordIdentities.AddRange(keep.Values);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Writes the identity tokens of records the index does not hold yet: the records of a ledger that predates the
+    /// index, or that a failed pass left without rows. One bounded pass over the records after
+    /// <paramref name="after"/> in key order, so a caller walks the whole ledger a page at a time and can stop and
+    /// resume; the answer is the last key it wrote, or null when the ledger holds no more records.
+    ///
+    /// The tokens are derived from the record row, so a record whose mapping declares identities gains those on its
+    /// next staging: the row alone cannot say what the mapping declared, and nothing is invented here.
+    /// </summary>
+    public async Task<(Guid? LastKey, int Records, int Tokens)> BackfillIdentitiesAsync(Guid? after, int max, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(max, 1);
+        await using var db = Open();
+        var from = after ?? Guid.Empty;
+        var records = await db.DeliveryRecords.AsNoTracking()
+            .Where(r => r.DeliveryKey.CompareTo(from) > 0)
+            .OrderBy(r => r.DeliveryKey)
+            .Take(Math.Clamp(max, 1, 1000))
+            .Select(r => new
+            {
+                r.FlowId,
+                r.DeliveryKey,
+                r.SourceKey,
+                r.SourceKeyJson,
+                r.Label,
+                r.TargetId,
+                r.SourceFileName,
+                r.PendingSourceFileName,
+            })
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (records.Count == 0)
+        {
+            return (null, 0, 0);
+        }
+
+        var keys = records.Select(r => r.DeliveryKey).ToArray();
+        var indexed = (await db.DeliveryRecordIdentities.AsNoTracking()
+            .Where(i => keys.Contains(i.DeliveryKey))
+            .Select(i => new { i.FlowId, i.DeliveryKey })
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false))
+            .Select(i => (i.FlowId, i.DeliveryKey))
+            .ToHashSet();
+
+        var written = 0;
+        var tokens = 0;
+        foreach (var flow in records.Where(r => !indexed.Contains((r.FlowId, r.DeliveryKey))).GroupBy(r => r.FlowId))
+        {
+            var states = flow.Select(r => new RecordState
+            {
+                DeliveryKey = new DeliveryKey(r.DeliveryKey),
+                FlowId = r.FlowId,
+                SourceKey = r.SourceKey,
+                SourceKeyJson = r.SourceKeyJson,
+                Label = r.Label,
+                MappingName = string.Empty,
+                TargetId = r.TargetId,
+                SourceFileName = r.SourceFileName,
+                PendingSourceFileName = r.PendingSourceFileName,
+            }).ToList();
+            await WriteIdentitiesAsync(db, flow.Key, states, ct).ConfigureAwait(false);
+            written += states.Count;
+            tokens += states.Sum(s => TokensOf(s).Count);
+        }
+
+        return (records[^1].DeliveryKey, written, tokens);
+    }
+
+    /// <summary>What one record is findable by, as the identity index stores it.</summary>
+    private static IReadOnlyList<RecordIdentityToken> TokensOf(RecordState record)
+        => RecordIdentities.Of(
+            record.Identities,
+            record.SourceKey,
+            RecordIdentities.KeyValues(record.SourceKeyJson),
+            record.Label,
+            record.TargetId,
+            record.SourceFileName ?? record.PendingSourceFileName);
 
     /// <summary>Refuses records of another flow than the one a flow-scoped write was called for, naming the first.</summary>
     private static void RequireFlow(Guid flowId, IEnumerable<(Guid FlowId, DeliveryKey Key)> records)
@@ -851,11 +1011,12 @@ public sealed partial class OsduLedger : ILedger
 
     /// <summary>
     /// A UUID is a delivery key, which every flow reading the row holds a record under (a seek of the key index); anything
-    /// else is a prefix over the identity columns across every flow, at most <paramref name="candidates"/> from each
-    /// column's own index. A candidate is a record, flow and key together, so a match in one flow never brings in another
-    /// flow's record of the same row, and the records are read by joining from the few candidates to the primary key, so
-    /// the read stays the size of the candidates however many records the ledger holds. A status narrows the candidates
-    /// after they are found, so it costs nothing more than reading them: the identity indexes are what bound the read.
+    /// else is a prefix over the identity index, which holds every value a record is findable by (the mapping's declared
+    /// identities, the key values, the words of the label, the OSDU id and its trailing part, the ingestion file name),
+    /// folded to upper case. A candidate is a record, flow and key together, so a match in one flow never brings in
+    /// another flow's record of the same row, and the records are read by joining from the few candidates to the primary
+    /// key, so the read stays the size of the candidates however many records the ledger holds. A status narrows the
+    /// candidates after they are found, so it costs nothing more than reading them: the index is what bounds the read.
     /// </summary>
     private static IQueryable<DeliveryRecord> LookupFilter(OsduDbContext db, string term, int candidates, RecordStatus? status)
     {
@@ -863,8 +1024,7 @@ public sealed partial class OsduLedger : ILedger
         var rows = db.DeliveryRecords.AsNoTracking();
         var found = Guid.TryParse(t, out var key)
             ? rows.Where(r => r.DeliveryKey == key)
-            : PrefixRecordCandidates(rows, t, candidates)
-                .Distinct()
+            : IdentityCandidates(db, t, candidates)
                 .Join(rows, m => new { m.FlowId, m.DeliveryKey }, r => new { r.FlowId, r.DeliveryKey }, (_, r) => r);
         if (status is { } wanted)
         {
@@ -873,6 +1033,30 @@ public sealed partial class OsduLedger : ILedger
         }
 
         return found;
+    }
+
+    /// <summary>
+    /// The records, of any flow, one of whose identity tokens starts with <paramref name="term"/>: a seek of the identity
+    /// index in its own order, at most <paramref name="candidates"/> of them. A record with several matching tokens is one
+    /// candidate, because the distinct is over the record, not the token.
+    /// </summary>
+    private static IQueryable<RecordIdentityRow> IdentityCandidates(OsduDbContext db, string term, int candidates)
+    {
+        var folded = RecordIdentities.Fold(term);
+        return db.DeliveryRecordIdentities.AsNoTracking()
+            .Where(i => i.Token.StartsWith(folded))
+            .OrderBy(i => i.Token)
+            .Select(i => new RecordIdentityRow { FlowId = i.FlowId, DeliveryKey = i.DeliveryKey })
+            .Take(candidates)
+            .Distinct();
+    }
+
+    /// <summary>A record named by an identity token: the pair the lookup joins back to the record on.</summary>
+    private sealed class RecordIdentityRow
+    {
+        public Guid FlowId { get; init; }
+
+        public Guid DeliveryKey { get; init; }
     }
 
     /// <summary>

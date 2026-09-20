@@ -95,11 +95,13 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | --- | --- | --- |
 | `GET /flows/{pipelineId}/stats` | read | Record counts by state, drift, the last 24 hours, the last submission. For a source with several interfaces, the counts of every interface added up (`interfaces` says how many, `flowId` is empty), or one interface's with `?interface=`. |
 | `GET /flows/{pipelineId}/interfaces` | read | The flow's interfaces in document order: each one's name, ledger identity (`flowId`) and the name it is derived from (`ledger`), route and why (`route`, `routeReason`), mapping, the kind the mapping fills as the last sync read it, record table, what the document declares it waits for (`after`), its counts, and the order a run takes: its `wave`, `waitsFor` and `notWaitedFor` (each an interface with `origin`, `after` or `schema`, and `why`). When the order cannot be worked out (a mapping the repository's sync did not read, a template the catalog does not hold, interfaces that wait for each other), `orderProblem` says why and the order shown is `after:` alone. A flow in the single form lists one entry with no name. |
-| `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId`, `runId` (the records that run touched, through its attempts), `drifted`. |
+| `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId` (the records the submission last planned), `deliveredBy` (the records it delivered, which stay its own however many submissions touch them afterwards), `runId` (the records that run touched, through its attempts), `drifted`. |
+| `GET /records?search=&status=` | read | One record from anywhere, across every flow: `search` is a delivery key, or the start of any value the record is known by (an identity the mapping declares, the source key or one of its columns, a word of the label, the OSDU id or its own part, the ingestion file). Paged; each hit carries the values that matched and what each is. It seeks `osdu.RecordIdentity`, so it answers at production volume and counts no further than its candidate bound. |
 | `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, the path each removal scope calls, and the method the record scope calls its path with (`recordMethod`: `POST`, or `DELETE` for a DDMS's own removal). On the ddms route the paths are those of the collection serving the kind the flow's synced mapping renders, and `ddms` says which collection of which DDMS that is (null on the other routes); a scope the flow cannot route reads `(not routable: ...)`, and one its DDMS refuses (the Well Delivery DDMS's history scope) `(refused: ...)`; neither is offered. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
 | `GET /records/{flowId}/{key}`, `/attempts`, `/activities` | read | One flow's record, its delivery history, its interventions. A record is addressed by the ledger's flow id and the delivery key together, because the same row read by several flows is one record per flow. |
+| `GET /records/{flowId}/{key}/chain` | read | Where the record is in the whole chain: the ingestion file its version came from, its row, and every run that handled a file of that name through pre-ingestion and ingestion, newest first, each with its flow, stage, outcome and rows. Read from the platform's record of processed files, so the runs are ones that actually ran; `fileKnown` is false with a `note` when the ledger holds no file for the record or no run recorded one of that name. |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
@@ -272,12 +274,20 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 
 - **Delivery** (Operate): every delivery flow with delivered versus total, pending, held, failed, drifted, and
   its last submission, and a field that opens Records looked up for whatever is typed into it.
-- **Records** (Operate): where an operator starts from what they hold rather than from a flow. A source key, a
-  label, an OSDU id or an ingestion file name lists every record across every flow that starts with it; a delivery
-  key lands on that record; a status narrows the list. It is the ledger's indexed lookup (`GET
-  /api/v1/delivery/records?search=&status=`), the same one the combined search reads, so it answers at production
-  volume and counts no further than its candidate bound. The term and the status are in the URL, so a lookup is a
-  link that can be sent on, and a row opens the record.
+- **Records** (Operate): where an operator starts from what they hold rather than from a flow. Any value a record is
+  known by lists the records that start with it, across every flow: a wellbore id or a well name the mapping declares
+  in `dataset.identity`, the source key or one of its key columns, a word of the label, the OSDU id or its own part,
+  and the ingestion file the record came from. A delivery key lands on that record, and a status narrows the list.
+  Every row says which of the record's values matched, and what that value is. It is the ledger's identity index
+  (`GET /api/v1/delivery/records?search=&status=`), the same lookup the combined search reads: one seek per term,
+  counted no further than its candidate bound. The term and the status are in the URL, so a lookup is a link that
+  can be sent on, and a row opens the record.
+- **The identity index.** `osdu.RecordIdentity` holds one row per value per record, the value folded to upper case
+  for comparison and kept as written for display, with the kind it came from. A staging writes a record's rows as a
+  set, so a row that moves on (a new file, a renamed label, a new wellbore id) is found by what it is now and no
+  longer by what it was. A mapping declares which of its dataset's columns are identities; without a declaration a
+  record is still found by its key, label, OSDU id and file. Records a ledger held before the index existed are
+  filled in by a background pass, a page at a time, which repeats every few hours and costs nothing once done.
 - **A flow's page** (Pipelines): the Delivery tab (stats, probe the target, release blocked),
   the Records tab (search and filters, every row opens the record), the Submissions tab, which says for each
   submission which selection it read. **A source that delivers several interfaces is read one interface at a time**,
@@ -290,12 +300,18 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   or at the whole filtered set. A run page links here filtered to the records that run touched, and a submission's
   page links here twice: to the records it last planned (`?submission=`, which a later submission moves on) and to
   the records it delivered (`?delivered=`, which stay its own however many submissions touch them afterwards).
-- **A record's page**: the answers an operator arrives with first, as a journey: a strip saying when the row was
-  received (with the ingestion file and row), when it was planned, how many times it was dispatched and how many
+- **A record's page**: the answers an operator arrives with first, as a journey across the whole chain. The strip
+  reads in the order the estate moves a row: **pre-ingestion** (the run that landed the file), **ingestion** (the run
+  that loaded it into the table the delivery flow reads), then received, planned, dispatched, landed, verified and
+  removed. The two chain stages come from the platform's own record of processed files
+  (`GET /api/v1/delivery/records/{flowId}/{key}/chain`), matched on the ingestion file the record carries, so they
+  name runs that actually ran; a file no run recorded says so rather than showing a blank. The rest of the strip says
+  when the row was received (with the ingestion file and row), when it was planned, how many times it was dispatched and how many
   failed, when it landed and as which version, when it was last verified and what that found, and whether it was
   removed; under it the timeline of every dated fact the ledger holds, oldest first, every dispatch with its phase,
   duration, worker, run, submission, the origin it sent and what OSDU answered, every intervention with who asked for
-  it, and folded in the middle when it is long. Then custody state, hashes, versions, the received-from file and row,
+  it, and folded in the middle when it is long. The pre-ingestion and ingestion runs take their place in the same
+  timeline, each with the rows it handled and a link to its run and flow. Then custody state, hashes, versions, the received-from file and row,
   the pending document, the render context; the history of attempts and interventions as tables; Verify, Redeliver,
   Read back, Source row (the record's rows as the ingestion tables hold them now, read on a node), Release and
   Remove from OSDU.
@@ -783,3 +799,9 @@ above it then holds its record before anything is sent, instead of failing after
 ([protocols.md](protocols.md#the-bulk-ceilings); [design.md](design.md) section 14.3 has the history). A 413 also holds
 the record rather than creating a duplicate, but the ceiling still needs to be intentional, and the files the
 pre-ingestion side produces sized under it. The control plane's own ceiling is `ControlPlane:MaxRequestBodyMegabytes`.
+
+The identity index has a ceiling of its own, and it is per record rather than per request: one record contributes at
+most 24 rows of at most 200 characters each, so a ledger of ten million records carries on the order of ten gigabytes
+of index for a typical estate (eight values of a few dozen characters each). That is the price of finding a record by
+any name it is known by. A mapping that declares many `dataset.identity` columns pays more of it; one that declares
+none still gets its key, label, OSDU id and file.

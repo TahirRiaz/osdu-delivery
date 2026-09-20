@@ -92,6 +92,7 @@ Each of these lets a host add something of its own without SQLFlow knowing what 
 | `929e535` | A link sets the pipelines page's repo and kind filters. |
 | `774401a` | The caller of an attributed write is named through one public rule a host module can use (`RequestActor`). |
 | `f217fe1` | A repository's contents read as the folder tree they are, at any depth, instead of one flat list per top-level folder. A project's card renders through the shared workbench tree primitive (`components/Tree.tsx`), which gained an optional `testId` on a row; `features/pipelines/folderTree.ts` builds the tree from repo-relative paths. It matters to any repository laid out with folders inside a project, which is every repository that groups a source's flows, mappings and data together. |
+| (this change) | The catalog finds the runs that handled a file by its name (`catalog.RunFile(Name, RunId)`, migration `RunFileByName`). The catalog already answered "what did this run process"; this is the other direction, "what has been done with this file", which is what tracing a row back through the flows that landed and loaded it needs, and without it that question scans every processed file the estate has recorded. It is a fix upstream wants regardless of this project: any estate that asks where a file went pays the scan today. |
 
 ## 3. Taking these upstream
 
@@ -99,8 +100,8 @@ Each of these lets a host add something of its own without SQLFlow knowing what 
    anything in `osdu/`.
 2. The extension points in section 2 are additive. SQLFlow's own flow kinds and endpoints keep their behaviour, and
    every point has tests in `sqlflow/tests` that exercise it with a probe module rather than with this project's.
-3. Four catalog migrations came with them: `RunKindArgumentsAndRequester`, `RunFanOutAndResult`,
-   `RequestLineageRecompute` and `SweepOrphanFileNodes`. They are SQLFlow's own, in SQLFlow's schema.
+3. Five catalog migrations came with them: `RunKindArgumentsAndRequester`, `RunFanOutAndResult`,
+   `RequestLineageRecompute`, `SweepOrphanFileNodes` and `RunFileByName`. They are SQLFlow's own, in SQLFlow's schema.
 
 When SQLFlow is pulled in again (`git subtree pull --prefix=sqlflow --squash B:/SQLFlowV3 main`), a conflict can only
 arise in the files that carry the points above. Resolve it keeping both SQLFlow's change and the extension point, then

@@ -1204,6 +1204,7 @@ dataset:
   system: wells                   # enters the delivery key
   key: [dataset.source_project, dataset.log_id]          # the columns the delivery key, and so the OSDU id, is derived from
   label: "{dataset.wellbore_uwi} / {dataset.log_source}"   # display and search only; never in the record
+  identity: [dataset.wellbore_uwi, dataset.log_id]        # indexed for lookup; never in the record
 
 parameters:                        # what the mapping accepts from the flow; values enter the render context
   dataPartition: { required: true }  # always declared: ids are minted in it, so letters, digits, _ - . only
@@ -1258,6 +1259,7 @@ fixtures:                          # whole-record regression fixtures, rendered 
 | `dataset.system` | The source system. It enters the delivery key, and so the OSDU id: two mappings that deliver the same rows into the same entity type and partition need different systems or keys (the OSDU id carries the entity type, not the kind's version), because one OSDU record belongs to one flow ([ledger.md](ledger.md#one-source-several-flows)). |
 | `dataset.key` | The columns of the dataset's row that identify a record, in order, each written `dataset.<column>`. The delivery key, and so the OSDU id, is derived from them. A key column need not be written into the record. |
 | `dataset.label` | Optional display text for the ledger and the GUI, with `{dataset.<column>}` tokens, cut at 400 characters. It never enters the record. |
+| `dataset.identity` | Optional list of the dataset's own columns whose values identify the record to a person (a wellbore id, a log id). Every value is indexed by the ledger, so the Records page finds the record by any of them across every flow. Search only: it never enters the record. |
 | `parameters` | Values the flow supplies under `render.parameters`, each declared with `required`, `default` and `description`. `dataPartition` is always declared, and a flow value for a parameter the mapping does not declare is refused. |
 | `mappings` | The entries, at least one. |
 | `fixtures` | Example rows and the exact record each must render to. |

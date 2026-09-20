@@ -78,6 +78,13 @@ public sealed record MappingDataset
 
     /// <summary>Display text with <c>{dataset.column}</c> tokens, for the ledger and the GUI; never part of the record.</summary>
     public string? Label { get; init; }
+
+    /// <summary>
+    /// The dataset's own columns whose values identify the record to a person (a wellbore id, a well name, a survey
+    /// name), without the <c>dataset.</c> prefix. The ledger indexes each value so the record is found by it across
+    /// every flow; search only, never part of the record.
+    /// </summary>
+    public IReadOnlyList<string> Identity { get; init; } = [];
 }
 
 public sealed record MappingParameter

@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Delivery.Data;
@@ -11,7 +12,15 @@ namespace SqlFlow.Delivery.ControlPlane.Api;
 /// </summary>
 public sealed record DeliveryRecordHitDto(
     Guid DeliveryKey, Guid FlowId, string? FlowName, Guid? PipelineId, string SourceKey, string? Label, string? TargetId,
-    string Status, DateTime? LastDeliveredUtc, DateTime UpdatedUtc, string? Interface = null);
+    string Status, DateTime? LastDeliveredUtc, DateTime UpdatedUtc, string? Interface = null,
+    IReadOnlyList<DeliveryRecordMatchDto>? Matched = null);
+
+/// <summary>
+/// One value of a record that the term matched, and what that value is (an identity the mapping declares, a key value,
+/// a word of the label, the OSDU id, the ingestion file). A hit says why it is a hit, so an operator searching a well
+/// name sees the name they typed rather than having to work out which column answered.
+/// </summary>
+public sealed record DeliveryRecordMatchDto(string Value, string Kind);
 
 /// <summary>
 /// How a record the ledger found is described to a reader that holds no flow: the Records page's lookup and the combined
@@ -19,9 +28,16 @@ public sealed record DeliveryRecordHitDto(
 /// </summary>
 internal static class DeliveryRecordHits
 {
-    /// <summary>The records as hits, each with the pipeline and interface its ledger belongs to, in the order given.</summary>
+    /// <summary>The matched values shown beside one hit, so a row says why it is a hit without becoming a list of its own.</summary>
+    public const int MaxMatchesShown = 3;
+
+    /// <summary>
+    /// The records as hits, each with the pipeline and interface its ledger belongs to, in the order given. With a
+    /// <paramref name="term"/>, each hit also carries the values of the record that start with it, read from the same
+    /// identity index the lookup seeks, so the page can say which value answered.
+    /// </summary>
     public static async Task<IReadOnlyList<DeliveryRecordHitDto>> DescribeAsync(
-        CatalogDbContext catalog, OsduDbContext osdu, IReadOnlyList<RecordState> records, CancellationToken ct)
+        CatalogDbContext catalog, OsduDbContext osdu, IReadOnlyList<RecordState> records, CancellationToken ct, string? term = null)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(osdu);
@@ -32,17 +48,57 @@ internal static class DeliveryRecordHits
         }
 
         var pipelines = await DeliveryPipelines.ForLedgersAsync(catalog, osdu, records.Select(r => r.FlowId).Distinct().ToList(), ct).ConfigureAwait(false);
-        return records.Select(record => Describe(record, pipelines.GetValueOrDefault(record.FlowId))).ToList();
+        var matches = await MatchesAsync(osdu, records, term, ct).ConfigureAwait(false);
+        return records
+            .Select(record => Describe(
+                record,
+                pipelines.GetValueOrDefault(record.FlowId),
+                matches.GetValueOrDefault((record.FlowId, record.DeliveryKey.Value))))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Which of each record's identity values the term matched, at most <see cref="MaxMatchesShown"/> per record. One
+    /// seek of the same index the lookup used, over the records of the page alone.
+    /// </summary>
+    private static async Task<Dictionary<(Guid FlowId, Guid DeliveryKey), List<DeliveryRecordMatchDto>>> MatchesAsync(
+        OsduDbContext osdu, IReadOnlyList<RecordState> records, string? term, CancellationToken ct)
+    {
+        var by = new Dictionary<(Guid, Guid), List<DeliveryRecordMatchDto>>();
+        if (string.IsNullOrWhiteSpace(term) || Guid.TryParse(term.Trim(), out _))
+        {
+            // A delivery key matched the record itself, not one of its values; there is nothing to explain.
+            return by;
+        }
+
+        var folded = RecordIdentities.Fold(term);
+        var keys = records.Select(r => r.DeliveryKey.Value).Distinct().ToList();
+        var rows = await osdu.DeliveryRecordIdentities.AsNoTracking()
+            .Where(i => keys.Contains(i.DeliveryKey) && i.Token.StartsWith(folded))
+            .OrderBy(i => i.Token)
+            .Select(i => new { i.FlowId, i.DeliveryKey, i.Display, i.Kind })
+            .ToListAsync(ct).ConfigureAwait(false);
+        foreach (var row in rows)
+        {
+            var list = by.TryGetValue((row.FlowId, row.DeliveryKey), out var held) ? held : by[(row.FlowId, row.DeliveryKey)] = [];
+            if (list.Count < MaxMatchesShown)
+            {
+                list.Add(new DeliveryRecordMatchDto(row.Display, row.Kind));
+            }
+        }
+
+        return by;
     }
 
     /// <summary>One record as a hit; a record whose flow no synced repository holds any more is named by its ledger alone.</summary>
-    public static DeliveryRecordHitDto Describe(RecordState record, LedgerPipeline? found)
+    public static DeliveryRecordHitDto Describe(RecordState record, LedgerPipeline? found, IReadOnlyList<DeliveryRecordMatchDto>? matched = null)
     {
         ArgumentNullException.ThrowIfNull(record);
         return new DeliveryRecordHitDto(
             record.DeliveryKey.Value, record.FlowId, found?.Pipeline.Name, found?.Pipeline.Id, record.SourceKey,
             record.Label, record.TargetId, record.Status.ToString().ToLowerInvariant(), record.LastDeliveredUtc, record.UpdatedUtc,
-            found is { Interface.Length: > 0 } ? found.Interface : null);
+            found is { Interface.Length: > 0 } ? found.Interface : null,
+            matched is { Count: > 0 } ? matched : null);
     }
 
     /// <summary>How a hit names where it belongs: the pipeline, and the interface of a source.</summary>

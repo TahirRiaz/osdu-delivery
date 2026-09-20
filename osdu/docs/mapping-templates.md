@@ -110,6 +110,7 @@ dataset:
   system: wells
   key: [dataset.source_project, dataset.log_id]
   label: "{dataset.wellbore_uwi} / {dataset.log_source} / run {dataset.log_run} ({dataset.log_id})"
+  identity: [dataset.wellbore_uwi, dataset.log_id]   # indexed for lookup; never in the record
 
 parameters:
   dataPartition: { required: true }
@@ -156,6 +157,7 @@ mappings:
 | `dataset.system` | The source system. It enters the delivery key, and so the OSDU id: two mappings that deliver the same rows into the same entity type and partition need different systems or keys (the OSDU id carries the entity type, not the kind's version), because one OSDU record belongs to one flow ([ledger.md](ledger.md#one-source-several-flows)). |
 | `dataset.key` | The dataset columns that identify a record, in order. The delivery key, and so the OSDU id, is derived from them. |
 | `dataset.label` | Optional display text for the ledger and the GUI, with `{dataset.column}` tokens. It never enters the record. |
+| `dataset.identity` | Optional list of the dataset's own columns whose values identify the record to a person (a wellbore id, a well name, a log id). The ledger indexes every value, so the Records page finds the record by any of them across every flow, without knowing which flow delivered it. Search only: like the label, an identity never enters the record or its hash. |
 | `parameters` | Values the flow supplies under `render.parameters`. `dataPartition` is always declared. |
 | `mappings` | The entries, described below. |
 | `fixtures` | Example rows and the exact record each must render to. Every run checks them before rendering. |

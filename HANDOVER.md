@@ -28,6 +28,46 @@ is never modified.
 Run the suites one at a time. A build while a suite is running swaps the binaries under it: doing that once cost 150
 false failures in `SqlFlow.ControlPlane.Tests`, which passes on its own.
 
+## Tracing an id through the chain (2026-09-20, second pass)
+
+The first pass made the delivery ledger reachable; this one answers the actual question: **take an id and say where it
+is across pre-ingestion, ingestion and OSDU.**
+
+- **The identity index** (`osdu.RecordIdentity`, migration `RecordIdentityIndex`, module version **1.9.0**). One row
+  per value a record is known by: the columns a mapping declares in the new `dataset.identity`, the source key and its
+  columns, the words of the label, the OSDU id and its part after the last colon, and the ingestion file. Folded to
+  upper case in `Token`, kept as written in `Display`, with `Kind`. The primary key leads with the token, so any
+  identifier is one seek across every flow. `RecordIdentities` in `osdu/src/SqlFlow.Delivery/Ledger/RecordIdentity.cs`
+  is the only place the token set is decided. A staging rewrites a record's rows as a set, so a record is found by what
+  it is now, not what it was; `RecordIdentityBackfillService` fills in records the ledger already held, a page at a
+  time, repeatable and resumable. The lookup's old four-column prefix scan is gone.
+- **The chain** (`GET /api/v1/delivery/records/{flowId}/{key}/chain`, `RecordChain.cs`). The record carries the
+  ingestion file its version came from; `catalog.RunFile` says which runs handled a file of that name, so the runs that
+  landed and loaded it are facts, not a reconstruction. The flow's kind names the stage (a file kind is
+  pre-ingestion, `ing` is ingestion). A file no run recorded returns no stages and a note saying why. In the e2e
+  estate the chain ran through the CLI, so `catalog.RunFile` is empty there and the note is what the spec asserts.
+- **`sqlflow:` commit `c0ad79d`** added `catalog.RunFile(Name, RunId)` (migration `RunFileByName`) with its own test.
+  Without it, "which runs handled this file" scans every processed file the estate has recorded. It is generic and
+  upstream wants it regardless; it is recorded in `docs/sqlflow-changes.md`.
+- The GUI: the Records page shows which value matched and what it is; the record's journey strip opens with
+  pre-ingestion and ingestion before the ledger's own milestones, and the chain runs take their place in the timeline.
+- Verification: `SqlLedgerTests` (identity tokens, restaging, backfill, the batch filter), `SqlServerLedgerTests`,
+  `DeliveryRecordLookupApiTests`, `DeliveryRecordChainApiTests`, `RunFileByNameTests` (in `sqlflow/`), and
+  `20-record-trace.spec.ts` extended for the declared wellbore id and the chain.
+
+| Suite | Result on 2026-09-20 |
+| --- | --- |
+| `osdu/tests/SqlFlow.Delivery.Tests` | 1760 passed, 1 failed under load (`EtpSessionTests`, a live local socket; 15/15 alone) |
+| `osdu/tests/SqlFlow.Delivery.ControlPlane.Tests` | 34 passed |
+| `sqlflow/tests/SqlFlow.ControlPlane.Tests` | 571 passed, 3 skipped (foreign engines) |
+| `osdu/gui` e2e specs 19 and 20 | 3 passed |
+| `osdu/gui` typecheck, lint, build | clean |
+| `bash tools/check-vendored-sqlflow.sh` | exit 0 |
+
+Two tests now fail only when the machine is busy and pass alone: `SqlServerChainTests` and `EtpSessionTests`. Both
+open something real (a SQL Server transaction, a local WebSocket), which is why the note at the top of this file
+about running the suites one at a time matters.
+
 ## Record traceability in the GUI (2026-09-20)
 
 The ledger and the API had held every trace from the start (a record's attempts, interventions, redelivery, release,
@@ -53,6 +93,18 @@ single and bulk removal); what was missing was the way to them from the product'
   because the Pipelines page now renders a folder tree (`treeitem`) while those specs still click `table-row`: that
   is the concurrent pipelines-tree work, not this change. The removal dialog now scrolls inside a short viewport;
   at 1280x720 its buttons were past the bottom of the window.
+- **A control plane started with `dotnet run` prints every request and every SQL statement.** SQLFlow's
+  `appsettings.json` (framework categories at Warning) reaches the OSDU host's build output through the project
+  reference, so a published container has it; `dotnet run` takes the project directory as its content root, where
+  there is no such file, so `dev.bat`, F5 and the e2e host log at Information for everything. Do not add an
+  `appsettings.json` to the OSDU host: it would replace the platform's file in the output and change what the
+  containers run with (`Bootstrap:ApplyMigrations`, rate limits, dispatch timings). Start the host from its output
+  instead (`SqlFlow.Delivery.ControlPlane.Host.exe --contentroot <bin folder>`), or set the two
+  `Logging__LogLevel__Microsoft.*` variables. The worker hosts log through the CLI's logger
+  (`SqlFlow.Cli/Program.cs`, minimum level Information, no category filters); SQLFlow's worker opens no catalog
+  connection, but the OSDU worker runs EF Core through the ledger, so its container logs likely carry every ledger
+  statement. That is a follow-up: a `sqlflow:` extension point for logging filters on the worker, or an OSDU-side
+  filter, not a change made here.
 - Running the e2e beside a leftover e2e control plane: one was still listening on 5299 from the Debug bin, which
   also blocks a Debug build of the host. Build the hosts in Release, run with `SQLFLOW_E2E_DOTNET_CONFIGURATION=Release`
   and `SQLFLOW_E2E_GUI_PORT=5174` (5173 is `dev.bat`'s GUI), and stop only the orphaned 5299 host.

@@ -38,6 +38,30 @@ The platform's run row carries the submission too: `Run.SubmissionId` when a run
 `Run.ResultSubmissionId` for the submission a deliver run registered or completed, so a submission page lists
 the runs that carried it.
 
+### `osdu.RecordIdentity`: what a record is findable by
+
+One row per value a record is known by, so an operator holding a wellbore id, a well name, a log id, an OSDU id or
+the name of the file a record arrived in finds it across every flow without knowing which flow delivered it.
+
+| Column | Purpose |
+| --- | --- |
+| `Token`, `FlowId`, `DeliveryKey` | Primary key, the token first: a prefix search seeks it, and a record of any flow is reached from the value alone. |
+| `Token` | The value folded to upper case, which is what a term is compared against (terms are folded the same way). |
+| `Display` | The value as it was read, for showing beside a hit. |
+| `Kind` | Where the value came from: `identity` (a column the mapping declares in `dataset.identity`), `key` (the source key or one of its columns), `label` (a word of the rendered label), `osdu` (the id, and its part after the last colon), `file` (the ingestion file). |
+
+A record's rows are written when it is staged, as a set: a staging deletes what the record no longer is and inserts
+what it now is, so a row that moved to a new file, a new wellbore id or a renamed label is found by what it is now.
+A record contributes at most `RecordIdentityLimits.MaxPerRecord` rows, each at most `MaxTokenLength` characters, so
+a record costs a known number of small rows however wide its source row is. Values shorter than `MinTokenLength`
+are not stored, because they match too much to be worth an index row; a short *term* still seeks, since the floor is
+on what is stored, not on what is typed.
+
+Records a ledger held before this table existed are filled in by a background pass in the control plane
+(`RecordIdentityBackfillService`), a page at a time in key order, skipping records the index already holds, so it is
+resumable, repeatable and costs nothing once complete. It derives tokens from the record row alone, so a record gains
+the identities its mapping declares when it is next staged.
+
 ### `osdu.Record`: the current state of one deliverable
 
 | Column | Purpose |
@@ -554,6 +578,10 @@ The same pass clears the captured run log of settled activities past the cut-off
 without bound, while the audit row itself, its flow, kind, actor, times, parameters, outcome and summary, is never
 deleted. Partition either table by time in the model if volume demands it (see
 [decisions/0005-ledger-retention.md](decisions/0005-ledger-retention.md)).
+
+The identity index is not pruned, and does not grow with activity: it grows with the number of records and their
+values, so it is rewritten by a staging and only ever holds what the current records are known by. Nothing deletes a
+record row, so no identity row is ever orphaned.
 
 For the analytical view, snapshot the tables into Delta when one is needed. The ledger is a live status store, not a
 reporting table.

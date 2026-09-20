@@ -327,6 +327,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/flows/{pipelineId:guid}/retrievals", ListRetrievalsAsync).WithName("ListDeliveryRetrievals");
         delivery.MapGet("/records/{flowId:guid}/{key:guid}", GetRecordAsync).WithName("GetDeliveryRecord");
         delivery.MapGet("/records/{flowId:guid}/{key:guid}/attempts", ListRecordAttemptsAsync).WithName("ListDeliveryRecordAttempts");
+        delivery.MapGet("/records/{flowId:guid}/{key:guid}/chain", GetRecordChainAsync).WithName("GetDeliveryRecordChain");
         delivery.MapGet("/records/{flowId:guid}/{key:guid}/activities", ListRecordActivitiesAsync).WithName("ListDeliveryRecordActivities");
         delivery.MapGet("/submissions/{submissionId:guid}", GetSubmissionAsync).WithName("GetDeliverySubmission");
         delivery.MapGet("/submissions/{submissionId:guid}/attempts", ListSubmissionAttemptsAsync).WithName("ListDeliverySubmissionAttempts");
@@ -614,7 +615,7 @@ public static class DeliveryEndpoints
             ? new BoundedCount(found.Count, Exact: true)
             : await ledger.CountLookupAsync(term, RecordListing.LookupCandidateLimit, query.Status, ct).ConfigureAwait(false);
 
-        var hits = await DeliveryRecordHits.DescribeAsync(db, osdu, items, ct).ConfigureAwait(false);
+        var hits = await DeliveryRecordHits.DescribeAsync(db, osdu, items, ct, term).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<DeliveryRecordHitDto>(hits, p, size, total.Count, TotalCapped: !total.Exact));
     }
 
@@ -716,6 +717,20 @@ public static class DeliveryEndpoints
 
         var attempts = await ledger.ListAttemptsAsync(flowId, record.DeliveryKey, Math.Clamp(max ?? 100, 1, MaxAttempts), ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryAttemptDto>>(attempts.Select(ToDto).ToList());
+    }
+
+    /// <summary>
+    /// Where the record is in the whole chain: the ingestion file its version came from, and every run that handled that
+    /// file on its way through pre-ingestion and ingestion, read from the platform's own record of processed files. The
+    /// delivery half of the chain is the record itself, which the page already holds.
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryRecordChainDto>, ProblemHttpResult>> GetRecordChainAsync(
+        Guid flowId, Guid key, CatalogDbContext db, ILedger ledger, CancellationToken ct)
+    {
+        var record = await ledger.GetRecordAsync(flowId, new DeliveryKey(key), ct).ConfigureAwait(false);
+        return record is null
+            ? RecordNotFound(flowId, key)
+            : TypedResults.Ok(await RecordChain.OfAsync(db, record, ct).ConfigureAwait(false));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliveryActivityDto>>, ProblemHttpResult>> ListRecordActivitiesAsync(

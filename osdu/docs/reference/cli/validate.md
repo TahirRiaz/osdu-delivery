@@ -50,7 +50,8 @@ document declaring an unknown `flowType` fails naming the kinds the host knows.
 - `template.kind` is `authority:source:entityType:major.minor.patch`, and `template.version` is 16 lower-case
   hexadecimal characters. The template itself is not loaded; that is `sqlflow check`.
 - `dataset.key` names columns of the dataset's own row, each once, and every `{dataset.<column>}` token in
-  `dataset.label` names such a column.
+  `dataset.label` names such a column. `dataset.identity` names such columns too, each once: their values are what
+  the ledger indexes so the record can be looked up by them.
 - Every entry has a `target` starting with `osdu.` that steps into at most one array (`[]`, never last), and
   exactly one of `source` and `static`.
 - A `source` is `dataset.<column>`, `dataset.<child>.<column>`, `dataset.<child>` on an array other entries fill

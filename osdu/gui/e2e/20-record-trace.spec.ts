@@ -28,10 +28,18 @@ test.describe.serial("record trace", () => {
     await expect(rows.first()).toContainText("NO_15_9");
     await expect(rows.first()).toContainText("wells-welllog-03-header-delivery");
 
-    // The label finds it too: what an operator holds is more often the wellbore's name than the row's key.
-    await adminPage.getByTestId("delivery-lookup-search").fill("OSDU-DEV-1-A");
-    await expect(adminPage).toHaveURL(/q=OSDU-DEV-1-A/);
-    await expect(rows.first()).toContainText("OSDU-DEV-1-A", { timeout: 30_000 });
+    // Every row says which of its values answered, so a hit explains itself.
+    await expect(rows.first().getByTestId("lookup-matched")).toBeVisible();
+
+    // The wellbore id the mapping declares as an identity finds it, which is what an operator actually holds. The
+    // log id does too, and neither is the start of the source key.
+    for (const [term, url] of [["OSDU-DEV-1-A", /q=OSDU-DEV-1-A/], ["L-1001", /q=L-1001/]] as const) {
+      await adminPage.getByTestId("delivery-lookup-search").fill(term);
+      await expect(adminPage).toHaveURL(url);
+      await expect(rows.first()).toBeVisible({ timeout: 30_000 });
+      await expect(rows.first().getByTestId("lookup-matched")).toContainText(term);
+    }
+
     await adminPage.getByTestId("delivery-lookup-search").fill("wells:NO_15_9");
     await expect(adminPage).toHaveURL(/q=wells%3ANO_15_9/);
     await expect(rows.first()).toContainText("NO_15_9", { timeout: 30_000 });
@@ -57,6 +65,13 @@ test.describe.serial("record trace", () => {
     await expect(adminPage.getByTestId("journey-planned")).toContainText("claimed the OSDU id");
     await expect(adminPage.getByTestId("journey-queued")).toBeVisible();
     await expect(adminPage.getByTestId("record-origin")).toContainText("welllog_");
+
+    // The chain before the ledger: the strip has a place for pre-ingestion and ingestion. This estate's chain ran
+    // through the CLI rather than as platform runs, so no run recorded the file and the page says exactly that,
+    // instead of inventing a stage or leaving a blank.
+    await expect(adminPage.getByTestId("milestone-pre")).toBeVisible();
+    await expect(adminPage.getByTestId("milestone-ing")).toBeVisible();
+    await expect(adminPage.getByTestId("record-chain-note")).toContainText(/No run in the catalog recorded/, { timeout: 30_000 });
 
     // Removing the one record opens the removal surface, which says the record was never delivered; nothing is sent.
     await adminPage.getByTestId("record-delete").click();

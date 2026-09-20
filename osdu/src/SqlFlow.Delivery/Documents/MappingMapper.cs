@@ -61,6 +61,14 @@ internal static partial class MappingMapper
             }
         }
 
+        // The columns an operator holds a record by, indexed by the ledger for the lookup: the dataset's own columns,
+        // like the key, and each named once.
+        var identity = (dataset.Identity ?? []).Select((column, i) => RootColumn(column, $"dataset.identity[{i}]", source)).ToList();
+        if (identity.Distinct(StringComparer.OrdinalIgnoreCase).Count() != identity.Count)
+        {
+            throw new FlowValidationException($"{source}: dataset.identity names a column more than once.");
+        }
+
         var parameters = (y.Parameters ?? []).ToDictionary(
             kv => kv.Key,
             kv => new MappingParameter { Required = kv.Value?.Required ?? false, Default = kv.Value?.Default, Description = kv.Value?.Description },
@@ -88,6 +96,7 @@ internal static partial class MappingMapper
                 System = FlowMapper.Require(dataset.System, "dataset.system", source),
                 Key = key,
                 Label = label,
+                Identity = identity,
             },
             Parameters = parameters,
             Entries = entries,

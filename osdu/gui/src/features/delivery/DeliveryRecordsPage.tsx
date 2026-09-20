@@ -19,6 +19,15 @@ import { RecordStatusBadge } from "./DeliveryBadges";
 
 const ALL = "all";
 
+/** What each kind of matched value is, in the operator's terms; the badge's tooltip says it. */
+const MATCH_KINDS: Record<string, string> = {
+  identity: "an identity the mapping declares (a wellbore id, a well name)",
+  key: "the record's key, or one of its columns",
+  label: "a word of the record's label",
+  osdu: "the OSDU id, or its own part",
+  file: "the ingestion file the record came from",
+};
+
 /** How long the field waits after the last keystroke before the term becomes the lookup: a lookup per keystroke is noise. */
 const DEBOUNCE_MS = 300;
 
@@ -39,6 +48,24 @@ const hitColumns: Column<DeliveryRecordHit>[] = [
         {row.label !== null && <span className="truncate font-mono text-[11px] text-muted-foreground">{row.sourceKey}</span>}
       </div>
     ),
+  },
+  {
+    id: "matched",
+    header: "Matched",
+    render: (row) => {
+      const matched = row.matched ?? [];
+      return matched.length === 0
+        ? <span className="text-muted-foreground">-</span>
+        : (
+          <span className="inline-flex flex-wrap gap-1" data-testid="lookup-matched">
+            {matched.map((match) => (
+              <Badge key={`${match.kind}:${match.value}`} variant="outline" className="font-mono text-[10px]" title={MATCH_KINDS[match.kind] ?? match.kind}>
+                {match.value}
+              </Badge>
+            ))}
+          </span>
+        );
+    },
   },
   {
     id: "flow",
@@ -117,13 +144,13 @@ export default function DeliveryRecordsPage() {
     <Page data-testid="page-delivery-records">
       <PageHeader
         title="Records"
-        subtitle="Find a delivered record by what you hold: a source key or label, an OSDU id, a delivery key, or the ingestion file it came from. Every flow is searched."
+        subtitle="Find a record by what you hold: a wellbore id or well name the mapping declares, a source key or label, an OSDU id, a delivery key, or the ingestion file it came from. Every flow is searched, and each row says which value matched."
       />
       <FilterBar>
         <SearchInput
           value={typed}
           onChange={setTyped}
-          placeholder="Source key, label, OSDU id, delivery key or file name"
+          placeholder="Wellbore id, well name, source key, OSDU id, delivery key or file"
           label="Look up records"
           testId="delivery-lookup-search"
           className="sm:w-[28rem]"
@@ -143,7 +170,7 @@ export default function DeliveryRecordsPage() {
           <EmptyState
             icon={<PackageSearch />}
             title="Type what you hold"
-            description="The start of a source key, a label or an OSDU id lists every record that begins with it; a delivery key lands on that record; an ingestion file name lists the records built from it. A flow's own Records tab lists everything it holds."
+            description="The start of any value a record is known by lists the records that begin with it: a wellbore id, a well name, a source key, a label, an OSDU id, or the ingestion file it came from. A delivery key lands on that record. A flow's own Records tab lists everything it holds."
             data-testid="delivery-lookup-empty"
           />
         )
@@ -156,7 +183,7 @@ export default function DeliveryRecordsPage() {
             columns={hitColumns}
             rowKey={(row) => `${row.flowId}/${row.deliveryKey}`}
             onRowClick={(row) => navigate(deliveryRecordRoute(row))}
-            emptyMessage="No record starts with that. A term matches the start of a source key, a label, an OSDU id or a file name; try a shorter one, or open the flow's Records tab and match anywhere."
+            emptyMessage="No record starts with that. A term matches the start of a value the record is known by; try a shorter one, or open the flow's Records tab and match anywhere."
             data-testid="delivery-lookup-table"
           />
         )}

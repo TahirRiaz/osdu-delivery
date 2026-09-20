@@ -150,6 +150,151 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_record_is_found_by_every_value_an_operator_holds_and_a_restaging_leaves_nothing_stale()
+    {
+        var submission = Guid.NewGuid();
+        var key = DeliveryKey.Derive("test", ["L-1001"]);
+        var record = Pending("wells:NO_15_9/L-1001", submission) with
+        {
+            DeliveryKey = key,
+            SourceKeyJson = """["NO_15_9","L-1001"]""",
+            Label = "OSDU-DEV-1-A / STAT_COMP / run 1 (L-1001)",
+            Identities = ["OSDU-DEV-1-A", "NO 15/9-19 SR"],
+            TargetId = "opendes:work-product-component--WellLog:ea10870200ce",
+            PendingSourceFileName = "welllog_20260901.csv",
+        };
+        await Ledger.UpsertPendingAsync(_flow, [record]);
+
+        // Every way an operator arrives: the wellbore id and the well name the mapping declares, a key value, the OSDU
+        // id and its trailing part, a word of the label, the file it came from, and the delivery key itself.
+        foreach (var term in new[]
+        {
+            "OSDU-DEV-1-A", "osdu-dev-1", "NO 15/9-19", "L-1001", "NO_15_9",
+            "opendes:work-product-component--WellLog:ea1087", "ea10870200ce", "STAT_COMP", "welllog_2026", key.Value.ToString("D"),
+        })
+        {
+            var found = await Ledger.LookupAsync(term, 10);
+            Assert.Equal(key, Assert.Single(found).DeliveryKey);
+            Assert.Equal(new BoundedCount(1, Exact: true), await Ledger.CountLookupAsync(term, 10));
+        }
+
+        // A status narrows the same lookup without leaving the index.
+        Assert.Empty(await Ledger.LookupAsync("OSDU-DEV-1-A", 10, RecordStatus.Delivered));
+        Assert.Single(await Ledger.LookupAsync("OSDU-DEV-1-A", 10, RecordStatus.Pending));
+
+        // A short term still seeks the index, because the floor is on the value stored, not on what is typed: an
+        // operator who types the first characters of a wellbore id gets the records that start with them.
+        Assert.Single(await Ledger.LookupAsync("OS", 10));
+        Assert.Empty(await Ledger.LookupAsync("ZZ", 10));
+
+        // The row moves on: a new file, a new wellbore id, a renamed label. The record is found by what it is now, and
+        // no longer by what it was, because a staging rewrites the record's tokens as a set.
+        await Ledger.UpsertPendingAsync(_flow, [record with
+        {
+            Label = "OSDU-DEV-1-B / STAT_CPI / run 2 (L-1001)",
+            Identities = ["OSDU-DEV-1-B"],
+            PendingSourceFileName = "welllog_20260902.csv",
+        }]);
+        Assert.Single(await Ledger.LookupAsync("OSDU-DEV-1-B", 10));
+        Assert.Single(await Ledger.LookupAsync("welllog_20260902", 10));
+        Assert.Empty(await Ledger.LookupAsync("OSDU-DEV-1-A", 10));
+        Assert.Empty(await Ledger.LookupAsync("welllog_20260901", 10));
+        // What did not change is still found, and only once however many stagings wrote it.
+        Assert.Equal(key, Assert.Single(await Ledger.LookupAsync("L-1001", 10)).DeliveryKey);
+
+        // The same row read by a second flow is that flow's record, and one term finds both.
+        var otherFlow = FlowId.Of("test-flow-two");
+        await Ledger.UpsertPendingAsync(otherFlow, [record with { FlowId = otherFlow, TargetId = "opendes:master-data--Well:ea10870200ce" }]);
+        Assert.Equal(2, (await Ledger.LookupAsync("L-1001", 10)).Count);
+        Assert.Equal(new BoundedCount(2, Exact: true), await Ledger.CountLookupAsync("L-1001", 10));
+    }
+
+    [Fact]
+    public void Identity_tokens_are_derived_once_and_bounded()
+    {
+        // What a record is findable by, and nothing else: the declared identities first, then the key values, the OSDU
+        // id with its own part, the label's words and the file. Case is folded for comparison, kept for display.
+        var tokens = RecordIdentities.Of(
+            ["OSDU-DEV-1-A"],
+            "wells:NO_15_9/L-1001",
+            ["NO_15_9", "L-1001", null, "  "],
+            "OSDU-DEV-1-A / STAT_COMP / run 1 (L-1001)",
+            "opendes:work-product-component--WellLog:ea1087",
+            "welllog_20260901.csv");
+        var by = tokens.ToLookup(t => t.Kind);
+
+        Assert.Equal("OSDU-DEV-1-A", Assert.Single(by[RecordIdentityKind.Declared]).Display);
+        // The key whole, then its parts: an operator pastes the key as the ledger prints it, or holds one column of it.
+        Assert.Equal(["wells:NO_15_9/L-1001", "NO_15_9", "L-1001"], by[RecordIdentityKind.Key].Select(t => t.Display));
+        Assert.Contains(by[RecordIdentityKind.Target], t => t.Display == "ea1087");
+        Assert.Contains(by[RecordIdentityKind.Label], t => t.Display == "STAT_COMP");
+        Assert.Equal("welllog_20260901.csv", Assert.Single(by[RecordIdentityKind.File]).Display);
+        // A value the record already carries is one token, whichever way it arrived: the wellbore id is declared, so
+        // the label's first word does not repeat it.
+        Assert.Equal(tokens.Count, tokens.Select(t => t.Token).Distinct(StringComparer.Ordinal).Count());
+        Assert.Single(tokens, t => t.Token == "OSDU-DEV-1-A");
+        Assert.All(tokens, t => Assert.Equal(t.Display.ToUpperInvariant(), t.Token));
+
+        // A value too short to tell records apart is not worth an index row, and neither is an empty one.
+        Assert.Empty(RecordIdentities.Of(["NO", "1", "", "   "], null, null, null, null, null));
+
+        // A row with more identifying values than the index holds keeps the first, so one record costs a known number
+        // of rows however wide its source row is, and a long value is stored by its start.
+        var many = RecordIdentities.Of(
+            Enumerable.Range(0, 100).Select(i => $"VALUE-{i:D3}").ToList(), null, null, null, null, null);
+        Assert.Equal(RecordIdentityLimits.MaxPerRecord, many.Count);
+        var long_ = RecordIdentities.Of([new string('W', RecordIdentityLimits.MaxTokenLength + 50)], null, null, null, null, null);
+        Assert.Equal(RecordIdentityLimits.MaxTokenLength, Assert.Single(long_).Token.Length);
+
+        // A key tuple the ledger stored as an object, and one it cannot read, are both handled: the record stays
+        // findable by everything else rather than failing its staging.
+        Assert.Equal(["A1", "B2"], RecordIdentities.KeyValues("""{"project":"A1","log":"B2"}"""));
+        Assert.Empty(RecordIdentities.KeyValues("not json"));
+        Assert.Empty(RecordIdentities.KeyValues(null));
+    }
+
+    [Fact]
+    public async Task Records_already_in_the_ledger_are_indexed_a_page_at_a_time()
+    {
+        // A ledger that predates the identity index: rows written with the index dropped, as a database upgraded to
+        // this version holds them.
+        var submission = Guid.NewGuid();
+        var records = Enumerable.Range(0, 5)
+            .Select(i => Pending($"wells:NO_15_9/L-{i:D4}", submission) with { Label = $"WELL-{i:D4}" })
+            .ToList();
+        await Ledger.UpsertPendingAsync(_flow, records);
+        await using (var db = _db.CreateDbContext())
+        {
+            await db.DeliveryRecordIdentities.ExecuteDeleteAsync();
+        }
+
+        Assert.Empty(await Ledger.LookupAsync("WELL-0003", 10));
+
+        // The backfill walks the ledger in key order, a page at a time, and is resumable from the key it last wrote.
+        var written = 0;
+        Guid? after = null;
+        for (var pass = 0; pass < 10; pass++)
+        {
+            var (last, count, tokens) = await Ledger.BackfillIdentitiesAsync(after, 2);
+            if (last is null)
+            {
+                break;
+            }
+
+            Assert.True(tokens >= count);
+            written += count;
+            after = last;
+        }
+
+        Assert.Equal(5, written);
+        Assert.Single(await Ledger.LookupAsync("WELL-0003", 10));
+
+        // A pass over records the index already holds writes nothing again, so restarting the control plane is free.
+        var again = await Ledger.BackfillIdentitiesAsync(null, 100);
+        Assert.Equal(0, again.Records);
+    }
+
+    [Fact]
     public async Task A_submission_s_delivered_records_stay_its_own_after_later_submissions_move_them_on()
     {
         var s1 = Guid.NewGuid();
