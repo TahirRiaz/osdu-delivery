@@ -1,9 +1,12 @@
+import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { PackageCheck } from "lucide-react";
+import { PackageCheck, PackageSearch } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SearchInput } from "@/components/SearchInput";
 import { isApiError } from "@/api/client";
 import { deliveryApi, type DeliveryFlowStats } from "../../api/delivery";
 import type { PipelineSummary } from "@/api/types";
@@ -69,6 +72,34 @@ function FlowCard({ pipeline, stats, onOpen }: { pipeline: PipelineSummary; stat
   );
 }
 
+/** The way from the estate's front door to one record: a term typed here opens the Records page looked up for it. */
+function FindRecordForm() {
+  const navigate = useNavigate();
+  const [term, setTerm] = useState("");
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const trimmed = term.trim();
+    navigate(trimmed === "" ? "/delivery/records" : `/delivery/records?q=${encodeURIComponent(trimmed)}`);
+  };
+
+  return (
+    <form className="flex flex-wrap items-center gap-2" onSubmit={submit} data-testid="delivery-find-record">
+      <SearchInput
+        value={term}
+        onChange={setTerm}
+        placeholder="Find a record: source key, OSDU id, key or file"
+        label="Find a record"
+        testId="delivery-find-record-term"
+        className="sm:w-80"
+      />
+      <Button type="submit" variant="outline" size="sm" data-testid="delivery-find-record-go">
+        <PackageSearch />
+        Look up
+      </Button>
+    </form>
+  );
+}
+
 /** Every delivery flow with what it has delivered: the "uploaded versus not" view across the estate. */
 export default function DeliveryOverviewPage() {
   const navigate = useNavigate();
@@ -110,6 +141,7 @@ export default function DeliveryOverviewPage() {
       <PageHeader
         title="Delivery"
         subtitle={flows.data ? `${pipelines.length} delivery flow${pipelines.length === 1 ? "" : "s"}: ${totals.delivered.toLocaleString()} of ${totals.total.toLocaleString()} records delivered, ${totals.pending.toLocaleString()} pending, ${totals.held.toLocaleString()} held, ${totals.failed.toLocaleString()} failed, ${totals.drifted.toLocaleString()} drifted.` : undefined}
+        actions={<FindRecordForm />}
       />
       {flows.data === undefined ? (
         <Skeleton className="h-40 w-full rounded-lg" />

@@ -167,7 +167,9 @@ export function RemovalDialog({ open, onClose, pipelineId, interfaceName = null,
         }
       }}
     >
-      <AlertDialogContent data-testid="removal-dialog" className="max-w-2xl gap-3">
+      {/* Three scopes, a target block and a typed confirmation outgrow a short window: the dialog scrolls rather than
+          putting its buttons past the bottom of the viewport. */}
+      <AlertDialogContent data-testid="removal-dialog" className="max-h-[calc(100dvh-2rem)] max-w-2xl gap-3 overflow-y-auto">
         <AlertDialogHeader>
           <AlertDialogTitle className="flex items-center gap-2">
             <Trash2 className="size-4 text-destructive" />

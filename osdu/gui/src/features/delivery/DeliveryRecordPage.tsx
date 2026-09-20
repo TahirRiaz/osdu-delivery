@@ -33,6 +33,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { useTabTitle } from "@/layout/workbench/TabsContext";
 import { BlockedBadge, RecordStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
 import { prettyJson } from "./prettyJson";
+import { RecordJourney } from "./RecordJourney";
 import { RemovalDialog } from "./RemovalDialog";
 import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
 
@@ -351,6 +352,19 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
         )}
       >
         <DetailPair label="Source key"><span className="break-all font-mono text-[12px]">{record.sourceKey}</span></DetailPair>
+        <DetailPair label="Received from">
+          {record.sourceFileName === null && record.pendingSourceFileName === null
+            ? <span className="text-muted-foreground">not recorded</span>
+            : (
+              <span className="inline-flex flex-wrap items-baseline gap-1" data-testid="record-origin">
+                <TruncatedText text={record.sourceFileName ?? record.pendingSourceFileName} mono maxWidth={240} />
+                {(record.sourceRowNumber ?? record.pendingSourceRowNumber) !== null && (
+                  <span className="text-[12px] text-muted-foreground">row <span className="font-mono">{record.sourceRowNumber ?? record.pendingSourceRowNumber}</span></span>
+                )}
+              </span>
+            )}
+        </DetailPair>
+        <DetailPair label="Received"><RelativeTime value={record.sourceUpdatedUtc ?? record.pendingSourceUpdatedUtc} absolute /></DetailPair>
         <DetailPair label="OSDU version"><span className="font-mono tabular-nums">{record.targetVersion ?? "-"}</span></DetailPair>
         <DetailPair label="Last delivered"><RelativeTime value={record.lastDeliveredUtc} absolute /></DetailPair>
         <DetailPair label="Last verified"><RelativeTime value={record.lastVerifiedUtc} absolute /></DetailPair>
@@ -366,6 +380,8 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
         <DetailPair label="Created"><RelativeTime value={record.createdUtc} absolute /></DetailPair>
         <DetailPair label="Updated"><RelativeTime value={record.updatedUtc} absolute /></DetailPair>
       </DetailHeaderCard>
+
+      <RecordJourney record={record} attempts={attempts.data} activities={activities.data} />
 
       {taskId !== null && (
         <Card className="gap-2 rounded-lg p-3" data-testid="record-task">

@@ -13,6 +13,21 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Records** (Operate) in the GUI: a record is found from what an operator holds (a source key, a label, an OSDU
+  id, a delivery key or an ingestion file name) across every flow, narrowed by status, without knowing which flow
+  delivered it; the Delivery page carries the same field. The API behind it is
+  `GET /api/v1/delivery/records?search=&status=`, the ledger's indexed lookup that the combined search already read.
+- A record's page opens on its **journey**: a strip answering when the row was received (with the ingestion file
+  and row), when it was planned, how many dispatches and how many failed, when it landed and as which version, what
+  the last verify found and whether it was removed, over a timeline of every dated fact the ledger holds, oldest
+  first, with every dispatch's phase, duration, worker, run, submission and origin, and every intervention with
+  who asked for it. The header now names the file and row the record was received from.
+- A submission's page undoes the batch it ran: **Remove what it delivered from OSDU** is one removal aimed at
+  exactly the records that submission delivered, through the same removal dialog, with the count read the way the
+  removal resolves it. The records filter gained `deliveredBy` for that set (`?delivered=` on a flow's Records
+  tab), beside `submissionId`, which names the records a submission last planned and which a later submission
+  moves on; the submission's page links to both sets.
+
 - The repository shape: SQLFlow vendored under `sqlflow/` as a squashed git subtree, everything OSDU Delivery adds
   under `osdu/`, and `OsduDelivery.sln` building both. `tools/check-vendored-sqlflow.sh` names the SQLFlow commit
   `sqlflow/` was vendored from, lists every file changed here since, and fails when a commit mixes `sqlflow/` with

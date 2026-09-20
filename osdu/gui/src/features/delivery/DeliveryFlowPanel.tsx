@@ -67,7 +67,10 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   // A submission or run page links here scoped to the records it touched; clearing the chip widens the list again.
+  // `submission` is the records a submission last planned, `delivered` the records it delivered, which stay its own
+  // however many submissions touch them afterwards.
   const submissionFilter = searchParams.get("submission");
+  const deliveredFilter = searchParams.get("delivered");
   const runFilter = searchParams.get("run");
   // Every view of a source is about one of its interfaces: they have separate ledgers, so their records, submissions
   // and targets are never summed. The choice travels in the URL, so a link to a source's records is a link to one
@@ -88,6 +91,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
     params.set("interface", next);
     // The chips point at records of the interface that was showing; another interface's records are not those.
     params.delete("submission");
+    params.delete("delivered");
     params.delete("run");
     return params;
   }), [setSearchParams]);
@@ -112,8 +116,9 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
     status: status === ALL ? undefined : (status as DeliveryRecordStatus),
     drifted: drifted || undefined,
     submissionId: submissionFilter ?? undefined,
+    deliveredBy: deliveredFilter ?? undefined,
     runId: runFilter ?? undefined,
-  }), [search, contains, status, drifted, submissionFilter, runFilter]);
+  }), [search, contains, status, drifted, submissionFilter, deliveredFilter, runFilter]);
 
   const clearSelection = useCallback(() => {
     setSelected(new Set());
@@ -320,7 +325,12 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             </Label>
             {submissionFilter && (
               <Button variant="outline" size="sm" className="h-8" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete("submission"); return next; })} data-testid="delivery-records-clear-submission">
-                submission {submissionFilter.slice(0, 8)}: clear
+                last planned by submission {submissionFilter.slice(0, 8)}: clear
+              </Button>
+            )}
+            {deliveredFilter && (
+              <Button variant="outline" size="sm" className="h-8" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete("delivered"); return next; })} data-testid="delivery-records-clear-delivered">
+                delivered by submission {deliveredFilter.slice(0, 8)}: clear
               </Button>
             )}
             {runFilter && (
@@ -330,7 +340,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             )}
           </FilterBar>
           <PagedTable
-            queryKey={["delivery", "records", pipelineId, interfaceName, search, status, drifted, contains, submissionFilter, runFilter]}
+            queryKey={["delivery", "records", pipelineId, interfaceName, search, status, drifted, contains, submissionFilter, deliveredFilter, runFilter]}
             fetchPage={(page, pageSize) => deliveryApi.records(pipelineId, { page, pageSize, interface: interfaceName ?? undefined, ...filter })}
             columns={recordColumns}
             rowKey={(row) => row.deliveryKey}

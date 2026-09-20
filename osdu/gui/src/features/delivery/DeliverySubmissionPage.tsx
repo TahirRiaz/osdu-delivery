@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import { Link as RouterLink, Navigate, useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { CircleAlert } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { CircleAlert, ListTree, PackageCheck, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +14,7 @@ import {
   deliveryApi,
   deliveryRecordRoute,
   type DeliveryAttempt,
+  type DeliverySubmissionDetail,
   type DeliveryWorkBatch,
 } from "../../api/delivery";
 import { AttemptDetail } from "./AttemptDetail";
@@ -28,9 +31,11 @@ import { useTabTitle } from "@/layout/workbench/TabsContext";
 import { SubmissionStatusBadge } from "./DeliveryBadges";
 import { SubmissionCounts } from "./DeliveryFlowPanel";
 import { prettyJson } from "./prettyJson";
+import { RemovalDialog } from "./RemovalDialog";
+import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
 
 /** Everything the ledger holds about one submission: what it was, how it went, every attempt it produced, and the runs
- * that carried it, with a way back to the records it touched. */
+ * that carried it, with a way back to the records it touched and the removal of what it put into OSDU. */
 export default function DeliverySubmissionPage() {
   const { submissionId } = useParams<{ submissionId: string }>();
   if (!submissionId) {
@@ -40,8 +45,82 @@ export default function DeliverySubmissionPage() {
   return <SubmissionContent submissionId={submissionId} />;
 }
 
+/** The flow's Records tab, scoped to one of this submission's sets, on the interface the submission belongs to. */
+function recordsLink(detail: DeliverySubmissionDetail, param: "submission" | "delivered"): string {
+  const params = new URLSearchParams({ tab: "records", [param]: detail.submission.submissionId });
+  if (detail.interface) {
+    params.set("interface", detail.interface);
+  }
+
+  return `/pipelines/${detail.pipelineId}?${params.toString()}`;
+}
+
+/**
+ * The batch as a thing that can be undone: the records this submission delivered are its own however many submissions
+ * touched them since, so "remove the batch we ran" is one removal aimed at exactly that set, confirmed with the target
+ * it leaves and the count it was shown, and refused if that count has moved by the time it runs.
+ */
+function BatchActions({ detail, onQueued }: { detail: DeliverySubmissionDetail; onQueued: (taskId: string) => void }) {
+  const navigate = useNavigate();
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const s = detail.submission;
+  const pipelineId = detail.pipelineId;
+  // The count the confirmation is built on, read the way the removal will resolve it, not the submission's own tally:
+  // a record removed or purged since is not in OSDU any more, and the removal must be aimed at what is.
+  const delivered = useQuery({
+    queryKey: ["delivery", "records", pipelineId, detail.interface ?? null, "delivered-by", s.submissionId],
+    queryFn: () => deliveryApi.records(pipelineId!, { deliveredBy: s.submissionId, page: 1, pageSize: 1, interface: detail.interface ?? undefined }),
+    enabled: pipelineId !== null,
+    refetchInterval: s.status === "completed" || s.status === "failed" ? 30000 : 5000,
+  });
+  const count = delivered.data?.total ?? 0;
+  const capped = delivered.data?.totalCapped === true;
+
+  if (pipelineId === null) {
+    return null;
+  }
+
+  return (
+    <>
+      <Button variant="outline" size="sm" onClick={() => navigate(recordsLink(detail, "delivered"))} data-testid="submission-delivered-records">
+        <PackageCheck />
+        {delivered.data === undefined ? "Records it delivered" : `Records it delivered (${count.toLocaleString()}${capped ? "+" : ""})`}
+      </Button>
+      <Button variant="outline" size="sm" onClick={() => navigate(recordsLink(detail, "submission"))} data-testid="submission-records">
+        <ListTree />
+        Records it last planned
+      </Button>
+      <Button
+        variant="destructive-outline"
+        size="sm"
+        onClick={() => setRemoveOpen(true)}
+        disabled={delivered.data === undefined || count === 0}
+        title={delivered.data !== undefined && count === 0 ? "This submission delivered nothing that is still in OSDU under its name." : undefined}
+        data-testid="submission-remove-delivered"
+      >
+        <Trash2 />
+        Remove what it delivered from OSDU
+      </Button>
+      <RemovalDialog
+        open={removeOpen}
+        onClose={() => setRemoveOpen(false)}
+        pipelineId={pipelineId}
+        interfaceName={detail.interface ?? null}
+        flowName={detail.interface ? `${s.flowName} / ${detail.interface}` : s.flowName}
+        selection={{ kind: "filter", filter: { deliveredBy: s.submissionId }, expected: count }}
+        onQueued={(accepted) => {
+          onQueued(accepted.taskId);
+          toast.success(`Removal of ${accepted.records.toLocaleString()} record(s) this submission delivered queued on a node.`);
+        }}
+      />
+    </>
+  );
+}
+
 function SubmissionContent({ submissionId }: { submissionId: string }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [removalTaskId, setRemovalTaskId] = useState<string | null>(null);
   const query = useQuery({
     queryKey: ["delivery", "submission", submissionId],
     queryFn: () => deliveryApi.submission(submissionId),
@@ -62,6 +141,16 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
   });
   useTabTitle(query.data ? `Submission ${submissionId.slice(0, 8)}` : undefined);
 
+  // A removal that finished on a node changed the ledger for every record it touched: the attempts, the counts and
+  // the delivered set are read again once the task settles, so the page shows what it did without a manual reload.
+  const removal = useComputeTask(removalTaskId);
+  const finishedRemoval = isTerminalTask(removal.data) ? removal.data!.taskId : null;
+  useEffect(() => {
+    if (finishedRemoval !== null) {
+      void queryClient.invalidateQueries({ queryKey: ["delivery"] });
+    }
+  }, [finishedRemoval, queryClient]);
+
   if (query.isError) {
     return (
       <Page data-testid="page-delivery-submission">
@@ -81,6 +170,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
   }
 
   const s = detail.submission;
+  const removalJson = isTerminalTask(removal.data) ? taskResultJson(removal.data) : null;
   const attemptColumns: Column<DeliveryAttempt>[] = [
     { id: "started", header: "When", render: (row) => <RelativeTime value={row.startedUtc} absolute /> },
     {
@@ -151,11 +241,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
             <Badge variant="outline" data-testid="submission-mapping">{s.mappingReference}</Badge>
           </>
         )}
-        actions={detail.pipelineId ? (
-          <Button variant="outline" size="sm" onClick={() => navigate(`/pipelines/${detail.pipelineId}?tab=records&submission=${s.submissionId}`)} data-testid="submission-records">
-            Records of this submission
-          </Button>
-        ) : undefined}
+        actions={<BatchActions detail={detail} onQueued={setRemovalTaskId} />}
         meta={(
           <>
             <IdChip label="submission" value={s.submissionId} testId="submission-id" copyTestId="copy-submission-id" />
@@ -202,6 +288,20 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
         <h2 className="text-[13px] font-medium">Outcome</h2>
         <SubmissionCounts submission={s} />
       </Card>
+
+      {removalTaskId !== null && (
+        <Card className="gap-2 rounded-lg p-3" data-testid="submission-removal-result">
+          <div className="flex items-center gap-2 text-[13px] font-medium">
+            Removal of what this submission delivered
+            <Badge variant="outline">{removal.data?.status ?? "queued"}</Badge>
+            {removal.data?.claimedByNode && <span className="font-mono text-[11px] text-muted-foreground">{removal.data.claimedByNode}</span>}
+          </div>
+          {removal.data?.error && <p className="text-[13px] text-destructive">{removal.data.error}</p>}
+          {removalJson !== null && (
+            <CodeView value={removalJson} language="json" height={260} data-testid="submission-removal-json" />
+          )}
+        </Card>
+      )}
 
       <Tabs defaultValue="attempts">
         <TabsList data-testid="submission-tabs">

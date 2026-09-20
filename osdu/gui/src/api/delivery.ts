@@ -126,6 +126,8 @@ export interface DeliverySubmissionDetail {
   pipelineId: string | null;
   /** The runs that carried or re-ran this submission, newest first. */
   runIds: string[];
+  /** The interface of a source the submission belongs to; null for a flow in the single form. */
+  interface?: string | null;
 }
 
 /** The current state of one deliverable: what OSDU holds for it, what is pending, and why it is where it is. */

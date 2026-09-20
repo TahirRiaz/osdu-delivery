@@ -251,7 +251,12 @@ cleanup rule forbids. A dataspace that is to go is an operator's decision, taken
 
 A removal names its records by key or by filter. The filter form is resolved on the node when the removal runs,
 so "every record this run delivered" travels as the filter rather than as tens of thousands of ids, and covers
-records no page ever rendered. One removal takes at most 25,000 records; a larger one is several removals.
+records no page ever rendered. The filter has two ways of naming a submission's records, because they are two
+sets: `submissionId` is the records the submission last planned, which a later submission moves on (a record it
+finds unchanged becomes that submission's), and `deliveredBy` is the records the submission delivered, resolved
+through the delivered attempts it wrote, which stay its own however many submissions touch them afterwards.
+"Remove the batch we ran" is a `deliveredBy` removal. One removal takes at most 25,000 records; a larger one is
+several removals.
 Records are removed in chunks of 500, batched into a single request where the protocol and the scope allow it
 (only the reversible scope has a bulk endpoint), and each record gets its own ledger attempt. A record OSDU has
 already lost is reported as already gone, not as a failure, and a record with no OSDU id at all is skipped. A
@@ -266,7 +271,13 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 ## The GUI
 
 - **Delivery** (Operate): every delivery flow with delivered versus total, pending, held, failed, drifted, and
-  its last submission.
+  its last submission, and a field that opens Records looked up for whatever is typed into it.
+- **Records** (Operate): where an operator starts from what they hold rather than from a flow. A source key, a
+  label, an OSDU id or an ingestion file name lists every record across every flow that starts with it; a delivery
+  key lands on that record; a status narrows the list. It is the ledger's indexed lookup (`GET
+  /api/v1/delivery/records?search=&status=`), the same one the combined search reads, so it answers at production
+  volume and counts no further than its candidate bound. The term and the status are in the URL, so a lookup is a
+  link that can be sent on, and a row opens the record.
 - **A flow's page** (Pipelines): the Delivery tab (stats, probe the target, release blocked),
   the Records tab (search and filters, every row opens the record), the Submissions tab, which says for each
   submission which selection it read. **A source that delivers several interfaces is read one interface at a time**,
@@ -276,16 +287,29 @@ per-record outcomes (failures first); every record's outcome is in its own attem
   every removal act on the interface that is showing. The counts at the top of the Delivery tab are the source's.
   A flow in the single form has one interface and no picker. Rows tick: a selection
   bar offers "select all N matching" and Remove from OSDU, so a removal can be aimed at exactly the ticked rows
-  or at the whole filtered set. A run page links here filtered to the records that run touched.
-- **A record's page**: custody state, hashes, versions, the pending document, the render context; the
-  history of attempts and interventions; Verify, Redeliver, Read back, Source row (the record's rows as the
-  ingestion tables hold them now, read on a node), Release and Remove from OSDU.
+  or at the whole filtered set. A run page links here filtered to the records that run touched, and a submission's
+  page links here twice: to the records it last planned (`?submission=`, which a later submission moves on) and to
+  the records it delivered (`?delivered=`, which stay its own however many submissions touch them afterwards).
+- **A record's page**: the answers an operator arrives with first, as a journey: a strip saying when the row was
+  received (with the ingestion file and row), when it was planned, how many times it was dispatched and how many
+  failed, when it landed and as which version, when it was last verified and what that found, and whether it was
+  removed; under it the timeline of every dated fact the ledger holds, oldest first, every dispatch with its phase,
+  duration, worker, run, submission, the origin it sent and what OSDU answered, every intervention with who asked for
+  it, and folded in the middle when it is long. Then custody state, hashes, versions, the received-from file and row,
+  the pending document, the render context; the history of attempts and interventions as tables; Verify, Redeliver,
+  Read back, Source row (the record's rows as the ingestion tables hold them now, read on a node), Release and
+  Remove from OSDU.
 - **The removal dialog**: one surface for both. It names the target first (endpoint as declared, data partition,
   protocol, auth) because that is which OSDU the records are about to leave, then the three scopes side by side
   with what each destroys, whether it can be undone, what the ledger will do, and the exact call it makes. The
   two permanent scopes ask the operator to type the data partition back before the button enables.
 - **A submission's page**: which selection it read and the window it covered, the ingestion table and connection it
-  read from, its counts, the runs that carried it, its work batches, its attempts, and a link to its records.
+  read from, its counts, the runs that carried it, its work batches, its attempts, and its two record sets as links:
+  what it delivered and what it last planned. The submission is the batch, and **Remove what it delivered from OSDU**
+  is how a batch is undone: one removal aimed at exactly the records this submission delivered, through the same
+  removal dialog (the target, the three scopes, the typed confirmation for the permanent ones), with the count read
+  the way the removal will resolve it and refused if that count has moved by the time it runs. The button is off
+  while the submission has delivered nothing that is still in OSDU under its name.
 - **A retrieval flow's page** (Pipelines): the Retrievals tab, every run with its window, location, counts and
   outcome; a row opens the platform run.
 - **A cache flow's page** (Pipelines): the Cache versions tab names the partition the flow fills and how many other

@@ -28,6 +28,38 @@ is never modified.
 Run the suites one at a time. A build while a suite is running swaps the binaries under it: doing that once cost 150
 false failures in `SqlFlow.ControlPlane.Tests`, which passes on its own.
 
+## Record traceability in the GUI (2026-09-20)
+
+The ledger and the API had held every trace from the start (a record's attempts, interventions, redelivery, release,
+single and bulk removal); what was missing was the way to them from the product's front door, and one batch semantic.
+
+- **Records** (Operate, `/delivery/records`) finds a record across every flow from what an operator holds (source
+  key, label, OSDU id, delivery key, ingestion file name), narrowed by status; the Delivery page carries the same
+  field. Behind it is `GET /api/v1/delivery/records?search=&status=`, the ledger's `LookupAsync` (now with a status),
+  which the combined search already read; `DeliveryRecordHits` in `RecordSearchContributor.cs` builds the hit for both.
+- **A record's journey** (`RecordJourney.tsx`) sits above the record page's tabs: a milestone strip (received, planned,
+  dispatched, landed, verified, removed) over a timeline built client-side from the record, its attempts and its
+  record-scoped activities. The header now shows the received-from file and row. A file name finds only records that
+  were delivered from it: the current origin is set when a delivery promotes the pending one.
+- **A batch is undone from its submission's page.** `RecordQuery.DeliveredBySubmissionId` (API `deliveredBy`, records
+  tab `?delivered=`, removal filter `DeliveredBySubmissionId`) is the set of records a submission delivered, resolved
+  through its delivered attempts over the `(SubmissionId, Outcome, Phase)` index. `SubmissionId` is a different set:
+  the records a submission last planned, which a later submission moves on (`MarkSkippedAsync` moves an unchanged
+  record's `LastSubmissionId`), so it was never "the batch we ran". No migration: the index existed.
+- Verification: `SqlLedgerTests.A_submission_s_delivered_records_stay_its_own_after_later_submissions_move_them_on`
+  (SQLite), `DeliveryRecordLookupApiTests` (real database), `20-record-trace.spec.ts` (e2e, no OSDU reached, no
+  removal run; passes). `SqlServerChainTests` fails one test when the suite runs beside a build and passes alone, as
+  the note above says. In the same e2e run, `03-seed`, `06-pipelines`, `07-lineage` and `18-interfaces` failed
+  because the Pipelines page now renders a folder tree (`treeitem`) while those specs still click `table-row`: that
+  is the concurrent pipelines-tree work, not this change. The removal dialog now scrolls inside a short viewport;
+  at 1280x720 its buttons were past the bottom of the window.
+- Running the e2e beside a leftover e2e control plane: one was still listening on 5299 from the Debug bin, which
+  also blocks a Debug build of the host. Build the hosts in Release, run with `SQLFLOW_E2E_DOTNET_CONFIGURATION=Release`
+  and `SQLFLOW_E2E_GUI_PORT=5174` (5173 is `dev.bat`'s GUI), and stop only the orphaned 5299 host.
+- The backend half of this change (ledger, operations, endpoints, contributor, their tests) was committed by a
+  concurrent session's `git add -A` inside `96db68f` ("Record the repo outline fix in the SQLFlow change log"); the
+  GUI, the e2e spec, the API test and the docs are the uncommitted remainder.
+
 ## The databases of an estate (2026-09-18)
 
 All of SQLFlow's metadata is one database. What is separated is the source data, where the volume is.
