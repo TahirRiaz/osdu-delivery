@@ -1112,6 +1112,11 @@ public static class DeliveryModel
             e.HasIndex(r => r.Label);
             e.HasIndex(r => r.SourceFileName);
 
+            // The Records page with nothing typed: the most recently updated records across every flow, and the most
+            // recent of one custody state, read from the end of an index instead of by ordering the whole ledger.
+            e.HasIndex(r => r.UpdatedUtc);
+            e.HasIndex(r => new { r.Status, r.UpdatedUtc });
+
             // Which records came from this file, inside a flow, in milliseconds.
             e.HasIndex(r => new { r.FlowId, r.SourceFileName, r.SourceRowNumber });
 

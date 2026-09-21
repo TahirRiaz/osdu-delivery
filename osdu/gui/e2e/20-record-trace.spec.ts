@@ -73,6 +73,17 @@ test.describe.serial("record trace", () => {
     await expect(adminPage.getByTestId("milestone-ing")).toBeVisible();
     await expect(adminPage.getByTestId("record-chain-note")).toContainText(/No run in the catalog recorded/, { timeout: 30_000 });
 
+    // Every long value of the header is clipped to its own column and copyable: a staged payload's path is longer
+    // than the column it sits in, and a value wider than its cell used to run under the value beside it.
+    const location = adminPage.getByTestId("copy-record-payload-location");
+    await expect(location).toBeVisible();
+    const fits = await adminPage.evaluate(() => Array.from(document.querySelectorAll("span[style*='max-width']"))
+      .every((span) => {
+        const parent = span.parentElement;
+        return parent === null || span.getBoundingClientRect().width <= parent.getBoundingClientRect().width + 1;
+      }));
+    expect(fits).toBe(true);
+
     // Removing the one record opens the removal surface, which says the record was never delivered; nothing is sent.
     await adminPage.getByTestId("record-delete").click();
     await expect(adminPage.getByTestId("removal-dialog")).toBeVisible();
@@ -99,9 +110,20 @@ test.describe.serial("record trace", () => {
     await expect(adminPage.getByTestId("delivery-records-clear-submission")).toBeVisible();
     await expect(adminPage.getByTestId("delivery-records-table").getByTestId("table-row").first()).toBeVisible({ timeout: 30_000 });
 
-    // Records has a place in the navigation of its own, and starts empty until something is typed.
+    // Records has a place in the navigation of its own, and opens on what the delivery system last took in rather
+    // than on an empty page: the newest records of every flow, each one a click from its own journey.
     await adminPage.getByTestId("nav-delivery-records").click();
     await expect(adminPage.getByTestId("page-delivery-records")).toBeVisible();
-    await expect(adminPage.getByTestId("delivery-lookup-empty")).toBeVisible();
+    await expect(adminPage.getByTestId("delivery-lookup-search")).toHaveValue("");
+    await expect(adminPage.getByTestId("delivery-lookup-caption")).toBeVisible();
+    const latest = adminPage.getByTestId("delivery-lookup-table").getByTestId("table-row");
+    await expect(latest.first()).toBeVisible({ timeout: 30_000 });
+
+    // Nothing was typed, so no row claims a value matched it.
+    await expect(latest.first().getByTestId("lookup-matched")).toHaveCount(0);
+    await latest.first().click();
+    await expect(adminPage.getByTestId("page-delivery-record")).toBeVisible();
+    await expect(adminPage.getByTestId("record-journey")).toBeVisible();
+    await expect(adminPage.getByTestId("record-milestones")).toBeVisible({ timeout: 30_000 });
   });
 });

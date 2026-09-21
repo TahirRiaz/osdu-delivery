@@ -28,6 +28,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   id, a delivery key or an ingestion file name) across every flow, narrowed by status, without knowing which flow
   delivered it; the Delivery page carries the same field. The API behind it is
   `GET /api/v1/delivery/records?search=&status=`, the ledger's indexed lookup that the combined search already read.
+- **The Records page opens on what the delivery system last took in or sent.** With nothing typed, the same route
+  lists the ledger's most recently updated records across every flow, newest first, refreshed every ten seconds, and
+  a status narrows that listing as it narrows a search; a row opens the record's journey exactly as a hit does. It is
+  read from the end of a recency index (migration `RecentRecordsIndex`, module version 1.9.1: `IX_Record_UpdatedUtc`,
+  and `IX_Record_Status_UpdatedUtc` for one state), so it costs what it shows rather than what the ledger holds, and
+  it reaches back no further than the candidate bound the lookup already used.
 - A record's page opens on its **journey**: a strip answering when the row was received (with the ingestion file
   and row), when it was planned, how many dispatches and how many failed, when it landed and as which version, what
   the last verify found and whether it was removed, over a timeline of every dated fact the ledger holds, oldest

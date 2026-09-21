@@ -16,8 +16,8 @@ namespace SqlFlow.ControlPlane.Tests;
 /// <summary>
 /// The Records page's lookup, as the API serves it: an operator holding a source key, an OSDU id, a delivery key or the
 /// name of the file a record came from finds the record without knowing which flow delivered it, across every flow, and
-/// narrows to a custody state. It is the ledger's indexed lookup, the same one the combined search reads, so a term is
-/// required and a page past the candidate bound is empty rather than a scan.
+/// narrows to a custody state. With nothing to look for, the same route lists what the delivery system last took in or
+/// sent, newest first. Both are indexed reads, so a page past the candidate bound is empty rather than a scan.
 /// </summary>
 public sealed class DeliveryRecordLookupApiTests
 {
@@ -115,14 +115,10 @@ public sealed class DeliveryRecordLookupApiTests
             using var badStatus = await GetAsync(client, token, $"/api/v1/delivery/records?search={marker}&status=nonsense");
             Assert.Equal(HttpStatusCode.BadRequest, badStatus.StatusCode);
 
-            // Paging walks the same hits; a term is required, because a lookup with nothing to seek would be a scan.
+            // Paging walks the same hits.
             var pageTwo = await LookupAsync(client, token, $"search={marker}-&page=2&pageSize=2");
             Assert.Single(pageTwo.GetProperty("items").EnumerateArray().ToList());
             Assert.Equal(3, pageTwo.GetProperty("total").GetInt64());
-            using var noTerm = await GetAsync(client, token, "/api/v1/delivery/records");
-            Assert.Equal(HttpStatusCode.BadRequest, noTerm.StatusCode);
-            using var blankTerm = await GetAsync(client, token, "/api/v1/delivery/records?search=%20");
-            Assert.Equal(HttpStatusCode.BadRequest, blankTerm.StatusCode);
         }
         finally
         {
@@ -131,6 +127,62 @@ public sealed class DeliveryRecordLookupApiTests
             await osdu.DeliveryRecordIdentities.Where(i => keys.Contains(i.DeliveryKey)).ExecuteDeleteAsync();
             await osdu.DeliveryAttempts.Where(a => keys.Contains(a.DeliveryKey)).ExecuteDeleteAsync();
             await osdu.DeliveryRecords.Where(r => keys.Contains(r.DeliveryKey)).ExecuteDeleteAsync();
+        }
+    }
+
+    [SkippableFact]
+    public async Task With_nothing_to_look_for_the_records_the_system_last_took_in_are_listed_newest_first()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.MigrateModuleAsync(cs);
+
+        var flowId = FlowId.Of(FlowName);
+        var marker = "RC" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        var keys = new[] { new DeliveryKey(Guid.NewGuid()), new DeliveryKey(Guid.NewGuid()), new DeliveryKey(Guid.NewGuid()) };
+        var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+
+        try
+        {
+            // Staged now, so these are the records the ledger last touched: the listing has to show them first.
+            await ledger.UpsertPendingAsync(flowId, keys
+                .Select((key, i) => Record(flowId, key, $"{marker}-{i}", $"opendes:master-data--Wellbore:{marker}-{i}", marker + "_wellbores.csv", i))
+                .ToList());
+
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+
+            var latest = await LookupAsync(client, token, "pageSize=200");
+            var items = latest.GetProperty("items").EnumerateArray().ToList();
+            Assert.NotEmpty(items);
+            foreach (var key in keys)
+            {
+                Assert.Contains(items, h => h.GetProperty("deliveryKey").GetGuid() == key.Value);
+            }
+
+            // Newest first, and nothing was typed, so no row claims a value matched it.
+            var times = items.Select(h => h.GetProperty("updatedUtc").GetDateTime()).ToList();
+            Assert.Equal(times.OrderByDescending(t => t).ToList(), times);
+            Assert.All(items, h => Assert.False(h.TryGetProperty("matched", out var matched) && matched.ValueKind != JsonValueKind.Null));
+
+            // A blank term is nothing typed, not a term that matches nothing.
+            var blank = await LookupAsync(client, token, "search=%20&pageSize=200");
+            Assert.Equal(items.Count, blank.GetProperty("items").EnumerateArray().Count());
+
+            // The same listing narrowed to one custody state, and a page past the recency bound is empty rather than a scan.
+            var pending = await LookupAsync(client, token, "status=pending&pageSize=200");
+            Assert.All(pending.GetProperty("items").EnumerateArray(), h => Assert.Equal("pending", h.GetProperty("status").GetString()));
+            Assert.Contains(pending.GetProperty("items").EnumerateArray(), h => h.GetProperty("deliveryKey").GetGuid() == keys[0].Value);
+            var past = await LookupAsync(client, token, $"page={(RecordListing.LookupCandidateLimit / 50) + 1}&pageSize=50");
+            Assert.Empty(past.GetProperty("items").EnumerateArray());
+        }
+        finally
+        {
+            await using var osdu = SampleEstate.Context(cs);
+            var ids = keys.Select(k => k.Value).ToArray();
+            await osdu.DeliveryRecordIdentities.Where(i => ids.Contains(i.DeliveryKey)).ExecuteDeleteAsync();
+            await osdu.DeliveryRecords.Where(r => ids.Contains(r.DeliveryKey)).ExecuteDeleteAsync();
         }
     }
 

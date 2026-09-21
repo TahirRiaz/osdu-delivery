@@ -1,13 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { PackageSearch } from "lucide-react";
+import { History } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import {
   DELIVERY_RECORD_STATUSES, deliveryApi, deliveryRecordRoute, type DeliveryRecordHit, type DeliveryRecordStatus,
 } from "../../api/delivery";
 import type { Column } from "@/components/DataTable";
-import { EmptyState } from "@/components/EmptyState";
 import { FilterBar } from "@/components/FilterBar";
 import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
@@ -35,38 +34,45 @@ function isRecordStatus(value: string | null): value is DeliveryRecordStatus {
   return value !== null && (DELIVERY_RECORD_STATUSES as readonly string[]).includes(value);
 }
 
-const hitColumns: Column<DeliveryRecordHit>[] = [
-  { id: "status", header: "Status", render: (row) => <RecordStatusBadge status={row.status as DeliveryRecordStatus} /> },
-  {
-    id: "record",
-    header: "Record",
-    fill: true,
-    floor: 200,
-    render: (row) => (
-      <div className="flex min-w-0 flex-col">
-        <span className="truncate font-medium">{row.label ?? row.sourceKey}</span>
-        {row.label !== null && <span className="truncate font-mono text-[11px] text-muted-foreground">{row.sourceKey}</span>}
-      </div>
-    ),
+const statusColumn: Column<DeliveryRecordHit> = {
+  id: "status", header: "Status", render: (row) => <RecordStatusBadge status={row.status as DeliveryRecordStatus} />,
+};
+
+const recordColumn: Column<DeliveryRecordHit> = {
+  id: "record",
+  header: "Record",
+  fill: true,
+  floor: 200,
+  render: (row) => (
+    // A label and a key are both as long as the estate made them: clipped to the column, each readable in full on hover.
+    <div className="flex min-w-0 flex-col">
+      <TruncatedText text={row.label ?? row.sourceKey} maxWidth={420} title="Record" className="font-medium" />
+      {row.label !== null && <TruncatedText text={row.sourceKey} mono maxWidth={420} title="Source key" className="text-[11px] text-muted-foreground" />}
+    </div>
+  ),
+};
+
+/** Why a row is a hit: only a search has one, so the recency listing leaves the column out rather than showing it empty. */
+const matchedColumn: Column<DeliveryRecordHit> = {
+  id: "matched",
+  header: "Matched",
+  render: (row) => {
+    const matched = row.matched ?? [];
+    return matched.length === 0
+      ? <span className="text-muted-foreground">-</span>
+      : (
+        <span className="inline-flex flex-wrap gap-1" data-testid="lookup-matched">
+          {matched.map((match) => (
+            <Badge key={`${match.kind}:${match.value}`} variant="outline" className="font-mono text-[10px]" title={MATCH_KINDS[match.kind] ?? match.kind}>
+              {match.value}
+            </Badge>
+          ))}
+        </span>
+      );
   },
-  {
-    id: "matched",
-    header: "Matched",
-    render: (row) => {
-      const matched = row.matched ?? [];
-      return matched.length === 0
-        ? <span className="text-muted-foreground">-</span>
-        : (
-          <span className="inline-flex flex-wrap gap-1" data-testid="lookup-matched">
-            {matched.map((match) => (
-              <Badge key={`${match.kind}:${match.value}`} variant="outline" className="font-mono text-[10px]" title={MATCH_KINDS[match.kind] ?? match.kind}>
-                {match.value}
-              </Badge>
-            ))}
-          </span>
-        );
-    },
-  },
+};
+
+const restColumns: Column<DeliveryRecordHit>[] = [
   {
     id: "flow",
     header: "Flow",
@@ -81,16 +87,28 @@ const hitColumns: Column<DeliveryRecordHit>[] = [
         )
     ),
   },
-  { id: "target", header: "OSDU id", render: (row) => <TruncatedText text={row.targetId} mono maxWidth={300} /> },
+  {
+    id: "target",
+    header: "OSDU id",
+    render: (row) => <TruncatedText text={row.targetId} mono maxWidth={300} copy={row.targetId !== null} copyTestId="copy-hit-target" />,
+  },
   { id: "delivered", header: "Delivered", render: (row) => <RelativeTime value={row.lastDeliveredUtc} /> },
   { id: "updated", header: "Updated", render: (row) => <RelativeTime value={row.updatedUtc} /> },
-  { id: "key", header: "Delivery key", render: (row) => <TruncatedText text={row.deliveryKey} mono maxWidth={140} /> },
+  { id: "key", header: "Delivery key", render: (row) => <TruncatedText text={row.deliveryKey} mono maxWidth={140} copy copyTestId="copy-hit-key" /> },
 ];
+
+/** The columns of a search, and the columns of the recency listing, which has nothing matched to explain. */
+const columnsFor = (searching: boolean): Column<DeliveryRecordHit>[] =>
+  searching ? [statusColumn, recordColumn, matchedColumn, ...restColumns] : [statusColumn, recordColumn, ...restColumns];
+
+/** How often the recency listing refreshes itself: a page left open is a view of what is arriving now. */
+const RECENT_POLL_MS = 10_000;
 
 /**
  * Where an operator starts from what they hold, not from a flow: a well name, an OSDU id, a delivery key or the file a
  * record came from finds the record across every flow, and its row opens the record's page with its whole history.
- * The term and the state travel in the URL, so a lookup is a link that can be sent on.
+ * With nothing typed it opens on the records the ledger last took in or sent, so the page answers "what has come in?"
+ * before it is asked anything. The term and the state travel in the URL, so a lookup is a link that can be sent on.
  */
 export default function DeliveryRecordsPage() {
   const navigate = useNavigate();
@@ -129,6 +147,9 @@ export default function DeliveryRecordsPage() {
     }
   }
 
+  const searching = term !== "";
+  const columns = useMemo(() => columnsFor(searching), [searching]);
+
   const selectStatus = (next: string) => setSearchParams((current) => {
     const params = new URLSearchParams(current);
     if (next === ALL) {
@@ -144,7 +165,7 @@ export default function DeliveryRecordsPage() {
     <Page data-testid="page-delivery-records">
       <PageHeader
         title="Records"
-        subtitle="Find a record by what you hold: a wellbore id or well name the mapping declares, a source key or label, an OSDU id, a delivery key, or the ingestion file it came from. Every flow is searched, and each row says which value matched."
+        subtitle="The records of every flow, newest first, and a way back to any one of them: a wellbore id or well name the mapping declares, a source key or label, an OSDU id, a delivery key, or the ingestion file it came from. Every flow is searched, and each hit says which value matched."
       />
       <FilterBar>
         <SearchInput
@@ -165,28 +186,32 @@ export default function DeliveryRecordsPage() {
           </SelectContent>
         </Select>
       </FilterBar>
-      {term === ""
-        ? (
-          <EmptyState
-            icon={<PackageSearch />}
-            title="Type what you hold"
-            description="The start of any value a record is known by lists the records that begin with it: a wellbore id, a well name, a source key, a label, an OSDU id, or the ingestion file it came from. A delivery key lands on that record. A flow's own Records tab lists everything it holds."
-            data-testid="delivery-lookup-empty"
-          />
-        )
-        : (
-          <PagedTable
-            queryKey={["delivery", "lookup", term, status]}
-            fetchPage={(page, pageSize) => deliveryApi.lookupRecords({
-              search: term, status: status === ALL ? undefined : (status as DeliveryRecordStatus), page, pageSize,
-            })}
-            columns={hitColumns}
-            rowKey={(row) => `${row.flowId}/${row.deliveryKey}`}
-            onRowClick={(row) => navigate(deliveryRecordRoute(row))}
-            emptyMessage="No record starts with that. A term matches the start of a value the record is known by; try a shorter one, or open the flow's Records tab and match anywhere."
-            data-testid="delivery-lookup-table"
-          />
-        )}
+      {!searching && (
+        <p className="flex items-center gap-1.5 text-[12px] text-muted-foreground" data-testid="delivery-lookup-caption">
+          <History className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+          <span>
+            The latest records the delivery system took in or sent, newest first. Type above to find one by what you
+            hold; open a row for its journey through pre-ingestion, ingestion and OSDU.
+          </span>
+        </p>
+      )}
+      <PagedTable
+        queryKey={["delivery", "lookup", term, status]}
+        fetchPage={(page, pageSize) => deliveryApi.lookupRecords({
+          search: searching ? term : undefined,
+          status: status === ALL ? undefined : (status as DeliveryRecordStatus),
+          page,
+          pageSize,
+        })}
+        columns={columns}
+        rowKey={(row) => `${row.flowId}/${row.deliveryKey}`}
+        onRowClick={(row) => navigate(deliveryRecordRoute(row))}
+        pollMs={searching ? undefined : RECENT_POLL_MS}
+        emptyMessage={searching
+          ? "No record starts with that. A term matches the start of a value the record is known by; try a shorter one, or open the flow's Records tab and match anywhere."
+          : "No records yet. A delivery flow takes its records into the ledger on its first run, and they appear here as they arrive."}
+        data-testid="delivery-lookup-table"
+      />
     </Page>
   );
 }

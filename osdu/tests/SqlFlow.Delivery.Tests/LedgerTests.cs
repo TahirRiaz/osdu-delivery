@@ -103,6 +103,47 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task Recent_lists_what_the_ledger_last_touched_across_flows_newest_first()
+    {
+        var submission = Guid.NewGuid();
+        var otherFlow = FlowId.Of("other-flow");
+        await Ledger.UpsertPendingAsync(_flow, [Pending("WELL-1", submission), Pending("WELL-2", submission)]);
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        await Ledger.UpsertPendingAsync(otherFlow, [Pending("OTHER-1", submission) with { FlowId = otherFlow }]);
+
+        // Every flow's records, the last one touched first. The two staged together share an update time, so they
+        // follow it in whichever order the key tie-break gives, and the listing is the three of them.
+        var recent = await Ledger.ListRecentAsync(10);
+        Assert.Equal(3, recent.Count);
+        Assert.Equal("OTHER-1", recent[0].SourceKey);
+        Assert.Equal(otherFlow, recent[0].FlowId);
+        Assert.Equal(["WELL-1", "WELL-2"], recent.Skip(1).Select(r => r.SourceKey).Order().ToArray());
+        Assert.Equal(new BoundedCount(3, Exact: true), await Ledger.CountRecentAsync(10));
+
+        // How many it returns is what was asked for, and the count is a floor once it reaches its limit.
+        Assert.Equal(2, (await Ledger.ListRecentAsync(2)).Count);
+        Assert.Equal(new BoundedCount(2, Exact: false), await Ledger.CountRecentAsync(2));
+
+        // A custody state narrows the same listing; a state nothing is in is empty rather than everything.
+        var key = DeliveryKey.Derive("test", ["WELL-1"]);
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        await Ledger.CompleteAsync(_flow, new RecordCompletion
+        {
+            DeliveryKey = key,
+            Status = RecordStatus.Held,
+            Error = "held by the test",
+            Attempt = new AttemptRecord { DeliveryKey = key, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Held, Phase = "metadata" },
+        });
+        Assert.Equal("WELL-1", Assert.Single(await Ledger.ListRecentAsync(10, RecordStatus.Held)).SourceKey);
+        Assert.Equal(new BoundedCount(1, Exact: true), await Ledger.CountRecentAsync(10, RecordStatus.Held));
+        Assert.Empty(await Ledger.ListRecentAsync(10, RecordStatus.Deleted));
+        Assert.Equal(new BoundedCount(0, Exact: true), await Ledger.CountRecentAsync(10, RecordStatus.Deleted));
+
+        // The record just held is the one last touched, so it leads the whole listing too.
+        Assert.Equal("WELL-1", (await Ledger.ListRecentAsync(10))[0].SourceKey);
+    }
+
+    [Fact]
     public async Task Record_listings_count_to_a_limit_page_in_a_stable_order_and_bound_their_searches()
     {
         var s1 = Guid.NewGuid();

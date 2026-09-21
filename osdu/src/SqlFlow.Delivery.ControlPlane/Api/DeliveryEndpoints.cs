@@ -580,21 +580,16 @@ public static class DeliveryEndpoints
     /// <summary>
     /// A record by what an operator holds, across every flow: the Records page's lookup. A delivery key lands on the
     /// record of every flow reading that row; anything else is a prefix over the OSDU id, the source key, the label and
-    /// the ingestion file name, narrowed to one custody state when asked. It is the ledger's own indexed lookup, the one
-    /// the combined search reads, so it answers in milliseconds at production volume and counts no further than its
-    /// candidate bound; a page past that bound is empty rather than a scan, and the phrase has to be narrowed instead.
+    /// the ingestion file name, narrowed to one custody state when asked. With no term it is the ledger's recency
+    /// listing instead: the records the delivery system last took in or sent, newest first, which is what the page shows
+    /// before anything is typed. Both are indexed reads, so they answer in milliseconds at production volume and reach
+    /// no further than the candidate bound; a page past that bound is empty rather than a scan, and the listing has to
+    /// be narrowed instead.
     /// </summary>
     private static async Task<Results<Ok<PagedResult<DeliveryRecordHitDto>>, ProblemHttpResult>> LookupRecordsAsync(
         string? search, string? status, int? page, int? pageSize, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
     {
-        var term = search?.Trim();
-        if (string.IsNullOrEmpty(term))
-        {
-            return TypedResults.Problem(
-                detail: "search names what to look for: a delivery key, or the start of an OSDU id, a source key, a label or an ingestion file name.",
-                statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
-        }
-
+        var term = search?.Trim() is { Length: > 0 } typed ? typed : null;
         var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(status, null, null, null, null));
         if (query is null)
         {
@@ -607,13 +602,17 @@ public static class DeliveryEndpoints
         var skip = (p - 1) * size;
         var found = skip >= RecordListing.LookupCandidateLimit
             ? []
-            : await ledger.LookupAsync(term, take, query.Status, ct).ConfigureAwait(false);
+            : term is null
+                ? await ledger.ListRecentAsync(take, query.Status, ct).ConfigureAwait(false)
+                : await ledger.LookupAsync(term, take, query.Status, ct).ConfigureAwait(false);
         var items = found.Skip(skip).Take(size).ToList();
 
-        // Fewer hits than asked for means no identity index ran into its bound, so that count is exact.
+        // Fewer records than asked for means neither the recency index nor an identity index ran into its bound, so that count is exact.
         var total = found.Count < take
             ? new BoundedCount(found.Count, Exact: true)
-            : await ledger.CountLookupAsync(term, RecordListing.LookupCandidateLimit, query.Status, ct).ConfigureAwait(false);
+            : term is null
+                ? await ledger.CountRecentAsync(RecordListing.LookupCandidateLimit, query.Status, ct).ConfigureAwait(false)
+                : await ledger.CountLookupAsync(term, RecordListing.LookupCandidateLimit, query.Status, ct).ConfigureAwait(false);
 
         var hits = await DeliveryRecordHits.DescribeAsync(db, osdu, items, ct, term).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<DeliveryRecordHitDto>(hits, p, size, total.Count, TotalCapped: !total.Exact));

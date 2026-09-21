@@ -280,14 +280,19 @@ Pipelines like any other flow.
 
 - **Delivery** (OSDU): every delivery flow with delivered versus total, pending, held, failed, drifted, and
   its last submission, and a field that opens Records looked up for whatever is typed into it.
-- **Records** (OSDU): where an operator starts from what they hold rather than from a flow. Any value a record is
-  known by lists the records that start with it, across every flow: a wellbore id or a well name the mapping declares
-  in `dataset.identity`, the source key or one of its key columns, a word of the label, the OSDU id or its own part,
-  and the ingestion file the record came from. A delivery key lands on that record, and a status narrows the list.
-  Every row says which of the record's values matched, and what that value is. It is the ledger's identity index
-  (`GET /api/v1/delivery/records?search=&status=`), the same lookup the combined search reads: one seek per term,
-  counted no further than its candidate bound. The term and the status are in the URL, so a lookup is a link that
-  can be sent on, and a row opens the record.
+- **Records** (OSDU): where an operator starts from what they hold rather than from a flow. **With nothing typed the
+  page lists what the delivery system last took in or sent, newest first, refreshing every ten seconds**, so "what has
+  come in?" is answered before anything is asked; a status narrows that listing the same way it narrows a search. Any
+  value a record is known by lists the records that start with it, across every flow: a wellbore id or a well name the
+  mapping declares in `dataset.identity`, the source key or one of its key columns, a word of the label, the OSDU id
+  or its own part, and the ingestion file the record came from. A delivery key lands on that record. Every row of a
+  search says which of the record's values matched, and what that value is; the recency listing leaves that column
+  out, because nothing was typed for a value to match. One route serves both
+  (`GET /api/v1/delivery/records?search=&status=`): with a term it is the ledger's identity index, the same lookup the
+  combined search reads, one seek per term; with none it is the recency index (`IX_Record_UpdatedUtc`, and
+  `IX_Record_Status_UpdatedUtc` for a state), read from its end. Both count no further than the candidate bound, and a
+  page past it is empty rather than a scan. The term and the status are in the URL, so a lookup is a link that can be
+  sent on, and a row opens the record with its whole journey.
 - **The identity index.** `osdu.RecordIdentity` holds one row per value per record, the value folded to upper case
   for comparison and kept as written for display, with the kind it came from. A staging writes a record's rows as a
   set, so a row that moves on (a new file, a renamed label, a new wellbore id) is found by what it is now and no

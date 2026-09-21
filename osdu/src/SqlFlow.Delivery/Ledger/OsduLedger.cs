@@ -1009,6 +1009,45 @@ public sealed partial class OsduLedger : ILedger
         return new BoundedCount(count, Exact: count < limit);
     }
 
+    public async Task<IReadOnlyList<RecordState>> ListRecentAsync(int max, RecordStatus? status = null, CancellationToken ct = default)
+    {
+        return await ReadAsync(
+            async db =>
+            {
+                // Ties broken by key: a bulk write stamps a whole batch with one update time, and the pages must still partition it.
+                var page = RecentFilter(db, status)
+                    .OrderByDescending(r => r.UpdatedUtc)
+                    .ThenByDescending(r => r.DeliveryKey)
+                    .Take(Math.Clamp(max, 1, RecordListing.LookupCandidateLimit));
+                return ToStates(await ReadLeasedAsync(db, page, ct).ConfigureAwait(false));
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    public async Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        var count = await ReadAsync(db => RecentFilter(db, status).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
+        return new BoundedCount(count, Exact: count < limit);
+    }
+
+    /// <summary>
+    /// The records the recency listing orders: every record, or those in one custody state. Both read an index that ends
+    /// with the update time ([UpdatedUtc], or [Status, UpdatedUtc]), so the newest rows are the end of a range the server
+    /// walks backwards, and the listing costs what it shows rather than what the ledger holds.
+    /// </summary>
+    private static IQueryable<DeliveryRecord> RecentFilter(OsduDbContext db, RecordStatus? status)
+    {
+        var rows = db.DeliveryRecords.AsNoTracking();
+        if (status is not { } wanted)
+        {
+            return rows;
+        }
+
+        var text = StatusText.Of(wanted);
+        return rows.Where(r => r.Status == text);
+    }
+
     /// <summary>
     /// A UUID is a delivery key, which every flow reading the row holds a record under (a seek of the key index); anything
     /// else is a prefix over the identity index, which holds every value a record is findable by (the mapping's declared

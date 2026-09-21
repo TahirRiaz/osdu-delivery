@@ -925,7 +925,10 @@ public static class RecordListing
     /// </summary>
     public const int ContainsScanLimit = 100_000;
 
-    /// <summary>Candidates the lookup across every flow takes from each identity index before ordering them.</summary>
+    /// <summary>
+    /// Candidates the lookup across every flow takes from each identity index before ordering them, and how far back the
+    /// recency listing that answers an empty search box reaches.
+    /// </summary>
     public const int LookupCandidateLimit = 1_000;
 }
 
@@ -1254,6 +1257,16 @@ public interface ILedger
 
     /// <summary>How many records a lookup matches, counting no further than <paramref name="limit"/>.</summary>
     Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, CancellationToken ct = default);
+
+    /// <summary>The ledger's most recently updated records across every flow, at most <paramref name="max"/> of them,
+    /// newest first and ties broken by key: what the delivery system last took in, sent or was answered about, without a
+    /// term to seek. With <paramref name="status"/>, only the records in that state. It reads the end of a recency index,
+    /// so it costs the same however many records the ledger holds, and it reaches no further back than
+    /// <see cref="RecordListing.LookupCandidateLimit"/> records.</summary>
+    Task<IReadOnlyList<RecordState>> ListRecentAsync(int max, RecordStatus? status = null, CancellationToken ct = default);
+
+    /// <summary>How many records the recency listing has to show, counting no further than <paramref name="limit"/>.</summary>
+    Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, CancellationToken ct = default);
 
     /// <summary>Delivered records due for the drift pass, oldest verification first.</summary>
     Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default);
