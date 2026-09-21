@@ -8,7 +8,7 @@ test.describe.serial("pipelines", () => {
     await adminPage.getByTestId("nav-pipelines").click();
     // The folder tree starts collapsed; a search expands it and surfaces the flow row.
     await adminPage.getByTestId("filter-name").fill("wells-welllog-03-header-delivery");
-    await adminPage.getByTestId("table-row").filter({ hasText: "wells-welllog-03-header-delivery" }).first().click();
+    await adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog-03-header-delivery" }).first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
 
     const tabs = adminPage.getByTestId("pipeline-tabs");

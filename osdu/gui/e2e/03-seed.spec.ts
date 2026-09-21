@@ -162,6 +162,27 @@ test.describe.serial("seed the estate via repo source sync", () => {
     expect(output).toContain("wells-osdu-00-reference-cache");
   });
 
+  test("register the fixture repo as a source and watch it sync", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-repos").click();
+    await expect(adminPage.getByTestId("page-repos")).toBeVisible();
+
+    const meta = fixtureMeta();
+    await adminPage.getByTestId("open-register-source").click();
+    await adminPage.getByTestId("source-name").fill(REPO_NAME);
+    await adminPage.getByTestId("source-remote-url").fill(meta.repoDir);
+    await adminPage.getByTestId("register-source-submit").click();
+
+    // The row appears; force an immediate pull and wait for the FIXTURE's head commit specifically, so a sha
+    // left over from a previous suite run can never satisfy this.
+    const row = adminPage.getByTestId("table-row").filter({ hasText: REPO_NAME }).first();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.getByTestId("source-sync-now").click();
+    await expect(row.getByText(meta.headSha.slice(0, 10)).first()).toBeVisible({ timeout: 120_000 });
+  });
+
+  // Runs AFTER the source is registered and synced, because each run records itself into that repo: a run that
+  // recorded first would create the repo itself, as a manual one, and the registration would find the name taken.
+  //
   // A delivery flow reads its records from ingestion tables, which the chain that fills them creates: the pre flows land
   // the sample files and the ingestion flows key them into the tables the delivery flows plan from. Running them through
   // the CLI host is the path a node takes, so what the later specs plan against is what production would hold. Landing
@@ -200,29 +221,12 @@ test.describe.serial("seed the estate via repo source sync", () => {
     }
   });
 
-  test("register the fixture repo as a source and watch it sync", async ({ adminPage }) => {
-    await adminPage.getByTestId("nav-repos").click();
-    await expect(adminPage.getByTestId("page-repos")).toBeVisible();
-
-    const meta = fixtureMeta();
-    await adminPage.getByTestId("open-register-source").click();
-    await adminPage.getByTestId("source-name").fill(REPO_NAME);
-    await adminPage.getByTestId("source-remote-url").fill(meta.repoDir);
-    await adminPage.getByTestId("register-source-submit").click();
-
-    // The row appears; force an immediate pull and wait for the FIXTURE's head commit specifically, so a sha
-    // left over from a previous suite run can never satisfy this.
-    const row = adminPage.getByTestId("table-row").filter({ hasText: REPO_NAME }).first();
-    await expect(row).toBeVisible({ timeout: 15_000 });
-    await row.getByTestId("source-sync-now").click();
-    await expect(row.getByText(meta.headSha.slice(0, 10)).first()).toBeVisible({ timeout: 120_000 });
-  });
-
   test("the synced pipeline appears in the catalog", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
+    // The page lists a repo's flows as the folder tree they are; a search expands it onto the matching rows.
     await adminPage.getByTestId("filter-name").fill("wells-welllog-03-header-delivery");
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "wells-welllog-03-header-delivery" });
+    const row = adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog-03-header-delivery" });
     await expect(row.first()).toBeVisible({ timeout: 60_000 });
   });
 

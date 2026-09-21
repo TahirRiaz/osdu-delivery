@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E, hostRun } from "../playwright.config";
-import { FixtureMeta } from "./global-setup";
+import { FixtureMeta, REPO_NAME } from "./global-setup";
 import { expect, test } from "./helpers";
 
 // A record's history where an operator already is. The GUI and the API have shown a record's attempts from the start;
@@ -80,7 +80,11 @@ test.describe.serial("records from the CLI", () => {
     // Records reach the ledger when a submission is planned, which is what an intake does: it renders and stages every
     // record of the scope and sends nothing. A plan run reports what it would do and stages nothing, so the earlier
     // specs' plan leaves the ledger empty by design.
-    expect(cli("run", flow, "--operation", "intake", "--set", "logSource=STAT_COMP")).toContain("record(s)");
+    //
+    // The run records itself into the repo the fixture is registered under, like every other run of this estate.
+    // Without --repo it would name the repo after the folder it was started from, leaving a second repo called
+    // "flows" in the catalog holding a copy of this flow.
+    expect(cli("run", flow, "--operation", "intake", "--set", "logSource=STAT_COMP", "--repo", REPO_NAME)).toContain("record(s)");
 
     const listed = json<{
       flow: string;

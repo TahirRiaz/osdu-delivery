@@ -8,7 +8,7 @@ test.describe.serial("interfaces", () => {
   test("a source lists its interfaces, and its records are read one interface at a time", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     await adminPage.getByTestId("filter-name").fill("wells-source-03-interfaces-delivery");
-    await adminPage.getByTestId("table-row").filter({ hasText: "wells-source-03-interfaces-delivery" }).first().click();
+    await adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-source-03-interfaces-delivery" }).first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
 
     // The Delivery tab opens on the source: the counts of every interface, then the interfaces themselves.

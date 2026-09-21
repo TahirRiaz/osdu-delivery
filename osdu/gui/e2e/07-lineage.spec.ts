@@ -20,6 +20,12 @@ const WELL_LOG = "osdu:wks:work-product-component--WellLog:1.4.0";
 
 const WELLBORE = "osdu:wks:master-data--Wellbore:1.3.0";
 
+/**
+ * The system a partition's cache types belong to (`OsduLineage.CacheSystem`). It is the cache of the partition, not of
+ * the flow: a partition has one cache whichever flow fills it, so the system never carries a flow's name.
+ */
+const CACHE_SYSTEM = "osdu-cache";
+
 test.describe.serial("lineage", () => {
   test("the synced estate lists the OSDU types and cache types its flows write and read", async ({ request }) => {
     const session = await adminSession(request);
@@ -43,7 +49,7 @@ test.describe.serial("lineage", () => {
     expect(wellbore!.writers).toBe(2);
     expect(wellbore!.readers).toBeGreaterThanOrEqual(2);
 
-    const units = named("wells-osdu-00-reference-cache", "UnitOfMeasure");
+    const units = named(CACHE_SYSTEM, "UnitOfMeasure");
     expect(units).toBeDefined();
     expect([units!.namespace, units!.group, units!.writers]).toEqual(["opendes", "cache", 1]);
     expect(units!.readers).toBeGreaterThanOrEqual(1);

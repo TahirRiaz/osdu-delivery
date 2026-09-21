@@ -66,12 +66,21 @@ test.describe.serial("record trace", () => {
     await expect(adminPage.getByTestId("journey-queued")).toBeVisible();
     await expect(adminPage.getByTestId("record-origin")).toContainText("welllog_");
 
-    // The chain before the ledger: the strip has a place for pre-ingestion and ingestion. This estate's chain ran
-    // through the CLI rather than as platform runs, so no run recorded the file and the page says exactly that,
-    // instead of inventing a stage or leaving a blank.
-    await expect(adminPage.getByTestId("milestone-pre")).toBeVisible();
-    await expect(adminPage.getByTestId("milestone-ing")).toBeVisible();
-    await expect(adminPage.getByTestId("record-chain-note")).toContainText(/No run in the catalog recorded/, { timeout: 30_000 });
+    // The chain before the ledger, named run by run. Pre-ingestion is found by the file it processed; ingestion
+    // processed no file of its own (it reads the table the pre flow landed), so it is found by the table it was
+    // writing when the row was stamped. Both are the estate's own runs, recorded as they ran.
+    await expect(adminPage.getByTestId("milestone-pre")).toContainText("wells-welllog-01-header-pre", { timeout: 30_000 });
+    await expect(adminPage.getByTestId("milestone-ing")).toContainText("wells-welllog-02-header-ing");
+    await expect(adminPage.getByTestId("milestone-pre")).not.toContainText("no run recorded");
+    await expect(adminPage.getByTestId("milestone-ing")).not.toContainText("no run recorded");
+
+    // Each stage is in the timeline too, saying what it did: the file it took in, and the table it loaded the row into.
+    const journey = adminPage.getByTestId("record-journey");
+    await expect(journey).toContainText("Landed: wells-welllog-01-header-pre took the file in");
+    await expect(journey).toContainText("Ingested: wells-welllog-02-header-ing loaded the row into its table");
+
+    // With every stage named there is nothing missing to explain, so the note is not rendered at all.
+    await expect(adminPage.getByTestId("record-chain-note")).toHaveCount(0);
 
     // Every long value of the header is clipped to its own column and copyable: a staged payload's path is longer
     // than the column it sits in, and a value wider than its cell used to run under the value beside it.
