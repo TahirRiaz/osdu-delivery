@@ -35,6 +35,34 @@ export function keyVariable(holder: DeliveryTemplateVariable, target: string): D
   };
 }
 
+/**
+ * The template's variables with one for every entry that fills a free key of an object that takes them
+ * (`osdu.tags.DeliveredBy`), each right after the object holding it, so a tree still reads parents before children.
+ * Without them an entry under `tags` would be filled by the mapping and shown nowhere.
+ */
+export function withKeyVariables(
+  variables: DeliveryTemplateVariable[],
+  entries: readonly MappingDraftEntry[],
+): DeliveryTemplateVariable[] {
+  const named = new Set(variables.map((variable) => variable.path));
+  const listed: DeliveryTemplateVariable[] = [];
+  for (const variable of variables) {
+    listed.push(variable);
+    if (variable.keyValueType === null) {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!named.has(entry.target) && isKeyOf(variable.path, entry.target)) {
+        named.add(entry.target);
+        listed.push(keyVariable(variable, entry.target));
+      }
+    }
+  }
+
+  return listed;
+}
+
 function isKeyOf(holder: string, target: string): boolean {
   return target.startsWith(`${holder}.`) && KEY_NAME.test(target.slice(holder.length + 1));
 }

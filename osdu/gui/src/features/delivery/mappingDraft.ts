@@ -163,6 +163,80 @@ export function entrySummary(entry: MappingDraftEntry): string {
   }
 }
 
+/**
+ * An entry on one line, without the target it fills: where the value comes from, the lookup that finds it, what is done
+ * to it, and when it applies. `dataset.facility_name | trim`, `cache.Wellbore.id by FacilityName = dataset.wellbore_uwi`.
+ */
+export function entryText(entry: MappingDraftEntry): string {
+  const lookup = lookupText(entry);
+  return [
+    entrySummary(entry),
+    lookup === "" ? "" : `by ${lookup}`,
+    entry.modifiers.length === 0 ? "" : `| ${entry.modifiers.map(modifierText).join(" | ")}`,
+    entry.appliesWhen === null ? "" : `when ${conditionText(entry.appliesWhen)}`,
+  ].filter((part) => part !== "").join(" ");
+}
+
+/** One property the mapping fills: where the value comes from, what is done to it, and the target it is written to. */
+export interface PropertyRow {
+  target: string;
+  /** Where the value comes from, which decides what the rest of the entry means. */
+  input: MappingDraftInput;
+  /** The value's origin: `dataset.log_source`, `cache.Wellbore.id`, `rows of dataset.curves`, `static "MD"`. */
+  source: string;
+  /** The origin without the word that names its kind, for a view that says the kind itself. */
+  sourceValue: string;
+  /** The cached record's lookup as one phrase, `Code/Name = dataset.elev_meas_ref`; empty when no cache is read. */
+  lookup: string;
+  /** One line per findBy, as the YAML writes them, for the property's own view. */
+  lookupDetail: string[];
+  /** The modifiers in order, one line each; empty for a value taken as it stands. */
+  modifiers: string[];
+  /** The modifier kinds in order, which is what a row has room for: `split, replace`. */
+  modifierKinds: string;
+  /** The entry's appliesWhen in one line, or null when it always applies. */
+  condition: string | null;
+  description: string | null;
+  required: boolean;
+  /** The whole line as text, with every modifier spelled out, which a hover panel shows and a filter matches. */
+  detail: string;
+  /** Everything the row holds, lowercased, which a filter matches against. */
+  search: string;
+}
+
+/** One entry read as a row: every part of it worded once, so every view of a mapping says the same thing. */
+export function propertyRow(entry: MappingDraftEntry): PropertyRow {
+  const source = entrySummary(entry);
+  const lookup = lookupText(entry);
+  const modifiers = entry.modifiers.map(modifierText);
+  const condition = entry.appliesWhen === null ? null : conditionText(entry.appliesWhen);
+  // The modifiers change the value a lookup compares, not the cached field, so they read after that value.
+  const detail = [
+    source,
+    lookup === "" ? "" : `by ${lookup}`,
+    modifiers.length === 0 ? "" : `| ${modifiers.join(" | ")}`,
+    `-> ${entry.target}`,
+    condition === null ? "" : `when ${condition}`,
+  ].filter((part) => part !== "").join(" ");
+  return {
+    target: entry.target,
+    input: entry.input,
+    source,
+    sourceValue: entry.input === "Repeat"
+      ? `dataset.${entry.child ?? ""}`
+      : entry.input === "Static" ? entry.static ?? "" : source,
+    lookup,
+    lookupDetail: lookupLines(entry),
+    modifiers,
+    modifierKinds: entry.modifiers.map((modifier) => modifier.kind).join(", "),
+    condition,
+    description: entry.description,
+    required: entry.required,
+    detail,
+    search: [detail, entry.description ?? ""].join("\n").toLowerCase(),
+  };
+}
+
 /** Text a modifier or a findBy line quotes, so a separator that is a space or a comma is visible. */
 function quoted(text: string): string {
   return text.includes("'") ? `"${text}"` : `'${text}'`;

@@ -122,6 +122,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /mapping-builder/compose` | read | A draft written as YAML and checked: what is still missing, whether it loads, and the preflight against its template and the current version of the cache of `scope`, with the `parameters` given. |
 | `POST /mapping-builder/parse` | read | A mapping document (`yaml`) as a draft the builder edits. |
 | `POST /mapping-builder/shape` | read | The shape of the records a mapping document (`yaml`, optional `path` and `parameters`) renders, drawn against its saved template without a row or a cache: the record with a placeholder naming the type and the source wherever a value comes from a row or the cache, the parameters the mapping declares with the value used, notes on what the placeholders cannot say, and the issue that stopped it when the document does not load or its template is not saved ([mapping-templates.md](mapping-templates.md)). |
+| `POST /mapping-builder/coverage` | read | What a mapping document (`yaml`, optional `path`) fills of the template version it pins: the kind and version, every variable a mapping may fill with whether the document reaches it on every row, on some rows or never, and whether an entry fills the variable itself or something it holds; plus what the mapping leaves required and empty, as the errors the delivery gate raises and warnings for the required variables the gate does not check ([mapping-templates.md](mapping-templates.md)). Nothing is rendered and no cache is read. |
 | `GET /caches` | read | One entry per partition whose cache the synced cache flows fill, narrowed by `repoId` to the partitions that repository's cache flows fill: the partition (`scope`); the `flows` filling it, each with its name, repository, `relativePath`, `pipelineId`, the `endpoint` it searches as declared, the schedules that refresh it and the types it declares; the `types` the cache holds as those flows together declare them, each with its entity type, its `sources` (each flow's kind, query and `onChange`), the `fields` it keeps (the path, the name it is cached as, and the flows declaring it), the `onChange` in effect (`approve` when any flow asks for it) and how many records the current version holds of it; the `current` version with the cache flow that wrote it, who asked and in which run; and how many `versions` the cache holds. |
 | `GET /cache/items` | read | The cached records of one partition's cache (`scope`) at one `version` (the current one when none is named), paged, filtered by `type` and searched with `search` over every value they hold. |
 | `GET /cache/versions` | read | The versions of one partition's cache (`scope`), newest first, each with whether it is current, the cache flow that wrote it, when it was captured, by whom and in which run, where its content came from, and its types and record counts. |
@@ -338,14 +339,19 @@ Pipelines like any other flow.
   to the OSDU cache page for what the cache holds and the changes waiting for approval.
 - **Audit trail** (OSDU): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (OSDU): the mapping documents the repositories hold, each mapping with the template it pins and a
-  link to the Mapping builder. A mapping opens on its Properties, a searchable list of one line per property the
-  mapping fills, read the way the renderer reads it: the value's origin (a dataset column, a cached field with the
-  lookup it is found by, a repeater or a static value), what is done to it, then the property in the template it lands
-  on. A line opens the property as the pipeline that fills it: every line the lookup tries in order, the modifiers as
-  the steps they are (drawn inside the lookup for a cache entry, since they change the value compared rather than the
-  cached field), and the condition that decides whether the value is written at all. The filter matches the whole
-  line, so a source column name answers which properties it reaches as directly as a path answers what fills it. The
-  YAML tab is the document as written, and the Record shape tab draws the record the mapping renders.
+  link to the Mapping builder. A mapping opens on its Properties: the template it pins as the record's tree, with the
+  mapping laid over it. Each row carries a glyph for how the mapping reaches that variable (filled on every row, filled
+  on some rows, not filled) and the findings on it; selecting one lays out what fills it as the pipeline that fills it:
+  the value's origin (a dataset column, a cached field with every line the lookup tries in order, a repeater or a
+  static value), the modifiers as the steps they are (drawn inside the lookup for a cache entry, since they change the
+  value compared rather than the cached field), and the condition that decides whether the value is written at all. It
+  opens on what the mapping fills and what a check names, which is the overview; the switches add what OSDU writes, the
+  nested lists or the rest of the template, and answer the two questions a mapping is read for: Show missing is what
+  the record requires and the mapping does not fill on every row, the validation against the schema, and Show unfilled
+  is every variable of the template nothing fills, which is what the mapping could carry and does not. The filter matches what fills a
+  variable as well as its path and description, so a source column name answers which variables it reaches. A mapping
+  pinning a template version nobody saved has no tree to lay itself over, and lists its own entries instead. The YAML
+  tab is the document as written, and the Record shape tab draws the record the mapping renders.
 - **Templates**: browse the schemas OSDU publishes through a delivery flow's connection (a node runs the search and the
   fetch with the flow's credentials), look at one laid out as a template (every variable with its type, requiredness,
   relationships, unit context and OSDU's description), and save it; or import a bundled schema file. The saved

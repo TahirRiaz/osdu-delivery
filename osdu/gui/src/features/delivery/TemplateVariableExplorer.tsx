@@ -1,10 +1,12 @@
-import { useMemo, useState, type FocusEvent } from "react";
+import { createContext, useContext, useMemo, useState, type FocusEvent } from "react";
 import {
   Braces,
   Brackets,
   Calendar,
   ChevronsDownUp,
   ChevronsUpDown,
+  Circle,
+  CircleCheck,
   CircleDot,
   Cloud,
   Cog,
@@ -13,8 +15,10 @@ import {
   Hash,
   Link2,
   List,
+  OctagonAlert,
   Ruler,
   ToggleLeft,
+  TriangleAlert,
   Type,
   type LucideIcon,
 } from "lucide-react";
@@ -23,7 +27,9 @@ import { Label } from "@/components/ui/label";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import type { DeliveryTemplateRole, DeliveryTemplateVariable } from "../../api/delivery";
+import type {
+  CoverageState, DeliveryMappingCoverage, DeliveryTemplateRole, DeliveryTemplateVariable, MappingDraftEntry, MappingDraftIssue,
+} from "../../api/delivery";
 import { CopyButton } from "@/components/CopyButton";
 import { DetailPair } from "@/components/DetailPair";
 import { FilterBar } from "@/components/FilterBar";
@@ -32,7 +38,10 @@ import { SearchInput } from "@/components/SearchInput";
 import { StatePill } from "@/components/StatusBadge";
 import { TreeContext, TreeNode, type TreeState } from "@/components/Tree";
 import { usePersistentLayout } from "@/layout/workbench/usePersistentLayout";
+import { entryText, propertyRow } from "./mappingDraft";
+import { EntryDetail } from "./MappingEntryDetail";
 import { holderPath, roleLabel, shapeText, splitPath } from "./templateFormat";
+import { withKeyVariables } from "./variableRows";
 
 /** One variable in the tree, with the variables it holds that survive the filter. */
 interface VariableNode {
@@ -42,13 +51,77 @@ interface VariableNode {
   children: VariableNode[];
 }
 
-/** Whether a variable matches the filter text: its path, title, description or the entity types it points to. */
-function matches(variable: DeliveryTemplateVariable, term: string): boolean {
+/** A mapping laid over the template: what it fills of it, and the entries doing the filling. */
+export interface MappingOverlay {
+  /** What the mapping fills, variable by variable, as the coverage endpoint answers it. */
+  coverage: DeliveryMappingCoverage;
+  /** The document's entries, so a variable can show what fills it and not only that something does. */
+  entries: MappingDraftEntry[];
+}
+
+/**
+ * How the mapping being looked at reaches one variable, what fills it, and what the checks found there. A row shows the
+ * state as a glyph and nothing more: the entry itself is on the row's hover and in the properties beside the tree,
+ * where it can be read whole instead of crowding every row.
+ */
+interface CoverageView {
+  state: CoverageState;
+  /** The entry filling the variable itself; null for an object filled through what it holds, and for an empty one. */
+  entry: MappingDraftEntry | null;
+  /** The worst finding on the variable, and what it says. */
+  finding: MappingDraftIssue | null;
+}
+
+/**
+ * What the mapping fills, by variable, for the tree to show. Null when no mapping is being looked at, which is how the
+ * Templates page reads the same tree: a template on its own, with nothing to say about who fills it.
+ */
+const CoverageContext = createContext<ReadonlyMap<string, CoverageView> | null>(null);
+
+/**
+ * How a variable's state reads: the word, the glyph and the tone, for a row and for the properties beside it. A
+ * variable the mapping fills carries a check whether or not every record ends up with it, because it is filled either
+ * way; the tone is what says a record may go without it. Only what nothing fills reads as empty.
+ */
+function coverageVisual(state: CoverageState): { label: string; tone: "success" | "warning" | "muted"; icon: LucideIcon; textClass: string } {
+  switch (state) {
+    case "Always":
+      return { label: "Filled on every row", tone: "success", icon: CircleCheck, textClass: "text-success" };
+    case "Sometimes":
+      return { label: "Filled on some rows", tone: "warning", icon: CircleCheck, textClass: "text-warning" };
+    case "Empty":
+      return { label: "Not filled", tone: "muted", icon: Circle, textClass: "text-muted-foreground" };
+  }
+}
+
+/**
+ * Whether the overview leaves a variable out: one the mapping does not reach and no check names. A variable the
+ * coverage says nothing about (what OSDU writes, a nested list) is left to the switch that shows its kind.
+ */
+function inOverview(covered: CoverageView | undefined): boolean {
+  return covered !== undefined && covered.state === "Empty" && covered.finding === null;
+}
+
+/**
+ * Whether a variable is one of the gaps: nothing fills it, or a check names it. An entry that may leave a value out is
+ * not a gap, because the mapping does fill that variable; what such an entry costs is said where it is required, by
+ * the check that names it.
+ */
+function isGap(covered: CoverageView | undefined): boolean {
+  return covered === undefined || covered.state === "Empty" || covered.finding !== null;
+}
+
+/**
+ * Whether a variable carries the filter text: its path, title, description or the entity types it points to, and what
+ * the mapping fills it with when there is one, so a source column, a cached type or a modifier finds its variables.
+ */
+function textMatches(variable: DeliveryTemplateVariable, term: string, covered: CoverageView | undefined): boolean {
   return term === ""
     || variable.path.toLowerCase().includes(term)
     || (variable.title ?? "").toLowerCase().includes(term)
     || (variable.description ?? "").toLowerCase().includes(term)
-    || variable.relationships.some((relationship) => relationship.toLowerCase().includes(term));
+    || variable.relationships.some((relationship) => relationship.toLowerCase().includes(term))
+    || (covered?.entry != null && entryText(covered.entry).toLowerCase().includes(term));
 }
 
 /**
@@ -59,7 +132,7 @@ function matches(variable: DeliveryTemplateVariable, term: string): boolean {
 function buildTree(
   variables: DeliveryTemplateVariable[],
   include: (variable: DeliveryTemplateVariable) => boolean,
-  term: string,
+  matches: (variable: DeliveryTemplateVariable) => boolean,
 ): { roots: VariableNode[]; matched: number } {
   const placed = new Map<string, VariableNode>();
   const roots: VariableNode[] = [];
@@ -68,7 +141,7 @@ function buildTree(
       continue;
     }
 
-    const node: VariableNode = { variable, matched: matches(variable, term), children: [] };
+    const node: VariableNode = { variable, matched: matches(variable), children: [] };
     placed.set(variable.path, node);
     let holder = holderPath(variable.path);
     while (holder !== null && !placed.has(holder)) {
@@ -94,15 +167,22 @@ function buildTree(
   return { roots: prune(roots), matched };
 }
 
-/** Every holder on the way to a variable that matches the filter, so a match is never hidden inside a collapsed branch. */
-function revealedPaths(variables: DeliveryTemplateVariable[], term: string): ReadonlySet<string> {
+/**
+ * Every holder on the way to a variable that matches, so a match is never hidden inside a collapsed branch. Nothing is
+ * revealed while the tree shows everything: a reader opening a fresh template reads its sections as an outline first.
+ */
+function revealedPaths(
+  variables: DeliveryTemplateVariable[],
+  matches: (variable: DeliveryTemplateVariable) => boolean,
+  narrowed: boolean,
+): ReadonlySet<string> {
   const paths = new Set<string>();
-  if (term === "") {
+  if (!narrowed) {
     return paths;
   }
 
   for (const variable of variables) {
-    if (matches(variable, term)) {
+    if (matches(variable)) {
       for (let holder = holderPath(variable.path); holder !== null; holder = holderPath(holder)) {
         paths.add(holder);
       }
@@ -155,15 +235,26 @@ function Glyph({ icon: Icon, className }: { icon: LucideIcon; className: string 
   return <Icon className={className} />;
 }
 
-/** A tree row's content: the shape glyph, the variable's name, its markers, and its shape at the far end. */
+/**
+ * A tree row's content: the shape glyph, the variable's name, its markers, and its shape at the far end. With a mapping
+ * to measure against, the name carries how that mapping reaches the variable, and a finding on it stands out in the row.
+ */
 function VariableLabel({ node }: { node: VariableNode }) {
   const { variable } = node;
   const role = roleVisual(variable.role);
+  const covered = useContext(CoverageContext)?.get(variable.path);
+  const coverage = covered === undefined ? null : coverageVisual(covered.state);
+  const finding = covered?.finding ?? null;
   return (
     <>
       <Glyph icon={shapeIcon(variable)} className={cn("size-3.5 shrink-0", role?.textClass ?? "text-muted-foreground")} />
       <span
-        className={cn("min-w-0 truncate font-mono text-[12px]", role?.textClass, !node.matched && "opacity-60")}
+        className={cn(
+          "min-w-0 truncate font-mono text-[12px]",
+          role?.textClass,
+          finding?.severity === "error" && "text-destructive",
+          !node.matched && "opacity-60",
+        )}
         title={variable.path}
         data-testid={`templates-view-variable-${variable.path}`}
         data-role={variable.role}
@@ -172,6 +263,21 @@ function VariableLabel({ node }: { node: VariableNode }) {
       </span>
       {variable.required && (
         <span className="shrink-0 font-mono text-[12px] font-semibold text-destructive" title="Required" aria-label="Required">*</span>
+      )}
+      {coverage !== null && (
+        <span
+          role="img"
+          aria-label={coverage.label}
+          title={[finding?.message ?? coverage.label, ...(covered?.entry == null ? [] : [entryText(covered.entry)])].join("\n")}
+          className={cn("inline-flex shrink-0", finding === null ? coverage.textClass : finding.severity === "error" ? "text-destructive" : "text-warning")}
+          data-testid={`templates-view-coverage-${variable.path}`}
+          data-coverage={covered?.state}
+        >
+          <Glyph
+            icon={finding === null ? coverage.icon : finding.severity === "error" ? OctagonAlert : TriangleAlert}
+            className="size-3"
+          />
+        </span>
       )}
       {role !== null && (
         <span
@@ -219,10 +325,12 @@ function KindList({ icon, label, values, testId }: { icon: LucideIcon; label: st
   );
 }
 
-/** Everything the template says about the selected variable. */
+/** Everything the template says about the selected variable, and how the mapping being looked at fills it. */
 function VariableProperties({ variable, holds }: { variable: DeliveryTemplateVariable; holds: number }) {
   const { leaf } = splitPath(variable.path);
   const role = roleVisual(variable.role);
+  const covered = useContext(CoverageContext)?.get(variable.path);
+  const coverage = covered === undefined ? null : coverageVisual(covered.state);
   return (
     <div className="flex flex-col gap-4" data-testid="templates-view-properties-variable">
       <div className="flex flex-col gap-1.5">
@@ -233,14 +341,33 @@ function VariableProperties({ variable, holds }: { variable: DeliveryTemplateVar
         <span className="break-all font-mono text-[12px] text-muted-foreground" data-testid="templates-view-properties-path">
           {variable.path}
         </span>
-        {(variable.required || role !== null || variable.nested) && (
+        {(variable.required || role !== null || variable.nested || coverage !== null) && (
           <div className="flex flex-wrap items-center gap-1.5">
             {variable.required && <Badge variant="secondary" className="text-[10px]" data-testid="templates-view-required">Required</Badge>}
+            {coverage !== null && (
+              <StatePill tone={coverage.tone} label={coverage.label} icon={coverage.icon} testId="templates-view-properties-coverage" />
+            )}
+            {/* A holder reads from what it holds, so its own entry being optional is said here, where it is not lost. */}
+            {covered?.entry != null && !covered.entry.required && (
+              <Badge variant="outline" className="text-[10px]" data-testid="templates-view-properties-optional">optional</Badge>
+            )}
             {role !== null && <StatePill tone={role.tone} label={role.label} icon={role.icon} testId="templates-view-properties-role" />}
             {variable.nested && <Badge variant="outline" className="text-[10px]">nested list</Badge>}
           </div>
         )}
       </div>
+
+      {covered?.finding != null && (
+        <p
+          className={cn("flex items-start gap-1.5 text-[13px]", covered.finding.severity === "error" ? "text-destructive" : "text-warning")}
+          data-testid="templates-view-properties-finding"
+        >
+          {covered.finding.severity === "error"
+            ? <OctagonAlert className="mt-0.5 size-3.5 shrink-0" />
+            : <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />}
+          {covered.finding.message}
+        </p>
+      )}
 
       {(variable.title !== null || variable.description !== null) && (
         <div className="flex flex-col gap-1">
@@ -261,6 +388,18 @@ function VariableProperties({ variable, holds }: { variable: DeliveryTemplateVar
           <DetailPair label="Free keys of"><span className="font-mono text-[12px]">{variable.keyValueType}</span></DetailPair>
         )}
         {holds > 0 && <DetailPair label="Holds">{holds} variable{holds === 1 ? "" : "s"}</DetailPair>}
+        {covered !== undefined && covered.entry === null && (
+          <DetailPair label="Filled by">
+            {covered.state === "Empty" ? "No entry of the mapping" : "The entries filling what it holds"}
+          </DetailPair>
+        )}
+        {covered?.entry != null && (
+          <div className="col-span-2" data-testid="templates-view-properties-entry">
+            <DetailPair label="Filled by">
+              <EntryDetail row={propertyRow(covered.entry)} target={false} />
+            </DetailPair>
+          </div>
+        )}
         {variable.unitContext !== null && (
           <div className="col-span-2">
             <DetailPair label={<span className="inline-flex items-center gap-1"><Ruler className="size-3" />Unit context</span>}>
@@ -287,11 +426,18 @@ function VariableProperties({ variable, holds }: { variable: DeliveryTemplateVar
 /**
  * A template's variables as the record's tree beside a properties panel: each variable under the one that holds it, the
  * filter and the switches narrowing the tree, and whatever the template says about the selected variable on the right.
+ * Given a `mapping` laid over it, every row also says what that mapping fills the variable with and what the checks
+ * found there, and the tree opens on what is filled and what the schema requires, which is the overview an author
+ * reads first; without one the tree is the template on its own.
  */
-export function TemplateVariableExplorer({ variables }: { variables: DeliveryTemplateVariable[] }) {
+export function TemplateVariableExplorer({ variables, mapping }: { variables: DeliveryTemplateVariable[]; mapping?: MappingOverlay }) {
   const [filter, setFilter] = useState("");
-  const [showWritten, setShowWritten] = useState(false);
+  const [showMinted, setShowMinted] = useState(false);
   const [showNested, setShowNested] = useState(false);
+  const [showRequired, setShowRequired] = useState(false);
+  const [showGaps, setShowGaps] = useState(false);
+  const [showMissing, setShowMissing] = useState(false);
+  const [showEverything, setShowEverything] = useState(false);
   // What the reader opened, and what they closed while a filter had revealed it; the filter's own reveal sits between.
   // The tree opens fully folded, top level included, so a record's sections read as an outline first.
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
@@ -301,12 +447,76 @@ export function TemplateVariableExplorer({ variables }: { variables: DeliveryTem
   );
   const layout = usePersistentLayout("sqlflow.templates.variables.layout");
 
-  const term = filter.trim().toLowerCase();
-  const tree = useMemo(
-    () => buildTree(variables, (variable) => (showWritten || variable.role === "Mapping") && (showNested || !variable.nested), term),
-    [variables, showWritten, showNested, term],
+  // What the mapping fills, by variable: the entry filling it, and the worst finding on it, an error over a warning.
+  const covered = useMemo(() => {
+    if (mapping === undefined) {
+      return null;
+    }
+
+    const worst = new Map<string, MappingDraftIssue>();
+    for (const issue of mapping.coverage.issues) {
+      if (issue.target !== null && worst.get(issue.target)?.severity !== "error") {
+        worst.set(issue.target, issue);
+      }
+    }
+
+    const byTarget = new Map(mapping.entries.map((entry) => [entry.target, entry]));
+    return new Map<string, CoverageView>(
+      mapping.coverage.variables.map((variable) => [
+        variable.target,
+        {
+          state: variable.state,
+          entry: variable.direct ? byTarget.get(variable.target) ?? null : null,
+          finding: worst.get(variable.target) ?? null,
+        },
+      ]),
+    );
+  }, [mapping]);
+
+  // An entry filling a free key of an object that takes them is a row of its own, under the object holding it.
+  const listed = useMemo(
+    () => (mapping === undefined ? variables : withKeyVariables(variables, mapping.entries)),
+    [variables, mapping],
   );
-  const byPath = useMemo(() => new Map(variables.map((variable) => [variable.path, variable])), [variables]);
+
+  // What the whole mapping comes to, whatever the tree is narrowed to: the variables it fills on every row, and the
+  // required ones a finding names, which is the count an author is looking for.
+  const counts = useMemo(() => {
+    if (mapping === undefined) {
+      return null;
+    }
+
+    return {
+      filled: mapping.coverage.variables.filter((variable) => variable.state !== "Empty").length,
+      gaps: new Set(mapping.coverage.issues.map((issue) => issue.target).filter((target) => target !== null)).size,
+    };
+  }, [mapping]);
+
+  const term = filter.trim().toLowerCase();
+  // What a mapping opens on: everything it fills, and every required variable a check names, which is the required
+  // ones the record actually needs. A property required inside an object nothing fills is not one of those: the record
+  // holds no such object, and listing it would bury the overview. The rest of the template is a switch away.
+  // Show missing and Show unfilled both ask about the whole template, so they step outside the overview rather than
+  // narrowing what it has already left out.
+  const overview = covered !== null && !showEverything && !showGaps && !showMissing;
+  const narrowed = term !== "" || showRequired || overview || ((showGaps || showMissing) && covered !== null);
+  const matches = useMemo(
+    () => (variable: DeliveryTemplateVariable) => (!showRequired || variable.required)
+      && (!showMissing || covered === null || covered.get(variable.path)?.finding != null)
+      && (!showGaps || covered === null || isGap(covered.get(variable.path)))
+      && (!overview || !inOverview(covered?.get(variable.path)))
+      && textMatches(variable, term, covered?.get(variable.path)),
+    [covered, overview, showGaps, showMissing, showRequired, term],
+  );
+  const tree = useMemo(
+    () => buildTree(
+      listed,
+      (variable) => (showMinted || variable.role === "Mapping") && (showNested || !variable.nested),
+      matches,
+    ),
+    [listed, showMinted, showNested, matches],
+  );
+  const byPath = useMemo(() => new Map(listed.map((variable) => [variable.path, variable])), [listed]);
   const holds = useMemo(() => {
     const counts = new Map<string, number>();
     for (const variable of variables) {
@@ -317,7 +527,7 @@ export function TemplateVariableExplorer({ variables }: { variables: DeliveryTem
     }
     return counts;
   }, [variables]);
-  const revealed = useMemo(() => revealedPaths(variables, term), [variables, term]);
+  const revealed = useMemo(() => revealedPaths(listed, matches, narrowed), [listed, matches, narrowed]);
 
   const treeState = useMemo<TreeState>(() => {
     const expanded = new Set(opened);
@@ -363,6 +573,27 @@ export function TemplateVariableExplorer({ variables }: { variables: DeliveryTem
     setClosed(new Set());
   };
 
+  // Narrowing the tree reveals its own matches the way filter text does, so an earlier close no longer applies.
+  const changeRequired = (next: boolean) => {
+    setShowRequired(next);
+    setClosed(new Set());
+  };
+
+  const changeGaps = (next: boolean) => {
+    setShowGaps(next);
+    setClosed(new Set());
+  };
+
+  const changeMissing = (next: boolean) => {
+    setShowMissing(next);
+    setClosed(new Set());
+  };
+
+  const changeEverything = (next: boolean) => {
+    setShowEverything(next);
+    setClosed(new Set());
+  };
+
   const expandAll = () => {
     setOpened(new Set(holds.keys()));
     setClosed(new Set());
@@ -385,63 +616,99 @@ export function TemplateVariableExplorer({ variables }: { variables: DeliveryTem
   const selected = selectedId === null ? undefined : byPath.get(selectedId);
 
   return (
-    <div className="flex flex-col gap-3">
-      <FilterBar>
-        <SearchInput
-          value={filter}
-          onChange={changeFilter}
-          placeholder="Path, description or entity type"
-          label="Filter the variables"
-          testId="templates-view-variables-filter"
-        />
-        <Label className="flex items-center gap-2 text-[13px] font-normal">
-          <Switch checked={showWritten} onCheckedChange={setShowWritten} data-testid="templates-view-show-written" />
-          Show what OSDU Delivery and OSDU write
-        </Label>
-        <Label className="flex items-center gap-2 text-[13px] font-normal">
-          <Switch checked={showNested} onCheckedChange={setShowNested} data-testid="templates-view-show-nested" />
-          Show nested lists
-        </Label>
-        <div className="flex items-center gap-1 sm:ml-auto">
-          <span className="mr-1 text-xs text-muted-foreground" data-testid="templates-view-variables-count">
-            {tree.matched} of {variables.length} variables
-          </span>
-          <IconAction label="Expand all" icon={<ChevronsUpDown />} onClick={expandAll} data-testid="templates-view-expand-all" />
-          <IconAction label="Collapse all" icon={<ChevronsDownUp />} onClick={collapseAll} data-testid="templates-view-collapse-all" />
-        </div>
-      </FilterBar>
-      <div
-        className="h-[min(640px,calc(100vh-300px))] min-h-[360px] overflow-hidden rounded-lg border"
-        data-testid="templates-view-variables"
-      >
-        <ResizablePanelGroup orientation="horizontal" defaultLayout={layout.defaultLayout} onLayoutChanged={layout.onLayoutChanged}>
-          {/* The properties side gets the larger share: a variable's description is the longest thing either side shows. */}
-          <ResizablePanel id="template-variables-tree" defaultSize="45" minSize="30">
-            <div
-              role="tree"
-              aria-label="Variables"
-              tabIndex={0}
-              onFocus={enterTree}
-              className="h-full overflow-y-auto overflow-x-hidden p-1 focus:outline-none"
-              data-testid="templates-view-variables-tree"
+    <CoverageContext.Provider value={covered}>
+      <div className="flex flex-col gap-3">
+        <FilterBar>
+          <SearchInput
+            value={filter}
+            onChange={changeFilter}
+            placeholder="Path, description or entity type"
+            label="Filter the variables"
+            testId="templates-view-variables-filter"
+          />
+          <Label className="flex items-center gap-2 text-[13px] font-normal" title="Variables no mapping fills: OSDU Delivery writes them, or OSDU sets them">
+            <Switch checked={showMinted} onCheckedChange={setShowMinted} data-testid="templates-view-show-minted" />
+            Show minted
+          </Label>
+          <Label className="flex items-center gap-2 text-[13px] font-normal" title="Lists inside a repeated item, which a mapping cannot fill">
+            <Switch checked={showNested} onCheckedChange={setShowNested} data-testid="templates-view-show-nested" />
+            Show nested
+          </Label>
+          <Label className="flex items-center gap-2 text-[13px] font-normal" title="Only the variables the schema requires, under the variables that hold them">
+            <Switch checked={showRequired} onCheckedChange={changeRequired} data-testid="templates-view-show-required" />
+            Show required
+          </Label>
+          {covered !== null && (
+            <Label
+              className="flex items-center gap-2 text-[13px] font-normal"
+              title="Only what the schema requires of this record and the mapping does not fill on every row"
             >
-              <TreeContext.Provider value={treeState}>
-                {tree.roots.length === 0
-                  ? <p className="px-2 py-3 text-[13px] text-muted-foreground">No variable matches the filter.</p>
-                  : tree.roots.map((node) => <VariableBranch key={node.variable.path} node={node} />)}
-              </TreeContext.Provider>
-            </div>
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel id="template-variables-properties" defaultSize="55" minSize="30">
-            <div className="h-full overflow-y-auto p-3" data-testid="templates-view-properties">
-              {selected === undefined
-                ? <p className="text-[13px] text-muted-foreground">Select a variable to see its properties.</p>
-                : <VariableProperties variable={selected} holds={holds.get(selected.path) ?? 0} />}
-            </div>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+              <Switch checked={showMissing} onCheckedChange={changeMissing} data-testid="templates-view-show-missing" />
+              Show missing
+            </Label>
+          )}
+          {covered !== null && (
+            <Label className="flex items-center gap-2 text-[13px] font-normal" title="Only the variables nothing fills, and the ones a check names">
+              <Switch checked={showGaps} onCheckedChange={changeGaps} data-testid="templates-view-show-gaps" />
+              Show unfilled
+            </Label>
+          )}
+          {covered !== null && (
+            <Label
+              className="flex items-center gap-2 text-[13px] font-normal"
+              title="The whole template, not only what the mapping fills and what the schema requires"
+            >
+              <Switch checked={showEverything} onCheckedChange={changeEverything} data-testid="templates-view-show-everything" />
+              Show everything
+            </Label>
+          )}
+          <div className="flex items-center gap-1 sm:ml-auto">
+            <span className="mr-1 text-xs text-muted-foreground" data-testid="templates-view-variables-count">
+              {tree.matched} of {listed.length} variables{counts === null ? "" : `, ${counts.filled} filled, ${counts.gaps} required missing`}
+            </span>
+            <IconAction label="Expand all" icon={<ChevronsUpDown />} onClick={expandAll} data-testid="templates-view-expand-all" />
+            <IconAction label="Collapse all" icon={<ChevronsDownUp />} onClick={collapseAll} data-testid="templates-view-collapse-all" />
+          </div>
+        </FilterBar>
+        <div
+          className="h-[min(640px,calc(100vh-300px))] min-h-[360px] overflow-hidden rounded-lg border"
+          data-testid="templates-view-variables"
+        >
+          <ResizablePanelGroup orientation="horizontal" defaultLayout={layout.defaultLayout} onLayoutChanged={layout.onLayoutChanged}>
+            {/* The properties side gets the larger share: a variable's description is the longest thing either side shows. */}
+            <ResizablePanel id="template-variables-tree" defaultSize="45" minSize="30">
+              <div
+                role="tree"
+                aria-label="Variables"
+                tabIndex={0}
+                onFocus={enterTree}
+                className="h-full overflow-y-auto overflow-x-hidden p-1 focus:outline-none"
+                data-testid="templates-view-variables-tree"
+              >
+                <TreeContext.Provider value={treeState}>
+                  {tree.roots.length === 0
+                    ? (
+                      <p className="px-2 py-3 text-[13px] text-muted-foreground" data-testid="templates-view-variables-empty">
+                        {showMissing && term === ""
+                          ? "Nothing the schema requires of this record is missing: every required variable the record reaches is filled on every row."
+                          : "No variable matches the filter."}
+                      </p>
+                    )
+                    : tree.roots.map((node) => <VariableBranch key={node.variable.path} node={node} />)}
+                </TreeContext.Provider>
+              </div>
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel id="template-variables-properties" defaultSize="55" minSize="30">
+              <div className="h-full overflow-y-auto p-3" data-testid="templates-view-properties">
+                {selected === undefined
+                  ? <p className="text-[13px] text-muted-foreground">Select a variable to see its properties.</p>
+                  : <VariableProperties variable={selected} holds={holds.get(selected.path) ?? 0} />}
+              </div>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </div>
       </div>
-    </div>
+    </CoverageContext.Provider>
   );
 }

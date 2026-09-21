@@ -1,80 +1,21 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ArrowDown, Filter, Info, OctagonAlert, TriangleAlert } from "lucide-react";
+import { Info, OctagonAlert, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import { deliveryApi, type MappingDraftEntry, type MappingDraftInput } from "../../api/delivery";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FilterBar } from "@/components/FilterBar";
 import { GlyphRef } from "@/components/GlyphRef";
 import { RichTooltip } from "@/components/RichTooltip";
 import { SearchInput } from "@/components/SearchInput";
 import { useClipped } from "@/components/useClipped";
-import { conditionText, entrySummary, lookupLines, lookupText, modifierText } from "./mappingDraft";
+import { EntryDetail } from "./MappingEntryDetail";
+import { propertyRow, type PropertyRow } from "./mappingDraft";
+import { useParsedMapping } from "./useParsedMapping";
 import { splitPath } from "./templateFormat";
 import { ProblemView } from "./TemplateSheet";
-
-/** One property the mapping fills: where the value comes from, what is done to it, and the target it is written to. */
-interface PropertyRow {
-  target: string;
-  /** Where the value comes from, which decides what the rest of the entry means. */
-  input: MappingDraftInput;
-  /** The value's origin: `dataset.log_source`, `cache.Wellbore.id`, `rows of dataset.curves`, `static "MD"`. */
-  source: string;
-  /** The origin without the word that names its kind, for a view that says the kind itself. */
-  sourceValue: string;
-  /** The cached record's lookup as one phrase, `Code/Name = dataset.elev_meas_ref`; empty when no cache is read. */
-  lookup: string;
-  /** One line per findBy, as the YAML writes them, for the property's own view. */
-  lookupDetail: string[];
-  /** The modifiers in order, one line each; empty for a value taken as it stands. */
-  modifiers: string[];
-  /** The modifier kinds in order, which is what the row has room for: `split, replace`. */
-  modifierKinds: string;
-  /** The entry's appliesWhen in one line, or null when it always applies. */
-  condition: string | null;
-  description: string | null;
-  required: boolean;
-  /** The whole line as text, with every modifier spelled out, which the hover panel shows and the filter matches. */
-  detail: string;
-  /** Everything the row holds, lowercased, which the filter matches against. */
-  search: string;
-}
-
-function propertyRow(entry: MappingDraftEntry): PropertyRow {
-  const source = entrySummary(entry);
-  const lookup = lookupText(entry);
-  const modifiers = entry.modifiers.map(modifierText);
-  const condition = entry.appliesWhen === null ? null : conditionText(entry.appliesWhen);
-  // The modifiers change the value a lookup compares, not the cached field, so they read after that value.
-  const detail = [
-    source,
-    lookup === "" ? "" : `by ${lookup}`,
-    modifiers.length === 0 ? "" : `| ${modifiers.join(" | ")}`,
-    `-> ${entry.target}`,
-    condition === null ? "" : `when ${condition}`,
-  ].filter((part) => part !== "").join(" ");
-  return {
-    target: entry.target,
-    input: entry.input,
-    source,
-    sourceValue: entry.input === "Repeat"
-      ? `dataset.${entry.child ?? ""}`
-      : entry.input === "Static" ? entry.static ?? "" : source,
-    lookup,
-    lookupDetail: lookupLines(entry),
-    modifiers,
-    modifierKinds: entry.modifiers.map((modifier) => modifier.kind).join(", "),
-    condition,
-    description: entry.description,
-    required: entry.required,
-    detail,
-    search: [detail, entry.description ?? ""].join("\n").toLowerCase(),
-  };
-}
 
 /** A formula on one line, clipped to the width its column leaves, with the whole of it on hover once anything is hidden. */
 function FormulaLine({ text, title, children }: { text: string; title: string; children: ReactNode }) {
@@ -120,50 +61,7 @@ const columns: Column<PropertyRow>[] = [
   },
 ];
 
-/** What the source of a value is called, so the node says the kind and the value says only itself. */
-const SOURCE_LABEL: Record<MappingDraftInput, string> = {
-  Dataset: "Dataset column",
-  Repeat: "One item per row of",
-  Cache: "Cached record",
-  Static: "Static value",
-};
-
-/** One end of the pipeline: where the value comes from, or the property it lands on. */
-function Node({
-  label, value, target = false, children, testId,
-}: { label: string; value: string; target?: boolean; children?: ReactNode; testId?: string }) {
-  return (
-    <div
-      className={cn("rounded-md border px-3 py-2", target ? "border-primary/40 bg-primary/5" : "bg-muted/40")}
-      data-testid={testId}
-    >
-      <p className="text-[11px] text-muted-foreground">{label}</p>
-      <p className="font-mono text-[12px] break-all">{value}</p>
-      {children}
-    </div>
-  );
-}
-
-/** One step down the pipeline: the arrow, and what happens on the way when something does. */
-function Step({ text, index }: { text?: string; index?: number }) {
-  return (
-    <div className="flex items-center gap-2 py-1 pl-3">
-      <ArrowDown className="size-3.5 shrink-0 text-muted-foreground" />
-      {text !== undefined && (
-        <span className="rounded border bg-background px-1.5 py-0.5 font-mono text-[11px]">
-          {index !== undefined && <span className="mr-1.5 text-muted-foreground">{index}</span>}
-          {text}
-        </span>
-      )}
-    </div>
-  );
-}
-
-/**
- * One property as the pipeline that fills it: the value's origin, the cached record it is found by, the modifiers in
- * the order they run, and the property they land on. A cache entry's modifiers change the value the lookup compares
- * rather than the cached field, so they are drawn inside the lookup, where they act.
- */
+/** One property as the pipeline that fills it, in a dialog: the row's own detail, under the property it fills. */
 function PropertyDialog({ row, onClose }: { row: PropertyRow | null; onClose: () => void }) {
   // The dialog fades out showing what it showed, so the last property stays rendered while it closes.
   const [shown, setShown] = useState<PropertyRow | null>(row);
@@ -172,7 +70,6 @@ function PropertyDialog({ row, onClose }: { row: PropertyRow | null; onClose: ()
   }
 
   const { parent, leaf } = splitPath(shown?.target ?? "");
-  const lookupSteps = shown !== null && shown.input === "Cache";
 
   return (
     <Dialog open={row !== null} onOpenChange={(open) => { if (!open) { onClose(); } }}>
@@ -192,64 +89,14 @@ function PropertyDialog({ row, onClose }: { row: PropertyRow | null; onClose: ()
               )}
             </DialogHeader>
 
-            <div className="flex flex-col">
-              {shown.condition !== null && (
-                <p
-                  className="mb-3 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-[12px]"
-                  data-testid="delivery-mapping-property-detail-condition"
-                >
-                  <Filter className="mt-0.5 size-3.5 shrink-0 text-warning" />
-                  <span>
-                    Only when <span className="font-mono">{shown.condition}</span>. A record the condition does not hold
-                    for is delivered without this property.
-                  </span>
-                </p>
-              )}
-
-              <Node label={SOURCE_LABEL[shown.input]} value={shown.sourceValue} testId="delivery-mapping-property-detail-source">
-                {lookupSteps && (
-                  <div className="mt-2 border-t pt-2" data-testid="delivery-mapping-property-detail-lookup">
-                    <p className="text-[11px] text-muted-foreground">
-                      found by, in order, until a cached record matches
-                    </p>
-                    <ul className="mt-1 flex flex-col gap-0.5">
-                      {shown.lookupDetail.map((line, index) => (
-                        <li key={`${index}-${line}`} className="font-mono text-[12px] break-all">{line}</li>
-                      ))}
-                    </ul>
-                    {shown.modifiers.length > 0 && (
-                      <div className="mt-2" data-testid="delivery-mapping-property-detail-modifiers">
-                        <p className="text-[11px] text-muted-foreground">on the value the lookup compares, first</p>
-                        <ul className="mt-1 flex flex-wrap gap-1">
-                          {shown.modifiers.map((text, index) => (
-                            <li key={`${index}-${text}`} className="rounded border bg-background px-1.5 py-0.5 font-mono text-[11px]">
-                              <span className="mr-1.5 text-muted-foreground">{index + 1}</span>
-                              {text}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </Node>
-
-              {!lookupSteps && shown.modifiers.length > 0
-                ? (
-                  <div data-testid="delivery-mapping-property-detail-modifiers">
-                    {shown.modifiers.map((text, index) => <Step key={`${index}-${text}`} text={text} index={index + 1} />)}
-                  </div>
-                )
-                : <Step />}
-
-              <Node label="Written to" value={shown.target} target />
-            </div>
+            <EntryDetail row={shown} />
           </>
         )}
       </DialogContent>
     </Dialog>
   );
 }
+
 interface MappingPropertiesViewProps {
   /** The mapping document as the catalog holds it. */
   yaml: string;
@@ -269,10 +116,7 @@ export function MappingPropertiesView({ yaml, path, contentHash }: MappingProper
   const [filter, setFilter] = useState("");
   const [onlyDerived, setOnlyDerived] = useState(false);
   const [opened, setOpened] = useState<string | null>(null);
-  const parsed = useQuery({
-    queryKey: ["delivery", "mapping-properties", path, contentHash],
-    queryFn: () => deliveryApi.parseMapping(yaml, path),
-  });
+  const parsed = useParsedMapping(yaml, path, contentHash);
 
   const draft = parsed.data?.draft ?? null;
   const rows = useMemo(() => (draft === null ? [] : draft.entries.map(propertyRow)), [draft]);

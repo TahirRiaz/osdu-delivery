@@ -65,7 +65,7 @@ test.describe.serial("templates and the mapping builder", () => {
     await sheet.getByTestId("templates-view-variable-osdu.data").click();
     await expect(sheet.getByTestId("templates-view-variable-osdu.data.FacilityName")).toBeVisible();
     await expect(sheet.getByTestId("templates-view-variable-osdu.id")).toHaveCount(0);
-    await sheet.getByTestId("templates-view-show-written").click();
+    await sheet.getByTestId("templates-view-show-minted").click();
     await expect(sheet.getByTestId("templates-view-variable-osdu.id")).toBeVisible();
 
     // Each writer is marked apart from what a mapping fills: a glyph named for the writer, and no marker on a mapping's variable.
@@ -81,6 +81,13 @@ test.describe.serial("templates and the mapping builder", () => {
     await sheet.getByTestId("templates-view-variable-osdu.data.FacilityName").click();
     await expect(sheet.getByTestId("templates-view-properties-path")).toHaveText("osdu.data.FacilityName");
     await expect(sheet.getByTestId("templates-view-properties-role")).toHaveCount(0);
+
+    // Show required narrows the tree to what the schema demands, keeping the holders on the way to them.
+    await sheet.getByTestId("templates-view-show-required").click();
+    await expect(sheet.getByTestId("templates-view-variable-osdu.acl")).toBeVisible();
+    await expect(sheet.getByTestId("templates-view-variable-osdu.data.FacilityName")).toHaveCount(0);
+    await sheet.getByTestId("templates-view-show-required").click();
+    await expect(sheet.getByTestId("templates-view-variable-osdu.data.FacilityName")).toBeVisible();
 
     await sheet.getByTestId("templates-view-tab-schema").click();
     await expect(sheet.getByTestId("templates-view-schema-json")).toBeVisible({ timeout: 15_000 });
@@ -384,42 +391,57 @@ test.describe.serial("templates and the mapping builder", () => {
     const detail = adminPage.getByTestId("delivery-mapping-detail");
     await expect(detail.getByTestId("delivery-mapping-template")).toContainText(WELLLOG_VERSION, { timeout: 15_000 });
 
-    // The properties open first, each row reading from the value's origin to the target it lands on.
-    const wellboreId = rowWith(adminPage, "delivery-mapping-properties-table", "delivery-mapping-property-osdu.data.WellboreID");
-    await expect(wellboreId).toContainText("cache.Wellbore.id by FacilityName = dataset.wellbore_uwi", { timeout: 15_000 });
-    const logName = rowWith(adminPage, "delivery-mapping-properties-table", "delivery-mapping-property-osdu.data.Name");
-    await expect(logName).toContainText("dataset.log_source");
-    await expect(logName).toContainText("trim");
+    // The properties open first: the template as the record's tree, with what this mapping fills of it. Every row says
+    // how the mapping reaches its variable, and the tree opens on what is filled and what a check names.
+    const properties = detail.getByTestId("delivery-mapping-coverage");
+    await expect(properties.getByTestId("templates-view-coverage-osdu.acl")).toHaveAttribute("data-coverage", "Always", { timeout: 30_000 });
+    await expect(properties.getByTestId("templates-view-coverage-osdu.data.Name")).toHaveAttribute("data-coverage", "Always");
     // A curve's business value is the one entry the mapping leaves optional, so a log without it still delivers.
-    const businessValue = rowWith(
-      adminPage, "delivery-mapping-properties-table", "delivery-mapping-property-osdu.data.Curves[].LogCurveBusinessValueID",
-    );
-    await expect(businessValue).toContainText("optional");
+    await expect(properties.getByTestId("templates-view-coverage-osdu.data.Curves[].LogCurveBusinessValueID"))
+      .toHaveAttribute("data-coverage", "Sometimes");
+    // An entry filling a free key of an object that takes them is a row under that object.
+    await expect(properties.getByTestId("templates-view-coverage-osdu.tags.DeliveredBy")).toHaveAttribute("data-coverage", "Always");
 
-    // The search answers what a source column reaches: the vertical measurement, and the unit it is found by.
-    await detail.getByTestId("delivery-mapping-properties-filter").fill("elev_meas_ref");
-    await expect(detail.getByTestId("delivery-mapping-properties-table").getByTestId("table-row")).toHaveCount(2);
-    await expect(detail.getByTestId("delivery-mapping-properties-count")).toContainText("2 of");
-
-    // A property opens on the detail the row has no width for: every line the lookup tries, and the modifiers in order.
-    await rowWith(
-      adminPage,
-      "delivery-mapping-properties-table",
-      "delivery-mapping-property-osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID",
-    ).click();
-    const property = adminPage.getByTestId("delivery-mapping-property-detail");
-    await expect(property.getByTestId("delivery-mapping-property-detail-source")).toContainText("cache.UnitOfMeasure.id");
-    await expect(property.getByTestId("delivery-mapping-property-detail-lookup"))
-      .toContainText("cache.UnitOfMeasure.Code = dataset.elev_meas_ref");
-    const modifiers = property.getByTestId("delivery-mapping-property-detail-modifiers");
+    // What fills a variable is read beside the tree, whole: the origin, every line the lookup tries, and the modifiers
+    // in order. A cache entry's modifiers change the value the lookup compares, which is the one thing a reader gets wrong.
+    await properties.getByTestId("templates-view-variable-osdu.data.WellboreID").click();
+    const entry = properties.getByTestId("templates-view-properties-entry");
+    await expect(entry.getByTestId("delivery-mapping-property-detail-source")).toContainText("cache.Wellbore.id");
+    await expect(entry.getByTestId("delivery-mapping-property-detail-lookup"))
+      .toContainText("cache.Wellbore.FacilityName = dataset.wellbore_uwi");
+    await properties.getByTestId("templates-view-variable-osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID").click();
+    const modifiers = entry.getByTestId("delivery-mapping-property-detail-modifiers");
     await expect(modifiers).toContainText("split on ' ', part 2");
     await expect(modifiers).toContainText("replace M to m, FT to ft");
-    // The modifiers of a cache entry change the value the lookup compares, which is the one thing a reader gets wrong.
     await expect(modifiers).toContainText("the value the lookup compares");
-    await property.getByRole("button", { name: "Close" }).click();
-    await expect(property).toBeHidden();
 
-    await detail.getByTestId("delivery-mapping-properties-filter-clear").click();
+    // The search reads what fills a variable too, so a source column answers with every variable it reaches: the
+    // vertical measurement, and the unit that measurement is found by.
+    await properties.getByTestId("templates-view-variables-filter").fill("elev_meas_ref");
+    await expect(properties.getByTestId("templates-view-variable-osdu.data.VerticalMeasurement.VerticalMeasurement")).toBeVisible();
+    await expect(properties.getByTestId("templates-view-variables-count")).toContainText("2 of");
+    await expect(properties.getByTestId("templates-view-variable-osdu.data.Name")).toHaveCount(0);
+    await properties.getByTestId("templates-view-variables-filter-clear").click();
+
+    // The overview leaves out what the mapping does not fill and the schema does not require; the switch adds it back.
+    await expect(properties.getByTestId("templates-view-variable-osdu.data.ResourceHomeRegionID")).toHaveCount(0);
+    await properties.getByTestId("templates-view-show-everything").click();
+    await expect(properties.getByTestId("templates-view-variable-osdu.data")).toBeVisible();
+    await properties.getByTestId("templates-view-show-everything").click();
+
+    // Show missing answers whether the mapping satisfies the schema: the sample fills everything this record requires.
+    await properties.getByTestId("templates-view-show-missing").click();
+    await expect(properties.getByTestId("templates-view-variables-empty")).toContainText("Nothing the schema requires");
+    await properties.getByTestId("templates-view-show-missing").click();
+
+    // Narrowing to what nothing fills keeps the holders on the way, and drops what the mapping fills, an entry that
+    // may leave its value out included: the mapping fills that variable either way.
+    await properties.getByTestId("templates-view-show-gaps").click();
+    await expect(properties.getByTestId("templates-view-variable-osdu.data.ResourceHomeRegionID")).toBeVisible();
+    await expect(properties.getByTestId("templates-view-coverage-osdu.acl")).toHaveCount(0);
+    await expect(properties.getByTestId("templates-view-coverage-osdu.data.Curves[].LogCurveBusinessValueID")).toHaveCount(0);
+    await properties.getByTestId("templates-view-show-gaps").click();
+    await expect(properties.getByTestId("templates-view-coverage-osdu.acl")).toHaveAttribute("data-coverage", "Always");
 
     // The record shape: the renderer's layout with placeholders, and the partition filled into the id once it is given.
     await detail.getByTestId("delivery-mapping-tab-shape").click();

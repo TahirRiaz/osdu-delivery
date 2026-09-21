@@ -1110,6 +1110,34 @@ export interface DeliveryMappingParseResult {
   issues: MappingDraftIssue[];
 }
 
+/**
+ * Whether what a mapping writes reaches a variable on every row (`Always`), on some rows (`Sometimes`: an entry that is
+ * `required: false` or only applies to some rows), or never (`Empty`: no entry names it and nothing fills what it holds).
+ */
+export type CoverageState = "Empty" | "Sometimes" | "Always";
+
+/** How a mapping fills one variable of the template it pins. */
+export interface DeliveryMappingCoverageVariable {
+  target: string;
+  state: CoverageState;
+  /** True when an entry targets the variable itself; false for an object filled through what it holds. */
+  direct: boolean;
+  required: boolean;
+}
+
+/**
+ * What a mapping fills of the template version it pins: every variable a mapping may fill with how the document reaches
+ * it, and what it leaves required and empty. The errors are the ones the delivery gate raises; the warnings are the
+ * required variables the gate does not check. `variables` is empty when the document does not load or its template is
+ * not saved, and `issues` says which.
+ */
+export interface DeliveryMappingCoverage {
+  kind: string | null;
+  version: string | null;
+  variables: DeliveryMappingCoverageVariable[];
+  issues: MappingDraftIssue[];
+}
+
 /** A parameter a mapping declares, and the value its record shape was drawn with: the one given, else the default. */
 export interface DeliveryMappingShapeParameter {
   name: string;
@@ -1246,6 +1274,9 @@ export const deliveryApi = {
   /** Writes a draft as YAML and checks it against its template and the named partition cache's current version, rendering with `parameters`. */
   composeMapping: (scope: string | null, draft: MappingDraft, parameters: Record<string, string> | null) =>
     post<DeliveryMappingComposeResult>("/api/v1/delivery/mapping-builder/compose", { scope, draft, parameters }),
+  /** What a mapping document fills of the template version it pins, variable by variable; nothing is rendered and no cache is read. */
+  mappingCoverage: (yaml: string, path: string | null) =>
+    post<DeliveryMappingCoverage>("/api/v1/delivery/mapping-builder/coverage", { yaml, path }),
   /** Reads a mapping document back into a draft for the builder. */
   parseMapping: (yaml: string, path: string | null) =>
     post<DeliveryMappingParseResult>("/api/v1/delivery/mapping-builder/parse", { yaml, path }),

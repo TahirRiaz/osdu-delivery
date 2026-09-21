@@ -21,7 +21,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
 import { KindText } from "./KindText";
-import { MappingPropertiesView } from "./MappingPropertiesView";
+import { MappingCoverageView } from "./MappingCoverageView";
 import { MappingShapeView } from "./MappingShapeView";
 
 const ALL = "all";
@@ -189,14 +189,14 @@ export default function DeliveryDocumentsPage() {
                   )}
                 </div>
                 {detail.mapping.message && <p className="text-[13px] text-destructive">{detail.mapping.message}</p>}
-                <Tabs defaultValue="properties" className="min-h-0 flex-1">
+                <Tabs defaultValue="coverage" className="min-h-0 flex-1">
                   <TabsList data-testid="delivery-mapping-tabs">
-                    <TabsTrigger value="properties" data-testid="delivery-mapping-tab-properties">Properties</TabsTrigger>
+                    <TabsTrigger value="coverage" data-testid="delivery-mapping-tab-coverage">Properties</TabsTrigger>
                     <TabsTrigger value="yaml" data-testid="delivery-mapping-tab-yaml">YAML</TabsTrigger>
                     <TabsTrigger value="shape" data-testid="delivery-mapping-tab-shape">Record shape</TabsTrigger>
                   </TabsList>
-                  <TabsContent value="properties" className="flex min-h-0 flex-col">
-                    <MappingPropertiesView
+                  <TabsContent value="coverage" className="flex min-h-0 flex-col">
+                    <MappingCoverageView
                       yaml={detail.yaml}
                       path={detail.mapping.relativePath}
                       contentHash={detail.mapping.contentHash}

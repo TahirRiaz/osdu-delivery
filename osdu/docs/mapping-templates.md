@@ -280,6 +280,65 @@ types are the ones a render writes:
 Nothing is read, rendered for delivery or stored. `POST /api/v1/delivery/mapping-builder/shape` draws the same for any
 mapping document.
 
+### What a mapping covers
+
+The Mappings page shows a mapping as the template it pins with the mapping laid over it: the template's variables as
+the record's tree, each row carrying a glyph for whether the mapping fills it, and nothing more. What fills it is read
+on the row's hover, and whole beside the tree: the entry drawn as the pipeline that fills it (`dataset.facility_name`
+then `trim`; `cache.Wellbore.id` found by `FacilityName = dataset.wellbore_uwi`; `static ["NO"]`), with each lookup
+line in the order it is tried, the modifiers as the steps they are, the condition, and whether the value may be left
+out. The filter matches that as well as a variable's path and description, so a source column, a cached type or a
+modifier answers with the variables it reaches. A mapping pinning a template version nobody saved has no tree to lay
+itself over, and lists its own entries instead.
+
+It opens as an overview: what the mapping fills, every required variable a check names, and the holders on the way to
+them, so the first read answers what a mapping is doing without a click. A property required inside an object nothing
+fills is left out, as it is left out of the findings: the record holds no such object. Show everything adds the rest of
+the template, and Show required narrows it to what the schema demands.
+
+Two switches ask about the whole template rather than narrowing the overview, and they answer two different questions:
+
+- **Show missing** is the validation: what this record requires and the mapping does not fill on every row, which is
+  every variable a check names. An empty tree is the answer that the mapping satisfies the schema, and the tree says
+  so in words. It is the same set the counts line calls "required missing", and the same set the gate stops a delivery
+  for wherever the gate looks.
+- **Show unfilled** is the wider question: every variable of the template nothing fills, whether or not the schema
+  asks for it, which is what a mapping could carry and does not. An entry that may leave a value out is not one of
+  those, because the mapping does fill that variable; what such an entry costs is said where the schema requires it,
+  by the check that names it.
+
+An entry filling a free key of an object that takes them (`osdu.tags.DeliveredBy`) is a row under that object, and an
+entry the template does not let a mapping fill is named above the tree, so no entry of the document goes unseen.
+
+Each row says how the document reaches its variable.
+
+- **Filled** is a static value, or a required entry that always applies: the record carries it on every row.
+- **Sometimes** is an entry that may leave it out, `required: false` or an `appliesWhen` that only holds on some rows.
+- **Not filled** is a variable no entry names, and nothing fills anything it holds. It is left out of the record.
+
+**An object is only as good as the weakest thing it promises.** It takes the worst state among the variables it holds
+that the mapping fills or the schema requires: one property the schema requires and nothing fills makes the object
+holding it missing, however many of its siblings are filled, and one property filled on some rows only makes it that.
+A property nothing fills and nothing requires promises nothing, so it is passed over rather than dragging its object
+down: `osdu.acl` reads as filled when its `owners` and `viewers` are, whatever else the schema allows beside them.
+
+An object's own entry decides it only when nothing inside it is promised. A repeater filling an array that may be left
+out still carries items whose properties are always written, so the branch reads as filled and the entry alone is
+marked optional, beside the tree where the entry is read.
+
+What a variable shows is not what its findings are judged on: a required property is missing because nothing writes
+it, never because something beside it is.
+
+A required variable the mapping leaves empty is the point of the view. The errors are the delivery gate's own
+(check 5 below, the required properties of `data`); the other required variables are warnings, because the gate does not
+stop a delivery for them today. A property required inside an object nothing fills is not reported at all: the record
+holds no such object, so nothing is missing from it. What OSDU Delivery writes, what OSDU sets and a list inside a
+repeated item are left out of the view, because no mapping fills those.
+
+One rule decides both: the gate runs it (`MappingCoverage.RequiredIssues`) as its check 5, and the view runs the same
+rule over the whole template. `POST /api/v1/delivery/mapping-builder/coverage` answers the same for any mapping
+document; nothing is rendered and no cache is read.
+
 ## Checks
 
 When a mapping is read:
