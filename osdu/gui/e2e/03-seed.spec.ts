@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E, connectionParts, connectionValue, hostRun } from "../playwright.config";
-import { CACHE, FixtureMeta, LOADING_FLOWS, SOURCE } from "./global-setup";
+import { CACHE, FixtureMeta, LOADING_FLOWS, REPO_NAME, SOURCE } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
 // Seeds the estate THROUGH the product: saves the templates the sample mappings pin, imports the sample cache records as the
@@ -166,6 +166,11 @@ test.describe.serial("seed the estate via repo source sync", () => {
   // the sample files and the ingestion flows key them into the tables the delivery flows plan from. Running them through
   // the CLI host is the path a node takes, so what the later specs plan against is what production would hold. Landing
   // before keying is the order the waves run in, and running the chain again loads nothing new.
+  //
+  // Each run is given the catalog and the repo the fixture is registered under, so it records itself the way a run of
+  // this estate does (`--db`, and `--repo` in place of the folder-name fallback, which would invent a repo of its own).
+  // Without that the ingestion tables filled but no run existed: a record's chain could name no pre-ingestion or
+  // ingestion run, and the stages of the only estate that exercises them were never recorded at all.
   test("load the sample ingestion tables by running the chain", () => {
     test.setTimeout(900_000);
     const meta = fixtureMeta();
@@ -175,8 +180,21 @@ test.describe.serial("seed the estate via repo source sync", () => {
     for (const flow of LOADING_FLOWS) {
       const output = execFileSync(
         "dotnet",
-        [...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--", "run", `${meta.sourceDir}/flows/${flow}.yaml`],
-        { encoding: "utf8", timeout: 600_000, env: { ...process.env, OSDU_SAMPLE_DB: meta.sampleDb, SQLFLOW_OSDU_DB: meta.osduDb } },
+        [
+          ...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--",
+          "run", `${meta.sourceDir}/flows/${flow}.yaml`,
+          "--db", "${env:SQLFLOW_E2E_CATALOG_CONNECTION}", "--repo", REPO_NAME,
+        ],
+        {
+          encoding: "utf8",
+          timeout: 600_000,
+          env: {
+            ...process.env,
+            OSDU_SAMPLE_DB: meta.sampleDb,
+            SQLFLOW_OSDU_DB: meta.osduDb,
+            SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,
+          },
+        },
       );
       expect(output, `${flow} reported nothing`).not.toBe("");
     }
@@ -188,13 +206,13 @@ test.describe.serial("seed the estate via repo source sync", () => {
 
     const meta = fixtureMeta();
     await adminPage.getByTestId("open-register-source").click();
-    await adminPage.getByTestId("source-name").fill("e2e-repo");
+    await adminPage.getByTestId("source-name").fill(REPO_NAME);
     await adminPage.getByTestId("source-remote-url").fill(meta.repoDir);
     await adminPage.getByTestId("register-source-submit").click();
 
     // The row appears; force an immediate pull and wait for the FIXTURE's head commit specifically, so a sha
     // left over from a previous suite run can never satisfy this.
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "e2e-repo" }).first();
+    const row = adminPage.getByTestId("table-row").filter({ hasText: REPO_NAME }).first();
     await expect(row).toBeVisible({ timeout: 15_000 });
     await row.getByTestId("source-sync-now").click();
     await expect(row.getByText(meta.headSha.slice(0, 10)).first()).toBeVisible({ timeout: 120_000 });
@@ -211,7 +229,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
   test("the synced repo appears on the repos page with its pipelines", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-repos").click();
     await expect(adminPage.getByTestId("page-repos")).toBeVisible();
-    const row = adminPage.getByTestId("table-row").filter({ hasText: "e2e-repo" });
+    const row = adminPage.getByTestId("table-row").filter({ hasText: REPO_NAME });
     await expect(row.first()).toBeVisible({ timeout: 30_000 });
     await row.first().click();
     await expect(adminPage.getByTestId("page-repo-detail")).toBeVisible();

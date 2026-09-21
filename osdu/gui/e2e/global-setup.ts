@@ -121,6 +121,12 @@ export interface FixtureMeta {
   osduDb: string;
 }
 
+/**
+ * The name the fixture repo is registered under. The seed registers the source with it and every run of the chain
+ * records into it, so a run never falls back to naming a repo after the folder it was started from.
+ */
+export const REPO_NAME = "e2e-repo";
+
 /** The delivery flows of the fixture estate, and the pre and ingestion flows that fill the tables they read. */
 export const CHAIN = [
   "wells-welllog-01-header-pre",
