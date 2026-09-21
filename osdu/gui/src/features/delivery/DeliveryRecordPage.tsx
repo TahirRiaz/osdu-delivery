@@ -142,8 +142,8 @@ const waiterColumns: Column<DeliveryRecordLink>[] = [
   { id: "status", header: "Status", render: (row) => <RecordStatusBadge status={row.status} testId="record-waiter-status" /> },
 ];
 
-function Hash({ value }: { value: string | null }) {
-  return value ? <span className="font-mono text-[12px]" title={value}>{value.slice(0, 12)}</span> : <span className="text-muted-foreground">-</span>;
+function Hash({ value, testId }: { value: string | null; testId?: string }) {
+  return <TruncatedText text={value} mono maxWidth={180} copy={value !== null} copyTestId={testId} />;
 }
 
 /** Everything the ledger knows about one record: its custody state, every delivery try, every intervention, the
@@ -358,13 +358,13 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           </>
         )}
       >
-        <DetailPair label="Source key"><span className="break-all font-mono text-[12px]">{record.sourceKey}</span></DetailPair>
+        <DetailPair label="Source key"><TruncatedText text={record.sourceKey} mono maxWidth={260} copy copyTestId="copy-record-source-key" /></DetailPair>
         <DetailPair label="Received from">
           {record.sourceFileName === null && record.pendingSourceFileName === null
             ? <span className="text-muted-foreground">not recorded</span>
             : (
               <span className="inline-flex flex-wrap items-baseline gap-1" data-testid="record-origin">
-                <TruncatedText text={record.sourceFileName ?? record.pendingSourceFileName} mono maxWidth={240} />
+                <TruncatedText text={record.sourceFileName ?? record.pendingSourceFileName} mono maxWidth={240} copy copyTestId="copy-record-origin" />
                 {(record.sourceRowNumber ?? record.pendingSourceRowNumber) !== null && (
                   <span className="text-[12px] text-muted-foreground">row <span className="font-mono">{record.sourceRowNumber ?? record.pendingSourceRowNumber}</span></span>
                 )}
@@ -377,13 +377,15 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
         <DetailPair label="Last verified"><RelativeTime value={record.lastVerifiedUtc} absolute /></DetailPair>
         <DetailPair label="Attempts"><span className="font-mono tabular-nums">{record.attemptCount}</span></DetailPair>
         <DetailPair label="Next attempt"><RelativeTime value={record.nextAttemptUtc} absolute /></DetailPair>
-        <DetailPair label="Lease">{record.leaseOwner ? <span className="font-mono text-[12px]">{record.leaseOwner}</span> : "-"}</DetailPair>
-        <DetailPair label="Metadata hash"><Hash value={record.metadataHash} /></DetailPair>
-        <DetailPair label="Payload hash"><Hash value={record.payloadHash} /></DetailPair>
-        <DetailPair label="Source fingerprint"><Hash value={record.sourceFingerprint} /></DetailPair>
+        <DetailPair label="Lease"><TruncatedText text={record.leaseOwner} mono maxWidth={220} copy={record.leaseOwner !== null} copyTestId="copy-record-lease" /></DetailPair>
+        <DetailPair label="Metadata hash"><Hash value={record.metadataHash} testId="copy-record-metadata-hash" /></DetailPair>
+        <DetailPair label="Payload hash"><Hash value={record.payloadHash} testId="copy-record-payload-hash" /></DetailPair>
+        <DetailPair label="Source fingerprint"><Hash value={record.sourceFingerprint} testId="copy-record-fingerprint" /></DetailPair>
         <DetailPair label="Source last modified">{record.sourceModifiedUtc ? <RelativeTime value={record.sourceModifiedUtc} absolute /> : "-"}</DetailPair>
         <DetailPair label="Payload files modified">{record.payloadModifiedUtc ? <RelativeTime value={record.payloadModifiedUtc} absolute /> : "-"}</DetailPair>
-        <DetailPair label="Payload location"><TruncatedText text={record.pendingPayloadLocation} mono maxWidth={260} /></DetailPair>
+        <DetailPair label="Payload location">
+          <TruncatedText text={record.pendingPayloadLocation} mono maxWidth={260} copy={record.pendingPayloadLocation !== null} copyTestId="copy-record-payload-location" />
+        </DetailPair>
         <DetailPair label="Created"><RelativeTime value={record.createdUtc} absolute /></DetailPair>
         <DetailPair label="Updated"><RelativeTime value={record.updatedUtc} absolute /></DetailPair>
       </DetailHeaderCard>

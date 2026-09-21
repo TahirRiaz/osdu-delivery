@@ -84,7 +84,7 @@ internal static class RecordChain
         {
             return new DeliveryRecordChainDto(
                 fileName, rowNumber, updated, [], FileKnown: false,
-                "No run in the catalog recorded processing a file of this name. The pre-ingestion and ingestion runs that carried it may have been pruned, or they ran before this estate recorded processed files.");
+                "No run in the catalog recorded processing a file of this name, so the runs that carried it cannot be named. The row did reach the ingestion table, which is where this record's file and row were read from: the runs may have been pruned, they ran before this estate recorded processed files, or the file was loaded outside a platform run.");
         }
 
         var pipelineIds = files.Select(x => x.Run.PipelineId).Distinct().ToList();

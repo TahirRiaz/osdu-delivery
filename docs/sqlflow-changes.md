@@ -38,6 +38,7 @@ it, and they are the ones to carry upstream first.
 | `d81a817` | A declared file or dataset longer than the catalog's column silently failed the sync. | Declared files and datasets are bounded to the catalog's widths. |
 | `ce119f2` | Nodes for files and datasets no declaration named any more were never removed, so a graph kept growing. | The sync sweeps them, and only the ones the syncing repository let go of (migration `SweepOrphanFileNodes`). |
 | `1dfc15f` | The run group companion had no caller left. | Removed. |
+| (this change) | `TruncatedText` put its pixel cap in an inline `style`, which beats the `max-w-full` class beside it. In a container narrower than the cap, the value rendered at the full cap and ran out of its cell: on a detail card a staged payload's path was drawn 260px wide in a 202px column, on top of the value in the next column. The component that exists so a long value can never blow out a layout was the one blowing it out. | The cap carries the container bound with it (`min(100%, <cap>px)`), so the value clips at whichever is smaller and the ellipsis and hover panel behave the same either way. It is a fix upstream wants regardless of this project: every detail grid, table and drawer in SQLFlow's own GUI renders values through this component. |
 
 ### Test determinism
 

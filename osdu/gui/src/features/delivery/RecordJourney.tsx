@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
+import { TruncatedText } from "@/components/TruncatedText";
 import type { DeliveryActivity, DeliveryAttempt, DeliveryChainStage, DeliveryRecord, DeliveryRecordChain } from "../../api/delivery";
 
 type Tone = "success" | "destructive" | "warning" | "info" | "muted";
@@ -45,6 +46,15 @@ function Mono({ children }: { children: ReactNode }) {
   return <span className="font-mono text-[12px]">{children}</span>;
 }
 
+/**
+ * A value with no length of its own (an OSDU id, a file name, a lease owner, a worker): clipped to the line it sits
+ * on, revealed in full on hover, and handed over by its copy button, so a timeline entry stays one line whatever the
+ * estate names things.
+ */
+function LongValue({ value, width = 320, copy = true }: { value: string; width?: number; copy?: boolean }) {
+  return <TruncatedText text={value} mono maxWidth={width} copy={copy} />;
+}
+
 function Origin({ file, row }: { file: string | null; row: number | null }) {
   if (file === null) {
     return <span>the ingestion table (the file is not recorded)</span>;
@@ -52,7 +62,7 @@ function Origin({ file, row }: { file: string | null; row: number | null }) {
 
   return (
     <span>
-      <Mono>{file}</Mono>
+      <LongValue value={file} width={280} />
       {row !== null && <span>{" row "}<Mono>{row}</Mono></span>}
     </span>
   );
@@ -152,7 +162,7 @@ function chainEvents(chain: DeliveryRecordChain | undefined): JourneyEvent[] {
       detail: (
         <div className="flex flex-col gap-0.5">
           <Detail parts={[
-            <span key="f"><Mono>{stage.fileName}</Mono></span>,
+            <span key="f"><LongValue value={stage.fileName} width={280} /></span>,
             stage.rows > 0 && `${stage.rows.toLocaleString()} row${stage.rows === 1 ? "" : "s"}`,
             duration !== null && `took ${duration}`,
             !stage.success && `ended ${stage.status}`,
@@ -210,7 +220,7 @@ function buildEvents(
     at: record.createdUtc,
     title: "Planned: the record entered the ledger",
     detail: <Detail parts={[
-      record.targetId !== null ? <span key="t">claimed the OSDU id <Mono>{record.targetId}</Mono></span> : "no OSDU id claimed yet",
+      record.targetId !== null ? <span key="t">claimed the OSDU id <LongValue value={record.targetId} /></span> : "no OSDU id claimed yet",
       `mapping ${record.mappingName}`,
     ]} />,
     tone: "info",
@@ -233,8 +243,8 @@ function buildEvents(
             attempt.phase !== "" && <span key="p">phase <Mono>{attempt.phase}</Mono></span>,
             duration !== null && `took ${duration}`,
             steps.length > 0 && `${steps.length} step${steps.length === 1 ? "" : "s"}`,
-            attempt.result?.correlationId && <span key="c">correlation <Mono>{attempt.result.correlationId}</Mono></span>,
-            <span key="w">by <Mono>{attempt.worker}</Mono></span>,
+            attempt.result?.correlationId && <span key="c">correlation <LongValue value={attempt.result.correlationId} width={220} /></span>,
+            <span key="w">by <LongValue value={attempt.worker} width={220} copy={false} /></span>,
             <RunRef key="r" runId={attempt.runId} />,
             <SubmissionRef key="s" submissionId={attempt.submissionId} />,
             attempt.sourceFileName !== null && <span key="o">from <Origin file={attempt.sourceFileName} row={attempt.sourceRowNumber} /></span>,
@@ -295,7 +305,7 @@ function buildEvents(
       id: "waiting",
       at: record.updatedUtc,
       title: "Waiting for a record it refers to",
-      detail: <Detail parts={[record.waitingFor !== null && <Mono key="w">{record.waitingFor}</Mono>, record.lastError]} />,
+      detail: <Detail parts={[record.waitingFor !== null && <LongValue key="w" value={record.waitingFor} />, record.lastError]} />,
       tone: "info",
       icon: Hourglass,
       order: 5,
@@ -336,10 +346,16 @@ function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[], chain: 
   const removed = attempts.find((a) => a.outcome === "deleted");
   const pre = chain?.stages.find((s) => s.stage === "pre-ingestion");
   const ing = chain?.stages.find((s) => s.stage === "ingestion");
+
+  // The stage cells answer WHICH RUN carried the row, which is not the same question as whether the stage happened:
+  // the row is in an ingestion table (that is where the ledger read its file and row from), so the file did reach
+  // ingestion, and something landed it before that. Only the run is missing, so the cell says exactly that rather
+  // than "not recorded", which reads as "it never happened" beside a Received cell that proves it did.
+  const loaded = (record.sourceFileName ?? record.pendingSourceFileName) !== null;
   const cells: SummaryCell[] = [
     {
       label: "Pre-ingestion",
-      value: pre === undefined ? (chain === undefined ? "-" : "not recorded") : <RelativeTime value={pre.ranUtc} />,
+      value: pre === undefined ? (chain === undefined ? "-" : "no run recorded") : <RelativeTime value={pre.ranUtc} />,
       caption: pre === undefined
         ? (chain?.fileName ?? "no file recorded")
         : `${pre.flowName}${pre.success ? "" : ` (${pre.status})`}`,
@@ -348,8 +364,12 @@ function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[], chain: 
     },
     {
       label: "Ingestion",
-      value: ing === undefined ? (chain === undefined ? "-" : "not recorded") : <RelativeTime value={ing.ranUtc} />,
-      caption: ing === undefined ? "no ingestion run recorded for this file" : `${ing.flowName}${ing.success ? "" : ` (${ing.status})`}`,
+      value: ing === undefined ? (chain === undefined ? "-" : "no run recorded") : <RelativeTime value={ing.ranUtc} />,
+      caption: ing !== undefined
+        ? `${ing.flowName}${ing.success ? "" : ` (${ing.status})`}`
+        : loaded
+          ? "the row is in the ingestion table; no run recorded the file"
+          : "no ingestion run recorded for this file",
       tone: ing !== undefined && !ing.success ? "destructive" : undefined,
       testId: "milestone-ing",
     },
