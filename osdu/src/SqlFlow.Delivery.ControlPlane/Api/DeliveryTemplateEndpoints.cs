@@ -135,6 +135,17 @@ public sealed record DeliveryMappingParseRequest(string Yaml, string? Path);
 
 public sealed record DeliveryMappingParseResult(MappingDraft? Draft, IReadOnlyList<MappingDraftIssue> Issues);
 
+/// <summary>A mapping document to measure against the template version it pins.</summary>
+public sealed record DeliveryMappingCoverageRequest(string Yaml, string? Path);
+
+/// <summary>
+/// What a mapping fills of its template: the template version it pins, every variable a mapping may fill with how the
+/// document reaches it, and what it leaves required and empty. <c>Variables</c> is empty when the document does not load
+/// or pins a template that is not saved, and <c>Issues</c> says which.
+/// </summary>
+public sealed record DeliveryMappingCoverageResult(
+    string? Kind, string? Version, IReadOnlyList<VariableCoverage> Variables, IReadOnlyList<MappingDraftIssue> Issues);
+
 /// <summary>A mapping document to draw the record shape of, and the parameter values to draw it with.</summary>
 public sealed record DeliveryMappingShapeRequest(string Yaml, string? Path, IReadOnlyDictionary<string, string>? Parameters);
 
@@ -177,6 +188,7 @@ public static class DeliveryTemplateEndpoints
         delivery.MapPost("/mapping-builder/compose", ComposeMappingAsync).WithName("ComposeDeliveryMapping");
         delivery.MapPost("/mapping-builder/parse", ParseMappingAsync).WithName("ParseDeliveryMapping");
         delivery.MapPost("/mapping-builder/shape", ShapeMappingAsync).WithName("ShapeDeliveryMapping");
+        delivery.MapPost("/mapping-builder/coverage", CoverMappingAsync).WithName("CoverDeliveryMapping");
         return group;
     }
 
@@ -650,7 +662,7 @@ public static class DeliveryTemplateEndpoints
             foreach (var issue in Preflight.Check(mapping, schema, references, context, sourceColumns: null))
             {
                 issues.Add(new MappingDraftIssue(
-                    issue.Severity == IssueSeverity.Error ? MappingDraftIssue.ErrorSeverity : MappingDraftIssue.WarningSeverity, issue.Message));
+                    issue.Severity == IssueSeverity.Error ? MappingDraftIssue.ErrorSeverity : MappingDraftIssue.WarningSeverity, issue.Message, issue.Target));
             }
         }
         catch (Exception ex) when (ex is FlowValidationException or DeliveryException)
@@ -731,6 +743,50 @@ public static class DeliveryTemplateEndpoints
             return ShapeIssue(declared, ex.Message);
         }
     }
+
+    /// <summary>
+    /// What a mapping document fills of the template it pins, variable by variable, and what it leaves required and empty
+    /// (<see cref="MappingCoverage.Of"/>). Nothing is rendered and no cache is read, so the answer is the document against
+    /// the schema alone. A document that does not load, or pins a template that is not saved, answers with the issue and no
+    /// variables; it is not an HTTP error, because the document is what the caller is looking at.
+    /// </summary>
+    private static async Task<Ok<DeliveryMappingCoverageResult>> CoverMappingAsync(
+        DeliveryMappingCoverageRequest request, ITemplateStore templates, DeliveryDocumentLoader documents, CancellationToken ct)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.Yaml))
+        {
+            return CoverageIssue(null, null, "There is no mapping document to measure against its template.");
+        }
+
+        MappingDefinition mapping;
+        try
+        {
+            mapping = documents.ParseMapping(request.Yaml, string.IsNullOrWhiteSpace(request.Path) ? "mapping.yaml" : request.Path);
+        }
+        catch (FlowValidationException ex)
+        {
+            return CoverageIssue(null, null, ex.Message);
+        }
+
+        var schema = await templates.LoadAsync(mapping.Template, ct).ConfigureAwait(false);
+        if (schema is null)
+        {
+            return CoverageIssue(
+                mapping.Template.Kind,
+                mapping.Template.Version,
+                $"The mapping pins template {mapping.Template}, which is not saved. Save it on the Templates page to see what the mapping fills.");
+        }
+
+        var coverage = MappingCoverage.Of(mapping, OsduTemplate.From(schema));
+        var issues = coverage.Issues
+            .Select(issue => new MappingDraftIssue(
+                issue.Severity == IssueSeverity.Error ? MappingDraftIssue.ErrorSeverity : MappingDraftIssue.WarningSeverity, issue.Message, issue.Target))
+            .ToList();
+        return TypedResults.Ok(new DeliveryMappingCoverageResult(schema.Kind, schema.Version, coverage.Variables, issues));
+    }
+
+    private static Ok<DeliveryMappingCoverageResult> CoverageIssue(string? kind, string? version, string message)
+        => TypedResults.Ok(new DeliveryMappingCoverageResult(kind, version, [], [new MappingDraftIssue(MappingDraftIssue.ErrorSeverity, message)]));
 
     private static Ok<DeliveryMappingShapeResult> ShapeIssue(IReadOnlyList<DeliveryMappingShapeParameterDto> parameters, string message)
         => TypedResults.Ok(new DeliveryMappingShapeResult(null, parameters, [], [new MappingDraftIssue(MappingDraftIssue.ErrorSeverity, message)]));

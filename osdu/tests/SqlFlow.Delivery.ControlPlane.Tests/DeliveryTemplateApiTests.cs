@@ -18,6 +18,7 @@ using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Delivery.Validation;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -250,6 +251,29 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal("opendes:work-product-component--WellLog:<delivery key from wells, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
             Assert.Equal("<string from dataset.curves.curve_id>", shape.Record["data"]!["Curves"]![0]!["CurveID"]!.GetValue<string>());
             Assert.Equal("opendes", Assert.Single(shape.Parameters).Value);
+
+            // The same document measured against its template: every variable a mapping may fill, with how the document
+            // reaches it, and nothing required left empty. Nothing is rendered and no cache is read.
+            var coverage = await ReadAsync<DeliveryMappingCoverageResult>(
+                await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/coverage", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml" }));
+            Assert.Equal(WellLogKind, coverage.Kind);
+            Assert.Equal(WellLogVersion, coverage.Version);
+            Assert.DoesNotContain(coverage.Issues, i => i.Severity == "error");
+            Assert.Equal(CoverageState.Always, Assert.Single(coverage.Variables, v => v.Target == "osdu.data.WellboreID").State);
+            Assert.True(Assert.Single(coverage.Variables, v => v.Target == "osdu.acl").State == CoverageState.Always);
+            Assert.False(Assert.Single(coverage.Variables, v => v.Target == "osdu.acl").Direct);
+            Assert.Contains(coverage.Variables, v => v.State == CoverageState.Empty);
+            Assert.DoesNotContain(coverage.Variables, v => v.Target == "osdu.id");
+
+            // A document whose template is not saved says so, instead of answering with an empty template.
+            var unsaved = await ReadAsync<DeliveryMappingCoverageResult>(await SendAsync(
+                client,
+                author,
+                HttpMethod.Post,
+                "/api/v1/delivery/mapping-builder/coverage",
+                new { yaml = sample.Replace($"version: {WellLogVersion}", "version: 00000000deadbeef", StringComparison.Ordinal), path = "mappings/WellLog@1.4.0.yaml" }));
+            Assert.Empty(unsaved.Variables);
+            Assert.Contains(unsaved.Issues, i => i.Severity == "error" && i.Message.Contains("which is not saved", StringComparison.Ordinal));
 
             // A wellbore reference read from the unit cache is written, and refused by the check against the template.
             var wrong = parsed.Draft with
