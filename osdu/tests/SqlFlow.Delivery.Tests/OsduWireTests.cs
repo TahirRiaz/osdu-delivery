@@ -642,7 +642,7 @@ public class SkipDuplicatesOptionTests
 /// <summary>
 /// The connection schema snapshots, reference captures and a retrieval flow's cache refresh reach OSDU through. A flow
 /// declares its endpoint and headers as references; the connection resolves them, so no caller can hand it a
-/// reference to use as a URL. A live retrieval flow whose endpoint was <c>${env:PETRODB_URL}</c> crashed its run on the
+/// reference to use as a URL. A live retrieval flow whose endpoint was <c>${env:OSDU_URL}</c> crashed its run on the
 /// first capture request because the cache refresh passed the declared value straight through.
 /// </summary>
 public class CaptureConnectionTests

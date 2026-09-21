@@ -48,7 +48,7 @@ kind in the estate the pattern matches (section 5).
 
 The OSDU platform is part of an OSDU type's identity because it is part of what the record is: two environments may both
 have a partition called `opendes`. The platform is identified by the endpoint exactly as the flow declares it
-(`${env:PETRODB_URL}`), which is SQLFlow's rule for every server identity: two flows naming the same platform through two
+(`${env:OSDU_URL}`), which is SQLFlow's rule for every server identity: two flows naming the same platform through two
 different references are two platforms to lineage. The partition cache is keyed by partition alone, because that is how
 the module keys the cache itself (`CacheScope`).
 
@@ -217,7 +217,7 @@ file nodes earlier syncs had already left behind without an edge (the machine-pa
 
 ## 10. Known limits
 
-- **Endpoint and partition are compared as written.** A delivery flow naming its platform `${env:PETRODB_URL}` and a
+- **Endpoint and partition are compared as written.** A delivery flow naming its platform `${env:OSDU_URL}` and a
   cache flow naming it with a literal URL are two platforms to lineage.
 - **A retrieval flow's relative `target.location`** is resolved by the runner against the process's working directory,
   not the flow file. Lineage places it relative to the flow file, as every other location of the module is resolved, and

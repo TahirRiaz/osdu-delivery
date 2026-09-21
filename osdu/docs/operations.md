@@ -21,7 +21,7 @@ Everything the platform already reads ([environment-variables.md](environment-va
 
 | Setting | Where | Purpose |
 | --- | --- | --- |
-| Flow secrets | nodes, the CLI | Whatever the flows reference: `${env:PETRODB_URL}`, `${keyvault:vault/name}`, and so on. A node holds the references its pool's flows need. |
+| Flow secrets | nodes, the CLI | Whatever the flows reference: `${env:OSDU_URL}`, `${keyvault:vault/name}`, and so on. A node holds the references its pool's flows need. |
 | `SQLFLOW_DELIVERY_ALLOW_LOOPBACK` | nodes, the CLI | `true` lets a flow target `localhost` (local OSDU stubs, tests). Off by default: the URL guard refuses loopback and private targets. |
 | `SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS` | nodes, the CLI | `true` lets a flow that declares `reliability.verifyTls: false` run here. Off by default: a repository document cannot take a node off TLS on its own, and a run that asks is refused, naming this variable. Set it only on the nodes that reach a target whose certificate cannot be trusted any other way; trusting the issuing authority on those nodes is the better answer. |
 | `SQLFLOW_DELIVERY_PRIVATE_NETWORKS` | nodes, the CLI | The private ranges (CIDR, comma separated) a flow may reach: an OSDU, its storage accounts or a proxy behind a private endpoint. Empty by default: every private address is refused, whether a URL names it or a host name resolves to it. Link-local and cloud metadata addresses are never reachable. |

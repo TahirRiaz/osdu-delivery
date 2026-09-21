@@ -51,7 +51,7 @@ public sealed class DeliveryInterfacesApiTests
               parameters:
                 dataPartition: opendes
             target:
-              endpoint: ${env:PETRODB_URL}
+              endpoint: ${env:OSDU_URL}
               headers: { data-partition-id: opendes }
               protocolOptions: { ddmsRoot: /api/os-wellbore-ddms }
             interfaces:

@@ -69,7 +69,7 @@ spec:
             - name: SQLFLOW_CONN_DWH
               valueFrom:
                 secretKeyRef: { name: osdu-delivery-secrets, key: ingestion-connection }
-            - name: PETRODB_URL
+            - name: OSDU_URL
               value: "https://your-osdu-host"
             - name: OSDU_TOKEN_URL
               value: "https://login.microsoftonline.com/your-tenant/oauth2/v2.0/token"

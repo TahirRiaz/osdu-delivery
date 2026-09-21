@@ -84,7 +84,7 @@ document moves from test to prod unchanged.
 | --- | --- |
 | `${env:SQLFLOW_CONN_PRE}` | The database the pre-ingestion flows land the source files in. |
 | `${env:SQLFLOW_CONN_DWH}` | The database the ingestion flows load the keyed ingestion tables into, which the OSDU flow reads. |
-| `${env:PETRODB_URL}` | The OSDU endpoint the sample estate delivers to. |
+| `${env:OSDU_URL}` | The OSDU endpoint the sample estate delivers to. |
 | `${env:OSDU_TOKEN_URL}`, `${env:OSDU_SCOPE}`, `${env:OSDU_CLIENT_ID}`, `${env:OSDU_CLIENT_SECRET}` | The OAuth2 client-credentials flow the sample estate authenticates with. |
 | `${env:APIM_KEY}` | The API management subscription key the sample estate's target requires. |
 

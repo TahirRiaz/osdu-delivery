@@ -59,7 +59,7 @@ change:
   useSourceVersions: true          # tier-0 gate: skip the run when no row changed in the window
 
 target:
-  endpoint: ${env:PETRODB_URL}     # ${env:NAME} and ${keyvault:vault/secret} references
+  endpoint: ${env:OSDU_URL}        # ${env:NAME} and ${keyvault:vault/secret} references
   auth:
     type: oauth2ClientCredentials  # none | bearer | apiKeyHeader | basic | oauth2ClientCredentials
     secondarySecretRef: ${env:OSDU_CLIENT_ID}
@@ -708,7 +708,7 @@ source:                               # shared by every interface
 render:
   parameters: { dataPartition: opendes }
 target:
-  endpoint: ${env:PETRODB_URL}
+  endpoint: ${env:OSDU_URL}
   auth: { ... }
   headers: { data-partition-id: opendes }
   protocolOptions:
@@ -1047,7 +1047,7 @@ name: wells-osdu-00-reference-cache
 batch: wells
 
 source:
-  endpoint: ${env:PETRODB_URL}
+  endpoint: ${env:OSDU_URL}
   auth:
     type: oauth2ClientCredentials
     secondarySecretRef: ${env:OSDU_CLIENT_ID}
@@ -1502,7 +1502,7 @@ it ([docs/lineage-design.md](../../docs/lineage-design.md)). What each kind cont
 | Retrieval | Each of `source.kinds`, wildcards included | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest under `target.location` |
 
 An **OSDU type** node is one exact kind in one partition of one platform: the platform is the flow's endpoint as written
-(`${env:PETRODB_URL}`; a literal URL is identified by a hash, never shown), the partition is `data-partition-id`, and the
+(`${env:OSDU_URL}`; a literal URL is identified by a hash, never shown), the partition is `data-partition-id`, and the
 node is listed under the entity type's group (`master-data`, `reference-data`, `work-product-component`, `dataset`). A
 kind read with wildcards has a node of its own, and also reads every exact kind the estate writes on the same platform
 and partition that it matches segment by segment. A **cache type** node is a cache type name in a partition, whichever

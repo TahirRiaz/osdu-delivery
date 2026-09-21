@@ -141,6 +141,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The sample estate names its OSDU endpoint `${env:OSDU_URL}`.** The reference was `${env:PETRODB_URL}`, named
+  after the facade an earlier estate delivered through, which read as a dependency the module does not have: the
+  variable holds the OSDU API base a flow's `target.endpoint` (or a cache or retrieval flow's `source.endpoint`)
+  resolves, and it now sits with the `OSDU_*` references beside it. A deployment renames the variable on its nodes
+  when it takes this build; a flow document that still says `${env:PETRODB_URL}` resolves whatever a node holds
+  under that name, so the two can be moved separately.
+
 - The current build has been run against a live OSDU: Azure Data Manager for Energy 0.29, partition `dev`, on
   2026-09-17. The storage, file, manifest and ddms routes each delivered and were read back, verify and reconcile were
   exercised, and every id created was removed at the reversible scope with a GET answering 404

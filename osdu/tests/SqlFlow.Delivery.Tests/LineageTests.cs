@@ -20,7 +20,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class LineageTests : IDisposable
 {
-    private const string Platform = "${env:PETRODB_URL}";
+    private const string Platform = "${env:OSDU_URL}";
 
     private static readonly DateTime Utc = new(2026, 9, 16, 0, 0, 0, DateTimeKind.Utc);
 
@@ -395,7 +395,7 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_partition_reference_stays_its_text_and_a_literal_endpoint_is_identified_by_hash()
     {
-        Rewrite("cache/wells-osdu-00-reference-cache.yaml", "  endpoint: ${env:PETRODB_URL}", "  endpoint: https://osdu.example.com");
+        Rewrite("cache/wells-osdu-00-reference-cache.yaml", "  endpoint: ${env:OSDU_URL}", "  endpoint: https://osdu.example.com");
         Rewrite("cache/wells-osdu-00-reference-cache.yaml", "data-partition-id: opendes", "data-partition-id: ${env:OSDU_PARTITION}");
 
         var lineage = Describe("cache/wells-osdu-00-reference-cache.yaml");

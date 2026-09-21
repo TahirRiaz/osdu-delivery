@@ -10,7 +10,7 @@ name: wells-osdu-04-metadata-retrieval
 batch: wells
 
 source:
-  endpoint: ${env:PETRODB_URL}
+  endpoint: ${env:OSDU_URL}
   auth:
     type: oauth2ClientCredentials
     secondarySecretRef: ${env:OSDU_CLIENT_ID}

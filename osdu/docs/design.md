@@ -716,7 +716,7 @@ change:
   onUnchanged: skip
 
 target:
-  endpoint: ${env:PETRODB_URL}/welllogs
+  endpoint: ${env:OSDU_URL}/welllogs
   auth: { type: oauth2ClientCredentials }
   protocol: osduWellLog
 

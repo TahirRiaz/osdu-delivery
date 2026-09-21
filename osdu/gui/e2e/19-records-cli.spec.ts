@@ -36,7 +36,7 @@ function cli(...args: string[]): string {
         SQLFLOW_OSDU_DB: E2E.osduDb,
         // The flow's target, as references it resolves but never uses: an intake reaches no OSDU (the fixture turns
         // the legal check off), and an address nothing listens on is what a run that tried to send would meet.
-        PETRODB_URL: "http://127.0.0.1:9",
+        OSDU_URL: "http://127.0.0.1:9",
         OSDU_TOKEN_URL: "http://127.0.0.1:9/token",
         OSDU_CLIENT_ID: "the-e2e-authenticates-with-nothing",
         OSDU_CLIENT_SECRET: "the-e2e-authenticates-with-nothing",

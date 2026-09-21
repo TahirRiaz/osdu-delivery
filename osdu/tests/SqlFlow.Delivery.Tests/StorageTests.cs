@@ -389,7 +389,7 @@ public sealed class OsduCacheStoreTests : IDisposable
 
     private static readonly DateTimeOffset T0 = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-    private static readonly CacheCapture Capture = new(Guid.Parse("0195c9a2-7f30-7c44-9c1e-0aa1b2c3d4e5"), "manual:tester", "${env:PETRODB_URL}");
+    private static readonly CacheCapture Capture = new(Guid.Parse("0195c9a2-7f30-7c44-9c1e-0aa1b2c3d4e5"), "manual:tester", "${env:OSDU_URL}");
 
     private static readonly ReferenceTypeSpec WellboreSpec = new()
     {
@@ -458,7 +458,7 @@ public sealed class OsduCacheStoreTests : IDisposable
         Assert.Null(saved.PreviousVersion);
         Assert.Equal(Capture.RunId, saved.RunId);
         Assert.Equal("manual:tester", saved.CapturedBy);
-        Assert.Equal("${env:PETRODB_URL}", saved.Origin);
+        Assert.Equal("${env:OSDU_URL}", saved.Origin);
         Assert.Equal(ProjectA, saved.FlowName);
         Assert.Equal(3, saved.Items);
         Assert.Equal(["UnitOfMeasure", "Wellbore"], saved.Types.Select(t => t.Name));

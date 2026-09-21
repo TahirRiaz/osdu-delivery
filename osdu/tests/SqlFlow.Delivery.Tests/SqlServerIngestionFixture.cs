@@ -60,7 +60,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// is normalized the same way.
     /// </summary>
     private static readonly string ShippedTarget = """
-          endpoint: ${env:PETRODB_URL}
+          endpoint: ${env:OSDU_URL}
           auth:
             type: oauth2ClientCredentials
             secondarySecretRef: ${env:OSDU_CLIENT_ID}

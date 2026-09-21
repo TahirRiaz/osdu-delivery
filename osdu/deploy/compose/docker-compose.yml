@@ -127,7 +127,7 @@ services:
       SQLFLOW_CONN_DWH: "Server=mssql;Database=OsduDeliveryIng;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
       # Every ${env:...} reference the flows declare resolves here, on the node; the sample estate names these
       # six. The control plane carries none of them. A plan run needs no OSDU target, so they can stay empty.
-      PETRODB_URL: ${PETRODB_URL:-}
+      OSDU_URL: ${OSDU_URL:-}
       OSDU_TOKEN_URL: ${OSDU_TOKEN_URL:-}
       OSDU_SCOPE: ${OSDU_SCOPE:-}
       OSDU_CLIENT_ID: ${OSDU_CLIENT_ID:-}
