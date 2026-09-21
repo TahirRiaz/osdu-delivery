@@ -142,6 +142,9 @@ public sealed class SourceRuntimeTests : IDisposable
               mappings: '{{mappings}}'
               parameters:
                 dataPartition: opendes
+                aclOwner: data.default.owners@opendes.dataservices.energy
+                aclViewer: data.default.viewers@opendes.dataservices.energy
+                legalTag: opendes-reference-data-default
             target:
               endpoint: http://localhost:9/petrodb
               headers:

@@ -55,9 +55,9 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
             var sentCurrent = Assert.Single(current.Protocol.Deliveries, w => w.Key == key);
             var sentNext = Assert.Single(next.Protocol.Deliveries, w => w.Key == key);
             Assert.Equal((WellLogVersions.CurrentKind, WellLogVersions.NextKind), (Text(sentCurrent.Document, "kind"), Text(sentNext.Document, "kind")));
-            Assert.Equal(TargetId.Compose(Samples.SampleCacheScope, "work-product-component--WellLog", key), sentCurrent.TargetId);
+            Assert.Equal(TargetId.Compose(Samples.SamplePartition, "work-product-component--WellLog", key), sentCurrent.TargetId);
             Assert.Equal(TargetId.Compose(NextPartition, "work-product-component--WellLog", key), sentNext.TargetId);
-            Assert.StartsWith(Samples.SampleCacheScope + ":master-data--Wellbore:", Text(sentCurrent.Document["data"], "WellboreID"), StringComparison.Ordinal);
+            Assert.StartsWith(Samples.SamplePartition + ":master-data--Wellbore:", Text(sentCurrent.Document["data"], "WellboreID"), StringComparison.Ordinal);
             Assert.StartsWith(NextPartition + ":master-data--Wellbore:", Text(sentNext.Document["data"], "WellboreID"), StringComparison.Ordinal);
             Assert.Equal(Text(sentCurrent.Document["data"], "Name"), Text(sentNext.Document["data"], "Name"));
             Assert.True(sentCurrent.DeliverPayload && sentNext.DeliverPayload);

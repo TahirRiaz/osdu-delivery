@@ -49,7 +49,11 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         var (runLogger, events, _) = RunArtifacts.BuildEventPlumbing(options, flow.Name);
         var loggers = new RunLogLoggerFactory(runLogger, events, runId, flow.Name);
         var log = loggers.CreateLogger("run");
-        var context = _provider.GetRequiredService<EngineContext>().WithLoggers(loggers);
+        // A cache and a retrieval flow name their platform and partition the same way a delivery flow does, so a run
+        // of one resolves them from the central configuration the control plane supplied before the node's own.
+        var context = _provider.GetRequiredService<EngineContext>()
+            .WithLoggers(loggers)
+            .WithSuppliedReferences(DeliveryRunPayload.Parse(options.Parameters).References);
         var warningSink = options.Echo;
 
         var stopwatch = Stopwatch.StartNew();

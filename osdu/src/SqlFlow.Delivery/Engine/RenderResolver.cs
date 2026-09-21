@@ -1,4 +1,5 @@
 using SqlFlow.Core;
+using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
@@ -27,13 +28,16 @@ public sealed class RenderResolver
     private readonly MappingCatalog _mappings;
     private readonly ICacheStore? _cache;
     private readonly ITemplateStore? _templates;
+    private readonly ISecretResolver _secrets;
 
-    public RenderResolver(MappingCatalog mappings, ICacheStore? cache, ITemplateStore? templates)
+    public RenderResolver(MappingCatalog mappings, ICacheStore? cache, ITemplateStore? templates, ISecretResolver secrets)
     {
         ArgumentNullException.ThrowIfNull(mappings);
+        ArgumentNullException.ThrowIfNull(secrets);
         _mappings = mappings;
         _cache = cache;
         _templates = templates;
+        _secrets = secrets;
     }
 
     public async Task<ResolvedMapping> ResolveAsync(FlowDefinition flow, CancellationToken ct = default)
@@ -63,9 +67,27 @@ public sealed class RenderResolver
             }
         }
 
-        foreach (var (name, value) in flow.Render.Parameters)
+        // Where a record goes and under whose access and legal terms belongs to the kind, not to any one mapping: a
+        // parameter the kind owns that the flow leaves out takes the reference the kind names for it. A flow that names
+        // its own value still wins, so a document can pin a destination when it has to.
+        var supplied = new Dictionary<string, string>(flow.Render.Parameters, StringComparer.Ordinal);
+        foreach (var declared in mapping.Parameters.Keys)
         {
-            parameters[name] = value;
+            if (!supplied.ContainsKey(declared) && DeliveryDestination.ReferenceFor(declared) is { } reference)
+            {
+                supplied[declared] = reference;
+            }
+        }
+
+        // What reaches a mapping from outside it is deployment configuration, not mapping content: the partition, the
+        // legal tag and the access groups of an estate all differ between test and production while the mapping stays the
+        // same. So these carry ${env:NAME} and ${keyvault:vault/secret} references exactly as target.endpoint and
+        // target.headers do, and they are expanded here, before the render context is built, so the context (and the
+        // rendered hash and the ledger row that records what rendered a document) holds the value that reached the
+        // record, never the reference that produced it. A mapping's own default is mapping content and stays literal.
+        foreach (var (name, value) in supplied)
+        {
+            parameters[name] = await _secrets.ResolveAsync(value, ct).ConfigureAwait(false);
         }
 
         var context = new RenderContext

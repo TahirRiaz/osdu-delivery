@@ -79,7 +79,9 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         var log = loggers.CreateLogger("run");
         var context = _provider.GetRequiredService<EngineContext>()
             .WithLoggers(loggers)
-            .WithFanOut(options.FanOut is { } fanOut ? new RunFanOutDispatcher(fanOut) : null);
+            .WithFanOut(options.FanOut is { } fanOut ? new RunFanOutDispatcher(fanOut) : null)
+            // The control plane supplies what it holds centrally; the node answers the rest from its own environment.
+            .WithSuppliedReferences(payload.References);
 
         var stopwatch = Stopwatch.StartNew();
         object result;

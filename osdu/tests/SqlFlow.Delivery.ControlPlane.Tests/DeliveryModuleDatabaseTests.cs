@@ -32,7 +32,7 @@ public sealed class DeliveryModuleDatabaseTests
         ["Document@1.0.0", "WellLog@1.4.0", "Wellbore@1.0.0", "WellboreTrajectory@1.3.0"];
 
     /// <summary>The partition the sample cache flow declares its types for.</summary>
-    private const string SampleScope = "opendes";
+    private const string SampleScope = "${env:OSDU_DATA_PARTITION}";
 
     [SkippableFact]
     public async Task A_module_database_of_its_own_takes_the_rows_and_the_catalog_database_never_sees_them()

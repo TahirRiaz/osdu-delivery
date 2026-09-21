@@ -84,6 +84,16 @@ spec:
             - name: APIM_KEY
               valueFrom:
                 secretKeyRef: { name: osdu-delivery-secrets, key: apim-key }
+            # Where the estate delivers, and under whose access and legal terms: the flows name these rather than
+            # writing a partition, a group or a tag into a document.
+            - name: OSDU_DATA_PARTITION
+              value: "your-partition"
+            - name: OSDU_ACL_OWNER
+              value: "data.default.owners@your-partition.dataservices.energy"
+            - name: OSDU_ACL_VIEWER
+              value: "data.default.viewers@your-partition.dataservices.energy"
+            - name: OSDU_LEGAL_TAG
+              value: "your-partition-default-legal-tag"
           resources:
             requests: { cpu: 500m, memory: 512Mi }
             limits: { cpu: "2", memory: 2Gi }

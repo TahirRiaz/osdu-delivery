@@ -238,7 +238,13 @@ public sealed class DeliveryTemplateApiTests
             var parsed = await ReadAsync<DeliveryMappingParseResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/parse", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml" }));
             Assert.Empty(parsed.Issues);
             Assert.NotNull(parsed.Draft);
-            var parameters = new Dictionary<string, string> { ["dataPartition"] = "opendes" };
+            var parameters = new Dictionary<string, string>
+            {
+                ["dataPartition"] = "opendes",
+                ["aclOwner"] = "data.default.owners@opendes.dataservices.energy",
+                ["aclViewer"] = "data.default.viewers@opendes.dataservices.energy",
+                ["legalTag"] = "opendes-reference-data-default",
+            };
             var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = parsed.Draft, parameters }));
             Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
             Assert.Contains("target: osdu.data.WellboreID", checkedSample.Yaml, StringComparison.Ordinal);
@@ -250,7 +256,7 @@ public sealed class DeliveryTemplateApiTests
             Assert.NotNull(shape.Record);
             Assert.Equal("opendes:work-product-component--WellLog:<delivery key from wells, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
             Assert.Equal("<string from dataset.curves.curve_id>", shape.Record["data"]!["Curves"]![0]!["CurveID"]!.GetValue<string>());
-            Assert.Equal("opendes", Assert.Single(shape.Parameters).Value);
+            Assert.Equal("opendes", Assert.Single(shape.Parameters, p => p.Name == "dataPartition").Value);
 
             // The same document measured against its template: every variable a mapping may fill, with how the document
             // reaches it, and nothing required left empty. Nothing is rendered and no cache is read.
@@ -574,6 +580,9 @@ public sealed class DeliveryTemplateApiTests
                   mapping: WellLog@1.4.0
                   parameters:
                     dataPartition: opendes
+                    aclOwner: data.default.owners@opendes.dataservices.energy
+                    aclViewer: data.default.viewers@opendes.dataservices.energy
+                    legalTag: opendes-reference-data-default
                 target:
                   endpoint: https://osdu.example.test
                   headers:

@@ -431,7 +431,7 @@ public class ReferenceCacheTests
         {
             Assert.Equal(Samples.SampleCacheScope, runtime.Mapping.Context.CacheScope);
             Assert.Equal("20260908T212727Z", runtime.Mapping.Context.CacheVersion);
-            Assert.Contains("\"cache\":\"opendes\"", runtime.Mapping.Context.Canonical(), StringComparison.Ordinal);
+            Assert.Contains($"\"cache\":\"{Samples.SampleCacheScope}\"", runtime.Mapping.Context.Canonical(), StringComparison.Ordinal);
         }
 
         // render.cacheVersion pins a version of the partition's cache.
@@ -453,7 +453,7 @@ public class ReferenceCacheTests
         Assert.Contains("declare no 'data-partition-id'", none.Message, StringComparison.Ordinal);
 
         var missingVersion = await Assert.ThrowsAsync<FlowValidationException>(() => FlowRuntime.CreateAsync(engine, flow with { Render = flow.Render with { CacheVersion = "19990101T000000Z" } }, values));
-        Assert.Contains("pins version 19990101T000000Z of the cache of partition 'opendes', which the catalog does not hold", missingVersion.Message, StringComparison.Ordinal);
+        Assert.Contains($"pins version 19990101T000000Z of the cache of partition '{Samples.SampleCacheScope}', which the catalog does not hold", missingVersion.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -483,7 +483,13 @@ public class ReferenceCacheTests
             CacheScope = Samples.SampleCacheScope,
             CacheVersion = references.Version,
             SchemaSnapshotVersion = schema.Version,
-            Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "opendes" },
+            Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [RenderContext.DataPartitionParameter] = "opendes",
+                ["aclOwner"] = "data.default.owners@opendes.dataservices.energy",
+                ["aclViewer"] = "data.default.viewers@opendes.dataservices.energy",
+                ["legalTag"] = "opendes-reference-data-default",
+            },
         };
         var renderer = new MappingRenderer(mapping, schema, references, context);
         var fixture = mapping.Fixtures.Single(f => f.Name.StartsWith("L-2001", StringComparison.Ordinal));

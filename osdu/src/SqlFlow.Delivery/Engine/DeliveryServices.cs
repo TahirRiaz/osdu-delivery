@@ -116,6 +116,10 @@ public static class DeliveryServices
             ?? throw new DeliveryException(NoLedgerMessage));
         services.AddSingleton<ICacheStore>(sp => sp.GetRequiredService<DeliveryLedgerSource>().Cache(sp)
             ?? throw new DeliveryException(NoLedgerMessage));
+
+        // The central configuration is registered for every host, not the control plane alone: the control plane reads it
+        // to supply the runs it queues, and the CLI reads and writes it so a deployment can configure an estate.
+        services.AddSingleton(sp => new Catalog.DeliveryConfigStore(sp.GetRequiredService<DeliveryLedgerSource>().Contexts(sp)));
         return services;
     }
 

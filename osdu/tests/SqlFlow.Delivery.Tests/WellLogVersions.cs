@@ -47,7 +47,7 @@ internal static class WellLogVersions
     public static FlowDefinition OnNextVersion(FlowDefinition flow, string name, string partition, string root)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        var mappings = Path.Combine(root, "next-mappings-" + partition);
+        var mappings = Path.Combine(root, "next-mappings-" + FolderName(partition));
         Directory.CreateDirectory(mappings);
         File.WriteAllText(Path.Combine(mappings, NextMapping + ".yaml"), NextMappingDocument(partition));
         return flow with
@@ -78,8 +78,8 @@ internal static class WellLogVersions
         foreach (var file in Directory.EnumerateFiles(Samples.CacheRecords, "*.json"))
         {
             var text = File.ReadAllText(file);
-            Assert.Contains(Samples.SampleCacheScope + ":", text, StringComparison.Ordinal);
-            File.WriteAllText(Path.Combine(directory, Path.GetFileName(file)), text.Replace(Samples.SampleCacheScope + ":", partition + ":", StringComparison.Ordinal));
+            Assert.Contains(Samples.SamplePartition + ":", text, StringComparison.Ordinal);
+            File.WriteAllText(Path.Combine(directory, Path.GetFileName(file)), text.Replace(Samples.SamplePartition + ":", partition + ":", StringComparison.Ordinal));
         }
 
         var cacheFlow = new DeliveryDocumentLoader().LoadCache(Samples.CacheFlow);
@@ -99,17 +99,26 @@ internal static class WellLogVersions
         text = Replace(text, "\nversion: 1.4.0\n", "\nversion: 1.5.0\n", 1);
         text = Replace(text, $"  kind: {CurrentKind}\n  version: {CurrentTemplateVersion}\n", $"  kind: {NextKind}\n  version: {NextTemplateVersion}\n", 1);
         text = Replace(text, $"\"kind\": \"{CurrentKind}\"", $"\"kind\": \"{NextKind}\"", 2);
-        if (partition == Samples.SampleCacheScope)
+        // A fixture pins the values its expected record was captured with, so it is only rewritten for a partition other
+        // than the sample estate's own, which a caller may name either as the estate writes it or as it resolves.
+        if (partition == Samples.SamplePartition || partition == Samples.SampleCacheScope)
         {
             return text;
         }
 
         var at = text.IndexOf("\nfixtures:\n", StringComparison.Ordinal);
         Assert.True(at > 0, "The sample WellLog mapping has no fixtures section: the derived 1.5.0 mapping no longer follows it.");
-        var fixtures = Replace(text[at..], $"dataPartition: {Samples.SampleCacheScope} }}", $"dataPartition: {partition} }}", 2);
-        fixtures = Replace(fixtures, $"\"{Samples.SampleCacheScope}:", $"\"{partition}:", expected: null);
+        var fixtures = Replace(text[at..], $"dataPartition: {Samples.SamplePartition}\n", $"dataPartition: {partition}\n", 2);
+        fixtures = Replace(fixtures, $"\"{Samples.SamplePartition}:", $"\"{partition}:", expected: null);
         return text[..at] + fixtures;
     }
+
+    /// <summary>
+    /// A partition as a folder name. An estate may name its partition as a ${env:...} reference, and a reference holds
+    /// characters no file system takes, so anything but a letter, digit, hyphen, underscore or dot becomes a hyphen.
+    /// </summary>
+    private static string FolderName(string partition)
+        => string.Concat(partition.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-'));
 
     /// <summary>Replaces <paramref name="from"/>, which must occur <paramref name="expected"/> times, or at least once when that is null.</summary>
     private static string Replace(string text, string from, string to, int? expected)

@@ -29,7 +29,7 @@ source:
         scope: ${env:OSDU_SCOPE}
   headers:
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
-    data-partition-id: opendes
+    data-partition-id: ${env:OSDU_DATA_PARTITION}
 
 # A changed cached value rewrites the documents built from it. By default (onChange: auto) the affected records are tagged
 # and the next run delivers them. Where a change should be looked at first, onChange: approve (here for every type, or on

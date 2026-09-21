@@ -114,10 +114,11 @@ dataset:
 
 parameters:
   dataPartition: { required: true }
+  aclOwner: { required: true }
 
 mappings:
   - target: osdu.acl.owners
-    static: [data.default.owners@opendes.dataservices.energy]
+    static: ["{param.aclOwner}"]
 
   - target: osdu.data.Name
     source: dataset.log_source

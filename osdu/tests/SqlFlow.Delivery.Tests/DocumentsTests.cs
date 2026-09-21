@@ -133,7 +133,7 @@ public class YamlDocumentLoaderTests
         Assert.Contains(mapping.Entries, e => e.Target.Text == "osdu.data.Curves" && e.IsRepeater && e.Source!.Child == "curves");
         Assert.Equal(["curves"], mapping.ChildDatasets);
         Assert.Equal(2, mapping.Fixtures.Count);
-        Assert.Equal(["opendes-reference-data-default"], mapping.Envelope.LegalTags);
+        Assert.Equal(["{param.legalTag}"], mapping.Envelope.LegalTags);
         Assert.Equal(["NO"], mapping.Envelope.OtherRelevantDataCountries);
     }
 

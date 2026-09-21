@@ -643,13 +643,16 @@ public class EndToEndTests : IDisposable
           dataPartition:
             required: true
             description: The OSDU data partition record ids are minted in.
+          aclOwner: { required: true }
+          aclViewer: { required: true }
+          legalTag: { required: true }
         mappings:
           - target: osdu.acl.owners
-            static: [data.default.owners@opendes.dataservices.energy]
+            static: ["{param.aclOwner}"]
           - target: osdu.acl.viewers
-            static: [data.default.viewers@opendes.dataservices.energy]
+            static: ["{param.aclViewer}"]
           - target: osdu.legal.legaltags
-            static: [opendes-reference-data-default]
+            static: ["{param.legalTag}"]
           - target: osdu.legal.otherRelevantDataCountries
             static: [NO]
           - target: osdu.data.FacilityName

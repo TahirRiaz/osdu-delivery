@@ -49,8 +49,11 @@ source:
 render:                            # the only block that changes what a document is
   mapping: WellLog@1.4.0           # pinned Name@version, never floating
   cacheVersion: current            # the version of the target partition's cache: current (the default) or a label such as 20260908T212727Z
-  parameters:                      # values for the parameters the mapping declares
-    dataPartition: dev
+  parameters:                      # values for the parameters the mapping declares, as literals or ${env:...} references
+    dataPartition: ${env:OSDU_DATA_PARTITION}
+    aclOwner: ${env:OSDU_ACL_OWNER}
+    aclViewer: ${env:OSDU_ACL_VIEWER}
+    legalTag: ${env:OSDU_LEGAL_TAG}
 
 change:
   detect: renderedHash             # renderedHash | always
@@ -1208,14 +1211,17 @@ dataset:
 
 parameters:                        # what the mapping accepts from the flow; values enter the render context
   dataPartition: { required: true }  # always declared: ids are minted in it, so letters, digits, _ - . only
+  aclOwner: { required: true }       # the access groups and the legal tag differ per estate, so the flow supplies them
+  aclViewer: { required: true }
+  legalTag: { required: true }
 
 mappings:
   - target: osdu.acl.owners        # the four access and legal variables take static, non-empty lists
-    static: [data.default.owners@opendes.dataservices.energy]
+    static: ["{param.aclOwner}"]
   - target: osdu.acl.viewers
-    static: [data.default.viewers@opendes.dataservices.energy]
+    static: ["{param.aclViewer}"]
   - target: osdu.legal.legaltags
-    static: [opendes-reference-data-default]
+    static: ["{param.legalTag}"]
   - target: osdu.legal.otherRelevantDataCountries
     static: [NO]
   - target: osdu.tags.DeliveredBy  # a key under an object with free keys

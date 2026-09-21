@@ -61,6 +61,27 @@ public sealed class DeliveryCliModule : ICliModule
             ValueOptions = ["--interface", "--search", "--status", "--max", "--key", "--attempts"],
         },
         new CliVerb(
+            "config",
+            [
+                "sqlflow config list [--repo <id>]",
+                "                                   The central configuration: the values the control plane supplies to the",
+                "                                   runs it queues, so a flow's ${env:NAME} resolves from one place rather",
+                "                                   than from every node (needs --db)",
+                "sqlflow config effective --repo <id>",
+                "                                   What a run of that repository's flows is given: the control plane's",
+                "                                   properties with the repository's own over them (needs --db)",
+                "sqlflow config set <name> --value <value> [--repo <id>] [--description <text>]",
+                "                                   Set a property, for every repository or for one. The value is a",
+                "                                   non-secret value or a ${env:...} or ${keyvault:...} reference a node",
+                "                                   resolves, never a secret (needs --db)",
+                "sqlflow config remove <name> [--repo <id>]",
+            ],
+            DeliveryConfigVerbs.ConfigAsync)
+        {
+            Subcommands = ["list", "effective", "set", "remove"],
+            ValueOptions = ["--repo", "--value", "--description"],
+        },
+        new CliVerb(
             "cache",
             [
                 "sqlflow cache list <partition | cache.yaml>",

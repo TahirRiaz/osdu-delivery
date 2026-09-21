@@ -24,8 +24,6 @@ source:
 
 render:
   mapping: Wellbore@1.0.0
-  parameters:
-    dataPartition: opendes
 
 change:
   detect: renderedHash
@@ -43,7 +41,7 @@ target:
         scope: ${env:OSDU_SCOPE}
   headers:
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
-    data-partition-id: opendes
+    data-partition-id: ${env:OSDU_DATA_PARTITION}
   protocol: osduRecord
 
 reliability:

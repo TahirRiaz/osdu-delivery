@@ -51,6 +51,13 @@ public sealed record EngineContext(
     /// <summary>A context with a different logger factory: the node swaps in the run log for one run.</summary>
     public EngineContext WithLoggers(ILoggerFactory loggers) => this with { Loggers = loggers };
 
+    /// <summary>
+    /// A context whose references resolve from the central configuration a run carried before they resolve from the
+    /// node. A run given nothing keeps the node's own resolver, so it behaves exactly as it did before.
+    /// </summary>
+    public EngineContext WithSuppliedReferences(IReadOnlyDictionary<string, string> supplied)
+        => this with { Secrets = Http.SuppliedReferenceResolver.For(supplied, Secrets) };
+
     /// <summary>A context with the fan-out the platform handed this run; every run gets its own.</summary>
     public EngineContext WithFanOut(IFanOutDispatcher? dispatcher) => this with { FanOut = dispatcher };
 
@@ -170,7 +177,7 @@ public sealed class FlowRuntime : IDisposable
         var values = FlowParameters.Resolve(flow, parameters);
         var layout = DeliveryLayout.Resolve(flow);
         var mappings = new MappingCatalog(layout.MappingsDirectory, context.Documents);
-        var resolver = new RenderResolver(mappings, context.Cache, context.Templates);
+        var resolver = new RenderResolver(mappings, context.Cache, context.Templates, context.Secrets);
         var mapping = await resolver.ResolveAsync(flow, ct).ConfigureAwait(false);
         return new FlowRuntime(context, flow, layout, mappings, values, mapping);
     }

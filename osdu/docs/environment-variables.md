@@ -85,10 +85,47 @@ document moves from test to prod unchanged.
 | `${env:SQLFLOW_CONN_PRE}` | The database the pre-ingestion flows land the source files in. |
 | `${env:SQLFLOW_CONN_DWH}` | The database the ingestion flows load the keyed ingestion tables into, which the OSDU flow reads. |
 | `${env:OSDU_URL}` | The OSDU endpoint the sample estate delivers to. |
+| `${env:OSDU_DATA_PARTITION}` | The partition the sample estate delivers to: the `data-partition-id` its requests carry, the partition whose cache its flows read, and the partition its record ids are minted in. |
+| `${env:OSDU_ACL_OWNER}`, `${env:OSDU_ACL_VIEWER}` | The entitlements groups every record the sample estate delivers is owned and readable by. |
+| `${env:OSDU_LEGAL_TAG}` | The legal tag every record the sample estate delivers carries. |
 | `${env:OSDU_TOKEN_URL}`, `${env:OSDU_SCOPE}`, `${env:OSDU_CLIENT_ID}`, `${env:OSDU_CLIENT_SECRET}` | The OAuth2 client-credentials flow the sample estate authenticates with. |
 | `${env:APIM_KEY}` | The API management subscription key the sample estate's target requires. |
 
 A `plan` run needs no OSDU target, so these can stay empty until one exists.
+
+## The central configuration
+
+A reference does not have to be a variable on every node. The control plane holds a configuration of its own in
+`[osdu].[ConfigProperty]`, and attaches it to every run it queues, so a node resolves `${env:NAME}` from what the run
+carried before it looks at its own environment. A reference the configuration does not name still comes from the node,
+so an estate can hold some values centrally and leave the rest where they are.
+
+| Where | What it covers |
+| --- | --- |
+| The control plane | Every repository it serves. |
+| One repository | The flows that repository holds, over the control plane's own value of the same name. |
+
+A property holds a non-secret value (a partition, an entitlements group, a legal tag, a base URL) or a `${env:...}` or
+`${keyvault:...}` reference, which travels unresolved and is resolved on the node. **A literal secret in a property is a
+defect**: the row is ordinary catalog content and the run payload that carries it is readable beside the run. Point a
+property at a secret with a reference instead, and the node resolves it.
+
+```bash
+sqlflow config set OSDU_DATA_PARTITION --value dev --db <conn-ref>
+sqlflow config set OSDU_LEGAL_TAG --value dev-equinor-private-default --repo <repo id> --db <conn-ref>
+sqlflow config effective --repo <repo id> --db <conn-ref>   # what a run of that estate is given
+```
+
+The same through the API: `GET /api/v1/delivery/config`, `PUT /api/v1/delivery/config/{name}` and
+`DELETE /api/v1/delivery/config/{name}` (both admin, both taking an optional `repoId`), and
+`GET /api/v1/delivery/config/effective/{repoId}`.
+
+### What the OSDU flow kind supplies
+
+Where a record goes and under whose access and legal terms belongs to the kind, not to any one flow. A mapping declares
+the parameters it fills and a flow does not repeat them: `dataPartition`, `aclOwner`, `aclViewer` and `legalTag` default
+to `${env:OSDU_DATA_PARTITION}`, `${env:OSDU_ACL_OWNER}`, `${env:OSDU_ACL_VIEWER}` and `${env:OSDU_LEGAL_TAG}`. A flow
+that names its own value under `render.parameters` still wins, so a document can pin a destination when it has to.
 
 ## Where values come from
 

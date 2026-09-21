@@ -45,7 +45,13 @@ public class MappingBuilderTests
             CacheScope = Samples.SampleCacheScope,
             CacheVersion = references.Version,
             SchemaSnapshotVersion = schema.Version,
-            Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "opendes" },
+            Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [RenderContext.DataPartitionParameter] = "opendes",
+                ["aclOwner"] = "data.default.owners@opendes.dataservices.energy",
+                ["aclViewer"] = "data.default.viewers@opendes.dataservices.energy",
+                ["legalTag"] = "opendes-reference-data-default",
+            },
         };
         var issues = Preflight.Check(reread, schema, references, context, sourceColumns: null);
         Assert.True(issues.All(i => i.Severity != IssueSeverity.Error), string.Join(Environment.NewLine, issues));

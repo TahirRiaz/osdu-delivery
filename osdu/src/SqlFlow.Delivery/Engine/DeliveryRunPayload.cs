@@ -1,8 +1,10 @@
+using System.Collections.ObjectModel;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Source;
@@ -216,7 +218,10 @@ public sealed record DeliveryRunPayload
 
     public const string InterfacesProperty = "interfaces";
 
-    private static readonly string[] Properties = [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty, InterfaceProperty, InterfacesProperty];
+    /// <summary>The central configuration the control plane supplied with this run.</summary>
+    public const string ReferencesProperty = "references";
+
+    private static readonly string[] Properties = [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty];
 
     public static DeliveryRunPayload None { get; } = new();
 
@@ -244,9 +249,17 @@ public sealed record DeliveryRunPayload
     /// <summary>The interfaces a run of a source runs, in any order; empty runs every interface.</summary>
     public IReadOnlyList<string> Interfaces { get; init; } = [];
 
+    /// <summary>
+    /// The central configuration the control plane supplied with this run: the values a flow's ${env:NAME} references
+    /// resolve to, ahead of the node's own environment. Empty when the control plane holds none, which leaves every
+    /// reference to the node. A value here is a non-secret value or a reference the node resolves, never a secret.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> References { get; init; } = ReadOnlyDictionary<string, string>.Empty;
+
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty
-        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && Interface is null && Interfaces.Count == 0;
+        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
+            && References.Count == 0;
 
     /// <summary>The payload of a run's parameters; none when it carries none.</summary>
     public static DeliveryRunPayload Parse(RunParameters parameters)
@@ -290,6 +303,7 @@ public sealed record DeliveryRunPayload
             Slices = SliceList(root[SlicesProperty]),
             Interface = root[InterfaceProperty] is null ? null : Text(root[InterfaceProperty], InterfaceProperty),
             Interfaces = Names(root[InterfacesProperty]),
+            References = ReferenceMap(root[ReferencesProperty]),
         };
     }
 
@@ -448,6 +462,18 @@ public sealed record DeliveryRunPayload
             root[InterfacesProperty] = new JsonArray(Interfaces.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
         }
 
+        if (References.Count > 0)
+        {
+            // Ordered by name so the same configuration writes the same payload, which keeps a run row comparable.
+            var references = new JsonObject();
+            foreach (var (name, value) in References.OrderBy(r => r.Key, StringComparer.Ordinal))
+            {
+                references[name] = value;
+            }
+
+            root[ReferencesProperty] = references;
+        }
+
         return root.ToJsonString();
     }
 
@@ -500,6 +526,46 @@ public sealed record DeliveryRunPayload
         }
 
         return array.Select(item => Id(item, RecordKeysProperty)).ToList();
+    }
+
+    /// <summary>
+    /// The central configuration a payload carries: a JSON object of reference name to value, refused property by
+    /// property so a bad one names itself. Absent is none, which leaves every reference to the node.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> ReferenceMap(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return ReadOnlyDictionary<string, string>.Empty;
+        }
+
+        if (node is not JsonObject obj)
+        {
+            throw new SqlFlowException($"payload {ReferencesProperty} must be a JSON object of reference name to value.");
+        }
+
+        if (obj.Count > DeliveryConfigNames.MaxPerRun)
+        {
+            throw new SqlFlowException($"payload {ReferencesProperty} holds {obj.Count} properties; one run carries at most {DeliveryConfigNames.MaxPerRun}.");
+        }
+
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (name, value) in obj)
+        {
+            if (!DeliveryConfigNames.IsName(name))
+            {
+                throw new SqlFlowException($"payload {ReferencesProperty} property '{name}' does not name a reference: a letter or underscore followed by letters, digits and underscores, at most {DeliveryConfigNames.MaxNameLength} characters.");
+            }
+
+            if (value is not JsonValue text || !text.TryGetValue<string>(out var supplied) || !DeliveryConfigNames.IsValue(supplied))
+            {
+                throw new SqlFlowException($"payload {ReferencesProperty} property '{name}' must be a non-empty string of at most {DeliveryConfigNames.MaxValueLength} characters without control characters.");
+            }
+
+            map[name] = supplied;
+        }
+
+        return map;
     }
 
     private static IReadOnlyList<string> Names(JsonNode? node)

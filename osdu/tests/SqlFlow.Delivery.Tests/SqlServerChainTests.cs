@@ -368,7 +368,7 @@ public class SqlServerChainTests
             await using var db = estate.Context();
             foreach (var (run, flow, kind, target) in new[]
             {
-                (runs[0], current, WellLogVersions.CurrentKind, Samples.SampleCacheScope),
+                (runs[0], current, WellLogVersions.CurrentKind, Samples.SamplePartition),
                 (runs[1], next, WellLogVersions.NextKind, partition),
             })
             {
@@ -652,6 +652,9 @@ public class SqlServerChainTests
             render:
               parameters:
                 dataPartition: opendes
+                aclOwner: data.default.owners@opendes.dataservices.energy
+                aclViewer: data.default.viewers@opendes.dataservices.energy
+                legalTag: opendes-reference-data-default
             target:
               endpoint: http://localhost:9/petrodb
               auth:

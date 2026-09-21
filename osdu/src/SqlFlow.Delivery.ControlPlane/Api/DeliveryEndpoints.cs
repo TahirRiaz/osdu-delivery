@@ -318,6 +318,9 @@ public static class DeliveryEndpoints
     {
         ArgumentNullException.ThrowIfNull(group);
         var delivery = group.MapGroup("/delivery").WithTags("Delivery");
+
+        // The central configuration the control plane supplies to the runs it queues.
+        DeliveryConfigEndpoints.Map(delivery);
         delivery.MapGet("/flows/{pipelineId:guid}/stats", GetStatsAsync).WithName("GetDeliveryFlowStats");
         delivery.MapGet("/flows/{pipelineId:guid}/interfaces", ListInterfacesAsync).WithName("ListDeliveryInterfaces");
         delivery.MapGet("/flows/{pipelineId:guid}/records", ListRecordsAsync).WithName("ListDeliveryRecords");

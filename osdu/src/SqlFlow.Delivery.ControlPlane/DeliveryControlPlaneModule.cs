@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using SqlFlow.Delivery.Catalog;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.ControlPlane.Api;
@@ -52,6 +54,12 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         // One module context per request, opened from the module database's factory, so an endpoint reads the osdu
         // tables exactly as the ledger does and the catalog's own context stays SQLFlow's.
         services.Services.AddScoped(provider => provider.GetRequiredService<IDbContextFactory<OsduDbContext>>().CreateDbContext());
+
+
+        // Every run reaches the queue through the dispatcher, whether an endpoint, a schedule or a fan-out group put it
+        // there, so the configuration is attached by decorating it rather than at any one caller.
+        RunDispatcherDecoration.Decorate(services.Services, (inner, provider) => new ConfiguredRunDispatcher(
+            inner, provider.GetRequiredService<DeliveryConfigStore>(), provider.GetRequiredService<ILogger<ConfiguredRunDispatcher>>()));
 
         // The delivery records category of the control plane's search: resolved per request, beside the built-in ones.
         services.Services.AddScoped<ISearchContributor, RecordSearchContributor>();

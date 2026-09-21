@@ -21,14 +21,23 @@ parameters:
   dataPartition:
     required: true
     description: The OSDU data partition record ids are minted in.
+  aclOwner:
+    required: true
+    description: The entitlements group that owns every record this mapping renders (acl.owners).
+  aclViewer:
+    required: true
+    description: The entitlements group that may read every record this mapping renders (acl.viewers).
+  legalTag:
+    required: true
+    description: The legal tag every record this mapping renders carries (legal.legaltags).
 
 mappings:
   - target: osdu.acl.owners
-    static: [data.default.owners@opendes.dataservices.energy]
+    static: ["{param.aclOwner}"]
   - target: osdu.acl.viewers
-    static: [data.default.viewers@opendes.dataservices.energy]
+    static: ["{param.aclViewer}"]
   - target: osdu.legal.legaltags
-    static: [opendes-reference-data-default]
+    static: ["{param.legalTag}"]
   - target: osdu.legal.otherRelevantDataCountries
     static: [NO]
   - target: osdu.tags.DeliveredBy
@@ -48,7 +57,11 @@ mappings:
 
 fixtures:
   - name: a document with a title and a description
-    parameters: { dataPartition: opendes }
+    parameters:
+      dataPartition: opendes
+      aclOwner: data.default.owners@opendes.dataservices.energy
+      aclViewer: data.default.viewers@opendes.dataservices.energy
+      legalTag: opendes-reference-data-default
     record:
       doc_id: D-0001
       doc_title: " Well report NO 15/9 A "

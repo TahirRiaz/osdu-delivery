@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -994,6 +995,71 @@ public sealed class OsduSchemaVersion
     public string MinimumCatalogMigration { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// What a central configuration property may be called and hold, and how many of them one run carries. The bounds are
+/// here rather than at each caller so the store, the API, the CLI and the run payload all refuse the same things.
+/// </summary>
+public static partial class DeliveryConfigNames
+{
+    /// <summary>The longest accepted property name, which is an environment variable name.</summary>
+    public const int MaxNameLength = 64;
+
+    /// <summary>The longest accepted value. A value is an identifier, a URL or a reference, never a document.</summary>
+    public const int MaxValueLength = 1000;
+
+    /// <summary>The most properties one run carries, which bounds what a queued run writes into its payload.</summary>
+    public const int MaxPerRun = 64;
+
+    /// <summary>Whether <paramref name="name"/> can name a property: an environment variable name, which is what a flow spells it as.</summary>
+    public static bool IsName(string? name)
+        => !string.IsNullOrEmpty(name) && name.Length <= MaxNameLength && NamePattern().IsMatch(name);
+
+    /// <summary>
+    /// Whether <paramref name="value"/> can be held as a property: non-empty, within the bound and free of the control
+    /// characters that would make a value unprintable in a log line or a run payload.
+    /// </summary>
+    public static bool IsValue(string? value)
+        => !string.IsNullOrEmpty(value) && value.Length <= MaxValueLength && !value.Any(char.IsControl);
+
+    [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_]*$")]
+    private static partial Regex NamePattern();
+}
+
+/// <summary>
+/// One property of the central configuration: a value the control plane supplies to the runs it queues, so a flow that
+/// names <c>${env:NAME}</c> resolves it from here rather than from whatever the node that picks the run up happens to
+/// hold. A property is set once for the whole control plane (<see cref="RepoId"/> null) and may be set again for one
+/// repository, which is an estate: the repository's value wins for the flows that repository holds.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <see cref="Value"/> is a non-secret value (a partition, an entitlements group, a legal tag, a base URL) or a
+/// <c>${env:NAME}</c> or <c>${keyvault:vault/secret}</c> reference, which travels unresolved and is resolved on the node.
+/// A literal secret here is a defect: this row, and the run payload it is carried in, are ordinary catalog content.
+/// </para>
+/// </remarks>
+public sealed class DeliveryConfigProperty
+{
+    public Guid Id { get; set; }
+
+    /// <summary>The repository whose flows this value applies to, or null for the control plane's own value.</summary>
+    public Guid? RepoId { get; set; }
+
+    /// <summary>The reference name a flow spells as <c>${env:NAME}</c>, held as written.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>The value, or a reference the node resolves.</summary>
+    public string Value { get; set; } = string.Empty;
+
+    /// <summary>What this property is for, shown wherever it is listed.</summary>
+    public string? Description { get; set; }
+
+    public DateTime UpdatedUtc { get; set; }
+
+    /// <summary>Who set it last.</summary>
+    public string UpdatedBy { get; set; } = string.Empty;
+}
+
 /// <summary>The EF model of the delivery ledger, in the <c>osdu</c> schema.</summary>
 public static class DeliveryModel
 {
@@ -1388,6 +1454,21 @@ public static class DeliveryModel
             e.HasKey(c => new { c.SetId, c.Scope, c.TypeName, c.ItemId, c.Path, c.Kind });
             // The impact query: which sets hold this cached value of this partition's cache.
             e.HasIndex(c => new { c.Scope, c.TypeName, c.ItemId });
+        });
+
+        modelBuilder.Entity<DeliveryConfigProperty>(e =>
+        {
+            e.ToTable("ConfigProperty", SchemaName);
+            e.HasKey(c => c.Id);
+            e.Property(c => c.Name).HasMaxLength(DeliveryConfigNames.MaxNameLength).IsRequired();
+            e.Property(c => c.Value).HasMaxLength(DeliveryConfigNames.MaxValueLength).IsRequired();
+            e.Property(c => c.Description).HasMaxLength(400);
+            e.Property(c => c.UpdatedBy).HasMaxLength(200).IsRequired();
+            // One value per name per scope, and the control plane's own value is the row with no repository. The filter is
+            // cleared because EF excludes nulls from a unique index over a nullable column by default, which would leave the
+            // control plane's own rows unconstrained; SQL Server treats nulls as equal, so one index covers both scopes.
+            e.HasIndex(c => new { c.RepoId, c.Name }).IsUnique().HasFilter(null);
+            e.HasIndex(c => c.Name);
         });
 
         modelBuilder.Entity<DeliveryUpdateTag>(e =>

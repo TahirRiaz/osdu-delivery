@@ -24,10 +24,6 @@ source:
   lastModified: update_date
   work: ../.work/wells-source-03-interfaces-delivery
 
-render:
-  parameters:
-    dataPartition: opendes
-
 target:
   endpoint: ${env:OSDU_URL}
   auth:
@@ -40,7 +36,7 @@ target:
         scope: ${env:OSDU_SCOPE}
   headers:
     Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
-    data-partition-id: opendes
+    data-partition-id: ${env:OSDU_DATA_PARTITION}
   # Where the DDMSs are under the endpoint. An interface that declares bulk goes to the one serving its entity type.
   ddms:
     wellbore:

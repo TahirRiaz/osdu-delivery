@@ -13,6 +13,22 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A central configuration the control plane supplies to the runs it queues.** `[osdu].[ConfigProperty]` (migration
+  `CentralConfigProperties`, module version 1.10.0) holds a property for the whole control plane, or for one
+  repository, which overrides it for that estate's flows. Every run of a delivery, cache or retrieval flow is queued
+  carrying what its repository resolves to, and the node resolves `${env:NAME}` from that before its own environment,
+  so an estate names where it delivers in one place instead of on every node. A reference the configuration does not
+  name still comes from the node, so the two can be mixed. It is attached by decorating `IRunDispatcher`, which every
+  run passes through, so a scheduled delivery and one someone pressed a button for resolve the same references. A
+  property holds a non-secret value or a `${env:...}` or `${keyvault:...}` reference the node resolves, never a
+  secret. `sqlflow config list | effective | set | remove`, and `GET/PUT/DELETE /api/v1/delivery/config`.
+
+- **The OSDU flow kind owns where a record goes.** `dataPartition`, `aclOwner`, `aclViewer` and `legalTag` are
+  properties of the kind, defaulting to `${env:OSDU_DATA_PARTITION}`, `${env:OSDU_ACL_OWNER}`,
+  `${env:OSDU_ACL_VIEWER}` and `${env:OSDU_LEGAL_TAG}`, so a mapping declares what it fills and a flow no longer
+  repeats them; a flow that names its own value under `render.parameters` still wins. The sample flows lost their
+  `render.parameters` blocks entirely.
+
 - **A record is found by what an operator holds, and its page shows the whole chain.** The ledger keeps an identity
   index (`osdu.RecordIdentity`, migration `RecordIdentityIndex`, module version 1.9.0): one row per value a record is
   known by, folded for comparison and kept as written for display, covering the columns a mapping declares as
@@ -140,6 +156,19 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   assert the result contract, and a link can set the pipelines page's repo and kind filters.
 
 ### Changed
+
+- **An estate names where it delivers, rather than writing it into its documents.** The partition a flow delivers
+  to (`target.headers.data-partition-id` and the `dataPartition` render parameter), the entitlements groups every
+  record is owned and readable by, and the legal tag it carries are all `${env:...}` references the node holds:
+  `OSDU_DATA_PARTITION`, `OSDU_ACL_OWNER`, `OSDU_ACL_VIEWER` and `OSDU_LEGAL_TAG`, beside the `OSDU_*` references
+  already there. The sample mappings declare `aclOwner`, `aclViewer` and `legalTag` and fill `osdu.acl.owners`,
+  `osdu.acl.viewers` and `osdu.legal.legaltags` from them through `{param....}`, so one set of documents serves
+  every partition an estate runs against. A flow's own render parameters are resolved before the render context is
+  built, so the context, the rendered hash and the ledger row hold the value that reached the record, never the
+  reference; a mapping's own default stays literal. A cache is still scoped by the partition its flows declare, as
+  written, which is how lineage already identifies a platform, so a cache flow and the delivery flows reading its
+  cache agree by naming the partition the same way. Deployments wire the four new references (compose, k8s), and a
+  node that has not gained them fails the run naming the one it is missing.
 
 - **The sample estate names its OSDU endpoint `${env:OSDU_URL}`.** The reference was `${env:PETRODB_URL}`, named
   after the facade an earlier estate delivered through, which read as a dependency the module does not have: the

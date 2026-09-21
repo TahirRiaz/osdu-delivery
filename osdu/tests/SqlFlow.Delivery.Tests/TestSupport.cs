@@ -1,4 +1,5 @@
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
@@ -512,6 +513,30 @@ public sealed class FakeHttpHandler : HttpMessageHandler
 /// <summary>Paths to the sample documents linked into the test output, and a ready-made engine context over them.</summary>
 public static class Samples
 {
+    /// <summary>
+    /// The sample estate declares where it delivers the way a real estate does, as ${env:...} references a node holds
+    /// (osdu/docs/environment-variables.md), so the suites supply them exactly as a node would. The values are the ones
+    /// every mapping fixture pins, which is what keeps a rendered document byte-identical to the fixture's expected
+    /// record. Set for the whole assembly before any test reads a sample document, and never overwriting a value the
+    /// process was started with, so a run against a real estate keeps its own.
+    /// </summary>
+    [ModuleInitializer]
+    internal static void UseSampleEstateReferences()
+    {
+        Reference("OSDU_DATA_PARTITION", "opendes");
+        Reference("OSDU_ACL_OWNER", "data.default.owners@opendes.dataservices.energy");
+        Reference("OSDU_ACL_VIEWER", "data.default.viewers@opendes.dataservices.energy");
+        Reference("OSDU_LEGAL_TAG", "opendes-reference-data-default");
+
+        static void Reference(string name, string value)
+        {
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(name)))
+            {
+                Environment.SetEnvironmentVariable(name, value);
+            }
+        }
+    }
+
     public const string WellLogKind = "osdu:wks:work-product-component--WellLog:1.4.0";
 
     public const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
@@ -563,8 +588,19 @@ public static class Samples
     /// <summary>The source's drop-off folder: the files the pre-ingestion flows read and the payloads the delivery streams.</summary>
     public static string Data => Path.Combine(Source, "data");
 
-    /// <summary>The partition the sample flows search and deliver to, whose cache the sample delivery flow reads.</summary>
-    public const string SampleCacheScope = "opendes";
+    /// <summary>
+    /// The partition the sample flows search and deliver to, whose cache the sample delivery flow reads. The estate names
+    /// it as the reference a node holds, and a cache is scoped by the partition its flows declare, not by the value that
+    /// reference resolves to, so a cache flow and the delivery flows that read its cache agree by naming it the same way.
+    /// </summary>
+    public const string SampleCacheScope = "${env:OSDU_DATA_PARTITION}";
+
+    /// <summary>
+    /// What that reference resolves to on a node, and so what the ids the sample estate mints carry: the render
+    /// parameter a mapping composes an id from is resolved before the document is rendered, while the cache a flow
+    /// reads is scoped by the partition as the document writes it.
+    /// </summary>
+    public const string SamplePartition = "opendes";
 
     /// <summary>The name of the sample cache flow, which fills the cache of <see cref="SampleCacheScope"/>.</summary>
     public const string SampleCacheFlowName = "wells-osdu-00-reference-cache";

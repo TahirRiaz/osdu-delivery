@@ -17,7 +17,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.9.1";
+    public const string ModuleVersion = "1.10.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that added fan-out run groups and run
@@ -57,6 +57,9 @@ public sealed class OsduDbContext : DbContext
     public DbSet<DeliveryTemplate> DeliveryTemplates => Set<DeliveryTemplate>();
 
     public DbSet<DeliveryCacheDefinition> DeliveryCacheDefinitions => Set<DeliveryCacheDefinition>();
+
+    /// <summary>The central configuration the control plane supplies to the runs it queues.</summary>
+    public DbSet<DeliveryConfigProperty> DeliveryConfigProperties => Set<DeliveryConfigProperty>();
 
     public DbSet<DeliveryCacheVersion> DeliveryCacheVersions => Set<DeliveryCacheVersion>();
 

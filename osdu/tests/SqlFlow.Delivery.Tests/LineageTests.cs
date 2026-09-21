@@ -22,6 +22,9 @@ public sealed class LineageTests : IDisposable
 {
     private const string Platform = "${env:OSDU_URL}";
 
+    /// <summary>The sample estate names its partition as the reference a node holds, and lineage compares it as written.</summary>
+    private const string Partition = "${env:OSDU_DATA_PARTITION}";
+
     private static readonly DateTime Utc = new(2026, 9, 16, 0, 0, 0, DateTimeKind.Utc);
 
     /// <summary>The folder the sample source occupies in the repository: a repository is laid out one folder per source.</summary>
@@ -79,10 +82,10 @@ public sealed class LineageTests : IDisposable
     }
 
     private static string TypeKey(string kind)
-        => NodeKey.For(ServerIdentity.Dataset(OsduLineage.TypeSystem, Platform), "opendes", OsduKind.Group(kind), kind);
+        => NodeKey.For(ServerIdentity.Dataset(OsduLineage.TypeSystem, Platform), Partition, OsduKind.Group(kind), kind);
 
     private static string CacheKey(string name)
-        => NodeKey.For(ServerIdentity.Dataset(OsduLineage.CacheSystem, null), "opendes", OsduLineage.CacheGroup, name);
+        => NodeKey.For(ServerIdentity.Dataset(OsduLineage.CacheSystem, null), Partition, OsduLineage.CacheGroup, name);
 
     private static string Datasets(RegisteredFlowLineage lineage, LineageRelation relation)
         => string.Join(", ", lineage.Datasets.Where(d => d.Relation == relation).Select(d => $"{d.System}/{d.Namespace}/{d.Group}/{d.Name}"));
@@ -151,10 +154,10 @@ public sealed class LineageTests : IDisposable
         Assert.Equal((LineageRelation.Reads, "../data/curves", "chunk_*.parquet"), (payload.Relation, payload.Location, payload.FilePattern));
 
         Assert.Equal(
-            "osdu-type/opendes/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0",
+            "osdu-type/${env:OSDU_DATA_PARTITION}/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0",
             Datasets(lineage, LineageRelation.Writes));
         Assert.Equal(
-            "osdu-cache/opendes/cache/LogCurveBusinessValue, osdu-cache/opendes/cache/UnitOfMeasure, osdu-cache/opendes/cache/Wellbore",
+            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/Wellbore",
             Datasets(lineage, LineageRelation.Reads));
         var written = lineage.Datasets.Single(d => d.Relation == LineageRelation.Writes);
         Assert.Equal((Platform, (char?)':'), (written.Instance, written.Separator));
@@ -168,7 +171,7 @@ public sealed class LineageTests : IDisposable
 
         Assert.Empty(lineage.Warnings);
         Assert.Empty(lineage.Files);
-        Assert.Equal("osdu-type/opendes/master-data/osdu:wks:master-data--Wellbore:1.3.0", Datasets(lineage, LineageRelation.Writes));
+        Assert.Equal("osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:1.3.0", Datasets(lineage, LineageRelation.Writes));
     }
 
     [Fact]
@@ -181,7 +184,7 @@ public sealed class LineageTests : IDisposable
 
         Assert.Empty(lineage.Warnings);
         Assert.Equal(
-            "osdu-type/opendes/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0, osdu-type/opendes/dataset/osdu:wks:dataset--File.Generic:1.0.0",
+            "osdu-type/${env:OSDU_DATA_PARTITION}/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0, osdu-type/${env:OSDU_DATA_PARTITION}/dataset/osdu:wks:dataset--File.Generic:1.0.0",
             Datasets(lineage, LineageRelation.Writes));
     }
 
@@ -194,13 +197,13 @@ public sealed class LineageTests : IDisposable
         Assert.Empty(lineage.Objects);
         Assert.Empty(lineage.Files);
         Assert.Equal(
-            "osdu-type/opendes/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/opendes/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
-            + "osdu-type/opendes/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/opendes/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*, "
-            + "osdu-type/opendes/master-data/osdu:wks:master-data--Wellbore:*",
+            "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
+            + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*, "
+            + "osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:*",
             Datasets(lineage, LineageRelation.Reads));
         Assert.Equal(
-            "osdu-cache/opendes/cache/UnitOfMeasure, osdu-cache/opendes/cache/LogCurveBusinessValue, osdu-cache/opendes/cache/VerticalMeasurementType, "
-            + "osdu-cache/opendes/cache/TrajectoryStationPropertyType, osdu-cache/opendes/cache/Wellbore",
+            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/VerticalMeasurementType, "
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/TrajectoryStationPropertyType, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/Wellbore",
             Datasets(lineage, LineageRelation.Writes));
     }
 
@@ -210,9 +213,9 @@ public sealed class LineageTests : IDisposable
         var lineage = Describe("flows/wells-osdu-04-metadata-retrieval.yaml");
 
         Assert.Equal(
-            "osdu-type/opendes/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/opendes/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
-            + "osdu-type/opendes/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/opendes/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*, "
-            + "osdu-type/opendes/master-data/osdu:wks:master-data--Wellbore:*",
+            "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
+            + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*, "
+            + "osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:*",
             Datasets(lineage, LineageRelation.Reads));
         Assert.Empty(Datasets(lineage, LineageRelation.Writes));
         Assert.Equal(
@@ -378,7 +381,7 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_flow_whose_partition_names_no_cache_keeps_its_tables_and_files_and_says_why_it_has_no_osdu_nodes()
     {
-        Rewrite("flows/wells-welllog-03-header-delivery.yaml", "    data-partition-id: opendes\n", "    data-partition-id: \"open des\"\n");
+        Rewrite("flows/wells-welllog-03-header-delivery.yaml", "    data-partition-id: ${env:OSDU_DATA_PARTITION}\n", "    data-partition-id: \"open des\"\n");
 
         var lineage = Describe("flows/wells-welllog-03-header-delivery.yaml");
 
@@ -396,7 +399,7 @@ public sealed class LineageTests : IDisposable
     public void A_partition_reference_stays_its_text_and_a_literal_endpoint_is_identified_by_hash()
     {
         Rewrite("cache/wells-osdu-00-reference-cache.yaml", "  endpoint: ${env:OSDU_URL}", "  endpoint: https://osdu.example.com");
-        Rewrite("cache/wells-osdu-00-reference-cache.yaml", "data-partition-id: opendes", "data-partition-id: ${env:OSDU_PARTITION}");
+        Rewrite("cache/wells-osdu-00-reference-cache.yaml", "data-partition-id: ${env:OSDU_DATA_PARTITION}", "data-partition-id: ${env:OSDU_PARTITION}");
 
         var lineage = Describe("cache/wells-osdu-00-reference-cache.yaml");
 
