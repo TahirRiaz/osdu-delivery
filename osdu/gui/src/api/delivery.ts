@@ -611,6 +611,14 @@ export interface DeliveryChainStage {
   sizeBytes: number;
   fileModifiedUtc: string | null;
   error: string | null;
+  /**
+   * How the run was found, which is what it is evidence of: "file" means it processed a file of that name, "table"
+   * means it was writing the record's ingestion table at the moment the row was stamped, so it is the run that
+   * loaded the row even though it handled no file.
+   */
+  matchedBy: "file" | "table";
+  /** The table the run was writing, for a stage matched that way; null for a stage matched by its file. */
+  objectName: string | null;
 }
 
 /**

@@ -724,13 +724,28 @@ public static class DeliveryEndpoints
     /// delivery half of the chain is the record itself, which the page already holds.
     /// </summary>
     private static async Task<Results<Ok<DeliveryRecordChainDto>, ProblemHttpResult>> GetRecordChainAsync(
-        Guid flowId, Guid key, CatalogDbContext db, ILedger ledger, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
     {
         var record = await ledger.GetRecordAsync(flowId, new DeliveryKey(key), ct).ConfigureAwait(false);
         return record is null
             ? RecordNotFound(flowId, key)
-            : TypedResults.Ok(await RecordChain.OfAsync(db, record, ct).ConfigureAwait(false));
+            : TypedResults.Ok(await RecordChain.OfAsync(
+                db, record, await SourceTableAsync(osdu, record.FlowId, ct).ConfigureAwait(false), ct).ConfigureAwait(false));
     }
+
+    /// <summary>
+    /// The ingestion table a flow reads its records from, which is what names the run that loaded a row. The sync
+    /// records it per interface, so it is one read and it survives a document that stopped parsing; a ledger no synced
+    /// interface names any more costs the ingestion stage and nothing else, and the runs that handled the file still
+    /// answer. The declared interface wins over one left behind by an older sync.
+    /// </summary>
+    private static async Task<string?> SourceTableAsync(OsduDbContext osdu, Guid ledgerFlowId, CancellationToken ct)
+        => await osdu.DeliveryInterfaces.AsNoTracking()
+            .Where(i => i.LedgerFlowId == ledgerFlowId && i.RecordObject != "")
+            .OrderByDescending(i => i.Active)
+            .ThenByDescending(i => i.LastSeenUtc)
+            .Select(i => i.RecordObject)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
 
     private static async Task<Results<Ok<IReadOnlyList<DeliveryActivityDto>>, ProblemHttpResult>> ListRecordActivitiesAsync(
         Guid flowId, Guid key, int? max, ILedger ledger, CancellationToken ct)

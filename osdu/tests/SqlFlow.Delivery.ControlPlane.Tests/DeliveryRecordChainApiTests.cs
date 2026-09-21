@@ -7,6 +7,7 @@ using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.ControlPlane;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
@@ -143,6 +144,137 @@ public sealed class DeliveryRecordChainApiTests
             await catalog.Pipelines.Where(p => p.Id == prePipeline || p.Id == ingPipeline).ExecuteDeleteAsync();
         }
     }
+
+    /// <summary>
+    /// An ingestion flow reads the table a pre-ingestion flow landed, not a file, so it records no file and a file name
+    /// can never name it. It is found by what it was writing instead: the flows that write the record's own ingestion
+    /// table are known from the lineage, and the run of one of them that was executing when the row was stamped is the
+    /// run that loaded it. A row stamped when no such run was executing leaves the stage out rather than naming the
+    /// table's latest load.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_ingestion_run_is_the_one_that_was_writing_the_record_table_when_the_row_was_stamped()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.MigrateModuleAsync(cs);
+
+        var marker = "CT" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        var flowName = $"{marker}-delivery";
+        var flowId = FlowId.Of(flowName);
+        var inside = new DeliveryKey(Guid.NewGuid());
+        var outside = new DeliveryKey(Guid.NewGuid());
+        var repoId = Guid.NewGuid();
+        var ingPipeline = Guid.NewGuid();
+        var ingRun = Guid.NewGuid();
+        var started = new DateTime(2026, 9, 5, 4, 0, 0, DateTimeKind.Utc);
+        var ended = started.AddMinutes(4);
+        var table = $"[{marker}Db].[ing].[WellLog]";
+        var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+
+        try
+        {
+            await ledger.UpsertPendingAsync(flowId,
+            [
+                Staged(flowId, inside, $"wells:{marker}/IN", $"{marker}_welllog.csv", started.AddMinutes(2)),
+                Staged(flowId, outside, $"wells:{marker}/OUT", $"{marker}_welllog.csv", ended.AddHours(3)),
+            ]);
+
+            await using (var osdu = SampleEstate.Context(cs))
+            {
+                // What the sync records for the flow: the ledger it writes, and the record table it reads.
+                osdu.DeliveryInterfaces.Add(new DeliveryInterface
+                {
+                    Id = Guid.NewGuid(),
+                    RepoId = repoId,
+                    FlowName = flowName,
+                    LedgerFlowId = flowId,
+                    LedgerName = flowName,
+                    Route = "storage",
+                    MappingReference = SampleEstate.WellboreMapping,
+                    RecordObject = table,
+                    RelativePath = $"flows/{flowName}.yaml",
+                    FirstSeenUtc = started,
+                    LastSeenUtc = started,
+                    Active = true,
+                });
+                await osdu.SaveChangesAsync();
+            }
+
+            await using (var catalog = new CatalogDbContext(CatalogDatabase.BuildOptions(cs)))
+            {
+                catalog.Pipelines.Add(Pipeline(ingPipeline, repoId, $"{marker}-ing", "ing", wave: 2));
+                var run = Run(ingRun, ingPipeline, repoId, $"{marker}-ing", "ing", ended);
+                run.StartUtc = started;
+                run.EndUtc = ended;
+                run.RowsLoaded = 42;
+                catalog.Runs.Add(run);
+
+                // The lineage every flow kind declares: this ingestion flow writes that table.
+                catalog.LineageEdges.Add(new CatalogLineageEdge
+                {
+                    RepoId = repoId,
+                    Flow = $"{marker}-ing",
+                    PipelineId = ingPipeline,
+                    Relation = "Writes",
+                    ObjectKey = $"${{env:{marker.ToLowerInvariant()}_db}}|{marker.ToLowerInvariant()}db|ing|welllog",
+                    ObjectName = "WellLog",
+                    Tier = "Declared",
+                });
+                await catalog.SaveChangesAsync();
+            }
+
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+
+            // The row stamped while that run was executing: the run is named, as the run that loaded it, with the
+            // table it was writing rather than a file it never processed.
+            using var response = await GetAsync(client, token, $"/api/v1/delivery/records/{flowId:D}/{inside.Value:D}/chain");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var stage = Assert.Single(json.RootElement.GetProperty("stages").EnumerateArray().ToList());
+            Assert.Equal("ingestion", stage.GetProperty("stage").GetString());
+            Assert.Equal(ingRun, stage.GetProperty("runId").GetGuid());
+            Assert.Equal("table", stage.GetProperty("matchedBy").GetString());
+            Assert.Equal("WellLog", stage.GetProperty("objectName").GetString());
+            Assert.Equal("", stage.GetProperty("fileName").GetString());
+            Assert.Equal(42, stage.GetProperty("rows").GetInt64());
+
+            // A row stamped hours after every recorded run has no ingestion stage: naming the table's last load would
+            // be a guess, and the note says what is missing instead.
+            using var later = await GetAsync(client, token, $"/api/v1/delivery/records/{flowId:D}/{outside.Value:D}/chain");
+            using var laterJson = JsonDocument.Parse(await later.Content.ReadAsStringAsync());
+            Assert.Empty(laterJson.RootElement.GetProperty("stages").EnumerateArray());
+            Assert.Contains("No run in the catalog", laterJson.RootElement.GetProperty("note").GetString()!, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await using var osdu = SampleEstate.Context(cs);
+            await osdu.DeliveryInterfaces.Where(i => i.LedgerFlowId == flowId).ExecuteDeleteAsync();
+            await osdu.DeliveryRecordIdentities.Where(i => i.FlowId == flowId).ExecuteDeleteAsync();
+            await osdu.DeliveryRecords.Where(r => r.FlowId == flowId).ExecuteDeleteAsync();
+            await using var catalog = new CatalogDbContext(CatalogDatabase.BuildOptions(cs));
+            await catalog.LineageEdges.Where(e => e.PipelineId == ingPipeline).ExecuteDeleteAsync();
+            await catalog.Runs.Where(r => r.RunId == ingRun).ExecuteDeleteAsync();
+            await catalog.Pipelines.Where(p => p.Id == ingPipeline).ExecuteDeleteAsync();
+        }
+    }
+
+    /// <summary>A pending record of one file, stamped by its ingestion table at the given moment.</summary>
+    private static RecordState Staged(Guid flowId, DeliveryKey key, string sourceKey, string file, DateTime updatedUtc) => new()
+    {
+        DeliveryKey = key,
+        FlowId = flowId,
+        SourceKey = sourceKey,
+        MappingName = SampleEstate.WellboreMapping,
+        Status = RecordStatus.Pending,
+        PendingSourceFileName = file,
+        PendingSourceRowNumber = 1,
+        PendingSourceUpdatedUtc = updatedUtc,
+        PendingDocumentRef = "1:0:10",
+        PendingMetadata = true,
+    };
 
     private static CatalogPipeline Pipeline(Guid id, Guid repoId, string name, string kind, int wave) => new()
     {

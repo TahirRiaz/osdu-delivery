@@ -139,9 +139,10 @@ function chainShape(stage: DeliveryChainStage): { icon: LucideIcon; tone: Tone }
 }
 
 /**
- * The runs that carried the record's file through the estate before it reached the delivery ledger: pre-ingestion
- * landing the file, ingestion loading it into the table the delivery flow reads. They are facts from the platform's
- * own record of processed files, so they take their place in the same timeline as everything else.
+ * The runs that carried the record through the estate before it reached the delivery ledger: pre-ingestion landing the
+ * file, ingestion loading its row into the table the delivery flow reads. Each is a fact the platform recorded, found
+ * by the file it processed or by the table it was writing when the row was stamped, so they take their place in the
+ * same timeline as everything else.
  */
 function chainEvents(chain: DeliveryRecordChain | undefined): JourneyEvent[] {
   if (chain === undefined) {
@@ -155,14 +156,14 @@ function chainEvents(chain: DeliveryRecordChain | undefined): JourneyEvent[] {
       id: `chain-${stage.runId}-${stage.stage}`,
       at: stage.ranUtc,
       title: stage.stage === "ingestion"
-        ? `Ingested: ${stage.flowName} loaded the file into its table`
+        ? `Ingested: ${stage.flowName} loaded the row into its table`
         : stage.stage === "pre-ingestion"
           ? `Landed: ${stage.flowName} took the file in`
           : `${stage.flowName} handled the file`,
       detail: (
         <div className="flex flex-col gap-0.5">
           <Detail parts={[
-            <span key="f"><LongValue value={stage.fileName} width={280} /></span>,
+            <span key="f"><LongValue value={stage.matchedBy === "table" ? (stage.objectName ?? "its table") : stage.fileName} width={280} /></span>,
             stage.rows > 0 && `${stage.rows.toLocaleString()} row${stage.rows === 1 ? "" : "s"}`,
             duration !== null && `took ${duration}`,
             !stage.success && `ended ${stage.status}`,
@@ -368,8 +369,8 @@ function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[], chain: 
       caption: ing !== undefined
         ? `${ing.flowName}${ing.success ? "" : ` (${ing.status})`}`
         : loaded
-          ? "the row is in the ingestion table; no run recorded the file"
-          : "no ingestion run recorded for this file",
+          ? "the row is in the ingestion table; no recorded run was writing it then"
+          : "no ingestion run recorded for this row",
       tone: ing !== undefined && !ing.success ? "destructive" : undefined,
       testId: "milestone-ing",
     },
