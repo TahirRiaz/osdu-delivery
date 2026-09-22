@@ -64,9 +64,9 @@ internal static class EtpSamples
         StoreLastWrite = 0,
         CustomData = new Dictionary<string, DataValue>(StringComparer.Ordinal)
         {
-            ["viewers"] = DataValue.Of(["data.default.viewers@opendes.example.com"]),
-            ["owners"] = DataValue.Of(["data.default.owners@opendes.example.com"]),
-            ["legaltags"] = DataValue.Of(["opendes-public-usa-dataset-1"]),
+            ["viewers"] = DataValue.Of(["data.default.viewers@dev.example.com"]),
+            ["owners"] = DataValue.Of(["data.default.owners@dev.example.com"]),
+            ["legaltags"] = DataValue.Of(["dev-public-usa-dataset-1"]),
             ["otherRelevantDataCountries"] = DataValue.Of(["US"]),
         },
     };

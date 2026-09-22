@@ -46,14 +46,14 @@ public class EtpRouteTests : IDisposable
 
         var space = Assert.Single(server.Spaces.Values);
         Assert.Equal("demo/study", space.Path);
-        Assert.Equal(["data.default.viewers@opendes.example.com"], space.CustomData["viewers"].Strings);
-        Assert.Equal(["opendes-public-usa-dataset-1"], space.CustomData["legaltags"].Strings);
+        Assert.Equal(["data.default.viewers@dev.example.com"], space.CustomData["viewers"].Strings);
+        Assert.Equal(["dev-public-usa-dataset-1"], space.CustomData["legaltags"].Strings);
         Assert.Equal("Top Volve", Assert.Single(space.Objects.Values).Name);
         Assert.False(server.InTransaction);
 
         // The server registers the dataspace's OSDU record itself; the route knows the id it will have.
-        Assert.Equal("opendes:dataset--ETPDataspace:demo-study", Assert.Single(server.StorageRecords));
-        Assert.Equal("opendes:dataset--ETPDataspace:demo-study", EtpDataspaceRecord.Id(server.Uri, "demo/study", "opendes"));
+        Assert.Equal("dev:dataset--ETPDataspace:demo-study", Assert.Single(server.StorageRecords));
+        Assert.Equal("dev:dataset--ETPDataspace:demo-study", EtpDataspaceRecord.Id(server.Uri, "demo/study", "dev"));
 
         // Every write went inside one transaction, and it was committed, not left open.
         Assert.Contains(server.Received, f => f.Body is StartTransaction);
@@ -248,27 +248,27 @@ public class EtpRouteTests : IDisposable
         var outcome = await route.DeliverAsync(Work(uuid, "Round trip"));
         var state = outcome.Returned;
 
-        var verified = await route.VerifyBatchAsync([new VerifyRequest("opendes:etp:1", null, state)]);
+        var verified = await route.VerifyBatchAsync([new VerifyRequest("dev:etp:1", null, state)]);
         Assert.Equal(VerifyOutcome.Match, Assert.Single(verified).Outcome);
         Assert.NotNull(Assert.Single(verified).ObservedVersion);
 
-        var read = await route.ReadAsync("opendes:etp:1", state, CancellationToken.None);
+        var read = await route.ReadAsync("dev:etp:1", state, CancellationToken.None);
         Assert.NotNull(read);
         Assert.Equal(state[OsduEtpProtocol.UriValue], read["uri"]!.GetValue<string>());
         Assert.Contains("Round trip", read["xml"]!.GetValue<string>(), StringComparison.Ordinal);
 
-        var record = await Assert.ThrowsAsync<DeliveryException>(() => route.DeleteAsync("opendes:etp:1", RemovalScope.Record, state));
+        var record = await Assert.ThrowsAsync<DeliveryException>(() => route.DeleteAsync("dev:etp:1", RemovalScope.Record, state));
         Assert.Contains("no reversible removal", record.Message, StringComparison.Ordinal);
-        var history = await Assert.ThrowsAsync<DeliveryException>(() => route.DeleteAsync("opendes:etp:1", RemovalScope.History, state));
+        var history = await Assert.ThrowsAsync<DeliveryException>(() => route.DeleteAsync("dev:etp:1", RemovalScope.History, state));
         Assert.Contains("no history to purge", history.Message, StringComparison.Ordinal);
 
-        var deleted = await route.DeleteAsync("opendes:etp:1", RemovalScope.Everything, state);
+        var deleted = await route.DeleteAsync("dev:etp:1", RemovalScope.Everything, state);
         Assert.True(deleted.Deleted);
         Assert.Empty(Assert.Single(server.Spaces.Values).Objects);
 
-        var gone = await route.VerifyBatchAsync([new VerifyRequest("opendes:etp:1", null, state)]);
+        var gone = await route.VerifyBatchAsync([new VerifyRequest("dev:etp:1", null, state)]);
         Assert.Equal(VerifyOutcome.Missing, Assert.Single(gone).Outcome);
-        var again = await route.DeleteAsync("opendes:etp:1", RemovalScope.Everything, state);
+        var again = await route.DeleteAsync("dev:etp:1", RemovalScope.Everything, state);
         Assert.True(again.AlreadyGone);
     }
 
@@ -279,7 +279,7 @@ public class EtpRouteTests : IDisposable
         var route = Route(server);
         var state = (await route.DeliverAsync(Work(Guid.NewGuid(), "Drift"))).Returned;
 
-        var verified = await route.VerifyBatchAsync([new VerifyRequest("opendes:etp:1", 1, state)]);
+        var verified = await route.VerifyBatchAsync([new VerifyRequest("dev:etp:1", 1, state)]);
         var result = Assert.Single(verified);
         Assert.Equal(VerifyOutcome.Drifted, result.Outcome);
         Assert.Contains("last wrote", result.Detail!, StringComparison.Ordinal);
@@ -338,11 +338,11 @@ public class EtpRouteTests : IDisposable
             _http,
             server.Uri,
             new TargetAuth { Type = TargetAuthType.None },
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" },
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" },
             [],
             new EtpSessionOptions { MaxMessageBytes = 2_000_000, RequestTimeout = TimeSpan.FromSeconds(20), KeepAlive = TimeSpan.Zero },
             NullLogger.Instance);
-        return new OsduEtpProtocol(connection, target, "opendes", NullLogger<OsduEtpProtocol>.Instance);
+        return new OsduEtpProtocol(connection, target, "dev", NullLogger<OsduEtpProtocol>.Instance);
     }
 
     private static DeliveryWork Work(
@@ -365,19 +365,19 @@ public class EtpRouteTests : IDisposable
         return new DeliveryWork
         {
             Key = DeliveryKey.Derive("etp", [uuid.ToString("N")]),
-            TargetId = $"opendes:etp:{uuid:N}",
+            TargetId = $"dev:etp:{uuid:N}",
             SourceKey = title,
             Document = new JsonObject
             {
                 ["kind"] = $"energistics:etp:{type}:2.0.1",
                 ["acl"] = new JsonObject
                 {
-                    ["viewers"] = new JsonArray { "data.default.viewers@opendes.example.com" },
-                    ["owners"] = new JsonArray { "data.default.owners@opendes.example.com" },
+                    ["viewers"] = new JsonArray { "data.default.viewers@dev.example.com" },
+                    ["owners"] = new JsonArray { "data.default.owners@dev.example.com" },
                 },
                 ["legal"] = new JsonObject
                 {
-                    ["legaltags"] = new JsonArray { "opendes-public-usa-dataset-1" },
+                    ["legaltags"] = new JsonArray { "dev-public-usa-dataset-1" },
                     ["otherRelevantDataCountries"] = new JsonArray { "US" },
                     ["status"] = "compliant",
                 },

@@ -47,10 +47,10 @@ public class MappingBuilderTests
             SchemaSnapshotVersion = schema.Version,
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                [RenderContext.DataPartitionParameter] = "opendes",
-                ["aclOwner"] = "data.default.owners@opendes.dataservices.energy",
-                ["aclViewer"] = "data.default.viewers@opendes.dataservices.energy",
-                ["legalTag"] = "opendes-reference-data-default",
+                [RenderContext.DataPartitionParameter] = "dev",
+                ["aclOwner"] = "data.default.owners@dev.dataservices.energy",
+                ["aclViewer"] = "data.default.viewers@dev.dataservices.energy",
+                ["legalTag"] = "dev-reference-data-default",
             },
         };
         var issues = Preflight.Check(reread, schema, references, context, sourceColumns: null);

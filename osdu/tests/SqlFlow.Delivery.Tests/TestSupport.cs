@@ -527,10 +527,10 @@ public static class Samples
     [ModuleInitializer]
     internal static void UseSampleEstateReferences()
     {
-        Reference("OSDU_DATA_PARTITION", "opendes");
-        Reference("OSDU_ACL_OWNER", "data.default.owners@opendes.dataservices.energy");
-        Reference("OSDU_ACL_VIEWER", "data.default.viewers@opendes.dataservices.energy");
-        Reference("OSDU_LEGAL_TAG", "opendes-reference-data-default");
+        Reference("OSDU_DATA_PARTITION", "dev");
+        Reference("OSDU_ACL_OWNER", "data.default.owners@dev.dataservices.energy");
+        Reference("OSDU_ACL_VIEWER", "data.default.viewers@dev.dataservices.energy");
+        Reference("OSDU_LEGAL_TAG", "dev-reference-data-default");
 
         static void Reference(string name, string value)
         {
@@ -604,7 +604,7 @@ public static class Samples
     /// parameter a mapping composes an id from is resolved before the document is rendered, while the cache a flow
     /// reads is scoped by the partition as the document writes it.
     /// </summary>
-    public const string SamplePartition = "opendes";
+    public const string SamplePartition = "dev";
 
     /// <summary>The name of the sample cache flow, which fills the cache of <see cref="SampleCacheScope"/>.</summary>
     public const string SampleCacheFlowName = "wells-osdu-00-reference-cache";

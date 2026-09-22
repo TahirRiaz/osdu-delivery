@@ -26,7 +26,7 @@ public sealed class DdmsDocumentsTests
           mapping: WellLog@1.4.0
         target:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
           protocol: {{protocol}}
           protocolOptions: { batchSize: 10{{options}} }
         {{ddms}}
@@ -41,7 +41,7 @@ public sealed class DdmsDocumentsTests
           work: work
         target:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
         {{ddms}}
         interfaces:
           wellbores:
@@ -200,7 +200,7 @@ public sealed class DdmsDocumentsTests
                 seismic:
                   root: /api/seismic-store/v3/
                   shape: seismicStoreV3
-                  tenant: ' opendes '
+                  tenant: ' dev '
                   subproject: seismic-raw
                   folder: /surveys/north/
                   provider: anthos
@@ -223,7 +223,7 @@ public sealed class DdmsDocumentsTests
         Assert.Equal(
             new SeismicStoreSettings
             {
-                Tenant = "opendes",
+                Tenant = "dev",
                 Subproject = "seismic-raw",
                 Folder = "surveys/north",
                 Provider = DdmsProvider.Anthos,
@@ -454,7 +454,7 @@ public sealed class DdmsDocumentsTests
         { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, settleSeconds: 5 }", "ddms", "", "target.ddms.s.settleSeconds describe the Production DDMS historian, and target.ddms.s has the seismicStoreV3 shape" },
         { "  ddms:\n    w: { root: /w, subproject: seismic, readOnly: true }", "ddms", "", "target.ddms.w.subproject, target.ddms.w.readOnly describe a Seismic Store, and target.ddms.w has the wellboreDdmsV3 shape. Remove them, or declare shape: seismicStoreV3." },
         { "  ddms:\n    r: { root: /r, shape: rafsV2, objectStore: 'https://s3.example.com', chunkMiB: 8 }", "ddms", "", "target.ddms.r.objectStore, target.ddms.r.chunkMiB describe a Seismic Store, and target.ddms.r has the rafsV2 shape" },
-        { "  ddms:\n    wd: { root: /wd, shape: wellDeliveryV1, provider: ibm, tenant: opendes }", "ddms", "", "target.ddms.wd.tenant describe a Seismic Store, and target.ddms.wd has the wellDeliveryV1 shape" },
+        { "  ddms:\n    wd: { root: /wd, shape: wellDeliveryV1, provider: ibm, tenant: dev }", "ddms", "", "target.ddms.wd.tenant describe a Seismic Store, and target.ddms.wd has the wellDeliveryV1 shape" },
         { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { work-product-component--SeismicTraceData: { path: traces } } }", "ddms", "", "target.ddms.s.collections.work-product-component--SeismicTraceData names a type Seismic Store registers no dataset for; a Seismic Store dataset's record is a dataset--FileCollection.* record." },
         { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { dataset--FileCollection.: {} } }", "ddms", "", "target.ddms.s.collections.dataset--FileCollection. names a type Seismic Store registers no dataset for" },
         { "  ddms:\n    s: { root: /s, shape: seismicStoreV3, subproject: seismic, collections: { dataset--FileCollection.SEGY: { bulk: false } } }", "ddms", "", "target.ddms.s.collections.dataset--FileCollection.SEGY says what a dataset keeps, and a Seismic Store dataset always keeps its files; remove bulk, columns and typedContent." },

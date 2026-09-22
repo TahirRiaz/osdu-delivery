@@ -17,7 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class SnapshotVersioningTests : IDisposable
 {
-    private const string Scope = "opendes";
+    private const string Scope = "dev";
 
     private const string Flow = "units";
 
@@ -64,7 +64,7 @@ public sealed class SnapshotVersioningTests : IDisposable
     private const string OneItem = """
         {
           "entityType": "reference-data--UnitOfMeasure",
-          "items": [ { "id": "opendes:reference-data--UnitOfMeasure:m", "Code": "m", "Name": "metre", "ID": "m" } ]
+          "items": [ { "id": "dev:reference-data--UnitOfMeasure:m", "Code": "m", "Name": "metre", "ID": "m" } ]
         }
         """;
 
@@ -72,14 +72,14 @@ public sealed class SnapshotVersioningTests : IDisposable
         {
           "entityType": "reference-data--UnitOfMeasure",
           "items": [
-            { "id": "opendes:reference-data--UnitOfMeasure:m", "Code": "m", "Name": "metre", "ID": "m" },
-            { "id": "opendes:reference-data--UnitOfMeasure:ft", "Code": "ft", "Name": "foot", "ID": "ft" }
+            { "id": "dev:reference-data--UnitOfMeasure:m", "Code": "m", "Name": "metre", "ID": "m" },
+            { "id": "dev:reference-data--UnitOfMeasure:ft", "Code": "ft", "Name": "foot", "ID": "ft" }
           ]
         }
         """;
 
     private const string OneWellbore = """
-        { "entityType": "master-data--Wellbore", "items": [ { "id": "opendes:master-data--Wellbore:A", "FacilityName": "NO 1/1-A" } ] }
+        { "entityType": "master-data--Wellbore", "items": [ { "id": "dev:master-data--Wellbore:A", "FacilityName": "NO 1/1-A" } ] }
         """;
 
     [Fact]
@@ -186,7 +186,7 @@ public sealed class SnapshotVersioningTests : IDisposable
             HttpMethod.Post,
             "/query_with_cursor",
             HttpStatusCode.OK,
-            """{"results":[{"id":"opendes:master-data--Wellbore:A","data":{"FacilityName":"NO 1/1-A","NameAlias":[{"AliasName":"1/1-A"},{"AliasName":"WELL A"}]}}]}""");
+            """{"results":[{"id":"dev:master-data--Wellbore:A","data":{"FacilityName":"NO 1/1-A","NameAlias":[{"AliasName":"1/1-A"},{"AliasName":"WELL A"}]}}]}""");
         using var osdu = await OsduConnection.CreateAsync(
             "http://localhost/osdu",
             new TargetAuth { Type = TargetAuthType.None },
@@ -230,7 +230,7 @@ public sealed class SnapshotVersioningTests : IDisposable
     private const string AliasedWellbore = """
         {
           "entityType": "master-data--Wellbore",
-          "items": [ { "id": "opendes:master-data--Wellbore:A", "FacilityName": "NO 1/1-A", "Alias": ["1/1-A", "WELL A"] } ]
+          "items": [ { "id": "dev:master-data--Wellbore:A", "FacilityName": "NO 1/1-A", "Alias": ["1/1-A", "WELL A"] } ]
         }
         """;
 
@@ -248,7 +248,7 @@ public sealed class SnapshotVersioningTests : IDisposable
 
         var lacking = await Assert.ThrowsAsync<DeliveryException>(() => builder.ImportDirectoryAsync(ReferenceDirectory(("Wellbore", OneWellbore)), [projectA], Capture));
         Assert.Contains(
-            "Wellbore.json holds no values under 'Alias' (from data.NameAlias.AliasName, kept by cache flow 'project-b'), which the cache of partition 'opendes' keeps for Wellbore",
+            "Wellbore.json holds no values under 'Alias' (from data.NameAlias.AliasName, kept by cache flow 'project-b'), which the cache of partition 'dev' keeps for Wellbore",
             lacking.Message,
             StringComparison.Ordinal);
         Assert.Empty(await store.ListVersionsAsync(Scope));
@@ -274,7 +274,7 @@ public sealed class SnapshotVersioningTests : IDisposable
         var builder = new SnapshotBuilder(_catalog.Caches(), Scope, "project-c", new TestClock(), Samples.Logger<SnapshotBuilder>());
 
         var ex = await Assert.ThrowsAsync<DeliveryException>(() => builder.ImportDirectoryAsync(ReferenceDirectory(("Wellbore", OneWellbore)), [disagreeing], Capture));
-        Assert.Contains("Cache flow 'project-c' disagrees with another cache flow of partition 'opendes'", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Cache flow 'project-c' disagrees with another cache flow of partition 'dev'", ex.Message, StringComparison.Ordinal);
         Assert.Contains("Wellbore.FacilityName is cached from data.FacilityName by cache flow 'project-b' and from data.Name by 'project-c'", ex.Message, StringComparison.Ordinal);
         Assert.Empty(await _catalog.Caches().ListVersionsAsync(Scope));
     }
@@ -333,8 +333,8 @@ public class ReferenceCaptureCursorTests
     {
         var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", hit => hit switch
         {
-            0 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c1","results":[{"id":"opendes:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}"""),
-            1 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c2","results":[{"id":"opendes:reference-data--UnitOfMeasure:ft","data":{"Code":"ft"}}]}"""),
+            0 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c1","results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}"""),
+            1 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c2","results":[{"id":"dev:reference-data--UnitOfMeasure:ft","data":{"Code":"ft"}}]}"""),
 
             // Elasticsearch keeps handing out a scroll id past the end. The page is empty, and that is the end.
             _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c3","results":[]}"""),
@@ -354,8 +354,8 @@ public class ReferenceCaptureCursorTests
     {
         var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", hit => hit switch
         {
-            0 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c1","results":[{"id":"opendes:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}"""),
-            1 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c2","results":[{"id":"opendes:reference-data--UnitOfMeasure:m","data":{"Code":"m"}},{"id":"opendes:reference-data--UnitOfMeasure:ft","data":{"Code":"ft"}}]}"""),
+            0 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c1","results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}"""),
+            1 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c2","results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}},{"id":"dev:reference-data--UnitOfMeasure:ft","data":{"Code":"ft"}}]}"""),
             _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c3","results":[]}"""),
         });
         var (builder, osdu) = await BuildAsync(handler);
@@ -363,7 +363,7 @@ public class ReferenceCaptureCursorTests
         {
             var captured = await builder.CaptureTypeAsync(osdu, Spec);
 
-            Assert.Equal(["opendes:reference-data--UnitOfMeasure:ft", "opendes:reference-data--UnitOfMeasure:m"], captured.Items.Select(i => i.Id));
+            Assert.Equal(["dev:reference-data--UnitOfMeasure:ft", "dev:reference-data--UnitOfMeasure:m"], captured.Items.Select(i => i.Id));
         }
     }
 
@@ -415,7 +415,7 @@ public class ReferenceCaptureCursorTests
     private static string Page(string cursor, int count, int from = 0)
     {
         var results = string.Join(",", Enumerable.Range(from, count).Select(
-            i => "{\"id\":\"opendes:reference-data--UnitOfMeasure:u" + i + "\",\"data\":{\"Code\":\"u" + i + "\"}}"));
+            i => "{\"id\":\"dev:reference-data--UnitOfMeasure:u" + i + "\",\"data\":{\"Code\":\"u" + i + "\"}}"));
         return "{\"cursor\":\"" + cursor + "\",\"results\":[" + results + "]}";
     }
 }

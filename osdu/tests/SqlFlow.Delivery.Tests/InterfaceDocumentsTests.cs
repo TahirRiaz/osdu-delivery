@@ -35,12 +35,12 @@ public sealed class InterfaceDocumentsTests
             pageSize: 500
         render:
           parameters:
-            dataPartition: opendes
+            dataPartition: dev
             region: north
         target:
           endpoint: ${env:OSDU_URL}
           headers:
-            data-partition-id: opendes
+            data-partition-id: dev
           protocolOptions:
             batchSize: 50
             uploadHeaders:
@@ -124,13 +124,13 @@ public sealed class InterfaceDocumentsTests
             Assert.Equal("update_date", flow.Source.LastModified);
             Assert.Null(flow.Source.SystemColumns.Deleted);
             Assert.Equal(500, flow.Source.Incremental.PageSize);
-            Assert.Equal("opendes", flow.Render.Parameters["dataPartition"]);
+            Assert.Equal("dev", flow.Render.Parameters["dataPartition"]);
             Assert.Equal(4, flow.Reliability.Concurrency);
             Assert.Equal(5, flow.Reliability.Retry.Attempts);
             Assert.Equal(30, flow.FailWhen.FailedPercent);
             Assert.Equal(50, flow.Target.ProtocolOptions.BatchSize);
             Assert.True(flow.Parameters["project"].Required);
-            Assert.Equal("opendes", flow.Target.Headers["data-partition-id"]);
+            Assert.Equal("dev", flow.Target.Headers["data-partition-id"]);
         });
         Assert.Equal("The Petrel project store.", source.Description);
         Assert.Null(wells.Description);
@@ -187,7 +187,7 @@ public sealed class InterfaceDocumentsTests
         Assert.Equal(500, wells.Source.Incremental.PageSize);
         Assert.Equal("pinned-7", wells.Render.CacheVersion);
         Assert.Equal("south", wells.Render.Parameters["region"]);
-        Assert.Equal("opendes", wells.Render.Parameters["dataPartition"]);
+        Assert.Equal("dev", wells.Render.Parameters["dataPartition"]);
         Assert.Equal("petrel", wells.Render.Parameters["source"]);
         Assert.Equal(UnchangedAction.Deliver, wells.Change.OnUnchanged);
         Assert.Equal(2, wells.Reliability.Concurrency);
@@ -344,7 +344,7 @@ public sealed class InterfaceDocumentsTests
     public void A_mapping_protocol_or_payload_named_for_the_whole_source_is_refused()
     {
         var yaml = Source(Wells, target: "  protocol: storage")
-            .Replace("  parameters:\n    dataPartition: opendes", "  mapping: Well@1.2.0\n  parameters:\n    dataPartition: opendes", StringComparison.Ordinal)
+            .Replace("  parameters:\n    dataPartition: dev", "  mapping: Well@1.2.0\n  parameters:\n    dataPartition: dev", StringComparison.Ordinal)
             .Replace("    batchSize: 50\n", "    batchSize: 50\n    payload: files\n", StringComparison.Ordinal);
         var refused = Assert.Throws<FlowValidationException>(() => _loader.ParseSource(yaml, "petrel.yaml")).Message;
         Assert.Contains("render.mapping (each interface pins its own mapping as interfaces.<name>.mapping)", refused, StringComparison.Ordinal);

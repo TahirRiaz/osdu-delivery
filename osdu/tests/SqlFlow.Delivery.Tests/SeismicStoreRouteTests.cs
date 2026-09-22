@@ -26,16 +26,16 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class SeismicStoreRouteTests
 {
-    private const string LineId = "opendes:dataset--FileCollection.SEGY:line-001";
+    private const string LineId = "dev:dataset--FileCollection.SEGY:line-001";
     private const string LineKind = "osdu:wks:dataset--FileCollection.SEGY:1.1.0";
-    private const string SdPath = "sd://opendes/seismic/surveys/north/line-001";
-    private const string Base = FakeOsduPlatform.SeismicRoot + "/dataset/tenant/opendes/subproject/seismic/dataset/line-001";
+    private const string SdPath = "sd://dev/seismic/surveys/north/line-001";
+    private const string Base = FakeOsduPlatform.SeismicRoot + "/dataset/tenant/dev/subproject/seismic/dataset/line-001";
     private const string Credentials = "GET " + FakeOsduPlatform.SeismicRoot + "/utility/upload-connection-string?sdpath=" + SdPath;
     private const string ReadRecord = "GET /api/storage/v2/records/" + LineId;
     private const string Service = "the DDMS 'seismic' (" + FakeOsduPlatform.SeismicRoot + ")";
     private const int MiB = 1024 * 1024;
 
-    private static readonly SeismicDataset Line001 = new("opendes", "seismic", "surveys/north", "line-001");
+    private static readonly SeismicDataset Line001 = new("dev", "seismic", "surveys/north", "line-001");
 
     private static SeismicStoreSettings Settings(string? provider = null, int chunkMiB = 1, bool readOnly = false) => new()
     {
@@ -61,7 +61,7 @@ public sealed class SeismicStoreRouteTests
                 new SecretResolver([new EnvSecretProvider()]), new TestClock(), platform, allowLoopback: true);
             var client = new OsduHttpClient(
                 Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
             options ??= new ProtocolOptions { WorkflowPollSeconds = 1, DatasetIndexWaitSeconds = 0 };
             var seismic = new DdmsService("seismic", FakeOsduPlatform.SeismicRoot, DdmsShape.SeismicStoreV3, DdmsCatalog.SeismicStoreCollections)
             {
@@ -86,7 +86,7 @@ public sealed class SeismicStoreRouteTests
         ["DatasetProperties"] = new JsonObject
         {
             ["FileCollectionPath"] = "sd://placeholder/",
-            ["FileSourceInfos"] = new JsonArray(new JsonObject { ["FileSource"] = "line-001.sgy", ["EncodingFormatTypeID"] = "opendes:reference-data--EncodingFormatType:SEG-Y:" }),
+            ["FileSourceInfos"] = new JsonArray(new JsonObject { ["FileSource"] = "line-001.sgy", ["EncodingFormatTypeID"] = "dev:reference-data--EncodingFormatType:SEG-Y:" }),
         },
     });
 
@@ -174,7 +174,7 @@ public sealed class SeismicStoreRouteTests
         Assert.Equal(SeismicStoreShape.LockIdOf(work.Key, Line001), lockId);
         Assert.Equal(lockId, reported[SeismicStoreShape.LockStep]["lockId"]);
         Assert.Equal([$"POST {Base}?path=surveys/north", Credentials, Close(lockId), ReadRecord], ServiceCalls(platform));
-        Assert.Equal("opendes-public", platform.Calls[0].Headers["ltag"]);
+        Assert.Equal("dev-public", platform.Calls[0].Headers["ltag"]);
 
         // Three blobs, each one staged block and a block list; each keeps the file's MD5 up to its end, as sdutil writes it.
         var location = Location(platform);
@@ -200,10 +200,10 @@ public sealed class SeismicStoreRouteTests
         Assert.Empty(platform.SeismicLocks);
         var stored = platform.Records[LineId];
         var properties = stored["data"]!["DatasetProperties"]!;
-        Assert.Equal("sd://opendes/seismic/surveys/north/", properties["FileCollectionPath"]!.GetValue<string>());
+        Assert.Equal("sd://dev/seismic/surveys/north/", properties["FileCollectionPath"]!.GetValue<string>());
         var source = Assert.Single(properties["FileSourceInfos"]!.AsArray())!;
         Assert.Equal("line-001", source["FileSource"]!.GetValue<string>());
-        Assert.Equal("opendes:reference-data--EncodingFormatType:SEG-Y:", source["EncodingFormatTypeID"]!.GetValue<string>());
+        Assert.Equal("dev:reference-data--EncodingFormatType:SEG-Y:", source["EncodingFormatTypeID"]!.GetValue<string>());
         Assert.Equal(file.Length.ToString(CultureInfo.InvariantCulture), source["FileSize"]!.GetValue<string>());
         Assert.Equal(file.Length.ToString(CultureInfo.InvariantCulture), stored["data"]!["TotalSize"]!.GetValue<string>());
 
@@ -506,7 +506,7 @@ public sealed class SeismicStoreRouteTests
             var dataset = new JsonObject
             {
                 ["name"] = "line-001",
-                ["tenant"] = "opendes",
+                ["tenant"] = "dev",
                 ["subproject"] = "seismic",
                 ["path"] = "/surveys/north/",
                 ["created_by"] = "someone",
@@ -525,12 +525,12 @@ public sealed class SeismicStoreRouteTests
         }
 
         var other = new FakeOsduPlatform();
-        other.SeismicDatasets[SdPath] = Existing("opendes:dataset--FileCollection.SEGY:someone-else");
+        other.SeismicDatasets[SdPath] = Existing("dev:dataset--FileCollection.SEGY:someone-else");
         using (var rig = new Rig(other))
         {
             var held = await Assert.ThrowsAsync<RecordHeldException>(() => rig.Protocol.DeliverAsync(Work(Line(), Files(("line-001.sgy", Bytes(1000))))));
             Assert.Equal(
-                $"the dataset {SdPath} already exists and belongs to opendes:dataset--FileCollection.SEGY:someone-else; the dataset's name is the record key, so {LineId} cannot take it",
+                $"the dataset {SdPath} already exists and belongs to dev:dataset--FileCollection.SEGY:someone-else; the dataset's name is the record key, so {LineId} cannot take it",
                 held.Message);
             Assert.Equal([$"POST {Base}?path=surveys/north", $"GET {Base}?path=surveys/north&translate-user-info=false"], ServiceCalls(other));
         }
@@ -652,7 +652,7 @@ public sealed class SeismicStoreRouteTests
         var again = await rig.Protocol.DeliverAsync(Work(Line("again"), Files(("line-001.sgy", Bytes(10))), existing: patched.TargetVersion, state: patched.Returned));
         Assert.True(again.Succeeded, again.Failure?.Message);
         Assert.Equal(("again", "kept"), (platform.Records[LineId]["data"]!["Name"]!.GetValue<string>(), platform.Records[LineId]["data"]!["Owned"]!.GetValue<string>()));
-        Assert.Equal("sd://opendes/seismic/surveys/north/", platform.Records[LineId]["data"]!["DatasetProperties"]!["FileCollectionPath"]!.GetValue<string>());
+        Assert.Equal("sd://dev/seismic/surveys/north/", platform.Records[LineId]["data"]!["DatasetProperties"]!["FileCollectionPath"]!.GetValue<string>());
     }
 
     [Fact]
@@ -716,7 +716,7 @@ public sealed class SeismicStoreRouteTests
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
         Assert.Equal("PUT /api/storage/v2/records", ServiceCalls(platform)[^1]);
         Assert.Equal(platform.Records[LineId]["version"]!.GetValue<long>(), outcome.TargetVersion);
-        Assert.Equal("sd://opendes/seismic/surveys/north/", platform.Records[LineId]["data"]!["DatasetProperties"]!["FileCollectionPath"]!.GetValue<string>());
+        Assert.Equal("sd://dev/seismic/surveys/north/", platform.Records[LineId]["data"]!["DatasetProperties"]!["FileCollectionPath"]!.GetValue<string>());
         Assert.EndsWith("; Seismic Store did not write the record to Storage, so the route wrote it", outcome.Detail, StringComparison.Ordinal);
 
         // A record change Seismic Store leaves unwritten keeps the version the ledger holds, and is written through Storage too.
@@ -760,8 +760,8 @@ public sealed class SeismicStoreRouteTests
             (blankTag, null, null, "legal must name at least one legal tag and one country"),
             (noViewers, null, null, "acl must name owners and viewers; Seismic Store would otherwise give the record the partition's default groups"),
             (noData, null, null, "the record has no data object, which Seismic Store requires of a dataset's record"),
-            (FakeOsduPlatform.Record("opendes:dataset--FileCollection.SEGY:line 001", LineKind), null, null, "the key 'line 001' of opendes:dataset--FileCollection.SEGY:line 001 cannot name a Seismic Store dataset"),
-            (FakeOsduPlatform.Record("opendes:dataset--FileCollection.SEGY:a/b", LineKind), null, null, "the key 'a/b' of opendes:dataset--FileCollection.SEGY:a/b cannot name a Seismic Store dataset"),
+            (FakeOsduPlatform.Record("dev:dataset--FileCollection.SEGY:line 001", LineKind), null, null, "the key 'line 001' of dev:dataset--FileCollection.SEGY:line 001 cannot name a Seismic Store dataset"),
+            (FakeOsduPlatform.Record("dev:dataset--FileCollection.SEGY:a/b", LineKind), null, null, "the key 'a/b' of dev:dataset--FileCollection.SEGY:a/b cannot name a Seismic Store dataset"),
             (Line(), Files(), null, $"no file was found for the dataset {SdPath}"),
             (Line(), Files(("a.sgy", Bytes(1)), ("a.sgy", Bytes(2))), null, $"two files of the dataset {SdPath} have the same name, and a dataset of several files keeps each under its name"),
             (Line(), Files(("a.sgy", Bytes(1)), ("..", Bytes(2))), null, $"the file name '..' cannot name an object of the dataset {SdPath}"),
@@ -928,7 +928,7 @@ public sealed class SeismicStoreRouteTests
             [
                 $"GET {FakeOsduPlatform.SeismicRoot}/svcstatus",
                 $"GET {FakeOsduPlatform.SeismicRoot}/svcstatus/access",
-                $"GET {FakeOsduPlatform.SeismicRoot}/subproject/tenant/opendes/subproject/seismic",
+                $"GET {FakeOsduPlatform.SeismicRoot}/subproject/tenant/dev/subproject/seismic",
             ],
             ServiceCalls(platform));
         Assert.Equal("the DDMS answered all 3 probes", probe.Detail);
@@ -940,7 +940,7 @@ public sealed class SeismicStoreRouteTests
         var failed = await other.Protocol.ProbeAsync();
         Assert.False(failed.Reachable);
         Assert.Equal(404, failed.Status);
-        Assert.Equal($"{FakeOsduPlatform.SeismicRoot}/subproject/tenant/opendes/subproject/seismic", failed.Path);
+        Assert.Equal($"{FakeOsduPlatform.SeismicRoot}/subproject/tenant/dev/subproject/seismic", failed.Path);
         Assert.Contains("The subproject seismic does not exist", failed.Detail, StringComparison.Ordinal);
     }
 
@@ -962,10 +962,10 @@ public sealed class SeismicStoreRouteTests
         Assert.Equal(VerifyOutcome.Drifted, drifted.Outcome);
         Assert.Equal($"observed version {version}, ledger holds {version - 1}", drifted.Detail);
 
-        platform.SeismicDatasets[SdPath]["seismicmeta_guid"] = "opendes:dataset--FileCollection.SEGY:other";
+        platform.SeismicDatasets[SdPath]["seismicmeta_guid"] = "dev:dataset--FileCollection.SEGY:other";
         var taken = await rig.Protocol.VerifyAsync(LineId, version);
         Assert.Equal((VerifyOutcome.Drifted, version), (taken.Outcome, taken.ObservedVersion));
-        Assert.Equal($"the dataset {SdPath} holds opendes:dataset--FileCollection.SEGY:other rather than this record", taken.Detail);
+        Assert.Equal($"the dataset {SdPath} holds dev:dataset--FileCollection.SEGY:other rather than this record", taken.Detail);
 
         platform.SeismicDatasets[SdPath]["seismicmeta_guid"] = LineId;
         platform.SeismicDatasets[SdPath]["status"] = "DELETE:1789000000000";
@@ -992,9 +992,9 @@ public sealed class SeismicStoreRouteTests
         var rendered = Line();
         Assert.False(rig.Protocol.CarryLink(LineId, null, rendered));
         var properties = rendered["data"]!["DatasetProperties"]!;
-        Assert.Equal("sd://opendes/seismic/surveys/north/", properties["FileCollectionPath"]!.GetValue<string>());
+        Assert.Equal("sd://dev/seismic/surveys/north/", properties["FileCollectionPath"]!.GetValue<string>());
         Assert.Equal("line-001", properties["FileSourceInfos"]![0]!["FileSource"]!.GetValue<string>());
-        Assert.Equal("opendes:reference-data--EncodingFormatType:SEG-Y:", properties["FileSourceInfos"]![0]!["EncodingFormatTypeID"]!.GetValue<string>());
+        Assert.Equal("dev:reference-data--EncodingFormatType:SEG-Y:", properties["FileSourceInfos"]![0]!["EncodingFormatTypeID"]!.GetValue<string>());
 
         var bare = FakeOsduPlatform.Record(LineId, LineKind);
         Assert.True(rig.Protocol.CarryLink(LineId, null, bare));
@@ -1005,7 +1005,7 @@ public sealed class SeismicStoreRouteTests
         {
             ["DatasetProperties"] = new JsonObject
             {
-                ["FileCollectionPath"] = "sd://opendes/seismic/surveys/north/",
+                ["FileCollectionPath"] = "sd://dev/seismic/surveys/north/",
                 ["FileSourceInfos"] = new JsonArray(new JsonObject { ["FileSource"] = "line-001" }, new JsonObject { ["FileSource"] = "line-002" }),
             },
         });
@@ -1058,7 +1058,7 @@ public sealed class SeismicStoreRouteTests
         var key = DeliveryKey.Derive("seismic", [LineId]);
         var id = SeismicStoreShape.LockIdOf(key, Line001);
         Assert.Matches("^W[A-Za-z0-9]{32}$", id);
-        Assert.Equal(id, SeismicStoreShape.LockIdOf(DeliveryKey.Derive("seismic", [LineId]), new SeismicDataset("opendes", "seismic", "surveys/north", "line-001")));
+        Assert.Equal(id, SeismicStoreShape.LockIdOf(DeliveryKey.Derive("seismic", [LineId]), new SeismicDataset("dev", "seismic", "surveys/north", "line-001")));
         Assert.NotEqual(id, SeismicStoreShape.LockIdOf(DeliveryKey.Derive("other-flow", [LineId]), Line001));
         Assert.NotEqual(id, SeismicStoreShape.LockIdOf(key, Line001 with { Folder = "surveys/south" }));
     }
@@ -1066,8 +1066,8 @@ public sealed class SeismicStoreRouteTests
     [Fact]
     public void A_dataset_path_is_the_folder_the_record_links_to_and_the_name()
     {
-        Assert.Equal(("sd://opendes/seismic/surveys/north/", SdPath), (Line001.FolderPath, Line001.SdPath));
+        Assert.Equal(("sd://dev/seismic/surveys/north/", SdPath), (Line001.FolderPath, Line001.SdPath));
         var root = Line001 with { Folder = null };
-        Assert.Equal(("sd://opendes/seismic/", "sd://opendes/seismic/line-001"), (root.FolderPath, root.SdPath));
+        Assert.Equal(("sd://dev/seismic/", "sd://dev/seismic/line-001"), (root.FolderPath, root.SdPath));
     }
 }

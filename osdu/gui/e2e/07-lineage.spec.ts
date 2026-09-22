@@ -40,7 +40,7 @@ test.describe.serial("lineage", () => {
     const wellLog = named("osdu-type", WELL_LOG);
     expect(wellLog, `no ${WELL_LOG} among ${datasets.map((d) => d.name).join(", ")}`).toBeDefined();
     // Two flows deliver well logs: wells-welllog-03-header-delivery in the single form, and the welllogs interface of wells-source-03-interfaces-delivery.
-    expect([wellLog!.namespace, wellLog!.group, wellLog!.writers]).toEqual(["opendes", "work-product-component", 2]);
+    expect([wellLog!.namespace, wellLog!.group, wellLog!.writers]).toEqual(["dev", "work-product-component", 2]);
 
     const wellbore = named("osdu-type", WELLBORE);
     expect(wellbore).toBeDefined();
@@ -51,7 +51,7 @@ test.describe.serial("lineage", () => {
 
     const units = named(CACHE_SYSTEM, "UnitOfMeasure");
     expect(units).toBeDefined();
-    expect([units!.namespace, units!.group, units!.writers]).toEqual(["opendes", "cache", 1]);
+    expect([units!.namespace, units!.group, units!.writers]).toEqual(["dev", "cache", 1]);
     expect(units!.readers).toBeGreaterThanOrEqual(1);
   });
 
@@ -73,7 +73,7 @@ test.describe.serial("lineage", () => {
     const graph = adminPage.getByTestId("page-lineage-graph");
     await expect(graph).toBeVisible();
     await expect(graph.getByText(WELL_LOG, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
-    await expect(graph.getByText(/^osdu type · opendes\.work-product-component/).first()).toBeVisible();
+    await expect(graph.getByText(/^osdu type · dev\.work-product-component/).first()).toBeVisible();
     await expect(graph.getByText("wells-welllog-03-header-delivery", { exact: true }).first()).toBeVisible();
   });
 
@@ -82,7 +82,7 @@ test.describe.serial("lineage", () => {
     const tree = adminPage.getByRole("tree", { name: "Catalog tree" });
     await tree.getByRole("treeitem", { name: /^Datasets/ }).click();
     await tree.getByRole("treeitem", { name: /^osdu cache/ }).click();
-    await tree.getByRole("treeitem", { name: /^opendes/ }).first().click();
+    await tree.getByRole("treeitem", { name: /^dev/ }).first().click();
     await tree.getByRole("treeitem", { name: /^cache/ }).click();
     await expect(tree.getByRole("treeitem", { name: /^UnitOfMeasure/ })).toBeVisible();
   });

@@ -75,9 +75,9 @@ public sealed class SqlServerLedgerMigrationTests
             INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [MappingName], [Status], [AttemptCount], [PendingMetadata], [PendingPayload],
                 [Blocked], [CreatedUtc], [UpdatedUtc], [TargetId], [LastDeliveredUtc], [PendingDocumentRef], [LastSubmissionId])
             VALUES
-                (@delivered, @logs, N'wells:NO_15_9/L-1001', N'WellLog', N'delivered', 0, 0, 0, 0, @now, @now, N'opendes:work-product-component--WellLog:a', @now, NULL, @submission),
-                (@queued, @logs, N'wells:NO_15_9/L-1002', N'WellLog', N'pending', 0, 1, 0, 0, @now, @now, N'opendes:work-product-component--WellLog:b', NULL, N'0:0:10', @submission),
-                (@held, @wellbores, N'wells:WB-A', N'Wellbore', N'held', 0, 0, 0, 1, @now, @now, N'opendes:master-data--Wellbore:c', NULL, NULL, NULL);
+                (@delivered, @logs, N'wells:NO_15_9/L-1001', N'WellLog', N'delivered', 0, 0, 0, 0, @now, @now, N'dev:work-product-component--WellLog:a', @now, NULL, @submission),
+                (@queued, @logs, N'wells:NO_15_9/L-1002', N'WellLog', N'pending', 0, 1, 0, 0, @now, @now, N'dev:work-product-component--WellLog:b', NULL, N'0:0:10', @submission),
+                (@held, @wellbores, N'wells:WB-A', N'Wellbore', N'held', 0, 0, 0, 1, @now, @now, N'dev:master-data--Wellbore:c', NULL, NULL, NULL);
             INSERT INTO [osdu].[Attempt] ([DeliveryKey], [SubmissionId], [Worker], [StartedUtc], [CompletedUtc], [Outcome], [Phase])
             VALUES
                 (@delivered, @submission, N'w', @now, @now, N'delivered', N'metadata'),
@@ -87,7 +87,7 @@ public sealed class SqlServerLedgerMigrationTests
             VALUES (@logs, N'wells-welllog-03-header-delivery', N'release', N'user:tahir', @now, N'completed', @delivered);
             INSERT INTO [osdu].[UpdateTag] ([Kind], [Scope], [TypeName], [ItemId], [Path], [Change], [ToVersion], [Mode], [Status], [SetIds],
                 [AffectedRecords], [Processed], [DetectedUtc], [Cursor])
-            VALUES (N'cache', N'opendes', N'Wellbore', N'opendes:master-data--Wellbore:x', N'Name', N'changed', N'v2', N'auto', N'rolling', N'1', 3, 1, @now, @held);
+            VALUES (N'cache', N'dev', N'Wellbore', N'dev:master-data--Wellbore:x', N'Name', N'changed', N'v2', N'auto', N'rolling', N'1', 3, 1, @now, @held);
             """,
             ("submission", submission), ("delivered", delivered), ("queued", queued), ("held", held), ("unrecorded", unrecorded));
 
@@ -103,8 +103,8 @@ public sealed class SqlServerLedgerMigrationTests
 
             // The ids a record queued or delivered a document for are claimed; a record only ever held claims nothing.
             var claims = await db.DeliveryRecords.AsNoTracking().ToDictionaryAsync(r => r.DeliveryKey, r => r.ClaimedTargetId);
-            Assert.Equal("opendes:work-product-component--WellLog:a", claims[delivered]);
-            Assert.Equal("opendes:work-product-component--WellLog:b", claims[queued]);
+            Assert.Equal("dev:work-product-component--WellLog:a", claims[delivered]);
+            Assert.Equal("dev:work-product-component--WellLog:b", claims[queued]);
             Assert.Null(claims[held]);
 
             // The rollout's cursor named a record by key, and now names its flow too.
@@ -117,10 +117,10 @@ public sealed class SqlServerLedgerMigrationTests
         // keeps the first flow's OSDU id for that flow.
         var ledger = new OsduLedger(database.Context, TimeProvider.System);
         Assert.Equal((2L, 1L), ((await ledger.StatsAsync(Logs, Now)).Total, (await ledger.StatsAsync(Logs, Now)).Delivered));
-        var second = await ledger.UpsertPendingAsync(Wellbores, [Pending(Wellbores, delivered, "opendes:master-data--Wellbore:a")]);
+        var second = await ledger.UpsertPendingAsync(Wellbores, [Pending(Wellbores, delivered, "dev:master-data--Wellbore:a")]);
         Assert.Equal((1, 0), (second.Staged, second.Conflicts.Count));
         var third = FlowId.Of("wells-welllog-copy");
-        var conflict = Assert.Single((await ledger.UpsertPendingAsync(third, [Pending(third, delivered, "opendes:work-product-component--WellLog:a")])).Conflicts);
+        var conflict = Assert.Single((await ledger.UpsertPendingAsync(third, [Pending(third, delivered, "dev:work-product-component--WellLog:a")])).Conflicts);
         Assert.Equal((Logs, "wells-welllog-03-header-delivery"), (conflict.OwnerFlowId, conflict.OwnerFlowName));
         Assert.Equal(2, (await ledger.LookupAsync(delivered.ToString(), 10)).Count);
 
@@ -167,8 +167,8 @@ public sealed class SqlServerLedgerMigrationTests
             INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [MappingName], [Status], [AttemptCount], [PendingMetadata], [PendingPayload],
                 [Blocked], [CreatedUtc], [UpdatedUtc], [TargetId], [LastDeliveredUtc])
             VALUES
-                (@first, @logs, N'a', N'WellLog', N'delivered', 0, 0, 0, 0, @now, @now, N'opendes:work-product-component--WellLog:same', @now),
-                (@second, @wellbores, N'b', N'WellLog', N'delivered', 0, 0, 0, 0, @now, @now, N'opendes:work-product-component--WellLog:same', @now);
+                (@first, @logs, N'a', N'WellLog', N'delivered', 0, 0, 0, 0, @now, @now, N'dev:work-product-component--WellLog:same', @now),
+                (@second, @wellbores, N'b', N'WellLog', N'delivered', 0, 0, 0, 0, @now, @now, N'dev:work-product-component--WellLog:same', @now);
             """,
             ("first", Guid.NewGuid()), ("second", Guid.NewGuid()));
 
@@ -272,7 +272,7 @@ public sealed class SqlServerLedgerMigrationTests
 
         var ledger = new OsduLedger(database.Context, TimeProvider.System);
         var key = Guid.NewGuid();
-        Assert.Equal(1, (await ledger.UpsertPendingAsync(Logs, [Pending(Logs, key, "opendes:work-product-component--WellLog:s")])).Staged);
+        Assert.Equal(1, (await ledger.UpsertPendingAsync(Logs, [Pending(Logs, key, "dev:work-product-component--WellLog:s")])).Staged);
 
         // The claim is the read path that used to fail first, before a node took any work.
         var claimed = await ledger.ClaimAsync(Logs, null, "w1", 10, TimeSpan.FromMinutes(5), Now);
@@ -300,7 +300,7 @@ public sealed class SqlServerLedgerMigrationTests
             INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [MappingName], [Status], [AttemptCount], [PendingMetadata], [PendingPayload],
                 [Blocked], [CreatedUtc], [UpdatedUtc], [TargetId], [ClaimedTargetId], [PendingDocumentRef])
             VALUES (@wellbore, @wellbores, N'wells:WB-A', N'Wellbore', N'pending', 0, 1, 0, 0, @now, @now,
-                N'opendes:master-data--Wellbore:a', N'opendes:master-data--Wellbore:a', N'0:0:10');
+                N'dev:master-data--Wellbore:a', N'dev:master-data--Wellbore:a', N'0:0:10');
             """,
             ("wellbore", wellbore));
 
@@ -313,14 +313,14 @@ public sealed class SqlServerLedgerMigrationTests
         var log = Guid.NewGuid();
         Assert.Equal(1, (await ledger.UpsertPendingAsync(
             Logs,
-            [Pending(Logs, log, "opendes:work-product-component--WellLog:s") with
+            [Pending(Logs, log, "dev:work-product-component--WellLog:s") with
             {
-                PendingReferences = [new RecordReference("opendes:master-data--Wellbore:a", "data.WellboreID")],
+                PendingReferences = [new RecordReference("dev:master-data--Wellbore:a", "data.WellboreID")],
             }])).Staged);
 
         var claim = await ledger.ClaimAsync(Logs, null, "w1", 10, TimeSpan.FromMinutes(5), Now);
         Assert.Empty(claim.Records);
-        Assert.Equal("opendes:master-data--Wellbore:a", Assert.Single(claim.Waiting).WaitingFor);
+        Assert.Equal("dev:master-data--Wellbore:a", Assert.Single(claim.Waiting).WaitingFor);
         Assert.Equal(1, (await ledger.StatsAsync(Logs, Now)).Waiting);
 
         // The record written before the migration still delivers, and its delivery releases what waited for it.

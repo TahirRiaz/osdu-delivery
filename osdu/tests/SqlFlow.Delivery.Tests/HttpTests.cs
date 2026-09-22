@@ -323,7 +323,7 @@ public class UrlPathTests
     [Fact]
     public void A_record_id_keeps_its_colons_and_its_other_legal_characters()
     {
-        Assert.Equal("opendes:master-data--Well:1234-abc", UrlPath.EscapeSegment("opendes:master-data--Well:1234-abc"));
+        Assert.Equal("dev:master-data--Well:1234-abc", UrlPath.EscapeSegment("dev:master-data--Well:1234-abc"));
         Assert.Equal("osdu:wks:work-product-component--WellLog:1.0.0", UrlPath.EscapeSegment("osdu:wks:work-product-component--WellLog:1.0.0"));
         Assert.Equal("a_b~c.d-e", UrlPath.EscapeSegment("a_b~c.d-e"));
     }
@@ -349,7 +349,7 @@ public class UrlPathTests
     [Fact]
     public void The_escaped_segment_survives_being_put_in_a_Uri()
     {
-        var url = new Uri("https://osdu.example.com/api/storage/v2/records/" + UrlPath.EscapeSegment("opendes:master-data--Well:1") + ":delete");
-        Assert.Equal("/api/storage/v2/records/opendes:master-data--Well:1:delete", url.AbsolutePath);
+        var url = new Uri("https://osdu.example.com/api/storage/v2/records/" + UrlPath.EscapeSegment("dev:master-data--Well:1") + ":delete");
+        Assert.Equal("/api/storage/v2/records/dev:master-data--Well:1:delete", url.AbsolutePath);
     }
 }

@@ -26,11 +26,11 @@ public class ReferenceCacheTests
     {
         var hit = Hit("""
             {
-              "id": "opendes:master-data--Wellbore:1",
+              "id": "dev:master-data--Wellbore:1",
               "data": {
                 "FacilityName": "NO 1/1-A",
                 "NameAlias": [
-                  { "AliasName": "1/1-A", "AliasNameTypeID": "opendes:reference-data--AliasNameType:Short:" },
+                  { "AliasName": "1/1-A", "AliasNameTypeID": "dev:reference-data--AliasNameType:Short:" },
                   { "AliasName": "WELL A" }
                 ],
                 "Tags": { "source": "wells" }
@@ -216,7 +216,7 @@ public class ReferenceCacheTests
         name: wells-osdu-00-reference-cache
         source:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
 
         """ + extra + "\ntypes:\n" + types + "\n",
         "cache/wells-osdu-00-reference-cache.yaml");
@@ -294,7 +294,7 @@ public class ReferenceCacheTests
             "onChange: approve\n");
 
         Assert.Equal("wells-osdu-00-reference-cache", cache.Name);
-        Assert.Equal("opendes", cache.Scope);
+        Assert.Equal("dev", cache.Scope);
         Assert.Equal("https://osdu.example.com", cache.Source.Endpoint);
         var wellbore = cache.Types[0];
         Assert.Equal("Wellbore", wellbore.Name);
@@ -354,7 +354,7 @@ public class ReferenceCacheTests
             name: osdu-metadata-sync
             source:
               endpoint: https://osdu.example.com
-              headers: { data-partition-id: opendes }
+              headers: { data-partition-id: dev }
               kinds: [osdu:wks:master-data--Wellbore:1.0.0]
             target:
               location: lake/metadata
@@ -485,10 +485,10 @@ public class ReferenceCacheTests
             SchemaSnapshotVersion = schema.Version,
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                [RenderContext.DataPartitionParameter] = "opendes",
-                ["aclOwner"] = "data.default.owners@opendes.dataservices.energy",
-                ["aclViewer"] = "data.default.viewers@opendes.dataservices.energy",
-                ["legalTag"] = "opendes-reference-data-default",
+                [RenderContext.DataPartitionParameter] = "dev",
+                ["aclOwner"] = "data.default.owners@dev.dataservices.energy",
+                ["aclViewer"] = "data.default.viewers@dev.dataservices.energy",
+                ["legalTag"] = "dev-reference-data-default",
             },
         };
         var renderer = new MappingRenderer(mapping, schema, references, context);
@@ -504,7 +504,7 @@ public class ReferenceCacheTests
 
         Assert.False(porosity.IsHeld, string.Join("; ", porosity.Holds));
         var nphi = porosity.Document["data"]!["Curves"]!.AsArray().Single(c => c!["CurveID"]!.GetValue<string>() == "NPHI");
-        Assert.Equal("opendes:reference-data--UnitOfMeasure:m3%2Fm3:", nphi!["CurveUnit"]!.GetValue<string>());
+        Assert.Equal("dev:reference-data--UnitOfMeasure:m3%2Fm3:", nphi!["CurveUnit"]!.GetValue<string>());
     }
 }
 
@@ -529,7 +529,7 @@ public class CacheDeclarationTests
         Fields = fields,
     };
 
-    private static CacheDeclaration Partition() => new("opendes",
+    private static CacheDeclaration Partition() => new("dev",
     [
         Wellbore("project-b", CacheChangeMode.Approve, Facility, Alias),
         Wellbore("project-a", CacheChangeMode.Auto, Facility),
@@ -539,7 +539,7 @@ public class CacheDeclarationTests
     [Fact]
     public void The_scope_of_a_flow_is_the_partition_its_headers_carry()
     {
-        Assert.Equal("opendes", CacheScope.Of(new Dictionary<string, string>(StringComparer.Ordinal) { ["Data-Partition-Id"] = " opendes " }, "flow.yaml"));
+        Assert.Equal("dev", CacheScope.Of(new Dictionary<string, string>(StringComparer.Ordinal) { ["Data-Partition-Id"] = " dev " }, "flow.yaml"));
         Assert.Equal("${keyvault:partition}", CacheScope.Of(new Dictionary<string, string>(StringComparer.Ordinal) { ["data-partition-id"] = "${keyvault:partition}" }, "flow.yaml"));
 
         var none = Assert.Throws<FlowValidationException>(() => CacheScope.Of(new Dictionary<string, string>(StringComparer.Ordinal), "flow.yaml"));
@@ -558,7 +558,7 @@ public class CacheDeclarationTests
 
         // A type no flow declares keeps the mode the capturing flow gives it.
         Assert.Equal(CacheChangeMode.Approve, declaration.ModeOf("VerticalMeasurementType", CacheChangeMode.Approve));
-        Assert.Equal(CacheChangeMode.Auto, CacheDeclaration.None("opendes").ModeOf("Wellbore", CacheChangeMode.Auto));
+        Assert.Equal(CacheChangeMode.Auto, CacheDeclaration.None("dev").ModeOf("Wellbore", CacheChangeMode.Auto));
     }
 
     [Fact]
@@ -577,7 +577,7 @@ public class CacheDeclarationTests
 
         // Widening keeps everything else the flow declares about the type, and a partition declaring nothing adds nothing.
         Assert.Equal(("master-data--Wellbore", "osdu:wks:master-data--Wellbore:*"), (widened.EntityType, widened.Kind));
-        Assert.Equal(["FacilityName"], CacheDeclaration.None("opendes").Widen(WellboreSpec(fields: Facility)).Fields.Select(f => f.Name));
+        Assert.Equal(["FacilityName"], CacheDeclaration.None("dev").Widen(WellboreSpec(fields: Facility)).Fields.Select(f => f.Name));
     }
 
     [Fact]
@@ -587,7 +587,7 @@ public class CacheDeclarationTests
 
         // Agreeing with the others, and adding a path of its own, is no conflict; nor is a flow's own earlier declaration.
         Assert.Empty(declaration.Conflicts("project-c", WellboreSpec(fields: [Facility, new ReferenceFieldSpec("data.WellID", "Well")])));
-        Assert.Empty(new CacheDeclaration("opendes", [Wellbore("project-b", CacheChangeMode.Auto, Facility)]).Conflicts("project-b", WellboreSpec("master-data--Well", Facility)));
+        Assert.Empty(new CacheDeclaration("dev", [Wellbore("project-b", CacheChangeMode.Auto, Facility)]).Conflicts("project-b", WellboreSpec("master-data--Well", Facility)));
         Assert.Empty(declaration.Conflicts("project-c", new ReferenceTypeSpec { Name = "VerticalMeasurementType", EntityType = "reference-data--VerticalMeasurementType", Kind = "osdu:wks:reference-data--VerticalMeasurementType:*", Fields = [new ReferenceFieldSpec("data.Code")] }));
 
         var entityType = declaration.Conflicts("project-c", WellboreSpec("master-data--Well", Facility));

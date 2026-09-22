@@ -59,10 +59,10 @@ public sealed class ComposedSourceTests : IDisposable
             render:
               mappings: '{{mappings}}'
               parameters:
-                dataPartition: opendes
-                aclOwner: data.default.owners@opendes.dataservices.energy
-                aclViewer: data.default.viewers@opendes.dataservices.energy
-                legalTag: opendes-reference-data-default
+                dataPartition: dev
+                aclOwner: data.default.owners@dev.dataservices.energy
+                aclViewer: data.default.viewers@dev.dataservices.energy
+                legalTag: dev-reference-data-default
             target:
               endpoint: {{FakeOsduPlatform.Endpoint}}
               headers:
@@ -164,7 +164,7 @@ public sealed class ComposedSourceTests : IDisposable
         => platform.Calls.Skip(from)
             .Select(c => Regex.Replace(c.Method + " " + Uri.UnescapeDataString(c.Uri.AbsolutePath), "/staging/landing/l-[0-9]+$", "/staging/landing/l-N"));
 
-    private static string TargetId(int log) => "opendes:work-product-component--WellLog:" + SampleEstate.Key(log).Value.ToString("N");
+    private static string TargetId(int log) => "dev:work-product-component--WellLog:" + SampleEstate.Key(log).Value.ToString("N");
 
     private static string? BulkLink(JsonObject record)
         => record["data"]?["ExtensionProperties"]?["wdms"]?["bulkURI"]?.GetValue<string>();
@@ -208,7 +208,7 @@ public sealed class ComposedSourceTests : IDisposable
         Assert.Equal("las-" + logs[0].LogId, state[PayloadParts.StateKey(PayloadParts.Files)]);
         Assert.Equal(logs[0].GridHash(), state[PayloadParts.StateKey(PayloadParts.Bulk)]);
         var dataset = state[Engine.Protocols.FileUploads.DatasetIdsValue];
-        Assert.StartsWith("opendes:dataset--File.Generic:minted-", dataset, StringComparison.Ordinal);
+        Assert.StartsWith("dev:dataset--File.Generic:minted-", dataset, StringComparison.Ordinal);
         Assert.Contains(dataset + ":", platform.Records[TargetId(0)]["data"]!["Datasets"]!.AsArray().Select(d => d!.GetValue<string>()));
 
         // The same rows again: nothing is sent.

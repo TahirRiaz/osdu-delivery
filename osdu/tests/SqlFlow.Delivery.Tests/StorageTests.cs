@@ -381,7 +381,7 @@ public class PayloadFileTests
 /// </summary>
 public sealed class OsduCacheStoreTests : IDisposable
 {
-    private const string Scope = "opendes";
+    private const string Scope = "dev";
 
     private const string ProjectA = "project-a-cache";
 

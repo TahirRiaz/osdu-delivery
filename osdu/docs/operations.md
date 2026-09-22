@@ -65,7 +65,7 @@ Everything the platform already reads ([environment-variables.md](environment-va
    Templates page browses OSDU and saves a template through the flow's connection on a node.
 4. Register the repository as a source in the GUI (Repos) and sync it. The delivery flow appears as a pipeline of kind
    `delivery`, and its mappings appear under Mappings, each with the template it pins. The cache flow
-   that fills the partition the delivery flow delivers to (the `data-partition-id` both declare, `opendes` in the
+   that fills the partition the delivery flow delivers to (the `data-partition-id` both declare, `dev` in the
    sample) appears as a pipeline of kind `cache`, and the partition's cache on the OSDU cache page, with no version yet.
 5. Capture the cache: run the cache flow with the refresh operation (Refresh now on the OSDU cache page, the Trigger
    run dialog on its pipeline, or `sqlflow run cache/wells-osdu-00-reference-cache.yaml --db <ref>` on a workstation), then
@@ -79,7 +79,7 @@ Everything the platform already reads ([environment-variables.md](environment-va
    found into the cache of its partition, writing that cache's first version into the catalog; the newest version is
    always the current one. Without access to OSDU,
    `sqlflow cache import cache/wells-osdu-00-reference-cache.yaml --from-dir <dir> --db <ref>` merges type files into the
-   partition's cache instead. `sqlflow cache list opendes --db <ref>` lists the versions. The cache flow's `schedule` keeps the cache refreshed ahead of the deliveries.
+   partition's cache instead. `sqlflow cache list dev --db <ref>` lists the versions. The cache flow's `schedule` keeps the cache refreshed ahead of the deliveries.
 6. Load the ingestion tables and plan before anything touches OSDU: run the pre-ingestion flow and then the
    ingestion flow beside the OSDU flow (lineage puts them in that order, so triggering the chain runs them in
    waves), then trigger the OSDU flow with operation `plan` and the flow parameters (the GUI's Trigger run

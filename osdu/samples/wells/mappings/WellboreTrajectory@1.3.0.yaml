@@ -110,10 +110,10 @@ mappings:
 fixtures:
   - name: T-1001, measured depth, inclination and azimuth in metres and degrees
     parameters:
-      dataPartition: opendes
-      aclOwner: data.default.owners@opendes.dataservices.energy
-      aclViewer: data.default.viewers@opendes.dataservices.energy
-      legalTag: opendes-reference-data-default
+      dataPartition: dev
+      aclOwner: data.default.owners@dev.dataservices.energy
+      aclViewer: data.default.viewers@dev.dataservices.energy
+      legalTag: dev-reference-data-default
     record:
       source_project: NO_15_9
       survey_id: T-1001
@@ -131,42 +131,42 @@ fixtures:
         - { station_property: AZI, property_type: AzimuthTN, property_unit: DEG }
     expected: |
       {
-        "id": "opendes:work-product-component--WellboreTrajectory:419a57e3f3d05223b56d3fce8508b39a",
+        "id": "dev:work-product-component--WellboreTrajectory:419a57e3f3d05223b56d3fce8508b39a",
         "kind": "osdu:wks:work-product-component--WellboreTrajectory:1.3.0",
         "acl": {
-          "owners": ["data.default.owners@opendes.dataservices.energy"],
-          "viewers": ["data.default.viewers@opendes.dataservices.energy"]
+          "owners": ["data.default.owners@dev.dataservices.energy"],
+          "viewers": ["data.default.viewers@dev.dataservices.energy"]
         },
-        "legal": { "legaltags": ["opendes-reference-data-default"], "otherRelevantDataCountries": ["NO"] },
+        "legal": { "legaltags": ["dev-reference-data-default"], "otherRelevantDataCountries": ["NO"] },
         "tags": { "DeliveredBy": "osdu-delivery" },
         "data": {
           "Name": "GYRO_2026",
           "SurveyReferenceIdentifier": "T-1001",
           "SurveyType": "Gyro",
           "SurveyVersion": "1",
-          "WellboreID": "opendes:master-data--Wellbore:OSDU-DEV-1-A:",
+          "WellboreID": "dev:master-data--Wellbore:OSDU-DEV-1-A:",
           "TopDepthMeasuredDepth": 1000,
           "BaseDepthMeasuredDepth": 1004,
           "VerticalMeasurement": {
             "VerticalMeasurement": 23.5,
-            "VerticalMeasurementUnitOfMeasureID": "opendes:reference-data--UnitOfMeasure:m:",
-            "VerticalMeasurementTypeID": "opendes:reference-data--VerticalMeasurementType:KellyBushing:"
+            "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:",
+            "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:"
           },
           "AvailableTrajectoryStationProperties": [
             {
               "Name": "MD",
-              "TrajectoryStationPropertyTypeID": "opendes:reference-data--TrajectoryStationPropertyType:MD:",
-              "StationPropertyUnitID": "opendes:reference-data--UnitOfMeasure:m:"
+              "TrajectoryStationPropertyTypeID": "dev:reference-data--TrajectoryStationPropertyType:MD:",
+              "StationPropertyUnitID": "dev:reference-data--UnitOfMeasure:m:"
             },
             {
               "Name": "INC",
-              "TrajectoryStationPropertyTypeID": "opendes:reference-data--TrajectoryStationPropertyType:Inclination:",
-              "StationPropertyUnitID": "opendes:reference-data--UnitOfMeasure:dega:"
+              "TrajectoryStationPropertyTypeID": "dev:reference-data--TrajectoryStationPropertyType:Inclination:",
+              "StationPropertyUnitID": "dev:reference-data--UnitOfMeasure:dega:"
             },
             {
               "Name": "AZI",
-              "TrajectoryStationPropertyTypeID": "opendes:reference-data--TrajectoryStationPropertyType:AzimuthTN:",
-              "StationPropertyUnitID": "opendes:reference-data--UnitOfMeasure:dega:"
+              "TrajectoryStationPropertyTypeID": "dev:reference-data--TrajectoryStationPropertyType:AzimuthTN:",
+              "StationPropertyUnitID": "dev:reference-data--UnitOfMeasure:dega:"
             }
           ]
         }

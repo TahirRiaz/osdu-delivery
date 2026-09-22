@@ -175,8 +175,8 @@ public sealed partial class DdmsCatalogTests
             Assert.NotNull(RafsOperation("DELETE", $"/v2/{segment}/{{record_id}}"));
             var pattern = new Regex(Parameters(get).Single(p => (string?)p["name"] == "record_id")["schema"]!["pattern"]!.GetValue<string>(), RegexOptions.CultureInvariant);
             var mine = DdmsCatalog.RafsCollections.Where(c => c.Segment == segment).ToList();
-            Assert.All(mine, c => Assert.Matches(pattern, $"opendes:{c.EntityType}:abc"));
-            Assert.All(DdmsCatalog.RafsCollections.Where(c => c.Segment != segment), c => Assert.DoesNotMatch(pattern, $"opendes:{c.EntityType}:abc"));
+            Assert.All(mine, c => Assert.Matches(pattern, $"dev:{c.EntityType}:abc"));
+            Assert.All(DdmsCatalog.RafsCollections.Where(c => c.Segment != segment), c => Assert.DoesNotMatch(pattern, $"dev:{c.EntityType}:abc"));
         }
     }
 
@@ -359,7 +359,7 @@ public sealed partial class DdmsCatalogTests
     [Theory]
     [InlineData("line-001", true)]
     [InlineData("a.b_c", true)]
-    [InlineData("opendes", true)]
+    [InlineData("dev", true)]
     [InlineData("a/b", false)]
     [InlineData("line 001", false)]
     [InlineData("ключ", false)]

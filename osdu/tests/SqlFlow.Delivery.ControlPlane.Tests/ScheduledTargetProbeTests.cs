@@ -252,10 +252,10 @@ public sealed class ScheduledTargetProbeTests
               work: ../.work/probe
             render:
               parameters:
-                dataPartition: opendes
+                dataPartition: dev
             target:
               endpoint: ${env:OSDU_URL}
-              headers: { data-partition-id: opendes }
+              headers: { data-partition-id: dev }
               protocolOptions: { ddmsRoot: /api/os-wellbore-ddms }
             interfaces:
               wellbores:
@@ -279,10 +279,10 @@ public sealed class ScheduledTargetProbeTests
             render:
               mapping: Wellbore@1.0.0
               parameters:
-                dataPartition: opendes
+                dataPartition: dev
             target:
               endpoint: ${env:OSDU_URL}
-              headers: { data-partition-id: opendes }
+              headers: { data-partition-id: dev }
             """;
 
         await using var db = CatalogDatabase.Create(cs);

@@ -39,7 +39,7 @@ public class YamlDocumentLoaderTests
           parameters: { dataPartition: dev }
         target:
           endpoint: https://example.org/petrodb
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
           protocol: ddms
           protocolOptions: { payload: curves, recordMethod: POST }
         reliability:
@@ -69,7 +69,7 @@ public class YamlDocumentLoaderTests
     [Fact]
     public void A_flow_without_the_partition_header_is_refused_when_read()
     {
-        var yaml = Flow.Replace("headers: { data-partition-id: opendes }", "headers: { }", StringComparison.Ordinal);
+        var yaml = Flow.Replace("headers: { data-partition-id: dev }", "headers: { }", StringComparison.Ordinal);
         Assert.DoesNotContain("data-partition-id", yaml, StringComparison.Ordinal);
         var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseFlow(yaml, "inline.yaml"));
         Assert.Contains("data-partition-id", ex.Message, StringComparison.Ordinal);
@@ -375,7 +375,7 @@ public class OsduIdentifierValidationTests
     }
 
     [Theory]
-    [InlineData("opendes")]
+    [InlineData("dev")]
     [InlineData("my-partition.eu_1")]
     public void A_data_partition_that_is_a_valid_id_segment_is_used(string partition)
     {
@@ -385,8 +385,8 @@ public class OsduIdentifierValidationTests
 
     [Theory]
     [InlineData("open des")]
-    [InlineData("opendes/eu")]
-    [InlineData("opendes:eu")]
+    [InlineData("dev/eu")]
+    [InlineData("dev:eu")]
     public void A_data_partition_that_would_mint_invalid_record_ids_is_refused(string partition)
     {
         var ex = Assert.Throws<FlowValidationException>(() => Context(partition).DataPartition);
@@ -409,7 +409,7 @@ public class OsduIdentifierValidationTests
         var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseRetrieval(Retrieval, "r.yaml"));
         Assert.Contains("data-partition-id", ex.Message, StringComparison.Ordinal);
 
-        var withHeader = Retrieval.Replace("headers: { }", "headers: { data-partition-id: opendes }", StringComparison.Ordinal);
+        var withHeader = Retrieval.Replace("headers: { }", "headers: { data-partition-id: dev }", StringComparison.Ordinal);
         Assert.Equal("wellbores-out", new DeliveryDocumentLoader().ParseRetrieval(withHeader, "r.yaml").Name);
     }
 

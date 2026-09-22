@@ -61,7 +61,7 @@ source:
 target:
   endpoint: ${env:OSDU_URL}
   auth: { ... }
-  headers: { data-partition-id: opendes }
+  headers: { data-partition-id: dev }
   ddms:                                       # optional: where DDMSs live when the registry does not say (section 5.3)
     wellbore: { root: /api/os-wellbore-ddms, shape: wellboreDdmsV3, entityTypes: { WellLog: welllogs, WellboreTrajectory: wellboretrajectories } }
 

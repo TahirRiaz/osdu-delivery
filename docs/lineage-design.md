@@ -36,8 +36,8 @@ Checked against the synced e2e catalog (`SQLFlow_E2E`, then named `SqlFlowCatalo
 | Node | Identity | Shown as |
 | --- | --- | --- |
 | Flow | The pipeline, as today. Every delivery, cache and retrieval flow is a flow node. | The flow's name, `delivery`/`cache`/`retrieval`, its wave |
-| OSDU type | The OSDU platform (the flow's endpoint reference), the data partition, and the record kind | The kind (`osdu:wks:master-data--Wellbore:1.3.0`), captioned `osdu type · opendes.master-data` |
-| Partition cache type | The data partition and the cache type name | The type name (`UnitOfMeasure`), captioned `osdu cache · opendes.cache` |
+| OSDU type | The OSDU platform (the flow's endpoint reference), the data partition, and the record kind | The kind (`osdu:wks:master-data--Wellbore:1.3.0`), captioned `osdu type · dev.master-data` |
+| Partition cache type | The data partition and the cache type name | The type name (`UnitOfMeasure`), captioned `osdu cache · dev.cache` |
 | File | The location relative to the repository root (a URL or an absolute path as written) | `data/welllog` |
 | Table, view | As today | As today |
 
@@ -47,7 +47,7 @@ has its own pattern node, which stands for everything of that type the platform 
 kind in the estate the pattern matches (section 5).
 
 The OSDU platform is part of an OSDU type's identity because it is part of what the record is: two environments may both
-have a partition called `opendes`. The platform is identified by the endpoint exactly as the flow declares it
+have a partition called `dev`. The platform is identified by the endpoint exactly as the flow declares it
 (`${env:OSDU_URL}`), which is SQLFlow's rule for every server identity: two flows naming the same platform through two
 different references are two platforms to lineage. The partition cache is keyed by partition alone, because that is how
 the module keys the cache itself (`CacheScope`).

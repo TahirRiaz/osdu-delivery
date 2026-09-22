@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
@@ -1008,13 +1008,30 @@ public sealed class FlowRuntime : IDisposable
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            await CompleteActivityAsync(ledger, activity.ActivityId, "cancelled", "cancelled", null).ConfigureAwait(false);
+            await SettleAsync(ledger, activity.ActivityId, "cancelled", "cancelled").ConfigureAwait(false);
             throw;
         }
-        catch (Exception ex) when (ex is DeliveryException or HttpRequestException or IOException or InvalidOperationException)
+        catch (Exception ex)
         {
-            await CompleteActivityAsync(ledger, activity.ActivityId, "failed", HeaderRedaction.RedactMessage(ex.Message), null).ConfigureAwait(false);
+            await SettleAsync(ledger, activity.ActivityId, "failed", HeaderRedaction.RedactMessage(ex.Message)).ConfigureAwait(false);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Ends an activity the operation did not finish. Every start is settled, whatever was thrown and from wherever in
+    /// the engine, so an action never keeps reading as running once its run is over; a ledger that cannot be written
+    /// here is logged and never replaces the failure the caller is about to see.
+    /// </summary>
+    private async Task SettleAsync(ILedger ledger, long activityId, string outcome, string summary)
+    {
+        try
+        {
+            await CompleteActivityAsync(ledger, activityId, outcome, summary, null).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException or InvalidOperationException or System.Data.Common.DbException)
+        {
+            _log.LogWarning("Could not settle activity {ActivityId} as {Outcome} in the ledger: {Message}", activityId, outcome, ex.Message);
         }
     }
 

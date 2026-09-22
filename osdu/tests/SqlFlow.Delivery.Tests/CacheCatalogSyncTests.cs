@@ -20,7 +20,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
         name: wells-osdu-00-reference-cache
         source:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
         onChange: approve
         types:
           - kind: osdu:wks:master-data--Wellbore:1.0.0
@@ -66,7 +66,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
     }
 
     /// <summary>A cache flow document: its name, partition and endpoint, and its types (YAML list items indented by two spaces).</summary>
-    private static string Flow(string name, string types, string partition = "opendes", string endpoint = "https://osdu.example.com") => $"""
+    private static string Flow(string name, string types, string partition = "dev", string endpoint = "https://osdu.example.com") => $"""
         flowType: cache
         name: {name}
         source:
@@ -115,7 +115,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
         var (warnings, result) = await SyncWithResultAsync(repoId);
 
         var warning = Assert.Single(warnings);
-        Assert.StartsWith("cache/c.yaml: Wellbore is left out of the cache of partition 'opendes', because ", warning, StringComparison.Ordinal);
+        Assert.StartsWith("cache/c.yaml: Wellbore is left out of the cache of partition 'dev', because ", warning, StringComparison.Ordinal);
         Assert.Contains("Wellbore.FacilityName is cached from data.FacilityName by cache flow 'project-a-cache' and from data.Name by 'project-c-cache'", warning, StringComparison.Ordinal);
         Assert.Equal(1, result.Invalid);
 
@@ -126,10 +126,10 @@ public sealed class CacheCatalogSyncTests : IDisposable
             .ToList();
         Assert.Equal(
             [
-                "opendes/project-a-cache/Wellbore",
-                "opendes/project-b-cache/UnitOfMeasure",
-                "opendes/project-b-cache/Wellbore",
-                "opendes/project-c-cache/VerticalMeasurementType",
+                "dev/project-a-cache/Wellbore",
+                "dev/project-b-cache/UnitOfMeasure",
+                "dev/project-b-cache/Wellbore",
+                "dev/project-c-cache/VerticalMeasurementType",
                 "other/other-partition-cache/Wellbore",
             ],
             rows);
@@ -138,7 +138,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
         Assert.Equal("cache/b.yaml", aliased.RelativePath);
 
         // What a refresh of the partition reads: one Wellbore type, filled from every path its flows declare.
-        var declaration = await OsduCacheStore.DeclarationAsync(db, "opendes");
+        var declaration = await OsduCacheStore.DeclarationAsync(db, "dev");
         Assert.Equal(["project-a-cache", "project-b-cache"], declaration.Of("Wellbore").Select(d => d.FlowName));
         Assert.Equal(["FacilityName", "Alias"], declaration.FieldsOf("Wellbore").Select(f => f.Name));
         Assert.Equal(["data.Name"], (await OsduCacheStore.DeclarationAsync(db, "other")).FieldsOf("Wellbore").Select(f => f.Path));
@@ -163,7 +163,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
 
         var warning = Assert.Single(warnings);
         Assert.Contains(
-            "well-cache.yaml: Wellbore is left out of the cache of partition 'opendes', because cache flow 'wells-osdu-00-reference-cache' declares Wellbore as master-data--Wellbore, and 'well-cache' declares it as master-data--Well",
+            "well-cache.yaml: Wellbore is left out of the cache of partition 'dev', because cache flow 'wells-osdu-00-reference-cache' declares Wellbore as master-data--Wellbore, and 'well-cache' declares it as master-data--Well",
             warning,
             StringComparison.Ordinal);
         Assert.Equal(1, result.Invalid);
@@ -182,7 +182,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
         var (warnings, result) = await SyncWithResultAsync(repoId);
 
         var warning = Assert.Single(warnings);
-        Assert.StartsWith("The cache flows of partition 'opendes' search different endpoints (https://osdu.example.com, https://other.example.com)", warning, StringComparison.Ordinal);
+        Assert.StartsWith("The cache flows of partition 'dev' search different endpoints (https://osdu.example.com, https://other.example.com)", warning, StringComparison.Ordinal);
         Assert.Equal(0, result.Invalid);
         await using var db = _catalog.CreateDbContext();
         Assert.Equal(4, await db.DeliveryCacheDefinitions.CountAsync(c => c.RepoId == repoId));
@@ -201,15 +201,15 @@ public sealed class CacheCatalogSyncTests : IDisposable
 
         static ReferenceType Units(params string[] codes) => new(
             "UnitOfMeasure", "reference-data--UnitOfMeasure",
-            codes.Select(code => ReferenceItem.FromText("opendes:reference-data--UnitOfMeasure:" + code, new Dictionary<string, string> { ["Code"] = code, ["Name"] = code })));
+            codes.Select(code => ReferenceItem.FromText("dev:reference-data--UnitOfMeasure:" + code, new Dictionary<string, string> { ["Code"] = code, ["Name"] = code })));
         var wellbore = new ReferenceType(
             "Wellbore", "master-data--Wellbore",
-            [ReferenceItem.FromText("opendes:master-data--Wellbore:1", new Dictionary<string, string> { ["FacilityName"] = "NO 1" })]);
+            [ReferenceItem.FromText("dev:master-data--Wellbore:1", new Dictionary<string, string> { ["FacilityName"] = "NO 1" })]);
         var store = _catalog.Caches();
         var capture = new CacheCapture(null, "tests", "seeded");
         var at = new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero);
-        await store.MergeAsync("opendes", "project-a-cache", [Units("m"), wellbore], capture, at);
-        await store.MergeAsync("opendes", "project-b-cache", [Units("ft")], capture, at.AddHours(1));
+        await store.MergeAsync("dev", "project-a-cache", [Units("m"), wellbore], capture, at);
+        await store.MergeAsync("dev", "project-b-cache", [Units("ft")], capture, at.AddHours(1));
 
         Write("cache/a.yaml", Flow("project-a-cache", FacilityWellbore));
         Assert.Empty(await SyncAsync(repoId));
@@ -222,9 +222,9 @@ public sealed class CacheCatalogSyncTests : IDisposable
         }
 
         // With A's hold gone, the metre leaves the partition's cache the next time B captures units without it.
-        var next = await store.MergeAsync("opendes", "project-b-cache", [Units("ft")], capture, at.AddHours(2));
+        var next = await store.MergeAsync("dev", "project-b-cache", [Units("ft")], capture, at.AddHours(2));
         Assert.True(next.Written);
-        Assert.Equal(["opendes:reference-data--UnitOfMeasure:ft"], next.Snapshot.Type("UnitOfMeasure")!.Items.Select(i => i.Id));
+        Assert.Equal(["dev:reference-data--UnitOfMeasure:ft"], next.Snapshot.Type("UnitOfMeasure")!.Items.Select(i => i.Id));
     }
 
     [Fact]
@@ -240,7 +240,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
 
         var wellbore = definitions[1];
         Assert.Equal("wells-osdu-00-reference-cache", wellbore.FlowName);
-        Assert.Equal("opendes", wellbore.Scope);
+        Assert.Equal("dev", wellbore.Scope);
         Assert.Equal("https://osdu.example.com", wellbore.Endpoint);
         Assert.Equal("cache/wells-osdu-00-reference-cache.yaml", wellbore.RelativePath);
         Assert.Equal("master-data--Wellbore", wellbore.EntityType);
@@ -291,7 +291,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
             { "version": "20260101T000000Z", "capturedUtc": "2026-01-01T00:00:00Z", "types": ["Wellbore"] }
             """);
         Write("snapshots/references/20260101T000000Z/Wellbore.json", """
-            { "entityType": "master-data--Wellbore", "items": [ { "id": "opendes:master-data--Wellbore:1", "FacilityName": "NO 1/1-A" } ] }
+            { "entityType": "master-data--Wellbore", "items": [ { "id": "dev:master-data--Wellbore:1", "FacilityName": "NO 1/1-A" } ] }
             """);
 
         Assert.Empty(await SyncAsync(Guid.NewGuid()));
@@ -323,7 +323,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
             name: osdu-metadata-sync
             source:
               endpoint: https://osdu.example.com
-              headers: { data-partition-id: opendes }
+              headers: { data-partition-id: dev }
               kinds: [osdu:wks:master-data--Wellbore:1.0.0]
             target:
               location: lake/metadata
@@ -343,7 +343,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
             name: broken-cache
             source:
               endpoint: https://osdu.example.com
-              headers: { data-partition-id: opendes }
+              headers: { data-partition-id: dev }
             types:
               - fields: [data.FacilityName]
             """);

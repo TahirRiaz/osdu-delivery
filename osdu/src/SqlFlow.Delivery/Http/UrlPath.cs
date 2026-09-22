@@ -6,7 +6,7 @@ namespace SqlFlow.Delivery.Http;
 /// Escaping for values that go into a URL <em>path segment</em>, which is not the same thing as escaping for a
 /// query string.
 ///
-/// OSDU identifiers are colon separated by construction (<c>opendes:master-data--Well:1234</c>), every storage,
+/// OSDU identifiers are colon separated by construction (<c>dev:master-data--Well:1234</c>), every storage,
 /// file and DDMS endpoint takes one in the path, and a search cursor is base64 and carries <c>=</c>. RFC 3986
 /// allows all of those unescaped in a segment: <c>pchar = unreserved / pct-encoded / sub-delims / ":" / "@"</c>.
 /// <see cref="Uri.EscapeDataString(string)"/> targets <c>application/x-www-form-urlencoded</c> instead and percent-encodes

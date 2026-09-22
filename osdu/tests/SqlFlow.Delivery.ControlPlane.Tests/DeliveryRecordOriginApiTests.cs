@@ -76,7 +76,7 @@ public sealed class DeliveryRecordOriginApiTests
                 DeliveryKey = key,
                 Status = RecordStatus.Delivered,
                 Promote = true,
-                TargetId = "opendes:master-data--Wellbore:WB-ORIGIN-1",
+                TargetId = "dev:master-data--Wellbore:WB-ORIGIN-1",
                 TargetVersion = 1,
                 Attempt = new AttemptRecord
                 {

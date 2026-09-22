@@ -12,7 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class CacheVersionComparisonTests : IDisposable
 {
-    private const string Scope = "opendes";
+    private const string Scope = "dev";
     private const string First = "20260901T100000Z";
     private const string Earlier = "20260910T100000Z";
     private const string Later = "20260911T100000Z";

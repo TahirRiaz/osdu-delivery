@@ -201,7 +201,7 @@ public class SqlLedgerTests : IDisposable
             SourceKeyJson = """["NO_15_9","L-1001"]""",
             Label = "OSDU-DEV-1-A / STAT_COMP / run 1 (L-1001)",
             Identities = ["OSDU-DEV-1-A", "NO 15/9-19 SR"],
-            TargetId = "opendes:work-product-component--WellLog:ea10870200ce",
+            TargetId = "dev:work-product-component--WellLog:ea10870200ce",
             PendingSourceFileName = "welllog_20260901.csv",
         };
         await Ledger.UpsertPendingAsync(_flow, [record]);
@@ -211,7 +211,7 @@ public class SqlLedgerTests : IDisposable
         foreach (var term in new[]
         {
             "OSDU-DEV-1-A", "osdu-dev-1", "NO 15/9-19", "L-1001", "NO_15_9",
-            "opendes:work-product-component--WellLog:ea1087", "ea10870200ce", "STAT_COMP", "welllog_2026", key.Value.ToString("D"),
+            "dev:work-product-component--WellLog:ea1087", "ea10870200ce", "STAT_COMP", "welllog_2026", key.Value.ToString("D"),
         })
         {
             var found = await Ledger.LookupAsync(term, 10);
@@ -245,7 +245,7 @@ public class SqlLedgerTests : IDisposable
 
         // The same row read by a second flow is that flow's record, and one term finds both.
         var otherFlow = FlowId.Of("test-flow-two");
-        await Ledger.UpsertPendingAsync(otherFlow, [record with { FlowId = otherFlow, TargetId = "opendes:master-data--Well:ea10870200ce" }]);
+        await Ledger.UpsertPendingAsync(otherFlow, [record with { FlowId = otherFlow, TargetId = "dev:master-data--Well:ea10870200ce" }]);
         Assert.Equal(2, (await Ledger.LookupAsync("L-1001", 10)).Count);
         Assert.Equal(new BoundedCount(2, Exact: true), await Ledger.CountLookupAsync("L-1001", 10));
     }
@@ -260,7 +260,7 @@ public class SqlLedgerTests : IDisposable
             "wells:NO_15_9/L-1001",
             ["NO_15_9", "L-1001", null, "  "],
             "OSDU-DEV-1-A / STAT_COMP / run 1 (L-1001)",
-            "opendes:work-product-component--WellLog:ea1087",
+            "dev:work-product-component--WellLog:ea1087",
             "welllog_20260901.csv");
         var by = tokens.ToLookup(t => t.Kind);
 

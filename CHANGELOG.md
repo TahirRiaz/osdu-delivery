@@ -157,6 +157,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The sample estate is written for the `dev` partition.** It used `opendes`, OSDU's own documented example
+  partition, which read as a real destination in a repository whose estates deliver to `dev`. Every occurrence
+  outside `osdu/specs` is now `dev`: the mapping fixtures and the records they pin, the sample cache records, the
+  suites, the docs and the walkthroughs. `osdu/specs` keeps `opendes` because those are OSDU's own OpenAPI documents
+  and integration briefs, and this project verifies platform behaviour against them as the vendor wrote them.
+  The sample cache records now carry `dev:` ids, which makes one mistake easier to make and so louder to find: they
+  are made-up records, and importing them into an estate that delivers for real puts ids into its cache the platform
+  may never have held. Their README says so first.
+
 - **A cache is keyed by the partition a flow reaches, not by the text its document spells it with.** An estate whose
   documents name their partition `${env:OSDU_DATA_PARTITION}` was keying its cache by that literal string: a capture
   under the real partition could never be read, two estates sharing a variable name but delivering to different

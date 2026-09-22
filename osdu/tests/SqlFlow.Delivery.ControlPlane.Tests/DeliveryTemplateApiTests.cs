@@ -189,7 +189,7 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal("WellLog@1.4.0", flow.Mapping);
             // The flow reads the cache of the partition it delivers to.
             Assert.Equal(scope, flow.CacheScope);
-            Assert.Equal("opendes", flow.Parameters["dataPartition"]);
+            Assert.Equal("dev", flow.Parameters["dataPartition"]);
 
             var caches = await ReadAsync<List<DeliveryBuilderCacheDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/mapping-builder/caches"));
             var cache = Assert.Single(caches, c => c.Scope == scope);
@@ -240,10 +240,10 @@ public sealed class DeliveryTemplateApiTests
             Assert.NotNull(parsed.Draft);
             var parameters = new Dictionary<string, string>
             {
-                ["dataPartition"] = "opendes",
-                ["aclOwner"] = "data.default.owners@opendes.dataservices.energy",
-                ["aclViewer"] = "data.default.viewers@opendes.dataservices.energy",
-                ["legalTag"] = "opendes-reference-data-default",
+                ["dataPartition"] = "dev",
+                ["aclOwner"] = "data.default.owners@dev.dataservices.energy",
+                ["aclViewer"] = "data.default.viewers@dev.dataservices.energy",
+                ["legalTag"] = "dev-reference-data-default",
             };
             var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = parsed.Draft, parameters }));
             Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
@@ -254,9 +254,9 @@ public sealed class DeliveryTemplateApiTests
             var shape = await ReadAsync<DeliveryMappingShapeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/shape", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml", parameters }));
             Assert.Empty(shape.Issues);
             Assert.NotNull(shape.Record);
-            Assert.Equal("opendes:work-product-component--WellLog:<delivery key from wells, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
+            Assert.Equal("dev:work-product-component--WellLog:<delivery key from wells, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
             Assert.Equal("<string from dataset.curves.curve_id>", shape.Record["data"]!["Curves"]![0]!["CurveID"]!.GetValue<string>());
-            Assert.Equal("opendes", Assert.Single(shape.Parameters, p => p.Name == "dataPartition").Value);
+            Assert.Equal("dev", Assert.Single(shape.Parameters, p => p.Name == "dataPartition").Value);
 
             // The same document measured against its template: every variable a mapping may fill, with how the document
             // reaches it, and nothing required left empty. Nothing is rendered and no cache is read.
@@ -579,10 +579,10 @@ public sealed class DeliveryTemplateApiTests
                 render:
                   mapping: WellLog@1.4.0
                   parameters:
-                    dataPartition: opendes
-                    aclOwner: data.default.owners@opendes.dataservices.energy
-                    aclViewer: data.default.viewers@opendes.dataservices.energy
-                    legalTag: opendes-reference-data-default
+                    dataPartition: dev
+                    aclOwner: data.default.owners@dev.dataservices.energy
+                    aclViewer: data.default.viewers@dev.dataservices.energy
+                    legalTag: dev-reference-data-default
                 target:
                   endpoint: https://osdu.example.test
                   headers:

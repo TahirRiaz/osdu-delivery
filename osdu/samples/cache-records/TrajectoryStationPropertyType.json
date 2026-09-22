@@ -1,9 +1,9 @@
 {
   "entityType": "reference-data--TrajectoryStationPropertyType",
   "items": [
-    { "id": "opendes:reference-data--TrajectoryStationPropertyType:MD", "Code": "MD", "Name": "Measured Depth" },
-    { "id": "opendes:reference-data--TrajectoryStationPropertyType:Inclination", "Code": "Inclination", "Name": "Inclination" },
-    { "id": "opendes:reference-data--TrajectoryStationPropertyType:AzimuthTN", "Code": "AzimuthTN", "Name": "Azimuth True North" },
-    { "id": "opendes:reference-data--TrajectoryStationPropertyType:TVD", "Code": "TVD", "Name": "True Vertical Depth" }
+    { "id": "dev:reference-data--TrajectoryStationPropertyType:MD", "Code": "MD", "Name": "Measured Depth" },
+    { "id": "dev:reference-data--TrajectoryStationPropertyType:Inclination", "Code": "Inclination", "Name": "Inclination" },
+    { "id": "dev:reference-data--TrajectoryStationPropertyType:AzimuthTN", "Code": "AzimuthTN", "Name": "Azimuth True North" },
+    { "id": "dev:reference-data--TrajectoryStationPropertyType:TVD", "Code": "TVD", "Name": "True Vertical Depth" }
   ]
 }

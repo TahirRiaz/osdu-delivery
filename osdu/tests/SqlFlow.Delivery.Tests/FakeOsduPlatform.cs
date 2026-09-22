@@ -161,7 +161,7 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
     };
 
     /// <summary>The one partition the historian's ingestion deployment takes (its <c>DATA_PARTITION_ID</c>).</summary>
-    public string TimeSeriesPartition { get; set; } = "opendes";
+    public string TimeSeriesPartition { get; set; } = "dev";
 
     /// <summary>
     /// The versions the historian stores, by record and series, in the order it accepted them, each with its points by
@@ -205,8 +205,8 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
     {
         ["id"] = id,
         ["kind"] = kind,
-        ["acl"] = new JsonObject { ["viewers"] = new JsonArray("data.default.viewers@opendes.example.com"), ["owners"] = new JsonArray("data.default.owners@opendes.example.com") },
-        ["legal"] = new JsonObject { ["legaltags"] = new JsonArray("opendes-public"), ["otherRelevantDataCountries"] = new JsonArray("NO") },
+        ["acl"] = new JsonObject { ["viewers"] = new JsonArray("data.default.viewers@dev.example.com"), ["owners"] = new JsonArray("data.default.owners@dev.example.com") },
+        ["legal"] = new JsonObject { ["legaltags"] = new JsonArray("dev-public"), ["otherRelevantDataCountries"] = new JsonArray("NO") },
         ["data"] = data ?? new JsonObject { ["Name"] = id },
     };
 
@@ -674,7 +674,7 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
         if (operation == "metadata" && method == "POST")
         {
             var record = JsonNode.Parse(body!)!.AsObject();
-            var id = $"opendes:dataset--File.Generic:minted-{(++_locations).ToString(CultureInfo.InvariantCulture)}";
+            var id = $"dev:dataset--File.Generic:minted-{(++_locations).ToString(CultureInfo.InvariantCulture)}";
             record["id"] = id;
             Put(record);
             return Json(HttpStatusCode.Created, new JsonObject { ["id"] = id });
@@ -1211,7 +1211,7 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
                 .Select(e => e.Split('/')[^2])
                 .Select(contentId => contentId[..contentId.LastIndexOf(':')])
                 .FirstOrDefault(dataset => dataset.Split(':')[2].StartsWith(contentType + "-", StringComparison.Ordinal));
-            var dataset = existing ?? $"opendes:dataset--File.Generic:{contentType}-{Guid.NewGuid():D}";
+            var dataset = existing ?? $"dev:dataset--File.Generic:{contentType}-{Guid.NewGuid():D}";
             var registered = Record(dataset, "osdu:wks:dataset--File.Generic:1.0.0", new JsonObject
             {
                 ["DatasetProperties"] = new JsonObject { ["FileSourceInfo"] = new JsonObject { ["FileSource"] = $"/rafs/{dataset}", ["FileSize"] = bytes.Length.ToString(CultureInfo.InvariantCulture) } },

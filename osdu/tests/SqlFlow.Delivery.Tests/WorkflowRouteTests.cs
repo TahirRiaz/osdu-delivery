@@ -18,7 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class WorkflowRouteTests
 {
-    private const string Partition = "opendes";
+    private const string Partition = "dev";
 
     private static readonly SecretResolver Secrets = new([new EnvSecretProvider()]);
 
@@ -114,7 +114,7 @@ public sealed class WorkflowRouteTests
     public async Task The_csv_parser_reads_a_descriptor_registered_with_its_file_and_its_rows_are_found_by_the_anchor_tag()
     {
         var platform = new FakeOsduPlatform();
-        const string anchor = "opendes:dataset--File.Generic:csv-wells-1";
+        const string anchor = "dev:dataset--File.Generic:csv-wells-1";
         var tag = WorkflowValues.Tag(anchor);
         platform.Register("csv_ingestion", new FakeOsduPlatform.Script
         {
@@ -125,7 +125,7 @@ public sealed class WorkflowRouteTests
                 var descriptor = p.Records[run.Context["id"]!.GetValue<string>()];
                 for (var i = 0; i < 3; i++)
                 {
-                    var row = FakeOsduPlatform.Record($"opendes:master-data--Well:wks-row{i}", "osdu:wks:master-data--Well:1.0.0");
+                    var row = FakeOsduPlatform.Record($"dev:master-data--Well:wks-row{i}", "osdu:wks:master-data--Well:1.0.0");
                     row["tags"] = descriptor["tags"]!.DeepClone();
                     p.Put(row);
                 }
@@ -198,8 +198,8 @@ public sealed class WorkflowRouteTests
     private static async Task EnergisticsAsync(AirflowApiVersion? xcom, string? airflowVersion)
     {
         var platform = new FakeOsduPlatform { AirflowVersion = airflowVersion ?? "v1" };
-        const string anchor = "opendes:dataset--File.Generic:epc-1";
-        const string manifest = "opendes:dataset--File.Generic:energistics-manifest-9";
+        const string anchor = "dev:dataset--File.Generic:epc-1";
+        const string manifest = "dev:dataset--File.Generic:energistics-manifest-9";
         var tag = WorkflowValues.Tag(anchor);
         platform.Register("Energyml_Converter", new FakeOsduPlatform.Script
         {
@@ -216,11 +216,11 @@ public sealed class WorkflowRouteTests
             Effect = (p, run) =>
             {
                 Assert.Equal(manifest, run.Context["manifest"]!.GetValue<string>());
-                var wpc = FakeOsduPlatform.Record("opendes:work-product-component--WellLog:resqml-1", "osdu:wks:work-product-component--WellLog:1.4.0", new JsonObject { ["Tags"] = new JsonArray(tag) });
+                var wpc = FakeOsduPlatform.Record("dev:work-product-component--WellLog:resqml-1", "osdu:wks:work-product-component--WellLog:1.4.0", new JsonObject { ["Tags"] = new JsonArray(tag) });
                 p.Put(wpc);
             },
         });
-        platform.Search = (kind, query) => query == $"data.Tags:\"{tag}\"" ? ["opendes:work-product-component--WellLog:resqml-1"] : [];
+        platform.Search = (kind, query) => query == $"data.Tags:\"{tag}\"" ? ["dev:work-product-component--WellLog:resqml-1"] : [];
 
         var route = new WorkflowRoute
         {
@@ -252,11 +252,11 @@ public sealed class WorkflowRouteTests
         var translate = AssertContract(platform.Runs[0], WorkflowCatalog.EnergymlConverter);
         Assert.Equal([anchor], translate["dataset_xml"]!.AsArray().Select(n => n!.GetValue<string>()));
         Assert.Equal(
-            ["opendes:dataset--File.Generic:epc-1-h5-0", "opendes:dataset--File.Generic:epc-1-h5-1"],
+            ["dev:dataset--File.Generic:epc-1-h5-0", "dev:dataset--File.Generic:epc-1-h5-1"],
             translate["dataset_h5"]!.AsArray().Select(n => n!.GetValue<string>()));
         AssertContract(platform.Runs[1], WorkflowCatalog.OsduIngestByReference);
-        Assert.Equal("opendes:dataset--File.Generic:epc-1-h5-0,opendes:dataset--File.Generic:epc-1-h5-1", outcome.Returned[OsduWorkflowProtocol.InputValue("h5")]);
-        Assert.True(platform.Records.ContainsKey("opendes:dataset--File.Generic:epc-1-h5-1"));
+        Assert.Equal("dev:dataset--File.Generic:epc-1-h5-0,dev:dataset--File.Generic:epc-1-h5-1", outcome.Returned[OsduWorkflowProtocol.InputValue("h5")]);
+        Assert.True(platform.Records.ContainsKey("dev:dataset--File.Generic:epc-1-h5-1"));
 
         var used = AssertConform(platform, OsduContracts.AirflowV1, OsduContracts.AirflowV2, OsduContracts.AirflowAuth);
         switch (xcom)
@@ -278,8 +278,8 @@ public sealed class WorkflowRouteTests
     public async Task Enyparser_writes_its_manifest_where_it_is_told_and_the_records_it_lists_are_read_back()
     {
         var platform = new FakeOsduPlatform();
-        const string anchor = "opendes:dataset--File.Generic:resqml-pack-1";
-        const string manifest = "opendes:dataset--File.Generic:resqml-pack-1-manifest";
+        const string anchor = "dev:dataset--File.Generic:resqml-pack-1";
+        const string manifest = "dev:dataset--File.Generic:resqml-pack-1-manifest";
         platform.Register("Enyparser_Translation", new FakeOsduPlatform.Script
         {
             Effect = (p, run) =>
@@ -288,8 +288,8 @@ public sealed class WorkflowRouteTests
                 p.Put(FakeOsduPlatform.Record(manifest, "osdu:wks:dataset--File.Generic:1.0.0"));
                 p.Content[manifest] = Encoding.UTF8.GetBytes("""
                     {"kind":"osdu:wks:Manifest:1.0.0",
-                     "MasterData":[{"id":"opendes:master-data--Wellbore:wb-9"}],
-                     "Data":{"WorkProductComponents":[{"id":"opendes:work-product-component--WellLog:wl-9"},{"id":"surrogate-key:wpc-1"}]}}
+                     "MasterData":[{"id":"dev:master-data--Wellbore:wb-9"}],
+                     "Data":{"WorkProductComponents":[{"id":"dev:work-product-component--WellLog:wl-9"},{"id":"surrogate-key:wpc-1"}]}}
                     """);
             },
         });
@@ -297,8 +297,8 @@ public sealed class WorkflowRouteTests
         {
             Effect = (p, run) =>
             {
-                p.Put(FakeOsduPlatform.Record("opendes:master-data--Wellbore:wb-9", "osdu:wks:master-data--Wellbore:1.3.0"));
-                p.Put(FakeOsduPlatform.Record("opendes:work-product-component--WellLog:wl-9", "osdu:wks:work-product-component--WellLog:1.4.0"));
+                p.Put(FakeOsduPlatform.Record("dev:master-data--Wellbore:wb-9", "osdu:wks:master-data--Wellbore:1.3.0"));
+                p.Put(FakeOsduPlatform.Record("dev:work-product-component--WellLog:wl-9", "osdu:wks:work-product-component--WellLog:1.4.0"));
             },
         });
 
@@ -322,10 +322,10 @@ public sealed class WorkflowRouteTests
 
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
         Assert.Equal("2", outcome.Returned[OsduWorkflowProtocol.RecordsValue]);
-        Assert.Equal("opendes:master-data--Wellbore:wb-9,opendes:work-product-component--WellLog:wl-9", outcome.Returned[OsduWorkflowProtocol.RecordIdsValue]);
+        Assert.Equal("dev:master-data--Wellbore:wb-9,dev:work-product-component--WellLog:wl-9", outcome.Returned[OsduWorkflowProtocol.RecordIdsValue]);
         var translate = AssertContract(platform.Runs[0], WorkflowCatalog.EnyparserTranslation);
         Assert.Equal(anchor, translate["work_product_name"]!.GetValue<string>());
-        Assert.Equal("opendes-public", translate["enyparserConfig"]!["legal"]!["legaltags"]![0]!.GetValue<string>());
+        Assert.Equal("dev-public", translate["enyparserConfig"]!["legal"]!["legaltags"]![0]!.GetValue<string>());
         AssertContract(platform.Runs[1], WorkflowCatalog.OsduIngestByReference);
 
         // The manifest is read from the location its retrieval instructions give, without the flow's credentials.
@@ -340,12 +340,12 @@ public sealed class WorkflowRouteTests
     [InlineData("/api/search/v2/query_with_cursor", "/api/search/v2/query_with_cursor")]
     public async Task A_search_for_what_the_runs_wrote_pages_by_cursor_on_the_search_path_the_flow_names(string? declared, string asked)
     {
-        var platform = new FakeOsduPlatform { Search = (_, _) => ["opendes:master-data--Well:w-1"] };
+        var platform = new FakeOsduPlatform { Search = (_, _) => ["dev:master-data--Well:w-1"] };
         using var rig = new Rig(platform);
         var route = new WorkflowRoute { Anchor = WorkflowAnchor.Storage, Stages = [Stage("csv_ingestion", "{}")] };
         var protocol = new OsduWorkflowProtocol(rig.Client, Rig.Options with { SearchQueryPath = declared }, route, Samples.Logger<OsduWorkflowProtocol>(), Secrets);
 
-        Assert.Equal(["opendes:master-data--Well:w-1"], await protocol.SearchAsync("osdu:wks:master-data--Well:1.*.*", "tags.osduDeliveryAnchor:\"x\"", CancellationToken.None));
+        Assert.Equal(["dev:master-data--Well:w-1"], await protocol.SearchAsync("osdu:wks:master-data--Well:1.*.*", "tags.osduDeliveryAnchor:\"x\"", CancellationToken.None));
         Assert.Equal(asked, Assert.Single(platform.Calls).Uri.AbsolutePath);
         Assert.Equal(["core/search POST /query_with_cursor"], AssertConform(platform));
     }
@@ -362,7 +362,7 @@ public sealed class WorkflowRouteTests
         },
         {
             "segy_to_mdio_conversion", WorkflowCatalog.SegyToMdio, "TGS.MDIO",
-            """{ "work_product_id": "{record:data.Parameters[Title=work_product_id].DataObjectParameter|first|id}", "filecollection_segy_id": "{record:data.Datasets[0]|id}", "mdio_sd_path": "sd://opendes/mdio/{record:data.Name}", "lossless": true, "chunksize": [64, 64, 64], "client_id": "{secret:client}", "client_secret": "{secret:client}", "refresh_token": "{secret:client}", "refresh_url": "{secret:client}" }"""
+            """{ "work_product_id": "{record:data.Parameters[Title=work_product_id].DataObjectParameter|first|id}", "filecollection_segy_id": "{record:data.Datasets[0]|id}", "mdio_sd_path": "sd://dev/mdio/{record:data.Name}", "lossless": true, "chunksize": [64, 64, 64], "client_id": "{secret:client}", "client_secret": "{secret:client}", "refresh_token": "{secret:client}", "refresh_url": "{secret:client}" }"""
         },
     };
 
@@ -371,8 +371,8 @@ public sealed class WorkflowRouteTests
     public async Task A_seg_y_conversion_starts_from_a_stored_record_and_its_artefact_is_found_on_it(string workflow, string contract, string artefactKind, string context)
     {
         var platform = new FakeOsduPlatform();
-        const string anchor = "opendes:work-product-component--SeismicTraceData:st-1";
-        var artefact = $"opendes:dataset--FileCollection.{artefactKind}:out-1";
+        const string anchor = "dev:work-product-component--SeismicTraceData:st-1";
+        var artefact = $"dev:dataset--FileCollection.{artefactKind}:out-1";
         platform.Register(workflow, new FakeOsduPlatform.Script
         {
             Effect = (p, run) =>
@@ -382,7 +382,7 @@ public sealed class WorkflowRouteTests
                 var trace = (JsonObject)p.Records[anchor].DeepClone();
                 trace["data"]!["Artefacts"] = new JsonArray(new JsonObject
                 {
-                    ["RoleID"] = "opendes:reference-data--ArtefactRole:ConvertedContent:",
+                    ["RoleID"] = "dev:reference-data--ArtefactRole:ConvertedContent:",
                     ["ResourceKind"] = $"osdu:wks:dataset--FileCollection.{artefactKind}:1.0.0",
                     ["ResourceID"] = artefact + ":",
                 });
@@ -407,8 +407,8 @@ public sealed class WorkflowRouteTests
         var document = FakeOsduPlatform.Record(anchor, "osdu:wks:work-product-component--SeismicTraceData:1.3.0", new JsonObject
         {
             ["Name"] = "st-1",
-            ["Datasets"] = new JsonArray("opendes:dataset--FileCollection.SEGY:segy-1:"),
-            ["Parameters"] = new JsonArray(new JsonObject { ["Title"] = "work_product_id", ["DataObjectParameter"] = "opendes:work-product--WorkProduct:wp-1:" }),
+            ["Datasets"] = new JsonArray("dev:dataset--FileCollection.SEGY:segy-1:"),
+            ["Parameters"] = new JsonArray(new JsonObject { ["Title"] = "work_product_id", ["DataObjectParameter"] = "dev:work-product--WorkProduct:wp-1:" }),
         });
 
         using var rig = new Rig(platform);
@@ -434,17 +434,17 @@ public sealed class WorkflowRouteTests
     public async Task Energistics_delivery_exports_records_and_its_datasets_are_read_from_the_task_that_wrote_them()
     {
         var platform = new FakeOsduPlatform { AirflowVersion = "v2" };
-        const string anchor = "opendes:work-product--WorkProduct:export-1";
+        const string anchor = "dev:work-product--WorkProduct:export-1";
         platform.Register("Energyml_Delivery", new FakeOsduPlatform.Script
         {
             Effect = (p, run) =>
             {
-                p.Put(FakeOsduPlatform.Record("opendes:dataset--File.Generic:epc-out", "osdu:wks:dataset--File.Generic:1.0.0"));
-                p.Put(FakeOsduPlatform.Record("opendes:dataset--File.Generic:h5-out", "osdu:wks:dataset--File.Generic:1.0.0"));
+                p.Put(FakeOsduPlatform.Record("dev:dataset--File.Generic:epc-out", "osdu:wks:dataset--File.Generic:1.0.0"));
+                p.Put(FakeOsduPlatform.Record("dev:dataset--File.Generic:h5-out", "osdu:wks:dataset--File.Generic:1.0.0"));
             },
             XCom = _ => new Dictionary<(string, string), JsonNode?>
             {
-                [("epc_h5_delivery", "return_value")] = new JsonObject { ["epc"] = "opendes:dataset--File.Generic:epc-out", ["h5"] = "opendes:dataset--File.Generic:h5-out" },
+                [("epc_h5_delivery", "return_value")] = new JsonObject { ["epc"] = "dev:dataset--File.Generic:epc-out", ["h5"] = "dev:dataset--File.Generic:h5-out" },
             },
         });
 
@@ -464,14 +464,14 @@ public sealed class WorkflowRouteTests
         var document = FakeOsduPlatform.Record(anchor, "osdu:wks:work-product--WorkProduct:1.2.0", new JsonObject
         {
             ["Name"] = "volve",
-            ["Components"] = new JsonArray("opendes:work-product-component--WellLog:a:", "opendes:work-product-component--WellLog:b:"),
+            ["Components"] = new JsonArray("dev:work-product-component--WellLog:a:", "dev:work-product-component--WellLog:b:"),
         });
 
         using var rig = new Rig(platform);
         var protocol = rig.Protocol(route, rig.Airflow(AirflowApiVersion.V2));
         var outcome = await protocol.DeliverAsync(Work(document));
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
-        Assert.Equal("opendes:dataset--File.Generic:epc-out,opendes:dataset--File.Generic:h5-out", outcome.Returned[OsduWorkflowProtocol.RecordIdsValue]);
+        Assert.Equal("dev:dataset--File.Generic:epc-out,dev:dataset--File.Generic:h5-out", outcome.Returned[OsduWorkflowProtocol.RecordIdsValue]);
         var sent = AssertContract(Assert.Single(platform.Runs), WorkflowCatalog.EnergymlDelivery);
         Assert.Equal("volve.epc", sent["name"]!.GetValue<string>());
 
@@ -486,7 +486,7 @@ public sealed class WorkflowRouteTests
     public async Task External_data_services_run_a_job_only_when_an_operator_asks_and_the_scheduler_and_naturalization_take_their_contexts()
     {
         var platform = new FakeOsduPlatform();
-        const string job = "opendes:master-data--ConnectedSourceDataJob:job-1";
+        const string job = "dev:master-data--ConnectedSourceDataJob:job-1";
         platform.Register("eds_ingest");
         platform.Register("eds_scheduler");
         platform.Register("eds_naturalization");
@@ -514,7 +514,7 @@ public sealed class WorkflowRouteTests
         Assert.Null(run.Context["Payload"]);
 
         var scheduler = rig.Protocol(new WorkflowRoute { Anchor = WorkflowAnchor.Storage, Stages = [Stage("eds_scheduler", "{}")] });
-        Assert.True((await scheduler.DeliverAsync(Work(FakeOsduPlatform.Record("opendes:master-data--ConnectedSourceRegistryEntry:csre-1", "osdu:wks:master-data--ConnectedSourceRegistryEntry:1.0.0")))).Succeeded);
+        Assert.True((await scheduler.DeliverAsync(Work(FakeOsduPlatform.Record("dev:master-data--ConnectedSourceRegistryEntry:csre-1", "osdu:wks:master-data--ConnectedSourceRegistryEntry:1.0.0")))).Succeeded);
         Assert.Empty(AssertContract(platform.Runs[1], WorkflowCatalog.EdsScheduler));
 
         var naturalize = rig.Protocol(new WorkflowRoute
@@ -523,10 +523,10 @@ public sealed class WorkflowRouteTests
             Stages = [Stage("eds_naturalization", """{ "items": [{ "id": "{record:id}" }] }""")],
             Results = new WorkflowResults { Strategy = WorkflowResultStrategy.Anchor },
         });
-        var wpc = FakeOsduPlatform.Record("opendes:work-product-component--Document:doc-1", "osdu:wks:work-product-component--Document:1.0.0");
+        var wpc = FakeOsduPlatform.Record("dev:work-product-component--Document:doc-1", "osdu:wks:work-product-component--Document:1.0.0");
         var naturalized = await naturalize.DeliverAsync(Work(wpc));
         Assert.True(naturalized.Succeeded, naturalized.Failure?.Message);
-        Assert.Equal("opendes:work-product-component--Document:doc-1", AssertContract(platform.Runs[2], WorkflowCatalog.EdsNaturalization)["items"]![0]!["id"]!.GetValue<string>());
+        Assert.Equal("dev:work-product-component--Document:doc-1", AssertContract(platform.Runs[2], WorkflowCatalog.EdsNaturalization)["items"]![0]!["id"]!.GetValue<string>());
         Assert.Equal("1", naturalized.Returned[OsduWorkflowProtocol.RecordsValue]);
         AssertConform(platform);
     }
@@ -535,7 +535,7 @@ public sealed class WorkflowRouteTests
     public async Task Osdu_ingest_takes_an_inline_manifest_the_context_builds_from_the_record()
     {
         var platform = new FakeOsduPlatform();
-        const string anchor = "opendes:master-data--Wellbore:wb-inline";
+        const string anchor = "dev:master-data--Wellbore:wb-inline";
         platform.Register("Osdu_ingest", new FakeOsduPlatform.Script
         {
             Effect = (p, run) =>
@@ -579,7 +579,7 @@ public sealed class WorkflowRouteTests
         using var rig = new Rig(platform);
         var route = new WorkflowRoute { Anchor = WorkflowAnchor.Storage, Stages = [Stage("eds_scheduler", "{}")] };
         var steps = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
-        var document = FakeOsduPlatform.Record("opendes:master-data--ConnectedSourceRegistryEntry:csre-2", "osdu:wks:master-data--ConnectedSourceRegistryEntry:1.0.0");
+        var document = FakeOsduPlatform.Record("dev:master-data--ConnectedSourceRegistryEntry:csre-2", "osdu:wks:master-data--ConnectedSourceRegistryEntry:1.0.0");
         DeliveryWork Tracked() => Work(document) with
         {
             CompletedSteps = steps,
@@ -611,12 +611,12 @@ public sealed class WorkflowRouteTests
         var platform = new FakeOsduPlatform();
         platform.Register("eds_scheduler");
         using var rig = new Rig(platform);
-        var document = FakeOsduPlatform.Record("opendes:master-data--ConnectedSourceRegistryEntry:csre-3", "osdu:wks:master-data--ConnectedSourceRegistryEntry:1.0.0");
+        var document = FakeOsduPlatform.Record("dev:master-data--ConnectedSourceRegistryEntry:csre-3", "osdu:wks:master-data--ConnectedSourceRegistryEntry:1.0.0");
         var route = new WorkflowRoute
         {
             Anchor = WorkflowAnchor.Storage,
             Stages = [Stage("eds_scheduler", "{}")],
-            Results = new WorkflowResults { Strategy = WorkflowResultStrategy.Ids, Template = "opendes:master-data--Well:late", Minimum = 1 },
+            Results = new WorkflowResults { Strategy = WorkflowResultStrategy.Ids, Template = "dev:master-data--Well:late", Minimum = 1 },
         };
 
         // The record was written and the service took the run, and the try stopped before its answer was recorded.
@@ -647,7 +647,7 @@ public sealed class WorkflowRouteTests
         Assert.Contains(platform.Calls, c => c.Method == HttpMethod.Post && c.Uri.AbsolutePath.EndsWith("/workflowRun", StringComparison.Ordinal));
 
         // The next try finds it, and runs nothing again.
-        platform.Put(FakeOsduPlatform.Record("opendes:master-data--Well:late", "osdu:wks:master-data--Well:1.0.0"));
+        platform.Put(FakeOsduPlatform.Record("dev:master-data--Well:late", "osdu:wks:master-data--Well:1.0.0"));
         var triggers = platform.Triggers("eds_scheduler").Count();
         var second = await rig.Protocol(route).DeliverAsync(Tracked());
         Assert.True(second.Succeeded, second.Failure?.Message);
@@ -666,7 +666,7 @@ public sealed class WorkflowRouteTests
             Anchor = WorkflowAnchor.Storage,
             Stages = [Stage("csv_ingestion", """{ "id": "{record:data.Name}", "dataPartitionId": "{partition}", "data_service_to_use": "{record:data.Service}" }""")],
         };
-        var document = FakeOsduPlatform.Record("opendes:master-data--Well:w-1", "osdu:wks:master-data--Well:1.0.0", new JsonObject { ["Name"] = "", ["Service"] = "blob" });
+        var document = FakeOsduPlatform.Record("dev:master-data--Well:w-1", "osdu:wks:master-data--Well:1.0.0", new JsonObject { ["Name"] = "", ["Service"] = "blob" });
         var outcome = await rig.Protocol(route).DeliverAsync(Work(document));
         var held = Assert.IsType<RecordHeldException>(outcome.Failure);
         Assert.Contains("'id' must not be empty", held.Message, StringComparison.Ordinal);
@@ -678,14 +678,14 @@ public sealed class WorkflowRouteTests
     public async Task A_removal_takes_what_the_runs_created_and_a_search_is_repeated_to_name_them_all()
     {
         var platform = new FakeOsduPlatform();
-        const string anchor = "opendes:dataset--File.Generic:csv-remove";
-        foreach (var id in new[] { "opendes:master-data--Well:r1", "opendes:master-data--Well:r2", "opendes:dataset--File.Generic:csv-remove-h5-0" })
+        const string anchor = "dev:dataset--File.Generic:csv-remove";
+        foreach (var id in new[] { "dev:master-data--Well:r1", "dev:master-data--Well:r2", "dev:dataset--File.Generic:csv-remove-h5-0" })
         {
             platform.Put(FakeOsduPlatform.Record(id, "osdu:wks:master-data--Well:1.0.0"));
         }
 
         platform.Put(FakeOsduPlatform.Record(anchor, "osdu:wks:dataset--File.Generic:1.0.0"));
-        platform.Search = (_, _) => ["opendes:master-data--Well:r1", "opendes:master-data--Well:r2"];
+        platform.Search = (_, _) => ["dev:master-data--Well:r1", "dev:master-data--Well:r2"];
         using var rig = new Rig(platform);
         var route = new WorkflowRoute
         {
@@ -697,9 +697,9 @@ public sealed class WorkflowRouteTests
         var state = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [OsduWorkflowProtocol.RecordsValue] = "2",
-            [OsduWorkflowProtocol.RecordIdsValue] = "opendes:master-data--Well:r1",
+            [OsduWorkflowProtocol.RecordIdsValue] = "dev:master-data--Well:r1",
             [OsduWorkflowProtocol.SearchKindValue] = "osdu:wks:master-data--Well:1.0.0",
-            [OsduWorkflowProtocol.InputValue("h5")] = "opendes:dataset--File.Generic:csv-remove-h5-0",
+            [OsduWorkflowProtocol.InputValue("h5")] = "dev:dataset--File.Generic:csv-remove-h5-0",
         };
 
         var protocol = rig.Protocol(route);
@@ -707,12 +707,12 @@ public sealed class WorkflowRouteTests
         Assert.True(removed.Deleted);
         Assert.Contains("2 record(s) the route created for it removed at the same scope", removed.Detail, StringComparison.Ordinal);
         Assert.Contains(anchor, platform.Removed);
-        Assert.Contains("opendes:master-data--Well:r2", platform.Removed);
+        Assert.Contains("dev:master-data--Well:r2", platform.Removed);
 
         // The reversible removal leaves the inputs, so OSDU can restore the record whole; everything takes them.
-        Assert.DoesNotContain("opendes:dataset--File.Generic:csv-remove-h5-0", platform.Removed);
+        Assert.DoesNotContain("dev:dataset--File.Generic:csv-remove-h5-0", platform.Removed);
         var purged = await protocol.DeleteAsync(anchor, RemovalScope.Everything, state);
-        Assert.Contains("opendes:dataset--File.Generic:csv-remove-h5-0", platform.Purged);
+        Assert.Contains("dev:dataset--File.Generic:csv-remove-h5-0", platform.Purged);
         Assert.Contains(anchor, platform.Purged);
         Assert.True(purged.Deleted);
 

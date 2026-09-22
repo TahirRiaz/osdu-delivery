@@ -25,7 +25,7 @@ public sealed class WorkflowDocumentsTests
         target:
           endpoint: ${env:OSDU_URL}
           headers:
-            data-partition-id: opendes
+            data-partition-id: dev
           protocolOptions:
             ddmsRoot: /api/os-wellbore-ddms
         {{target}}
@@ -46,7 +46,7 @@ public sealed class WorkflowDocumentsTests
         target:
           endpoint: ${env:OSDU_URL}
           headers:
-            data-partition-id: opendes
+            data-partition-id: dev
         {{target}}
         """).ReplaceLineEndings("\n");
 
@@ -416,7 +416,7 @@ public sealed class WorkflowDocumentsTests
                     context:
                       work_product_id: "{record:id}"
                       filecollection_segy_id: "{record:data.Datasets[0]}"
-                      mdio_sd_path: sd://opendes/mdio/out
+                      mdio_sd_path: sd://dev/mdio/out
                       client_id: "{secret:clientId}"
                 secrets:
                   clientId: ${env:MDIO_CLIENT}

@@ -23,9 +23,9 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class ProductionTimeSeriesRouteTests
 {
-    private const string ValuesId = "opendes:work-product-component--ProductionValues:pv-1";
+    private const string ValuesId = "dev:work-product-component--ProductionValues:pv-1";
     private const string ValuesKind = "osdu:wks:work-product-component--ProductionValues:2.0.0";
-    private const string Well = "opendes:master-data--Well:w-1:";
+    private const string Well = "dev:master-data--Well:w-1:";
     private const string Records = "/api/storage/v2/records";
     private const string Ingest = FakeOsduPlatform.TimeSeriesRoot + "/production-values/" + ValuesId + "/timeseries";
     private const string Query = FakeOsduPlatform.TimeSeriesQueryRoot + "/production-values/" + ValuesId + "/timeseries/";
@@ -54,7 +54,7 @@ public sealed class ProductionTimeSeriesRouteTests
                 new SecretResolver([new EnvSecretProvider()]), new TestClock(), platform, allowLoopback: true);
             Client = new OsduHttpClient(
                 Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
             Options = new ProtocolOptions { WorkflowPollSeconds = 1, DatasetIndexWaitSeconds = 0 };
             var historian = new DdmsService("historian", FakeOsduPlatform.TimeSeriesRoot, DdmsShape.ProductionTimeSeriesV1, DdmsCatalog.TimeSeriesCollections)
             {
@@ -124,8 +124,8 @@ public sealed class ProductionTimeSeriesRouteTests
             ["ProductionMetricValues"] = new JsonArray(series.Select(s => (JsonNode?)new JsonObject
             {
                 ["DDMSDatasetID"] = s.Id,
-                ["ParameterKindID"] = s.Kind.Contains(':', StringComparison.Ordinal) ? s.Kind : $"opendes:reference-data--ParameterKind:{s.Kind}:",
-                ["UnitOfMeasureID"] = "opendes:reference-data--UnitOfMeasure:bbl%2Fd:",
+                ["ParameterKindID"] = s.Kind.Contains(':', StringComparison.Ordinal) ? s.Kind : $"dev:reference-data--ParameterKind:{s.Kind}:",
+                ["UnitOfMeasureID"] = "dev:reference-data--UnitOfMeasure:bbl%2Fd:",
             }).ToArray()),
         };
         if (reportingEntity is not null)
@@ -194,15 +194,15 @@ public sealed class ProductionTimeSeriesRouteTests
     private static string[] Links(JsonObject record) => record["data"]!["DDMSDatasets"]!.AsArray().Select(n => n!.GetValue<string>()).ToArray();
 
     [Theory]
-    [InlineData("opendes:reference-data--ParameterKind:Double:", "Double")]
+    [InlineData("dev:reference-data--ParameterKind:Double:", "Double")]
     [InlineData("osdu:reference-data--ParameterKind:Integer:1", "Integer")]
-    [InlineData("opendes:reference-data--parameterkind:BOOLEAN:", "Boolean")]
-    [InlineData("opendes:reference-data--ParameterKind:String:", "String")]
-    [InlineData("opendes:reference-data--ParameterKind:Timestamp:", "Timestamp")]
-    [InlineData("opendes:reference-data--ParameterKind:set-string:", "SetString")]
-    [InlineData("opendes:reference-data--ParameterKind:SetString:", "SetString")]
+    [InlineData("dev:reference-data--parameterkind:BOOLEAN:", "Boolean")]
+    [InlineData("dev:reference-data--ParameterKind:String:", "String")]
+    [InlineData("dev:reference-data--ParameterKind:Timestamp:", "Timestamp")]
+    [InlineData("dev:reference-data--ParameterKind:set-string:", "SetString")]
+    [InlineData("dev:reference-data--ParameterKind:SetString:", "SetString")]
     [InlineData("Double", "Double")]
-    [InlineData("opendes:reference-data--ParameterKind:Long:", "Unknown")]
+    [InlineData("dev:reference-data--ParameterKind:Long:", "Unknown")]
     [InlineData("", "Unknown")]
     public void A_series_kind_is_read_from_the_code_its_parameter_kind_names(string parameterKind, string expected)
         => Assert.Equal(Enum.Parse<SeriesKind>(expected), SeriesDefinition.KindOf(parameterKind));
@@ -281,7 +281,7 @@ public sealed class ProductionTimeSeriesRouteTests
         var platform = new FakeOsduPlatform();
         using var rig = new Rig(platform);
         var document = Values(Standard);
-        document["data"]!["DDMSDatasets"] = new JsonArray("urn://other/keep", "urn://pddms/production-values/opendes:work-product-component--ProductionValues:other/timeseries");
+        document["data"]!["DDMSDatasets"] = new JsonArray("urn://other/keep", "urn://pddms/production-values/dev:work-product-component--ProductionValues:other/timeseries");
 
         var outcome = await rig.Protocol.DeliverAsync(Work(document));
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
@@ -493,7 +493,7 @@ public sealed class ProductionTimeSeriesRouteTests
             + "{\"timeseriesId\":\"WELLS\",\"points\":[{\"timestamp\":" + Day0.ToString(CultureInfo.InvariantCulture) + ",\"value\":4.0}]}"
             + "]}";
 
-        var outcome = await rig.Protocol.DeliverAsync(Work(Values(("TAGS", "opendes:reference-data--ParameterKind:set-string:"), ("OIL", "Double"), ("WELLS", "Integer")), Files(("points.json", Encoding.UTF8.GetBytes(json)))));
+        var outcome = await rig.Protocol.DeliverAsync(Work(Values(("TAGS", "dev:reference-data--ParameterKind:set-string:"), ("OIL", "Double"), ("WELLS", "Integer")), Files(("points.json", Encoding.UTF8.GetBytes(json)))));
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
         var body = platform.Calls[1].Body!;
         Assert.Contains("\"value\":[\"shut-in\",\"tested\"]", body, StringComparison.Ordinal);
@@ -509,10 +509,10 @@ public sealed class ProductionTimeSeriesRouteTests
     {
         var withTimes = Values(("WHEN", "Timestamp"), ("OIL", "Double"));
         var withUnknown = Values(("ODD", "Decimal"), ("OIL", "Double"));
-        var withSet = Values(("TAGS", "opendes:reference-data--ParameterKind:set-string:"));
+        var withSet = Values(("TAGS", "dev:reference-data--ParameterKind:set-string:"));
         var oldKind = Values("osdu:wks:work-product-component--ProductionValues:1.3.0", Well, Standard);
         var noEntity = Values(ValuesKind, null, Standard);
-        var notMaster = Values(ValuesKind, "opendes:work-product-component--WellLog:x:", Standard);
+        var notMaster = Values(ValuesKind, "dev:work-product-component--WellLog:x:", Standard);
         var noSeries = Values();
         var twice = Values(("OIL", "Double"), ("OIL", "Integer"));
         var noKind = Values(Standard);
@@ -529,8 +529,8 @@ public sealed class ProductionTimeSeriesRouteTests
             (Values(Standard), [("points.parquet", await TableAsync([("timestamp", typeof(long)), ("OIL", typeof(string))], [[Day0, "abc"]]))], "row 1 of points.parquet holds abc (String) for OIL, which is not a finite number"),
             (Values(Standard), [("points.parquet", await TableAsync([("timestamp", typeof(long)), ("WELLS", typeof(double))], [[Day0, 1.0], [Day0 + Day, 2.5]]))], "row 2 of points.parquet holds 2.5 (Double) for WELLS, which is not a whole number"),
             (Values(Standard), [("points.parquet", await TableAsync([("timestamp", typeof(long)), ("OIL", typeof(double))], [[Day0, double.PositiveInfinity]]))], "for OIL, which is not a finite number"),
-            (withTimes, [("points.json", Series(("WHEN", [(Day0, JsonValue.Create("2020-12-16T11:46:20.163Z"))])))], "WHEN is a date-time series (opendes:reference-data--ParameterKind:Timestamp:)"),
-            (withUnknown, [("points.json", Series(("ODD", [(Day0, JsonValue.Create(1.5))])))], "ODD names the kind opendes:reference-data--ParameterKind:Decimal:, which the ingestion service does not know"),
+            (withTimes, [("points.json", Series(("WHEN", [(Day0, JsonValue.Create("2020-12-16T11:46:20.163Z"))])))], "WHEN is a date-time series (dev:reference-data--ParameterKind:Timestamp:)"),
+            (withUnknown, [("points.json", Series(("ODD", [(Day0, JsonValue.Create(1.5))])))], "ODD names the kind dev:reference-data--ParameterKind:Decimal:, which the ingestion service does not know"),
             (Values(Standard), [("points.json", Series(("OIL", [(Day0, JsonValue.Create(1.5)), (Day0, JsonValue.Create(2.5))])))], $"point 2 of OIL in points.json is at {Day0}, the timestamp of the point before it"),
             (Values(Standard), [("points.parquet", await TableAsync([("timestamp", typeof(long)), ("OIL", typeof(double))], [[Day0 + Day, 1.0], [Day0, 2.0]]))], $"the point of OIL in row 2 of points.parquet is at {Day0}, before the point ahead of it ({Day0 + Day})"),
             (Values(Standard), [("points.json", Encoding.UTF8.GetBytes("{\"timeseries\":[{\"timeseriesId\":\"OIL\",\"points\":[{\"point\":1,\"value\":1.5}]}]}"))], "names its time point, which the ingestion service reads from timestamp"),
@@ -539,7 +539,7 @@ public sealed class ProductionTimeSeriesRouteTests
             (Values(Standard), [("points.json", Encoding.UTF8.GetBytes("{\"productionValues\":[]}"))], "is not in the form the ingestion service takes for one record"),
             (Values(Standard), [("points.json", Encoding.UTF8.GetBytes("{\"timeseries\":[{\"timeseriesId\":\"OIL\",\"points\":[]},{\"timeseriesId\":\"OIL\",\"points\":[]}]}"))], "the points file points.json lists OIL more than once"),
             (Values(Standard), [("points.json", Encoding.UTF8.GetBytes("not json"))], "the points file points.json is not JSON"),
-            (withSet, [("points.parquet", await TableAsync([("timestamp", typeof(long)), ("TAGS", typeof(string))], [[Day0, "a"]]))], "TAGS is a SET-STRING series (opendes:reference-data--ParameterKind:set-string:), whose values are lists of strings; send its points from a JSON points file"),
+            (withSet, [("points.parquet", await TableAsync([("timestamp", typeof(long)), ("TAGS", typeof(string))], [[Day0, "a"]]))], "TAGS is a SET-STRING series (dev:reference-data--ParameterKind:set-string:), whose values are lists of strings; send its points from a JSON points file"),
             (withSet, [("points.json", Series(("TAGS", [(Day0, new JsonArray("a", "a"))])))], "which is not a list of distinct strings, as the SET-STRING series TAGS takes"),
             (Values(Standard), [("a.json", oneOil), ("b.json", oneOil)], "OIL has points in both a.json and b.json; keep the points of a series in one file"),
             (Values(Standard), [("points.csv", Encoding.UTF8.GetBytes("timestamp,OIL"))], "the points file points.csv is neither .parquet nor .json"),
@@ -555,7 +555,7 @@ public sealed class ProductionTimeSeriesRouteTests
             (Values(Standard), [("points.parquet", [.. "PAR1"u8, .. "not a footer"u8, 12, 0, 0, 0, .. "PAR1"u8])], "the points file points.parquet is declared as parquet but could not be read"),
             (oldKind, [("points.json", oneOil)], "is ProductionValues 1.3.0; the historian keeps the points of ProductionValues 2.0.0 and later"),
             (noEntity, [("points.json", oneOil)], "data.ReportingEntityID is not given"),
-            (notMaster, [("points.json", oneOil)], "data.ReportingEntityID 'opendes:work-product-component--WellLog:x:' is not a master data record"),
+            (notMaster, [("points.json", oneOil)], "data.ReportingEntityID 'dev:work-product-component--WellLog:x:' is not a master data record"),
             (noSeries, [("points.json", oneOil)], "data.ProductionMetricValues lists no series"),
             (twice, [("points.json", oneOil)], "data.ProductionMetricValues lists the DDMSDatasetID OIL more than once"),
             (noKind, [("points.json", oneOil)], "WELLS (entry 2 of data.ProductionMetricValues) has no ParameterKindID"),

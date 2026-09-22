@@ -175,7 +175,7 @@ internal sealed partial class FakeEtpServer
     /// <summary>The <c>dataset--ETPDataspace</c> record the server writes for a dataspace it creates (section 6.3).</summary>
     public List<string> StorageRecords { get; } = [];
 
-    private static string RecordId(string path) => $"opendes:dataset--ETPDataspace:{path.Replace('/', '-')}";
+    private static string RecordId(string path) => $"dev:dataset--ETPDataspace:{path.Replace('/', '-')}";
 
     private async Task LockAsync(LockDataspaces request, EtpFrame frame, Peer peer, CancellationToken ct)
     {

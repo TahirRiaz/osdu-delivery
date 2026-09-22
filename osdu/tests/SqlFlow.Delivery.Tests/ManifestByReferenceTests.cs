@@ -29,7 +29,7 @@ public sealed class ManifestByReferenceTests
                 Secrets, TimeProvider.System, platform, allowLoopback: true);
             Client = new OsduHttpClient(
                 Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
         }
 
         public HttpRuntime Runtime { get; }
@@ -51,7 +51,7 @@ public sealed class ManifestByReferenceTests
     }
 
     private static JsonObject Wellbore(string key, int padding = 0) => FakeOsduPlatform.Record(
-        "opendes:master-data--Wellbore:" + key,
+        "dev:master-data--Wellbore:" + key,
         "osdu:wks:master-data--Wellbore:1.3.0",
         new JsonObject { ["FacilityName"] = key, ["Remarks"] = new string('x', padding) });
 
@@ -68,7 +68,7 @@ public sealed class ManifestByReferenceTests
     /// <summary>The execution context an inline manifest of <paramref name="records"/> is sent with, for measuring it.</summary>
     private static JsonObject InlineContext(params JsonObject[] records) => new()
     {
-        ["Payload"] = new JsonObject { ["AppKey"] = "osdu-delivery", ["data-partition-id"] = "opendes" },
+        ["Payload"] = new JsonObject { ["AppKey"] = "osdu-delivery", ["data-partition-id"] = "dev" },
         ["manifest"] = new JsonObject
         {
             ["kind"] = "osdu:wks:Manifest:1.0.0",
@@ -94,10 +94,10 @@ public sealed class ManifestByReferenceTests
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
         var run = Assert.Single(platform.Runs);
         Assert.Equal(ByReference, run.Workflow);
-        var manifestId = "opendes:dataset--File.Generic:osdu-delivery-manifest-" + run.RunId;
+        var manifestId = "dev:dataset--File.Generic:osdu-delivery-manifest-" + run.RunId;
         Assert.Equal(["Payload", "acl", "legal", "manifest"], run.Context.Select(p => p.Key));
         Assert.Equal(manifestId, run.Context["manifest"]!.GetValue<string>());
-        Assert.Equal("opendes", run.Context["Payload"]!["data-partition-id"]!.GetValue<string>());
+        Assert.Equal("dev", run.Context["Payload"]!["data-partition-id"]!.GetValue<string>());
         Assert.True(JsonNode.DeepEquals(wellbore["acl"], run.Context["acl"]));
         Assert.True(JsonNode.DeepEquals(wellbore["legal"], run.Context["legal"]));
 
@@ -209,7 +209,7 @@ public sealed class ManifestByReferenceTests
         using var rig = new Rig(platform);
         var wellbore = Wellbore("wb-resumed");
         const string runId = "7d3c2f0e-5b1a-4c8e-9f2d-3a4b5c6d7e8f";
-        var manifestId = "opendes:dataset--File.Generic:osdu-delivery-manifest-" + runId;
+        var manifestId = "dev:dataset--File.Generic:osdu-delivery-manifest-" + runId;
 
         // What the earlier try left: the run triggered, its manifest stored, and the record the run wrote.
         platform.Runs.Add(new FakeOsduPlatform.Run(ByReference, runId, new JsonObject()));

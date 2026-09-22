@@ -40,7 +40,7 @@ public sealed partial class FakeOsduPlatform
     /// <summary>The subprojects by <c>tenant/subproject</c>: the legal tag and access policy each was created with, and its storage.</summary>
     public Dictionary<string, (string LegalTag, string Policy, string Bucket)> SeismicSubprojects { get; } = new(StringComparer.Ordinal)
     {
-        ["opendes/seismic"] = ("opendes-public", "uniform", "ss-dev-seismic00001"),
+        ["dev/seismic"] = ("dev-public", "uniform", "ss-dev-seismic00001"),
     };
 
     /// <summary>The datasets by <c>sd://</c> path, as the catalogue keeps them.</summary>
@@ -139,7 +139,7 @@ public sealed partial class FakeOsduPlatform
                     ["ltag"] = sub.LegalTag,
                     ["access_policy"] = sub.Policy,
                     ["gcs_bucket"] = sub.Bucket,
-                    ["acls"] = new JsonObject { ["admins"] = new JsonArray("data.sdms.admin@opendes.example.com"), ["viewers"] = new JsonArray("data.sdms.viewer@opendes.example.com") },
+                    ["acls"] = new JsonObject { ["admins"] = new JsonArray("data.sdms.admin@dev.example.com"), ["viewers"] = new JsonArray("data.sdms.viewer@dev.example.com") },
                 })
                 : SeismicText(HttpStatusCode.NotFound, $"[seismic-store-service] The subproject {name} does not exist");
         }
@@ -389,7 +389,7 @@ public sealed partial class FakeOsduPlatform
         copy["sbit_count"] = held is null ? 0 : 1;
         if (withSuffix)
         {
-            copy["ctag"] = copy["ctag"]!.GetValue<string>() + "opendes-gcp;opendes";
+            copy["ctag"] = copy["ctag"]!.GetValue<string>() + "dev-gcp;dev";
             copy["access_policy"] = "uniform";
         }
 

@@ -59,10 +59,10 @@ public sealed class DdmsSourceTests : IDisposable
             render:
               mappings: '{{mappings}}'
               parameters:
-                dataPartition: opendes
-                aclOwner: data.default.owners@opendes.dataservices.energy
-                aclViewer: data.default.viewers@opendes.dataservices.energy
-                legalTag: opendes-reference-data-default
+                dataPartition: dev
+                aclOwner: data.default.owners@dev.dataservices.energy
+                aclViewer: data.default.viewers@dev.dataservices.energy
+                legalTag: dev-reference-data-default
             target:
               endpoint: http://localhost
               headers:
@@ -229,7 +229,7 @@ public sealed class DdmsSourceTests : IDisposable
 
         // Each record went to the collection serving its entity type, record first and its bulk data after it.
         string Call(FakeHttpHandler.Request c) => c.Method + " " + c.Uri.AbsolutePath;
-        var surveyId = "opendes:work-product-component--WellboreTrajectory:" + DeliveryKey.Derive("wells", ["NO_15_9", "T-1001"]).Value.ToString("N");
+        var surveyId = "dev:work-product-component--WellboreTrajectory:" + DeliveryKey.Derive("wells", ["NO_15_9", "T-1001"]).Value.ToString("N");
         var trajectoryCalls = handler.Calls.Select(Call).Where(c => c.Contains("/wellboretrajectories", StringComparison.Ordinal)).ToList();
         Assert.Equal(
             [
@@ -248,7 +248,7 @@ public sealed class DdmsSourceTests : IDisposable
             ["MD", "INC", "AZI"],
             written["data"]!["AvailableTrajectoryStationProperties"]!.AsArray().Select(s => (string?)s!["Name"]));
         Assert.Equal(
-            "opendes:reference-data--TrajectoryStationPropertyType:MD:",
+            "dev:reference-data--TrajectoryStationPropertyType:MD:",
             (string?)written["data"]!["AvailableTrajectoryStationProperties"]![0]!["TrajectoryStationPropertyTypeID"]);
 
         // Every call keeps to its contract.

@@ -40,7 +40,7 @@ public sealed class DspdmRouteTests
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (partition)
             {
-                headers["data-partition-id"] = "opendes";
+                headers["data-partition-id"] = "dev";
             }
 
             var client = new OsduHttpClient(Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None }, headers);
@@ -59,7 +59,7 @@ public sealed class DspdmRouteTests
         public void Dispose() => Runtime.Dispose();
     }
 
-    private static string TargetId(string key, string entity = "well") => $"opendes:{entity}:{DeliveryKey.Derive("acme", [key]).Value:N}";
+    private static string TargetId(string key, string entity = "well") => $"dev:{entity}:{DeliveryKey.Derive("acme", [key]).Value:N}";
 
     /// <summary>A rendered WELL row: its attributes, and the attributes its mapping fills.</summary>
     private static JsonObject Well(string uwi, string name = "Alpha 1", string op = "Acme", JsonObject? more = null, string? key = null, string[]? owned = null)

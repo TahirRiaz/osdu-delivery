@@ -353,8 +353,8 @@ test.describe.serial("templates and the mapping builder", () => {
 
     await adminPage.getByTestId("mapping-builder-repo").click();
     await adminPage.getByRole("option").filter({ hasText: "e2e-repo" }).first().click();
-    // The repository's delivery flow delivers to partition opendes, so the builder reads that partition's cache without being told.
-    await expect(adminPage.getByTestId("mapping-builder-cache")).toContainText("opendes", { timeout: 15_000 });
+    // The repository's delivery flow delivers to partition dev, so the builder reads that partition's cache without being told.
+    await expect(adminPage.getByTestId("mapping-builder-cache")).toContainText("dev", { timeout: 15_000 });
     await expect(adminPage.getByTestId("mapping-builder-cache-note")).toContainText(/holds \d+ types? at version /, { timeout: 15_000 });
 
     await adminPage.getByTestId("mapping-builder-template").click();
@@ -448,8 +448,8 @@ test.describe.serial("templates and the mapping builder", () => {
     const shape = detail.getByTestId("delivery-mapping-shape-json");
     // The editor draws only the lines in view, so the check reads the id on the first lines rather than a deeper field.
     await expect(shape).toContainText("<delivery key from wells", { timeout: 15_000 });
-    await detail.getByTestId("delivery-mapping-shape-parameter-dataPartition").fill("opendes");
-    await expect(shape).toContainText("opendes:work-product-component--WellLog:", { timeout: 15_000 });
+    await detail.getByTestId("delivery-mapping-shape-parameter-dataPartition").fill("dev");
+    await expect(shape).toContainText("dev:work-product-component--WellLog:", { timeout: 15_000 });
 
     await detail.getByTestId("delivery-mapping-open-builder").click();
 

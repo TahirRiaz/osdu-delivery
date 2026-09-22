@@ -49,10 +49,10 @@ public sealed class DeliveryInterfacesApiTests
               work: ../.work/{logSource}
             render:
               parameters:
-                dataPartition: opendes
+                dataPartition: dev
             target:
               endpoint: ${env:OSDU_URL}
-              headers: { data-partition-id: opendes }
+              headers: { data-partition-id: dev }
               protocolOptions: { ddmsRoot: /api/os-wellbore-ddms }
             interfaces:
               wellbores:

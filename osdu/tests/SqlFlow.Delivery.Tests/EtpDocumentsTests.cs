@@ -142,7 +142,7 @@ public class EtpDocumentsTests
           mapping: Grid@1.0.0
         target:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
           protocol: etp
         {{etp}}
         """).ReplaceLineEndings("\n");

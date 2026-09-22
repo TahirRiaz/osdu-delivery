@@ -19,7 +19,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public class RemovalProtocolTests
 {
-    private const string RecordId = "opendes:work-product-component--WellLog:abc";
+    private const string RecordId = "dev:work-product-component--WellLog:abc";
 
     private static (OsduHttpClient Client, HttpRuntime Runtime) Client(FakeHttpHandler handler)
     {

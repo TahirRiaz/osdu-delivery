@@ -32,7 +32,7 @@ public class EtpSessionTests : IDisposable
     private static readonly Dictionary<string, string> Headers = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Authorization"] = "Bearer test-token",
-        ["data-partition-id"] = "opendes",
+        ["data-partition-id"] = "dev",
     };
 
     [Fact]
@@ -49,7 +49,7 @@ public class EtpSessionTests : IDisposable
         Assert.Contains(EtpProtocols.Store, session.Protocols);
 
         Assert.Equal("Bearer test-token", server.UpgradeHeaders["Authorization"]);
-        Assert.Equal("opendes", server.UpgradeHeaders["data-partition-id"]);
+        Assert.Equal("dev", server.UpgradeHeaders["data-partition-id"]);
         Assert.Equal(EtpSessionOptions.SubProtocol, server.UpgradeHeaders["Sec-WebSocket-Protocol"]);
     }
 

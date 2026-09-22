@@ -75,22 +75,22 @@ public class ReferenceReaderTests
         var reader = ReferenceReader.Of(Template());
         var document = new JsonObject
         {
-            ["id"] = "opendes:work-product-component--WellLog:log-1",
+            ["id"] = "dev:work-product-component--WellLog:log-1",
             ["data"] = new JsonObject
             {
-                ["WellboreID"] = "opendes:master-data--Wellbore:w-1:",
+                ["WellboreID"] = "dev:master-data--Wellbore:w-1:",
                 ["Name"] = "not a reference",
-                ["Datasets"] = new JsonArray("opendes:dataset--File.Generic:d-1:1614105463059152", "opendes:dataset--File.Generic:d-2:"),
+                ["Datasets"] = new JsonArray("dev:dataset--File.Generic:d-1:1614105463059152", "dev:dataset--File.Generic:d-2:"),
                 ["Curves"] = new JsonArray(
-                    new JsonObject { ["CurveID"] = "GR", ["CurveUnit"] = "opendes:reference-data--UnitOfMeasure:m:" },
-                    new JsonObject { ["CurveID"] = "DT", ["CurveUnit"] = "opendes:reference-data--UnitOfMeasure:m:" }),
+                    new JsonObject { ["CurveID"] = "GR", ["CurveUnit"] = "dev:reference-data--UnitOfMeasure:m:" },
+                    new JsonObject { ["CurveID"] = "DT", ["CurveUnit"] = "dev:reference-data--UnitOfMeasure:m:" }),
             },
         };
 
-        var references = reader.Read(document, "opendes:work-product-component--WellLog:log-1");
+        var references = reader.Read(document, "dev:work-product-component--WellLog:log-1");
 
         Assert.Equal(
-            ["opendes:master-data--Wellbore:w-1", "opendes:dataset--File.Generic:d-1", "opendes:dataset--File.Generic:d-2", "opendes:reference-data--UnitOfMeasure:m"],
+            ["dev:master-data--Wellbore:w-1", "dev:dataset--File.Generic:d-1", "dev:dataset--File.Generic:d-2", "dev:reference-data--UnitOfMeasure:m"],
             references.Select(r => r.Id));
         Assert.Equal("data.WellboreID", references[0].Property);
         Assert.Equal("data.Datasets", references[1].Property);
@@ -101,14 +101,14 @@ public class ReferenceReaderTests
     public void A_value_that_is_not_a_record_id_and_the_record_s_own_id_are_not_references()
     {
         var reader = ReferenceReader.Of(Template());
-        var ownId = "opendes:work-product-component--WellLog:log-1";
+        var ownId = "dev:work-product-component--WellLog:log-1";
         var document = new JsonObject
         {
             ["id"] = ownId,
             ["data"] = new JsonObject
             {
                 ["WellboreID"] = "a name, not an id",
-                ["Datasets"] = new JsonArray(string.Empty, "opendes:work-product-component--WellLog:log-1:", "no:colons--here"),
+                ["Datasets"] = new JsonArray(string.Empty, "dev:work-product-component--WellLog:log-1:", "no:colons--here"),
                 ["Curves"] = new JsonArray(new JsonObject { ["CurveUnit"] = null }),
             },
         };
@@ -126,17 +126,17 @@ public class ReferenceReaderTests
         };
         var reader = ReferenceReader.Of(OsduTemplate.From(new SchemaSnapshot("osdu:wks:master-data--Well:1.0.0", schema, DateTimeOffset.UnixEpoch)));
 
-        Assert.Empty(reader.Read(new JsonObject { ["data"] = new JsonObject { ["Name"] = "opendes:master-data--Wellbore:w-1:" } }, null));
+        Assert.Empty(reader.Read(new JsonObject { ["data"] = new JsonObject { ["Name"] = "dev:master-data--Wellbore:w-1:" } }, null));
         Assert.Empty(ReferenceReader.None.Read(new JsonObject(), null));
     }
 
     [Theory]
-    [InlineData("opendes:master-data--Wellbore:w-1:", true)]
-    [InlineData("opendes:master-data--Wellbore:w-1:1614105463059152", true)]
-    [InlineData("opendes:master-data--Wellbore:w-1", true)]
-    [InlineData("opendes:master-data--Wellbore:", false)]
-    [InlineData("opendes:wellbore:w-1", false)]
-    [InlineData("opendes:master-data--Wellbore w-1:x", false)]
+    [InlineData("dev:master-data--Wellbore:w-1:", true)]
+    [InlineData("dev:master-data--Wellbore:w-1:1614105463059152", true)]
+    [InlineData("dev:master-data--Wellbore:w-1", true)]
+    [InlineData("dev:master-data--Wellbore:", false)]
+    [InlineData("dev:wellbore:w-1", false)]
+    [InlineData("dev:master-data--Wellbore w-1:x", false)]
     [InlineData("", false)]
     public void What_reads_as_a_reference_to_an_osdu_record(string value, bool expected)
         => Assert.Equal(expected, TargetId.IsRecordReference(value));

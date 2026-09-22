@@ -263,7 +263,7 @@ them for its domain queries, and copies each entity into Storage where the deplo
   version see the rewrite; on `provider: ibm`, whose store refuses a second save of a version, it takes a new one. A
   write answered with a server error, or not at all, is settled by reading that version back.
 - References: the DDMS indexes only references that end in a version, and its queries and reference trees work only
-  through that index. A reference the mapping renders in the usual form (`opendes:master-data--Well:w1:`) to an entity
+  through that index. A reference the mapping renders in the usual form (`dev:master-data--Well:w1:`) to an entity
   type the DDMS serves is sent with the version the DDMS holds for that entity (read once, and known without a read for
   an entity the same protocol wrote); one the DDMS does not hold is sent as rendered, and the attempt names it
   (`wellDelivery.unpinned`), so a redelivery once the entity lands adds the version.

@@ -52,11 +52,11 @@ The example values are for log `L-1001` in the sample estate.
 
 | Property | Status | How it is filled | L-1001 |
 | --- | --- | --- | --- |
-| `id` | Engine | `{dataPartition}:work-product-component--WellLog:{key}`. The partition is the flow's `render.parameters.dataPartition`. The key is a UUIDv5 over the source system `recall` (`dataset.system`) and the values of the `dataset.key` columns, `source_project` and `log_id`. The same log always gets the same id. | `opendes:work-product-component--WellLog:ea10870200ce5404ac1b49154b070e74` |
+| `id` | Engine | `{dataPartition}:work-product-component--WellLog:{key}`. The partition is the flow's `render.parameters.dataPartition`. The key is a UUIDv5 over the source system `recall` (`dataset.system`) and the values of the `dataset.key` columns, `source_project` and `log_id`. The same log always gets the same id. | `dev:work-product-component--WellLog:ea10870200ce5404ac1b49154b070e74` |
 | `kind` | Engine | The template's kind, `template.kind` in the mapping. | `osdu:wks:work-product-component--WellLog:1.4.0` |
 | `version` | OSDU | Assigned by OSDU on each write. The ledger records the version OSDU returns. | |
-| `acl` | Static | `osdu.acl.owners` and `osdu.acl.viewers`, each a `static` list. | owners `data.default.owners@opendes.dataservices.energy`, viewers `data.default.viewers@opendes.dataservices.energy` |
-| `legal` | Static | `osdu.legal.legaltags` and `osdu.legal.otherRelevantDataCountries`, each a `static` list. `status` is not sent. | `opendes-reference-data-default`, `NO` |
+| `acl` | Static | `osdu.acl.owners` and `osdu.acl.viewers`, each a `static` list. | owners `data.default.owners@dev.dataservices.energy`, viewers `data.default.viewers@dev.dataservices.energy` |
+| `legal` | Static | `osdu.legal.legaltags` and `osdu.legal.otherRelevantDataCountries`, each a `static` list. `status` is not sent. | `dev-reference-data-default`, `NO` |
 | `tags` | Static and Mapped | `osdu.tags.DeliveredBy` is `static: osdu-delivery`. `osdu.tags.WellLogNativeUID` is `source: dataset.native_uid` with the modifier `split: { separator: ",", part: 1 }`, keeping the first part. | `DeliveredBy: osdu-delivery`, `WellLogNativeUID: NO_15_9:L-1001` |
 | `ancestry` | Not filled | | |
 | `meta` | Not filled | | |
@@ -115,7 +115,7 @@ Fifteen of the thirty-four properties are filled.
 | `SamplingStop` | Mapped | `source: dataset.index_max` | none | number | `1004` | Yes, but see the unit finding below. |
 | `TopMeasuredDepth` | Mapped | `source: dataset.index_min` | none | number | `1000` | Yes, but see the unit finding below. |
 | `VerticalMeasurement` | Mapped | entries for three of its properties, section 2.4.2 | | object | section 2.4.2 | Partly. |
-| `WellboreID` | Mapped | `source: cache.Wellbore.id` with `findBy: cache.Wellbore.FacilityName = dataset.wellbore_uwi`. The entry is required, so the record is held if no cached wellbore matches. | none | string, points to master-data--Wellbore | `"opendes:master-data--Wellbore:OSDU-DEV-1-A:"` | Yes. |
+| `WellboreID` | Mapped | `source: cache.Wellbore.id` with `findBy: cache.Wellbore.FacilityName = dataset.wellbore_uwi`. The entry is required, so the record is held if no cached wellbore matches. | none | string, points to master-data--Wellbore | `"dev:master-data--Wellbore:OSDU-DEV-1-A:"` | Yes. |
 
 The other nineteen are not filled: `CandidateReferenceCurveIDs`, `CompanyID`, `ConveyanceMethodID`,
 `DrillingFluidProperty`, `FrameIdentifier`, `HoleTypeLogging`, `LogRemark`, `LogServiceDateInterval`,
@@ -134,13 +134,13 @@ twenty-one properties are filled.
 | Property | Status | Entry | Modifiers | GR curve of L-1001 |
 | --- | --- | --- | --- | --- |
 | `CurveID` | Mapped | `source: dataset.curves.curve_id` | none | `"GR"` |
-| `CurveUnit` | Mapped | `source: cache.UnitOfMeasure.id`, with `findBy` on `Code`, then `Name`, then `id`, each compared with `dataset.curves.curve_unit`. The record is held if nothing matches. | `replace: { M: m, METRE: m, METER: m, FT: ft, FEET: ft, GAPI: gAPI, G/CM3: g/cm3, V/V: m3/m3 }`, applied to the value `findBy` compares | `"opendes:reference-data--UnitOfMeasure:gAPI:"` |
-| `DepthUnit` | Mapped | `source: cache.UnitOfMeasure.id`, with `findBy` on `Code`, then `Name`, then `id`, each compared with `dataset.curves.index_unit` | `replace: { M: m, FT: ft }` | `"opendes:reference-data--UnitOfMeasure:m:"` |
+| `CurveUnit` | Mapped | `source: cache.UnitOfMeasure.id`, with `findBy` on `Code`, then `Name`, then `id`, each compared with `dataset.curves.curve_unit`. The record is held if nothing matches. | `replace: { M: m, METRE: m, METER: m, FT: ft, FEET: ft, GAPI: gAPI, G/CM3: g/cm3, V/V: m3/m3 }`, applied to the value `findBy` compares | `"dev:reference-data--UnitOfMeasure:gAPI:"` |
+| `DepthUnit` | Mapped | `source: cache.UnitOfMeasure.id`, with `findBy` on `Code`, then `Name`, then `id`, each compared with `dataset.curves.index_unit` | `replace: { M: m, FT: ft }` | `"dev:reference-data--UnitOfMeasure:m:"` |
 | `TopDepth` | Mapped | `source: dataset.curves.index_min` | none | `1000` |
 | `BaseDepth` | Mapped | `source: dataset.curves.index_max` | none | `1004` |
 | `CurveDescription` | Mapped | `source: dataset.curves.curve_description` | none | `"Gamma ray"` |
 | `CurveVersion` | Mapped | `source: dataset.curves.curve_version` | none | `"1"` |
-| `LogCurveBusinessValueID` | Mapped | `source: cache.LogCurveBusinessValue.id`, with `findBy` on `Code`, then `Name`, each compared with `dataset.curves.business_value`, and `required: false`, so the property is left out if nothing matches. | none | `"opendes:reference-data--LogCurveBusinessValue:High:"` |
+| `LogCurveBusinessValueID` | Mapped | `source: cache.LogCurveBusinessValue.id`, with `findBy` on `Code`, then `Name`, each compared with `dataset.curves.business_value`, and `required: false`, so the property is left out if nothing matches. | none | `"dev:reference-data--LogCurveBusinessValue:High:"` |
 
 The other thirteen are not filled: `CurveQuality`, `CurveSampleTypeID`, `DateStamp`, `DepthCoding`, `Interpolate`,
 `InterpreterName`, `IsProcessed`, `LogCurveFamilyID`, `LogCurveMainFamilyID`, `LogCurveTypeID`, `Mnemonic`,
@@ -152,7 +152,7 @@ The `CurveUnit` entry reads the cache captured from OSDU. For `GAPI` the `replac
 `findBy` finds this cached record by its `Code`, whose `id` the entry writes with a trailing `:`:
 
 ```json
-{ "Code": "gAPI", "ID": "gAPI", "Name": "API gamma ray unit", "id": "opendes:reference-data--UnitOfMeasure:gAPI" }
+{ "Code": "gAPI", "ID": "gAPI", "Name": "API gamma ray unit", "id": "dev:reference-data--UnitOfMeasure:gAPI" }
 ```
 
 #### 2.4.2 `data.VerticalMeasurement`
@@ -164,8 +164,8 @@ and one with a static value.
 | Property | Status | Entry | Modifiers | L-1001 |
 | --- | --- | --- | --- | --- |
 | `VerticalMeasurement` | Mapped | `source: dataset.elev_meas_ref`, converted to a number | `split: { separator: " ", part: 1 }`, where a single space splits on any run of whitespace | `23.5` |
-| `VerticalMeasurementUnitOfMeasureID` | Mapped | `source: cache.UnitOfMeasure.id`, with `findBy` on `Code`, then `Name`, then `id`, each compared with `dataset.elev_meas_ref` | `split: { separator: " ", part: 2 }`, then `replace: { M: m, FT: ft }`, applied to the value `findBy` compares | `"opendes:reference-data--UnitOfMeasure:m:"` |
-| `VerticalMeasurementTypeID` | Static | `static: "{param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"` | none | `"opendes:reference-data--VerticalMeasurementType:KellyBushing:"` |
+| `VerticalMeasurementUnitOfMeasureID` | Mapped | `source: cache.UnitOfMeasure.id`, with `findBy` on `Code`, then `Name`, then `id`, each compared with `dataset.elev_meas_ref` | `split: { separator: " ", part: 2 }`, then `replace: { M: m, FT: ft }`, applied to the value `findBy` compares | `"dev:reference-data--UnitOfMeasure:m:"` |
+| `VerticalMeasurementTypeID` | Static | `static: "{param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"` | none | `"dev:reference-data--VerticalMeasurementType:KellyBushing:"` |
 
 The other nine are not filled: `EffectiveDateTime`, `TerminationDateTime`, `VerticalCRSID`,
 `VerticalMeasurementDescription`, `VerticalMeasurementPathID`, `VerticalMeasurementSourceID`,
@@ -206,19 +206,19 @@ sampling.
 
 ```json
 {
-  "id": "opendes:work-product-component--WellLog:ea10870200ce5404ac1b49154b070e74",
+  "id": "dev:work-product-component--WellLog:ea10870200ce5404ac1b49154b070e74",
   "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
   "acl": {
-    "owners": ["data.default.owners@opendes.dataservices.energy"],
-    "viewers": ["data.default.viewers@opendes.dataservices.energy"]
+    "owners": ["data.default.owners@dev.dataservices.energy"],
+    "viewers": ["data.default.viewers@dev.dataservices.energy"]
   },
-  "legal": { "legaltags": ["opendes-reference-data-default"], "otherRelevantDataCountries": ["NO"] },
+  "legal": { "legaltags": ["dev-reference-data-default"], "otherRelevantDataCountries": ["NO"] },
   "tags": { "DeliveredBy": "osdu-delivery", "WellLogNativeUID": "NO_15_9:L-1001" },
   "data": {
     "LogSource": "NO_15_9",
     "LogRun": "L-1001",
     "Name": "STAT_COMP",
-    "WellboreID": "opendes:master-data--Wellbore:OSDU-DEV-1-A:",
+    "WellboreID": "dev:master-data--Wellbore:OSDU-DEV-1-A:",
     "LogVersion": "1",
     "LogActivity": "MAIN",
     "ActivityType": "SLB",
@@ -231,14 +231,14 @@ sampling.
     "IsRegular": true,
     "VerticalMeasurement": {
       "VerticalMeasurement": 23.5,
-      "VerticalMeasurementUnitOfMeasureID": "opendes:reference-data--UnitOfMeasure:m:",
-      "VerticalMeasurementTypeID": "opendes:reference-data--VerticalMeasurementType:KellyBushing:"
+      "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:",
+      "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:"
     },
     "Curves": [
       {
         "CurveID": "MD",
-        "CurveUnit": "opendes:reference-data--UnitOfMeasure:m:",
-        "DepthUnit": "opendes:reference-data--UnitOfMeasure:m:",
+        "CurveUnit": "dev:reference-data--UnitOfMeasure:m:",
+        "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
         "TopDepth": 1000,
         "BaseDepth": 1004,
         "CurveDescription": "Measured depth",
@@ -246,23 +246,23 @@ sampling.
       },
       {
         "CurveID": "GR",
-        "CurveUnit": "opendes:reference-data--UnitOfMeasure:gAPI:",
-        "DepthUnit": "opendes:reference-data--UnitOfMeasure:m:",
+        "CurveUnit": "dev:reference-data--UnitOfMeasure:gAPI:",
+        "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
         "TopDepth": 1000,
         "BaseDepth": 1004,
         "CurveDescription": "Gamma ray",
         "CurveVersion": "1",
-        "LogCurveBusinessValueID": "opendes:reference-data--LogCurveBusinessValue:High:"
+        "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:"
       },
       {
         "CurveID": "RHOB",
-        "CurveUnit": "opendes:reference-data--UnitOfMeasure:g%2Fcm3:",
-        "DepthUnit": "opendes:reference-data--UnitOfMeasure:m:",
+        "CurveUnit": "dev:reference-data--UnitOfMeasure:g%2Fcm3:",
+        "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
         "TopDepth": 1000,
         "BaseDepth": 1004,
         "CurveDescription": "Bulk density",
         "CurveVersion": "1",
-        "LogCurveBusinessValueID": "opendes:reference-data--LogCurveBusinessValue:High:"
+        "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:"
       }
     ]
   }

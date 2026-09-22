@@ -23,11 +23,11 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class ReservoirManagementRouteTests
 {
-    private const string PhiKId = "opendes:work-product-component--PersistedCollection:phik-1";
+    private const string PhiKId = "dev:work-product-component--PersistedCollection:phik-1";
     private const string PhiKKind = "osdu:wks:work-product-component--PersistedCollection:1.2.0";
-    private const string ForecastId = "opendes:work-product-component--ProductionValues:fc-1";
+    private const string ForecastId = "dev:work-product-component--ProductionValues:fc-1";
     private const string ForecastKind = "osdu:wks:work-product-component--ProductionValues:1.0.0";
-    private const string Reservoir = "opendes:master-data--Reservoir:r1:";
+    private const string Reservoir = "dev:master-data--Reservoir:r1:";
     private const string Root = FakeOsduPlatform.ReservoirManagementRoot + "/ddms/";
     private const string Service = "the DDMS 'rm' (" + FakeOsduPlatform.ReservoirManagementRoot + ")";
 
@@ -43,7 +43,7 @@ public sealed class ReservoirManagementRouteTests
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (partition)
             {
-                headers["data-partition-id"] = "opendes";
+                headers["data-partition-id"] = "dev";
             }
 
             var client = new OsduHttpClient(Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None }, headers);
@@ -120,9 +120,9 @@ public sealed class ReservoirManagementRouteTests
     private static List<string> Sent(FakeOsduPlatform platform, int from = 0)
         => platform.Calls.Skip(from).Select(c => c.Method + " " + Uri.UnescapeDataString(c.Uri.PathAndQuery)).ToList();
 
-    private static string ReadCopy(string segment, string id) => $"GET {Root}{segment}/{id}?data_partition_id=opendes&catalog_entity_id={id}";
+    private static string ReadCopy(string segment, string id) => $"GET {Root}{segment}/{id}?data_partition_id=dev&catalog_entity_id={id}";
 
-    private static string List(string segment) => $"GET {Root}{segment}/?data_partition_id=opendes&parent_type=Reservoir";
+    private static string List(string segment) => $"GET {Root}{segment}/?data_partition_id=dev&parent_type=Reservoir";
 
     private static string Delete(string table, long key) => $"DELETE {Root}{table}/{key}?catalog_entity_id={key}";
 
@@ -226,7 +226,7 @@ public sealed class ReservoirManagementRouteTests
     {
         var platform = new FakeOsduPlatform();
         using var rig = new Rig(platform);
-        const string FluidId = "opendes:work-product-component--FluidSystemCharacterization:fs-1";
+        const string FluidId = "dev:work-product-component--FluidSystemCharacterization:fs-1";
         var fluid = FakeOsduPlatform.Record(FluidId, "osdu:wks:work-product-component--FluidSystemCharacterization:1.0.0", new JsonObject { ["ParentObjectID"] = Reservoir });
         var rows = """
             {
@@ -240,7 +240,7 @@ public sealed class ReservoirManagementRouteTests
         Assert.Equal("PVTO", Assert.Single(platform.Rows("fluid-synthesis-tank-blackoil").Values)["flu_tab_type"]!.GetValue<string>());
         Assert.Equal("fluid-synthesis-tank-pvt=101-102;fluid-synthesis-tank-blackoil=103", outcome.Returned[ReservoirManagementShape.RowsKey]);
 
-        const string TankId = "opendes:work-product-component--AcquiferInterpretation:tank-1";
+        const string TankId = "dev:work-product-component--AcquiferInterpretation:tank-1";
         var tank = FakeOsduPlatform.Record(TankId, "osdu:wks:work-product-component--AcquiferInterpretation:1.1.0", new JsonObject { ["ParentObjectID"] = Reservoir });
         var calls = platform.Calls.Count;
         var held = await Assert.ThrowsAsync<RecordHeldException>(() => rig.Protocol.DeliverAsync(Work(tank, Rows("""{ "aquifer-datum": [ { "aqui_poro": 0.2 } ] }"""))));
@@ -449,7 +449,7 @@ public sealed class ReservoirManagementRouteTests
     [Fact]
     public async Task A_kr_synthesis_is_never_taken_in_by_the_service_and_its_rows_go_under_a_copy_an_operator_inserted()
     {
-        const string KrId = "opendes:work-product-component--PersistedCollection:kr-1";
+        const string KrId = "dev:work-product-component--PersistedCollection:kr-1";
         var kr = new[] { new DdmsCollectionEntry("work-product-component--PersistedCollection", "kr-synthesis", Bulk: true) };
         var rows = """
             { "kr-synthesis-rt": [ { "rt_tab_name": "SAT1", "swi": 0.2, "rt_kr_table": true, "kr-synthesis-kr": [ { "sat_tab_type": "SWOF", "swof_sw": 0.2, "swof_krw": 0 } ] } ] }
@@ -514,12 +514,12 @@ public sealed class ReservoirManagementRouteTests
             (PhiK(kind: "osdu:wks:work-product-component--PersistedCollection:1.3.0"), Rows(TwoRockTypes), true,
                 $"{Service} takes only {PhiKKind} records into its database, where a phi-k-synthesis record's rows go, and the record's kind is 'osdu:wks:work-product-component--PersistedCollection:1.3.0'"),
             (PhiK(parent: null), Rows(TwoRockTypes), true, $"the record names no data.ParentObjectID, which {Service} takes its copy's parent from"),
-            (PhiK(id: "opendes:work-product-component--PersistedCollection:phik 1"), Rows(TwoRockTypes), true,
-                $"the id 'opendes:work-product-component--PersistedCollection:phik 1' is not one {Service} reads a phi-k-synthesis record by"),
+            (PhiK(id: "dev:work-product-component--PersistedCollection:phik 1"), Rows(TwoRockTypes), true,
+                $"the id 'dev:work-product-component--PersistedCollection:phik 1' is not one {Service} reads a phi-k-synthesis record by"),
             (PhiK(), Rows(TwoRockTypes), false, $"{Service} takes the partition as data_partition_id, and the flow sends no data-partition-id to take it from"),
             (PhiK(), Rows(TwoRockTypes, "rows.csv"), true, "the rows file rows.csv is not a .json file; the Reservoir Management DDMS takes rows as JSON"),
             (PhiK(), new RafsRouteTests.NamedFiles(), true, "no rows file was found for the record (a .json file of the tables below phi-k-synthesis: phi-k-synthesis-rt)"),
-            (FakeOsduPlatform.Record("opendes:master-data--FluidSystem:pvt-1", "osdu:wks:master-data--FluidSystem:1.0.0"), Rows("{}"), true,
+            (FakeOsduPlatform.Record("dev:master-data--FluidSystem:pvt-1", "osdu:wks:master-data--FluidSystem:1.0.0"), Rows("{}"), true,
                 $"{Service} keeps no rows for pvt-properties records, and the record comes with a rows file"),
         };
 
@@ -551,7 +551,7 @@ public sealed class ReservoirManagementRouteTests
         await rig.Protocol.DeliverAsync(Work(PhiK(), Rows(TwoRockTypes)));
 
         // The service's copy was removed by hand: the first row finds no parent.
-        platform.RmHeaders["phi-k-synthesis"][PhiKId]["parent_object_id"] = "opendes:master-data--Reservoir:other:";
+        platform.RmHeaders["phi-k-synthesis"][PhiKId]["parent_object_id"] = "dev:master-data--Reservoir:other:";
         var refused = await Assert.ThrowsAsync<RecordHeldException>(() => rig.Protocol.DeliverAsync(Work(PhiK(), Rows(TwoRockTypes), completed: new Dictionary<string, IReadOnlyDictionary<string, string>>
         {
             ["sync"] = new Dictionary<string, string> { ["parent_object_id"] = Reservoir },
@@ -651,10 +651,10 @@ public sealed class ReservoirManagementRouteTests
     }
 
     [Theory]
-    [InlineData("opendes:master-data--Reservoir:r1:", "Reservoir")]
-    [InlineData("opendes:master-data--ReservoirSegment:s1:", "Segment")]
-    [InlineData("opendes:master-data--Sector:s1:", "Sector")]
-    [InlineData("opendes:master-data--PersistedCollection:c1:", "Reservoir")]
+    [InlineData("dev:master-data--Reservoir:r1:", "Reservoir")]
+    [InlineData("dev:master-data--ReservoirSegment:s1:", "Segment")]
+    [InlineData("dev:master-data--Sector:s1:", "Sector")]
+    [InlineData("dev:master-data--PersistedCollection:c1:", "Reservoir")]
     [InlineData(null, "Reservoir")]
     public void The_list_call_is_asked_for_the_parent_type_the_parent_names(string? parent, string expected)
         => Assert.Equal(expected, ReservoirManagementShape.ParentTypeOf(parent));

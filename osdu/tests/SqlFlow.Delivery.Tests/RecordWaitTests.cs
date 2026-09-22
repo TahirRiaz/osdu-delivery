@@ -40,7 +40,7 @@ public class RecordWaitTests : IDisposable
     };
 
     private static string Id(Guid flowId, string sourceKey)
-        => flowId == FlowId.Of("wellbores") ? $"opendes:master-data--Wellbore:{sourceKey}" : $"opendes:work-product-component--WellLog:{sourceKey}";
+        => flowId == FlowId.Of("wellbores") ? $"dev:master-data--Wellbore:{sourceKey}" : $"dev:work-product-component--WellLog:{sourceKey}";
 
     private SubmissionState Submission(Guid id, Guid flowId) => new()
     {
@@ -120,7 +120,7 @@ public class RecordWaitTests : IDisposable
     public async Task An_id_the_ledger_does_not_hold_is_not_waited_for()
     {
         var submission = Guid.NewGuid();
-        var log = await StageAsync(_logs, "L-1", submission, "opendes:reference-data--UnitOfMeasure:m");
+        var log = await StageAsync(_logs, "L-1", submission, "dev:reference-data--UnitOfMeasure:m");
 
         var claim = await Ledger.ClaimAsync(_logs, submission, "w1", 10, TimeSpan.FromMinutes(5), Now);
 
@@ -242,12 +242,12 @@ public class RecordWaitTests : IDisposable
         var log = await StageAsync(_logs, "L-1", submission, wellbore.TargetId!);
         Assert.Single((await Ledger.ClaimAsync(_logs, submission, "w1", 10, TimeSpan.FromMinutes(5), Now)).Waiting);
 
-        await Ledger.UpsertPendingAsync(_logs, [Pending(_logs, "L-1", submission, "opendes:reference-data--UnitOfMeasure:m")]);
+        await Ledger.UpsertPendingAsync(_logs, [Pending(_logs, "L-1", submission, "dev:reference-data--UnitOfMeasure:m")]);
 
         var restaged = await Ledger.GetRecordAsync(_logs, log.DeliveryKey);
         Assert.Equal(RecordStatus.Pending, restaged!.Status);
         Assert.Null(restaged.WaitingFor);
-        Assert.Equal("opendes:reference-data--UnitOfMeasure:m", Assert.Single(restaged.PendingReferences).Id);
+        Assert.Equal("dev:reference-data--UnitOfMeasure:m", Assert.Single(restaged.PendingReferences).Id);
         Assert.Single((await Ledger.ClaimAsync(_logs, submission, "w2", 10, TimeSpan.FromMinutes(5), Now)).Records);
     }
 
@@ -290,7 +290,7 @@ public class RecordWaitTests : IDisposable
 
         Assert.Equal(2, (await Ledger.ListWaitingForAsync(wellbore.TargetId!, 10)).Count);
         Assert.Equal(wellbore.DeliveryKey, Assert.Single(await Ledger.ListHoldersAsync(wellbore.TargetId!, 10)).DeliveryKey);
-        Assert.Equal([wellbore.TargetId], await Ledger.HeldIdsAsync([wellbore.TargetId!, "opendes:master-data--Well:nobody"]));
+        Assert.Equal([wellbore.TargetId], await Ledger.HeldIdsAsync([wellbore.TargetId!, "dev:master-data--Well:nobody"]));
     }
 
     public void Dispose()

@@ -651,10 +651,10 @@ public class SqlServerChainTests
               work: ../.work/{{name}}/{logSource}
             render:
               parameters:
-                dataPartition: opendes
-                aclOwner: data.default.owners@opendes.dataservices.energy
-                aclViewer: data.default.viewers@opendes.dataservices.energy
-                legalTag: opendes-reference-data-default
+                dataPartition: dev
+                aclOwner: data.default.owners@dev.dataservices.energy
+                aclViewer: data.default.viewers@dev.dataservices.energy
+                legalTag: dev-reference-data-default
             target:
               endpoint: http://localhost:9/petrodb
               auth:

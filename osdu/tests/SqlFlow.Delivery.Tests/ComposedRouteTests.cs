@@ -17,7 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class ComposedRouteTests
 {
-    private const string LogId = "opendes:work-product-component--WellLog:log-7";
+    private const string LogId = "dev:work-product-component--WellLog:log-7";
     private const string LogKind = "osdu:wks:work-product-component--WellLog:1.2.0";
     private const string Ddms = FakeOsduPlatform.DdmsRoot + "/ddms/v3/welllogs";
 
@@ -32,7 +32,7 @@ public sealed class ComposedRouteTests
                 Secrets, TimeProvider.System, platform, allowLoopback: true);
             Client = new OsduHttpClient(
                 Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
         }
 
         public HttpRuntime Runtime { get; }
@@ -149,7 +149,7 @@ public sealed class ComposedRouteTests
         Assert.True(first.Succeeded, first.Failure?.Message);
         Assert.True(first.MetadataDelivered);
         Assert.True(first.PayloadDelivered);
-        const string dataset = "opendes:dataset--File.Generic:minted-2";
+        const string dataset = "dev:dataset--File.Generic:minted-2";
         Assert.Equal(dataset, first.Returned[FileUploads.DatasetIdsValue]);
         Assert.Equal("1", first.Returned["files"]);
         Assert.Equal("f1", first.Returned[PayloadParts.StateKey("las")]);
@@ -197,7 +197,7 @@ public sealed class ComposedRouteTests
             forced: new HashSet<string>(StringComparer.Ordinal) { PayloadParts.Files }));
         Assert.True(third.Succeeded, third.Failure?.Message);
         Assert.True(third.MetadataDelivered);
-        const string redelivered = "opendes:dataset--File.Generic:minted-4";
+        const string redelivered = "dev:dataset--File.Generic:minted-4";
         Assert.Equal(redelivered, third.Returned[FileUploads.DatasetIdsValue]);
         Assert.False(third.Returned.ContainsKey(PayloadParts.StateKey("curves")));
         Assert.Equal(
@@ -308,7 +308,7 @@ public sealed class ComposedRouteTests
         Assert.True(first.Succeeded, first.Failure?.Message);
         Assert.True(first.MetadataDelivered);
         Assert.True(first.PayloadDelivered);
-        const string dataset = "opendes:dataset--File.Generic:minted-2";
+        const string dataset = "dev:dataset--File.Generic:minted-2";
         Assert.Equal(dataset, first.Returned[FileUploads.DatasetIdsValue]);
         Assert.Equal("f1", first.Returned[PayloadParts.StateKey("las")]);
         Assert.Equal("b1", first.Returned[PayloadParts.StateKey("curves")]);

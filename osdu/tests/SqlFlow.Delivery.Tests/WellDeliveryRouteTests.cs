@@ -21,11 +21,11 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class WellDeliveryRouteTests
 {
-    private const string WellId = "opendes:master-data--Well:welldemo2";
-    private const string WellboreId = "opendes:master-data--Wellbore:wbdemo2";
+    private const string WellId = "dev:master-data--Well:welldemo2";
+    private const string WellboreId = "dev:master-data--Wellbore:wbdemo2";
     private const string WellKind = "osdu:wks:master-data--Well:1.0.0";
     private const string WellboreKind = "osdu:wks:master-data--Wellbore:1.0.0";
-    private const string Planned = "opendes:reference-data--ExistenceKind:Planned:";
+    private const string Planned = "dev:reference-data--ExistenceKind:Planned:";
     private const string Storage = "/api/storage/v2/records/";
     private const string Entities = FakeOsduPlatform.WellDeliveryRoot + "/storage/v1/";
 
@@ -38,7 +38,7 @@ public sealed class WellDeliveryRouteTests
                 new SecretResolver([new EnvSecretProvider()]), new TestClock(), platform, allowLoopback: true);
             var client = new OsduHttpClient(
                 Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
             var service = new DdmsService("welldelivery", FakeOsduPlatform.WellDeliveryRoot, DdmsShape.WellDeliveryV1, DdmsCatalog.WellDeliveryCollections)
             {
                 WellDelivery = settings ?? new WellDeliverySettings(),
@@ -67,7 +67,7 @@ public sealed class WellDeliveryRouteTests
     {
         ["FacilityName"] = "Wellbore 2",
         ["WellID"] = WellId + ":",
-        ["NameAliases"] = new JsonArray(new JsonObject { ["AliasNameTypeID"] = "opendes:reference-data--AliasNameType:Borehole:" }),
+        ["NameAliases"] = new JsonArray(new JsonObject { ["AliasNameTypeID"] = "dev:reference-data--AliasNameType:Borehole:" }),
     });
 
     /// <summary>One delivery of <paramref name="document"/>; the steps it reports are appended to <paramref name="reported"/>.</summary>
@@ -139,7 +139,7 @@ public sealed class WellDeliveryRouteTests
 
         // A protocol that wrote an entity knows its version without asking.
         var calls = platform.Calls.Count;
-        var section = Entity("opendes:master-data--HoleSection:hs3", "osdu:wks:master-data--HoleSection:1.0.0", new JsonObject { ["WellboreID"] = WellboreId + ":" });
+        var section = Entity("dev:master-data--HoleSection:hs3", "osdu:wks:master-data--HoleSection:1.0.0", new JsonObject { ["WellboreID"] = WellboreId + ":" });
         await wellbores.Protocol.DeliverAsync(Work(section));
         Assert.Equal(["PUT " + Entities + "holesection"], Sent(platform, calls));
         Assert.Equal([$"{WellboreId}:{wellbore.TargetVersion}"], platform.WellDeliveryIndex.Single(i => i.Key.StartsWith("holesection|hs3|", StringComparison.Ordinal)).Value.ToArray());
@@ -150,7 +150,7 @@ public sealed class WellDeliveryRouteTests
         var sent = SentBody(platform, 2);
         Assert.Equal($"{WellId}:{wellVersion}", sent["data"]!["WellID"]!.GetValue<string>());
         Assert.Equal(Planned, sent["data"]!["ExistenceKind"]!.GetValue<string>());
-        Assert.Equal("opendes:reference-data--AliasNameType:Borehole:", sent["data"]!["NameAliases"]![0]!["AliasNameTypeID"]!.GetValue<string>());
+        Assert.Equal("dev:reference-data--AliasNameType:Borehole:", sent["data"]!["NameAliases"]![0]!["AliasNameTypeID"]!.GetValue<string>());
         Assert.Equal("application/json", platform.Calls[2].ContentType);
 
         // The DDMS indexed the pinned reference, and copied both entities into storage.
@@ -261,16 +261,16 @@ public sealed class WellDeliveryRouteTests
     public static TheoryData<string, string, string> Refused => new()
     {
         { WellId, """{"kind":"k:s:t:1.0.0","acl":{"owners":["o@x"],"viewers":["v@x"]},"legal":{"legaltags":["t"],"otherRelevantDataCountries":["NO"]},"data":{"FacilityName":"w"}}""", "data.ExistenceKind is not given" },
-        { WellId, """{"kind":"k:s:t:1.0.0","acl":{"owners":["o@x"],"viewers":["v@x"]},"legal":{"legaltags":["t"],"otherRelevantDataCountries":["NO"]},"data":{"ExistenceKind":"opendes:reference-data--ExistenceKind:Planned"}}""", "is not in the reference form" },
+        { WellId, """{"kind":"k:s:t:1.0.0","acl":{"owners":["o@x"],"viewers":["v@x"]},"legal":{"legaltags":["t"],"otherRelevantDataCountries":["NO"]},"data":{"ExistenceKind":"dev:reference-data--ExistenceKind:Planned"}}""", "is not in the reference form" },
         { WellId, """{"kind":"k:s:t:1.0.0","acl":{"owners":["o@x"],"viewers":["v@x"]},"legal":{"legaltags":["t"],"otherRelevantDataCountries":["NO"]},"data":{"ExistenceKind":"a:reference-data--ExistenceKind:Planned:","StartDateTime":"2021-05-18T10:00:00.000Z"}}""", "data.StartDateTime '2021-05-18T10:00:00.000Z' is in a form the Well Delivery DDMS cannot parse" },
         { WellId, """{"kind":"k:s:t:1.0.0","acl":{"owners":["data.default.owners"],"viewers":["v@x"]},"legal":{"legaltags":["t"],"otherRelevantDataCountries":["NO"]},"data":{"ExistenceKind":"a:reference-data--ExistenceKind:Planned:"}}""", "acl.owners names 'data.default.owners' without a domain" },
         { WellId, """{"kind":"k:s:t:1.0.0","acl":{"owners":["o@x"],"viewers":["v@x"]},"legal":{"legaltags":[],"otherRelevantDataCountries":["NO"]},"data":{"ExistenceKind":"a:reference-data--ExistenceKind:Planned:"}}""", "legal.legaltags is empty" },
         { WellId, """{"kind":"k:s:t:1.0.0","acl":{"owners":["o@x"],"viewers":["v@x"]},"legal":{"legaltags":["t"]},"data":{"ExistenceKind":"a:reference-data--ExistenceKind:Planned:"}}""", "legal.otherRelevantDataCountries is empty" },
         { WellId, """{"kind":"k:s:t:1.0.0","acl":{"owners":["o@x"],"viewers":["v@x"]},"legal":{"legaltags":["t"],"otherRelevantDataCountries":["NO"]},"data":{"ExistenceKind":"a:reference-data--ExistenceKind:Planned:"},"meta":{"kind":"Unit"}}""", "meta is not an array of objects" },
         { WellId, """{"kind":"k:s:t:1.0.0","acl":{"owners":["o@x"],"viewers":["v@x"]},"legal":{"legaltags":["t"],"otherRelevantDataCountries":["NO"]}}""", "has no data object" },
-        { "opendes:master-data--Well:a:b", """{"kind":"k:s:t:1.0.0"}""", "has characters other than letters, digits" },
-        { "opendes:master-data--Well_Plan:x", """{"kind":"k:s:t:1.0.0"}""", "has characters the Well Delivery DDMS takes on a write and refuses on every read" },
-        { "opendes-Well-x", """{"kind":"k:s:t:1.0.0"}""", "does not match the id the Well Delivery DDMS takes" },
+        { "dev:master-data--Well:a:b", """{"kind":"k:s:t:1.0.0"}""", "has characters other than letters, digits" },
+        { "dev:master-data--Well_Plan:x", """{"kind":"k:s:t:1.0.0"}""", "has characters the Well Delivery DDMS takes on a write and refuses on every read" },
+        { "dev-Well-x", """{"kind":"k:s:t:1.0.0"}""", "does not match the id the Well Delivery DDMS takes" },
     };
 
     [Theory]
@@ -326,13 +326,13 @@ public sealed class WellDeliveryRouteTests
         Assert.Equal(VerifyOutcome.Missing, (await rig.Protocol.VerifyAsync(WellId, delivered.TargetVersion)).Outcome);
 
         // The copy of an entity named under another namespace is stored under the partition.
-        Assert.Equal("opendes:master-data--Well:w9", foreign.Returned[WellDeliveryShape.StorageIdKey]);
+        Assert.Equal("dev:master-data--Well:w9", foreign.Returned[WellDeliveryShape.StorageIdKey]);
         calls = platform.Calls.Count;
         var purged = await rig.Protocol.DeleteAsync("osdu:master-data--Well:w9", RemovalScope.Everything, foreign.Returned);
-        Assert.Equal("purged from the Well Delivery DDMS (every version), and its Storage copy opendes:master-data--Well:w9 purged", purged.Detail);
-        Assert.Equal(["DELETE " + Entities + "well/w9:purge", "DELETE " + Storage + "opendes:master-data--Well:w9"], Sent(platform, calls));
+        Assert.Equal("purged from the Well Delivery DDMS (every version), and its Storage copy dev:master-data--Well:w9 purged", purged.Detail);
+        Assert.Equal(["DELETE " + Entities + "well/w9:purge", "DELETE " + Storage + "dev:master-data--Well:w9"], Sent(platform, calls));
         Assert.DoesNotContain(platform.WellDeliveryEntities.Keys, k => k.StartsWith("well|w9|", StringComparison.Ordinal));
-        Assert.Contains("opendes:master-data--Well:w9", platform.Purged);
+        Assert.Contains("dev:master-data--Well:w9", platform.Purged);
 
         var gone = await rig.Protocol.DeleteAsync("osdu:master-data--Well:w9", RemovalScope.Everything, foreign.Returned);
         Assert.True(gone.AlreadyGone);

@@ -254,7 +254,7 @@ public sealed class AirflowXCom : IWorkflowXCom
 
 /// <summary>
 /// The OSDU record ids in a value a workflow produced: a list of ids, a JSON document holding them, or the text Airflow
-/// gives for a Python value (<c>{'energyml_manifest_creation': ['opendes:dataset--File.Generic:abc:']}</c>). Each id is
+/// gives for a Python value (<c>{'energyml_manifest_creation': ['dev:dataset--File.Generic:abc:']}</c>). Each id is
 /// taken without its version, as the upstream collections strip a trailing colon before reading a record
 /// (osdu/specs/workflows/INTEGRATION.md sections 3.6 and 4).
 /// </summary>

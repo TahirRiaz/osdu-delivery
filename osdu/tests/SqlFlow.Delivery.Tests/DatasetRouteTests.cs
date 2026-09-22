@@ -30,7 +30,7 @@ public sealed class DatasetRouteTests
                 Secrets, TimeProvider.System, platform, allowLoopback: true);
             Client = new OsduHttpClient(
                 Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
             Options = options ?? new ProtocolOptions
             {
                 PayloadContentType = "application/octet-stream",
@@ -73,7 +73,7 @@ public sealed class DatasetRouteTests
     {
         var platform = new FakeOsduPlatform();
         using var rig = new Rig(platform);
-        const string id = "opendes:dataset--File.Generic:report-1";
+        const string id = "dev:dataset--File.Generic:report-1";
         var outcome = await rig.Protocol.DeliverAsync(Work(FakeOsduPlatform.Record(id, "osdu:wks:dataset--File.Generic:1.0.0"), new MemoryFiles(("report.pdf", "%PDF-1.7"))));
 
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
@@ -110,17 +110,17 @@ public sealed class DatasetRouteTests
         var platform = new FakeOsduPlatform();
         using var rig = new Rig(platform);
         var two = await Assert.ThrowsAsync<RecordHeldException>(() => rig.Protocol.DeliverAsync(
-            Work(FakeOsduPlatform.Record("opendes:dataset--File.Generic:two", "osdu:wks:dataset--File.Generic:1.0.0"), new MemoryFiles(("a.txt", "a"), ("b.txt", "b")))));
+            Work(FakeOsduPlatform.Record("dev:dataset--File.Generic:two", "osdu:wks:dataset--File.Generic:1.0.0"), new MemoryFiles(("a.txt", "a"), ("b.txt", "b")))));
         Assert.Contains("holds 2 files, and a dataset--File.Generic dataset holds one file", two.Message, StringComparison.Ordinal);
         Assert.Empty(platform.Calls);
 
         // A type no DMS serves is refused by the storage instructions with 400, which holds the record.
         var refused = new FakeHttpHandler().On(HttpMethod.Post, "/storageInstructions", System.Net.HttpStatusCode.BadRequest, """{"code":400,"reason":"Bad Request","message":"No DMS handler for resource type 'dataset--PhysicalMedia' is registered"}""");
         using var runtime = new HttpRuntime(new FlowReliability { Retry = new FlowRetry { Attempts = 1 } }, Secrets, TimeProvider.System, refused, allowLoopback: true);
-        var client = new OsduHttpClient(runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None }, new Dictionary<string, string> { ["data-partition-id"] = "opendes" });
+        var client = new OsduHttpClient(runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None }, new Dictionary<string, string> { ["data-partition-id"] = "dev" });
         var protocol = new OsduDatasetProtocol(client, rig.Options, Samples.Logger<OsduDatasetProtocol>());
         var held = await Assert.ThrowsAsync<RecordHeldException>(() => protocol.DeliverAsync(
-            Work(FakeOsduPlatform.Record("opendes:dataset--PhysicalMedia:tape-1", "osdu:wks:dataset--PhysicalMedia:1.0.0"), new MemoryFiles(("tape.bin", "x")))));
+            Work(FakeOsduPlatform.Record("dev:dataset--PhysicalMedia:tape-1", "osdu:wks:dataset--PhysicalMedia:1.0.0"), new MemoryFiles(("tape.bin", "x")))));
         Assert.Contains("the dataset service has no storage for dataset--PhysicalMedia", held.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(refused.Calls, c => c.Uri.AbsolutePath.EndsWith("/registerDataset", StringComparison.Ordinal));
     }
@@ -134,7 +134,7 @@ public sealed class DatasetRouteTests
     {
         var platform = new FakeOsduPlatform { Provider = provider };
         using var rig = new Rig(platform);
-        const string id = "opendes:dataset--FileCollection.SEGY:survey-1";
+        const string id = "dev:dataset--FileCollection.SEGY:survey-1";
         var outcome = await rig.Protocol.DeliverAsync(Work(FakeOsduPlatform.Record(id, "osdu:wks:dataset--FileCollection.SEGY:1.0.0"), new MemoryFiles(("a.segy", "trace-a"), ("b.segy", "trace-bb"))));
 
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
@@ -183,8 +183,8 @@ public sealed class DatasetRouteTests
     }
 
     [Theory]
-    [InlineData("osdu:wks:dataset--FileCollection.SEGY:1.0.0", "opendes:dataset--FileCollection.SEGY:ibm-1", "a collection location")]
-    [InlineData("osdu:wks:dataset--File.Generic:1.0.0", "opendes:dataset--File.Generic:ibm-2", "a file location")]
+    [InlineData("osdu:wks:dataset--FileCollection.SEGY:1.0.0", "dev:dataset--FileCollection.SEGY:ibm-1", "a collection location")]
+    [InlineData("osdu:wks:dataset--File.Generic:1.0.0", "dev:dataset--File.Generic:ibm-2", "a file location")]
     public async Task A_location_with_credentials_for_an_unnamed_endpoint_holds_the_record(string kind, string id, string what)
     {
         var platform = new FakeOsduPlatform { Provider = FakeOsduPlatform.Staging.Ibm };
@@ -206,15 +206,15 @@ public sealed class DatasetRouteTests
             PayloadContentType = "application/octet-stream",
         };
         using var rig = new Rig(platform, options);
-        const string id = "opendes:work-product-component--SeismicTraceData:st-7";
+        const string id = "dev:work-product-component--SeismicTraceData:st-7";
         var document = FakeOsduPlatform.Record(id, "osdu:wks:work-product-component--SeismicTraceData:1.3.0");
         var first = await rig.Protocol.DeliverAsync(Work(document, new MemoryFiles(("line1.segy", "L1"), ("line2.segy", "L2"))));
 
         Assert.True(first.Succeeded, first.Failure?.Message);
-        const string dataset = "opendes:dataset--FileCollection.Generic:st-7-files";
+        const string dataset = "dev:dataset--FileCollection.Generic:st-7-files";
         Assert.Equal(dataset, first.Returned[FileUploads.DatasetIdsValue]);
         Assert.Equal(dataset + ":", platform.Records[id]["data"]!["Datasets"]![0]!.GetValue<string>());
-        Assert.Equal("opendes-public", platform.Records[dataset]["legal"]!["legaltags"]![0]!.GetValue<string>());
+        Assert.Equal("dev-public", platform.Records[dataset]["legal"]!["legaltags"]![0]!.GetValue<string>());
         Assert.Equal(platform.Records[id]["version"]!.GetValue<long>(), first.TargetVersion);
         var recordVersion = first.TargetVersion;
 
@@ -240,7 +240,7 @@ public sealed class DatasetRouteTests
     {
         var platform = new FakeOsduPlatform();
         using var rig = new Rig(platform);
-        const string id = "opendes:dataset--File.Generic:report-2";
+        const string id = "dev:dataset--File.Generic:report-2";
         var delivered = await rig.Protocol.DeliverAsync(Work(FakeOsduPlatform.Record(id, "osdu:wks:dataset--File.Generic:1.0.0"), new MemoryFiles(("report.pdf", "%PDF"))));
         Assert.True(delivered.Succeeded, delivered.Failure?.Message);
         var source = platform.Records[id]["data"]!["DatasetProperties"]!["FileSourceInfo"]!["FileSource"]!.GetValue<string>();
@@ -263,7 +263,7 @@ public sealed class DatasetRouteTests
 
         // A record storage does not hold cannot be rewritten either.
         var missing = await Assert.ThrowsAsync<DeliveryException>(() => rig.Protocol.DeliverAsync(
-            Work(FakeOsduPlatform.Record("opendes:dataset--File.Generic:never", "osdu:wks:dataset--File.Generic:1.0.0"), null, payload: false, existing: 1)));
+            Work(FakeOsduPlatform.Record("dev:dataset--File.Generic:never", "osdu:wks:dataset--File.Generic:1.0.0"), null, payload: false, existing: 1)));
         Assert.Contains("is not in storage", missing.Message, StringComparison.Ordinal);
         AssertConform(platform);
     }
@@ -278,7 +278,7 @@ public sealed class DatasetRouteTests
             PreserveDataKeys = ["ExtensionProperties"],
             UploadHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["x-ms-blob-type"] = "BlockBlob" },
         });
-        const string id = "opendes:dataset--File.Generic:report-3";
+        const string id = "dev:dataset--File.Generic:report-3";
         const string kind = "osdu:wks:dataset--File.Generic:1.0.0";
         var delivered = await rig.Protocol.DeliverAsync(Work(FakeOsduPlatform.Record(id, kind), new MemoryFiles(("report.pdf", "%PDF"))));
         Assert.True(delivered.Succeeded, delivered.Failure?.Message);
@@ -307,10 +307,10 @@ public sealed class DatasetRouteTests
     public async Task A_dataset_the_service_cannot_hand_out_fails_its_record_and_the_others_land()
     {
         var platform = new FakeOsduPlatform();
-        platform.Unretrievable.Add("opendes:dataset--File.Generic:lost");
+        platform.Unretrievable.Add("dev:dataset--File.Generic:lost");
         using var rig = new Rig(platform);
         var works = new[] { "kept", "lost" }
-            .Select(n => Work(FakeOsduPlatform.Record($"opendes:dataset--File.Generic:{n}", "osdu:wks:dataset--File.Generic:1.0.0"), new MemoryFiles(($"{n}.txt", n))))
+            .Select(n => Work(FakeOsduPlatform.Record($"dev:dataset--File.Generic:{n}", "osdu:wks:dataset--File.Generic:1.0.0"), new MemoryFiles(($"{n}.txt", n))))
             .ToList();
         var outcomes = await rig.Protocol.DeliverBatchAsync(works);
         Assert.True(outcomes[0].Succeeded, outcomes[0].Failure?.Message);
@@ -324,7 +324,7 @@ public sealed class DatasetRouteTests
         using var rig = new Rig(platform, new ProtocolOptions { BatchSize = 500, UploadHeaders = new Dictionary<string, string> { ["x-ms-blob-type"] = "BlockBlob" } });
         Assert.Equal(20, rig.Protocol.MaxBatch);
         var works = Enumerable.Range(0, 25)
-            .Select(i => Work(FakeOsduPlatform.Record($"opendes:dataset--File.Generic:many-{i.ToString(CultureInfo.InvariantCulture)}", "osdu:wks:dataset--File.Generic:1.0.0"), new MemoryFiles(("f.txt", "x"))))
+            .Select(i => Work(FakeOsduPlatform.Record($"dev:dataset--File.Generic:many-{i.ToString(CultureInfo.InvariantCulture)}", "osdu:wks:dataset--File.Generic:1.0.0"), new MemoryFiles(("f.txt", "x"))))
             .ToList();
         var outcomes = await rig.Protocol.DeliverBatchAsync(works);
         Assert.All(outcomes, o => Assert.True(o.Succeeded, o.Failure?.Message));
@@ -337,7 +337,7 @@ public sealed class DatasetRouteTests
     {
         var platform = new FakeOsduPlatform();
         using var rig = new Rig(platform);
-        const string id = "opendes:dataset--File.Generic:removable";
+        const string id = "dev:dataset--File.Generic:removable";
         platform.Put(FakeOsduPlatform.Record(id, "osdu:wks:dataset--File.Generic:1.0.0"));
 
         var removed = await rig.Protocol.DeleteAsync(id, RemovalScope.Record);

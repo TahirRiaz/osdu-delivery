@@ -1,7 +1,7 @@
 {
   "entityType": "reference-data--VerticalMeasurementType",
   "items": [
-    { "id": "opendes:reference-data--VerticalMeasurementType:KellyBushing", "Code": "KB", "Name": "Kelly Bushing" },
-    { "id": "opendes:reference-data--VerticalMeasurementType:RotaryTable", "Code": "RT", "Name": "Rotary Table" }
+    { "id": "dev:reference-data--VerticalMeasurementType:KellyBushing", "Code": "KB", "Name": "Kelly Bushing" },
+    { "id": "dev:reference-data--VerticalMeasurementType:RotaryTable", "Code": "RT", "Name": "Rotary Table" }
   ]
 }

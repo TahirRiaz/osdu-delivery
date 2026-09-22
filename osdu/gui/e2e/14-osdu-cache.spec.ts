@@ -7,7 +7,7 @@ import { expect, test } from "./helpers";
 // five types (none asking for approval), and the sample records were imported through the CLI as the first version.
 
 /** The partition the sample cache flow fills, and so the cache the page shows. */
-const PARTITION = "opendes";
+const PARTITION = "dev";
 
 test.describe.serial("osdu cache", () => {
   test("the page opens on the cache: where it is defined, what it holds, and its types", async ({ adminPage }) => {

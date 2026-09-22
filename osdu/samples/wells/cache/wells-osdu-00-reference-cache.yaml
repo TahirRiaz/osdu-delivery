@@ -6,7 +6,7 @@
 # every declared type and merges what it finds into the cache of its partition (data-partition-id below) in the catalog,
 # which writes a new version when anything changed and records the flow and the run that wrote it. A partition has one
 # cache: every cache flow searching it adds to the same records, stored once, and every delivery flow delivering to it
-# reads them. The versions are listed on the GUI's OSDU cache page and by 'sqlflow cache list opendes'; nothing is
+# reads them. The versions are listed on the GUI's OSDU cache page and by 'sqlflow cache list dev'; nothing is
 # written back to this repository.
 #
 # The cache itself is never kept in this repository: this document defines it, and a run captures it into the

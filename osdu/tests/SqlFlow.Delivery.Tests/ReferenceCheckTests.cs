@@ -41,7 +41,7 @@ public class ReferenceCheckTests : IDisposable
         Ledger,
         new OsduHttpClient(
             _runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" }),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" }),
         "/api/storage/v2/query/records");
 
     private static RecordState Record(Guid flowId, string sourceKey, params string[] references) => new()
@@ -50,7 +50,7 @@ public class ReferenceCheckTests : IDisposable
         FlowId = flowId,
         SourceKey = sourceKey,
         MappingName = "Thing",
-        TargetId = $"opendes:work-product-component--WellLog:{sourceKey}",
+        TargetId = $"dev:work-product-component--WellLog:{sourceKey}",
         PendingDocumentRef = "0:0:10",
         PendingRenderContext = "{}",
         PendingMetadataHash = "mh",
@@ -61,22 +61,22 @@ public class ReferenceCheckTests : IDisposable
     [Fact]
     public async Task An_id_neither_the_ledger_nor_storage_holds_is_named_and_the_others_are_not()
     {
-        _platform.Records["opendes:master-data--Wellbore:in-storage"] = new JsonObject
+        _platform.Records["dev:master-data--Wellbore:in-storage"] = new JsonObject
         {
-            ["id"] = "opendes:master-data--Wellbore:in-storage",
+            ["id"] = "dev:master-data--Wellbore:in-storage",
             ["kind"] = "osdu:wks:master-data--Wellbore:1.3.0",
             ["version"] = 1,
         };
         var wellbores = FlowId.Of("wellbores");
-        await Ledger.UpsertPendingAsync(wellbores, [Record(wellbores, "in-ledger") with { TargetId = "opendes:master-data--Wellbore:in-ledger", PendingReferences = [] }]);
-        var known = Record(_flow, "L-1", "opendes:master-data--Wellbore:in-storage", "opendes:master-data--Wellbore:in-ledger");
-        var dangling = Record(_flow, "L-2", "opendes:master-data--Wellbore:nowhere");
+        await Ledger.UpsertPendingAsync(wellbores, [Record(wellbores, "in-ledger") with { TargetId = "dev:master-data--Wellbore:in-ledger", PendingReferences = [] }]);
+        var known = Record(_flow, "L-1", "dev:master-data--Wellbore:in-storage", "dev:master-data--Wellbore:in-ledger");
+        var dangling = Record(_flow, "L-2", "dev:master-data--Wellbore:nowhere");
 
         var missing = await Check().MissingAsync([known, dangling], CancellationToken.None);
 
         var named = Assert.Single(missing);
         Assert.Equal(dangling.DeliveryKey, named.Key);
-        Assert.Equal("opendes:master-data--Wellbore:nowhere", Assert.Single(named.Value).Id);
+        Assert.Equal("dev:master-data--Wellbore:nowhere", Assert.Single(named.Value).Id);
         Assert.Contains("data.WellboreID", ReferenceCheck.Describe(named.Value), StringComparison.Ordinal);
 
         // Only the ids the ledger does not hold are asked of storage.
@@ -129,7 +129,7 @@ public class ReferenceCheckTests : IDisposable
           mapping: WellLog@1.4.0
         target:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
           protocol: storage
         {{target}}
         """).ReplaceLineEndings("\n");

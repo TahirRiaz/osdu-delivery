@@ -35,7 +35,7 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
           work: ../.work
         target:
           endpoint: ${env:OSDU_URL}
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
         interfaces:
           wellbores:
             record: { object: Petrel.ing.Wellbore, key: [facility_name] }

@@ -19,7 +19,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public class OsduContentTypeTests
 {
-    private const string RecordId = "opendes:work-product-component--WellLog:abc";
+    private const string RecordId = "dev:work-product-component--WellLog:abc";
 
     private static (OsduHttpClient Client, HttpRuntime Runtime) Client(FakeHttpHandler handler)
     {
@@ -126,7 +126,7 @@ public class OsduErrorTests
     public void An_app_error_reads_as_its_message_and_reason()
     {
         Assert.Equal("busy (try later)", OsduError.Describe("""{"code":503,"message":"busy","reason":"try later"}"""));
-        Assert.Equal("Invalid legal tags: opendes-missing", OsduError.Describe("""{"code":400,"reason":"Bad Request","message":"Invalid legal tags: opendes-missing"}""").Split(" (")[0]);
+        Assert.Equal("Invalid legal tags: dev-missing", OsduError.Describe("""{"code":400,"reason":"Bad Request","message":"Invalid legal tags: dev-missing"}""").Split(" (")[0]);
         Assert.Equal("Not Found", OsduError.Describe("""{"code":404,"reason":"Not Found"}"""));
         Assert.Equal("Record not found", OsduError.Describe("""{"code":404,"reason":"record not found","message":"Record not found"}"""));
     }
@@ -165,14 +165,14 @@ public class OsduErrorTests
     [Fact]
     public async Task A_refused_request_surfaces_with_what_the_service_said()
     {
-        var handler = new FakeHttpHandler().On(HttpMethod.Put, "/records", HttpStatusCode.BadRequest, """{"code":400,"reason":"Bad Request","message":"Invalid legal tags: opendes-missing"}""");
+        var handler = new FakeHttpHandler().On(HttpMethod.Put, "/records", HttpStatusCode.BadRequest, """{"code":400,"reason":"Bad Request","message":"Invalid legal tags: dev-missing"}""");
         using var runtime = new HttpRuntime(
             new FlowReliability { Retry = new FlowRetry { Attempts = 1 } }, new SecretResolver([new EnvSecretProvider()]), new TestClock(), handler, allowLoopback: true);
 
         var ex = await Assert.ThrowsAsync<SqlFlow.Delivery.OsduStatusException>(() => runtime.Data.SendAsync(() => new HttpRequestMessage(HttpMethod.Put, "http://localhost/records")));
 
         Assert.Equal(400, ex.StatusCode);
-        Assert.EndsWith("Invalid legal tags: opendes-missing (Bad Request)", ex.Message, StringComparison.Ordinal);
+        Assert.EndsWith("Invalid legal tags: dev-missing (Bad Request)", ex.Message, StringComparison.Ordinal);
     }
 }
 
@@ -228,7 +228,7 @@ public class LegalTagValidatorTests
             new SecretResolver([new EnvSecretProvider()]), clock, handler, allowLoopback: true);
         var client = new OsduHttpClient(
             runtime, "http://localhost/osdu", new TargetAuth { Type = TargetAuthType.None },
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
         return (client, runtime);
     }
 
@@ -243,12 +243,12 @@ public class LegalTagValidatorTests
         var (client, runtime) = Client(handler, clock);
         using (runtime)
         {
-            var invalid = await new LegalTagValidator(client, time: clock).InvalidAsync(["opendes-public", "opendes-public", " ", "opendes-private"]);
+            var invalid = await new LegalTagValidator(client, time: clock).InvalidAsync(["dev-public", "dev-public", " ", "dev-private"]);
 
             Assert.Empty(invalid);
             var call = Assert.Single(handler.Calls);
-            Assert.Equal(["opendes-public", "opendes-private"], NamesIn(call));
-            Assert.Equal("opendes", call.Headers["data-partition-id"]);
+            Assert.Equal(["dev-public", "dev-private"], NamesIn(call));
+            Assert.Equal("dev", call.Headers["data-partition-id"]);
         }
     }
 
@@ -256,17 +256,17 @@ public class LegalTagValidatorTests
     public async Task Refused_tags_come_back_with_the_reason_the_service_gives()
     {
         var handler = new FakeHttpHandler().On(HttpMethod.Post, ValidatePath, HttpStatusCode.OK,
-            """{"invalidLegalTags":[{"name":"opendes-expired","reason":"LegalTag has expired"},{"name":"opendes-noreason"}]}""");
+            """{"invalidLegalTags":[{"name":"dev-expired","reason":"LegalTag has expired"},{"name":"dev-noreason"}]}""");
         var clock = new TestClock();
         var (client, runtime) = Client(handler, clock);
         using (runtime)
         {
-            var invalid = await new LegalTagValidator(client, time: clock).InvalidAsync(["opendes-public", "opendes-expired", "opendes-noreason"]);
+            var invalid = await new LegalTagValidator(client, time: clock).InvalidAsync(["dev-public", "dev-expired", "dev-noreason"]);
 
             Assert.Equal(2, invalid.Count);
-            Assert.Equal("LegalTag has expired", invalid["opendes-expired"]);
-            Assert.Contains("invalid", invalid["opendes-noreason"], StringComparison.Ordinal);
-            Assert.False(invalid.ContainsKey("opendes-public"));
+            Assert.Equal("LegalTag has expired", invalid["dev-expired"]);
+            Assert.Contains("invalid", invalid["dev-noreason"], StringComparison.Ordinal);
+            Assert.False(invalid.ContainsKey("dev-public"));
         }
     }
 
@@ -278,7 +278,7 @@ public class LegalTagValidatorTests
         var (client, runtime) = Client(handler, clock);
         using (runtime)
         {
-            var names = Enumerable.Range(0, 30).Select(i => "opendes-tag-" + i.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToList();
+            var names = Enumerable.Range(0, 30).Select(i => "dev-tag-" + i.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToList();
             await new LegalTagValidator(client, time: clock).InvalidAsync(names);
 
             Assert.Equal(2, handler.Calls.Count);
@@ -296,13 +296,13 @@ public class LegalTagValidatorTests
         using (runtime)
         {
             var validator = new LegalTagValidator(client, time: clock);
-            await validator.InvalidAsync(["opendes-public"]);
+            await validator.InvalidAsync(["dev-public"]);
             clock.Advance(TimeSpan.FromMinutes(9));
-            await validator.InvalidAsync(["opendes-public"]);
+            await validator.InvalidAsync(["dev-public"]);
             Assert.Single(handler.Calls);
 
             clock.Advance(TimeSpan.FromMinutes(2));
-            await validator.InvalidAsync(["opendes-public"]);
+            await validator.InvalidAsync(["dev-public"]);
             Assert.Equal(2, handler.Calls.Count);
         }
     }
@@ -318,13 +318,13 @@ public class LegalTagValidatorTests
         var (client, runtime) = Client(handler, clock);
         using (runtime)
         {
-            var invalid = await new LegalTagValidator(client, time: clock).InvalidAsync(["opendes-a", "opendes-b"]);
+            var invalid = await new LegalTagValidator(client, time: clock).InvalidAsync(["dev-a", "dev-b"]);
 
             Assert.Equal(2, invalid.Count);
-            Assert.Contains("does not know", invalid["opendes-a"], StringComparison.Ordinal);
+            Assert.Contains("does not know", invalid["dev-a"], StringComparison.Ordinal);
             Assert.Equal(3, handler.Calls.Count);
-            Assert.Equal(["opendes-a"], NamesIn(handler.Calls[1]));
-            Assert.Equal(["opendes-b"], NamesIn(handler.Calls[2]));
+            Assert.Equal(["dev-a"], NamesIn(handler.Calls[1]));
+            Assert.Equal(["dev-b"], NamesIn(handler.Calls[2]));
         }
     }
 
@@ -336,7 +336,7 @@ public class LegalTagValidatorTests
         var (client, runtime) = Client(handler, clock);
         using (runtime)
         {
-            var ex = await Assert.ThrowsAsync<DeliveryException>(() => new LegalTagValidator(client, time: clock).InvalidAsync(["opendes-public"]));
+            var ex = await Assert.ThrowsAsync<DeliveryException>(() => new LegalTagValidator(client, time: clock).InvalidAsync(["dev-public"]));
             Assert.Contains("not reachable", ex.Message, StringComparison.Ordinal);
         }
     }
@@ -348,7 +348,7 @@ public class LegalTagValidatorTests
 /// </summary>
 public class WellboreDdmsRootTests
 {
-    private const string RecordId = "opendes:work-product-component--WellLog:abc";
+    private const string RecordId = "dev:work-product-component--WellLog:abc";
 
     private static readonly ProtocolOptions PlatformRoot = new() { DdmsRoot = "/api/os-wellbore-ddms" };
 
@@ -359,7 +359,7 @@ public class WellboreDdmsRootTests
             new SecretResolver([new EnvSecretProvider()]), new TestClock(), handler, allowLoopback: true);
         var client = new OsduHttpClient(
             runtime, "http://localhost", new TargetAuth { Type = TargetAuthType.None },
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
         return (client, runtime);
     }
 
@@ -455,7 +455,7 @@ public class WellboreDdmsRootTests
           parameters: { dataPartition: dev }
         target:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
           protocol: ddms
           protocolOptions: { payload: curves, ddmsRoot: /api/os-wellbore-ddms/ }
         """;
@@ -493,7 +493,7 @@ public class LegalTagCheckTests
             new SecretResolver([new EnvSecretProvider()]), new TestClock(), handler, allowLoopback: true);
         var client = new OsduHttpClient(
             runtime, "http://localhost", new TargetAuth { Type = TargetAuthType.None },
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
         return (client, runtime);
     }
 
@@ -518,12 +518,12 @@ public class LegalTagCheckTests
     [Fact]
     public async Task A_storage_target_asks_the_legal_service_under_its_endpoint()
     {
-        var handler = new FakeHttpHandler().On(HttpMethod.Post, ValidatePath, HttpStatusCode.OK, """{"invalidLegalTags":[{"name":"opendes-expired","reason":"LegalTag has expired"}]}""");
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, ValidatePath, HttpStatusCode.OK, """{"invalidLegalTags":[{"name":"dev-expired","reason":"LegalTag has expired"}]}""");
         var (client, runtime) = Client(handler);
         using (runtime)
         {
             IDeliveryProtocol protocol = new OsduRecordProtocol(client, new ProtocolOptions());
-            var invalid = await protocol.InvalidLegalTagsAsync(["opendes-public", "opendes-expired"]);
+            var invalid = await protocol.InvalidLegalTagsAsync(["dev-public", "dev-expired"]);
 
             Assert.NotNull(invalid);
             Assert.Equal("LegalTag has expired", Assert.Single(invalid).Value);
@@ -539,7 +539,7 @@ public class LegalTagCheckTests
         using (runtime)
         {
             IDeliveryProtocol protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
-            Assert.Null(await protocol.InvalidLegalTagsAsync(["opendes-public"]));
+            Assert.Null(await protocol.InvalidLegalTagsAsync(["dev-public"]));
             Assert.Empty(handler.Calls);
         }
     }
@@ -552,7 +552,7 @@ public class LegalTagCheckTests
         using (runtime)
         {
             IDeliveryProtocol protocol = new OsduDdmsProtocol(client, new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms" }, Samples.Logger<OsduDdmsProtocol>());
-            var invalid = await protocol.InvalidLegalTagsAsync(["opendes-public"]);
+            var invalid = await protocol.InvalidLegalTagsAsync(["dev-public"]);
 
             Assert.NotNull(invalid);
             Assert.Empty(invalid);
@@ -577,7 +577,7 @@ public class LegalTagCheckTests
           parameters: { dataPartition: dev }
         target:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
           protocol: storage
           protocolOptions: { validateLegalTags: false, legalValidatePath: "__PATH__" }
         """;
@@ -618,7 +618,7 @@ public class SkipDuplicatesOptionTests
           parameters: { dataPartition: dev }
         target:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
           protocol: storage
           protocolOptions: { __OPTIONS__ }
         """;

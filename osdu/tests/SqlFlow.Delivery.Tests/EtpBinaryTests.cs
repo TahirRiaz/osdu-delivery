@@ -60,7 +60,7 @@ public class EtpBinaryTests
 
     [Theory]
     [InlineData("")]
-    [InlineData("opendes")]
+    [InlineData("dev")]
     [InlineData("eml:///dataspace('demo/study')")]
     [InlineData("éΩ中🚀")]
     public void A_string_crosses_as_utf8_with_its_byte_length_in_front(string value)

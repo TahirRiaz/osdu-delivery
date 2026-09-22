@@ -58,24 +58,24 @@ mappings:
 fixtures:
   - name: a document with a title and a description
     parameters:
-      dataPartition: opendes
-      aclOwner: data.default.owners@opendes.dataservices.energy
-      aclViewer: data.default.viewers@opendes.dataservices.energy
-      legalTag: opendes-reference-data-default
+      dataPartition: dev
+      aclOwner: data.default.owners@dev.dataservices.energy
+      aclViewer: data.default.viewers@dev.dataservices.energy
+      legalTag: dev-reference-data-default
     record:
       doc_id: D-0001
       doc_title: " Well report NO 15/9 A "
       doc_description: Geological observations over the logged interval.
     expected: |
       {
-        "id": "opendes:work-product-component--Document:9534c481c62851e4a5cedc2268e0141a",
+        "id": "dev:work-product-component--Document:9534c481c62851e4a5cedc2268e0141a",
         "kind": "osdu:wks:work-product-component--Document:1.0.0",
         "acl": {
-          "owners": ["data.default.owners@opendes.dataservices.energy"],
-          "viewers": ["data.default.viewers@opendes.dataservices.energy"]
+          "owners": ["data.default.owners@dev.dataservices.energy"],
+          "viewers": ["data.default.viewers@dev.dataservices.energy"]
         },
         "legal": {
-          "legaltags": ["opendes-reference-data-default"],
+          "legaltags": ["dev-reference-data-default"],
           "otherRelevantDataCountries": ["NO"]
         },
         "tags": { "DeliveredBy": "osdu-delivery" },

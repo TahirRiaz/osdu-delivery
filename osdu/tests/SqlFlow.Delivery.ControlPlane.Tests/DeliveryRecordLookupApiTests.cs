@@ -43,12 +43,12 @@ public sealed class DeliveryRecordLookupApiTests
         {
             await ledger.UpsertPendingAsync(flowId,
             [
-                Record(flowId, delivered, marker + "-A", $"opendes:master-data--Wellbore:{marker}-A", marker + "_wellbores.csv", 3),
-                Record(flowId, held, marker + "-B", $"opendes:master-data--Wellbore:{marker}-B", marker + "_wellbores.csv", 4),
+                Record(flowId, delivered, marker + "-A", $"dev:master-data--Wellbore:{marker}-A", marker + "_wellbores.csv", 3),
+                Record(flowId, held, marker + "-B", $"dev:master-data--Wellbore:{marker}-B", marker + "_wellbores.csv", 4),
             ]);
             await ledger.UpsertPendingAsync(otherFlow,
             [
-                Record(otherFlow, elsewhere, marker + "-C", $"opendes:master-data--Well:{marker}-C", marker + "_wells.csv", 1),
+                Record(otherFlow, elsewhere, marker + "-C", $"dev:master-data--Well:{marker}-C", marker + "_wells.csv", 1),
             ]);
 
             var lease = "lookup-test/" + Guid.NewGuid().ToString("N");
@@ -59,7 +59,7 @@ public sealed class DeliveryRecordLookupApiTests
                     DeliveryKey = delivered,
                     Status = RecordStatus.Delivered,
                     Promote = true,
-                    TargetId = $"opendes:master-data--Wellbore:{marker}-A",
+                    TargetId = $"dev:master-data--Wellbore:{marker}-A",
                     TargetVersion = 1,
                     Attempt = new AttemptRecord
                     {
@@ -95,12 +95,12 @@ public sealed class DeliveryRecordLookupApiTests
             var hitA = Assert.Single(hits, h => h.GetProperty("deliveryKey").GetGuid() == delivered.Value);
             Assert.Equal(flowId, hitA.GetProperty("flowId").GetGuid());
             Assert.Equal("delivered", hitA.GetProperty("status").GetString());
-            Assert.Equal($"opendes:master-data--Wellbore:{marker}-A", hitA.GetProperty("targetId").GetString());
+            Assert.Equal($"dev:master-data--Wellbore:{marker}-A", hitA.GetProperty("targetId").GetString());
 
             // The OSDU id, the ingestion file name and the delivery key itself find a record too. A file finds every
             // record built from it, landed or not: an operator asking "what came out of this file" means all of them,
             // and the held one is exactly what they are looking for.
-            Assert.Equal(1, (await LookupAsync(client, token, $"search=opendes:master-data--Well:{marker}")).GetProperty("total").GetInt64());
+            Assert.Equal(1, (await LookupAsync(client, token, $"search=dev:master-data--Well:{marker}")).GetProperty("total").GetInt64());
             var byFile = await LookupAsync(client, token, $"search={marker}_wellbores");
             Assert.Equal(2, byFile.GetProperty("total").GetInt64());
             Assert.Contains(byFile.GetProperty("items").EnumerateArray(), h => h.GetProperty("deliveryKey").GetGuid() == delivered.Value);
@@ -146,7 +146,7 @@ public sealed class DeliveryRecordLookupApiTests
         {
             // Staged now, so these are the records the ledger last touched: the listing has to show them first.
             await ledger.UpsertPendingAsync(flowId, keys
-                .Select((key, i) => Record(flowId, key, $"{marker}-{i}", $"opendes:master-data--Wellbore:{marker}-{i}", marker + "_wellbores.csv", i))
+                .Select((key, i) => Record(flowId, key, $"{marker}-{i}", $"dev:master-data--Wellbore:{marker}-{i}", marker + "_wellbores.csv", i))
                 .ToList());
 
             await using var factory = Factory(cs);

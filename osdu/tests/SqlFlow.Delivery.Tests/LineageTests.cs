@@ -416,18 +416,18 @@ public sealed class LineageTests : IDisposable
     {
         var warnings = new List<string>();
 
-        Assert.Null(OsduLineage.Type(LineageRelation.Writes, Platform, "opendes", "osdu:wks:master-data--Wellbore:*", "flow 'x'", "a write", warnings));
-        Assert.Null(OsduLineage.Type(LineageRelation.Reads, Platform, "opendes", "not a kind", "flow 'x'", "a read", warnings));
-        Assert.Null(OsduLineage.Type(LineageRelation.Reads, new string('e', DeclaredDataset.MaxInstanceLength + 1), "opendes", Samples.WellboreKind, "flow 'x'", "a read", warnings));
+        Assert.Null(OsduLineage.Type(LineageRelation.Writes, Platform, "dev", "osdu:wks:master-data--Wellbore:*", "flow 'x'", "a write", warnings));
+        Assert.Null(OsduLineage.Type(LineageRelation.Reads, Platform, "dev", "not a kind", "flow 'x'", "a read", warnings));
+        Assert.Null(OsduLineage.Type(LineageRelation.Reads, new string('e', DeclaredDataset.MaxInstanceLength + 1), "dev", Samples.WellboreKind, "flow 'x'", "a read", warnings));
         Assert.Null(OsduLineage.Type(
-            LineageRelation.Reads, Platform, "opendes", "osdu:wks:master-data--" + new string('W', DeclaredDataset.MaxPartLength) + ":1.0.0", "flow 'x'", "a read", warnings));
-        Assert.Null(OsduLineage.CacheType(LineageRelation.Reads, "opendes", "Well|bore", "flow 'x'", warnings));
-        Assert.Null(OsduLineage.CacheType(LineageRelation.Reads, "opendes", " ", "flow 'x'", warnings));
+            LineageRelation.Reads, Platform, "dev", "osdu:wks:master-data--" + new string('W', DeclaredDataset.MaxPartLength) + ":1.0.0", "flow 'x'", "a read", warnings));
+        Assert.Null(OsduLineage.CacheType(LineageRelation.Reads, "dev", "Well|bore", "flow 'x'", warnings));
+        Assert.Null(OsduLineage.CacheType(LineageRelation.Reads, "dev", " ", "flow 'x'", warnings));
 
         Assert.Equal(6, warnings.Count);
         Assert.DoesNotContain(warnings, w => w.Contains(new string('e', 100), StringComparison.Ordinal));
         Assert.Equal("osdu:wks:master-data--Wellbore:1.3.0",
-            OsduLineage.Type(LineageRelation.Writes, Platform, "opendes", Samples.WellboreKind, "flow 'x'", "a write", warnings)!.Name);
+            OsduLineage.Type(LineageRelation.Writes, Platform, "dev", Samples.WellboreKind, "flow 'x'", "a write", warnings)!.Name);
     }
 
     [Theory]

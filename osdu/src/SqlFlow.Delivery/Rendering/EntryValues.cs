@@ -369,7 +369,7 @@ internal static partial class EntryValues
         return Missing(entry, $"{path}: no {typeName} matches {described}{fold} in {version}", holds);
     }
 
-    /// <summary>The cache version a render read, as a hold reason names it: "version 20260910T165153Z of the cache of partition 'opendes'".</summary>
+    /// <summary>The cache version a render read, as a hold reason names it: "version 20260910T165153Z of the cache of partition 'dev'".</summary>
     private static string CacheLabel(RenderContext context)
         => context.CacheScope is null ? $"cache version {context.CacheVersion}" : $"version {context.CacheVersion} of the cache of partition '{context.CacheScope}'";
 

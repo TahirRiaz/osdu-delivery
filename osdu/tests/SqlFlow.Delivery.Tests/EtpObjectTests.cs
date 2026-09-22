@@ -208,7 +208,7 @@ public class EtpObjectTests
     [Fact]
     public void The_dataspace_record_id_is_the_one_the_server_will_register()
     {
-        Assert.Equal("opendes:dataset--ETPDataspace:demo-study", EtpDataspaceRecord.Id(new Uri("wss://osdu.example.com/x"), "demo/study", "opendes"));
+        Assert.Equal("dev:dataset--ETPDataspace:demo-study", EtpDataspaceRecord.Id(new Uri("wss://osdu.example.com/x"), "demo/study", "dev"));
 
         // A path the encoder cannot spell keeps its bytes as the server writes them.
         Assert.Equal("demo-study.2", EtpDataspaceRecord.UrlId("demo/study.2"));

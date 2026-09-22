@@ -29,7 +29,7 @@ public sealed partial class FakeOsduPlatform
     public Dictionary<string, SortedDictionary<long, JsonObject>> RmRows { get; } = new(StringComparer.Ordinal);
 
     /// <summary>The master records the service's database has a pool row for; a copy is taken in only under one of them.</summary>
-    public HashSet<string> RmPools { get; } = new(StringComparer.Ordinal) { "opendes:master-data--Reservoir:r1:" };
+    public HashSet<string> RmPools { get; } = new(StringComparer.Ordinal) { "dev:master-data--Reservoir:r1:" };
 
     /// <summary>Whether the forecast base 0, which the list call gives every forecast it takes in, exists.</summary>
     public bool RmForecastBaseZero { get; set; } = true;

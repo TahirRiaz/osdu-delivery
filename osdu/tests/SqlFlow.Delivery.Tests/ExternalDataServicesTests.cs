@@ -28,12 +28,12 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class ExternalDataServicesTests
 {
-    private const string Partition = "opendes";
-    private const string RegistryId = "opendes:master-data--ConnectedSourceRegistryEntry:source-1";
+    private const string Partition = "dev";
+    private const string RegistryId = "dev:master-data--ConnectedSourceRegistryEntry:source-1";
     private const string RegistryKind = "osdu:wks:master-data--ConnectedSourceRegistryEntry:1.0.0";
-    private const string JobId = "opendes:master-data--ConnectedSourceDataJob:job-1";
+    private const string JobId = "dev:master-data--ConnectedSourceDataJob:job-1";
     private const string JobKind = "osdu:wks:master-data--ConnectedSourceDataJob:2.0.0";
-    private const string ProxyId = "opendes:dataset--External:proxy-1";
+    private const string ProxyId = "dev:dataset--External:proxy-1";
     private const string ProxyKind = "osdu:wks:dataset--External:1.0.0";
 
     private static readonly SecretResolver Secrets = new([new EnvSecretProvider()]);
@@ -43,8 +43,8 @@ public sealed class ExternalDataServicesTests
     private static JsonObject Scheme(string name, string flow = "ClientCredentials") => new()
     {
         ["Name"] = name,
-        ["TypeID"] = "opendes:reference-data--SecuritySchemeType:OAuth2:",
-        ["FlowTypeID"] = $"opendes:reference-data--OAuth2FlowType:{flow}:",
+        ["TypeID"] = "dev:reference-data--SecuritySchemeType:OAuth2:",
+        ["FlowTypeID"] = $"dev:reference-data--OAuth2FlowType:{flow}:",
         ["TokenUrl"] = "https://login.example.com/oauth2/token",
         ["ClientIDKeyName"] = "source-client-id",
         ["ClientSecretKeyName"] = "source-client-secret",
@@ -80,11 +80,11 @@ public sealed class ExternalDataServicesTests
             ["OnIngestionDataPartitionID"] = Partition,
             ["ScheduleUTC"] = "0 1 * * *",
             ["LastSuccessfulRunDateUTC"] = "2026-01-01T00:00:00Z",
-            ["OnIngestionLegalTags"] = new JsonObject { ["legaltags"] = new JsonArray("opendes-public"), ["otherRelevantDataCountries"] = new JsonArray("NO") },
+            ["OnIngestionLegalTags"] = new JsonObject { ["legaltags"] = new JsonArray("dev-public"), ["otherRelevantDataCountries"] = new JsonArray("NO") },
             ["OnIngestionAcl"] = new JsonObject
             {
-                ["owners"] = new JsonArray("data.default.owners@opendes.example.com"),
-                ["viewers"] = new JsonArray("data.default.viewers@opendes.example.com"),
+                ["owners"] = new JsonArray("data.default.owners@dev.example.com"),
+                ["viewers"] = new JsonArray("data.default.viewers@dev.example.com"),
             },
             ["Workflows"] = new JsonArray(Fetch()),
         };
@@ -143,9 +143,9 @@ public sealed class ExternalDataServicesTests
         ["scheme without a name"] = (d => SchemeOf(d).Remove("Name"), "data.SecuritySchemes[0] has no Name"),
         ["scheme without a type"] = (d => SchemeOf(d).Remove("TypeID"), "data.SecuritySchemes[0] has no TypeID"),
         ["scheme without a flow"] = (d => SchemeOf(d).Remove("FlowTypeID"), "data.SecuritySchemes[0] has no FlowTypeID"),
-        ["flow of another reference type"] = (d => SchemeOf(d)["FlowTypeID"] = "opendes:reference-data--SecuritySchemeType:OAuth2:", "FlowTypeID 'opendes:reference-data--SecuritySchemeType:OAuth2:' is not a reference-data--OAuth2FlowType reference"),
-        ["flow eds-dms does not build"] = (d => SchemeOf(d)["FlowTypeID"] = "opendes:reference-data--OAuth2FlowType:DeviceCode:", "names the flow 'DeviceCode', and eds-dms builds only ClientCredentials"),
-        ["flow in another case"] = (d => SchemeOf(d)["FlowTypeID"] = "opendes:reference-data--OAuth2FlowType:clientCredentials:", "names the flow 'clientCredentials'"),
+        ["flow of another reference type"] = (d => SchemeOf(d)["FlowTypeID"] = "dev:reference-data--SecuritySchemeType:OAuth2:", "FlowTypeID 'dev:reference-data--SecuritySchemeType:OAuth2:' is not a reference-data--OAuth2FlowType reference"),
+        ["flow eds-dms does not build"] = (d => SchemeOf(d)["FlowTypeID"] = "dev:reference-data--OAuth2FlowType:DeviceCode:", "names the flow 'DeviceCode', and eds-dms builds only ClientCredentials"),
+        ["flow in another case"] = (d => SchemeOf(d)["FlowTypeID"] = "dev:reference-data--OAuth2FlowType:clientCredentials:", "names the flow 'clientCredentials'"),
         ["implicit flow"] = (d => d["SecuritySchemes"] = new JsonArray(Implicit()), "data.SecuritySchemes[0] uses the Implicit flow, which eds-dms refuses"),
         ["flow key missing"] = (d => SchemeOf(d).Remove("ScopesKeyName"), "data.SecuritySchemes[0] (ClientCredentials) has no ScopesKeyName"),
         ["flow key empty"] = (d => SchemeOf(d)["ClientSecretKeyName"] = string.Empty, "data.SecuritySchemes[0] (ClientCredentials) has no ClientSecretKeyName"),
@@ -160,8 +160,8 @@ public sealed class ExternalDataServicesTests
     private static JsonObject Implicit() => new()
     {
         ["Name"] = "implicit",
-        ["TypeID"] = "opendes:reference-data--SecuritySchemeType:OAuth2:",
-        ["FlowTypeID"] = "opendes:reference-data--OAuth2FlowType:Implicit:",
+        ["TypeID"] = "dev:reference-data--SecuritySchemeType:OAuth2:",
+        ["FlowTypeID"] = "dev:reference-data--OAuth2FlowType:Implicit:",
         ["AuthorizationUrl"] = "https://login.example.com/oauth2/authorize",
         ["CallbackUrl"] = "https://app.example.com/callback",
         ["ClientIDKeyName"] = "source-client-id",
@@ -216,12 +216,12 @@ public sealed class ExternalDataServicesTests
 
         // eds-dms cuts a reference at its third colon, so a version or a missing trailing colon names the same flow; the
         // value of TypeID is not read.
-        Assert.Null(EdsRecordRules.Hold(new EdsTarget(), Registry(d => SchemeOf(d)["FlowTypeID"] = "opendes:reference-data--OAuth2FlowType:ClientCredentials:3")));
-        Assert.Null(EdsRecordRules.Hold(new EdsTarget(), Registry(d => SchemeOf(d)["FlowTypeID"] = "opendes:reference-data--OAuth2FlowType:ClientCredentials")));
+        Assert.Null(EdsRecordRules.Hold(new EdsTarget(), Registry(d => SchemeOf(d)["FlowTypeID"] = "dev:reference-data--OAuth2FlowType:ClientCredentials:3")));
+        Assert.Null(EdsRecordRules.Hold(new EdsTarget(), Registry(d => SchemeOf(d)["FlowTypeID"] = "dev:reference-data--OAuth2FlowType:ClientCredentials")));
         Assert.Null(EdsRecordRules.Hold(new EdsTarget(), Registry(d => SchemeOf(d)["TypeID"] = string.Empty)));
 
         // The type eds-dms's own tests use, without its group, is checked the same way.
-        Assert.Contains("data.DatasetURL is missing", Held(Registry(d => d.Remove("DatasetURL"), "opendes:wks:ConnectedSourceRegistryEntry:1.0.0")), StringComparison.Ordinal);
+        Assert.Contains("data.DatasetURL is missing", Held(Registry(d => d.Remove("DatasetURL"), "dev:wks:ConnectedSourceRegistryEntry:1.0.0")), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -241,8 +241,8 @@ public sealed class ExternalDataServicesTests
         var account = new JsonObject
         {
             ["Name"] = "account",
-            ["TypeID"] = "opendes:reference-data--SecuritySchemeType:OAuth2:",
-            ["FlowTypeID"] = "opendes:reference-data--OAuth2FlowType:GcpServiceAccount:",
+            ["TypeID"] = "dev:reference-data--SecuritySchemeType:OAuth2:",
+            ["FlowTypeID"] = "dev:reference-data--OAuth2FlowType:GcpServiceAccount:",
             ["GcpServiceAccountKey"] = "source-account-key",
             ["TokenUrl"] = "https://oauth2.googleapis.com/token",
         };
@@ -270,7 +270,7 @@ public sealed class ExternalDataServicesTests
         Assert.Contains("; data.SecuritySchemes[0] (ClientCredentials) has no ClientIDKeyName", hold, StringComparison.Ordinal);
 
         Assert.Null(EdsRecordRules.Hold(new EdsTarget { Checks = false }, broken));
-        Assert.Null(EdsRecordRules.Hold(new EdsTarget(), FakeOsduPlatform.Record("opendes:master-data--Well:w-1", "osdu:wks:master-data--Well:1.0.0")));
+        Assert.Null(EdsRecordRules.Hold(new EdsTarget(), FakeOsduPlatform.Record("dev:master-data--Well:w-1", "osdu:wks:master-data--Well:1.0.0")));
         Assert.Null(EdsRecordRules.Hold(new EdsTarget(), new JsonObject { ["id"] = RegistryId }));
     }
 
@@ -278,7 +278,7 @@ public sealed class ExternalDataServicesTests
     {
         ["no registry entry"] = (d => d.Remove("ConnectedSourceRegistryEntryID"), "data.ConnectedSourceRegistryEntryID is missing"),
         ["registry entry without its colon"] = (d => d["ConnectedSourceRegistryEntryID"] = RegistryId, $"data.ConnectedSourceRegistryEntryID '{RegistryId}' is not a reference to a connected source registry entry"),
-        ["registry entry of another type"] = (d => d["ConnectedSourceRegistryEntryID"] = "opendes:master-data--Well:w-1:", "'opendes:master-data--Well:w-1:' is not a reference to a connected source registry entry"),
+        ["registry entry of another type"] = (d => d["ConnectedSourceRegistryEntryID"] = "dev:master-data--Well:w-1:", "'dev:master-data--Well:w-1:' is not a reference to a connected source registry entry"),
         ["registry entry with a colon in its id"] = (d => d["ConnectedSourceRegistryEntryID"] = RegistryId + ":a:", "is not a reference to a connected source registry entry"),
         ["no active indicator"] = (d => d.Remove("ActiveIndicator"), "data.ActiveIndicator is missing, and the scheduler runs only the jobs where it is true"),
         ["active indicator as text"] = (d => d["ActiveIndicator"] = "true", "data.ActiveIndicator is not true or false"),
@@ -289,11 +289,11 @@ public sealed class ExternalDataServicesTests
         ["no source partition"] = (d => d.Remove("ConnectedSourceDataPartitionID"), "data.ConnectedSourceDataPartitionID is missing"),
         ["partition with a space"] = (d => d["OnIngestionDataPartitionID"] = "open des", "data.OnIngestionDataPartitionID 'open des' is not a partition id"),
         ["no legal tags"] = (d => d.Remove("OnIngestionLegalTags"), "data.OnIngestionLegalTags is missing, and EDS gives the records it fetches its legal tags"),
-        ["legal tags not an object"] = (d => d["OnIngestionLegalTags"] = new JsonArray("opendes-public"), "data.OnIngestionLegalTags is not an object"),
+        ["legal tags not an object"] = (d => d["OnIngestionLegalTags"] = new JsonArray("dev-public"), "data.OnIngestionLegalTags is not an object"),
         ["empty legal tags"] = (d => d["OnIngestionLegalTags"]!["legaltags"] = new JsonArray(), "data.OnIngestionLegalTags.legaltags is not a list of at least one entry"),
         ["no countries"] = (d => d["OnIngestionLegalTags"]!.AsObject().Remove("otherRelevantDataCountries"), "data.OnIngestionLegalTags.otherRelevantDataCountries is missing"),
         ["no access block"] = (d => d.Remove("OnIngestionAcl"), "data.OnIngestionAcl is missing"),
-        ["owner that is not a data group"] = (d => d["OnIngestionAcl"]!["owners"] = new JsonArray("owners@opendes.example.com"), "data.OnIngestionAcl.owners holds 'owners@opendes.example.com', which is not a group Storage takes in an ACL"),
+        ["owner that is not a data group"] = (d => d["OnIngestionAcl"]!["owners"] = new JsonArray("owners@dev.example.com"), "data.OnIngestionAcl.owners holds 'owners@dev.example.com', which is not a group Storage takes in an ACL"),
         ["empty viewers"] = (d => d["OnIngestionAcl"]!["viewers"] = new JsonArray(), "data.OnIngestionAcl.viewers is not a list of at least one entry"),
         ["viewer that is not text"] = (d => d["OnIngestionAcl"]!["viewers"] = new JsonArray(1), "data.OnIngestionAcl.viewers holds an empty entry, or one that is not a string"),
         ["no schedule"] = (d => d.Remove("ScheduleUTC"), "data.ScheduleUTC is missing"),
@@ -342,7 +342,7 @@ public sealed class ExternalDataServicesTests
         Assert.Null(EdsRecordRules.Hold(new EdsTarget(), Job(d => d.Remove("LimitRecords"))));
 
         // The job a data job names by the bare type eds-dms's tests use is a registry entry all the same.
-        Assert.Null(EdsRecordRules.Hold(new EdsTarget(), Job(d => d["ConnectedSourceRegistryEntryID"] = "opendes:ConnectedSourceRegistryEntry:source-1:")));
+        Assert.Null(EdsRecordRules.Hold(new EdsTarget(), Job(d => d["ConnectedSourceRegistryEntryID"] = "dev:ConnectedSourceRegistryEntry:source-1:")));
     }
 
     private static readonly Dictionary<string, (Action<JsonObject> Change, string Expected)> ProxyCases = new(StringComparer.Ordinal)
@@ -360,10 +360,10 @@ public sealed class ExternalDataServicesTests
         ["no job id"] = (d => PropertiesOf(d)["ConnectedSourceDataJobId"] = " ", "data.DatasetProperties.ConnectedSourceDataJobId is missing"),
         ["no source partition"] = (d => PropertiesOf(d).Remove("SourceDataPartitionId"), "data.DatasetProperties.SourceDataPartitionId is missing"),
         ["no source record"] = (d => PropertiesOf(d).Remove("SourceRecordId"), "data.DatasetProperties.SourceRecordId is missing"),
-        ["two spellings that differ"] = (d => PropertiesOf(d)["ConnectedSourceDataJobID"] = "opendes:master-data--ConnectedSourceDataJob:job-2", $"data.DatasetProperties names ConnectedSourceDataJobId '{JobId}' and ConnectedSourceDataJobID 'opendes:master-data--ConnectedSourceDataJob:job-2', and eds-dms reads one of them"),
+        ["two spellings that differ"] = (d => PropertiesOf(d)["ConnectedSourceDataJobID"] = "dev:master-data--ConnectedSourceDataJob:job-2", $"data.DatasetProperties names ConnectedSourceDataJobId '{JobId}' and ConnectedSourceDataJobID 'dev:master-data--ConnectedSourceDataJob:job-2', and eds-dms reads one of them"),
         ["id that is not text"] = (d => PropertiesOf(d)["SourceRecordId"] = 5, "data.DatasetProperties.SourceRecordId is not a string"),
-        ["registry entry id of two parts"] = (d => PropertiesOf(d)["ConnectedSourceRegistryEntryId"] = "opendes:source-1", "ConnectedSourceRegistryEntryId 'opendes:source-1' is not a record id eds-dms can read"),
-        ["registry entry id of another type"] = (d => PropertiesOf(d)["ConnectedSourceRegistryEntryId"] = "opendes:master-data--Well:w-1", "ConnectedSourceRegistryEntryId 'opendes:master-data--Well:w-1' does not name a connected source registry entry"),
+        ["registry entry id of two parts"] = (d => PropertiesOf(d)["ConnectedSourceRegistryEntryId"] = "dev:source-1", "ConnectedSourceRegistryEntryId 'dev:source-1' is not a record id eds-dms can read"),
+        ["registry entry id of another type"] = (d => PropertiesOf(d)["ConnectedSourceRegistryEntryId"] = "dev:master-data--Well:w-1", "ConnectedSourceRegistryEntryId 'dev:master-data--Well:w-1' does not name a connected source registry entry"),
         ["job id with a colon inside it"] = (d => PropertiesOf(d)["ConnectedSourceDataJobId"] = JobId + ":1a", $"ConnectedSourceDataJobId '{JobId}:1a' is not a record id eds-dms can read"),
         ["partition with a slash"] = (d => PropertiesOf(d)["SourceDataPartitionId"] = "sou/rce", "data.DatasetProperties.SourceDataPartitionId 'sou/rce' is not a partition id"),
         ["source record of another partition"] = (d => PropertiesOf(d)["SourceRecordId"] = "other:dataset--File.Generic:file-1", "SourceRecordId 'other:dataset--File.Generic:file-1' reaches the source as 'source:other:dataset--File.Generic:file-1', which is not a record id of partition 'source'"),
@@ -395,7 +395,7 @@ public sealed class ExternalDataServicesTests
                 ["SourceRecordID"] = "source:dataset--File.Generic:file-1:3",
             },
             "osdu:wks:dataset--ConnectedSource.Generic:0.2.0",
-            "opendes:dataset--ConnectedSource.Generic:file-1")));
+            "dev:dataset--ConnectedSource.Generic:file-1")));
 
         // The same value under both spellings is one value; a source record id without its partition gets the partition in
         // front, as eds-dms puts it there.
@@ -404,21 +404,21 @@ public sealed class ExternalDataServicesTests
     }
 
     [Theory]
-    [InlineData("opendes:master-data--Well:w-1:", "opendes:master-data--Well:w-1")]
-    [InlineData("opendes:master-data--Well:w-1:12", "opendes:master-data--Well:w-1")]
-    [InlineData("opendes:master-data--Well:w-1:a:b", "opendes:master-data--Well:w-1")]
-    [InlineData("opendes:master-data--Well:w-1", "opendes:master-data--Well:w-1")]
+    [InlineData("dev:master-data--Well:w-1:", "dev:master-data--Well:w-1")]
+    [InlineData("dev:master-data--Well:w-1:12", "dev:master-data--Well:w-1")]
+    [InlineData("dev:master-data--Well:w-1:a:b", "dev:master-data--Well:w-1")]
+    [InlineData("dev:master-data--Well:w-1", "dev:master-data--Well:w-1")]
     [InlineData("master-data--Well:w-1:3", "master-data--Well:w-1:3")]
     [InlineData("", "")]
     public void A_reference_is_cut_at_its_third_colon_as_eds_dms_cuts_it(string reference, string expected)
         => Assert.Equal(expected, EdsRecordRules.VersionStripped(reference));
 
     [Theory]
-    [InlineData("opendes:reference-data--OAuth2FlowType:ClientCredentials:", "ClientCredentials")]
-    [InlineData("opendes:reference-data--OAuth2FlowType:RefreshToken:2", "RefreshToken")]
-    [InlineData("opendes:reference-data--OAuth2FlowType:", "")]
+    [InlineData("dev:reference-data--OAuth2FlowType:ClientCredentials:", "ClientCredentials")]
+    [InlineData("dev:reference-data--OAuth2FlowType:RefreshToken:2", "RefreshToken")]
+    [InlineData("dev:reference-data--OAuth2FlowType:", "")]
     [InlineData("ClientCredentials", null)]
-    [InlineData("opendes:reference-data--SecuritySchemeType:OAuth2:", null)]
+    [InlineData("dev:reference-data--SecuritySchemeType:OAuth2:", null)]
     public void A_flow_type_reference_names_the_flow_after_its_type(string reference, string? expected)
         => Assert.Equal(expected, EdsRecordRules.FlowOf(reference));
 
@@ -453,9 +453,9 @@ public sealed class ExternalDataServicesTests
         // What Storage adds, the forms it may give a number or an empty block in, and the order it lists keys in.
         var stored = (JsonObject)JsonNode.Parse(written.ToJsonString())!;
         stored["version"] = 1_700_000_000_000_123L;
-        stored["createUser"] = "eds@opendes.example.com";
+        stored["createUser"] = "eds@dev.example.com";
         stored["createTime"] = "2026-09-17T10:00:00.000Z";
-        stored["modifyUser"] = "eds@opendes.example.com";
+        stored["modifyUser"] = "eds@dev.example.com";
         stored["modifyTime"] = "2026-09-17T11:00:00.000Z";
         stored["legal"]!["status"] = "compliant";
         stored["tags"] = new JsonObject();
@@ -480,8 +480,8 @@ public sealed class ExternalDataServicesTests
         foreach (var change in new Action<JsonObject>[]
         {
             s => s["data"]!["ActiveIndicator"] = false,
-            s => s["acl"]!["viewers"] = new JsonArray("data.other.viewers@opendes.example.com"),
-            s => s["legal"]!["legaltags"] = new JsonArray("opendes-private"),
+            s => s["acl"]!["viewers"] = new JsonArray("data.other.viewers@dev.example.com"),
+            s => s["legal"]!["legaltags"] = new JsonArray("dev-private"),
             s => s["tags"] = new JsonObject { ["owner"] = "eds" },
             s => s["ancestry"] = new JsonObject { ["parents"] = new JsonArray(RegistryId + ":1") },
             s => s["kind"] = "osdu:wks:master-data--ConnectedSourceDataJob:1.0.0",
@@ -543,7 +543,7 @@ public sealed class ExternalDataServicesTests
                 endpoint: ${env:OSDU_URL}
                 protocol: storage
                 headers:
-                  data-partition-id: opendes
+                  data-partition-id: dev
               """
             : """
               flowType: delivery
@@ -554,7 +554,7 @@ public sealed class ExternalDataServicesTests
               target:
                 endpoint: ${env:OSDU_URL}
                 headers:
-                  data-partition-id: opendes
+                  data-partition-id: dev
               """;
         return (head + "\n" + eds + interfaces).ReplaceLineEndings("\n");
     }
@@ -687,15 +687,15 @@ public sealed class ExternalDataServicesTests
             parameters:
               dataPartition: { required: true }
             mappings:
-              - { target: osdu.acl.owners, static: [data.default.owners@opendes.example.com] }
-              - { target: osdu.acl.viewers, static: [data.default.viewers@opendes.example.com] }
-              - { target: osdu.legal.legaltags, static: [opendes-public] }
+              - { target: osdu.acl.owners, static: [data.default.owners@dev.example.com] }
+              - { target: osdu.acl.viewers, static: [data.default.viewers@dev.example.com] }
+              - { target: osdu.legal.legaltags, static: [dev-public] }
               - { target: osdu.legal.otherRelevantDataCountries, static: [NO] }
               - { target: osdu.data.Name, source: dataset.name }
               - { target: osdu.data.DatasetURL, source: dataset.url, required: false }
               - { target: osdu.data.SecuritySchemes, source: dataset.schemes }
               - { target: "osdu.data.SecuritySchemes[].Name", source: dataset.schemes.name }
-              - { target: "osdu.data.SecuritySchemes[].TypeID", static: "opendes:reference-data--SecuritySchemeType:OAuth2:" }
+              - { target: "osdu.data.SecuritySchemes[].TypeID", static: "dev:reference-data--SecuritySchemeType:OAuth2:" }
               - { target: "osdu.data.SecuritySchemes[].FlowTypeID", source: dataset.schemes.flow }
               - { target: "osdu.data.SecuritySchemes[].TokenUrl", source: dataset.schemes.token_url }
               - { target: "osdu.data.SecuritySchemes[].ClientIDKeyName", source: dataset.schemes.client_id }
@@ -741,7 +741,7 @@ public sealed class ExternalDataServicesTests
                 ["schemes"] = schemes.Select(s => new SourceRow(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["name"] = s.Name,
-                    ["flow"] = $"opendes:reference-data--OAuth2FlowType:{s.Flow}:",
+                    ["flow"] = $"dev:reference-data--OAuth2FlowType:{s.Flow}:",
                     ["token_url"] = "https://login.example.com/oauth2/token",
                     ["client_id"] = "source-client-id",
                     ["client_secret"] = s.Secret,
@@ -785,7 +785,7 @@ public sealed class ExternalDataServicesTests
 
         var usable = Assert.Single(entries, e => e.Action == PlannedAction.Create);
         Assert.Equal("usable", NameOf(usable));
-        Assert.StartsWith("opendes:master-data--ConnectedSourceRegistryEntry:", usable.TargetId, StringComparison.Ordinal);
+        Assert.StartsWith("dev:master-data--ConnectedSourceRegistryEntry:", usable.TargetId, StringComparison.Ordinal);
         var held = entries.Where(e => e.Action == PlannedAction.Hold).OrderBy(NameOf, StringComparer.Ordinal).ToList();
         Assert.Equal(new[] { "no-secret", "no-url" }, held.Select(NameOf));
         Assert.All(held, e => Assert.StartsWith("External Data Services could not use this connected source registry entry: ", e.Reason, StringComparison.Ordinal));
@@ -855,7 +855,7 @@ public sealed class ExternalDataServicesTests
 
         // Storage stamps who wrote the version and when, and says whether the legal tags hold.
         var landed = platform.Records[JobId];
-        landed["modifyUser"] = "eds-airflow@opendes.example.com";
+        landed["modifyUser"] = "eds-airflow@dev.example.com";
         landed["modifyTime"] = at;
         landed["legal"]!["status"] = "compliant";
         return version;

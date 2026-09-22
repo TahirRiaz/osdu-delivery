@@ -239,7 +239,7 @@ public sealed class DspdmDocumentsTests
             CacheScope = "acme",
             CacheVersion = ReferenceSnapshot.Empty.Version,
             SchemaSnapshotVersion = schema.Version,
-            Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "opendes" },
+            Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "dev" },
         };
         var renderer = new MappingRenderer(mapping, schema, ReferenceSnapshot.Empty, context);
         var result = renderer.Render(new SourceRecord
@@ -248,7 +248,7 @@ public sealed class DspdmDocumentsTests
         });
 
         Assert.False(result.IsHeld, string.Join("; ", result.Holds));
-        Assert.Equal("opendes:well:" + result.Key!.Value.Value.ToString("N"), result.TargetId);
+        Assert.Equal("dev:well:" + result.Key!.Value.Value.ToString("N"), result.TargetId);
         Assert.Equal(["OPERATOR", "REMARK", "UWI", "WELL_NAME"], result.Document[DspdmKinds.OwnedProperty]!.AsArray().Select(a => a!.GetValue<string>()));
         Assert.Null(result.Document["data"]!["REMARK"]);
         Assert.Null(result.Document["acl"]);
@@ -333,7 +333,7 @@ public sealed class DspdmDocumentsTests
           mapping: Well@1.0.0
         target:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
           protocol: {{protocol}}
         {{dspdm}}
         """).ReplaceLineEndings("\n");
@@ -347,7 +347,7 @@ public sealed class DspdmDocumentsTests
           work: work
         target:
           endpoint: https://osdu.example.com
-          headers: { data-partition-id: opendes }
+          headers: { data-partition-id: dev }
         {{dspdm}}
         interfaces:
           wells:

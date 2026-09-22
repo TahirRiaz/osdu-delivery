@@ -205,7 +205,7 @@ public sealed class RedirectGuardTests
         }
 
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
-        request.Headers.TryAddWithoutValidation("data-partition-id", "opendes");
+        request.Headers.TryAddWithoutValidation("data-partition-id", "dev");
         request.Headers.TryAddWithoutValidation("Ocp-Apim-Subscription-Key", "gateway-key");
         request.Headers.TryAddWithoutValidation(OsduCorrelation.HeaderName, "corr-1");
         return request;
@@ -259,7 +259,7 @@ public sealed class RedirectGuardTests
         Assert.Equal(HttpMethod.Get, followed.Method);
         Assert.Null(followed.Body);
         Assert.Equal("Bearer secret-token", followed.Headers["Authorization"]);
-        Assert.Equal("opendes", followed.Headers["data-partition-id"]);
+        Assert.Equal("dev", followed.Headers["data-partition-id"]);
     }
 
     [Fact]

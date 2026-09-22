@@ -23,9 +23,9 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class RafsRouteTests
 {
-    private const string AnalysisId = "opendes:work-product-component--SamplesAnalysis:sa-1";
+    private const string AnalysisId = "dev:work-product-component--SamplesAnalysis:sa-1";
     private const string AnalysisKind = "osdu:wks:work-product-component--SamplesAnalysis:1.0.0";
-    private const string ShiftId = "opendes:work-product-component--DepthShift:ds-1";
+    private const string ShiftId = "dev:work-product-component--DepthShift:ds-1";
     private const string ShiftKind = "osdu:wks:work-product-component--DepthShift:1.0.0";
     private const string V2 = FakeOsduPlatform.RafsRoot + "/v2/";
     private const string Storage = "/api/storage/v2/records/";
@@ -41,7 +41,7 @@ public sealed class RafsRouteTests
                 new SecretResolver([new EnvSecretProvider()]), new TestClock(), platform, allowLoopback: true);
             Client = new OsduHttpClient(
                 Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
             Options = options ?? new ProtocolOptions { WorkflowPollSeconds = 1, DatasetIndexWaitSeconds = 0 };
             Flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.Ddms, Ddms = [Rafs], ProtocolOptions = Options }, "samples");
             Protocol = new OsduDdmsProtocol(Client, Options, NullLogger.Instance, routing: DdmsRouting.Of(Flow));
@@ -87,12 +87,12 @@ public sealed class RafsRouteTests
     /// <summary>A SamplesAnalysis table in the split JSON form the contract describes.</summary>
     private static byte[] SplitJson(string recordId)
         => Encoding.UTF8.GetBytes(
-            "{\"columns\":[\"SamplesAnalysisID\",\"SampleID\",\"Meta\"],\"index\":[0],\"data\":[[\"" + recordId + ":\",\"opendes:master-data--Sample:s-1:\",[]]]}");
+            "{\"columns\":[\"SamplesAnalysisID\",\"SampleID\",\"Meta\"],\"index\":[0],\"data\":[[\"" + recordId + ":\",\"dev:master-data--Sample:s-1:\",[]]]}");
 
     private static JsonObject Analysis(string name = "NMR run") => FakeOsduPlatform.Record(AnalysisId, AnalysisKind, new JsonObject
     {
         ["Name"] = name,
-        ["SampleAnalysisTypeIDs"] = new JsonArray("opendes:reference-data--SampleAnalysisType:NMR:"),
+        ["SampleAnalysisTypeIDs"] = new JsonArray("dev:reference-data--SampleAnalysisType:NMR:"),
     });
 
     private static JsonObject Shift() => FakeOsduPlatform.Record(ShiftId, ShiftKind, new JsonObject { ["Name"] = "gamma ray alignment" });
@@ -164,7 +164,7 @@ public sealed class RafsRouteTests
         Assert.Equal(nmrUrn.Split('/')[^2], outcome.Returned["content.nmr.contentId"]);
         var datasets = outcome.Returned[RafsShape.DatasetsKey].Split(',');
         Assert.Equal(2, datasets.Length);
-        Assert.All(datasets, d => Assert.StartsWith("opendes:dataset--File.Generic:", d, StringComparison.Ordinal));
+        Assert.All(datasets, d => Assert.StartsWith("dev:dataset--File.Generic:", d, StringComparison.Ordinal));
         Assert.All(datasets, d => Assert.True(platform.Records.ContainsKey(d)));
         Assert.Equal(("application/x-parquet", "1.0.0"), (platform.RafsContent[AnalysisId + "|nmr"].MediaType, platform.RafsContent[AnalysisId + "|nmr"].SchemaVersion));
 
@@ -246,7 +246,7 @@ public sealed class RafsRouteTests
         Assert.Contains("is not one RAFS accepts: <authority>:wks:<entity type>", kind.Message, StringComparison.Ordinal);
 
         var extra = Analysis();
-        extra["acl"]!["editors"] = new JsonArray("data.default.editors@opendes.example.com");
+        extra["acl"]!["editors"] = new JsonArray("data.default.editors@dev.example.com");
         var acl = await Assert.ThrowsAsync<RecordHeldException>(() => rig.Protocol.DeliverAsync(Work(extra)));
         Assert.Contains("acl must hold non-empty viewers and owners and nothing else", acl.Message, StringComparison.Ordinal);
 
@@ -254,7 +254,7 @@ public sealed class RafsRouteTests
             () => rig.Protocol.DeliverAsync(Work(Analysis(), new NamedFiles(("nmr.parquet", Table("SamplesAnalysisID", AnalysisId, 1)), ("nmr.1.0.0.json", SplitJson(AnalysisId))))));
         Assert.Contains("holds nmr content more than once", twice.Message, StringComparison.Ordinal);
 
-        var report = FakeOsduPlatform.Record("opendes:work-product-component--SamplesAnalysesReport:r-1", "osdu:wks:work-product-component--SamplesAnalysesReport:1.0.0");
+        var report = FakeOsduPlatform.Record("dev:work-product-component--SamplesAnalysesReport:r-1", "osdu:wks:work-product-component--SamplesAnalysesReport:1.0.0");
         var alone = await Assert.ThrowsAsync<RecordHeldException>(
             () => rig.Protocol.DeliverAsync(Work(report, new NamedFiles(("report.json", Encoding.UTF8.GetBytes("{}"))))));
         Assert.Contains("which holds records alone and takes no content", alone.Message, StringComparison.Ordinal);
@@ -352,12 +352,12 @@ public sealed class RafsRouteTests
     {
         var platform = new FakeOsduPlatform();
         using var rig = new Rig(platform);
-        var model = FakeOsduPlatform.Record("opendes:work-product-component--FluidModel:fm-1", "osdu:wks:work-product-component--FluidModel:1.0.0");
-        var outcome = await rig.Protocol.DeliverAsync(Work(model, new NamedFiles(("blackoilfluidmodel.parquet", Table("FluidModelID", "opendes:work-product-component--FluidModel:fm-1", 4)))));
+        var model = FakeOsduPlatform.Record("dev:work-product-component--FluidModel:fm-1", "osdu:wks:work-product-component--FluidModel:1.0.0");
+        var outcome = await rig.Protocol.DeliverAsync(Work(model, new NamedFiles(("blackoilfluidmodel.parquet", Table("FluidModelID", "dev:work-product-component--FluidModel:fm-1", 4)))));
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
         Assert.Equal("1 content table(s); RAFS warned: Records missing FluidModelTypeID will not be included in outputs produced by search endpoints", outcome.Detail);
         Assert.Contains("GET " + V2 + "fluidmodel/fluidmodeltypes", Sent(platform));
-        Assert.Contains("POST " + V2 + "fluidmodel/opendes:work-product-component--FluidModel:fm-1/data/blackoilfluidmodel?content_schema_version=1.0.0", Sent(platform));
+        Assert.Contains("POST " + V2 + "fluidmodel/dev:work-product-component--FluidModel:fm-1/data/blackoilfluidmodel?content_schema_version=1.0.0", Sent(platform));
     }
 
     [Fact]

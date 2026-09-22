@@ -152,10 +152,10 @@ mappings:
 fixtures:
   - name: L-1001, three curves in metres, regular sampling
     parameters:
-      dataPartition: opendes
-      aclOwner: data.default.owners@opendes.dataservices.energy
-      aclViewer: data.default.viewers@opendes.dataservices.energy
-      legalTag: opendes-reference-data-default
+      dataPartition: dev
+      aclOwner: data.default.owners@dev.dataservices.energy
+      aclViewer: data.default.viewers@dev.dataservices.energy
+      legalTag: dev-reference-data-default
     record:
       source_project: NO_15_9
       log_id: L-1001
@@ -178,19 +178,19 @@ fixtures:
         - { curve_id: RHOB, curve_unit: G/CM3, index_unit: M, index_min: "1000", index_max: "1004", curve_description: Bulk density, curve_version: "1", business_value: HIGH }
     expected: |
       {
-        "id": "opendes:work-product-component--WellLog:ea10870200ce5404ac1b49154b070e74",
+        "id": "dev:work-product-component--WellLog:ea10870200ce5404ac1b49154b070e74",
         "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
         "acl": {
-          "owners": ["data.default.owners@opendes.dataservices.energy"],
-          "viewers": ["data.default.viewers@opendes.dataservices.energy"]
+          "owners": ["data.default.owners@dev.dataservices.energy"],
+          "viewers": ["data.default.viewers@dev.dataservices.energy"]
         },
-        "legal": { "legaltags": ["opendes-reference-data-default"], "otherRelevantDataCountries": ["NO"] },
+        "legal": { "legaltags": ["dev-reference-data-default"], "otherRelevantDataCountries": ["NO"] },
         "tags": { "DeliveredBy": "osdu-delivery", "WellLogNativeUID": "NO_15_9:L-1001" },
         "data": {
           "LogSource": "NO_15_9",
           "LogRun": "L-1001",
           "Name": "STAT_COMP",
-          "WellboreID": "opendes:master-data--Wellbore:OSDU-DEV-1-A:",
+          "WellboreID": "dev:master-data--Wellbore:OSDU-DEV-1-A:",
           "LogVersion": "1",
           "LogActivity": "MAIN",
           "ActivityType": "SLB",
@@ -203,14 +203,14 @@ fixtures:
           "IsRegular": true,
           "VerticalMeasurement": {
             "VerticalMeasurement": 23.5,
-            "VerticalMeasurementUnitOfMeasureID": "opendes:reference-data--UnitOfMeasure:m:",
-            "VerticalMeasurementTypeID": "opendes:reference-data--VerticalMeasurementType:KellyBushing:"
+            "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:",
+            "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:"
           },
           "Curves": [
             {
               "CurveID": "MD",
-              "CurveUnit": "opendes:reference-data--UnitOfMeasure:m:",
-              "DepthUnit": "opendes:reference-data--UnitOfMeasure:m:",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
               "TopDepth": 1000,
               "BaseDepth": 1004,
               "CurveDescription": "Measured depth",
@@ -218,23 +218,23 @@ fixtures:
             },
             {
               "CurveID": "GR",
-              "CurveUnit": "opendes:reference-data--UnitOfMeasure:gAPI:",
-              "DepthUnit": "opendes:reference-data--UnitOfMeasure:m:",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:gAPI:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
               "TopDepth": 1000,
               "BaseDepth": 1004,
               "CurveDescription": "Gamma ray",
               "CurveVersion": "1",
-              "LogCurveBusinessValueID": "opendes:reference-data--LogCurveBusinessValue:High:"
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:"
             },
             {
               "CurveID": "RHOB",
-              "CurveUnit": "opendes:reference-data--UnitOfMeasure:g%2Fcm3:",
-              "DepthUnit": "opendes:reference-data--UnitOfMeasure:m:",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:g%2Fcm3:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
               "TopDepth": 1000,
               "BaseDepth": 1004,
               "CurveDescription": "Bulk density",
               "CurveVersion": "1",
-              "LogCurveBusinessValueID": "opendes:reference-data--LogCurveBusinessValue:High:"
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:"
             }
           ]
         }
@@ -242,10 +242,10 @@ fixtures:
 
   - name: L-2001, feet and a volume fraction, discrete sampling
     parameters:
-      dataPartition: opendes
-      aclOwner: data.default.owners@opendes.dataservices.energy
-      aclViewer: data.default.viewers@opendes.dataservices.energy
-      legalTag: opendes-reference-data-default
+      dataPartition: dev
+      aclOwner: data.default.owners@dev.dataservices.energy
+      aclViewer: data.default.viewers@dev.dataservices.energy
+      legalTag: dev-reference-data-default
     record:
       source_project: NO_16_2
       log_id: L-2001
@@ -267,19 +267,19 @@ fixtures:
         - { curve_id: NPHI, curve_unit: V/V, index_unit: FT, index_min: "1500", index_max: "1501.5", curve_description: Neutron porosity, curve_version: "1", business_value: MEDIUM }
     expected: |
       {
-        "id": "opendes:work-product-component--WellLog:301a1dde98065c0e8676ac96a7d93ea0",
+        "id": "dev:work-product-component--WellLog:301a1dde98065c0e8676ac96a7d93ea0",
         "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
         "acl": {
-          "owners": ["data.default.owners@opendes.dataservices.energy"],
-          "viewers": ["data.default.viewers@opendes.dataservices.energy"]
+          "owners": ["data.default.owners@dev.dataservices.energy"],
+          "viewers": ["data.default.viewers@dev.dataservices.energy"]
         },
-        "legal": { "legaltags": ["opendes-reference-data-default"], "otherRelevantDataCountries": ["NO"] },
+        "legal": { "legaltags": ["dev-reference-data-default"], "otherRelevantDataCountries": ["NO"] },
         "tags": { "DeliveredBy": "osdu-delivery", "WellLogNativeUID": "NO_16_2:L-2001" },
         "data": {
           "LogSource": "NO_16_2",
           "LogRun": "L-2001",
           "Name": "STAT_COMP",
-          "WellboreID": "opendes:master-data--Wellbore:OSDU-DEV-1-B:",
+          "WellboreID": "dev:master-data--Wellbore:OSDU-DEV-1-B:",
           "LogVersion": "2",
           "LogActivity": "MAIN",
           "ActivityType": "BHGE",
@@ -292,14 +292,14 @@ fixtures:
           "IsRegular": false,
           "VerticalMeasurement": {
             "VerticalMeasurement": 18,
-            "VerticalMeasurementUnitOfMeasureID": "opendes:reference-data--UnitOfMeasure:ft:",
-            "VerticalMeasurementTypeID": "opendes:reference-data--VerticalMeasurementType:KellyBushing:"
+            "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:ft:",
+            "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:"
           },
           "Curves": [
             {
               "CurveID": "MD",
-              "CurveUnit": "opendes:reference-data--UnitOfMeasure:ft:",
-              "DepthUnit": "opendes:reference-data--UnitOfMeasure:ft:",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:ft:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:ft:",
               "TopDepth": 1500,
               "BaseDepth": 1501.5,
               "CurveDescription": "Measured depth",
@@ -307,13 +307,13 @@ fixtures:
             },
             {
               "CurveID": "NPHI",
-              "CurveUnit": "opendes:reference-data--UnitOfMeasure:m3%2Fm3:",
-              "DepthUnit": "opendes:reference-data--UnitOfMeasure:ft:",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:m3%2Fm3:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:ft:",
               "TopDepth": 1500,
               "BaseDepth": 1501.5,
               "CurveDescription": "Neutron porosity",
               "CurveVersion": "1",
-              "LogCurveBusinessValueID": "opendes:reference-data--LogCurveBusinessValue:Medium:"
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:Medium:"
             }
           ]
         }

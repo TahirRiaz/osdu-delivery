@@ -1,4 +1,4 @@
-using SqlFlow.Core;
+﻿using SqlFlow.Core;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Intake;
 using SqlFlow.Delivery.Engine.Planning;
@@ -34,11 +34,12 @@ public class EndToEndTests : IDisposable
     private async Task<MemoryIngestionTables> EstateAsync() => await SampleEstate.BuildAsync(_root, Now.AddMinutes(-5), time: _clock);
 
     private async Task<(FlowRuntime Runtime, FakeProtocol Protocol, OsduLedger Ledger)> RuntimeAsync(
-        MemoryIngestionTables tables, Func<FlowDefinition, FlowDefinition>? adjust = null, FakeProtocol? protocol = null)
+        MemoryIngestionTables tables, Func<FlowDefinition, FlowDefinition>? adjust = null, FakeProtocol? protocol = null,
+        FakeProtocolFactory? protocols = null)
     {
         var ledger = _db.Ledger(_clock);
         protocol ??= new FakeProtocol();
-        var engine = Samples.Engine(ledger, _clock, sources: tables) with { Protocols = new FakeProtocolFactory(protocol) };
+        var engine = Samples.Engine(ledger, _clock, sources: tables) with { Protocols = protocols ?? new FakeProtocolFactory(protocol) };
         var flow = adjust is null ? Samples.LocalFlow(_root) : adjust(Samples.LocalFlow(_root));
         var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
         return (runtime, protocol, ledger);
@@ -74,12 +75,12 @@ public class EndToEndTests : IDisposable
         Assert.Equal(3, plan.Entries.Count);
         Assert.All(plan.Entries, e => Assert.Equal(PlannedAction.Create, e.Action));
         Assert.All(plan.Entries, e => Assert.Equal(1, e.ChunkCount));
-        Assert.All(plan.Entries, e => Assert.StartsWith("opendes:work-product-component--WellLog:", e.TargetId!, StringComparison.Ordinal));
+        Assert.All(plan.Entries, e => Assert.StartsWith("dev:work-product-component--WellLog:", e.TargetId!, StringComparison.Ordinal));
         // Every entry carries the row it was read from, which is what the ledger records as the record's origin.
         Assert.All(plan.Entries, e => Assert.Equal(SampleEstate.FileName, e.Origin.FileName));
         Assert.All(plan.Entries, e => Assert.NotNull(e.SourceKeyJson));
         var doc = plan.Entries[0].Render!.Document;
-        Assert.Equal("opendes:reference-data--UnitOfMeasure:m:", doc["data"]!["VerticalMeasurement"]!["VerticalMeasurementUnitOfMeasureID"]!.GetValue<string>());
+        Assert.Equal("dev:reference-data--UnitOfMeasure:m:", doc["data"]!["VerticalMeasurement"]!["VerticalMeasurementUnitOfMeasureID"]!.GetValue<string>());
     }
 
     [Fact]
@@ -112,7 +113,7 @@ public class EndToEndTests : IDisposable
             // The wellbore the sample well logs refer to is another flow's record of this ledger, queued and not yet
             // delivered: the well logs point at a record that is not in OSDU.
             var wellboreFlow = FlowId.Of("wells-wellbore-03-header-delivery");
-            const string WellboreId = "opendes:master-data--Wellbore:OSDU-DEV-1-A";
+            const string WellboreId = "dev:master-data--Wellbore:OSDU-DEV-1-A";
             var wellbore = new DeliveryKey(Guid.NewGuid());
             var submission = Guid.NewGuid();
             await ledger.RegisterSubmissionAsync(new SubmissionState
@@ -200,7 +201,7 @@ public class EndToEndTests : IDisposable
                 ledger,
                 new OsduHttpClient(
                     http, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
-                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" }),
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" }),
                 "/api/storage/v2/query/records");
 
             // Neither the ledger nor storage holds the wellbores the sample well logs refer to.
@@ -217,7 +218,7 @@ public class EndToEndTests : IDisposable
             Assert.Equal(3, records.Count);
             Assert.All(records, r => Assert.Contains("neither the ledger nor OSDU's storage service holds", r.LastError!, StringComparison.Ordinal));
 
-            Assert.All(records, r => Assert.Contains("opendes:master-data--Wellbore:OSDU-DEV-1-", r.LastError!, StringComparison.Ordinal));
+            Assert.All(records, r => Assert.Contains("dev:master-data--Wellbore:OSDU-DEV-1-", r.LastError!, StringComparison.Ordinal));
 
             // Once storage holds every record they refer to (the wellbores, the units, the curve types), the released
             // records go out.
@@ -567,6 +568,31 @@ public class EndToEndTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// An operation that throws anything at all still ends its activity: the ledger is the only account of what an
+    /// operator asked for, and an action left reading as running would say the opposite of what happened.
+    /// </summary>
+    [Fact]
+    public async Task An_operation_that_fails_outright_leaves_its_activity_failed_not_running()
+    {
+        var tables = await EstateAsync();
+        var protocol = new FakeProtocol();
+        // The protocol cannot be built: the failure a missing ${env:...} credential raises, outside the engine's own types.
+        var protocols = new FakeProtocolFactory(protocol) { FailWith = () => new SqlFlowException("Environment variable 'PETRODB_URL' is not set.") };
+        var (runtime, _, ledger) = await RuntimeAsync(tables, protocol: protocol, protocols: protocols);
+        using (runtime)
+        {
+            runtime.Actor = "gui:tahir";
+            var thrown = await Assert.ThrowsAsync<SqlFlowException>(() => runtime.VerifyAsync(100, null, reconcile: false));
+            Assert.Equal("Environment variable 'PETRODB_URL' is not set.", thrown.Message);
+
+            var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = "verify" }));
+            Assert.Equal("failed", activity.Outcome);
+            Assert.NotNull(activity.CompletedUtc);
+            Assert.Equal("Environment variable 'PETRODB_URL' is not set.", activity.Summary);
+        }
+    }
+
     [Fact]
     public async Task Verify_detects_drift_and_reconcile_queues_redelivery()
     {
@@ -685,8 +711,8 @@ public class EndToEndTests : IDisposable
             var (logRun, logSubmission) = await RunAsync(logs, logProtocol, ledger);
             var (wellboreRun, wellboreSubmission) = await RunAsync(wellbores, wellboreProtocol, ledger);
             Assert.Equal((3, 3), (logRun.Delivered, wellboreRun.Delivered));
-            Assert.All(logProtocol.Deliveries, w => Assert.StartsWith("opendes:work-product-component--WellLog:", w.TargetId, StringComparison.Ordinal));
-            Assert.All(wellboreProtocol.Deliveries, w => Assert.StartsWith("opendes:master-data--Wellbore:", w.TargetId, StringComparison.Ordinal));
+            Assert.All(logProtocol.Deliveries, w => Assert.StartsWith("dev:work-product-component--WellLog:", w.TargetId, StringComparison.Ordinal));
+            Assert.All(wellboreProtocol.Deliveries, w => Assert.StartsWith("dev:master-data--Wellbore:", w.TargetId, StringComparison.Ordinal));
             Assert.All(wellboreProtocol.Deliveries, w => Assert.False(w.DeliverPayload));
 
             // One row, one key, two records: each names its own mapping, OSDU id, submission and history, and both name the
@@ -730,7 +756,7 @@ public class EndToEndTests : IDisposable
             wellbores.Actor = "gui:tahir";
             var removed = await wellbores.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalScope.Record);
             Assert.Equal(1, removed.Removed);
-            Assert.StartsWith("opendes:master-data--Wellbore:", Assert.Single(wellboreProtocol.Deletes).TargetId, StringComparison.Ordinal);
+            Assert.StartsWith("dev:master-data--Wellbore:", Assert.Single(wellboreProtocol.Deletes).TargetId, StringComparison.Ordinal);
             Assert.Empty(logProtocol.Deletes);
             Assert.Equal(RecordStatus.Deleted, (await ledger.GetRecordAsync(wellbores.Flow.Id, SampleEstate.Key(0)))!.Status);
             Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(logs.Flow.Id, SampleEstate.Key(0)))!.Status);
@@ -828,7 +854,7 @@ public class EndToEndTests : IDisposable
     private static ReferenceType GammaRayUnit(string code) => new(
         "UnitOfMeasure", "reference-data--UnitOfMeasure",
         [
-            new ReferenceItem("opendes:reference-data--UnitOfMeasure:gAPI", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
+            new ReferenceItem("dev:reference-data--UnitOfMeasure:gAPI", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
             {
                 ["Code"] = ReferenceValue.Of(code),
                 ["ID"] = ReferenceValue.Of(code),

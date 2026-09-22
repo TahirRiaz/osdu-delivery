@@ -72,10 +72,10 @@ mappings:
 fixtures:
   - name: wellbore A with one alias
     parameters:
-      dataPartition: opendes
-      aclOwner: data.default.owners@opendes.dataservices.energy
-      aclViewer: data.default.viewers@opendes.dataservices.energy
-      legalTag: opendes-reference-data-default
+      dataPartition: dev
+      aclOwner: data.default.owners@dev.dataservices.energy
+      aclViewer: data.default.viewers@dev.dataservices.energy
+      legalTag: dev-reference-data-default
     record:
       facility_name: " SAMPLE-WELLBORE-A "
       facility_description: Sample wellbore A
@@ -85,14 +85,14 @@ fixtures:
         - { alias_name: WB-A }
     expected: |
       {
-        "id": "opendes:master-data--Wellbore:8186728109c950ab9391404fbd59a195",
+        "id": "dev:master-data--Wellbore:8186728109c950ab9391404fbd59a195",
         "kind": "osdu:wks:master-data--Wellbore:1.3.0",
         "acl": {
-          "owners": ["data.default.owners@opendes.dataservices.energy"],
-          "viewers": ["data.default.viewers@opendes.dataservices.energy"]
+          "owners": ["data.default.owners@dev.dataservices.energy"],
+          "viewers": ["data.default.viewers@dev.dataservices.energy"]
         },
         "legal": {
-          "legaltags": ["opendes-reference-data-default"],
+          "legaltags": ["dev-reference-data-default"],
           "otherRelevantDataCountries": ["NO"]
         },
         "tags": { "DeliveredBy": "osdu-delivery" },
@@ -101,7 +101,7 @@ fixtures:
           "FacilityDescription": "Sample wellbore A",
           "FacilityID": "srn:master-data/Wellbore:A",
           "NameAliases": [
-            { "AliasName": "WB-A", "AliasNameTypeID": "opendes:reference-data--AliasNameType:UniqueIdentifier:" }
+            { "AliasName": "WB-A", "AliasNameTypeID": "dev:reference-data--AliasNameType:UniqueIdentifier:" }
           ]
         }
       }

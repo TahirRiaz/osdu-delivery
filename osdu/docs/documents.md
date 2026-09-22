@@ -277,7 +277,7 @@ OSDU id, and joins the child tables; the primary key is how the rows are found a
 ### The DDMSs a flow delivers to
 
 A record on the `ddms` route goes to the collection of the DDMS that serves its entity type, which every record id
-names (`opendes:work-product-component--WellboreTrajectory:...`). OSDU Delivery knows the collections of the Wellbore
+names (`dev:work-product-component--WellboreTrajectory:...`). OSDU Delivery knows the collections of the Wellbore
 DDMS ([../specs/wellbore-ddms/INTEGRATION.md](../specs/wellbore-ddms/INTEGRATION.md) sections 2 and 4.3):
 
 | Entity type | Collection | Bulk data | Bulk columns checked against |
@@ -300,7 +300,7 @@ Register service knows, or a DDMS of another call pattern.
 ```yaml
 target:
   endpoint: ${env:OSDU_URL}
-  headers: { data-partition-id: opendes }
+  headers: { data-partition-id: dev }
   ddms:
     wellbore:
       root: /api/os-wellbore-ddms       # where it is under the endpoint
@@ -330,7 +330,7 @@ target:
       root: /api/seismic-store/v3        # Seismic Store with its version path; required, the records going through Storage
       shape: seismicStoreV3
       subproject: seismic-raw            # required: the subproject the datasets are registered in
-      tenant: opendes                    # the tenant (the default: the flow's data-partition-id)
+      tenant: dev                    # the tenant (the default: the flow's data-partition-id)
       folder: surveys/north              # the folder the datasets go in (the default: the subproject's root)
       provider: anthos                   # azure, gc, anthos or ibm (the default: the provider the service names)
       objectStore: https://minio.example.com   # the S3 store on anthos and ibm, another Google endpoint on gc
@@ -555,7 +555,7 @@ reached over ETP 1.2 on a WebSocket rather than through an OSDU service
 ```yaml
 target:
   endpoint: https://osdu.example.com
-  headers: { data-partition-id: opendes }
+  headers: { data-partition-id: dev }
   protocol: etp
   etp:
     dataspace: volve/study
@@ -565,8 +565,8 @@ target:
 ```json
 {
   "kind": "energistics:etp:obj_Grid2dRepresentation:2.0.1",
-  "acl": { "viewers": ["data.default.viewers@opendes.example.com"], "owners": ["data.default.owners@opendes.example.com"] },
-  "legal": { "legaltags": ["opendes-public-usa-dataset-1"], "otherRelevantDataCountries": ["US"], "status": "compliant" },
+  "acl": { "viewers": ["data.default.viewers@dev.example.com"], "owners": ["data.default.owners@dev.example.com"] },
+  "legal": { "legaltags": ["dev-public-usa-dataset-1"], "otherRelevantDataCountries": ["US"], "status": "compliant" },
   "data": {
     "Dataspace": "volve/study",
     "Arrays": [
@@ -620,7 +620,7 @@ OSDU records ([../specs/production-dspdm/INTEGRATION.md](../specs/production-dsp
 ```yaml
 target:
   endpoint: https://osdu.example.com
-  headers: { data-partition-id: opendes }
+  headers: { data-partition-id: dev }
   protocol: dspdm
   dspdm:
     root: /api/dspdm/v1
@@ -707,11 +707,11 @@ source:                               # shared by every interface
   lastModified: update_date
   work: ../.work/wells/{logSource}
 render:
-  parameters: { dataPartition: opendes }
+  parameters: { dataPartition: dev }
 target:
   endpoint: ${env:OSDU_URL}
   auth: { ... }
-  headers: { data-partition-id: opendes }
+  headers: { data-partition-id: dev }
   protocolOptions:
     ddmsRoot: /api/os-wellbore-ddms   # where the DDMS sits under the endpoint, for the interfaces delivered through one
 reliability:
@@ -1040,7 +1040,7 @@ The reference and master data the mappings resolve against ([design.md](design.m
 one place what is cached is defined: the OSDU platform to search, the types to cache, and for each type the paths of a
 record to keep. It fills the cache of the partition its `source.headers.data-partition-id` names, and a delivery flow
 reads the cache of the partition it delivers to ([The partition cache](#the-partition-cache)). The sample estate's
-cache flow, `samples/wells/cache/wells-osdu-00-reference-cache.yaml`, fills partition `opendes`:
+cache flow, `samples/wells/cache/wells-osdu-00-reference-cache.yaml`, fills partition `dev`:
 
 ```yaml
 flowType: cache
@@ -1058,7 +1058,7 @@ source:
       body:
         scope: ${env:OSDU_SCOPE}
   headers:
-    data-partition-id: opendes
+    data-partition-id: dev
 
 # A changed cached value rewrites the documents built from it. By default (onChange: auto) the affected records are tagged
 # and the next run delivers them. Where a change should be looked at first, onChange: approve (here for every type, or on
@@ -1150,8 +1150,8 @@ A catalog keeps one cache per OSDU data partition, keyed by the partition as the
 `data-partition-id` header (its scope). A cache flow fills the cache of the partition in its
 `source.headers.data-partition-id`; a delivery flow reads the cache of the partition in its
 `target.headers.data-partition-id`. A partition is an id segment (letters, digits, underscore, hyphen and dot, at most
-200 characters) or a `${env:...}` or `${keyvault:...}` reference, and partitions compare as written: `opendes` and a
-reference that resolves to `opendes` are two different caches.
+200 characters) or a `${env:...}` or `${keyvault:...}` reference, and partitions compare as written: `dev` and a
+reference that resolves to `dev` are two different caches.
 
 Several cache flows may fill one partition, in the same repository or in different ones, so each project declares the
 reference data it needs without copying another project's file. What they capture is stored once per partition, and
@@ -1244,7 +1244,7 @@ mappings:
 
 fixtures:                          # whole-record regression fixtures, rendered by the preflight gate
   - name: ...
-    parameters: { dataPartition: opendes }
+    parameters: { dataPartition: dev }
     record: { column: value, ... }       # the dataset's row
     datasets: { curves: [ { ... } ] }    # child dataset rows by child dataset name
     expected: |
