@@ -26,10 +26,10 @@ and the order it is built in.
 
 | OSDU write surface | Contract | Covered today | Gap |
 | --- | --- | --- | --- |
-| Storage records (every kind) | storage v2 | `osduRecord` | none for plain records |
-| File datasets (File service) | file v2 | `osduFile` | none for single files |
+| Storage records (every kind) | storage v2 | `storage` | none for plain records |
+| File datasets (File service) | file v2 | `file` | none for single files |
 | Dataset service (registry, storage instructions, file collections) | dataset v1 | `dataset` (stage 6): single files and file collections, uploaded as Azure, MinIO, S3 and Google Cloud Storage take them | IBM collections: the location names no endpoint for its credentials, so the record is held |
-| Manifest ingestion (`Osdu_ingest`) | workflow v1 | `osduManifest`, by reference when the flow asks or a manifest is above the inline limit (stage 6) | none |
+| Manifest ingestion (`Osdu_ingest`) | workflow v1 | `manifest`, by reference when the flow asks or a manifest is above the inline limit (stage 6) | none |
 | Other ingestion workflows (CSV parser, Energistics parsers, SEG-Y to VDS, ZGY, MDIO, External Data Services) | workflow v1 + DAG sources | `workflow` (stage 6): every deliverable workflow the workflows and EDS briefs describe | none |
 | Files and bulk data of one record | file v2, dataset v1, workflow v1, `osdu/specs/wellbore-ddms` | `fileAndDdms` and `manifestAndDdms` (stage 6) | none |
 | Wellbore DDMS, bulk kinds (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) | `osdu/specs/wellbore-ddms` | every bulk collection (`ddms`, stage 5) | none |
@@ -226,7 +226,7 @@ tables below them posted one per call with their keys fed down and recorded, fou
 on redelivery, and never the service's own record write or purging delete), each against a fake of the service (and,
 for Seismic Store, of the three object stores, the S3 one checking every signature with the AWS SDK) with every request
 to an OSDU service checked against its pinned contract, and the ddms route split into one writer per shape. The
-Reservoir DDMS is the route type `etp` (`osduEtp`): Energistics data objects in dataspaces of its own store, reached over
+Reservoir DDMS is the route type `etp` (`etp`): Energistics data objects in dataspaces of its own store, reached over
 ETP 1.2 on a WebSocket. The client is the module's own, built from the pinned protocol
 (`osdu/specs/reservoir-ddms/etp-1.2.avpr`): the 47 messages and 37 data types the route uses as C# records with an Avro
 binary codec, every one of them round-tripped in a test against a codec driven by that same file, so the checked-in
@@ -246,7 +246,7 @@ carried into every rewrite on the storage, manifest and workflow routes (the man
 `preserveDataKeys` as the others do); a write that carries keys records the hash of the content the flow owns, so a verify
 tells a version another system wrote from drift; and a fetch is the stage 6 workflow route running `eds_ingest` or
 `eds_scheduler`. Every rule is tested against the brief's cases, and the three routes against the fake platform, a job
-rewritten, fetched and verified on each. The Production DDMS core service is the route type `dspdm` (`osduDspdm`): rows of
+rewritten, fetched and verified on each. The Production DDMS core service is the route type `dspdm` (`dspdm`): rows of
 business objects, whose templates' kinds have the source `dspdm`, checked against the business object DSPDM's metadata
 describes, found again by one of its unique constraints before they are saved, inserted and updated in one save with a
 refused save sent again row by row, a save whose answer was lost found again by the marker recorded before it, rows

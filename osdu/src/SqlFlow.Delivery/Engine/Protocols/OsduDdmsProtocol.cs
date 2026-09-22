@@ -19,7 +19,7 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// back, verified and removed. The protocol is named after the <c>osduWellLog</c> value a flow's <c>target.protocol</c>
 /// gives it.
 /// </summary>
-public sealed class OsduWellLogProtocol : IDeliveryProtocol
+public sealed class OsduDdmsProtocol : IDeliveryProtocol
 {
     public const string MetadataStep = "metadata";
     public const string PayloadStep = "payload";
@@ -34,7 +34,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
     private readonly IDdmsShape _seismic;
     private readonly IDdmsShape _reservoirManagement;
 
-    public OsduWellLogProtocol(OsduHttpClient client, ProtocolOptions options, ILogger logger, long requestBodyCeiling = 0, TimeProvider? time = null, DdmsRouting? routing = null)
+    public OsduDdmsProtocol(OsduHttpClient client, ProtocolOptions options, ILogger logger, long requestBodyCeiling = 0, TimeProvider? time = null, DdmsRouting? routing = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(options);
@@ -51,7 +51,7 @@ public sealed class OsduWellLogProtocol : IDeliveryProtocol
         _reservoirManagement = new ReservoirManagementShape(context);
     }
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduWellLog;
+    public DeliveryProtocol Kind => DeliveryProtocol.Ddms;
 
     /// <summary>Where the protocol sends each record: the flow's DDMSs, every registration among them read.</summary>
     public DdmsRouting Routing => _routing;

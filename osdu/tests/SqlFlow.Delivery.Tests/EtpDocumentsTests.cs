@@ -30,7 +30,7 @@ public class EtpDocumentsTests
                 lock: true
             """), "grids.yaml");
 
-        Assert.Equal(DeliveryProtocol.OsduEtp, flow.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Etp, flow.Target.Protocol);
         Assert.Equal("volve/study", flow.Target.Etp.Dataspace);
         Assert.Equal(25, flow.Target.Etp.ObjectsPerMessage);
         Assert.Equal(4_000_000, flow.Target.Etp.MaxMessageBytes);
@@ -96,7 +96,7 @@ public class EtpDocumentsTests
         Assert.NotNull(parts);
         Assert.Equal([PayloadParts.Files, PayloadParts.Bulk], parts.Select(p => p.Role));
         Assert.All(parts, part => Assert.True(part.Optional));
-        Assert.True(PayloadParts.Composed(DeliveryProtocol.OsduEtp));
+        Assert.True(PayloadParts.Composed(DeliveryProtocol.Etp));
     }
 
     [Fact]

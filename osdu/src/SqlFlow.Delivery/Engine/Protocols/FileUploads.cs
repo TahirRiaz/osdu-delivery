@@ -90,7 +90,7 @@ internal static class FileUploads
             var result = await client.SendToSignedUrlAsync(
                 HttpMethod.Put,
                 location.SignedUrl,
-                () => OsduWellLogProtocol.OpenSync(payload, chunk),
+                () => OsduDdmsProtocol.OpenSync(payload, chunk),
                 options.PayloadContentType,
                 chunk.Size,
                 SignedUploadHeaders(location.SignedUrl, options.UploadHeaders),

@@ -71,7 +71,7 @@ internal sealed partial class WellDeliveryShape(DdmsShapeContext context) : IDdm
             throw new RecordHeldException($"{work.TargetId} goes to {route.Describe()}, which holds records alone and takes no bulk data; deliver the record without a payload");
         }
 
-        if (work.DeliverMetadata && work.Completed(OsduWellLogProtocol.MetadataStep) is null && RecordProblem(work.TargetId, work.Document) is { } problem)
+        if (work.DeliverMetadata && work.Completed(OsduDdmsProtocol.MetadataStep) is null && RecordProblem(work.TargetId, work.Document) is { } problem)
         {
             throw new RecordHeldException(problem);
         }
@@ -88,10 +88,10 @@ internal sealed partial class WellDeliveryShape(DdmsShapeContext context) : IDdm
         }
 
         var steps = new DeliverySteps(_time);
-        if (work.Completed(OsduWellLogProtocol.MetadataStep) is { } done)
+        if (work.Completed(OsduDdmsProtocol.MetadataStep) is { } done)
         {
             // An earlier try wrote the entity and failed afterwards; nothing is written again.
-            steps.Resumed(OsduWellLogProtocol.MetadataStep, done);
+            steps.Resumed(OsduDdmsProtocol.MetadataStep, done);
             var resumed = done.TryGetValue("version", out var text) ? RecordWriter.ParseVersion(text) : null;
             return new DeliveryOutcome
             {
@@ -144,8 +144,8 @@ internal sealed partial class WellDeliveryShape(DdmsShapeContext context) : IDdm
             returned[StorageIdKey] = StorageId(work.TargetId);
         }
 
-        steps.Add(OsduWellLogProtocol.MetadataStep, started, status, returned);
-        await work.ReportStepAsync(OsduWellLogProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
+        steps.Add(OsduDdmsProtocol.MetadataStep, started, status, returned);
+        await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
 
         var warnings = new List<string>();
         if (valid == false)

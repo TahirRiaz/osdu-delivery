@@ -188,18 +188,18 @@ A route type is one call pattern, written once:
 
 | Route type | Services (openapi) | Status |
 | --- | --- | --- |
-| `storage` | storage v2 | exists (`osduRecord`) |
-| `file` | file v2, storage v2 | exists (`osduFile`) |
-| `manifest` | file v2, workflow v1, storage v2 | exists (`osduManifest`) |
-| `ddms` with shape `wellboreDdmsV3` | wellbore DDMS v3: `POST /{collection}`, `/{collection}/{id}/data`, `/{collection}/{id}/sessions` | built (stage 5, `osduWellLog`): every Wellbore DDMS collection, the four that keep bulk data (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) and the five that hold records alone, and any DDMS of the same shape |
+| `storage` | storage v2 | exists (`storage`) |
+| `file` | file v2, storage v2 | exists (`file`) |
+| `manifest` | file v2, workflow v1, storage v2 | exists (`manifest`) |
+| `ddms` with shape `wellboreDdmsV3` | wellbore DDMS v3: `POST /{collection}`, `/{collection}/{id}/data`, `/{collection}/{id}/sessions` | built (stage 5, `ddms`): every Wellbore DDMS collection, the four that keep bulk data (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement) and the five that hold records alone, and any DDMS of the same shape |
 | `ddms` with shape `wellDeliveryV1` | Well Delivery DDMS: `PUT /storage/v1/{type}`, `/storage/v1/{type}/{entityId}`; storage v2 for the copy it keeps | built (stage 7, section 5.10) |
 | `ddms` with shape `rafsV2` | RAFS v2: `POST /v2/{collection}`, `/v2/{collection}/{id}/data[/{contentType}]`, the type catalogues; storage v2 for the datasets it registers | built (stage 7, section 5.10) |
 | `ddms` with shape `productionTimeSeriesV1` | Production DDMS historian: ingestion `POST /production-values/{id}/timeseries`, query `GET /production-values/{id}/timeseries/{timeseriesId}/versions/{version}`; storage v2 for the ProductionValues record | built (stage 7, section 5.10) |
 | `ddms` with shape `seismicStoreV3` | Seismic Store v3: `POST`, `GET`, `PATCH` and `DELETE /dataset/tenant/{t}/subproject/{s}/dataset/{name}`, `PUT .../lock` and `.../unlock`, `GET /utility/upload-connection-string`; the object store its credentials open (Azure Blob Storage, Google Cloud Storage, S3); storage v2 for the dataset record | built (stage 7, section 5.10) |
 | `ddms` with shape `reservoirManagement` | Reservoir Management DDMS: `GET /ddms/{collection}/` (the list call that takes records in), `GET /ddms/{collection}/{id}`, `POST /ddms/{table}`, `GET /ddms/{table}/header-entity/{key}`, `DELETE /ddms/{table}/{key}`; storage v2 for the header record; search v2 for a record the service did not take in | built (stage 7, section 5.10) |
-| `dataset` | dataset v1: `storageInstructions`, `registerDataset`, `retrievalInstructions`, `metadataRecord/{id}/softDelete`; storage v2 | built (stage 6, `osduDataset`), section 5.6 |
-| `fileAndDdms`, `manifestAndDdms` | the above, composed | built (stage 6, `osduFileAndDdms`, `osduManifestAndDdms`), section 5.7 |
-| `workflow` | workflow v1, dataset v1, storage v2, search v2; Airflow's REST API (v1 or v2) for the outputs only it returns | built (stage 6, `osduWorkflow`), section 5.9 |
+| `dataset` | dataset v1: `storageInstructions`, `registerDataset`, `retrievalInstructions`, `metadataRecord/{id}/softDelete`; storage v2 | built (stage 6, `dataset`), section 5.6 |
+| `fileAndDdms`, `manifestAndDdms` | the above, composed | built (stage 6, `fileAndDdms`, `manifestAndDdms`), section 5.7 |
+| `workflow` | workflow v1, dataset v1, storage v2, search v2; Airflow's REST API (v1 or v2) for the outputs only it returns | built (stage 6, `workflow`), section 5.9 |
 | the other DDMSs | their briefs under `osdu/specs` | stage 7, section 5.10 |
 
 The well log specific checks became checks of any tabular bulk upload: the row labels of each chunk read before a
@@ -513,8 +513,8 @@ that did not complete. A record can be redelivered or released on its own, as to
   existing ledgers, OSDU id claims and history carry on unchanged.
 - The sample estate becomes one source file, `wells.yaml`, whose `wellbores` and `welllogs` interfaces adopt the
   ledgers of `wells-wellbore-03-header-delivery` and `wells-welllog-03-header-delivery` with `ledger:`.
-- `target.protocol` keeps working in the single form: `osduRecord` is `storage`, `osduFile` is `file`,
-  `osduManifest` is `manifest`, `osduWellLog` is `ddms` with the well log collection.
+- `target.protocol` keeps working in the single form, naming the same routes as `route:` on an interface; the names
+  those routes carried before (`osduRecord`, `osduWellLog` and the rest) still load.
 - The GUI, API and CLI gain the interface as a filter and the source as a roll-up; the record routes keep their
   ledger identity in the path.
 

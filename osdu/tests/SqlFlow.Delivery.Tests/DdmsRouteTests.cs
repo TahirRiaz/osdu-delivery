@@ -38,7 +38,7 @@ public sealed class DdmsRouteTests
         return (client, runtime);
     }
 
-    private static OsduWellLogProtocol Protocol(OsduHttpClient client, ProtocolOptions? options = null, DdmsRouting? routing = null)
+    private static OsduDdmsProtocol Protocol(OsduHttpClient client, ProtocolOptions? options = null, DdmsRouting? routing = null)
         => new(client, options ?? new ProtocolOptions { DdmsRoot = Root }, NullLogger.Instance, routing: routing);
 
     private static string Envelope(string id, string entityType, string data) =>
@@ -302,7 +302,7 @@ public sealed class DdmsRouteTests
     {
         var petro = new DdmsService("petro", "/petro", DdmsShape.WellboreDdmsV3, [new DdmsCollectionEntry("work-product-component--WellLog", "logs", Bulk: true)]);
         var flow = Samples.Targeting(
-            new FlowTarget { Endpoint = "http://localhost", Protocol = DeliveryProtocol.OsduWellLog, ProtocolOptions = new ProtocolOptions { DdmsRoot = Root }, Ddms = [petro] },
+            new FlowTarget { Endpoint = "http://localhost", Protocol = DeliveryProtocol.Ddms, ProtocolOptions = new ProtocolOptions { DdmsRoot = Root }, Ddms = [petro] },
             "logs");
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Post, "/petro/ddms/v3/logs", HttpStatusCode.OK, Written(LogId, 1))
@@ -334,7 +334,7 @@ public sealed class DdmsRouteTests
     {
         var petro = new DdmsService("petro", "/petro", DdmsShape.WellboreDdmsV3, [new DdmsCollectionEntry("work-product-component--WellLog", "logs", Bulk: true)]);
         var flow = Samples.Targeting(
-            new FlowTarget { Endpoint = "http://localhost", Protocol = DeliveryProtocol.OsduWellLog, ProtocolOptions = new ProtocolOptions { DdmsRoot = Root }, Ddms = [petro] },
+            new FlowTarget { Endpoint = "http://localhost", Protocol = DeliveryProtocol.Ddms, ProtocolOptions = new ProtocolOptions { DdmsRoot = Root }, Ddms = [petro] },
             "logs");
         var handler = new FakeHttpHandler().On(HttpMethod.Get, "/petro/about", HttpStatusCode.OK, "{}");
         var (client, runtime) = Client(handler);
@@ -369,7 +369,7 @@ public sealed class DdmsRouteTests
             new FlowTarget
             {
                 Endpoint = "http://localhost",
-                Protocol = DeliveryProtocol.OsduWellLog,
+                Protocol = DeliveryProtocol.Ddms,
                 Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" },
                 ProtocolOptions = new ProtocolOptions { RegisterPath = registerPath },
                 Ddms = [.. others, new DdmsService("wellbore", root, DdmsShape.WellboreDdmsV3, collections ?? []) { Registration = "wellbore" }],
@@ -377,8 +377,8 @@ public sealed class DdmsRouteTests
             "logs");
 
     /// <summary>The protocol the node builds for <paramref name="flow"/>, over the fake OSDU <paramref name="runtime"/> talks to.</summary>
-    private static async Task<OsduWellLogProtocol> BuildAsync(FlowDefinition flow, HttpRuntime runtime)
-        => (OsduWellLogProtocol)await ProtocolFactory.CreateAsync(flow, runtime, new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance);
+    private static async Task<OsduDdmsProtocol> BuildAsync(FlowDefinition flow, HttpRuntime runtime)
+        => (OsduDdmsProtocol)await ProtocolFactory.CreateAsync(flow, runtime, new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance);
 
     [Fact]
     public async Task A_ddms_named_by_its_registration_is_read_from_the_register_service_when_the_protocol_is_built()
@@ -503,7 +503,7 @@ public sealed class DdmsRouteTests
         Assert.Single(handler.Calls);
 
         // Without a registration, the check needs no protocol at all.
-        using var plain = FlowRuntime.ForTarget(context, Samples.Targeting(new FlowTarget { Endpoint = "http://localhost", Protocol = DeliveryProtocol.OsduWellLog }));
+        using var plain = FlowRuntime.ForTarget(context, Samples.Targeting(new FlowTarget { Endpoint = "http://localhost", Protocol = DeliveryProtocol.Ddms }));
         await plain.CheckRouteAsync("osdu:wks:master-data--Wellbore:1.3.0");
         Assert.Single(handler.Calls);
     }

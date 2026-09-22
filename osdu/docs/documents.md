@@ -70,9 +70,8 @@ target:
     token: { url: ${env:OSDU_TOKEN_URL}, body: { scope: ${env:OSDU_SCOPE} }, basicAuthClient: false, tokenPath: access_token, applyPrefix: "Bearer " }
   headers:                         # extra headers on every request
     data-partition-id: dev         # required: every OSDU service rejects a request without it, so the loader insists on it; its cache is the one the mapping reads
-  # the route type: storage | file | dataset | manifest | ddms | fileAndDdms | manifestAndDdms | workflow | dspdm | etp,
-  # or the protocol it maps onto: osduRecord | osduFile | osduDataset | osduManifest | osduWellLog | osduFileAndDdms |
-  # osduManifestAndDdms | osduWorkflow | osduDspdm | osduEtp
+  # the route: storage | file | dataset | manifest | ddms | fileAndDdms | manifestAndDdms | workflow | dspdm | etp
+  # (the names these routes carried before, osduRecord | osduWellLog | ... , still load)
   protocol: ddms
   ddms:                            # ddms: DDMSs the records go to by entity type, before the Wellbore DDMS under ddmsRoot (see "The DDMSs a flow delivers to")
     wellbore: { root: /api/os-wellbore-ddms }
@@ -110,8 +109,8 @@ target:
     sessionDataPath: /ddms/v3/welllogs/{id}/sessions/{sessionId}/data
     sessionCommitPath: /ddms/v3/welllogs/{id}/sessions/{sessionId}
     verifyPath: /ddms/v3/welllogs/{id}
-    deletePath: /ddms/v3/welllogs/{id}       # logical delete (osduRecord: POST /api/storage/v2/records/{id}:delete)
-    # The storage service's purge (osduRecord: DELETE /api/storage/v2/records/{id}). On the ddms route a bulk
+    deletePath: /ddms/v3/welllogs/{id}       # logical delete (storage: POST /api/storage/v2/records/{id}:delete)
+    # The storage service's purge (storage: DELETE /api/storage/v2/records/{id}). On the ddms route a bulk
     # collection purges with DELETE {deletePath}?purge=true, and a record collection, whose DELETE is logical only,
     # purges here; a DDMS endpoint does not reach storage by a path, so write the whole URL.
     purgePath: https://osdu.example.com/api/storage/v2/records/{id}
@@ -124,7 +123,7 @@ target:
     payloadContentType: application/x-parquet  # the type the payload goes as: the bulk data on a ddms route, the files where they are the payload
     filesContentType: text/plain   # the type a record's files are uploaded as; default payloadContentType where the files are the payload, application/octet-stream beside bulk data
     versionPath: recordIdVersions[0]
-    skipDuplicates: false          # osduRecord, osduFile: opt in to skipdupes=true only once the target is confirmed to compare acl, legal and tags, not just data
+    skipDuplicates: false          # storage, file: opt in to skipdupes=true only once the target is confirmed to compare acl, legal and tags, not just data
     verifyBatchPath: /api/storage/v2/query/records   # the batched read a verify pass uses (100 ids per request)
     ddmsRoot: /api/os-wellbore-ddms  # ddms: the endpoint is the platform root and the Wellbore DDMS sits under this path; omit when the endpoint is the DDMS itself
     registerPath: /api/register/v1/ddms/{id}  # ddms: where the Register service reads the registration of a DDMS target.ddms names with register
@@ -132,21 +131,21 @@ target:
     validateLegalTags: true        # deliver and intake runs ask the legal service about the mapping's legal tags first; false skips it
     legalValidatePath: /api/legal/v1/legaltags:validate  # where to ask; needed (as a whole URL) only for a ddms flow whose endpoint is the DDMS itself
     preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]  # data keys other systems write, carried from the stored record into every update
-    batchSize: 100                 # records per write request where the service takes arrays (osduRecord, osduFile, osduManifest; at most 500)
-    uploadUrlPath: /api/file/v2/files/uploadURL      # osduFile, osduManifest: the signed landing-zone location
+    batchSize: 100                 # records per write request where the service takes arrays (storage, file, manifest; at most 500)
+    uploadUrlPath: /api/file/v2/files/uploadURL      # file, manifest: the signed landing-zone location
     uploadUrlExpiry: 12H           # how long the signed URL stays valid (30M, 12H, 2D); default the service's one hour
     uploadHeaders: { x-ms-blob-type: BlockBlob }     # extra headers on the signed-URL upload; the Azure blob type is added for a *.blob.core.* URL anyway
-    fileMetadataPath: /api/file/v2/files/metadata    # osduFile, osduManifest: registers the dataset record
+    fileMetadataPath: /api/file/v2/files/metadata    # file, manifest: registers the dataset record
     fileDeletePath: /api/file/v2/files/{id}/metadata # purge: deletes a dataset record and its file
     datasetKind: osdu:wks:dataset--File.Generic:1.0.0  # file, manifest: the kind of the dataset registered per file; dataset: the kind of the dataset a record of another kind refers to
     datasetsProperty: Datasets     # the record's data property listing its dataset ids
-    workflowName: Osdu_ingest      # osduManifest: the ingestion workflow
+    workflowName: Osdu_ingest      # manifest: the ingestion workflow
     workflowRunPath: /api/workflow/v1/workflow/{workflow}/workflowRun
     workflowStatusPath: /api/workflow/v1/workflow/{workflow}/workflowRun/{runId}
     workflowPollSeconds: 10
     workflowTimeoutMinutes: 60     # a run still going after this fails the try; the next try resumes polling it
-    datasetIndexWaitSeconds: 120   # osduManifest: how long to wait for the search index to list the registered datasets before the manifest names them (0 = no wait); osduFile, osduManifest: how long a resumed registration waits for the index before registering the file again
-    searchQueryPath: /api/search/v2/query            # osduFile, osduManifest: where those waits ask
+    datasetIndexWaitSeconds: 120   # manifest: how long to wait for the search index to list the registered datasets before the manifest names them (0 = no wait); file, manifest: how long a resumed registration waits for the index before registering the file again
+    searchQueryPath: /api/search/v2/query            # file, manifest: where those waits ask
     workflowAppKey: osdu-delivery  # executionContext.Payload.AppKey
     workflowPayload: {}            # extra executionContext.Payload entries
     manifestKind: osdu:wks:Manifest:1.0.0
@@ -780,16 +779,16 @@ What an interface's records carry decides how they are delivered:
 
 | The interface declares | Route | Each record |
 | --- | --- | --- |
-| no `files`, no `bulk` | `storage` | is written through the storage service (the `osduRecord` protocol). |
-| `files` | `file` | has its files uploaded and registered through the file service, then is written through the storage service (`osduFile`). |
-| `files` and `route: dataset` | `dataset` | has its files stored and registered through the dataset service: a record of a dataset kind is that dataset, any other refers to one dataset holding its files (`osduDataset`). |
-| `bulk` | `ddms` | is written through its DDMS, then its bulk data (`osduWellLog`). |
-| `files` and `bulk` | `fileAndDdms` | has its files uploaded and registered through the file service, is written through its DDMS referring to them, then its bulk data (`osduFileAndDdms`). |
-| `route: manifest`, with or without `files` | `manifest` | has its files registered first, then goes through the ingestion workflow in manifests (`osduManifest`). |
-| `route: manifest` and `bulk`, with or without `files` | `manifestAndDdms` | goes through the ingestion workflow in manifests, its files registered first, then its bulk data through its DDMS (`osduManifestAndDdms`). |
-| `workflow` | `workflow` | is written first, its inputs registered, then the workflow runs in stages and what it wrote is read back (`osduWorkflow`). |
-| `route: dspdm` | `dspdm` | is a row of a Production DDMS business object: found again by its unique key, then saved through DSPDM (`osduDspdm`, [The Production DDMS core service](#the-production-ddms-core-service)). |
-| `route: etp`, with or without `files` and `bulk` | `etp` | is an Energistics object in a dataspace of the Reservoir DDMS, written over ETP 1.2 on a WebSocket with the arrays it names (`osduEtp`, [The Reservoir DDMS](#the-reservoir-ddms)). |
+| no `files`, no `bulk` | `storage` | is written through the storage service. |
+| `files` | `file` | has its files uploaded and registered through the file service, then is written through the storage service. |
+| `files` and `route: dataset` | `dataset` | has its files stored and registered through the dataset service: a record of a dataset kind is that dataset, any other refers to one dataset holding its files. |
+| `bulk` | `ddms` | is written through its DDMS, then its bulk data. |
+| `files` and `bulk` | `fileAndDdms` | has its files uploaded and registered through the file service, is written through its DDMS referring to them, then its bulk data. |
+| `route: manifest`, with or without `files` | `manifest` | has its files registered first, then goes through the ingestion workflow in manifests. |
+| `route: manifest` and `bulk`, with or without `files` | `manifestAndDdms` | goes through the ingestion workflow in manifests, its files registered first, then its bulk data through its DDMS. |
+| `workflow` | `workflow` | is written first, its inputs registered, then the workflow runs in stages and what it wrote is read back. |
+| `route: dspdm` | `dspdm` | is a row of a Production DDMS business object: found again by its unique key, then saved through DSPDM ([The Production DDMS core service](#the-production-ddms-core-service)). |
+| `route: etp`, with or without `files` and `bulk` | `etp` | is an Energistics object in a dataspace of the Reservoir DDMS, written over ETP 1.2 on a WebSocket with the arrays it names ([The Reservoir DDMS](#the-reservoir-ddms)). |
 
 `route:` names a route outright. A named route and a part only another route sends make the two routes' composition:
 `file` with `bulk` and `ddms` with `files` are `fileAndDdms`, and `manifest` with `bulk` is `manifestAndDdms`. A route
@@ -1501,7 +1500,7 @@ it ([docs/lineage-design.md](../../docs/lineage-design.md)). What each kind cont
 
 | Flow | Reads | Writes |
 | --- | --- | --- |
-| Delivery | The record table and every `source.datasets` table, on the server `source.connection` names; the files under the `root` of the payload set its protocol streams; every cache type its mapping reads (`cache.<Type>` sources and `findBy` lines) | The OSDU type its mapping fills (`template.kind`); for `osduFile` and `osduManifest`, also `protocolOptions.datasetKind` |
+| Delivery | The record table and every `source.datasets` table, on the server `source.connection` names; the files under the `root` of the payload set its protocol streams; every cache type its mapping reads (`cache.<Type>` sources and `findBy` lines) | The OSDU type its mapping fills (`template.kind`); for `file` and `manifest`, also `protocolOptions.datasetKind` |
 | Cache | Each type's `kind`, wildcards included | Each type's `name` in its partition's cache |
 | Retrieval | Each of `source.kinds`, wildcards included | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest under `target.location` |
 

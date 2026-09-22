@@ -62,7 +62,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var outcome = await protocol.DeliverAsync(Work(true, true, 1));
 
             // The metadata write made version 1699999 and the bulk write made 1700001, which is what OSDU serves: a live
@@ -93,7 +93,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions { SessionThresholdChunks = 1 }, Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions { SessionThresholdChunks = 1 }, Samples.Logger<OsduDdmsProtocol>());
             var outcome = await protocol.DeliverAsync(Work(false, true, 3));
 
             Assert.Equal(3, outcome.ChunksSent);
@@ -116,7 +116,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions { SessionThresholdChunks = 0 }, Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions { SessionThresholdChunks = 0 }, Samples.Logger<OsduDdmsProtocol>());
             var outcome = await protocol.DeliverAsync(Work(false, true, 1));
 
             Assert.Equal(1, outcome.ChunksSent);
@@ -138,7 +138,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(committed);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var outcome = await protocol.DeliverAsync(Work(false, true, 2));
 
             Assert.Equal(2, outcome.ChunksSent);
@@ -155,7 +155,7 @@ public class ProtocolTests
         var (client2, _, runtime2) = Client(abandoned);
         using (runtime2)
         {
-            var protocol = new OsduWellLogProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var ex = await Assert.ThrowsAsync<DeliveryException>(() => protocol.DeliverAsync(Work(false, true, 2)));
 
             Assert.Contains("abandoned", ex.Message, StringComparison.Ordinal);
@@ -173,7 +173,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var ex = await Assert.ThrowsAsync<OsduStatusException>(() => protocol.DeliverAsync(Work(false, true, 3, existing: 5)));
             Assert.Equal(422, ex.StatusCode);
             var create = handler.Calls[0];
@@ -192,7 +192,7 @@ public class ProtocolTests
         var (client2, _, runtime2) = Client(ok);
         using (runtime2)
         {
-            var protocol = new OsduWellLogProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var outcome = await protocol.DeliverAsync(Work(false, true, 3));
             Assert.Equal(3, outcome.ChunksSent);
             var sent = ok.Calls.Where(c => c.Method == HttpMethod.Post && c.Uri.AbsolutePath.EndsWith("/data", StringComparison.Ordinal)).Select(c => c.Body).ToList();
@@ -224,7 +224,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var held = await Assert.ThrowsAsync<RecordHeldException>(
                 () => protocol.DeliverAsync(Work(true, true, 2, source: new MemoryPayload(2, rowsPerChunk: 5, labels: ChunkLabels.Restarting))));
 
@@ -245,7 +245,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var held = await Assert.ThrowsAsync<RecordHeldException>(
                 () => protocol.DeliverAsync(Work(false, true, 2, source: new MemoryPayload(2, rowsPerChunk: 3, labels: ChunkLabels.OverlappingColumn))));
 
@@ -262,7 +262,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var outcome = await protocol.DeliverAsync(Work(false, true, 2, source: new MemoryPayload(2, rowsPerChunk: 4, labels: ChunkLabels.CurvesSplit)));
 
             Assert.Equal(2, outcome.ChunksSent);
@@ -279,7 +279,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var held = await Assert.ThrowsAsync<RecordHeldException>(
                 () => protocol.DeliverAsync(Work(false, true, 3, source: new MemoryPayload(3, rowsPerChunk: 3))));
 
@@ -297,7 +297,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var held = await Assert.ThrowsAsync<RecordHeldException>(
                 () => protocol.DeliverAsync(Work(false, true, 2, source: new MemoryPayload(2, rowsPerChunk: 4, labels: ChunkLabels.CurvesSplit))));
 
@@ -312,7 +312,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(described);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var outcome = await protocol.DeliverAsync(Work(false, true, 3, source: new MemoryPayload(3, rowsPerChunk: 3)));
 
             Assert.Equal("9", outcome.Returned["rows"]);
@@ -324,7 +324,7 @@ public class ProtocolTests
         var (client2, _, runtime2) = Client(silent);
         using (runtime2)
         {
-            var protocol = new OsduWellLogProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var outcome = await protocol.DeliverAsync(Work(false, true, 3, source: new MemoryPayload(3, rowsPerChunk: 3)));
 
             Assert.Equal(3, outcome.ChunksSent);
@@ -342,13 +342,13 @@ public class ProtocolTests
         using (runtime)
         {
             // 40 rows by 4 columns is 160 values, so a ceiling of 100 values holds it.
-            var values = new OsduWellLogProtocol(client, new ProtocolOptions { MaxChunkValues = 100 }, Samples.Logger<OsduWellLogProtocol>());
+            var values = new OsduDdmsProtocol(client, new ProtocolOptions { MaxChunkValues = 100 }, Samples.Logger<OsduDdmsProtocol>());
             var tooManyValues = await Assert.ThrowsAsync<RecordHeldException>(
                 () => values.DeliverAsync(Work(true, true, 1, source: new MemoryPayload(1, columns: 4, rowsPerChunk: 40))));
             Assert.Contains("160 values (40 rows by 4 columns)", tooManyValues.Message, StringComparison.Ordinal);
             Assert.Contains("maxChunkValues", tooManyValues.Message, StringComparison.Ordinal);
 
-            var columns = new OsduWellLogProtocol(client, new ProtocolOptions { MaxChunkColumns = 3 }, Samples.Logger<OsduWellLogProtocol>());
+            var columns = new OsduDdmsProtocol(client, new ProtocolOptions { MaxChunkColumns = 3 }, Samples.Logger<OsduDdmsProtocol>());
             var tooManyColumns = await Assert.ThrowsAsync<RecordHeldException>(
                 () => columns.DeliverAsync(Work(true, true, 1, source: new MemoryPayload(1, columns: 4, rowsPerChunk: 2))));
             Assert.Contains("has 4 columns", tooManyColumns.Message, StringComparison.Ordinal);
@@ -370,12 +370,12 @@ public class ProtocolTests
         {
             // A payload the target takes as JSON is not measurable from a parquet footer, so it is not measured.
             var json = new ProtocolOptions { PayloadContentType = "application/json", MaxChunkValues = 1, MaxChunkColumns = 1 };
-            var outcome = await new OsduWellLogProtocol(client, json, Samples.Logger<OsduWellLogProtocol>()).DeliverAsync(Work(false, true, 1));
+            var outcome = await new OsduDdmsProtocol(client, json, Samples.Logger<OsduDdmsProtocol>()).DeliverAsync(Work(false, true, 1));
             Assert.Equal(1, outcome.ChunksSent);
 
             // Both ceilings off is the explicit opt out for a target that has raised them.
             var off = new ProtocolOptions { MaxChunkValues = 0, MaxChunkColumns = 0 };
-            var second = await new OsduWellLogProtocol(client, off, Samples.Logger<OsduWellLogProtocol>())
+            var second = await new OsduDdmsProtocol(client, off, Samples.Logger<OsduDdmsProtocol>())
                 .DeliverAsync(Work(false, true, 1, source: new MemoryPayload(1, columns: 8, rowsPerChunk: 8)));
             Assert.Equal(1, second.ChunksSent);
         }
@@ -391,7 +391,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var ex = await Assert.ThrowsAsync<DeliveryException>(() => protocol.DeliverAsync(Work(false, true, 1)));
 
             Assert.Contains("dev:work-product-component--WellLog:abc", ex.Message, StringComparison.Ordinal);
@@ -407,7 +407,7 @@ public class ProtocolTests
         var (client, _, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var held = await Assert.ThrowsAsync<RecordHeldException>(() => protocol.DeliverAsync(Work(true, true, 1,
                 document: """{"id":"dev:work-product-component--WellLog:abc","kind":"k","data":{"ReferenceCurveID":"MD","Curves":[{"CurveID":"GR"},{"CurveID":"RHOB"}]}}""")));
 
@@ -428,7 +428,7 @@ public class ProtocolTests
         var (client, handler, runtime) = Client();
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var ex = await Assert.ThrowsAsync<RecordHeldException>(() => protocol.DeliverAsync(Work(true, true, 1, source: new NotParquetPayload())));
             Assert.Contains("declared as parquet but its footer could not be read", ex.Message, StringComparison.Ordinal);
             Assert.Empty(handler.Calls);
@@ -705,7 +705,7 @@ public class DeliverRunScopeTests
         var loader = new DeliveryDocumentLoader();
         var logs = loader.LoadFlow(Samples.Flow);
         var wellbores = loader.LoadFlow(Samples.WellboreFlowFile);
-        var files = logs with { Target = logs.Target with { Protocol = DeliveryProtocol.OsduFile } };
+        var files = logs with { Target = logs.Target with { Protocol = DeliveryProtocol.File } };
         RedeliverScope Of(FlowDefinition flow, string? part) => DeliveryExecutor.RedeliverScopeOf(new DeliveryRunPayload { RecordKeys = [key], Redeliver = part }, flow).Scope;
 
         // The ddms route sends the record and its bulk data.

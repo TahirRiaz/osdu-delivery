@@ -52,9 +52,9 @@ public sealed class ReservoirManagementRouteTests
             {
                 ReservoirManagement = settings ?? new ReservoirManagementSettings { SettleSeconds = 30, PollSeconds = 5 },
             };
-            Flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.OsduWellLog, Ddms = [rm], ProtocolOptions = options }, "reservoir");
+            Flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.Ddms, Ddms = [rm], ProtocolOptions = options }, "reservoir");
             Clock = new ProductionTimeSeriesRouteTests.SteppingClock();
-            Protocol = new OsduWellLogProtocol(client, options, NullLogger.Instance, time: Clock, routing: DdmsRouting.Of(Flow));
+            Protocol = new OsduDdmsProtocol(client, options, NullLogger.Instance, time: Clock, routing: DdmsRouting.Of(Flow));
         }
 
         public HttpRuntime Runtime { get; }
@@ -63,7 +63,7 @@ public sealed class ReservoirManagementRouteTests
 
         public ProductionTimeSeriesRouteTests.SteppingClock Clock { get; }
 
-        public OsduWellLogProtocol Protocol { get; }
+        public OsduDdmsProtocol Protocol { get; }
 
         public void Dispose() => Runtime.Dispose();
     }

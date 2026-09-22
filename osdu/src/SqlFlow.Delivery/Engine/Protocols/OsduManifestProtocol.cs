@@ -82,7 +82,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     /// <summary>Whether the partition registers the by-reference workflow, once asked.</summary>
     private bool? _byReferenceRegistered;
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduManifest;
+    public DeliveryProtocol Kind => DeliveryProtocol.Manifest;
 
     public int MaxBatch => Math.Clamp(_options.BatchSize, 1, ProtocolOptions.MaxBatchSize);
 

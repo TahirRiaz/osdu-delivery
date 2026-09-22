@@ -429,7 +429,7 @@ public static class DeliveryEndpoints
             var kind = described.FirstOrDefault(d => d.LedgerFlowId == flow.Id)?.Kind;
             var name = flow.Interface ?? string.Empty;
             result.Add(new DeliveryInterfaceDto(
-                flow.Interface, flow.Id, flow.LedgerName, RouteChecks.Name(flow.Target.Protocol), flow.RouteReason, flow.Render.Mapping,
+                flow.Interface, flow.Id, flow.LedgerName, DeliveryProtocols.Name(flow.Target.Protocol), flow.RouteReason, flow.Render.Mapping,
                 string.IsNullOrEmpty(kind) ? null : kind, flow.Source.Record.Object, flow.After, StatsDto(source.Pipeline, [(flow, stats)]),
                 order.WaveOf(name),
                 order.WaitsFor(name).Select(d => Wait(d, d.DependsOn)).ToList(),
@@ -1609,7 +1609,7 @@ public static class DeliveryEndpoints
 
         var paths = RemovalEndpoints.Of(flow.Flow, string.IsNullOrEmpty(kind) ? null : kind);
         return new DeliveryTargetDto(
-            flow.Pipeline.Id, flow.Pipeline.Name, target.Endpoint, partition, target.Protocol.ToString(),
+            flow.Pipeline.Id, flow.Pipeline.Name, target.Endpoint, partition, DeliveryProtocols.Name(target.Protocol),
             target.Auth.Type.ToString(), paths.Record, paths.History, paths.Everything, flow.Flow.Interface, ddms, paths.RecordMethod);
     }
 

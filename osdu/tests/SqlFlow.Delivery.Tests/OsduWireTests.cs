@@ -373,7 +373,7 @@ public class WellboreDdmsRootTests
         var (client, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, PlatformRoot, Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, PlatformRoot, Samples.Logger<OsduDdmsProtocol>());
 
             Assert.Equal(SqlFlow.Delivery.Ledger.VerifyOutcome.Match, (await protocol.VerifyAsync(RecordId, 4)).Outcome);
             Assert.True((await protocol.ProbeAsync()).Reachable);
@@ -394,7 +394,7 @@ public class WellboreDdmsRootTests
         var (client, runtime) = Client(handler);
         using (runtime)
         {
-            var outcome = await new OsduWellLogProtocol(client, PlatformRoot, Samples.Logger<OsduWellLogProtocol>()).DeleteAsync(RecordId, RemovalScope.History);
+            var outcome = await new OsduDdmsProtocol(client, PlatformRoot, Samples.Logger<OsduDdmsProtocol>()).DeleteAsync(RecordId, RemovalScope.History);
 
             Assert.True(outcome.Deleted);
             Assert.Equal("/api/storage/v2/records/" + RecordId + "/versions", Assert.Single(handler.Calls).Uri.AbsolutePath);
@@ -409,7 +409,7 @@ public class WellboreDdmsRootTests
         using (runtime)
         {
             var options = new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms", VerifyPath = "/petrodb/welllogs/{id}" };
-            await new OsduWellLogProtocol(client, options, Samples.Logger<OsduWellLogProtocol>()).VerifyAsync(RecordId, 1);
+            await new OsduDdmsProtocol(client, options, Samples.Logger<OsduDdmsProtocol>()).VerifyAsync(RecordId, 1);
 
             Assert.Equal("/petrodb/welllogs/" + RecordId, Assert.Single(handler.Calls).Uri.AbsolutePath);
         }
@@ -422,7 +422,7 @@ public class WellboreDdmsRootTests
             Samples.Targeting(new FlowTarget
             {
                 Endpoint = "https://osdu.example.com",
-                Protocol = DeliveryProtocol.OsduWellLog,
+                Protocol = DeliveryProtocol.Ddms,
                 ProtocolOptions = PlatformRoot,
             }),
             "osdu:wks:work-product-component--WellLog:1.4.0");
@@ -456,7 +456,7 @@ public class WellboreDdmsRootTests
         target:
           endpoint: https://osdu.example.com
           headers: { data-partition-id: opendes }
-          protocol: osduWellLog
+          protocol: ddms
           protocolOptions: { payload: curves, ddmsRoot: /api/os-wellbore-ddms/ }
         """;
 
@@ -468,13 +468,13 @@ public class WellboreDdmsRootTests
     }
 
     [Theory]
-    [InlineData("osduWellLog", "api/os-wellbore-ddms", "starting with '/'")]
-    [InlineData("osduWellLog", "https://osdu.example.com/api/os-wellbore-ddms", "starting with '/'")]
-    [InlineData("osduRecord", "/api/os-wellbore-ddms", "only applies to the osduWellLog protocol")]
+    [InlineData("ddms", "api/os-wellbore-ddms", "starting with '/'")]
+    [InlineData("ddms", "https://osdu.example.com/api/os-wellbore-ddms", "starting with '/'")]
+    [InlineData("storage", "/api/os-wellbore-ddms", "only applies to the ddms route")]
     public void A_root_that_cannot_mean_what_it_says_is_refused_when_read(string protocol, string root, string expected)
     {
         var yaml = Flow
-            .Replace("protocol: osduWellLog", "protocol: " + protocol, StringComparison.Ordinal)
+            .Replace("protocol: ddms", "protocol: " + protocol, StringComparison.Ordinal)
             .Replace("ddmsRoot: /api/os-wellbore-ddms/", "ddmsRoot: \"" + root + "\"", StringComparison.Ordinal);
         var ex = Assert.Throws<SqlFlow.Core.FlowValidationException>(() => new SqlFlow.Delivery.Documents.DeliveryDocumentLoader().ParseFlow(yaml, "inline.yaml"));
         Assert.Contains(expected, ex.Message, StringComparison.Ordinal);
@@ -498,18 +498,18 @@ public class LegalTagCheckTests
     }
 
     [Theory]
-    [InlineData(DeliveryProtocol.OsduRecord, null, null, true, ValidatePath)]
-    [InlineData(DeliveryProtocol.OsduFile, null, null, true, ValidatePath)]
-    [InlineData(DeliveryProtocol.OsduManifest, null, null, true, ValidatePath)]
-    [InlineData(DeliveryProtocol.OsduWellLog, "/api/os-wellbore-ddms", null, true, ValidatePath)]
-    [InlineData(DeliveryProtocol.OsduWellLog, null, null, true, null)]
-    [InlineData(DeliveryProtocol.OsduWellLog, null, "https://osdu.example.com/api/legal/v1/legaltags:validate", true, "https://osdu.example.com/api/legal/v1/legaltags:validate")]
-    [InlineData(DeliveryProtocol.OsduRecord, null, null, false, null)]
+    [InlineData(DeliveryProtocol.Storage, null, null, true, ValidatePath)]
+    [InlineData(DeliveryProtocol.File, null, null, true, ValidatePath)]
+    [InlineData(DeliveryProtocol.Manifest, null, null, true, ValidatePath)]
+    [InlineData(DeliveryProtocol.Ddms, "/api/os-wellbore-ddms", null, true, ValidatePath)]
+    [InlineData(DeliveryProtocol.Ddms, null, null, true, null)]
+    [InlineData(DeliveryProtocol.Ddms, null, "https://osdu.example.com/api/legal/v1/legaltags:validate", true, "https://osdu.example.com/api/legal/v1/legaltags:validate")]
+    [InlineData(DeliveryProtocol.Storage, null, null, false, null)]
     public void The_check_goes_where_the_target_can_reach_the_legal_service(DeliveryProtocol protocol, string? ddmsRoot, string? legalPath, bool validate, string? expected)
     {
         // Every endpoint but a DDMS's own is the platform root; the ddms route knows which its endpoint is.
         var options = new ProtocolOptions { DdmsRoot = ddmsRoot, LegalValidatePath = legalPath, ValidateLegalTags = validate };
-        var path = protocol == DeliveryProtocol.OsduWellLog
+        var path = protocol == DeliveryProtocol.Ddms
             ? SqlFlow.Delivery.Engine.DdmsRouting.Of(options).LegalValidatePath
             : LegalTagValidator.PathFor(options, platformEndpoint: true);
         Assert.Equal(expected, path);
@@ -538,7 +538,7 @@ public class LegalTagCheckTests
         var (client, runtime) = Client(handler);
         using (runtime)
         {
-            IDeliveryProtocol protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            IDeliveryProtocol protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             Assert.Null(await protocol.InvalidLegalTagsAsync(["opendes-public"]));
             Assert.Empty(handler.Calls);
         }
@@ -551,7 +551,7 @@ public class LegalTagCheckTests
         var (client, runtime) = Client(handler);
         using (runtime)
         {
-            IDeliveryProtocol protocol = new OsduWellLogProtocol(client, new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms" }, Samples.Logger<OsduWellLogProtocol>());
+            IDeliveryProtocol protocol = new OsduDdmsProtocol(client, new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms" }, Samples.Logger<OsduDdmsProtocol>());
             var invalid = await protocol.InvalidLegalTagsAsync(["opendes-public"]);
 
             Assert.NotNull(invalid);
@@ -578,7 +578,7 @@ public class LegalTagCheckTests
         target:
           endpoint: https://osdu.example.com
           headers: { data-partition-id: opendes }
-          protocol: osduRecord
+          protocol: storage
           protocolOptions: { validateLegalTags: false, legalValidatePath: "__PATH__" }
         """;
 
@@ -619,7 +619,7 @@ public class SkipDuplicatesOptionTests
         target:
           endpoint: https://osdu.example.com
           headers: { data-partition-id: opendes }
-          protocol: osduRecord
+          protocol: storage
           protocolOptions: { __OPTIONS__ }
         """;
 

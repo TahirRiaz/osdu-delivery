@@ -171,7 +171,7 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
         }
 
         EnsureLink(attempt.Document, plan.Dataset, work.DeliverPayload ? plan.Size : attempt.Known ? KnownSize(work.TargetState) : null);
-        attempt.RecordWritten = Resume(work, OsduWellLogProtocol.MetadataStep, attempt.Steps) is not null;
+        attempt.RecordWritten = Resume(work, OsduDdmsProtocol.MetadataStep, attempt.Steps) is not null;
 
         if (work.Completed(CloseStep) is { } closed)
         {
@@ -1163,8 +1163,8 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
         attempt.RecordWritten = true;
         var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = attempt.Work.TargetId };
         var now = attempt.Steps.Now;
-        attempt.Steps.Add(OsduWellLogProtocol.MetadataStep, now, null, values);
-        await attempt.Work.ReportStepAsync(OsduWellLogProtocol.MetadataStep, values, ct).ConfigureAwait(false);
+        attempt.Steps.Add(OsduDdmsProtocol.MetadataStep, now, null, values);
+        await attempt.Work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, values, ct).ConfigureAwait(false);
     }
 
     private SeismicDataset DatasetOf(DdmsRoute route, string targetId)

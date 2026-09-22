@@ -15,6 +15,7 @@ using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.Delivery.ControlPlane.Background;
 
@@ -283,7 +284,7 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
             @interface = flow.Flow.Interface,
             endpoint = target.Endpoint,
             partition,
-            protocol = target.Protocol.ToString(),
+            protocol = DeliveryProtocols.Name(target.Protocol),
         }));
 
         var activity = await ledger.StartActivityAsync(

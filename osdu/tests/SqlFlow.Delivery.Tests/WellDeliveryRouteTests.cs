@@ -43,13 +43,13 @@ public sealed class WellDeliveryRouteTests
             {
                 WellDelivery = settings ?? new WellDeliverySettings(),
             };
-            var flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.OsduWellLog, Ddms = [service] }, "wells");
-            Protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), NullLogger.Instance, time: time, routing: DdmsRouting.Of(flow));
+            var flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.Ddms, Ddms = [service] }, "wells");
+            Protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), NullLogger.Instance, time: time, routing: DdmsRouting.Of(flow));
         }
 
         public HttpRuntime Runtime { get; }
 
-        public OsduWellLogProtocol Protocol { get; }
+        public OsduDdmsProtocol Protocol { get; }
 
         public void Dispose() => Runtime.Dispose();
     }

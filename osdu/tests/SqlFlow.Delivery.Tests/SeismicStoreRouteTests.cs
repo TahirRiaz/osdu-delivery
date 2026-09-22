@@ -67,15 +67,15 @@ public sealed class SeismicStoreRouteTests
             {
                 SeismicStore = settings ?? Settings(),
             };
-            Flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.OsduWellLog, Ddms = [seismic], ProtocolOptions = options }, "seismic");
-            Protocol = new OsduWellLogProtocol(client, options, NullLogger.Instance, time: new ProductionTimeSeriesRouteTests.SteppingClock(), routing: DdmsRouting.Of(Flow));
+            Flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.Ddms, Ddms = [seismic], ProtocolOptions = options }, "seismic");
+            Protocol = new OsduDdmsProtocol(client, options, NullLogger.Instance, time: new ProductionTimeSeriesRouteTests.SteppingClock(), routing: DdmsRouting.Of(Flow));
         }
 
         public HttpRuntime Runtime { get; }
 
         public FlowDefinition Flow { get; }
 
-        public OsduWellLogProtocol Protocol { get; }
+        public OsduDdmsProtocol Protocol { get; }
 
         public void Dispose() => Runtime.Dispose();
     }

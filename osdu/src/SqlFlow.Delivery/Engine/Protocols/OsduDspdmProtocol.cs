@@ -90,7 +90,7 @@ public sealed class OsduDspdmProtocol : IDeliveryProtocol
         _catalog = new DspdmCatalog(_service, target);
     }
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduDspdm;
+    public DeliveryProtocol Kind => DeliveryProtocol.Dspdm;
 
     public int MaxBatch => Math.Clamp(_options.BatchSize, 1, MaxRowsPerSave);
 

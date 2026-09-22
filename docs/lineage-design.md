@@ -58,7 +58,7 @@ the module keys the cache itself (`CacheScope`).
 | --- | --- | --- |
 | Pre-ingestion (`file`) | Its source files, at their repository-relative location | Its landing table and typed view (unchanged) |
 | Ingestion (`ing`) | The typed view (unchanged) | Its keyed table (unchanged) |
-| Delivery | The record and dataset ingestion tables (unchanged); the payload files under each `source.payloads.<name>.root`; each partition cache type its mapping reads (`cache.<Type>`) | The OSDU type its mapping fills (`template.kind`); for `osduFile` and `osduManifest`, the dataset kind it registers files as (`protocolOptions.datasetKind`) |
+| Delivery | The record and dataset ingestion tables (unchanged); the payload files under each `source.payloads.<name>.root`; each partition cache type its mapping reads (`cache.<Type>`) | The OSDU type its mapping fills (`template.kind`); for `file` and `manifest`, the dataset kind it registers files as (`protocolOptions.datasetKind`) |
 | Cache | Each declared type's OSDU kind (`types[].kind`, wildcards allowed) | Each declared cache type (`types[].name`) in its partition's cache |
 | Retrieval | Each OSDU kind it retrieves (`source.kinds`) | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest it lands under `target.location`, as file drops a pre flow can read |
 

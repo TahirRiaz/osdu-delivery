@@ -487,14 +487,14 @@ internal static partial class FlowMapper
             flows.Add(flow);
         }
 
-        if (target.Dspdm is not null && !flows.Any(f => f.Target.Protocol == DeliveryProtocol.OsduDspdm))
+        if (target.Dspdm is not null && !flows.Any(f => f.Target.Protocol == DeliveryProtocol.Dspdm))
         {
             throw new FlowValidationException(
                 $"{source}: target.dspdm declares the Production DDMS core service the dspdm route writes rows to, and no interface is delivered by it (route: dspdm). "
                 + "Remove target.dspdm, or route the interfaces it is meant for through it.");
         }
 
-        if (!string.IsNullOrWhiteSpace(target.VerifyReferences) && flows.All(f => f.Target.Protocol == DeliveryProtocol.OsduDspdm))
+        if (!string.IsNullOrWhiteSpace(target.VerifyReferences) && flows.All(f => f.Target.Protocol == DeliveryProtocol.Dspdm))
         {
             throw new FlowValidationException(
                 $"{source}: target.verifyReferences checks the references of the records sent through OSDU's storage service, and every interface of the "
@@ -635,13 +635,13 @@ internal static partial class FlowMapper
                 Eds = target.Eds,
 
                 // The DSPDM the source declares is where its dspdm interfaces go; the other interfaces have no use for it.
-                Dspdm = route.Protocol == DeliveryProtocol.OsduDspdm ? target.Dspdm : null,
+                Dspdm = route.Protocol == DeliveryProtocol.Dspdm ? target.Dspdm : null,
 
                 // The Reservoir DDMS the source declares is where its etp interfaces go.
-                Etp = route.Protocol == DeliveryProtocol.OsduEtp ? target.Etp : null,
+                Etp = route.Protocol == DeliveryProtocol.Etp ? target.Etp : null,
 
                 // A DSPDM row refers to no storage record, so a dspdm interface has nothing for the storage check to read.
-                VerifyReferences = route.Protocol == DeliveryProtocol.OsduDspdm ? null : target.VerifyReferences,
+                VerifyReferences = route.Protocol == DeliveryProtocol.Dspdm ? null : target.VerifyReferences,
             },
             Reliability = YamlOverlay.Apply(y.Reliability, i.Reliability),
             Verify = YamlOverlay.Apply(y.Verify, i.Verify),
@@ -697,7 +697,7 @@ internal static partial class FlowMapper
         var files = i.Files is not null;
         var bulk = i.Bulk is not null;
         var workflow = i.Workflow is not null;
-        var named = string.IsNullOrWhiteSpace(i.Route) ? null : (InterfaceRouteName?)ParseEnum<InterfaceRouteName>(i.Route!.Trim(), at + ".route", source);
+        var named = string.IsNullOrWhiteSpace(i.Route) ? null : (DeliveryProtocol?)ParseEnum<DeliveryProtocol>(i.Route!.Trim(), at + ".route", source);
         var filesKey = $"{at}.{FilesPayload}";
         var bulkKey = $"{at}.{BulkPayload}";
         var workflowKey = $"{at}.workflow";
@@ -711,89 +711,89 @@ internal static partial class FlowMapper
         }
 
         Refuse(
-            workflow && named is not (null or InterfaceRouteName.Workflow),
+            workflow && named is not (null or DeliveryProtocol.Workflow),
             $"{at}.route is {i.Route?.Trim()}, and {workflowKey} declares a workflow, which only the workflow route runs. Remove {at}.route, or name workflow.");
         switch (named)
         {
-            case InterfaceRouteName.Storage:
+            case DeliveryProtocol.Storage:
                 Refuse(files || bulk, $"{at}.route is storage, which writes the record alone, so {(files ? filesKey : bulkKey)} would never be sent. Remove it, or choose the route that delivers it.");
-                return new InterfaceRoute(DeliveryProtocol.OsduRecord, null, $"{at}.route names the storage route: each record is written through the storage service");
-            case InterfaceRouteName.File when bulk:
-            case InterfaceRouteName.Ddms when files:
-            case InterfaceRouteName.FileAndDdms:
+                return new InterfaceRoute(DeliveryProtocol.Storage, null, $"{at}.route names the storage route: each record is written through the storage service");
+            case DeliveryProtocol.File when bulk:
+            case DeliveryProtocol.Ddms when files:
+            case DeliveryProtocol.FileAndDdms:
                 Refuse(!files || !bulk, $"{at}.route is fileAndDdms, which registers each record's files and writes its bulk data through its DDMS, and the interface declares no {(files ? bulkKey : filesKey)}.");
                 return new InterfaceRoute(
-                    DeliveryProtocol.OsduFileAndDdms,
+                    DeliveryProtocol.FileAndDdms,
                     null,
                     $"{at} is delivered by the fileAndDdms route ("
-                    + (named == InterfaceRouteName.FileAndDdms ? $"{at}.route names it" : $"{at}.route names {i.Route!.Trim()} and the interface declares both {FilesPayload} and {BulkPayload}")
+                    + (named == DeliveryProtocol.FileAndDdms ? $"{at}.route names it" : $"{at}.route names {i.Route!.Trim()} and the interface declares both {FilesPayload} and {BulkPayload}")
                     + "): each record's files are uploaded and registered through the file service, the record is written through its DDMS referring to them, then its bulk data");
-            case InterfaceRouteName.File:
+            case DeliveryProtocol.File:
                 Refuse(!files, $"{at}.route is file, which uploads and registers each record's files, and the interface declares none under {filesKey}.");
-                return new InterfaceRoute(DeliveryProtocol.OsduFile, FilesPayload, $"{at}.route names the file route: each record's files are uploaded and registered through the file service before the record is written");
-            case InterfaceRouteName.Dataset:
+                return new InterfaceRoute(DeliveryProtocol.File, FilesPayload, $"{at}.route names the file route: each record's files are uploaded and registered through the file service before the record is written");
+            case DeliveryProtocol.Dataset:
                 Refuse(!files, $"{at}.route is dataset, which stores each record's files and registers them through the dataset service, and the interface declares none under {filesKey}.");
                 Refuse(bulk, $"{at}.route is dataset, which writes no DDMS bulk data, so {bulkKey} would never be sent.");
                 return new InterfaceRoute(
-                    DeliveryProtocol.OsduDataset,
+                    DeliveryProtocol.Dataset,
                     FilesPayload,
                     $"{at}.route names the dataset route: each record's files are stored where the dataset service says and registered with it, a record of a dataset kind as that dataset");
-            case InterfaceRouteName.Manifest when bulk:
-            case InterfaceRouteName.ManifestAndDdms:
+            case DeliveryProtocol.Manifest when bulk:
+            case DeliveryProtocol.ManifestAndDdms:
                 Refuse(!bulk, $"{at}.route is manifestAndDdms, which writes each record's bulk data through its DDMS after the manifest, and the interface declares none under {bulkKey}.");
                 return new InterfaceRoute(
-                    DeliveryProtocol.OsduManifestAndDdms,
+                    DeliveryProtocol.ManifestAndDdms,
                     null,
                     $"{at} is delivered by the manifestAndDdms route ("
-                    + (named == InterfaceRouteName.ManifestAndDdms ? $"{at}.route names it" : $"{at}.route names manifest and the interface declares {BulkPayload}")
+                    + (named == DeliveryProtocol.ManifestAndDdms ? $"{at}.route names it" : $"{at}.route names manifest and the interface declares {BulkPayload}")
                     + "): the records go through the ingestion workflow in manifests" + (files ? ", their files registered first," : string.Empty) + " then each record's bulk data through its DDMS");
-            case InterfaceRouteName.Manifest:
+            case DeliveryProtocol.Manifest:
                 return new InterfaceRoute(
-                    DeliveryProtocol.OsduManifest,
+                    DeliveryProtocol.Manifest,
                     files ? FilesPayload : null,
                     $"{at}.route names the manifest route: the records go through the ingestion workflow in manifests" + (files ? ", their files registered first" : string.Empty));
-            case InterfaceRouteName.Ddms:
+            case DeliveryProtocol.Ddms:
                 return new InterfaceRoute(
-                    DeliveryProtocol.OsduWellLog,
+                    DeliveryProtocol.Ddms,
                     bulk ? BulkPayload : null,
                     $"{at}.route names the ddms route: each record is written through its DDMS" + (bulk ? ", then its bulk data" : string.Empty));
-            case InterfaceRouteName.Dspdm:
+            case DeliveryProtocol.Dspdm:
                 Refuse(files || bulk, $"{at}.route is dspdm, which saves business object rows alone, so {(files ? filesKey : bulkKey)} would never be sent. Remove it, or choose the route that delivers it.");
                 return new InterfaceRoute(
-                    DeliveryProtocol.OsduDspdm,
+                    DeliveryProtocol.Dspdm,
                     null,
                     $"{at}.route names the dspdm route: each record is a row of a Production DDMS business object, found again by its unique key and saved through DSPDM");
-            case InterfaceRouteName.Workflow:
+            case DeliveryProtocol.Workflow:
                 Refuse(!workflow, $"{at}.route is workflow, and the interface declares no workflow under {workflowKey}.");
                 Refuse(bulk, $"{at}.route is workflow, which writes no DDMS bulk data, so {bulkKey} would never be sent.");
-                return new InterfaceRoute(DeliveryProtocol.OsduWorkflow, null, $"{at}.route names the workflow route: {WorkflowReason(i)}");
+                return new InterfaceRoute(DeliveryProtocol.Workflow, null, $"{at}.route names the workflow route: {WorkflowReason(i)}");
         }
 
         if (workflow)
         {
             Refuse(bulk, $"{workflowKey} declares a workflow, and the workflow route writes no DDMS bulk data, so {bulkKey} would never be sent.");
-            return new InterfaceRoute(DeliveryProtocol.OsduWorkflow, null, $"{at} declares a workflow, so it goes by the workflow route: {WorkflowReason(i)}");
+            return new InterfaceRoute(DeliveryProtocol.Workflow, null, $"{at} declares a workflow, so it goes by the workflow route: {WorkflowReason(i)}");
         }
 
         if (files && bulk)
         {
             return new InterfaceRoute(
-                DeliveryProtocol.OsduFileAndDdms,
+                DeliveryProtocol.FileAndDdms,
                 null,
                 $"{at} declares {FilesPayload} and {BulkPayload}, so each record's files are uploaded and registered through the file service, the record is written through its DDMS referring to them, then its bulk data");
         }
 
         if (files)
         {
-            return new InterfaceRoute(DeliveryProtocol.OsduFile, FilesPayload, $"{at} declares {FilesPayload}, so each record's files are uploaded and registered through the file service before the record is written through the storage service");
+            return new InterfaceRoute(DeliveryProtocol.File, FilesPayload, $"{at} declares {FilesPayload}, so each record's files are uploaded and registered through the file service before the record is written through the storage service");
         }
 
         if (bulk)
         {
-            return new InterfaceRoute(DeliveryProtocol.OsduWellLog, BulkPayload, $"{at} declares {BulkPayload}, so each record is written through its DDMS and its bulk data after it");
+            return new InterfaceRoute(DeliveryProtocol.Ddms, BulkPayload, $"{at} declares {BulkPayload}, so each record is written through its DDMS and its bulk data after it");
         }
 
-        return new InterfaceRoute(DeliveryProtocol.OsduRecord, null, $"{at} declares no {FilesPayload} and no {BulkPayload}, so each record is written through the storage service");
+        return new InterfaceRoute(DeliveryProtocol.Storage, null, $"{at} declares no {FilesPayload} and no {BulkPayload}, so each record is written through the storage service");
     }
 
     /// <summary>What the workflow route does for an interface, in the words its route reason gives.</summary>
@@ -822,64 +822,48 @@ internal static partial class FlowMapper
         return files ? WorkflowAnchor.Dataset : WorkflowAnchor.Storage;
     }
 
-    /// <summary>The routes an interface can name with <c>route:</c>, and a document in the single form with <c>target.protocol</c>.</summary>
-    private enum InterfaceRouteName
-    {
-        Storage,
-        File,
-        Dataset,
-        Manifest,
-        Ddms,
-        FileAndDdms,
-        ManifestAndDdms,
-        Workflow,
-        Dspdm,
-        Etp,
-    }
-
-    /// <summary>The protocol that delivers a route type.</summary>
-    private static DeliveryProtocol RouteProtocol(InterfaceRouteName route) => route switch
-    {
-        InterfaceRouteName.Storage => DeliveryProtocol.OsduRecord,
-        InterfaceRouteName.File => DeliveryProtocol.OsduFile,
-        InterfaceRouteName.Dataset => DeliveryProtocol.OsduDataset,
-        InterfaceRouteName.Manifest => DeliveryProtocol.OsduManifest,
-        InterfaceRouteName.Ddms => DeliveryProtocol.OsduWellLog,
-        InterfaceRouteName.FileAndDdms => DeliveryProtocol.OsduFileAndDdms,
-        InterfaceRouteName.ManifestAndDdms => DeliveryProtocol.OsduManifestAndDdms,
-        InterfaceRouteName.Workflow => DeliveryProtocol.OsduWorkflow,
-        InterfaceRouteName.Dspdm => DeliveryProtocol.OsduDspdm,
-        InterfaceRouteName.Etp => DeliveryProtocol.OsduEtp,
-        _ => throw new ArgumentOutOfRangeException(nameof(route), route, "not a route type"),
-    };
+    /// <summary>
+    /// The route names retired when the routes took the names they carry everywhere else, mapped to the route each one
+    /// named, so flow documents written before that keep loading. The current spelling of every one of them is the route
+    /// name itself (<c>osduRecord</c> was the storage route, <c>osduWellLog</c> the ddms route serving every DDMS).
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, DeliveryProtocol> LegacyProtocolNames =
+        new Dictionary<string, DeliveryProtocol>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["osduRecord"] = DeliveryProtocol.Storage,
+            ["osduWellLog"] = DeliveryProtocol.Ddms,
+            ["osduFile"] = DeliveryProtocol.File,
+            ["osduManifest"] = DeliveryProtocol.Manifest,
+            ["osduDataset"] = DeliveryProtocol.Dataset,
+            ["osduFileAndDdms"] = DeliveryProtocol.FileAndDdms,
+            ["osduManifestAndDdms"] = DeliveryProtocol.ManifestAndDdms,
+            ["osduWorkflow"] = DeliveryProtocol.Workflow,
+            ["osduDspdm"] = DeliveryProtocol.Dspdm,
+            ["osduEtp"] = DeliveryProtocol.Etp,
+        };
 
     /// <summary>
-    /// The protocol <c>target.protocol</c> names: a route type (<c>storage</c>, <c>file</c>, <c>dataset</c>,
-    /// <c>manifest</c>, <c>ddms</c>, <c>fileAndDdms</c>, <c>manifestAndDdms</c>, <c>workflow</c>), or the protocol a route
-    /// type maps onto (<c>osduRecord</c>, <c>osduFile</c>, <c>osduManifest</c>, <c>osduWellLog</c> and the others), as
-    /// documents written before the route types name it.
+    /// The route <c>target.protocol</c> names: a route name (<c>storage</c>, <c>file</c>, <c>dataset</c>,
+    /// <c>manifest</c>, <c>ddms</c>, <c>fileAndDdms</c>, <c>manifestAndDdms</c>, <c>workflow</c>, <c>dspdm</c>,
+    /// <c>etp</c>), or one of the names those routes carried before (<see cref="LegacyProtocolNames"/>).
     /// </summary>
     private static DeliveryProtocol ParseProtocol(string value, string source)
     {
-        foreach (var route in Enum.GetValues<InterfaceRouteName>())
+        foreach (var route in Enum.GetValues<DeliveryProtocol>())
         {
             if (string.Equals(value, route.ToString(), StringComparison.OrdinalIgnoreCase))
             {
-                return RouteProtocol(route);
+                return route;
             }
         }
 
-        foreach (var protocol in Enum.GetValues<DeliveryProtocol>())
+        if (LegacyProtocolNames.TryGetValue(value, out var retired))
         {
-            if (string.Equals(value, protocol.ToString(), StringComparison.OrdinalIgnoreCase))
-            {
-                return protocol;
-            }
+            return retired;
         }
 
         throw new FlowValidationException(
-            $"{source}: 'target.protocol' value '{value}' is not one of {string.Join(", ", Enum.GetNames<InterfaceRouteName>().Select(n => char.ToLowerInvariant(n[0]) + n[1..]))} "
-            + $"(or the protocols they map onto: {string.Join(", ", Enum.GetNames<DeliveryProtocol>().Select(n => char.ToLowerInvariant(n[0]) + n[1..]))}).");
+            $"{source}: 'target.protocol' value '{value}' is not one of {string.Join(", ", Enum.GetNames<DeliveryProtocol>().Select(n => char.ToLowerInvariant(n[0]) + n[1..]))}.");
     }
 
     private static string? MapLedger(string? ledger, string at, string source)
@@ -1234,7 +1218,7 @@ internal static partial class FlowMapper
             {
                 RequirePartColumns(flow, payloadName, source, paths);
             }
-            else if (flow.Target.Protocol == DeliveryProtocol.OsduDataset)
+            else if (flow.Target.Protocol == DeliveryProtocol.Dataset)
             {
                 throw new FlowValidationException($"{source}: the dataset route stores and registers each record's files, and {paths.Payload(FilesPayload)} declares none.");
             }
@@ -1377,7 +1361,7 @@ internal static partial class FlowMapper
             if (!DeliveryProtocols.ReachesDdms(flow.Target.Protocol))
             {
                 throw new FlowValidationException(
-                    $"{source}: {paths.Shared("target.protocolOptions.ddmsRoot")} only applies to the osduWellLog protocol; {flow.Target.Protocol} reaches its services under the endpoint already.");
+                    $"{source}: {paths.Shared("target.protocolOptions.ddmsRoot")} only applies to the ddms route; the {DeliveryProtocols.Name(flow.Target.Protocol)} route reaches its services under the endpoint already.");
             }
 
             if (ddmsRoot.Length == 0 || ddmsRoot[0] != '/' || ddmsRoot.Contains("://", StringComparison.Ordinal) || ddmsRoot.Any(char.IsWhiteSpace))
@@ -1539,7 +1523,7 @@ internal static partial class FlowMapper
 
         if (!DeliveryProtocols.ReachesDdms(protocol))
         {
-            throw new FlowValidationException($"{source}: target.ddms declares the DDMSs the ddms route delivers to, and this flow's protocol is {protocol}. Remove target.ddms.");
+            throw new FlowValidationException($"{source}: target.ddms declares the DDMSs the ddms route delivers to, and this flow's protocol is {DeliveryProtocols.Name(protocol)}. Remove target.ddms.");
         }
 
         if (declared.Count == 0)
@@ -2240,7 +2224,7 @@ internal static partial class FlowMapper
     private static ReferenceVerification MapVerifyReferences(string? declared, DeliveryProtocol protocol, string source)
     {
         var verification = ParseEnum(declared?.Trim(), ReferenceVerification.None, "target.verifyReferences", source);
-        if (verification == ReferenceVerification.Storage && protocol == DeliveryProtocol.OsduDspdm)
+        if (verification == ReferenceVerification.Storage && protocol == DeliveryProtocol.Dspdm)
         {
             throw new FlowValidationException(
                 $"{source}: target.verifyReferences is storage, and the flow is delivered by the dspdm route, whose rows refer to no storage record. Remove target.verifyReferences.");
@@ -2294,10 +2278,10 @@ internal static partial class FlowMapper
             return new EtpTarget();
         }
 
-        if (protocol != DeliveryProtocol.OsduEtp)
+        if (protocol != DeliveryProtocol.Etp)
         {
             throw new FlowValidationException(
-                $"{source}: target.etp declares the Reservoir DDMS the etp route writes Energistics objects to, and this flow's route is {Engine.RouteChecks.Name(protocol)}. Remove target.etp.");
+                $"{source}: target.etp declares the Reservoir DDMS the etp route writes Energistics objects to, and this flow's route is {DeliveryProtocols.Name(protocol)}. Remove target.etp.");
         }
 
         var target = new EtpTarget
@@ -2348,10 +2332,10 @@ internal static partial class FlowMapper
             return new DspdmTarget();
         }
 
-        if (protocol != DeliveryProtocol.OsduDspdm)
+        if (protocol != DeliveryProtocol.Dspdm)
         {
             throw new FlowValidationException(
-                $"{source}: target.dspdm declares the Production DDMS core service the dspdm route writes rows to, and this flow's route is {Engine.RouteChecks.Name(protocol)}. Remove target.dspdm.");
+                $"{source}: target.dspdm declares the Production DDMS core service the dspdm route writes rows to, and this flow's route is {DeliveryProtocols.Name(protocol)}. Remove target.dspdm.");
         }
 
         var timezone = string.IsNullOrWhiteSpace(declared.Timezone) ? DspdmTarget.DefaultTimeZone : declared.Timezone.Trim();

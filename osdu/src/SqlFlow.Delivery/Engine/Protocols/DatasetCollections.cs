@@ -159,7 +159,7 @@ internal static class DatasetCollections
         }
 
         fields.Add(new("key", key ?? directory.Trim('/') + "/" + name));
-        await client.SendFormToSignedUrlAsync(target, fields, "file", name, () => OsduWellLogProtocol.OpenSync(source, chunk), chunk.Size, contentType, ct).ConfigureAwait(false);
+        await client.SendFormToSignedUrlAsync(target, fields, "file", name, () => OsduDdmsProtocol.OpenSync(source, chunk), chunk.Size, contentType, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -173,7 +173,7 @@ internal static class DatasetCollections
         var token = Text(signing, "connectionString")!;
         var url = new Uri(GcsUploadEndpoint + Uri.EscapeDataString(bucket) + "/o?uploadType=media&name=" + Uri.EscapeDataString(folder + name));
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Authorization"] = "Bearer " + token };
-        await client.SendToSignedUrlAsync(HttpMethod.Post, url, () => OsduWellLogProtocol.OpenSync(source, chunk), contentType, chunk.Size, headers, ct).ConfigureAwait(false);
+        await client.SendToSignedUrlAsync(HttpMethod.Post, url, () => OsduDdmsProtocol.OpenSync(source, chunk), contentType, chunk.Size, headers, ct).ConfigureAwait(false);
     }
 
     /// <summary>The URL of a file under a directory URL, keeping the directory's query (its SAS).</summary>
@@ -225,7 +225,7 @@ internal sealed class SegmentStream : Stream
 
     public static Stream Open(IPayloadSource source, PayloadFile chunk, long offset, long length)
     {
-        var inner = OsduWellLogProtocol.OpenSync(source, chunk);
+        var inner = OsduDdmsProtocol.OpenSync(source, chunk);
         try
         {
             if (offset > 0)

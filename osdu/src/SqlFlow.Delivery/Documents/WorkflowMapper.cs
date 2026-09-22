@@ -37,12 +37,12 @@ internal static partial class FlowMapper
         var at = WorkflowKey(paths);
         if (declared is null)
         {
-            return protocol == DeliveryProtocol.OsduWorkflow
+            return protocol == DeliveryProtocol.Workflow
                 ? throw new FlowValidationException($"{source}: the workflow route runs the workflow {at} declares, and the document declares none.")
                 : null;
         }
 
-        if (protocol != DeliveryProtocol.OsduWorkflow)
+        if (protocol != DeliveryProtocol.Workflow)
         {
             throw new FlowValidationException($"{source}: {at} declares a workflow, which only the workflow route runs, and the flow's route is {protocol}. Remove {at}, or name the workflow route.");
         }
@@ -294,7 +294,7 @@ internal static partial class FlowMapper
     /// </summary>
     private static void ValidateParts(FlowDefinition flow, IReadOnlyList<PayloadPart> parts, string source, KeyPaths paths)
     {
-        var route = Engine.RouteChecks.Name(flow.Target.Protocol);
+        var route = DeliveryProtocols.Name(flow.Target.Protocol);
         if (flow.Target.ProtocolOptions.Payload is { } selected)
         {
             throw new FlowValidationException(
@@ -303,8 +303,8 @@ internal static partial class FlowMapper
 
         var required = flow.Target.Protocol switch
         {
-            DeliveryProtocol.OsduFileAndDdms => new[] { FilesPayload, BulkPayload },
-            DeliveryProtocol.OsduManifestAndDdms => [BulkPayload],
+            DeliveryProtocol.FileAndDdms => new[] { FilesPayload, BulkPayload },
+            DeliveryProtocol.ManifestAndDdms => [BulkPayload],
             _ => [],
         };
         foreach (var name in required)
@@ -357,16 +357,16 @@ internal static partial class FlowMapper
     {
         var options = flow.Target.ProtocolOptions;
         if (options.ManifestByReference != ManifestReference.Never
-            && flow.Target.Protocol is not (DeliveryProtocol.OsduManifest or DeliveryProtocol.OsduManifestAndDdms))
+            && flow.Target.Protocol is not (DeliveryProtocol.Manifest or DeliveryProtocol.ManifestAndDdms))
         {
             throw new FlowValidationException(
-                $"{source}: {paths.Shared("target.protocolOptions.manifestByReference")} says how manifests reach the ingestion workflow, and the flow's route ({Engine.RouteChecks.Name(flow.Target.Protocol)}) sends none.");
+                $"{source}: {paths.Shared("target.protocolOptions.manifestByReference")} says how manifests reach the ingestion workflow, and the flow's route ({DeliveryProtocols.Name(flow.Target.Protocol)}) sends none.");
         }
 
-        if (options.FilesContentType is not null && flow.Target.Protocol is DeliveryProtocol.OsduRecord or DeliveryProtocol.OsduWellLog)
+        if (options.FilesContentType is not null && flow.Target.Protocol is DeliveryProtocol.Storage or DeliveryProtocol.Ddms)
         {
             throw new FlowValidationException(
-                $"{source}: {paths.Shared("target.protocolOptions.filesContentType")} says what type a record's files are uploaded as, and the flow's route ({Engine.RouteChecks.Name(flow.Target.Protocol)}) uploads no files; payloadContentType names the type of what it sends.");
+                $"{source}: {paths.Shared("target.protocolOptions.filesContentType")} says what type a record's files are uploaded as, and the flow's route ({DeliveryProtocols.Name(flow.Target.Protocol)}) uploads no files; payloadContentType names the type of what it sends.");
         }
 
         if (options.ManifestInlineLimitKb is < 1 or > MaxManifestInlineLimitKb)
@@ -418,9 +418,9 @@ internal static partial class FlowMapper
     {
         if (flow.Target.Airflow is { } airflow)
         {
-            if (flow.Target.Protocol != DeliveryProtocol.OsduWorkflow)
+            if (flow.Target.Protocol != DeliveryProtocol.Workflow)
             {
-                throw new FlowValidationException($"{source}: target.airflow says where the Airflow behind the Workflow service is, which only the workflow route reads, and the flow's route is {Engine.RouteChecks.Name(flow.Target.Protocol)}.");
+                throw new FlowValidationException($"{source}: target.airflow says where the Airflow behind the Workflow service is, which only the workflow route reads, and the flow's route is {DeliveryProtocols.Name(flow.Target.Protocol)}.");
             }
 
             if (!airflow.Endpoint.Contains("${", StringComparison.Ordinal)

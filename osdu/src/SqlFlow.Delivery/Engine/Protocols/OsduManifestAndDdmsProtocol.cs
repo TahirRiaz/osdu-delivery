@@ -13,7 +13,7 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// by reading each record back, and then each written record's bulk data goes through the collection of its DDMS, as
 /// the ddms route sends it. Every record and its bulk data are checked against the DDMS's rules before the manifest is
 /// sent. Ingestion writes a record through storage, past the DDMS, so a record that already holds bulk data carries the
-/// link its DDMS keeps to it into the manifest (<see cref="OsduWellLogProtocol.CarryLink"/>: the Wellbore DDMS's bulk
+/// link its DDMS keeps to it into the manifest (<see cref="OsduDdmsProtocol.CarryLink"/>: the Wellbore DDMS's bulk
 /// link, RAFS's content datasets): without it the record would lose its link to the bulk data it holds.
 /// </summary>
 public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
@@ -21,7 +21,7 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
     private readonly OsduHttpClient _client;
     private readonly ProtocolOptions _options;
     private readonly OsduManifestProtocol _manifest;
-    private readonly OsduWellLogProtocol _ddms;
+    private readonly OsduDdmsProtocol _ddms;
     private readonly ILogger _logger;
     private readonly TimeProvider _time;
 
@@ -35,10 +35,10 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
         _logger = logger;
         _time = time ?? TimeProvider.System;
         _manifest = new OsduManifestProtocol(client, options.ForFiles(besideBulk: true), logger, requestBodyCeiling, _time);
-        _ddms = new OsduWellLogProtocol(client, options, logger, requestBodyCeiling, _time, routing);
+        _ddms = new OsduDdmsProtocol(client, options, logger, requestBodyCeiling, _time, routing);
     }
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduManifestAndDdms;
+    public DeliveryProtocol Kind => DeliveryProtocol.ManifestAndDdms;
 
     public int MaxBatch => _manifest.MaxBatch;
 
@@ -122,7 +122,7 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
 
     /// <summary>
     /// The link each record's DDMS keeps to its data, carried into the manifest of every record the manifest writes
-    /// (<see cref="OsduWellLogProtocol.CarryLink"/>): from the stored record for a record storage holds, read in one
+    /// (<see cref="OsduDdmsProtocol.CarryLink"/>): from the stored record for a record storage holds, read in one
     /// batched read, and as the DDMS links a record it holds nothing for yet for a new one (the historian's link to the
     /// record's points; no bulk link on the Wellbore DDMS).
     /// </summary>
@@ -141,7 +141,7 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
             try
             {
                 stored = await RecordWriter.ReadManyAsync(
-                    _client, _options.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath, updates.Select(p => p.Work.TargetId).ToList(), OsduWellLogProtocol.LinkAttributes, ct).ConfigureAwait(false);
+                    _client, _options.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath, updates.Select(p => p.Work.TargetId).ToList(), OsduDdmsProtocol.LinkAttributes, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
             {

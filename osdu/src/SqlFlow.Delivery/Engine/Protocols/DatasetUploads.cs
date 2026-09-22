@@ -85,7 +85,7 @@ internal static class DatasetUploads
             await client.SendToSignedUrlAsync(
                 HttpMethod.Put,
                 signed,
-                () => OsduWellLogProtocol.OpenSync(source, chunk),
+                () => OsduDdmsProtocol.OpenSync(source, chunk),
                 options.PayloadContentType,
                 chunk.Size,
                 FileUploads.SignedUploadHeaders(signed, options.UploadHeaders),

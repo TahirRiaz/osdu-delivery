@@ -40,7 +40,7 @@ public class YamlDocumentLoaderTests
         target:
           endpoint: https://example.org/petrodb
           headers: { data-partition-id: opendes }
-          protocol: osduWellLog
+          protocol: ddms
           protocolOptions: { payload: curves, recordMethod: POST }
         reliability:
           concurrency: 2
@@ -111,7 +111,7 @@ public class YamlDocumentLoaderTests
         var loader = new DeliveryDocumentLoader();
         var flow = loader.LoadFlow(Samples.Flow);
         Assert.Equal("wells-welllog-03-header-delivery", flow.Name);
-        Assert.Equal(DeliveryProtocol.OsduWellLog, flow.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Ddms, flow.Target.Protocol);
         Assert.Equal("WellLog", flow.Render.MappingName);
         Assert.Equal("1.4.0", flow.Render.MappingVersion);
         Assert.Equal(TargetAuthType.OAuth2ClientCredentials, flow.Target.Auth.Type);
@@ -188,9 +188,9 @@ public class YamlDocumentLoaderTests
         var loader = new DeliveryDocumentLoader();
         var floating = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("WellLog@1.4.0", "WellLog", StringComparison.Ordinal), "f"));
         Assert.Contains("pinned", floating.Message, StringComparison.Ordinal);
-        Assert.Equal(DeliveryProtocol.OsduManifest, loader.ParseFlow(Flow.Replace("osduWellLog", "osduManifest", StringComparison.Ordinal), "f").Target.Protocol);
-        Assert.Equal(DeliveryProtocol.OsduFile, loader.ParseFlow(Flow.Replace("osduWellLog", "osduFile", StringComparison.Ordinal), "f").Target.Protocol);
-        var unknownProtocol = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("osduWellLog", "ftp", StringComparison.Ordinal), "f"));
+        Assert.Equal(DeliveryProtocol.Manifest, loader.ParseFlow(Flow.Replace("protocol: ddms", "protocol: manifest", StringComparison.Ordinal), "f").Target.Protocol);
+        Assert.Equal(DeliveryProtocol.File, loader.ParseFlow(Flow.Replace("protocol: ddms", "protocol: file", StringComparison.Ordinal), "f").Target.Protocol);
+        var unknownProtocol = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(Flow.Replace("protocol: ddms", "protocol: ftp", StringComparison.Ordinal), "f"));
         Assert.Contains("target.protocol", unknownProtocol.Message, StringComparison.Ordinal);
     }
 
@@ -225,7 +225,7 @@ public class YamlDocumentLoaderTests
         // A metadata-only flow streams no files, so there is no payload watermark to take.
         var noPayload = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
             (Flow.ReplaceLineEndings("\n") + "\nchange: { payloadDetect: lastModified }")
-                .Replace("osduWellLog", "osduRecord", StringComparison.Ordinal)
+                .Replace("protocol: ddms", "protocol: storage", StringComparison.Ordinal)
                 .Replace("  protocolOptions: { payload: curves, recordMethod: POST }\n", string.Empty, StringComparison.Ordinal),
             "f"));
         Assert.Contains("no payload files", noPayload.Message, StringComparison.Ordinal);

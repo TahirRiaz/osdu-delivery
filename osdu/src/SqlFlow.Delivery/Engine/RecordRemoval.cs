@@ -114,13 +114,13 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
             return OfDdms(flow, kind);
         }
 
-        if (flow.Target.Protocol == DeliveryProtocol.OsduDspdm)
+        if (flow.Target.Protocol == DeliveryProtocol.Dspdm)
         {
             // DSPDM keeps no deleted rows and no versions: a row is deleted for good, by the key DSPDM gave it.
             return new RemovalEndpoints(DspdmRecordRefused, DspdmHistoryRefused, (flow.Target.Dspdm.Root ?? string.Empty) + DspdmDelete) { RecordMethod = "DELETE" };
         }
 
-        if (flow.Target.Protocol == DeliveryProtocol.OsduEtp)
+        if (flow.Target.Protocol == DeliveryProtocol.Etp)
         {
             // The Reservoir DDMS keeps no deleted objects and no earlier versions: an object is deleted for good, over
             // ETP rather than over HTTP, and no dataspace is ever deleted (its delete purges an OSDU record).
@@ -130,8 +130,8 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
         // A dataset the route registers itself is removed reversibly through the Dataset service, whose undelete restores it.
         var registersDataset = flow.Target.Protocol switch
         {
-            DeliveryProtocol.OsduDataset => !string.IsNullOrWhiteSpace(kind) && OsduKind.EntityType(kind) is { } entityType && Protocols.DatasetService.IsDatasetType(entityType),
-            DeliveryProtocol.OsduWorkflow => flow.Target.Workflow?.Anchor == Model.WorkflowAnchor.Dataset,
+            DeliveryProtocol.Dataset => !string.IsNullOrWhiteSpace(kind) && OsduKind.EntityType(kind) is { } entityType && Protocols.DatasetService.IsDatasetType(entityType),
+            DeliveryProtocol.Workflow => flow.Target.Workflow?.Anchor == Model.WorkflowAnchor.Dataset,
             _ => false,
         };
         if (registersDataset)

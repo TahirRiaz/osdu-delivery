@@ -20,7 +20,7 @@ public sealed class OsduFileAndDdmsProtocol : IDeliveryProtocol
     private readonly OsduHttpClient _client;
     private readonly ProtocolOptions _options;
     private readonly ProtocolOptions _files;
-    private readonly OsduWellLogProtocol _ddms;
+    private readonly OsduDdmsProtocol _ddms;
     private readonly long _requestBodyCeiling;
     private readonly TimeProvider _time;
 
@@ -34,10 +34,10 @@ public sealed class OsduFileAndDdmsProtocol : IDeliveryProtocol
         _files = options.ForFiles(besideBulk: true);
         _requestBodyCeiling = requestBodyCeiling;
         _time = time ?? TimeProvider.System;
-        _ddms = new OsduWellLogProtocol(client, options, logger, requestBodyCeiling, _time, routing);
+        _ddms = new OsduDdmsProtocol(client, options, logger, requestBodyCeiling, _time, routing);
     }
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduFileAndDdms;
+    public DeliveryProtocol Kind => DeliveryProtocol.FileAndDdms;
 
     /// <summary>Where the protocol sends each record: the flow's DDMSs, every registration among them read.</summary>
     public DdmsRouting Routing => _ddms.Routing;

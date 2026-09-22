@@ -973,7 +973,7 @@ public sealed class DeliveryWorker
     }
 
     /// <summary>The route a protocol is, as flows name it, or the protocol's own name for one no flow can name.</summary>
-    private static string RouteOf(DeliveryProtocol kind) => Enum.IsDefined(kind) ? RouteChecks.Name(kind) : kind.ToString();
+    private static string RouteOf(DeliveryProtocol kind) => Enum.IsDefined(kind) ? DeliveryProtocols.Name(kind) : kind.ToString();
 
     /// <summary>
     /// The attempt's result: the correlation id its OSDU requests carried, every step (including the ones resumed from an

@@ -72,7 +72,7 @@ internal sealed partial class RafsShape(DdmsShapeContext context) : IDdmsShape
     public async Task<object?> PrepareAsync(DeliveryWork work, DdmsRecordPaths paths, CancellationToken ct)
     {
         var route = RouteOf(paths);
-        if (work.DeliverMetadata && work.Completed(OsduWellLogProtocol.MetadataStep) is null && RecordProblem(route, work.Document) is { } problem)
+        if (work.DeliverMetadata && work.Completed(OsduDdmsProtocol.MetadataStep) is null && RecordProblem(route, work.Document) is { } problem)
         {
             throw new RecordHeldException(problem);
         }
@@ -152,9 +152,9 @@ internal sealed partial class RafsShape(DdmsShapeContext context) : IDdmsShape
 
         if (work.DeliverMetadata)
         {
-            if (work.Completed(OsduWellLogProtocol.MetadataStep) is { } done)
+            if (work.Completed(OsduDdmsProtocol.MetadataStep) is { } done)
             {
-                steps.Resumed(OsduWellLogProtocol.MetadataStep, done);
+                steps.Resumed(OsduDdmsProtocol.MetadataStep, done);
                 version = done.TryGetValue("version", out var text) ? RecordWriter.ParseVersion(text) ?? version : version;
             }
             else
@@ -174,8 +174,8 @@ internal sealed partial class RafsShape(DdmsShapeContext context) : IDdmsShape
                     warnings.Add(warning);
                 }
 
-                steps.Add(OsduWellLogProtocol.MetadataStep, started, status, returned);
-                await work.ReportStepAsync(OsduWellLogProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
+                steps.Add(OsduDdmsProtocol.MetadataStep, started, status, returned);
+                await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
             }
 
             metadataDelivered = true;
@@ -207,7 +207,7 @@ internal sealed partial class RafsShape(DdmsShapeContext context) : IDdmsShape
                     // A second write of the same table re-versions the same dataset and replaces its URN, so a write whose
                     // answer was lost may be sent again.
                     var result = await _client.SendStreamAsync(
-                        HttpMethod.Post, url, () => OsduWellLogProtocol.OpenSync(payload, content.File), content.MediaType, content.File.Size > 0 ? content.File.Size : null, ct, idempotent: true).ConfigureAwait(false);
+                        HttpMethod.Post, url, () => OsduDdmsProtocol.OpenSync(payload, content.File), content.MediaType, content.File.Size > 0 ? content.File.Size : null, ct, idempotent: true).ConfigureAwait(false);
                     var urn = ParseUrn(result, url);
                     var answered = new Dictionary<string, string>(StringComparer.Ordinal)
                     {

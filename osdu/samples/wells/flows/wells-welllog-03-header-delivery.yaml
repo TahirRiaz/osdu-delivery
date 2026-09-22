@@ -71,7 +71,7 @@ target:
         scope: ${env:OSDU_SCOPE}
   headers:
     data-partition-id: ${env:OSDU_DATA_PARTITION}
-  protocol: osduWellLog
+  protocol: ddms
   protocolOptions:
     payload: curves
     sessionThresholdChunks: 1

@@ -5,7 +5,7 @@ tabular bulk data attached to them (log curves, trajectory stations, pressure te
 record against its kind's schema, stores it through the Storage service, and hands bulk data to a separate bulk worker
 service. OSDU Delivery reaches it through two route types: the generic tabular DDMS route, for the four collections
 that carry bulk data (`welllogs`, `wellboretrajectories`, `ppfgdataset`, `wellpressuretestrawmeasurement`), which
-generalises the current `osduWellLog` protocol; and the DDMS record route, for the five record-only collections
+generalises the current `ddms` protocol; and the DDMS record route, for the five record-only collections
 (`wellbores`, `wells`, `wellboremarkersets`, `wellboreintervalsets`, `welllogacquisition`). This brief lists every
 call those routes make, each with its contract citation, and the service behaviour the contract does not state, each
 with its source citation.
@@ -20,7 +20,7 @@ with its source citation.
 | `[98-r0.29 path:lines]` | Project 98 source at the same `release/0.29` head, commit `918175251426c6d890a0b0f219abb9f5ed35ff87`. | Source. Section 8.2 only. |
 | `[98-v0.29.2 path:lines]` | Project 98 source at tag `v0.29.2`, commit `fa3616c1e3ce0e794669579a3cd2abae6dfc3bfe` (2026-02-24), the latest `v0.29.*` tag on 2026-09-17. | Source. Section 8.2 only. |
 | `[1392 path:lines]` | Project 1392, `osdu/platform/domain-data-mgmt-services/wellbore/lib/wellbore-core/wellbore-schema-manipulation`, tag `v0.29.0`, commit `6bc4417ce41b03ecabbd1e7d23295f8d4e79b40f`. Project 98 pins `wellbore-schema-manipulation==0.29.0` [98 pyproject.toml:57]. | Source of a library the service calls. That the published 0.29.0 package was built from this tag is an inference. |
-| `[OD path:lines]` | This repository: the current `osduWellLog` protocol and its options. | Current engine behaviour, for comparison only. |
+| `[OD path:lines]` | This repository: the current `ddms` protocol and its options. | Current engine behaviour, for comparison only. |
 | `!NNN` | Project 98 merge requests, state read on 2026-09-17. | Pending work. Not in the pinned contract or code. |
 
 How statements are marked:
@@ -54,7 +54,7 @@ Provenance notes:
   `root_path` [98 app/conf.py:196-200; 98 app/wdms_app.py:92-96]. The route takes the service root from its
   configuration, not from the contract. The current protocol prepends `ProtocolOptions.DdmsRoot` when its endpoint is
   the platform root [OD osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs:522-531;
-  OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWellLogProtocol.cs:541-549].
+  OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduDdmsProtocol.cs:541-549].
 - `/about`, `/version` and `/log-recognition/*` sit directly under the root. Every entity route sits under `/ddms/v3`
   [C: paths].
 
@@ -254,7 +254,7 @@ Order rules:
   metadata version written between opening and committing a session is replaced in the next version by the older
   metadata, so the session is opened after the record's last metadata write. The current protocol opens the session
   with `fromVersion` set to the version its metadata write returned
-  [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWellLogProtocol.cs:437-446].
+  [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduDdmsProtocol.cs:437-446].
 
 ### 3.1 Create or update the record (call 1)
 
@@ -294,7 +294,7 @@ Checks, in order (source) [98 app/routers/ddms_v3/welllog_ddms_v3.py:158-182;
      `data.ReferenceCurveID` must be one of them, else `WellLog[<i>] should have a curve with a curveID value equal to
      the ReferenceCurveID value: '<value>'` [98 app/consistency/welllog_consistency.py:50-73;
      98 app/routers/ddms_v3/welllog_ddms_v3.py:162-175]. The current protocol holds such a record before sending it
-     [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWellLogProtocol.cs:91-98, 191-218].
+     [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduDdmsProtocol.cs:91-98, 191-218].
    - WellboreTrajectory: `data.AvailableTrajectoryStationProperties[].Name` unique, else
      `All station properties in WellboreTrajectory[<i>] should be unique`
      [98 app/consistency/trajectory_consistency.py:37-60; 98 app/routers/ddms_v3/wellbore_trajectory_ddms_v3.py:155-162].
@@ -342,7 +342,7 @@ Create or update:
   `CreateUpdateRecordsResponse` shape, new version in `recordIdVersions[0]`)
   [98 app/routers/bulk/bulk_routes.py:125-130; 98 app/routers/bulk/utils.py:81-86]. The contract does not promise it;
   the current protocol reads the record back instead
-  [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWellLogProtocol.cs:155-166].
+  [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduDdmsProtocol.cs:155-166].
 
 What the code does [98 app/routers/bulk/bulk_routes.py:95-130]:
 
@@ -483,7 +483,7 @@ Failures and conflicts (source):
 - 412 (`SessionUpdatedEtagUnmatched`): the session blob changed concurrently.
 - Sources: [98 app/bulk_persistence/sessions_storage.py:154-167, 186-209, 335-390].
 - The current protocol settles a commit answered with 409, 412 or 5xx by reading the session's state (call 6)
-  [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWellLogProtocol.cs:473-505].
+  [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduDdmsProtocol.cs:473-505].
 
 Session states [C: #/components/schemas/SessionState]: `open`, `committing`, `abandoning`, `committed`, `abandoned`.
 Allowed changes in code [98 app/bulk_persistence/sessions_storage.py:340-390]:
@@ -670,7 +670,7 @@ Version suffix on `record_id` (source):
   [C: POST /ddms/v3/{c}/{record_id}/data], through `GET /ddms/v3/{c}/{record_id}/versions/{version}/data` [C].
 - Inference: after a bulk step, the version to record is the one that step created, not the metadata write's. The
   current protocol reads the record back after the payload step to learn it
-  [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWellLogProtocol.cs:155-166].
+  [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduDdmsProtocol.cs:155-166].
 
 ### 5.3 BulkURI and DDMSDatasets
 
@@ -802,7 +802,7 @@ Source [98 app/routers/bulk/bulk_routes.py:199-272; 98 app/routers/record_utils.
 5. WellLog only: statistics as an extra content check.
 
 The current protocol reads the record back after every payload step, describes the bulk after a session, and settles
-an unclear commit with call 6 [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWellLogProtocol.cs:141-166, 342-400, 473-505].
+an unclear commit with call 6 [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduDdmsProtocol.cs:141-166, 342-400, 473-505].
 
 ### 6.5 Delete (call 10)
 
@@ -831,7 +831,7 @@ Source [98 app/routers/delete/delete_bulk_data.py:30-94]:
 
 Project rule: `purge=true` is a Storage purge, so live cleanup never uses it. The reversible scope is DELETE without
 `purge`. The current protocol sends `?purge=true` for its `Everything` removal scope and a Storage version purge for
-`History` [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWellLogProtocol.cs:244-288].
+`History` [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduDdmsProtocol.cs:244-288].
 
 ### 6.6 Probe, about and version
 
@@ -847,7 +847,7 @@ Project rule: `purge=true` is a Storage purge, so live cleanup never uses it. Th
 - `details` in `/version` holds the build details, `environment_name`, `cloud_provider`, `de_client_config_timeout`,
   `enable_read_fast_track`, `bulk_backend` (`Bulk worker service`), and `enable_wdms_bulk_worker` when the worker host
   is set [98 app/routers/about.py:53-83; 98 app/bulk_persistence/bulk_io_wdms_worker.py:29-30].
-- The current protocol probes `GET /about` [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWellLogProtocol.cs:30].
+- The current protocol probes `GET /about` [OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduDdmsProtocol.cs:30].
 
 ## 7. Limits and errors
 
@@ -1030,10 +1030,10 @@ bulk collections. For those four, the contract has the same shapes for:
 - the read-back routes and their query parameters;
 - DELETE with `purge` (sections 3 to 6).
 
-The code mounts one shared bulk router and one shared session router under each prefix. The current `osduWellLog`
+The code mounts one shared bulk router and one shared session router under each prefix. The current `ddms`
 flow (record POST; bulk POST or an `overwrite` session; record read-back; `describe` after a session; DELETE; `/about`
 probe) maps onto the other three collections by changing the collection segment
-[OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWellLogProtocol.cs:23-30].
+[OD osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduDdmsProtocol.cs:23-30].
 
 What the route type takes per collection:
 

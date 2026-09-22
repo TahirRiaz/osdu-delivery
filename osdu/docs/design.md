@@ -635,8 +635,8 @@ From the specs already held in `osdu-csharp-client/openapi_specs/`:
 
 The last is asynchronous and batch-shaped, and it is OSDU's own preferred bulk path.
 
-All four are implemented as named protocols (`osduRecord`, `osduWellLog`, `osduFile`,
-`osduManifest`; [protocols.md](protocols.md)). The record, file and manifest protocols
+All four are implemented as named protocols (`storage`, `ddms`, `file`,
+`manifest`; [protocols.md](protocols.md)). The record, file and manifest protocols
 batch records per request, and every protocol reports each step it took and what the
 target returned (section 16.3).
 
@@ -718,7 +718,7 @@ change:
 target:
   endpoint: ${env:OSDU_URL}/welllogs
   auth: { type: oauth2ClientCredentials }
-  protocol: osduWellLog
+  protocol: ddms
 
 reliability:
   concurrency: 8

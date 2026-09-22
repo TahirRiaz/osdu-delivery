@@ -20,7 +20,7 @@ public sealed class DdmsRoutingTests
             new FlowTarget
             {
                 Endpoint = "https://osdu.example.com",
-                Protocol = DeliveryProtocol.OsduWellLog,
+                Protocol = DeliveryProtocol.Ddms,
                 ProtocolOptions = options ?? new ProtocolOptions(),
                 Ddms = ddms ?? [],
             },
@@ -431,6 +431,6 @@ public sealed class DdmsRoutingTests
         Assert.Contains("names no entity type", Assert.Throws<DeliveryException>(() => RouteChecks.Check(logs, "osdu:wks:*:1.0.0")).Message, StringComparison.Ordinal);
 
         // Another route checks nothing here.
-        RouteChecks.Check(logs with { Target = logs.Target with { Protocol = DeliveryProtocol.OsduRecord } }, "osdu:wks:work-product-component--SeismicTraceData:1.3.0");
+        RouteChecks.Check(logs with { Target = logs.Target with { Protocol = DeliveryProtocol.Storage } }, "osdu:wks:work-product-component--SeismicTraceData:1.3.0");
     }
 }

@@ -97,7 +97,7 @@ public sealed class OsduEtpProtocol : IDeliveryProtocol
         _time = time ?? TimeProvider.System;
     }
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduEtp;
+    public DeliveryProtocol Kind => DeliveryProtocol.Etp;
 
     /// <summary>Objects per <c>PutDataObjects</c> message, which is also the batch the worker hands over.</summary>
     public int MaxBatch => _target.ObjectsPerMessage;

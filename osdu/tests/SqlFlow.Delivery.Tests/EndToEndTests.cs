@@ -97,7 +97,7 @@ public class EndToEndTests : IDisposable
             var counted = capture.Of("osdu_delivery.records", "flow", runtime.Flow.Label);
             Assert.Equal(3, counted.Count);
             Assert.All(counted, c => Assert.Equal("delivered", c.Tags["outcome"]));
-            Assert.All(counted, c => Assert.Equal(Engine.RouteChecks.Name(protocol.Kind), c.Tags["route"]));
+            Assert.All(counted, c => Assert.Equal(DeliveryProtocols.Name(protocol.Kind), c.Tags["route"]));
             Assert.Equal(3, capture.Of("osdu_delivery.record.duration", "flow", runtime.Flow.Label).Count);
         }
     }
@@ -669,7 +669,7 @@ public class EndToEndTests : IDisposable
         {
             Name = "wells-welllog-wellbores",
             Render = flow.Render with { Mapping = "LogWellbore@1.0.0", MappingsDirectory = mappings },
-            Target = flow.Target with { Protocol = DeliveryProtocol.OsduRecord },
+            Target = flow.Target with { Protocol = DeliveryProtocol.Storage },
         };
     }
 

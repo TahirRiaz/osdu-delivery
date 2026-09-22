@@ -4,6 +4,7 @@ using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.Delivery.Catalog;
 
@@ -68,7 +69,7 @@ public static class DeliveryInterfaceCatalog
                     Ordinal = ordinal,
                     LedgerFlowId = flow.Id,
                     LedgerName = flow.LedgerName,
-                    Route = RouteChecks.Name(flow.Target.Protocol),
+                    Route = DeliveryProtocols.Name(flow.Target.Protocol),
                     RouteReason = Clip(flow.RouteReason, 1000),
                     MappingReference = flow.Render.Mapping,
                     Kind = kinds.GetValueOrDefault(flow.Render.Mapping, string.Empty),

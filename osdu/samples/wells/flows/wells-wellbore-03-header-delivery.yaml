@@ -41,7 +41,7 @@ target:
         scope: ${env:OSDU_SCOPE}
   headers:
     data-partition-id: ${env:OSDU_DATA_PARTITION}
-  protocol: osduRecord
+  protocol: storage
 
 reliability:
   concurrency: 8

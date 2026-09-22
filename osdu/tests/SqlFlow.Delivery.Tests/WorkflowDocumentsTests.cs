@@ -88,21 +88,21 @@ public sealed class WorkflowDocumentsTests
             """), "estate.yaml");
 
         var logs = source.Interface("logs");
-        Assert.Equal(DeliveryProtocol.OsduFileAndDdms, logs.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.FileAndDdms, logs.Target.Protocol);
         Assert.Null(logs.Target.ProtocolOptions.Payload);
         Assert.Equal(["files", "bulk"], PayloadParts.Of(logs)!.Select(p => p.Payload));
         Assert.Equal(["files", "bulk"], PayloadParts.Roles(logs));
         Assert.Contains("declares files and bulk", logs.RouteReason, StringComparison.Ordinal);
-        Assert.Equal("fileAndDdms", RouteChecks.Name(logs.Target.Protocol));
+        Assert.Equal("fileAndDdms", DeliveryProtocols.Name(logs.Target.Protocol));
 
         var trajectories = source.Interface("trajectories");
-        Assert.Equal(DeliveryProtocol.OsduManifestAndDdms, trajectories.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.ManifestAndDdms, trajectories.Target.Protocol);
         Assert.Equal(["bulk"], PayloadParts.Of(trajectories)!.Select(p => p.Payload));
         Assert.Contains("route names manifest and the interface declares bulk", trajectories.RouteReason, StringComparison.Ordinal);
         Assert.Equal("/api/os-wellbore-ddms", trajectories.Target.ProtocolOptions.DdmsRoot);
 
         var named = source.Interface("named");
-        Assert.Equal(DeliveryProtocol.OsduFileAndDdms, named.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.FileAndDdms, named.Target.Protocol);
         Assert.Contains("route names ddms and the interface declares both files and bulk", named.RouteReason, StringComparison.Ordinal);
 
         // Redelivery names the parts each route sends.
@@ -130,9 +130,9 @@ public sealed class WorkflowDocumentsTests
             """), "estate.yaml");
 
         var segy = source.Interface("segy");
-        Assert.Equal(DeliveryProtocol.OsduDataset, segy.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Dataset, segy.Target.Protocol);
         Assert.Equal("files", segy.Target.ProtocolOptions.Payload);
-        Assert.Equal("dataset", RouteChecks.Name(segy.Target.Protocol));
+        Assert.Equal("dataset", DeliveryProtocols.Name(segy.Target.Protocol));
         Assert.Null(PayloadParts.Of(segy));
         Assert.Null(segy.Target.ProtocolOptions.DdmsRoot);
         Assert.Equal(["all", "record", "files", "metadata", "payload"], RedeliverScopes.For(segy));
@@ -144,7 +144,7 @@ public sealed class WorkflowDocumentsTests
         Assert.Contains("is not a dataset kind", Assert.Throws<DeliveryException>(() => RouteChecks.Check(generic, "osdu:wks:work-product-component--SeismicTraceData:1.3.0")).Message, StringComparison.Ordinal);
 
         // The file route mints its own dataset ids, so it cannot deliver a dataset.
-        var file = segy with { Target = segy.Target with { Protocol = DeliveryProtocol.OsduFile } };
+        var file = segy with { Target = segy.Target with { Protocol = DeliveryProtocol.File } };
         Assert.Contains("Deliver a dataset with its files by the dataset route", Assert.Throws<DeliveryException>(() => RouteChecks.Check(file, "osdu:wks:dataset--File.Generic:1.0.0")).Message, StringComparison.Ordinal);
     }
 
@@ -254,7 +254,7 @@ public sealed class WorkflowDocumentsTests
             """), "estate.yaml");
 
         var csv = source.Interface("csv");
-        Assert.Equal(DeliveryProtocol.OsduWorkflow, csv.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Workflow, csv.Target.Protocol);
         Assert.Contains("declares a workflow, so it goes by the workflow route", csv.RouteReason, StringComparison.Ordinal);
         Assert.Contains("csv_ingestion", csv.RouteReason, StringComparison.Ordinal);
         var workflow = csv.Target.Workflow!;
@@ -314,7 +314,7 @@ public sealed class WorkflowDocumentsTests
                 files: { root: ../data/epc, locationColumn: epc_folder, hashColumn: epc_hash }
             """), "energistics.yaml");
 
-        Assert.Equal(DeliveryProtocol.OsduWorkflow, flow.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Workflow, flow.Target.Protocol);
         var workflow = flow.Target.Workflow!;
         Assert.Equal(WorkflowRunWhen.Created, workflow.RunWhen);
         var input = Assert.Single(workflow.Inputs);

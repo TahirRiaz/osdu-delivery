@@ -38,7 +38,7 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
 
     public async Task<object?> PrepareAsync(DeliveryWork work, DdmsRecordPaths paths, CancellationToken ct)
     {
-        var writesMetadata = work.DeliverMetadata && work.Completed(OsduWellLogProtocol.MetadataStep) is null;
+        var writesMetadata = work.DeliverMetadata && work.Completed(OsduDdmsProtocol.MetadataStep) is null;
         if (work.DeliverPayload && BulkProblem(work.TargetId, paths) is { } nowhere)
         {
             throw new RecordHeldException(nowhere);
@@ -82,10 +82,10 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
 
         if (work.DeliverMetadata)
         {
-            if (work.Completed(OsduWellLogProtocol.MetadataStep) is { } done)
+            if (work.Completed(OsduDdmsProtocol.MetadataStep) is { } done)
             {
                 // The previous try wrote the record and failed later: reuse its version, do not write it again.
-                steps.Resumed(OsduWellLogProtocol.MetadataStep, done);
+                steps.Resumed(OsduDdmsProtocol.MetadataStep, done);
                 version = done.TryGetValue("version", out var text) ? RecordWriter.ParseVersion(text) ?? version : version;
             }
             else
@@ -99,8 +99,8 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
                     returned["version"] = v.ToString(CultureInfo.InvariantCulture);
                 }
 
-                steps.Add(OsduWellLogProtocol.MetadataStep, started, status, returned);
-                await work.ReportStepAsync(OsduWellLogProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
+                steps.Add(OsduDdmsProtocol.MetadataStep, started, status, returned);
+                await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
             }
 
             metadataDelivered = true;
@@ -123,7 +123,7 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
             {
                 var chunk = chunks[0];
                 var url = _client.Url(paths.Data!, work.TargetId);
-                await _client.SendStreamAsync(HttpMethod.Post, url, () => OsduWellLogProtocol.OpenSync(payload, chunk), _options.PayloadContentType, chunk.Size > 0 ? chunk.Size : null, ct, idempotent: true).ConfigureAwait(false);
+                await _client.SendStreamAsync(HttpMethod.Post, url, () => OsduDdmsProtocol.OpenSync(payload, chunk), _options.PayloadContentType, chunk.Size > 0 ? chunk.Size : null, ct, idempotent: true).ConfigureAwait(false);
                 chunksSent = 1;
             }
             else
@@ -157,7 +157,7 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
             version = landedVersion;
             returned["version"] = landedVersion.ToString(CultureInfo.InvariantCulture);
 
-            steps.Add(OsduWellLogProtocol.PayloadStep, started, null, returned);
+            steps.Add(OsduDdmsProtocol.PayloadStep, started, null, returned);
             payloadDelivered = true;
         }
 
@@ -470,7 +470,7 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
 
                 // A chunk sent twice into a session lands twice in the committed bulk, so a chunk whose outcome is
                 // unclear fails the session (which is abandoned) rather than being resent.
-                await _client.SendStreamAsync(HttpMethod.Post, url, () => OsduWellLogProtocol.OpenSync(payload, chunk), _options.PayloadContentType, chunk.Size > 0 ? chunk.Size : null, ct, idempotent: false).ConfigureAwait(false);
+                await _client.SendStreamAsync(HttpMethod.Post, url, () => OsduDdmsProtocol.OpenSync(payload, chunk), _options.PayloadContentType, chunk.Size > 0 ? chunk.Size : null, ct, idempotent: false).ConfigureAwait(false);
                 sent++;
             }
 

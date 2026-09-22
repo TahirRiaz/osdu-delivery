@@ -34,7 +34,7 @@ public sealed class OsduFileProtocol : IDeliveryProtocol
         _records = new OsduRecordProtocol(client, options, _time);
     }
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduFile;
+    public DeliveryProtocol Kind => DeliveryProtocol.File;
 
     public int MaxBatch => _records.MaxBatch;
 

@@ -215,7 +215,7 @@ public sealed class DeliveryInterfacesApiTests
             var records = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/records?interface=welllogs");
             Assert.Equal(key.Value, Assert.Single(records.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
             var target = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/target?interface=welllogs");
-            Assert.Equal(("welllogs", "OsduWellLog"), (target.GetProperty("interface").GetString(), target.GetProperty("protocol").GetString()));
+            Assert.Equal(("welllogs", "ddms"), (target.GetProperty("interface").GetString(), target.GetProperty("protocol").GetString()));
 
             // The well logs' mapping is synced, so the target names the collection of the kind it renders.
             Assert.Equal(

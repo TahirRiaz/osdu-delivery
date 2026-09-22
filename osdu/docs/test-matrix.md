@@ -30,15 +30,15 @@ say what the suites prove; the live column says which of them a live platform ha
 
 | Route | What it delivers | Proven by | Against |
 | --- | --- | --- | --- |
-| `storage` (`osduRecord`) | Any kind through Storage v2, batched, upsert by id | `CoreTests`, `EndToEndTests`, `RemovalTests` | The fake platform, every request checked against the storage contract |
-| `file` (`osduFile`) | Files through the File service, registered, then the record naming them | `FileProtocolTests`, `ProtocolContractTests` | The fake file, dataset and storage services |
-| `dataset` (`osduDataset`) | Files stored and registered through the Dataset service (Azure, MinIO, S3, Google Cloud Storage) | `DatasetRouteTests`, `ObjectStoreProtocolTests` | The fake dataset service and the four object stores, S3 signatures checked with the AWS SDK |
-| `manifest` (`osduManifest`) | Files registered, then records through `Osdu_ingest`, inline or by reference | `ManifestByReferenceTests`, `WorkflowRouteTests` | The fake workflow, search and storage services |
-| `ddms` (`osduWellLog`) | The record through the collection of the DDMS serving its entity type, then its bulk data | `DdmsRouteTests`, `DdmsRoutingTests`, `WellboreDdmsRulesTests` | The fake Wellbore DDMS v3, every request checked against its OpenAPI |
+| `storage` (`storage`) | Any kind through Storage v2, batched, upsert by id | `CoreTests`, `EndToEndTests`, `RemovalTests` | The fake platform, every request checked against the storage contract |
+| `file` (`file`) | Files through the File service, registered, then the record naming them | `FileProtocolTests`, `ProtocolContractTests` | The fake file, dataset and storage services |
+| `dataset` (`dataset`) | Files stored and registered through the Dataset service (Azure, MinIO, S3, Google Cloud Storage) | `DatasetRouteTests`, `ObjectStoreProtocolTests` | The fake dataset service and the four object stores, S3 signatures checked with the AWS SDK |
+| `manifest` (`manifest`) | Files registered, then records through `Osdu_ingest`, inline or by reference | `ManifestByReferenceTests`, `WorkflowRouteTests` | The fake workflow, search and storage services |
+| `ddms` (`ddms`) | The record through the collection of the DDMS serving its entity type, then its bulk data | `DdmsRouteTests`, `DdmsRoutingTests`, `WellboreDdmsRulesTests` | The fake Wellbore DDMS v3, every request checked against its OpenAPI |
 | `fileAndDdms`, `manifestAndDdms` | The composed routes: files or a manifest first, then bulk data | `ComposedRouteTests` | The fakes of both halves |
-| `workflow` (`osduWorkflow`) | The record written, its inputs registered, catalogued workflow runs, outputs read back | `WorkflowRouteTests`, `WorkflowTemplateTests`, `WorkflowDocumentsTests` | The fake workflow service and Airflow's REST API |
-| `dspdm` (`osduDspdm`) | Rows of Production DDMS business objects, found again by a unique key | `DspdmRouteTests`, `DspdmDocumentsTests` | A fake of DSPDM built from its source, every request checked against its contract |
-| `etp` (`osduEtp`) | Energistics objects in dataspaces of the Reservoir DDMS over ETP 1.2 | `EtpRouteTests`, `EtpSessionTests`, `EtpSchemaTests`, `EtpBinaryTests`, `EtpObjectTests`, `EtpDocumentsTests` | A fake ETP server over a real WebSocket, every message round-tripped against the pinned Avro protocol |
+| `workflow` (`workflow`) | The record written, its inputs registered, catalogued workflow runs, outputs read back | `WorkflowRouteTests`, `WorkflowTemplateTests`, `WorkflowDocumentsTests` | The fake workflow service and Airflow's REST API |
+| `dspdm` (`dspdm`) | Rows of Production DDMS business objects, found again by a unique key | `DspdmRouteTests`, `DspdmDocumentsTests` | A fake of DSPDM built from its source, every request checked against its contract |
+| `etp` (`etp`) | Energistics objects in dataspaces of the Reservoir DDMS over ETP 1.2 | `EtpRouteTests`, `EtpSessionTests`, `EtpSchemaTests`, `EtpBinaryTests`, `EtpObjectTests`, `EtpDocumentsTests` | A fake ETP server over a real WebSocket, every message round-tripped against the pinned Avro protocol |
 
 ## DDMS shapes of the `ddms` route
 

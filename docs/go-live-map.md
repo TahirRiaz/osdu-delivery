@@ -29,11 +29,11 @@ live on the current build.
 
 | Route | What it delivers | Evidence | Removal and live cleanup |
 | --- | --- | --- | --- |
-| `storage` (osduRecord) | Any kind through Storage v2, batched, upsert by id. | L-prev | Soft delete (bulk); 404 proof works. |
-| `file` (osduFile) | Files through the File service, registered, then the record naming them. | L-prev | Record and its `dataset--File.Generic` soft-deleted; the files behind them stay. |
-| `manifest` (osduManifest) | `Osdu_ingest`, inline or by reference; records read back. | L-prev (inline only) | As `file`. By reference has never run live. |
-| `dataset` (osduDataset) | Dataset service storage and registration: Azure, MinIO, S3, Google Cloud Storage. | C | Dataset service reversible delete. IBM collections are held; staged collection files stay. |
-| `workflow` (osduWorkflow) | Anchor record, inputs, up to four catalogued workflow runs, outputs read back. | C | Anchor reversible; records a run wrote are removed only when the flow names them. Needs the workflows registered in the partition. |
+| `storage` (storage) | Any kind through Storage v2, batched, upsert by id. | L-prev | Soft delete (bulk); 404 proof works. |
+| `file` (file) | Files through the File service, registered, then the record naming them. | L-prev | Record and its `dataset--File.Generic` soft-deleted; the files behind them stay. |
+| `manifest` (manifest) | `Osdu_ingest`, inline or by reference; records read back. | L-prev (inline only) | As `file`. By reference has never run live. |
+| `dataset` (dataset) | Dataset service storage and registration: Azure, MinIO, S3, Google Cloud Storage. | C | Dataset service reversible delete. IBM collections are held; staged collection files stay. |
+| `workflow` (workflow) | Anchor record, inputs, up to four catalogued workflow runs, outputs read back. | C | Anchor reversible; records a run wrote are removed only when the flow names them. Needs the workflows registered in the partition. |
 | `ddms`, Wellbore DDMS v3 | Nine collections; bulk data for WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement. | L-prev (WellLog) | DDMS logical delete; bulk data stays. The other eight collections never ran live. |
 | `ddms`, Well Delivery | An entity per write under a version, versioned references, its Storage copy. | C | On Azure and IBM a soft-deleted entity still reads back, so the 404 proof fails. History scope refused. |
 | `ddms`, RAFS v2 | Rock and Fluid Sample records and their content tables. | C | Logical delete; what a read answers afterwards is unconfirmed. |
@@ -42,7 +42,7 @@ live on the current build.
 | `ddms`, Reservoir Management | Header records through Storage, the rows of the tables below them. | C | Soft delete leaves the rows and the service's copy. Records past the first 100 of a kind need an operator. |
 | `fileAndDdms`, `manifestAndDdms` | Files or a manifest first, then each record's bulk data through its DDMS. | C | As their parts. |
 | EDS checks (storage, manifest, workflow) | Registry entries, data jobs and proxy datasets checked for what External Data Services needs; its run state kept. | C | As the route. Secrets a registry entry names cannot be checked. |
-| `dspdm` (osduDspdm) | Production DDMS business object rows, found again by a unique key before every save. | C | Hard delete only: DSPDM keeps no deleted rows. Relies on DSPDM's shipped update and time zone settings. |
+| `dspdm` (dspdm) | Production DDMS business object rows, found again by a unique key before every save. | C | Hard delete only: DSPDM keeps no deleted rows. Relies on DSPDM's shipped update and time zone settings. |
 | `etp` (Reservoir DDMS) | Energistics data objects in dataspaces over ETP 1.2 (WebSocket, Avro), with the arrays they name. | C | The object is deleted outright: the store keeps no deleted objects. A dataspace is never deleted, since the server purges its Storage record when it is, so a live test leaves its dataspace behind. |
 
 ## Workstreams

@@ -177,7 +177,7 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_file_protocol_flow_also_writes_the_dataset_kind_it_registers_files_as()
     {
-        Rewrite("flows/wells-welllog-03-header-delivery.yaml", "protocol: osduWellLog", "protocol: osduFile");
+        Rewrite("flows/wells-welllog-03-header-delivery.yaml", "protocol: ddms", "protocol: file");
         Rewrite("flows/wells-welllog-03-header-delivery.yaml", "    sessionThresholdChunks: 1\n", "    datasetKind: osdu:wks:dataset--File.Generic:1.0.0\n");
 
         var lineage = Describe("flows/wells-welllog-03-header-delivery.yaml");

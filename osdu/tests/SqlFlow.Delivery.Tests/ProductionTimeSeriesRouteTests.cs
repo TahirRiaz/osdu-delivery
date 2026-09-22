@@ -60,8 +60,8 @@ public sealed class ProductionTimeSeriesRouteTests
             {
                 TimeSeries = settings ?? Settings(),
             };
-            Flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.OsduWellLog, Ddms = [historian], ProtocolOptions = Options }, "production");
-            Protocol = new OsduWellLogProtocol(Client, Options, NullLogger.Instance, ceiling, Clock, DdmsRouting.Of(Flow));
+            Flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.Ddms, Ddms = [historian], ProtocolOptions = Options }, "production");
+            Protocol = new OsduDdmsProtocol(Client, Options, NullLogger.Instance, ceiling, Clock, DdmsRouting.Of(Flow));
         }
 
         public SteppingClock Clock { get; } = new();
@@ -74,7 +74,7 @@ public sealed class ProductionTimeSeriesRouteTests
 
         public FlowDefinition Flow { get; }
 
-        public OsduWellLogProtocol Protocol { get; }
+        public OsduDdmsProtocol Protocol { get; }
 
         public void Dispose() => Runtime.Dispose();
     }

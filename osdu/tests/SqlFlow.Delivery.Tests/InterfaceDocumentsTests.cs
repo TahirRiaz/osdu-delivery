@@ -100,21 +100,21 @@ public sealed class InterfaceDocumentsTests
 
         // The route follows from what each interface's records carry.
         var wells = source.Interface("wells");
-        Assert.Equal(DeliveryProtocol.OsduRecord, wells.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Storage, wells.Target.Protocol);
         Assert.Null(wells.Target.ProtocolOptions.Payload);
         Assert.Contains("storage service", wells.RouteReason, StringComparison.Ordinal);
         var documents = source.Interface("DOCUMENTS");
-        Assert.Equal(DeliveryProtocol.OsduFile, documents.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.File, documents.Target.Protocol);
         Assert.Equal("files", documents.Target.ProtocolOptions.Payload);
         Assert.Equal("../data/documents", documents.Source.Payloads["files"].Root);
         Assert.Contains("file service", documents.RouteReason, StringComparison.Ordinal);
         var logs = source.Interface("logs");
-        Assert.Equal(DeliveryProtocol.OsduWellLog, logs.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Ddms, logs.Target.Protocol);
         Assert.Equal("bulk", logs.Target.ProtocolOptions.Payload);
         Assert.Equal("/api/os-wellbore-ddms", logs.Target.ProtocolOptions.DdmsRoot);
         Assert.Equal(["wells"], logs.After);
-        Assert.Equal("storage", RouteChecks.Name(wells.Target.Protocol));
-        Assert.Equal("ddms", RouteChecks.Name(logs.Target.Protocol));
+        Assert.Equal("storage", DeliveryProtocols.Name(wells.Target.Protocol));
+        Assert.Equal("ddms", DeliveryProtocols.Name(logs.Target.Protocol));
 
         // What the source declares is every interface's, and what differs is the interface's own.
         Assert.All(source.Interfaces, flow =>
@@ -320,11 +320,11 @@ public sealed class InterfaceDocumentsTests
             """), "petrel.yaml");
 
         var seismic = source.Interface("seismic");
-        Assert.Equal(DeliveryProtocol.OsduManifest, seismic.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Manifest, seismic.Target.Protocol);
         Assert.Equal("files", seismic.Target.ProtocolOptions.Payload);
         Assert.Contains("route names the manifest route", seismic.RouteReason, StringComparison.Ordinal);
         var markers = source.Interface("markers");
-        Assert.Equal(DeliveryProtocol.OsduWellLog, markers.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Ddms, markers.Target.Protocol);
         Assert.Null(markers.Target.ProtocolOptions.Payload);
     }
 
@@ -343,7 +343,7 @@ public sealed class InterfaceDocumentsTests
     [Fact]
     public void A_mapping_protocol_or_payload_named_for_the_whole_source_is_refused()
     {
-        var yaml = Source(Wells, target: "  protocol: osduRecord")
+        var yaml = Source(Wells, target: "  protocol: storage")
             .Replace("  parameters:\n    dataPartition: opendes", "  mapping: Well@1.2.0\n  parameters:\n    dataPartition: opendes", StringComparison.Ordinal)
             .Replace("    batchSize: 50\n", "    batchSize: 50\n    payload: files\n", StringComparison.Ordinal);
         var refused = Assert.Throws<FlowValidationException>(() => _loader.ParseSource(yaml, "petrel.yaml")).Message;

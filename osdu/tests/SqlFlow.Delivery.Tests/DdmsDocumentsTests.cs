@@ -70,7 +70,7 @@ public sealed class DdmsDocumentsTests
                     work-product-component--WellboreTrajectory: { path: wellboretrajectories, bulk: true, columns: trajectoryStations }
             """), "logs.yaml");
 
-        Assert.Equal(DeliveryProtocol.OsduWellLog, flow.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Ddms, flow.Target.Protocol);
         Assert.Equal(["petro", "wellbore"], flow.Target.Ddms.Select(d => d.Name));
         var petro = flow.Target.Ddms[0];
         Assert.Equal("/petro", petro.Root);
@@ -331,15 +331,45 @@ public sealed class DdmsDocumentsTests
     }
 
     [Theory]
-    [InlineData("ddms", DeliveryProtocol.OsduWellLog)]
-    [InlineData("Ddms", DeliveryProtocol.OsduWellLog)]
-    [InlineData("storage", DeliveryProtocol.OsduRecord)]
-    [InlineData("file", DeliveryProtocol.OsduFile)]
-    [InlineData("manifest", DeliveryProtocol.OsduManifest)]
-    [InlineData("osduWellLog", DeliveryProtocol.OsduWellLog)]
-    [InlineData("osduRecord", DeliveryProtocol.OsduRecord)]
-    public void The_protocol_names_a_route_type_or_the_protocol_it_maps_onto(string value, DeliveryProtocol expected)
+    [InlineData("ddms", DeliveryProtocol.Ddms)]
+    [InlineData("Ddms", DeliveryProtocol.Ddms)]
+    [InlineData("storage", DeliveryProtocol.Storage)]
+    [InlineData("file", DeliveryProtocol.File)]
+    [InlineData("manifest", DeliveryProtocol.Manifest)]
+    [InlineData("dspdm", DeliveryProtocol.Dspdm)]
+    [InlineData("etp", DeliveryProtocol.Etp)]
+    public void The_protocol_names_a_route(string value, DeliveryProtocol expected)
         => Assert.Equal(expected, _loader.ParseFlow(Single(string.Empty, value), "logs.yaml").Target.Protocol);
+
+    /// <summary>
+    /// The names these routes carried before they took the names they carry everywhere else. Flow documents written then
+    /// keep loading, so none of these may stop resolving without a deliberate break.
+    /// </summary>
+    [Theory]
+    [InlineData("osduRecord", DeliveryProtocol.Storage)]
+    [InlineData("osduWellLog", DeliveryProtocol.Ddms)]
+    [InlineData("OSDUWELLLOG", DeliveryProtocol.Ddms)]
+    [InlineData("osduFile", DeliveryProtocol.File)]
+    [InlineData("osduManifest", DeliveryProtocol.Manifest)]
+    [InlineData("osduDspdm", DeliveryProtocol.Dspdm)]
+    [InlineData("osduEtp", DeliveryProtocol.Etp)]
+    public void A_retired_protocol_name_still_names_the_route_it_named(string value, DeliveryProtocol expected)
+        => Assert.Equal(expected, _loader.ParseFlow(Single(string.Empty, value), "logs.yaml").Target.Protocol);
+
+    /// <summary>
+    /// The rest of the retired names, whose routes need payloads or a workflow this flow does not declare. The name still
+    /// resolves: what refuses the flow is the route itself, and it says so under the name that route carries now.
+    /// </summary>
+    [Theory]
+    [InlineData("osduDataset", "dataset")]
+    [InlineData("osduFileAndDdms", "fileAndDdms")]
+    [InlineData("osduManifestAndDdms", "manifestAndDdms")]
+    [InlineData("osduWorkflow", "workflow")]
+    public void A_retired_protocol_name_of_a_route_this_flow_cannot_run_still_resolves(string value, string route)
+    {
+        var refused = Assert.Throws<FlowValidationException>(() => _loader.ParseFlow(Single(string.Empty, value), "logs.yaml"));
+        Assert.Contains($"the {route} route", refused.Message, StringComparison.Ordinal);
+    }
 
     [Theory]
     [InlineData("teleport")]
@@ -348,14 +378,13 @@ public sealed class DdmsDocumentsTests
     {
         var refused = Assert.Throws<FlowValidationException>(() => _loader.ParseFlow(Single(string.Empty, value), "logs.yaml"));
         Assert.Equal(
-            $"logs.yaml: 'target.protocol' value '{value}' is not one of storage, file, dataset, manifest, ddms, fileAndDdms, manifestAndDdms, workflow, dspdm, etp "
-            + "(or the protocols they map onto: osduRecord, osduWellLog, osduFile, osduManifest, osduDataset, osduFileAndDdms, osduManifestAndDdms, osduWorkflow, osduDspdm, osduEtp).",
+            $"logs.yaml: 'target.protocol' value '{value}' is not one of storage, file, dataset, manifest, ddms, fileAndDdms, manifestAndDdms, workflow, dspdm, etp.",
             refused.Message);
     }
 
     public static TheoryData<string, string, string, string> RefusedDeclarations => new()
     {
-        { "  ddms:\n    petro: { root: /petro }", "storage", "", "target.ddms declares the DDMSs the ddms route delivers to, and this flow's protocol is OsduRecord" },
+        { "  ddms:\n    petro: { root: /petro }", "storage", "", "target.ddms declares the DDMSs the ddms route delivers to, and this flow's protocol is storage" },
         { "  ddms: {}", "ddms", "", "target.ddms declares no DDMS" },
         { "  ddms:\n    2petro: { root: /petro }", "ddms", "", "target.ddms names a DDMS '2petro'; a DDMS name is a letter followed by letters, digits, '_' and '-'" },
         { "  ddms:\n    petro: { root: /a, collections: { master-data--Well: { path: wells } } }\n    Petro: { root: /b, collections: { master-data--Wellbore: { path: wellbores } } }", "ddms", "", "target.ddms declares 'Petro' more than once (DDMS names are compared ignoring case)" },
@@ -464,7 +493,7 @@ public sealed class DdmsDocumentsTests
             """), "estate.yaml");
 
         var logs = source.Interface("logs");
-        Assert.Equal(DeliveryProtocol.OsduWellLog, logs.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Ddms, logs.Target.Protocol);
         Assert.Null(logs.Target.ProtocolOptions.DdmsRoot);
         Assert.Equal("/api/os-wellbore-ddms", logs.Target.Ddms.Single().Root);
 

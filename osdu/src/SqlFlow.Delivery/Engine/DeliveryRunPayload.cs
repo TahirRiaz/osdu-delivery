@@ -132,8 +132,8 @@ public static class RedeliverScopes
 
         return flow.Target.Protocol switch
         {
-            DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest or DeliveryProtocol.OsduDataset => [All, Record, Files, Metadata, Payload],
-            DeliveryProtocol.OsduWellLog => [All, Record, Bulk, Metadata, Payload],
+            DeliveryProtocol.File or DeliveryProtocol.Manifest or DeliveryProtocol.Dataset => [All, Record, Files, Metadata, Payload],
+            DeliveryProtocol.Ddms => [All, Record, Bulk, Metadata, Payload],
             _ => [All, Record, Metadata],
         };
     }
@@ -157,7 +157,7 @@ public static class RedeliverScopes
         if (!parts.Contains(part, StringComparer.Ordinal))
         {
             throw new DeliveryException(
-                $"'{flow.Label}' is delivered by the {RouteChecks.Name(flow.Target.Protocol)} route, which sends {Sends(flow)}, so a redelivery of '{part}' has nothing to send; name one of {string.Join(", ", parts)}.");
+                $"'{flow.Label}' is delivered by the {DeliveryProtocols.Name(flow.Target.Protocol)} route, which sends {Sends(flow)}, so a redelivery of '{part}' has nothing to send; name one of {string.Join(", ", parts)}.");
         }
 
         return part switch
@@ -185,9 +185,9 @@ public static class RedeliverScopes
 
         return flow.Target.Protocol switch
         {
-            DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest or DeliveryProtocol.OsduDataset => "the record and its files",
-            DeliveryProtocol.OsduWellLog => "the record and its bulk data",
-            DeliveryProtocol.OsduEtp => "the object alone, its XML and arrays rendered into its document",
+            DeliveryProtocol.File or DeliveryProtocol.Manifest or DeliveryProtocol.Dataset => "the record and its files",
+            DeliveryProtocol.Ddms => "the record and its bulk data",
+            DeliveryProtocol.Etp => "the object alone, its XML and arrays rendered into its document",
             _ => "the record alone",
         };
     }

@@ -43,8 +43,8 @@ public sealed class RafsRouteTests
                 Runtime, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "opendes" });
             Options = options ?? new ProtocolOptions { WorkflowPollSeconds = 1, DatasetIndexWaitSeconds = 0 };
-            Flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.OsduWellLog, Ddms = [Rafs], ProtocolOptions = Options }, "samples");
-            Protocol = new OsduWellLogProtocol(Client, Options, NullLogger.Instance, routing: DdmsRouting.Of(Flow));
+            Flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.Ddms, Ddms = [Rafs], ProtocolOptions = Options }, "samples");
+            Protocol = new OsduDdmsProtocol(Client, Options, NullLogger.Instance, routing: DdmsRouting.Of(Flow));
         }
 
         public HttpRuntime Runtime { get; }
@@ -55,7 +55,7 @@ public sealed class RafsRouteTests
 
         public FlowDefinition Flow { get; }
 
-        public OsduWellLogProtocol Protocol { get; }
+        public OsduDdmsProtocol Protocol { get; }
 
         public void Dispose() => Runtime.Dispose();
     }

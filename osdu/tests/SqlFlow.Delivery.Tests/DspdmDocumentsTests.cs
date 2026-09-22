@@ -154,7 +154,7 @@ public sealed class DspdmDocumentsTests
                   well_test: {}
             """), "wells.yaml");
 
-        Assert.Equal(DeliveryProtocol.OsduDspdm, flow.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Dspdm, flow.Target.Protocol);
         var dspdm = flow.Target.Dspdm;
         Assert.Equal("/api/dspdm/v1", dspdm.Root);
         Assert.Equal("GMT+02:00", dspdm.Timezone);
@@ -203,9 +203,9 @@ public sealed class DspdmDocumentsTests
         var source = _loader.ParseSource(Source("  dspdm: { timezone: GMT+01:00 }", "route: dspdm"), "estate.yaml");
         var wells = source.Interfaces.Single(i => i.Interface == "wells");
         var logs = source.Interfaces.Single(i => i.Interface == "logs");
-        Assert.Equal(DeliveryProtocol.OsduDspdm, wells.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Dspdm, wells.Target.Protocol);
         Assert.Equal("GMT+01:00", wells.Target.Dspdm.Timezone);
-        Assert.Equal(DeliveryProtocol.OsduRecord, logs.Target.Protocol);
+        Assert.Equal(DeliveryProtocol.Storage, logs.Target.Protocol);
         Assert.Equal(DspdmTarget.DefaultTimeZone, logs.Target.Dspdm.Timezone);
     }
 
@@ -265,9 +265,9 @@ public sealed class DspdmDocumentsTests
     [Fact]
     public void Business_object_rows_go_by_the_dspdm_route_alone()
     {
-        Assert.Equal("dspdm", RouteChecks.Name(DeliveryProtocol.OsduDspdm));
-        var dspdm = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.OsduDspdm });
-        var storage = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.OsduRecord });
+        Assert.Equal("dspdm", DeliveryProtocols.Name(DeliveryProtocol.Dspdm));
+        var dspdm = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.Dspdm });
+        var storage = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.Storage });
 
         RouteChecks.Check(dspdm, Kind);
         RouteChecks.Check(storage, "osdu:wks:master-data--Wellbore:1.1.0");
@@ -281,8 +281,8 @@ public sealed class DspdmDocumentsTests
         Assert.True(DspdmKinds.Is(Kind));
         Assert.False(DspdmKinds.Is("osdu:wks:master-data--Wellbore:1.1.0"));
         Assert.Equal("well", DspdmKinds.EntityOf(Kind));
-        Assert.False(DeliveryProtocols.CarriesPayload(DeliveryProtocol.OsduDspdm));
-        Assert.False(DeliveryProtocols.ReachesDdms(DeliveryProtocol.OsduDspdm));
+        Assert.False(DeliveryProtocols.CarriesPayload(DeliveryProtocol.Dspdm));
+        Assert.False(DeliveryProtocols.ReachesDdms(DeliveryProtocol.Dspdm));
     }
 
     [Fact]
@@ -291,7 +291,7 @@ public sealed class DspdmDocumentsTests
         var flow = Samples.Targeting(new FlowTarget
         {
             Endpoint = FakeOsduPlatform.Endpoint,
-            Protocol = DeliveryProtocol.OsduDspdm,
+            Protocol = DeliveryProtocol.Dspdm,
             Dspdm = new DspdmTarget { Root = FakeOsduPlatform.DspdmRoot },
         });
         var endpoints = RemovalEndpoints.Of(flow, Kind);

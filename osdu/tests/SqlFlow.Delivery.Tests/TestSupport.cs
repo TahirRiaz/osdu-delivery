@@ -254,7 +254,7 @@ public sealed class FakeProtocol : IDeliveryProtocol
     /// <summary>Runs before each delivery; lets a test hold a delivery open (for example until it is cancelled).</summary>
     public Func<DeliveryWork, CancellationToken, Task>? Before { get; set; }
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduWellLog;
+    public DeliveryProtocol Kind => DeliveryProtocol.Ddms;
 
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {

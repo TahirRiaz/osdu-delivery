@@ -43,7 +43,7 @@ public static class PayloadParts
 
     /// <summary>True for the routes that send their payload in parts.</summary>
     public static bool Composed(DeliveryProtocol protocol)
-        => protocol is DeliveryProtocol.OsduFileAndDdms or DeliveryProtocol.OsduManifestAndDdms or DeliveryProtocol.OsduWorkflow or DeliveryProtocol.OsduEtp;
+        => protocol is DeliveryProtocol.FileAndDdms or DeliveryProtocol.ManifestAndDdms or DeliveryProtocol.Workflow or DeliveryProtocol.Etp;
 
     /// <summary>
     /// The payload sets <paramref name="flow"/>'s route sends as parts, in the order it sends them, or null for a route
@@ -56,11 +56,11 @@ public static class PayloadParts
         var declaresFiles = flow.Source.Payloads.ContainsKey(Files);
         switch (flow.Target.Protocol)
         {
-            case DeliveryProtocol.OsduFileAndDdms:
+            case DeliveryProtocol.FileAndDdms:
                 return [new PayloadPart(Files, Files), new PayloadPart(Bulk, Bulk)];
-            case DeliveryProtocol.OsduManifestAndDdms:
+            case DeliveryProtocol.ManifestAndDdms:
                 return declaresFiles ? [new PayloadPart(Files, Files), new PayloadPart(Bulk, Bulk)] : [new PayloadPart(Bulk, Bulk)];
-            case DeliveryProtocol.OsduEtp:
+            case DeliveryProtocol.Etp:
                 // The object's XML and the values of its arrays, each optional: a mapping may render either into the
                 // document instead (osdu/specs/reservoir-ddms/INTEGRATION.md section 5).
                 var etp = new List<PayloadPart>();
@@ -75,7 +75,7 @@ public static class PayloadParts
                 }
 
                 return etp.Count > 0 ? etp : null;
-            case DeliveryProtocol.OsduWorkflow:
+            case DeliveryProtocol.Workflow:
                 var parts = new List<PayloadPart>();
                 if (declaresFiles)
                 {
@@ -103,7 +103,7 @@ public static class PayloadParts
         }
 
         var roles = parts.Select(p => p.Role).Distinct(StringComparer.Ordinal).ToList();
-        if (flow.Target.Protocol == DeliveryProtocol.OsduWorkflow)
+        if (flow.Target.Protocol == DeliveryProtocol.Workflow)
         {
             roles.Add(Workflow);
         }

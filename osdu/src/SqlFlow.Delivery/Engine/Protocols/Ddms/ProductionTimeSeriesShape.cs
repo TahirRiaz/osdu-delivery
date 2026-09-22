@@ -89,7 +89,7 @@ internal sealed partial class ProductionTimeSeriesShape(DdmsShapeContext context
     public async Task<object?> PrepareAsync(DeliveryWork work, DdmsRecordPaths paths, CancellationToken ct)
     {
         var route = RouteOf(paths);
-        var writesRecord = work.DeliverMetadata && work.Completed(OsduWellLogProtocol.MetadataStep) is null;
+        var writesRecord = work.DeliverMetadata && work.Completed(OsduDdmsProtocol.MetadataStep) is null;
         if (!writesRecord && !work.DeliverPayload)
         {
             return TimeSeriesPlan.Empty;
@@ -160,9 +160,9 @@ internal sealed partial class ProductionTimeSeriesShape(DdmsShapeContext context
         var metadataDelivered = false;
         if (work.DeliverMetadata)
         {
-            if (work.Completed(OsduWellLogProtocol.MetadataStep) is { } done)
+            if (work.Completed(OsduDdmsProtocol.MetadataStep) is { } done)
             {
-                steps.Resumed(OsduWellLogProtocol.MetadataStep, done);
+                steps.Resumed(OsduDdmsProtocol.MetadataStep, done);
                 version = done.TryGetValue("version", out var text) ? RecordWriter.ParseVersion(text) ?? version : version;
             }
             else
@@ -176,8 +176,8 @@ internal sealed partial class ProductionTimeSeriesShape(DdmsShapeContext context
                     returned["version"] = v.ToString(CultureInfo.InvariantCulture);
                 }
 
-                steps.Add(OsduWellLogProtocol.MetadataStep, started, status, returned);
-                await work.ReportStepAsync(OsduWellLogProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
+                steps.Add(OsduDdmsProtocol.MetadataStep, started, status, returned);
+                await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
             }
 
             metadataDelivered = true;

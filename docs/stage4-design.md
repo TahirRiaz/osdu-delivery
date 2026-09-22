@@ -148,7 +148,7 @@ in the current sample, with the schedule carrying `values: { logSource: STAT_COM
 
 `wells-wellbore-01-header-pre`, `wells-wellbore-01-aliases-pre`, `wells-wellbore-02-header-ing` (`keyColumns: [facility_name]`),
 `wells-wellbore-02-aliases-ing` (`[facility_name, alias_name]`) and `wells-wellbore-03-header-delivery` (record `OsduSample.ing.Wellbore`,
-dataset `aliases` joined on `facility_name`, `protocol: osduRecord`).
+dataset `aliases` joined on `facility_name`, `protocol: storage`).
 
 ## 2. Planning over the ingestion tables
 
@@ -520,7 +520,7 @@ the GUI, the API or the schedule) loads and delivers them with the same traceabi
 - **`Catalog/CatalogFanOutDispatcher.cs`:** unchanged logic; control plane only.
 - **`Engine/CacheExecutor.cs`** (line 110) and **`Engine/RetrievalExecutor.cs`** (line 113): replace the checks on `SubmissionId`, `RecordKeys`, `Partitions` and `Drop` with a refusal of `parameters.HasKindArguments` beyond their own operations; `CanExecute(RegisteredFlowDocument)`.
 - **`Engine/RunLogLoggerFactory.cs`** (line 83): remove the `KnownStatePublisher` category; add `SqlServerIngestionSource` mapped to `source`.
-- **`Engine/Protocols/OsduWellLogProtocol.cs`** (lines 62, 301, 408, 437, 568) and **`Engine/Protocols/FileUploads.cs`** (lines 5, 47, 74): `Drops.PayloadChunk` becomes `PayloadFile`; remove `using SqlFlow.Delivery.Drops`.
+- **`Engine/Protocols/OsduDdmsProtocol.cs`** (lines 62, 301, 408, 437, 568) and **`Engine/Protocols/FileUploads.cs`** (lines 5, 47, 74): `Drops.PayloadChunk` becomes `PayloadFile`; remove `using SqlFlow.Delivery.Drops`.
 - **New `Engine/Operations/ReadSourceRowOperation.cs`:** an `IComputeOperation` that reads one record's ingestion rows by key on a node. It serves the record page's source view and replaces the replica view.
 
 **Ledger**

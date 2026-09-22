@@ -184,7 +184,7 @@ public class RemovalProtocolTests
     [Fact]
     public void The_endpoints_a_flow_would_call_follow_its_protocol()
     {
-        var storage = RemovalEndpoints.Of(Samples.Targeting(new FlowTarget { Endpoint = "http://x", Protocol = DeliveryProtocol.OsduRecord }), null);
+        var storage = RemovalEndpoints.Of(Samples.Targeting(new FlowTarget { Endpoint = "http://x", Protocol = DeliveryProtocol.Storage }), null);
         Assert.Equal("/api/storage/v2/records/{id}:delete", storage.Record);
         Assert.Equal("/api/storage/v2/records/{id}/versions", storage.History);
         Assert.Equal("/api/storage/v2/records/{id}", storage.Everything);
@@ -192,7 +192,7 @@ public class RemovalProtocolTests
         // The wellbore DDMS owns the record but not its versions, so only the history scope leaves the DDMS. Its
         // paths carry no /api/<service>/ prefix, so a storage path under a DDMS endpoint would not resolve: with
         // nowhere to send it the scope reports itself unconfigured rather than naming a URL that would 404.
-        var ddmsFlow = Samples.Targeting(new FlowTarget { Endpoint = "http://x", Protocol = DeliveryProtocol.OsduWellLog });
+        var ddmsFlow = Samples.Targeting(new FlowTarget { Endpoint = "http://x", Protocol = DeliveryProtocol.Ddms });
         var ddms = RemovalEndpoints.Of(ddmsFlow, "osdu:wks:work-product-component--WellLog:1.4.0");
         Assert.Equal("/ddms/v3/welllogs/{id}", ddms.Record);
         Assert.Equal(RemovalEndpoints.HistoryNotConfigured, ddms.History);
@@ -218,7 +218,7 @@ public class RemovalProtocolTests
             Samples.Targeting(new FlowTarget
             {
                 Endpoint = "http://x",
-                Protocol = DeliveryProtocol.OsduWellLog,
+                Protocol = DeliveryProtocol.Ddms,
                 ProtocolOptions = new ProtocolOptions
                 {
                     PurgeVersionsPath = "https://osdu.example.com/api/storage/v2/records/{id}/versions",
@@ -237,7 +237,7 @@ public class RemovalProtocolTests
         var (client, runtime) = Client(handler);
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions(), Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
             var ex = await Assert.ThrowsAsync<RecordHeldException>(() => protocol.DeleteAsync(RecordId, RemovalScope.History));
 
             Assert.Contains("purgeVersionsPath", ex.Message, StringComparison.Ordinal);
@@ -253,7 +253,7 @@ public class RemovalProtocolTests
         using (runtime)
         {
             var options = new ProtocolOptions { PurgeVersionsPath = "http://localhost/storage/api/storage/v2/records/{id}/versions" };
-            var protocol = new OsduWellLogProtocol(client, options, Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, options, Samples.Logger<OsduDdmsProtocol>());
             var outcome = await protocol.DeleteAsync(RecordId, RemovalScope.History);
 
             Assert.True(outcome.Deleted);

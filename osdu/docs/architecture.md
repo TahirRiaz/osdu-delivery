@@ -100,8 +100,8 @@ waves of what they wait for, each interface going through the steps below under 
    pinned mapping against its pinned template and the cache version it reads, and decide per record what changed
    (fingerprints, business version, render context, independent metadata and payload hashes). The pending work goes
    to the ledger and the rendered documents to work batch files on the flow's work location.
-2. **Deliver.** Lease work batches, send their records through the flow's protocol (`osduRecord`, `osduWellLog`,
-   `osduFile`, `osduManifest`), report every step and what the target returned, and write one append-only attempt
+2. **Deliver.** Lease work batches, send their records through the flow's protocol (`storage`, `ddms`,
+   `file`, `manifest`), report every step and what the target returned, and write one append-only attempt
    per try. A worker keeps one lease row per claim and appends what it learns; the lease applies that to the records
    at each renewal and when it closes. Back off and retry, resume after completed steps, hold what retrying cannot
    fix, and hand leases back on a stop, so any number of nodes share the work. A large submission fans its intake and its drains out over member

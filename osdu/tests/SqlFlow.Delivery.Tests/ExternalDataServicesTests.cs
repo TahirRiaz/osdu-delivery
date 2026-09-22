@@ -616,18 +616,18 @@ public sealed class ExternalDataServicesTests
     [Fact]
     public void A_proxy_dataset_goes_by_a_route_that_registers_no_files_for_it()
     {
-        RouteChecks.Check(Routed(DeliveryProtocol.OsduRecord), ProxyKind);
-        RouteChecks.Check(Routed(DeliveryProtocol.OsduManifest), ProxyKind);
-        RouteChecks.Check(Routed(DeliveryProtocol.OsduWorkflow, anchor: WorkflowAnchor.Storage), "osdu:wks:dataset--ConnectedSource.Generic:0.2.0");
-        RouteChecks.Check(Routed(DeliveryProtocol.OsduDataset), "osdu:wks:dataset--File.Generic:1.0.0");
+        RouteChecks.Check(Routed(DeliveryProtocol.Storage), ProxyKind);
+        RouteChecks.Check(Routed(DeliveryProtocol.Manifest), ProxyKind);
+        RouteChecks.Check(Routed(DeliveryProtocol.Workflow, anchor: WorkflowAnchor.Storage), "osdu:wks:dataset--ConnectedSource.Generic:0.2.0");
+        RouteChecks.Check(Routed(DeliveryProtocol.Dataset), "osdu:wks:dataset--File.Generic:1.0.0");
 
         foreach (var flow in new[]
         {
-            Routed(DeliveryProtocol.OsduDataset),
-            Routed(DeliveryProtocol.OsduFile, files: true),
-            Routed(DeliveryProtocol.OsduManifest, files: true),
-            Routed(DeliveryProtocol.OsduWorkflow, anchor: WorkflowAnchor.Dataset, files: true),
-            Routed(DeliveryProtocol.OsduWorkflow, anchor: WorkflowAnchor.Storage, files: true),
+            Routed(DeliveryProtocol.Dataset),
+            Routed(DeliveryProtocol.File, files: true),
+            Routed(DeliveryProtocol.Manifest, files: true),
+            Routed(DeliveryProtocol.Workflow, anchor: WorkflowAnchor.Dataset, files: true),
+            Routed(DeliveryProtocol.Workflow, anchor: WorkflowAnchor.Storage, files: true),
         })
         {
             var refused = Assert.Throws<DeliveryException>(() => RouteChecks.Check(flow, ProxyKind));
@@ -711,7 +711,7 @@ public sealed class ExternalDataServicesTests
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = Partition },
         };
         var resolved = new ResolvedMapping(mapping, schema, ReferenceSnapshot.Empty, context, new MappingRenderer(mapping, schema, ReferenceSnapshot.Empty, context));
-        var flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.OsduRecord, Eds = eds }) with
+        var flow = Samples.Targeting(new FlowTarget { Endpoint = FakeOsduPlatform.Endpoint, Protocol = DeliveryProtocol.Storage, Eds = eds }) with
         {
             Render = new FlowRender { Mapping = "Registry@1.0.0" },
         };

@@ -242,7 +242,7 @@ public sealed class FlowRuntime : IDisposable
     public async Task CheckRouteAsync(string kind, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
-        if (Flow.Target.Protocol == DeliveryProtocol.OsduDspdm)
+        if (Flow.Target.Protocol == DeliveryProtocol.Dspdm)
         {
             RouteChecks.Check(Flow, kind);
             if (await ProtocolAsync(ct).ConfigureAwait(false) is OsduDspdmProtocol dspdm)
@@ -256,7 +256,7 @@ public sealed class FlowRuntime : IDisposable
         {
             var routing = await ProtocolAsync(ct).ConfigureAwait(false) switch
             {
-                OsduWellLogProtocol ddms => ddms.Routing,
+                OsduDdmsProtocol ddms => ddms.Routing,
                 OsduFileAndDdmsProtocol files => files.Routing,
                 OsduManifestAndDdmsProtocol manifests => manifests.Routing,
                 _ => null,

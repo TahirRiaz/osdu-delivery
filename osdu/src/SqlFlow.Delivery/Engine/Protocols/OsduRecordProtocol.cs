@@ -49,7 +49,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
         _time = time ?? TimeProvider.System;
     }
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduRecord;
+    public DeliveryProtocol Kind => DeliveryProtocol.Storage;
 
     public int MaxBatch => Math.Clamp(_options.BatchSize, 1, ProtocolOptions.MaxBatchSize);
 

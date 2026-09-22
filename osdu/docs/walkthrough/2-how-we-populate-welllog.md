@@ -31,7 +31,7 @@ Everything below is taken from the sample estate:
    mapping must have them.
 6. **Before anything renders, the preflight gate checks the mapping against the template.** A target the template does
    not have, a single value written to an object, or a required property without an entry stops the run.
-7. **The flow's protocol sends it.** `osduWellLog` writes the record to the wellbore DDMS (`POST /ddms/v3/welllogs`)
+7. **The flow's protocol sends it.** `ddms` writes the record to the wellbore DDMS (`POST /ddms/v3/welllogs`)
    and then streams the curve values to its `/data` endpoint from the folder the record's own `curve_folder` column
    names, under the flow's declared payload root. The curve values never appear in the record.
 

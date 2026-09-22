@@ -48,7 +48,7 @@ public sealed class OsduDatasetProtocol : IDeliveryProtocol
         _records = new OsduRecordProtocol(client, options, _time);
     }
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduDataset;
+    public DeliveryProtocol Kind => DeliveryProtocol.Dataset;
 
     /// <summary>Records per request: a registration takes at most 20.</summary>
     public int MaxBatch => Math.Clamp(_options.BatchSize, 1, DatasetService.MaxRecords);

@@ -22,18 +22,18 @@ public static class ProtocolFactory
         var ceiling = flow.Reliability.MaxRequestBodyBytes;
         return flow.Target.Protocol switch
         {
-            DeliveryProtocol.OsduRecord => new OsduRecordProtocol(client, options),
+            DeliveryProtocol.Storage => new OsduRecordProtocol(client, options),
             // The DDMSs the flow names by registration are read here, so every operation routes by what they registered.
-            DeliveryProtocol.OsduWellLog => new OsduWellLogProtocol(
-                client, options, loggers.CreateLogger<OsduWellLogProtocol>(), ceiling, routing: await RoutingAsync(flow, client, ct).ConfigureAwait(false)),
-            DeliveryProtocol.OsduFile => new OsduFileProtocol(client, options, ceiling),
-            DeliveryProtocol.OsduDataset => new OsduDatasetProtocol(client, options, loggers.CreateLogger<OsduDatasetProtocol>(), ceiling),
-            DeliveryProtocol.OsduManifest => new OsduManifestProtocol(client, options, loggers.CreateLogger<OsduManifestProtocol>(), ceiling),
-            DeliveryProtocol.OsduFileAndDdms => new OsduFileAndDdmsProtocol(
+            DeliveryProtocol.Ddms => new OsduDdmsProtocol(
+                client, options, loggers.CreateLogger<OsduDdmsProtocol>(), ceiling, routing: await RoutingAsync(flow, client, ct).ConfigureAwait(false)),
+            DeliveryProtocol.File => new OsduFileProtocol(client, options, ceiling),
+            DeliveryProtocol.Dataset => new OsduDatasetProtocol(client, options, loggers.CreateLogger<OsduDatasetProtocol>(), ceiling),
+            DeliveryProtocol.Manifest => new OsduManifestProtocol(client, options, loggers.CreateLogger<OsduManifestProtocol>(), ceiling),
+            DeliveryProtocol.FileAndDdms => new OsduFileAndDdmsProtocol(
                 client, options, loggers.CreateLogger<OsduFileAndDdmsProtocol>(), ceiling, routing: await RoutingAsync(flow, client, ct).ConfigureAwait(false)),
-            DeliveryProtocol.OsduManifestAndDdms => new OsduManifestAndDdmsProtocol(
+            DeliveryProtocol.ManifestAndDdms => new OsduManifestAndDdmsProtocol(
                 client, options, loggers.CreateLogger<OsduManifestAndDdmsProtocol>(), ceiling, routing: await RoutingAsync(flow, client, ct).ConfigureAwait(false)),
-            DeliveryProtocol.OsduWorkflow => new OsduWorkflowProtocol(
+            DeliveryProtocol.Workflow => new OsduWorkflowProtocol(
                 client,
                 options,
                 flow.Target.Workflow ?? throw new FlowValidationException($"{flow.SourcePath ?? flow.Name}: the workflow route runs the workflow the flow declares, and it declares none."),
@@ -41,10 +41,10 @@ public static class ProtocolFactory
                 secrets,
                 flow.Target.Airflow is { } airflow ? new Workflows.AirflowXCom(http, airflow, secrets) : new Workflows.LatestInfoXCom(client),
                 ceiling),
-            DeliveryProtocol.OsduDspdm => new OsduDspdmProtocol(client, options, flow.Target.Dspdm, loggers.CreateLogger<OsduDspdmProtocol>()),
+            DeliveryProtocol.Dspdm => new OsduDspdmProtocol(client, options, flow.Target.Dspdm, loggers.CreateLogger<OsduDspdmProtocol>()),
 
             // The etp route speaks ETP 1.2 on a WebSocket rather than HTTP, and opens it through the flow's own stack.
-            DeliveryProtocol.OsduEtp => new OsduEtpProtocol(
+            DeliveryProtocol.Etp => new OsduEtpProtocol(
                 new Etp.EtpConnection(
                     http,
                     Etp.EtpConnection.WebSocketUri(client.Endpoint, flow.Target.Etp.Path),

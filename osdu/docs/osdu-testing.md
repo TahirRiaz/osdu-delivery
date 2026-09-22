@@ -185,10 +185,10 @@ the catalog ([documents.md](documents.md#cache-flow)).
 
 | Flow | Kind and protocol | What it delivers |
 | --- | --- | --- |
-| `e2e-wellbore` | delivery, `osduRecord` | 2 `master-data--Wellbore` records |
-| `recall-welllog` | delivery, `osduWellLog` | 3 `work-product-component--WellLog` records and their wellbore DDMS bulk data: L-1001 (MD, GR, RHOB), L-1002 (MD, GR), L-2001 (MD, NPHI) |
-| `e2e-document` | delivery, `osduManifest` | 1 `work-product-component--Document` with a CSV file, through `Osdu_ingest` |
-| `e2e-file` | delivery, `osduFile` | 1 `work-product-component--Document` with a CSV file, through the file service |
+| `e2e-wellbore` | delivery, `storage` | 2 `master-data--Wellbore` records |
+| `recall-welllog` | delivery, `ddms` | 3 `work-product-component--WellLog` records and their wellbore DDMS bulk data: L-1001 (MD, GR, RHOB), L-1002 (MD, GR), L-2001 (MD, NPHI) |
+| `e2e-document` | delivery, `manifest` | 1 `work-product-component--Document` with a CSV file, through `Osdu_ingest` |
+| `e2e-file` | delivery, `file` | 1 `work-product-component--Document` with a CSV file, through the file service |
 | `e2e-cache-sync` | retrieval | Wellbore and reference data read into the OSDU cache that `recall-welllog` renders from |
 
 Runs held by the live catalog between its re-mints on 2026-09-10 and 2026-09-12 (the second re-mint added
@@ -212,13 +212,13 @@ reference snapshot it rendered with did not cache. Nothing was sent.
 
 | Protocol | What was proven |
 | --- | --- |
-| `osduRecord` | First delivery of both wellbores; an unchanged re-run sends nothing; revising one wellbore sends that one and skips the other (`delivered=1 skippedUnchanged=1`). |
-| `osduWellLog`, single request | Three logs delivered with metadata and bulk data. A payload-only change (new GR values, same metadata) sends only that log. The ledger's version is the version the bulk write created, so verify after a clean delivery finds no drift. A parquet file of 9 rows went to `POST /data` in one request with no session, and the rows the DDMS holds match the drop value for value. |
-| `osduWellLog`, session | L-1001 split into two chunk files of 5 and 4 rows whose row index continues (0 to 4, 5 to 8, both as a stored index column and as a pandas `RangeIndex`) committed one version of 9 rows that match the drop; the log's description was read back after the commit and checked at 9 rows. |
-| `osduWellLog`, refusals | Two chunks that both number their rows from zero are held before a session opens, naming both files, and nothing reaches the DDMS. One file whose stored index repeats labels is refused by the DDMS with HTTP 422 (duplicated index); the record is held and nothing is written. |
-| `osduWellLog`, curves | For all three logs, the curves the record declares match the bulk data's columns, and the reference curve is one of them. |
-| `osduManifest` | A document and its CSV delivered through `Osdu_ingest`: the file is uploaded, registered through the file service, retrievable through its download URL with a matching sha256, and the manifest is triggered only after search can see the dataset. A changed document delivered by a scheduled run lands as a new version. |
-| `osduFile` | Four stages on one document: first delivery (upload, registration, record write); an unchanged re-run sends nothing; a metadata-only change writes a new record version with no upload and the same dataset; a payload change uploads the new file and registers a new dataset. The bytes in OSDU match the drop by size and sha256 at every stage. |
+| `storage` | First delivery of both wellbores; an unchanged re-run sends nothing; revising one wellbore sends that one and skips the other (`delivered=1 skippedUnchanged=1`). |
+| `ddms`, single request | Three logs delivered with metadata and bulk data. A payload-only change (new GR values, same metadata) sends only that log. The ledger's version is the version the bulk write created, so verify after a clean delivery finds no drift. A parquet file of 9 rows went to `POST /data` in one request with no session, and the rows the DDMS holds match the drop value for value. |
+| `ddms`, session | L-1001 split into two chunk files of 5 and 4 rows whose row index continues (0 to 4, 5 to 8, both as a stored index column and as a pandas `RangeIndex`) committed one version of 9 rows that match the drop; the log's description was read back after the commit and checked at 9 rows. |
+| `ddms`, refusals | Two chunks that both number their rows from zero are held before a session opens, naming both files, and nothing reaches the DDMS. One file whose stored index repeats labels is refused by the DDMS with HTTP 422 (duplicated index); the record is held and nothing is written. |
+| `ddms`, curves | For all three logs, the curves the record declares match the bulk data's columns, and the reference curve is one of them. |
+| `manifest` | A document and its CSV delivered through `Osdu_ingest`: the file is uploaded, registered through the file service, retrievable through its download URL with a matching sha256, and the manifest is triggered only after search can see the dataset. A changed document delivered by a scheduled run lands as a new version. |
+| `file` | Four stages on one document: first delivery (upload, registration, record write); an unchanged re-run sends nothing; a metadata-only change writes a new record version with no upload and the same dataset; a payload change uploads the new file and registers a new dataset. The bytes in OSDU match the drop by size and sha256 at every stage. |
 
 ### 2.2 Change detection
 
@@ -261,7 +261,7 @@ reference snapshot it rendered with did not cache. Nothing was sent.
 | Area | What was proven |
 | --- | --- |
 | Intake and drain | Intake plans a change into a work batch and sends nothing; drain delivers the batch. |
-| Crash mid-delivery | The control plane was killed while an `osduFile` record was between its upload and its registration. After the restart the recovered run resumed the reported upload and registration, registered the file once, and delivered the record; the ledger matches OSDU and no duplicate dataset was created. An earlier interruption on the build before defect 14's fix left the record delivering; an ordinary deliver run of its drop repaired it. |
+| Crash mid-delivery | The control plane was killed while an `file` record was between its upload and its registration. After the restart the recovered run resumed the reported upload and registration, registered the file once, and delivered the record; the ledger matches OSDU and no duplicate dataset was created. An earlier interruption on the build before defect 14's fix left the record delivering; an ordinary deliver run of its drop repaired it. |
 | Standalone worker | A `sqlflow worker` started under its own node name is listed online, claims a pooled verify run, and stops cleanly through the node restart endpoint. |
 
 ### 2.7 The GUI over live data
@@ -295,7 +295,7 @@ manual submission at all. That restriction is gone, and section 2.9 is the pass 
 
 A submission is metadata plus where the payload files already are. Nothing is uploaded through the API and nothing is
 staged: the record points at its files and the node opens that location with its own identity when the run delivers.
-Proven against `e2e-file` (`osduFile`, one document with one attached file) on 2026-09-12, marker `ODLIVE20260912C`,
+Proven against `e2e-file` (`file`, one document with one attached file) on 2026-09-12, marker `ODLIVE20260912C`,
 after opting the flow in with `source.manualSubmission` and a `manualSubmissionFileRoots` bounding it to this estate's
 own file area:
 

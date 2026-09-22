@@ -92,9 +92,9 @@ public static class DeliveryLineage
 
             // The routes that register datasets beside the record write the dataset kind too; the workflow route writes
             // each input's own kind.
-            if (flow.Target.Protocol is DeliveryProtocol.OsduFile or DeliveryProtocol.OsduManifest or DeliveryProtocol.OsduDataset
-                or DeliveryProtocol.OsduFileAndDdms or DeliveryProtocol.OsduManifestAndDdms
-                || (flow.Target.Protocol == DeliveryProtocol.OsduWorkflow && flow.Target.Workflow?.Anchor == WorkflowAnchor.Storage && flow.Source.Payloads.ContainsKey(PayloadParts.Files)))
+            if (flow.Target.Protocol is DeliveryProtocol.File or DeliveryProtocol.Manifest or DeliveryProtocol.Dataset
+                or DeliveryProtocol.FileAndDdms or DeliveryProtocol.ManifestAndDdms
+                || (flow.Target.Protocol == DeliveryProtocol.Workflow && flow.Target.Workflow?.Anchor == WorkflowAnchor.Storage && flow.Source.Payloads.ContainsKey(PayloadParts.Files)))
             {
                 Add(datasets, OsduLineage.Type(
                     LineageRelation.Writes, endpoint, partition, flow.Target.ProtocolOptions.DatasetKind, who,

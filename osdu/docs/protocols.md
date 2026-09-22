@@ -6,23 +6,25 @@ code and parameterised by the flow, not an authorable step language.
 
 | Protocol | Services | Pattern | Batched |
 | --- | --- | --- | --- |
-| `osduRecord` | storage | One JSON document, upsert by client-supplied id, array endpoint. | up to `batchSize` records per request |
-| `osduWellLog` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default), by the call pattern of its shape: the Wellbore DDMS v3, the Well Delivery DDMS, RAFS, the Production DDMS historian, Seismic Store, the Reservoir Management DDMS | Record, then, on a collection that keeps bulk data, its bulk data (a Wellbore DDMS session, RAFS's content tables, the historian's points, a Seismic Store dataset's files, or the Reservoir Management DDMS's rows). | one record per request |
-| `osduFile` | file, storage | Signed upload URL per file, streamed upload, dataset registration, then the record with its dataset list. | the record write, up to `batchSize` |
-| `osduDataset` | dataset, storage | Staging location per record, upload the way its provider takes it, registration under the record's own id (or a dataset the record refers to), retrieval checked. | up to 20 registrations per request |
-| `osduManifest` | file, dataset, workflow, search, storage | Uploads, one manifest per batch handed to the ingestion workflow, inline or by reference, the run polled, the records read back. | one workflow run per batch of up to `batchSize` |
-| `osduFileAndDdms` | file, the DDMS | The record's files as `osduFile` registers them, the record through its DDMS naming them, then its bulk data; each part only when it moved. | one record per request |
-| `osduManifestAndDdms` | file, dataset, workflow, search, storage, the DDMS | The batch through the manifest, then each record's bulk data through its DDMS. | as `osduManifest` |
-| `osduWorkflow` | dataset, workflow, search, storage; Airflow's REST API when the flow names it | The record written, its inputs registered, up to four workflow runs in order, what they wrote found and read back. | one record per run |
-| `osduDspdm` | the Production DDMS core service (DSPDM) | A business object row, not an OSDU record: found again by its unique key, then inserted or updated under the primary key DSPDM gave it, and read back, verified and deleted by that key. | up to `batchSize` rows per save (at most 256) |
-| `osduEtp` | the Reservoir DDMS, over ETP 1.2 on a WebSocket | An Energistics data object in a dataspace, not an OSDU record: its XML and the arrays it names, written inside one transaction per dataspace and committed together. | `objectsPerMessage` objects per message (default 100) |
+| `storage` | storage | One JSON document, upsert by client-supplied id, array endpoint. | up to `batchSize` records per request |
+| `ddms` | the DDMS serving each record's entity type (the Wellbore DDMS's nine collections by default), by the call pattern of its shape: the Wellbore DDMS v3, the Well Delivery DDMS, RAFS, the Production DDMS historian, Seismic Store, the Reservoir Management DDMS | Record, then, on a collection that keeps bulk data, its bulk data (a Wellbore DDMS session, RAFS's content tables, the historian's points, a Seismic Store dataset's files, or the Reservoir Management DDMS's rows). | one record per request |
+| `file` | file, storage | Signed upload URL per file, streamed upload, dataset registration, then the record with its dataset list. | the record write, up to `batchSize` |
+| `dataset` | dataset, storage | Staging location per record, upload the way its provider takes it, registration under the record's own id (or a dataset the record refers to), retrieval checked. | up to 20 registrations per request |
+| `manifest` | file, dataset, workflow, search, storage | Uploads, one manifest per batch handed to the ingestion workflow, inline or by reference, the run polled, the records read back. | one workflow run per batch of up to `batchSize` |
+| `fileAndDdms` | file, the DDMS | The record's files as `file` registers them, the record through its DDMS naming them, then its bulk data; each part only when it moved. | one record per request |
+| `manifestAndDdms` | file, dataset, workflow, search, storage, the DDMS | The batch through the manifest, then each record's bulk data through its DDMS. | as `manifest` |
+| `workflow` | dataset, workflow, search, storage; Airflow's REST API when the flow names it | The record written, its inputs registered, up to four workflow runs in order, what they wrote found and read back. | one record per run |
+| `dspdm` | the Production DDMS core service (DSPDM) | A business object row, not an OSDU record: found again by its unique key, then inserted or updated under the primary key DSPDM gave it, and read back, verified and deleted by that key. | up to `batchSize` rows per save (at most 256) |
+| `etp` | the Reservoir DDMS, over ETP 1.2 on a WebSocket | An Energistics data object in a dataspace, not an OSDU record: its XML and the arrays it names, written inside one transaction per dataspace and committed together. | `objectsPerMessage` objects per message (default 100) |
 
-A flow in the single form names its route with `target.protocol`, as a route type or as the protocol it maps onto.
-An interface of a source is given one by its route, which follows from what the interface declares
-([documents.md](documents.md#routes)): `storage` is `osduRecord`, `file` is `osduFile`, `dataset` is `osduDataset`,
-`manifest` is `osduManifest`, `ddms` is `osduWellLog` (whose payload is the interface's `bulk`), `fileAndDdms` is
-`osduFileAndDdms`, `manifestAndDdms` is `osduManifestAndDdms`, `workflow` is `osduWorkflow`, `dspdm` is `osduDspdm`, and
-`etp` is `osduEtp`.
+A flow in the single form names its route with `target.protocol`. An interface of a source is given one by its `route`,
+which follows from what the interface declares ([documents.md](documents.md#routes)); the ddms route takes the
+interface's `bulk` as its payload. The name in the table above is the one name each route carries: it is what a flow
+writes, what a validation error quotes, and what the ledger's `Route` column and the GUI show.
+
+Each route was once named after the protocol that ran it (`storage` was `osduRecord`, `ddms` was `osduWellLog`, and so
+on with an `osdu` prefix and the old protocol's name). Those names still load, so flow documents written then keep
+working, but nothing emits them and new documents should not use them.
 
 The core is protocol independent: identity, rendering, change detection, the ledger, idempotency and the
 preflight gate never change. A protocol implements the delivery, and the read-back, verify, probe and delete
@@ -61,7 +63,7 @@ a workflow run id. See [design.md](design.md) section 16.3.
 
 ## Payload parts
 
-`osduFileAndDdms`, `osduManifestAndDdms` and `osduWorkflow` send a record's payload in parts: its files, its bulk data,
+`fileAndDdms`, `manifestAndDdms` and `workflow` send a record's payload in parts: its files, its bulk data,
 a workflow's inputs, and the workflow run. The planner resolves each part's folder and content hash from the record's
 row as it resolves a single payload's, and the ledger keeps the parts in the columns a payload has always had
 ([ledger.md](ledger.md#payloads-in-parts)): the payload hash is the hash of the parts' hashes, and the pending payload
@@ -71,7 +73,7 @@ hash differs from the one the record's target state keeps for it (`payload.<set>
 returns `payload.<set>` with the hash of each part it sent. An optional workflow input a row names no folder for is a
 part without files.
 
-## `osduRecord`
+## `storage`
 
 - `{recordMethod} {endpoint}{recordPath}` with an array of up to `protocolOptions.batchSize` records (default
   100, at most 500). Defaults: `PUT /api/storage/v2/records`.
@@ -93,14 +95,14 @@ part without files.
   [documents.md](documents.md#external-data-services)). A write that carries keys returns `ownedContent.hash`, the hash
   of what a client writes of the record (id, kind, acl, the legal tags and countries, data, ancestry, meta and tags,
   never what storage adds) with those keys left out, and `ownedContent.excluded`, the keys; a later write that carries
-  none clears them. `osduFile`, and the storage writes of `osduDataset` and of the workflow route, go through this
+  none clears them. `file`, and the storage writes of `dataset` and of the workflow route, go through this
   route and carry them the same way; a registration through the Dataset service writes the record whole.
 - Verify, one record: `GET {endpoint}{verifyPath}` (default `/api/storage/v2/records/{id}`), compare `version`.
 - Verify, a pass: `POST {verifyBatchPath}` (default `/api/storage/v2/query/records`) with up to 100 ids and
   the attributes projected down, so a drift pass over a large estate costs a handful of requests rather than
   one per record. The records it returns carry their observed version, and the rest are missing, whether or not
   the response names them under `invalidRecords`, which is how storage answers for a record it does not hold.
-  `osduFile` and `osduManifest` verify through the same read, because their records live in storage too.
+  `file` and `manifest` verify through the same read, because their records live in storage too.
 - A record whose version moved and whose target state holds `ownedContent.hash` is read whole, in a second batched read
   of those records alone. When the hash of what it holds matches, only keys another system writes changed (EDS updating
   a job's run state after a fetch): the record matches, and the result says the newer version is not drift. A read that
@@ -113,7 +115,7 @@ part without files.
   time: every record in it carries the one failure that happened. The paths are `deletePath`,
   `purgeVersionsPath`, `purgePath` and `bulkDeletePath`.
 
-## `osduWellLog`: the ddms route
+## `ddms`
 
 A record goes to the DDMS serving its entity type, and by the call pattern of that DDMS's shape: `wellboreDdmsV3`
 (described first, below), [`wellDeliveryV1`](#the-well-delivery-shape), [`rafsV2`](#the-rafs-shape),
@@ -304,7 +306,7 @@ The Rock and Fluid Sample DDMS writes sample records through Storage and keeps t
   record is read back for the version it ends at. The ledger keeps the dataset ids (`rafs.datasets`): RAFS never removes
   them.
 - The link: `data.DDMSDatasets` belongs to RAFS, and a record write replaces it, so a metadata update reads the stored
-  record and carries its RAFS URNs; a manifest that rewrites the record through `osduManifestAndDdms` carries them too.
+  record and carries its RAFS URNs; a manifest that rewrites the record through `manifestAndDdms` carries them too.
 - Reads (verify, read back, the catalogues) send `Cache-Control: no-store`, since RAFS caches its answers for up to a
   minute.
 - Remove: the reversible scope is RAFS's logical delete (`DELETE /v2/{collection}/{id}`) and storage's reversible
@@ -471,7 +473,7 @@ own record write sends the records to Storage without their ids, and its delete 
   `GET {root}/ddms/estimated-volumes-det/header-entity/probe?header_entity_id=probe`, a read that checks the token and
   answers with no rows.
 
-## `osduFile`
+## `file`
 
 The files go first, then the record that references them (openapi file v2, storage v2).
 
@@ -492,9 +494,9 @@ The files go first, then the record that references them (openapi file v2, stora
    mark asks the search index which dataset that landing-zone path became
    (`POST {searchQueryPath}`, for up to `datasetIndexWaitSeconds`) and takes it over, returning it with
    `adopted`; nothing listed means the registration never landed and the file is registered again. Two datasets
-   for one path hold the record, naming both. `osduManifest` registers through the same step.
+   for one path hold the record, naming both. `manifest` registers through the same step.
 3. The record, with `data.{datasetsProperty}` (default `Datasets`) referencing the registered datasets as `{id}:`
-   (the form the work product component schemas require; any references the mapping rendered are kept), goes through the storage array endpoint exactly as `osduRecord`, batched with
+   (the form the work product component schemas require; any references the mapping rendered are kept), goes through the storage array endpoint exactly as `storage`, batched with
    the rest of the batch. Step `records`.
 
 A metadata-only change rewrites the record with the dataset ids of its earlier delivery (from the target
@@ -506,7 +508,7 @@ restored whole, and a history purge touches only the record's own earlier versio
 
 The files go as `payloadContentType`, or `filesContentType` when the flow names it.
 
-## `osduDataset`
+## `dataset`
 
 The files and the record through the Dataset service (openapi dataset v1, storage v2;
 [../specs/core/INTEGRATION.md](../specs/core/INTEGRATION.md) sections 2.5 and 2.5.1). A record of a dataset kind is
@@ -533,7 +535,7 @@ the dataset; any other record refers to one dataset of `datasetKind` holding its
    request refused as a whole is tried record by record. `POST {datasetRetrievalPath}` (default
    `/api/dataset/v1/retrievalInstructions`) then checks that the service hands out every dataset it registered; one it
    leaves out fails its record for the try. Step `register` returns `datasetId`, `version` and `retrievable`.
-4. A record of another kind is written through storage as `osduRecord` writes it, its dataset list naming the dataset,
+4. A record of another kind is written through storage as `storage` writes it, its dataset list naming the dataset,
    when its document changed or it has not named the dataset before. A change to a dataset record alone is written
    through storage with the `DatasetProperties` storage holds, because a registration would copy the staging area
    again; a record storage does not hold, or holds without them, fails the try.
@@ -544,31 +546,31 @@ is storage's, which leaves its dataset. The history purge is storage's. Removing
 storage, and for a record of another kind its dataset too; the files a registration copied stay in the platform's
 storage. Verify and read back go to storage.
 
-## `osduFileAndDdms` and `osduManifestAndDdms`
+## `fileAndDdms` and `manifestAndDdms`
 
 The composed routes send a record's files and its bulk data as parts ([Payload parts](#payload-parts)).
 
-`osduFileAndDdms`:
+`fileAndDdms`:
 
-1. The DDMS's rules for the record and the bulk data's chunks are checked first, as `osduWellLog` checks them, so a
+1. The DDMS's rules for the record and the bulk data's chunks are checked first, as `ddms` checks them, so a
    record the DDMS would refuse is held before any file is uploaded.
-2. When the files part goes, its files are uploaded and registered as in `osduFile` (steps `upload-{i}` and
+2. When the files part goes, its files are uploaded and registered as in `file` (steps `upload-{i}` and
    `register-{i}`), as `filesContentType` (default `application/octet-stream`).
 3. The record goes through its DDMS collection when its document changed or its files moved, its dataset list naming
    the new datasets or those of its earlier delivery; the bulk link the DDMS holds is carried, from the stored record
    when the record was delivered before.
-4. When the bulk part goes, the bulk data goes as `osduWellLog` sends it, as `payloadContentType`, and the version is
+4. When the bulk part goes, the bulk data goes as `ddms` sends it, as `payloadContentType`, and the version is
    read back.
 
 It returns `datasetIds`, `files`, and `payload.<set>` for each part it sent. Removal is the DDMS's; removing everything
 also deletes the datasets the files were registered as, with their files, through the file service. The probe asks
 the file service and every DDMS the flow reaches.
 
-`osduManifestAndDdms`:
+`manifestAndDdms`:
 
 1. Each record's DDMS rules and bulk data chunks are checked first.
 2. A record whose document changed, whose files moved, or which is new and has bulk data goes through the manifest as
-   `osduManifest` sends it (its files registered first, as `filesContentType`). A record that already holds bulk data
+   `manifest` sends it (its files registered first, as `filesContentType`). A record that already holds bulk data
    has the DDMS's bulk link, and the `DDMSDatasets` entries the DDMS wrote, carried into its manifest from one batched
    storage read (`POST {verifyBatchPath}`, projected to `data.ExtensionProperties` and `data.DDMSDatasets`), since
    ingestion writes through storage, past the DDMS; a read that fails fails those records for the try. A new record's
@@ -582,18 +584,18 @@ the file service and every DDMS the flow reaches.
 Verify and read back go to storage. Removal is the DDMS's, with the files' datasets when everything goes. The probe
 asks the Workflow service and every DDMS.
 
-## `osduWorkflow`
+## `workflow`
 
 One protocol for every ingestion workflow ([documents.md](documents.md#the-workflow-route);
 [../specs/workflows/INTEGRATION.md](../specs/workflows/INTEGRATION.md)).
 
 1. The anchor tag, when the route declares one, is written into the record's `tags`.
-2. Each input whose hash moved is registered through the Dataset service as in `osduDataset`: one dataset per file under
+2. Each input whose hash moved is registered through the Dataset service as in `dataset`: one dataset per file under
    `{partition}:{entity type}:{key}-{input}-{n}`, or one collection under `{key}-{input}`, with the record's `acl` and
    `legal`. Step `register-{input}` returns the ids; the target state keeps them as `input.<name>`. A storage anchor's
    own files are registered the same way, as `datasetKind`.
 3. The anchor is written when its document or its files changed: a dataset anchor with new files is staged and
-   registered as `osduDataset` registers a dataset record; any other write goes through storage as `osduRecord` writes
+   registered as `dataset` registers a dataset record; any other write goes through storage as `storage` writes
    it, with the keys other systems write (a dataset anchor carrying the `DatasetProperties` storage holds, a storage
    anchor its dataset list). Step `anchor` keeps `ownedContent.hash` when the write returned one, so a try that resumes
    past the anchor still returns it.
@@ -626,17 +628,17 @@ storage. The records the runs created are removed at the same scope when the rou
 repeated to find them all; the registered inputs and files go only when everything goes. The probe asks the Workflow
 service, and whether this partition registers every workflow the stages name.
 
-## `osduManifest`
+## `manifest`
 
 OSDU's own bulk path (openapi file v2, workflow v1, storage v2): the batch's files, one manifest, one
 workflow run.
 
-1. The batch's files are uploaded and registered as in `osduFile` (steps `upload-{i}` and `register-{i}`), and
+1. The batch's files are uploaded and registered as in `file` (steps `upload-{i}` and `register-{i}`), and
    each record's dataset list references the datasets registered for it as `{id}:`. Registration comes first
    because it is what makes a file retrievable: a dataset the manifest only describes is created with its file
    left in the landing zone, where the file service's download URL finds nothing (observed on a live M26
    service). The file service mints the dataset ids and ignores an id the request supplies, so a payload
-   change registers new datasets and the record points at them; the earlier ones stay, as for `osduFile`. The
+   change registers new datasets and the record points at them; the earlier ones stay, as for `file`. The
    reference form matters as well: manifest ingestion validates the schemas' reference pattern and drops a
    record that breaks it.
 2. Before the manifest, the registered datasets are waited for until the search index lists them
@@ -647,7 +649,7 @@ workflow run.
    listed the dataset wrote it. A wait that runs out is named on step `indexed` and the manifest goes ahead.
    Then each record's version is read from storage, as in step 5, and carried on the manifest step as
    `priorVersion`. A record the ledger holds a version of, and storage holds, has the keys other systems write (as
-   `osduRecord` carries them) read in one more batched read projected to `data.<key>`, and copied into the manifest's
+   `storage` carries them) read in one more batched read projected to `data.<key>`, and copied into the manifest's
    copy of it.
 3. One manifest (`manifestKind`, default `osdu:wks:Manifest:1.0.0`) carries every record of the batch in the
    section its kind names (`ReferenceData`, `MasterData`, `Data.WorkProduct`, `Data.WorkProductComponents`,
@@ -673,10 +675,10 @@ workflow run.
    was not written by it either, because a finished run that dropped a record leaves an existing one in place,
    and it goes into a new run the same way. Step `records` returns
    the record id and version, and a record that carries keys other systems write returns `ownedContent.hash` and
-   `ownedContent.excluded` as `osduRecord` does.
+   `ownedContent.excluded` as `storage` does.
 
 Verify, read back and removal go to storage, and a purge of everything deletes the datasets and their files through the file
-service, as for `osduFile`.
+service, as for `file`.
 
 A manifest goes by reference when `manifestByReference` is `always`, or `auto` and the trigger request (measured as the
 request indented by four) is above `manifestInlineLimitKb`, on a partition that registers `byReferenceWorkflowName`
@@ -688,7 +690,7 @@ that run, and the dataset is removed reversibly (`softDelete`) once the run has 
 without the workflow fails the batch; `auto` there splits the batch into manifests under the limit, a record whose
 manifest alone is above it going on its own.
 
-## `osduDspdm`: the dspdm route
+## `dspdm`
 
 The Production DDMS core service keeps rows of business objects in its own database, under a primary key it draws from
 a sequence when it inserts a row ([../specs/production-dspdm/INTEGRATION.md](../specs/production-dspdm/INTEGRATION.md)).
@@ -754,7 +756,7 @@ and before a row is sent, is in [documents.md](documents.md#the-production-ddms-
 - Probe: `GET {root}/health`, which needs no token, then a read of `BUSINESS OBJECT`, which needs the token, a
   partition DSPDM serves and the entitlement to read.
 
-## `osduEtp`: the etp route
+## `etp`
 
 The Reservoir DDMS keeps Energistics data objects in dataspaces of its own store, reached over ETP 1.2 on a WebSocket
 ([../specs/reservoir-ddms/INTEGRATION.md](../specs/reservoir-ddms/INTEGRATION.md)). A record is one object, not an OSDU

@@ -76,7 +76,7 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
         _records = new OsduRecordProtocol(client, options, _time);
     }
 
-    public DeliveryProtocol Kind => DeliveryProtocol.OsduWorkflow;
+    public DeliveryProtocol Kind => DeliveryProtocol.Workflow;
 
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {

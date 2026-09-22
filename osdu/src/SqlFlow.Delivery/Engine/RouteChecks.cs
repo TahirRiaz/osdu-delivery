@@ -15,22 +15,6 @@ namespace SqlFlow.Delivery.Engine;
 /// </summary>
 public static class RouteChecks
 {
-    /// <summary>The route names a flow reads: storage, file, dataset, manifest, ddms, fileAndDdms, manifestAndDdms, workflow and dspdm.</summary>
-    public static string Name(DeliveryProtocol protocol) => protocol switch
-    {
-        DeliveryProtocol.OsduRecord => "storage",
-        DeliveryProtocol.OsduFile => "file",
-        DeliveryProtocol.OsduDataset => "dataset",
-        DeliveryProtocol.OsduManifest => "manifest",
-        DeliveryProtocol.OsduWellLog => "ddms",
-        DeliveryProtocol.OsduFileAndDdms => "fileAndDdms",
-        DeliveryProtocol.OsduManifestAndDdms => "manifestAndDdms",
-        DeliveryProtocol.OsduWorkflow => "workflow",
-        DeliveryProtocol.OsduDspdm => "dspdm",
-        DeliveryProtocol.OsduEtp => "etp",
-        _ => throw new ArgumentOutOfRangeException(nameof(protocol), protocol, "not a delivery protocol"),
-    };
-
     /// <summary>
     /// Throws a <see cref="DeliveryException"/> when the flow's route cannot deliver records of <paramref name="kind"/>.
     /// <paramref name="routing"/> is the ddms route's routing with its registrations read (the protocol's); without it
@@ -42,14 +26,14 @@ public static class RouteChecks
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
 
         var keys = KeyPaths.Of(flow);
-        var route = Name(flow.Target.Protocol);
+        var route = DeliveryProtocols.Name(flow.Target.Protocol);
         var mapping = $"{keys.Name("render.mapping")} {flow.Render.Mapping}";
         var entityType = OsduKind.EntityType(kind)
             ?? throw new DeliveryException(
                 $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, which names no entity type, so the {route} route cannot tell where it goes.");
         // A DSPDM business object row is no OSDU record: the dspdm route writes rows alone, and no other route writes them.
         var row = DspdmKinds.Is(kind);
-        if (row != (flow.Target.Protocol == DeliveryProtocol.OsduDspdm))
+        if (row != (flow.Target.Protocol == DeliveryProtocol.Dspdm))
         {
             throw new DeliveryException(row
                 ? $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, a row of a DSPDM business object (its template's source is '{DspdmKinds.Source}'), which only the dspdm route writes. "
@@ -60,7 +44,7 @@ public static class RouteChecks
 
         // An Energistics object is no OSDU record either: the etp route writes objects alone, and no other route writes them.
         var energistics = EtpKinds.Is(kind);
-        if (energistics != (flow.Target.Protocol == DeliveryProtocol.OsduEtp))
+        if (energistics != (flow.Target.Protocol == DeliveryProtocol.Etp))
         {
             throw new DeliveryException(energistics
                 ? $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, an Energistics object (its template's source is '{EtpKinds.Source}'), which only the etp route writes. "
@@ -80,15 +64,15 @@ public static class RouteChecks
 
         switch (flow.Target.Protocol)
         {
-            case DeliveryProtocol.OsduFile when dataset:
+            case DeliveryProtocol.File when dataset:
                 throw new DeliveryException(
                     $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, a dataset, and the file route registers each file as a dataset of its own and writes the record beside them. "
                     + $"Deliver a dataset with its files by the dataset route ({keys.Shared("route")}: dataset), which registers it under its own id.");
-            case DeliveryProtocol.OsduDataset when !dataset && !Protocols.DatasetService.IsDatasetType(Identity.TargetId.EntityTypeFromKind(flow.Target.ProtocolOptions.DatasetKind)):
+            case DeliveryProtocol.Dataset when !dataset && !Protocols.DatasetService.IsDatasetType(Identity.TargetId.EntityTypeFromKind(flow.Target.ProtocolOptions.DatasetKind)):
                 throw new DeliveryException(
                     $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, which is not a dataset, so its files are registered as a dataset of {keys.Shared("target.protocolOptions.datasetKind")}, "
                     + $"and '{flow.Target.ProtocolOptions.DatasetKind}' is not a dataset kind.");
-            case DeliveryProtocol.OsduWorkflow when flow.Target.Workflow is { Anchor: WorkflowAnchor.Dataset } && !dataset:
+            case DeliveryProtocol.Workflow when flow.Target.Workflow is { Anchor: WorkflowAnchor.Dataset } && !dataset:
                 throw new DeliveryException(
                     $"{KeyPaths.Where(flow)}: {mapping} renders {kind}, which is not a dataset, and the workflow is anchored on a dataset registered with its files. "
                     + "Render the dataset the workflow reads (a descriptor such as dataset--File.Generic), or anchor the workflow on a storage record (anchor: storage).");
@@ -99,7 +83,7 @@ public static class RouteChecks
             return;
         }
 
-        var sendsBulk = flow.Target.Protocol != DeliveryProtocol.OsduWellLog || Planning.Planner.PayloadName(flow) is not null;
+        var sendsBulk = flow.Target.Protocol != DeliveryProtocol.Ddms || Planning.Planner.PayloadName(flow) is not null;
         if ((routing ?? DdmsRouting.Of(flow)).Problem(entityType, sendsBulk) is { } problem)
         {
             throw new DeliveryException($"{problem} ({mapping} renders {kind}.)");
@@ -112,10 +96,10 @@ public static class RouteChecks
     /// </summary>
     private static bool RegistersFiles(FlowDefinition flow) => flow.Target.Protocol switch
     {
-        DeliveryProtocol.OsduFile or DeliveryProtocol.OsduDataset or DeliveryProtocol.OsduFileAndDdms => true,
-        DeliveryProtocol.OsduManifest => Planning.Planner.PayloadName(flow) is not null,
-        DeliveryProtocol.OsduManifestAndDdms => flow.Source.Payloads.ContainsKey(PayloadParts.Files),
-        DeliveryProtocol.OsduWorkflow => flow.Target.Workflow?.Anchor == WorkflowAnchor.Dataset || flow.Source.Payloads.ContainsKey(PayloadParts.Files),
+        DeliveryProtocol.File or DeliveryProtocol.Dataset or DeliveryProtocol.FileAndDdms => true,
+        DeliveryProtocol.Manifest => Planning.Planner.PayloadName(flow) is not null,
+        DeliveryProtocol.ManifestAndDdms => flow.Source.Payloads.ContainsKey(PayloadParts.Files),
+        DeliveryProtocol.Workflow => flow.Target.Workflow?.Anchor == WorkflowAnchor.Dataset || flow.Source.Payloads.ContainsKey(PayloadParts.Files),
         _ => false,
     };
 }

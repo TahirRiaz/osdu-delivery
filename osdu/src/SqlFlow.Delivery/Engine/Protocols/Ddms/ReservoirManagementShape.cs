@@ -418,9 +418,9 @@ internal sealed class ReservoirManagementShape(DdmsShapeContext context) : IDdms
     /// <summary>Writes the record through Storage, with the data keys OSDU owns carried from the stored record.</summary>
     private async Task<long?> WriteRecordAsync(DeliveryWork work, DdmsRoute route, DeliverySteps steps, CancellationToken ct)
     {
-        if (work.Completed(OsduWellLogProtocol.MetadataStep) is { } done)
+        if (work.Completed(OsduDdmsProtocol.MetadataStep) is { } done)
         {
-            steps.Resumed(OsduWellLogProtocol.MetadataStep, done);
+            steps.Resumed(OsduDdmsProtocol.MetadataStep, done);
             return done.TryGetValue("version", out var text) ? RecordWriter.ParseVersion(text) ?? work.ExistingVersion : work.ExistingVersion;
         }
 
@@ -443,8 +443,8 @@ internal sealed class ReservoirManagementShape(DdmsShapeContext context) : IDdms
             values["version"] = v.ToString(CultureInfo.InvariantCulture);
         }
 
-        steps.Add(OsduWellLogProtocol.MetadataStep, started, status, values);
-        await work.ReportStepAsync(OsduWellLogProtocol.MetadataStep, values, ct).ConfigureAwait(false);
+        steps.Add(OsduDdmsProtocol.MetadataStep, started, status, values);
+        await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, values, ct).ConfigureAwait(false);
         return version;
     }
 

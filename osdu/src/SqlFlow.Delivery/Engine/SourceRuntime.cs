@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Engine.Worker;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.Delivery.Engine;
 
@@ -420,7 +421,7 @@ public sealed class SourceRuntime
             {
                 var protocol = await runtime.ProtocolAsync(ct).ConfigureAwait(false);
                 var probe = await protocol.ProbeAsync(ct).ConfigureAwait(false);
-                var route = RouteChecks.Name(flow.Target.Protocol);
+                var route = DeliveryProtocols.Name(flow.Target.Protocol);
                 if (probe.Reachable)
                 {
                     return;
@@ -466,7 +467,7 @@ public sealed class SourceRuntime
         FlowDefinition flow, FlowRuntime runtime, string operation, DeliveryRunPayload payload, InterfaceOrderPlan order, CancellationToken ct)
     {
         var log = runtime.Context.Loggers.CreateLogger("run");
-        var route = RouteChecks.Name(flow.Target.Protocol);
+        var route = DeliveryProtocols.Name(flow.Target.Protocol);
         var started = _context.Time.GetUtcNow().UtcDateTime;
         log.LogInformation("Interface started: {Operation} by the {Route} route ({Reason}).", operation, route, flow.RouteReason);
         await EmitAsync(flow, "interface.started", $"{operation} by the {route} route").ConfigureAwait(false);
@@ -502,7 +503,7 @@ public sealed class SourceRuntime
         var name = flow.Interface ?? string.Empty;
         var waits = order.WaitsFor(name);
         return new InterfaceOutcome(
-            name, flow.Id, flow.LedgerName, RouteChecks.Name(flow.Target.Protocol), flow.RouteReason,
+            name, flow.Id, flow.LedgerName, DeliveryProtocols.Name(flow.Target.Protocol), flow.RouteReason,
             waits.Select(w => w.DependsOn).ToList(), waits.Select(w => $"{w.DependsOn}: {w.Why}").ToList(), order.WaveOf(name),
             state, reason, started, completed, result);
     }

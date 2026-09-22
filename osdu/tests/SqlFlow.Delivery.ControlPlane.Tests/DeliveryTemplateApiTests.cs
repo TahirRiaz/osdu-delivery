@@ -587,7 +587,7 @@ public sealed class DeliveryTemplateApiTests
                   endpoint: https://osdu.example.test
                   headers:
                     data-partition-id: {scope}
-                  protocol: osduRecord
+                  protocol: storage
                 """,
             DefinitionJson = $$"""{"name":"{{flowName}}","flowKind":"delivery"}""",
             Active = true,

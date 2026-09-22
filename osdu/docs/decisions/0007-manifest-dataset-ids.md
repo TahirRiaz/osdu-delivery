@@ -10,11 +10,11 @@ the datasets of the previous delivery, and the ledger could not name what a reco
 
 ## Decision
 
-- The `osduManifest` protocol gives every dataset entry an id derived from the record id and the dataset
+- The `manifest` protocol gives every dataset entry an id derived from the record id and the dataset
   kind: `{partition}:{datasetType}:{recordSuffix}-{chunkIndex}`.
 - The record's dataset list is written with those ids before the workflow runs, and the ids are recorded on
   the record's target state, so purge can delete them and a redelivery overwrites them.
-- The `osduFile` protocol, which registers datasets itself through the file service, lets the service assign
+- The `file` protocol, which registers datasets itself through the file service, lets the service assign
   the id and records what came back; the ids of every delivery stay on the attempts.
 
 ## Consequences

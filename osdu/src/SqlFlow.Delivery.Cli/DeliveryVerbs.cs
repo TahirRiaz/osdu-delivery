@@ -10,6 +10,7 @@ using SqlFlow.Delivery.Engine.Planning;
 using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Templates;
@@ -170,7 +171,7 @@ internal static class DeliveryVerbs
             result["ledger"] = flow.LedgerName;
             result["route"] = new JsonObject
             {
-                ["name"] = RouteChecks.Name(flow.Target.Protocol),
+                ["name"] = DeliveryProtocols.Name(flow.Target.Protocol),
                 ["reason"] = flow.RouteReason,
             };
             result["after"] = new JsonArray(flow.After.Select(a => (JsonNode)JsonValue.Create(a)).ToArray());
@@ -205,7 +206,7 @@ internal static class DeliveryVerbs
             if (flow.Interface is { } name && order is not null)
             {
                 context.Out.WriteLine($"    ledger      {flow.LedgerName}");
-                context.Out.WriteLine($"    route       {RouteChecks.Name(flow.Target.Protocol)}: {flow.RouteReason}");
+                context.Out.WriteLine($"    route       {DeliveryProtocols.Name(flow.Target.Protocol)}: {flow.RouteReason}");
                 context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"    wave        {order.WaveOf(name)}"));
                 var waits = order.WaitsFor(name);
                 if (waits.Count == 0)

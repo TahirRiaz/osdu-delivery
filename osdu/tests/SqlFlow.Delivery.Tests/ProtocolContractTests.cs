@@ -175,7 +175,7 @@ public sealed class ProtocolContractTests
         using (runtime)
         {
             var options = new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms" };
-            var protocol = new OsduWellLogProtocol(client, options, Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, options, Samples.Logger<OsduDdmsProtocol>());
             Assert.True((await protocol.DeliverAsync(Work(true, true, new ParquetChunks(1)))).Succeeded);
             Assert.True((await protocol.DeliverAsync(Work(false, true, new ParquetChunks(3)))).Succeeded);
             await protocol.VerifyAsync(RecordId, 11);
@@ -244,7 +244,7 @@ public sealed class ProtocolContractTests
         var (client, runtime) = Client(handler, "http://localhost");
         using (runtime)
         {
-            var protocol = new OsduWellLogProtocol(client, new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms" }, Samples.Logger<OsduWellLogProtocol>());
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms" }, Samples.Logger<OsduDdmsProtocol>());
             var work = Work(true, collection.Bulk, new ParquetChunks(1), existing: 10) with { TargetId = id, Document = TestSchema.Doc(CollectionDocument(collection, id)) };
             var outcome = await protocol.DeliverAsync(work);
             Assert.True(outcome.Succeeded, outcome.Failure?.Message);
