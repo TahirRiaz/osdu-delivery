@@ -68,6 +68,8 @@ Each of these lets a host add something of its own without SQLFlow knowing what 
 | `3561809` | A host module declares its own database, migrated, reported and verified alongside the catalog (`ModuleDatabase`), so a module's schema upgrades without touching SQLFlow's. |
 | `a1742b2`, `f299024`, `30e8e4f` | A module asks whether its rows are reachable on a host's connection (`ModuleDatabase.IsReachableOn`), which is what decides whether it may share the host's transaction. A sync extension whose tables are in a database of its own cannot: Azure SQL has no cross-database statement, and the two databases may not share a server. The `ICatalogSyncExtension` contract says what each kind of extension must then do. |
 
+| `PENDING` | The control plane reads the local development env file the CLI has always read (`ControlPlaneHost.ApplyLocalEnvFile`, `SQLFLOW_LOCAL_ENV_FILE` to opt out). A host and the documents it runs now live in one checkout, so the nearest `.sqlflow/env` at the content root or any parent is that deployment's, and the in-process node resolves a flow's `${env:...}` against this very process. The process environment still wins, and a test estate opts out so it never picks up a developer's real credentials. Upstream wants this regardless: it removes a launcher script's job of copying the file in by hand. |
+
 ### Flow kinds
 
 | Commit | The extension point |

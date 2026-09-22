@@ -130,6 +130,10 @@ export default defineConfig({
       env: {
         ASPNETCORE_URLS: E2E.apiBaseUrl,
         ASPNETCORE_ENVIRONMENT: "Production",
+        // The host reads the nearest .sqlflow/env at its content root or above, which in a developer's checkout is their
+        // own: real credentials and a live OSDU partition. This estate is hermetic and must never pick those up, so it
+        // opts out and declares below exactly what it resolves.
+        SQLFLOW_LOCAL_ENV_FILE: "false",
         // The catalog connection reaches the control plane as a reference, the way a deployment's does: it can carry a
         // password, and a literal secret never goes into configuration.
         ControlPlane__Catalog__ConnectionReference: "${env:SQLFLOW_E2E_CATALOG_CONNECTION}",
