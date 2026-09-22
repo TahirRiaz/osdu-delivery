@@ -64,7 +64,8 @@ public static class DeliveryServices
         // that is what decides whether its rows can ride the catalog's transaction or need a connection of their own.
         services.AddSingleton<ICatalogSyncExtension>(sp => new DeliveryCatalogSync(
             sp.GetRequiredService<DeliveryDocumentLoader>(),
-            sp.GetService<IDbContextFactory<OsduDbContext>>()));
+            sp.GetService<IDbContextFactory<OsduDbContext>>(),
+            sp.GetService<ISecretResolver>()));
 
         // Protocols and the completion callback. The logging listener is always on; hosts add their own (a live
         // feed, metrics, a webhook) by registering more IDeliveryListener instances.

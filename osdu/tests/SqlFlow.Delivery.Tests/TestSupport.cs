@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -409,7 +409,11 @@ public sealed class FakeProtocolFactory : IProtocolFactory
         _protocol = protocol;
     }
 
-    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default) => Task.FromResult(_protocol);
+    /// <summary>Stands in for a protocol that cannot be built at all: an unresolved secret, an identity out of reach.</summary>
+    public Func<Exception?>? FailWith { get; set; }
+
+    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default)
+        => FailWith?.Invoke() is { } failure ? Task.FromException<IDeliveryProtocol>(failure) : Task.FromResult(_protocol);
 }
 
 /// <summary>
@@ -589,11 +593,11 @@ public static class Samples
     public static string Data => Path.Combine(Source, "data");
 
     /// <summary>
-    /// The partition the sample flows search and deliver to, whose cache the sample delivery flow reads. The estate names
-    /// it as the reference a node holds, and a cache is scoped by the partition its flows declare, not by the value that
-    /// reference resolves to, so a cache flow and the delivery flows that read its cache agree by naming it the same way.
+    /// The partition the sample flows search and deliver to, whose cache the sample delivery flow reads. A cache is keyed
+    /// by the partition a flow actually reaches, so this is the resolved partition even though the estate's documents name
+    /// it as a reference: capture and read both resolve, so both agree.
     /// </summary>
-    public const string SampleCacheScope = "${env:OSDU_DATA_PARTITION}";
+    public const string SampleCacheScope = SamplePartition;
 
     /// <summary>
     /// What that reference resolves to on a node, and so what the ids the sample estate mints carry: the render
@@ -624,7 +628,7 @@ public static class Samples
     {
         var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
         return new CacheDeclaration(
-            flow.Scope,
+            SampleCacheScope,
             flow.Types.Select(t => new CacheTypeDeclaration(flow.Name, t.Name, t.EntityType, t.Kind, t.Query, t.Fields, t.OnChange)));
     }
 
@@ -643,9 +647,11 @@ public static class Samples
     {
         ArgumentNullException.ThrowIfNull(store);
         var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
-        var builder = new SnapshotBuilder(store, flow.Scope, flow.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());
+        // The estate names its partition as a reference; a cache is keyed by what that resolves to, as a capture and a
+        // render both key it.
+        var builder = new SnapshotBuilder(store, SampleCacheScope, flow.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());
         var write = await builder.ImportDirectoryAsync(CacheRecords, flow.Types, new CacheCapture(null, "tests", "sample files"));
-        return (await store.LoadAsync(flow.Scope, write.Snapshot.Version))!;
+        return (await store.LoadAsync(SampleCacheScope, write.Snapshot.Version))!;
     }
 
     /// <summary>Saves the sample templates into <paramref name="store"/> and loads each once, returning what was saved.</summary>

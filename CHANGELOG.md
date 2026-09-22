@@ -157,6 +157,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **A cache is keyed by the partition a flow reaches, not by the text its document spells it with.** An estate whose
+  documents name their partition `${env:OSDU_DATA_PARTITION}` was keying its cache by that literal string: a capture
+  under the real partition could never be read, two estates sharing a variable name but delivering to different
+  partitions would have shared one cache, and two documents naming one partition differently would each have needed
+  their own copy of identical reference data. The partition is now resolved wherever a cache is keyed: the render's
+  read, a refresh's capture, an offline `sqlflow cache import`, and the catalog sync that records a partition's
+  declarations. The sync resolves once per document and keys everything from that, and a control plane that cannot
+  resolve a reference records it as written rather than failing the sync.
+
 - **The sample estate stops asking for an API Management key.** Its flows sent
   `Ocp-Apim-Subscription-Key: ${env:APIM_KEY}` on every request, which is an Azure API Management gateway key and
   nothing to do with OSDU: a platform reached directly takes a bearer token and no such header. The estate demanded a

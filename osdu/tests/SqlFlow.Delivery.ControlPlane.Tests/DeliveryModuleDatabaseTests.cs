@@ -1,3 +1,5 @@
+using SqlFlow.Core.Secrets;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -32,7 +34,20 @@ public sealed class DeliveryModuleDatabaseTests
         ["Document@1.0.0", "WellLog@1.4.0", "Wellbore@1.0.0", "WellboreTrajectory@1.3.0"];
 
     /// <summary>The partition the sample cache flow declares its types for.</summary>
-    private const string SampleScope = "${env:OSDU_DATA_PARTITION}";
+    private const string SampleScope = "opendes";
+
+    /// <summary>
+    /// The sample estate names its partition as the reference a node holds, so this assembly supplies it before any test
+    /// reads a sample document, and never over a value the process was started with.
+    /// </summary>
+    [ModuleInitializer]
+    internal static void UseSampleEstateReferences()
+    {
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("OSDU_DATA_PARTITION")))
+        {
+            Environment.SetEnvironmentVariable("OSDU_DATA_PARTITION", SampleScope);
+        }
+    }
 
     [SkippableFact]
     public async Task A_module_database_of_its_own_takes_the_rows_and_the_catalog_database_never_sees_them()
@@ -244,9 +259,16 @@ public sealed class DeliveryModuleDatabaseTests
             return estate;
         }
 
-        /// <summary>The sync as a host composes it: the delivery loader, and the module database when the host has one.</summary>
+        /// <summary>
+        /// The sync as a host composes it: the delivery loader, the module database when the host has one, and the
+        /// resolver that turns a document's ${env:...} into the partition a cache is keyed by, which is what a capture and
+        /// a render both key it under.
+        /// </summary>
         public DeliveryCatalogSync Sync()
-            => new(new DeliveryDocumentLoader(), _moduleConnectionString is null ? null : new ModuleContexts(_moduleConnectionString));
+            => new(
+                new DeliveryDocumentLoader(),
+                _moduleConnectionString is null ? null : new ModuleContexts(_moduleConnectionString),
+                new SecretResolver([new EnvSecretProvider()]));
 
         /// <summary>A context on the database the module's rows are in, for reading what a sync left.</summary>
         public OsduDbContext ModuleContext()

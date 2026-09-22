@@ -110,6 +110,23 @@ public sealed class RenderResolver
     /// (<c>target.headers.data-partition-id</c>). A mapping that reads nothing from the cache renders against no cache at all,
     /// so refreshing a cache never moves the render context of records that never read it.
     /// </summary>
+    /// <summary>
+    /// The partition a flow's requests carry, resolved: its <c>data-partition-id</c> header with every reference expanded,
+    /// checked to be a partition a cache can be named by.
+    /// </summary>
+    private async Task<string> PartitionAsync(FlowDefinition flow, string where, CancellationToken ct)
+    {
+        var declared = flow.Target.Headers
+            .FirstOrDefault(h => h.Key.Equals(CacheScope.PartitionHeader, StringComparison.OrdinalIgnoreCase)).Value;
+        if (string.IsNullOrWhiteSpace(declared))
+        {
+            throw new FlowValidationException(
+                $"{where}: the headers declare no '{CacheScope.PartitionHeader}', so there is no partition whose cache the flow uses.");
+        }
+
+        return CacheScope.Normalize(await _secrets.ResolveAsync(declared, ct).ConfigureAwait(false), where);
+    }
+
     private async Task<(ReferenceSnapshot References, string? Scope)> CacheAsync(FlowDefinition flow, MappingDefinition mapping, string where, CancellationToken ct)
     {
         var readsCache = mapping.Entries.Any(e => e.Source?.Kind == MappingSourceKind.Cache);
@@ -118,7 +135,11 @@ public sealed class RenderResolver
             return (ReferenceSnapshot.Empty, null);
         }
 
-        var scope = CacheScope.Of(flow.Target.Headers, $"{where}: target");
+        // The cache holds one partition's reference data, so it is keyed by the partition the flow actually reaches, not
+        // by the text the document spells it with. An estate that names its partition ${env:...} would otherwise key its
+        // cache by that text: the same reference in two estates delivering to two partitions would share one cache, and
+        // two documents naming one partition different ways would each need their own capture of identical data.
+        var scope = await PartitionAsync(flow, $"{where}: target", ct).ConfigureAwait(false);
         if (_cache is null)
         {
             throw new FlowValidationException(

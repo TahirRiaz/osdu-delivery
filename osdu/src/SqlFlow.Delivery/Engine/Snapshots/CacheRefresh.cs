@@ -40,7 +40,12 @@ public sealed class CacheRefresher
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         var store = _context.Cache ?? throw new DeliveryException(
             $"Cache flow '{flow.Name}' writes into the cache of its partition, which lives in the module's database, and this host was started without it. Run it through the control plane or a node, or start the CLI with the module's connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB), or with --db when the catalog's database holds the osdu schema.");
-        var scope = flow.Scope;
+        // The capture is keyed by the partition the flow actually reaches, the way a render's read of that cache is, so a
+        // document naming its partition ${env:...} captures into the partition's cache rather than into one named after
+        // the text. Both sides resolve, so both sides agree.
+        var scope = CacheScope.Normalize(
+            await _context.Secrets.ResolveAsync(flow.Scope, ct).ConfigureAwait(false),
+            $"{flow.SourcePath ?? flow.Name}: source");
         var declaration = await store.DeclarationAsync(scope, ct).ConfigureAwait(false);
         declaration.ThrowOnConflicts(flow.Name, flow.Types);
         var spec = CaptureSpec(flow, values, declaration);

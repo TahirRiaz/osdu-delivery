@@ -1,3 +1,4 @@
+using SqlFlow.Core.Secrets;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -43,6 +44,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     private const int MaxTemplateVersionLength = 64;
 
     private readonly DeliveryDocumentLoader _documents;
+    private readonly ISecretResolver? _secrets;
     private readonly IDbContextFactory<OsduDbContext>? _module;
 
     /// <summary>
@@ -50,11 +52,39 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     /// them. A host that registered no module database of its own passes none, and the rows are then the catalog
     /// database's own, which is where the <c>osdu</c> schema sits unless a deployment gives the module a database.
     /// </summary>
-    public DeliveryCatalogSync(DeliveryDocumentLoader documents, IDbContextFactory<OsduDbContext>? module = null)
+    public DeliveryCatalogSync(
+        DeliveryDocumentLoader documents,
+        IDbContextFactory<OsduDbContext>? module = null,
+        ISecretResolver? secrets = null)
     {
         ArgumentNullException.ThrowIfNull(documents);
         _documents = documents;
         _module = module;
+        _secrets = secrets;
+    }
+
+    /// <summary>
+    /// The partition <paramref name="cache"/> fills, resolved where this host can resolve it, and as the document writes
+    /// it where it cannot. Resolution never fails a sync: a repository is described by what its documents say, and a value
+    /// this host has no way to know is not a reason to refuse the document.
+    /// </summary>
+    private async Task<string> ResolvedScopeAsync(CacheDefinition cache, CancellationToken ct)
+    {
+        if (_secrets is null)
+        {
+            return cache.Scope;
+        }
+
+        try
+        {
+            return Snapshots.CacheScope.Normalize(
+                await _secrets.ResolveAsync(cache.Scope, ct).ConfigureAwait(false),
+                cache.SourcePath ?? cache.Name);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return cache.Scope;
+        }
     }
 
     public async Task<CatalogSyncExtensionResult> SyncAsync(
@@ -402,7 +432,16 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         }
 
         // What the other repositories declare for the same partitions: this repository's declarations have to agree with them.
-        var scopes = parsed.Select(p => p.Cache.Scope).Distinct(StringComparer.Ordinal).ToList();
+        // Each document's partition is resolved once, and everything below is keyed by what it resolved to: the scopes
+        // read from other repositories, the conflict check, and the rows written. Resolving in one place is what keeps
+        // those three agreeing with each other and with the capture and the render.
+        var scopeOf = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (cache, _) in parsed)
+        {
+            scopeOf[cache.Name] = await ResolvedScopeAsync(cache, ct).ConfigureAwait(false);
+        }
+
+        var scopes = scopeOf.Values.Distinct(StringComparer.Ordinal).ToList();
         var names = flows.Keys.ToList();
         var elsewhere = await context.DeliveryCacheDefinitions.AsNoTracking()
             .Where(c => c.RepoId != repoId && scopes.Contains(c.Scope) && !names.Contains(c.FlowName))
@@ -419,7 +458,11 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
         foreach (var (cache, relative) in parsed)
         {
-            var scope = cache.Scope;
+            // A cache is keyed by the partition its flow reaches, so the declaration is recorded under the resolved
+            // partition, which is what a capture and a render both look under. A control plane that cannot resolve the
+            // reference records it as written: the declaration is then found by a node that resolves it the same way, and
+            // one that does not fails naming the partition it could not find rather than writing under two keys.
+            var scope = scopeOf[cache.Name];
             var endpoint = Clip(cache.Source.Endpoint, 1000);
             foreach (var type in cache.Types)
             {

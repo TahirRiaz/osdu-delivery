@@ -377,7 +377,12 @@ internal static class DeliveryVerbs
                 }
 
                 var full = Path.GetFullPath(directory);
-                var builder = new SnapshotBuilder(store, cache.Scope, cache.Name, engine.Time, engine.Loggers.CreateLogger<SnapshotBuilder>());
+                // Keyed by the partition the document actually names, resolved, so an offline import lands in the same
+                // cache a capture writes and a render reads.
+                var importScope = CacheScope.Normalize(
+                    await engine.Secrets.ResolveAsync(cache.Scope, ct).ConfigureAwait(false),
+                    cache.SourcePath ?? cache.Name);
+                var builder = new SnapshotBuilder(store, importScope, cache.Name, engine.Time, engine.Loggers.CreateLogger<SnapshotBuilder>());
                 var write = await builder.ImportDirectoryAsync(
                     full, cache.Types, new CacheCapture(null, "cli:" + Environment.UserName, $"files under {full}"), ct).ConfigureAwait(false);
                 var records = write.Snapshot.Types.Sum(t => t.Items.Count);
