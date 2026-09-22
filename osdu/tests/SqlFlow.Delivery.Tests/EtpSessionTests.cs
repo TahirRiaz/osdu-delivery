@@ -57,10 +57,11 @@ public class EtpSessionTests : IDisposable
     public async Task Every_message_this_client_sends_carries_an_even_id_above_the_last_one()
     {
         await using var server = new FakeEtpServer();
-        await using var session = await OpenAsync(server);
+        await using var session = await OpenAsync(server, WithoutKeepAlive);
         await session.CallAsync(Info("eml:///dataspace('demo/study')"));
         await session.CallAsync(Info("eml:///dataspace('demo/other')"));
 
+        // The session opened and made two calls, and sends nothing of its own: exactly three messages reached the server.
         var ids = server.Received.Select(frame => frame.Header.MessageId).ToList();
         Assert.Equal(3, ids.Count);
         Assert.All(ids, id => Assert.Equal(0, id % 2));
@@ -239,8 +240,16 @@ public class EtpSessionTests : IDisposable
         GC.SuppressFinalize(this);
     }
 
-    private Task<EtpSession> OpenAsync(FakeEtpServer server)
-        => EtpSession.OpenAsync(server.Uri, Headers, _http.Invoker, new UrlGuard([], _http.Network), Options, NullLogger.Instance);
+    private Task<EtpSession> OpenAsync(FakeEtpServer server, EtpSessionOptions? options = null)
+        => EtpSession.OpenAsync(server.Uri, Headers, _http.Invoker, new UrlGuard([], _http.Network), options ?? Options, NullLogger.Instance);
+
+    /// <summary>
+    /// The session options with the keep-alive off, for a test that counts what reached the server. A session pings when
+    /// it has been idle for <see cref="EtpSessionOptions.KeepAlive"/>, which this class keeps at 200ms so the keep-alive
+    /// itself can be tested; every ping is a message the server records, so a test asserting an exact frame count would
+    /// otherwise be counting how long the machine took between two calls.
+    /// </summary>
+    private static EtpSessionOptions WithoutKeepAlive => Options with { KeepAlive = TimeSpan.Zero };
 
     private static GetDataspaceInfo Info(string uri) => new()
     {

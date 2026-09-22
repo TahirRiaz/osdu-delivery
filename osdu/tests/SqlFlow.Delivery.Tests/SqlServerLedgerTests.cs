@@ -646,11 +646,18 @@ public class SqlServerLedgerTests
         // SQL Server turns a statement's row locks into a lock on the whole table once the statement holds 5,000 of them on
         // one index, and a lock on the record, event or attempt table stops every node of every flow. Each write below
         // reaches 6,000 records, so each has to run in slices.
-        var ledger = await LedgerAsync(_clock);
+        //
+        // The measure is a database-wide counter: sys.dm_db_index_operational_stats reports every escalation on these
+        // tables, whoever caused it. This collection disables parallelization, but that only orders collections against
+        // each other within one process, and it cannot stop another test process, or anything else sharing the server's
+        // test database, from escalating on the same tables while this test measures. So this one test works in a
+        // database of its own, where the only escalations possible are the ones it caused.
+        await using var scratch = await ScratchLedgerAsync();
+        var ledger = new OsduLedger(scratch.Context, _clock);
         const int Records = 6_000;
         var s1 = Guid.NewGuid();
         var records = Enumerable.Range(0, Records).Select(i => Work($"bulk-{i:D5}", s1, $"0:{i * 10}:10", "mh", Now.AddDays(-1))).ToList();
-        var before = await LockEscalationsAsync();
+        var before = await LockEscalationsAsync(scratch.ConnectionString);
 
         Assert.Equal(Records, (await ledger.UpsertPendingAsync(_flow, records)).Staged);
         await ledger.AddWorkBatchAsync(new WorkBatchState { SubmissionId = s1, FlowId = _flow, Index = 0, Location = "work/" + _run, RecordCount = Records, CreatedUtc = Now });
@@ -671,13 +678,13 @@ public class SqlServerLedgerTests
         Assert.Equal(Records, await ledger.CountAsync(_flow, s1, RecordStatus.Delivered));
         Assert.Equal(LeaseApplied.None, await ledger.CloseLeaseAsync(token, new LeaseClosing { End = LeaseEnd.Done, Delivered = Records }, Now));
         Assert.Equal(Records, await ledger.ForceRedeliverAsync(_flow, records.Select(r => r.DeliveryKey), RedeliverScope.Metadata, Now));
-        Assert.Equal(before, await LockEscalationsAsync());
+        Assert.Equal(before, await LockEscalationsAsync(scratch.ConnectionString));
 
         // The measure is live: one statement over the same records does lock the whole table, rolled back at once. The
         // database escalates only while no other session holds a lock on the table. The suite's other classes are done by
         // now, but other processes may share the database, so the statement is run again, a moment apart, until that
         // moment comes.
-        await using var connection = new SqlConnection(ConnectionString.Value);
+        await using var connection = new SqlConnection(scratch.ConnectionString);
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = """
@@ -687,16 +694,16 @@ public class SqlServerLedgerTests
             """;
         command.Parameters.Add(new SqlParameter("@flow", System.Data.SqlDbType.UniqueIdentifier) { Value = _flow });
         var giveUp = DateTime.UtcNow.AddMinutes(1);
-        while (await LockEscalationsAsync() == before && DateTime.UtcNow < giveUp)
+        while (await LockEscalationsAsync(scratch.ConnectionString) == before && DateTime.UtcNow < giveUp)
         {
             await command.ExecuteNonQueryAsync();
-            if (await LockEscalationsAsync() == before)
+            if (await LockEscalationsAsync(scratch.ConnectionString) == before)
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(100));
             }
         }
 
-        Assert.True(await LockEscalationsAsync() > before, "One statement over 6,000 records should have locked the whole record table within a minute of trying.");
+        Assert.True(await LockEscalationsAsync(scratch.ConnectionString) > before, "One statement over 6,000 records should have locked the whole record table within a minute of trying.");
     }
 
     [SkippableFact]
@@ -810,9 +817,76 @@ public class SqlServerLedgerTests
     /// index whose locks reached the threshold; attempts are counted on every index of a statement that holds many locks in
     /// all, and say nothing on their own.
     /// </summary>
-    private static async Task<long> LockEscalationsAsync()
+    /// <summary>
+    /// A migrated ledger database of this test's own on the test server, dropped when the test ends. A test that measures
+    /// a database-wide counter cannot share a database with anything else, or it measures the other writer too.
+    /// </summary>
+    private static async Task<ScratchLedger> ScratchLedgerAsync()
     {
-        await using var connection = new SqlConnection(ConnectionString.Value);
+        RequireDatabase();
+        var name = "osdu_lock_escalation_" + Guid.NewGuid().ToString("N")[..12];
+        var master = new SqlConnectionStringBuilder(ConnectionString.Value!) { InitialCatalog = "master" }.ConnectionString;
+        var connectionString = new SqlConnectionStringBuilder(ConnectionString.Value!) { InitialCatalog = name }.ConnectionString;
+
+        await ExecuteOnAsync(master, $"CREATE DATABASE [{name}];");
+        try
+        {
+            // The ledger's reads run under snapshot isolation, and the schema is the module's own migrations, so the
+            // scratch database is the same database the suite's shared one is, with nothing else in it.
+            await ExecuteOnAsync(master, $"ALTER DATABASE [{name}] SET ALLOW_SNAPSHOT_ISOLATION ON;");
+            await using var db = new OsduDbContext(OsduDbContext.SqlServerOptions(connectionString));
+            await db.Database.MigrateAsync();
+        }
+        catch
+        {
+            await DropAsync(master, name);
+            throw;
+        }
+
+        return new ScratchLedger(master, name, connectionString);
+    }
+
+    private static async Task ExecuteOnAsync(string connectionString, string sql)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task DropAsync(string master, string name)
+    {
+        try
+        {
+            // Single-user first, so a connection the test left open cannot keep the database alive.
+            await ExecuteOnAsync(master, $"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}];");
+        }
+        catch (SqlException)
+        {
+            // A scratch database left behind names itself and costs nothing; failing the test over the cleanup would hide
+            // whatever the test actually found.
+        }
+    }
+
+    /// <summary>The scratch database, with the context factory a ledger is built over.</summary>
+    private sealed class ScratchLedger(string master, string name, string connectionString) : IAsyncDisposable
+    {
+        public string ConnectionString { get; } = connectionString;
+
+        public OsduDbContext Context() => new(OsduDbContext.SqlServerOptions(ConnectionString));
+
+        public async ValueTask DisposeAsync()
+        {
+            // The drop sets the database single-user with rollback, which evicts whatever still holds a connection to it.
+            // Clearing the process's pools would reach every other test running beside this one, so it is not done here.
+            await DropAsync(master, name);
+        }
+    }
+
+    private static async Task<long> LockEscalationsAsync(string connectionString)
+    {
+        await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = """
