@@ -126,13 +126,12 @@ services:
       SQLFLOW_CONN_PRE: "Server=mssql;Database=OsduDeliveryPre;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
       SQLFLOW_CONN_DWH: "Server=mssql;Database=OsduDeliveryIng;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
       # Every ${env:...} reference the flows declare resolves here, on the node; the sample estate names these
-      # ten. The control plane carries none of them. A plan run needs no OSDU target, so they can stay empty.
+      # nine. The control plane carries none of them. A plan run needs no OSDU target, so they can stay empty.
       OSDU_URL: ${OSDU_URL:-}
       OSDU_TOKEN_URL: ${OSDU_TOKEN_URL:-}
       OSDU_SCOPE: ${OSDU_SCOPE:-}
       OSDU_CLIENT_ID: ${OSDU_CLIENT_ID:-}
       OSDU_CLIENT_SECRET: ${OSDU_CLIENT_SECRET:-}
-      APIM_KEY: ${APIM_KEY:-}
       # Where the estate delivers, and under whose access and legal terms: a flow names these rather than writing a
       # partition, a group or a tag into a document, so the same document moves from test to prod unchanged.
       OSDU_DATA_PARTITION: ${OSDU_DATA_PARTITION:-}

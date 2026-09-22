@@ -157,6 +157,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The sample estate stops asking for an API Management key.** Its flows sent
+  `Ocp-Apim-Subscription-Key: ${env:APIM_KEY}` on every request, which is an Azure API Management gateway key and
+  nothing to do with OSDU: a platform reached directly takes a bearer token and no such header. The estate demanded a
+  credential its target does not use, so a run failed resolving a reference no one could supply. The header is gone
+  from the flows, the cache flow, the deploy templates and the docs. Redaction still covers it: a flow that does sit
+  behind a gateway and sets the header keeps it out of logs and off redirects, which the platform's own suites assert.
+
 - **An estate names where it delivers, rather than writing it into its documents.** The partition a flow delivers
   to (`target.headers.data-partition-id` and the `dataPartition` render parameter), the entitlements groups every
   record is owned and readable by, and the legal tag it carries are all `${env:...}` references the node holds:

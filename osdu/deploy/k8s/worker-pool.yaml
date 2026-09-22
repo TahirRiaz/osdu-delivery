@@ -81,9 +81,6 @@ spec:
             - name: OSDU_CLIENT_SECRET
               valueFrom:
                 secretKeyRef: { name: osdu-delivery-secrets, key: osdu-client-secret }
-            - name: APIM_KEY
-              valueFrom:
-                secretKeyRef: { name: osdu-delivery-secrets, key: apim-key }
             # Where the estate delivers, and under whose access and legal terms: the flows name these rather than
             # writing a partition, a group or a tag into a document.
             - name: OSDU_DATA_PARTITION

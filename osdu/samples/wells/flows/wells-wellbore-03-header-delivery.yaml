@@ -40,7 +40,6 @@ target:
       body:
         scope: ${env:OSDU_SCOPE}
   headers:
-    Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
     data-partition-id: ${env:OSDU_DATA_PARTITION}
   protocol: osduRecord
 

@@ -89,7 +89,6 @@ document moves from test to prod unchanged.
 | `${env:OSDU_ACL_OWNER}`, `${env:OSDU_ACL_VIEWER}` | The entitlements groups every record the sample estate delivers is owned and readable by. |
 | `${env:OSDU_LEGAL_TAG}` | The legal tag every record the sample estate delivers carries. |
 | `${env:OSDU_TOKEN_URL}`, `${env:OSDU_SCOPE}`, `${env:OSDU_CLIENT_ID}`, `${env:OSDU_CLIENT_SECRET}` | The OAuth2 client-credentials flow the sample estate authenticates with. |
-| `${env:APIM_KEY}` | The API management subscription key the sample estate's target requires. |
 
 A `plan` run needs no OSDU target, so these can stay empty until one exists.
 

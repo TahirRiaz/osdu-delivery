@@ -41,7 +41,6 @@ function cli(...args: string[]): string {
         OSDU_CLIENT_ID: "the-e2e-authenticates-with-nothing",
         OSDU_CLIENT_SECRET: "the-e2e-authenticates-with-nothing",
         OSDU_SCOPE: "the-e2e-authenticates-with-nothing",
-        APIM_KEY: "the-e2e-authenticates-with-nothing",
       },
     },
   );

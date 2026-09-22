@@ -69,7 +69,6 @@ target:
     secretRef: ${env:OSDU_CLIENT_SECRET}
     token: { url: ${env:OSDU_TOKEN_URL}, body: { scope: ${env:OSDU_SCOPE} }, basicAuthClient: false, tokenPath: access_token, applyPrefix: "Bearer " }
   headers:                         # extra headers on every request
-    Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
     data-partition-id: dev         # required: every OSDU service rejects a request without it, so the loader insists on it; its cache is the one the mapping reads
   # the route type: storage | file | dataset | manifest | ddms | fileAndDdms | manifestAndDdms | workflow | dspdm | etp,
   # or the protocol it maps onto: osduRecord | osduFile | osduDataset | osduManifest | osduWellLog | osduFileAndDdms |
@@ -1060,7 +1059,6 @@ source:
       body:
         scope: ${env:OSDU_SCOPE}
   headers:
-    Ocp-Apim-Subscription-Key: ${env:APIM_KEY}
     data-partition-id: opendes
 
 # A changed cached value rewrites the documents built from it. By default (onChange: auto) the affected records are tagged
