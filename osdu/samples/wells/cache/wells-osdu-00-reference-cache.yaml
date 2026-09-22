@@ -40,13 +40,13 @@ types:
     fields: [data.Code, data.Name, data.ID]
   - kind: "osdu:wks:reference-data--LogCurveBusinessValue:*"
     name: LogCurveBusinessValue
-    fields: [data.Code, data.Name]
+    fields: [data.Code, data.Name, data.ID]
   - kind: "osdu:wks:reference-data--VerticalMeasurementType:*"
     name: VerticalMeasurementType
-    fields: [data.Code, data.Name]
+    fields: [data.Code, data.Name, data.ID]
   - kind: "osdu:wks:reference-data--TrajectoryStationPropertyType:*"
     name: TrajectoryStationPropertyType
-    fields: [data.Code, data.Name]
+    fields: [data.Code, data.Name, data.ID]
   - kind: "osdu:wks:master-data--Wellbore:*"
     name: Wellbore
     fields:

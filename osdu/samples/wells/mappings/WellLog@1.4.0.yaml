@@ -65,7 +65,9 @@ mappings:
     modifiers: [trim]
   - target: osdu.data.WellboreID
     source: cache.Wellbore.id
-    findBy: cache.Wellbore.FacilityName = dataset.wellbore_uwi
+    findBy:
+      - cache.Wellbore.FacilityName = dataset.wellbore_uwi
+      - cache.Wellbore.Alias = dataset.wellbore_uwi
   - target: osdu.data.LogVersion
     source: dataset.log_version
   - target: osdu.data.LogActivity
@@ -101,6 +103,7 @@ mappings:
     findBy:
       - cache.UnitOfMeasure.Code = dataset.elev_meas_ref
       - cache.UnitOfMeasure.Name = dataset.elev_meas_ref
+      - cache.UnitOfMeasure.ID = dataset.elev_meas_ref
       - cache.UnitOfMeasure.id = dataset.elev_meas_ref
     modifiers:
       - split: { separator: " ", part: 2 }
@@ -118,6 +121,7 @@ mappings:
     findBy:
       - cache.UnitOfMeasure.Code = dataset.curves.curve_unit
       - cache.UnitOfMeasure.Name = dataset.curves.curve_unit
+      - cache.UnitOfMeasure.ID = dataset.curves.curve_unit
       - cache.UnitOfMeasure.id = dataset.curves.curve_unit
     modifiers:
       # V/V is a volume fraction, which OSDU's reference data calls m3/m3. Replacing it with % would declare values that
@@ -128,6 +132,7 @@ mappings:
     findBy:
       - cache.UnitOfMeasure.Code = dataset.curves.index_unit
       - cache.UnitOfMeasure.Name = dataset.curves.index_unit
+      - cache.UnitOfMeasure.ID = dataset.curves.index_unit
       - cache.UnitOfMeasure.id = dataset.curves.index_unit
     modifiers:
       - replace: { M: m, FT: ft }
@@ -144,6 +149,7 @@ mappings:
     findBy:
       - cache.LogCurveBusinessValue.Code = dataset.curves.business_value
       - cache.LogCurveBusinessValue.Name = dataset.curves.business_value
+      - cache.LogCurveBusinessValue.ID = dataset.curves.business_value
     # A depth curve has no business value, and that is not a reason to hold its log.
     required: false
 

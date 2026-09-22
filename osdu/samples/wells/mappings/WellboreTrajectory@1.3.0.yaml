@@ -64,7 +64,9 @@ mappings:
     required: false
   - target: osdu.data.WellboreID
     source: cache.Wellbore.id
-    findBy: cache.Wellbore.FacilityName = dataset.wellbore_uwi
+    findBy:
+      - cache.Wellbore.FacilityName = dataset.wellbore_uwi
+      - cache.Wellbore.Alias = dataset.wellbore_uwi
   - target: osdu.data.TopDepthMeasuredDepth
     source: dataset.top_md
   - target: osdu.data.BaseDepthMeasuredDepth
@@ -80,6 +82,7 @@ mappings:
     findBy:
       - cache.UnitOfMeasure.Code = dataset.elev_meas_ref
       - cache.UnitOfMeasure.Name = dataset.elev_meas_ref
+      - cache.UnitOfMeasure.ID = dataset.elev_meas_ref
       - cache.UnitOfMeasure.id = dataset.elev_meas_ref
     modifiers:
       - split: { separator: " ", part: 2 }
@@ -94,12 +97,16 @@ mappings:
     source: dataset.stations.station_property
   - target: osdu.data.AvailableTrajectoryStationProperties[].TrajectoryStationPropertyTypeID
     source: cache.TrajectoryStationPropertyType.id
-    findBy: cache.TrajectoryStationPropertyType.Code = dataset.stations.property_type
+    findBy:
+      - cache.TrajectoryStationPropertyType.Code = dataset.stations.property_type
+      - cache.TrajectoryStationPropertyType.Name = dataset.stations.property_type
+      - cache.TrajectoryStationPropertyType.ID = dataset.stations.property_type
   - target: osdu.data.AvailableTrajectoryStationProperties[].StationPropertyUnitID
     source: cache.UnitOfMeasure.id
     findBy:
       - cache.UnitOfMeasure.Code = dataset.stations.property_unit
       - cache.UnitOfMeasure.Name = dataset.stations.property_unit
+      - cache.UnitOfMeasure.ID = dataset.stations.property_unit
       - cache.UnitOfMeasure.id = dataset.stations.property_unit
     modifiers:
       # OSDU's unit for an angle in degrees is dega.

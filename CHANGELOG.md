@@ -157,6 +157,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The cache captures every field a reference record is named by, and a lookup matches on all of them.** A
+  reference-data record is named by its code, its name or its own `ID`, and a source may use any of the three. The
+  cache flow captured `data.ID` for `UnitOfMeasure` alone, and no mapping matched on it; the other three reference
+  types captured only `Code` and `Name`. All four now capture `data.Code`, `data.Name` and `data.ID`, which is the
+  same set the working implementation's loaders request, and every `findBy` offers all of them as alternatives. A
+  wellbore is matched by `FacilityName` or by any of its aliases, which is what the `Alias` field was captured for
+  and what nothing had used. A source spelling a unit `m`, `metre` or by its id now resolves the same record
+  instead of holding the row.
+
 - **The sample cache flow reads a wellbore's aliases from the property the schema actually has.** It declared
   `data.NameAlias.AliasName`, and `master-data--Wellbore` has no `NameAlias`: the property is `NameAliases`, an array
   of `AbstractAliasNames` whose items carry `AliasName`. Nothing was ever cached under `Alias`, which a capture
