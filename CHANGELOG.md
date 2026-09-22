@@ -157,6 +157,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The sample cache flow reads a wellbore's aliases from the property the schema actually has.** It declared
+  `data.NameAlias.AliasName`, and `master-data--Wellbore` has no `NameAlias`: the property is `NameAliases`, an array
+  of `AbstractAliasNames` whose items carry `AliasName`. Nothing was ever cached under `Alias`, which a capture
+  reported and which nothing yet read, so it cost nothing until the first lookup by alias failed to match for no
+  visible reason. Corrected in the sample estate and in the four documents that taught the path.
+
 - **The sample estate is written for the `dev` partition.** It used `opendes`, OSDU's own documented example
   partition, which read as a real destination in a repository whose estates deliver to `dev`. Every occurrence
   outside `osdu/specs` is now `dev`: the mapping fixtures and the records they pin, the sample cache records, the

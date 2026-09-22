@@ -53,7 +53,7 @@ types:
       - data.FacilityName
       # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a drop
       # naming a wellbore by any one of them resolves to the same record.
-      - path: data.NameAlias.AliasName
+      - path: data.NameAliases.AliasName
         as: Alias
 
 reliability:

@@ -293,7 +293,7 @@ reference set with no signal.
 
 **What the cache holds.** A cached record is its OSDU id and the values found at the paths
 the cache declares. A path is cached in whatever shape OSDU returned it: a scalar, a set of
-values, or a nested object. Paths cross arrays implicitly, so `data.NameAlias.AliasName`
+values, or a nested object. Paths cross arrays implicitly, so `data.NameAliases.AliasName`
 reaches through an array of objects and caches the set of aliases it found. Nothing is
 narrowed to text on the way in, because a cache that quietly drops what it cannot flatten
 looks, at render time, exactly like bad source data.

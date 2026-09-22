@@ -186,7 +186,7 @@ Every entry has one `target` and one input. The input is either `source` or `sta
 | `dataset.<child>.<column>` | A column of a child dataset's row. Only valid under a repeated target. |
 | `dataset.<child>` | On a target that is an array of objects: one array item per row of the child dataset. This is the repeater. |
 | `cache.<Type>.id` | The OSDU id of the cached record `findBy` selects, in the reference form OSDU relationships use (ending in `:`). |
-| `cache.<Type>.<field>` | A field of that cached record, such as `Name` or `NameAlias.AliasName`. |
+| `cache.<Type>.<field>` | A field of that cached record, such as `Name` or `NameAliases.AliasName`. |
 
 A repeated target's entries (`osdu.data.Curves[].X`) read the child dataset the repeater names. They can also read the
 parent row's columns with `dataset.<column>`. A repeater inside a repeated item is not supported.

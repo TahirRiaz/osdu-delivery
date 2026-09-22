@@ -1080,7 +1080,7 @@ types:
       - data.FacilityName
       # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a
       # source row naming a wellbore by any one of them resolves to the same record.
-      - path: data.NameAlias.AliasName
+      - path: data.NameAliases.AliasName
         as: Alias
 
 reliability:
@@ -1102,7 +1102,7 @@ schedule:
 | `types[].kind` | Required. The kind searched, `authority:source:entityType:version` with wildcards per segment. |
 | `types[].name`, `types[].entityType` | Optional. The entity type is derived from the kind, and the name from the entity type (`reference-data--UnitOfMeasure` gives `UnitOfMeasure`). A kind that names no entity type needs `entityType`. |
 | `types[].query` | Optional Lucene query narrowing the type; `*` when omitted. |
-| `types[].fields` | Required: the paths to keep, written bare (`data.Code`, cached as `Code`) or as `{ path: ..., as: ... }`. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object. A path crosses arrays implicitly, so `data.NameAlias.AliasName` reaches through an array of objects and caches the set of aliases it finds. A path that yields nothing on every record is reported at capture. |
+| `types[].fields` | Required: the paths to keep, written bare (`data.Code`, cached as `Code`) or as `{ path: ..., as: ... }`. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object. A path crosses arrays implicitly, so `data.NameAliases.AliasName` reaches through an array of objects and caches the set of aliases it finds. A path that yields nothing on every record is reported at capture. |
 | `onChange`, `types[].onChange` | What a changed cached value does to the records already built from it. `auto` (the default) tags them and lets the next run carry the new document; `approve` is an option that tags them and holds them back until someone approves the update on the OSDU cache page. Set for the flow and overridden per type, so a single type whose changes should be looked at first can opt in while the rest update on their own. When several cache flows of a partition declare a type, its changes wait for approval when any of them says `approve`. |
 | `reliability` | The HTTP settings, as on a delivery flow. |
 | `schedule` | The platform envelope, as on every flow; a fire runs a refresh. |
@@ -1291,7 +1291,7 @@ A static entry takes only `appliesWhen` and `description` besides its value. No 
 | `dataset.<child>.<column>` | A column of a child dataset's row, inside a repeater over that child dataset. |
 | `dataset.<child>` | On a target other entries step into (`osdu.data.Curves`): one array item per row of the child dataset. This is the repeater, and it takes no modifiers. |
 | `cache.<Type>.id` | The OSDU id of the cached record `findBy` selects, with the trailing `:` OSDU relationships use. |
-| `cache.<Type>.<field>` | A field of that cached record, or a path inside one (`Name`, `NameAlias.AliasName`). |
+| `cache.<Type>.<field>` | A field of that cached record, or a path inside one (`Name`, `NameAliases.AliasName`). |
 
 An entry inside a repeater (`osdu.data.Curves[].CurveID`) reads the rows of the child dataset the repeater names, and can
 read the dataset's own row with `dataset.<column>` too. A repeater inside a repeated item is not supported. Each child
@@ -1311,7 +1311,7 @@ line that finds one record wins. Modifiers change the dataset value before it is
 and are never modified.
 
 Fields are named as the capture stored them (the path without its `data.` root, or the `as` it declared; see the
-cache flow's `types[].fields`), or as a path inside one (`NameAlias.AliasName`) when the field was cached
+cache flow's `types[].fields`), or as a path inside one (`NameAliases.AliasName`) when the field was cached
 whole. A field holding a set matches on any one of its values, so a record with three aliases is found by any of them.
 An exact match wins, and case is ignored only when that finds exactly one record: OSDU codes that differ only by case
 are different records (`ft` is the foot and `fT` the femtotesla, `s/m` second per metre and `S/m` siemens per metre).
