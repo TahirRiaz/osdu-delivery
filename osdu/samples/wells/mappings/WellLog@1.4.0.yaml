@@ -149,7 +149,6 @@ mappings:
     findBy:
       - cache.LogCurveBusinessValue.Code = dataset.curves.business_value
       - cache.LogCurveBusinessValue.Name = dataset.curves.business_value
-      - cache.LogCurveBusinessValue.ID = dataset.curves.business_value
     # A depth curve has no business value, and that is not a reason to hold its log.
     required: false
 

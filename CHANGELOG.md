@@ -161,7 +161,10 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   reference-data record is named by its code, its name or its own `ID`, and a source may use any of the three. The
   cache flow captured `data.ID` for `UnitOfMeasure` alone, and no mapping matched on it; the other three reference
   types captured only `Code` and `Name`. All four now capture `data.Code`, `data.Name` and `data.ID`, which is the
-  same set the working implementation's loaders request, and every `findBy` offers all of them as alternatives. A
+  same set the working implementation's loaders request, and every `findBy` offers all of them as alternatives,
+  except where a partition carries no `data.ID` at all: a capture reported that of `LogCurveBusinessValue` and
+  `VerticalMeasurementType`, so those two declare the code and the name alone rather than an empty path that would
+  be reported on every nightly run. A
   wellbore is matched by `FacilityName` or by any of its aliases, which is what the `Alias` field was captured for
   and what nothing had used. A source spelling a unit `m`, `metre` or by its id now resolves the same record
   instead of holding the row.
