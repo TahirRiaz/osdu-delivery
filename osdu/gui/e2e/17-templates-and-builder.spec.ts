@@ -35,9 +35,15 @@ function rowWith(page: Page, table: string, testId: string): Locator {
   return page.getByTestId(table).getByTestId("table-row").filter({ has: page.getByTestId(testId) });
 }
 
+/**
+ * How long a page may take to appear on its first visit of a run: the GUI's dev server compiles a lazily loaded page's
+ * modules when it is first asked for, which takes longer than the default wait on a busy machine.
+ */
+const FIRST_VISIT_MS = 30_000;
+
 async function openTemplates(page: Page): Promise<void> {
   await page.getByTestId("nav-delivery-templates").click();
-  await expect(page.getByTestId("page-delivery-templates")).toBeVisible();
+  await expect(page.getByTestId("page-delivery-templates")).toBeVisible({ timeout: FIRST_VISIT_MS });
 }
 
 test.describe.serial("templates and the mapping builder", () => {
@@ -348,7 +354,7 @@ test.describe.serial("templates and the mapping builder", () => {
 
   test("the builder starts a mapping from a saved template, with what the cache holds prefilled", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-mapping-builder").click();
-    await expect(adminPage.getByTestId("page-delivery-mapping-builder")).toBeVisible();
+    await expect(adminPage.getByTestId("page-delivery-mapping-builder")).toBeVisible({ timeout: FIRST_VISIT_MS });
     await expect(adminPage.getByTestId("mapping-builder-empty")).toBeVisible();
 
     await adminPage.getByTestId("mapping-builder-repo").click();
@@ -386,7 +392,7 @@ test.describe.serial("templates and the mapping builder", () => {
 
   test("a synced mapping opens in the builder and passes the check against the cache its flow reads", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-documents").click();
-    await expect(adminPage.getByTestId("page-delivery-documents")).toBeVisible();
+    await expect(adminPage.getByTestId("page-delivery-documents")).toBeVisible({ timeout: FIRST_VISIT_MS });
     const row = adminPage.getByTestId("delivery-mappings-table").getByTestId("table-row").filter({ hasText: "WellLog@1.4.0" }).first();
     await expect(row).toContainText(WELLLOG_VERSION, { timeout: 30_000 });
     await row.click();
