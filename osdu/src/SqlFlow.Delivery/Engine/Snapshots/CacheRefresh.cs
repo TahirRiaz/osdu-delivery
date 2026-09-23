@@ -50,9 +50,28 @@ public sealed class CacheRefresher
         declaration.ThrowOnConflicts(flow.Name, flow.Types);
         var spec = CaptureSpec(flow, values, declaration);
 
-        using var osdu = await ConnectAsync(flow, ct).ConfigureAwait(false);
+        // Each origin is captured its own way, and everything captured is merged into one version: a flow's refresh writes one
+        // version of its partition's cache, whatever its types come from.
         var builder = new SnapshotBuilder(store, scope, flow.Name, _context.Time, _context.Loggers.CreateLogger<SnapshotBuilder>());
-        var write = await builder.CaptureAsync(osdu, spec, new CacheCapture(runId, actor, flow.Source.Endpoint), ct).ConfigureAwait(false);
+        var captured = new List<ReferenceType>(spec.Types.Count);
+        var origins = new List<string>();
+        IReadOnlyList<SystemPropertyReading> readings = [];
+        var searched = spec.Types.Where(t => t.Origin == CacheOrigin.Osdu).ToList();
+        if (searched.Count > 0)
+        {
+            using var osdu = await ConnectAsync(flow, ct).ConfigureAwait(false);
+            foreach (var type in searched)
+            {
+                captured.Add(await builder.CaptureTypeAsync(osdu, type, ct).ConfigureAwait(false));
+            }
+
+            // The partition's system properties are read wherever the platform is reached, which is a capture of OSDU types; a
+            // flow of lookup tables alone reads none and keeps what the cache knew.
+            readings = await SystemPropertyCapture.ReadAsync(osdu, scope, _logger, ct).ConfigureAwait(false);
+            origins.Add(flow.Source.Endpoint!);
+        }
+
+        var write = await builder.WriteAsync(captured, new CacheCapture(runId, actor, string.Join("; ", origins)), readings, ct).ConfigureAwait(false);
         var snapshot = write.Snapshot;
         var previousVersion = write.Previous?.Version;
 
@@ -71,8 +90,8 @@ public sealed class CacheRefresher
                     .AnalyzeAsync(scope, write.Previous?.Type(type.Name), type, mode, previousVersion, snapshot.Version, ct)
                     .ConfigureAwait(false);
             types.Add(new CachedTypeOutcome(
-                type.Name, type.EntityType, typeSpec.Kind, type.Items.Count, typeSpec.Fields.Select(f => f.Name).ToList(), ModeText(mode),
-                impact.ChangedItems, impact.Changes, impact.AffectedRecords));
+                type.Name, type.EntityType, CacheOrigins.Text(typeSpec.Origin), typeSpec.Describe(), typeSpec.Kind, type.Items.Count,
+                typeSpec.Fields.Select(f => f.Name).ToList(), ModeText(mode), impact.ChangedItems, impact.Changes, impact.AffectedRecords));
         }
 
         var outcome = new CacheRefreshOutcome(
@@ -103,9 +122,15 @@ public sealed class CacheRefresher
         var spec = CaptureSpec(flow, values, declaration);
         var current = _context.Cache is { } cache ? await cache.VersionAsync(scope, version: null, ct).ConfigureAwait(false) : null;
 
-        using var osdu = await ConnectAsync(flow, ct).ConfigureAwait(false);
         var types = new List<CachePlanType>(spec.Types.Count);
-        foreach (var type in spec.Types)
+        var searched = spec.Types.Where(t => t.Origin == CacheOrigin.Osdu).ToList();
+        if (searched.Count == 0)
+        {
+            return new CachePlanOutcome(DeliveryOperations.Plan, scope, flow.Name, current?.Version, types, 0, current?.SystemProperties ?? []);
+        }
+
+        using var osdu = await ConnectAsync(flow, ct).ConfigureAwait(false);
+        foreach (var type in searched)
         {
             var body = new JsonObject { ["kind"] = type.Kind, ["query"] = type.Query, ["limit"] = 1, ["trackTotalCount"] = true };
             var page = await osdu.PostJsonAsync(QueryPath, body, ct).ConfigureAwait(false);
@@ -113,7 +138,7 @@ public sealed class CacheRefresher
                 ? value
                 : throw new DeliveryException($"{QueryPath} did not report totalCount for kind {type.Kind}.");
             _logger.LogInformation("plan {Type}: {Total} record(s) of kind {Kind} match the query {Query}", type.Name, total, type.Kind, type.Query);
-            types.Add(new CachePlanType(type.Name, type.Kind, type.Query, type.Fields.Select(f => f.Name).ToList(), total));
+            types.Add(new CachePlanType(type.Name, CacheOrigins.Text(type.Origin), type.Describe(), type.Kind, type.Query, type.Fields.Select(f => f.Name).ToList(), total));
         }
 
         var readings = await SystemPropertyCapture.ReadAsync(osdu, scope, _logger, ct).ConfigureAwait(false);
@@ -130,7 +155,9 @@ public sealed class CacheRefresher
 
     private Task<OsduConnection> ConnectAsync(CacheDefinition flow, CancellationToken ct)
         => OsduConnection.CreateAsync(
-            flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, flow.Reliability, _context.Secrets, allowLoopback: EngineContext.LoopbackAllowed, ct: ct);
+            flow.Source.Endpoint ?? throw new DeliveryException(
+                $"Cache flow '{flow.Name}' declares a type searched on OSDU and no source.endpoint to search it on."),
+            flow.Source.Auth, flow.Source.Headers, flow.Reliability, _context.Secrets, allowLoopback: EngineContext.LoopbackAllowed, ct: ct);
 
     private static string ModeText(CacheChangeMode mode) => mode == CacheChangeMode.Auto ? "auto" : "approve";
 }
@@ -150,13 +177,16 @@ public sealed record CacheRefreshOutcome(
     public long AffectedRecords => Types.Sum(t => t.AffectedRecords);
 }
 
-/// <summary>One cached type as the refresh left it, with what its changes did to the delivered estate.</summary>
+/// <summary>
+/// One cached type as the refresh left it, with what its changes did to the delivered estate: its origin (osdu, table or
+/// dictionary), where its records came from as a person reads it, and for an OSDU type the kind searched.
+/// </summary>
 public sealed record CachedTypeOutcome(
-    string Name, string EntityType, string Kind, int Items, IReadOnlyList<string> Fields, string OnChange, int ChangedItems, int Changes,
-    long AffectedRecords);
+    string Name, string EntityType, string Origin, string Source, string? Kind, int Items, IReadOnlyList<string> Fields, string OnChange,
+    int ChangedItems, int Changes, long AffectedRecords);
 
-/// <summary>One declared type as a plan counts it.</summary>
-public sealed record CachePlanType(string Name, string Kind, string Query, IReadOnlyList<string> Fields, long Records);
+/// <summary>One declared type as a plan counts it; <paramref name="Kind"/> and <paramref name="Query"/> are an OSDU type's search.</summary>
+public sealed record CachePlanType(string Name, string Origin, string Source, string? Kind, string Query, IReadOnlyList<string> Fields, long Records);
 
 /// <summary>
 /// The <c>result</c> of a plan run on a cache flow: what each type's search matches, the version the partition's cache

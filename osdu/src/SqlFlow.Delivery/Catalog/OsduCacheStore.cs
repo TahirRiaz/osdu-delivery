@@ -112,7 +112,7 @@ public sealed class OsduCacheStore : ICacheStore
         var rows = await db.DeliveryCacheDefinitions.AsNoTracking()
             .Where(d => d.Scope == scope)
             .OrderBy(d => d.FlowName).ThenBy(d => d.Name).ThenBy(d => d.RepoId)
-            .Select(d => new { d.FlowName, d.Name, d.EntityType, d.Kind, d.Query, d.FieldsJson, d.OnChange })
+            .Select(d => new { d.FlowName, d.Name, d.EntityType, d.Kind, d.Query, d.FieldsJson, d.OnChange, d.Origin })
             .ToListAsync(ct).ConfigureAwait(false);
 
         // A flow is named once per catalog; the sync warns when two repositories declare the same one, and the first row wins here.
@@ -128,7 +128,8 @@ public sealed class OsduCacheStore : ICacheStore
             declarations.Add(new CacheTypeDeclaration(
                 row.FlowName, row.Name, row.EntityType, row.Kind, string.IsNullOrWhiteSpace(row.Query) ? "*" : row.Query,
                 ParseFields(row.FieldsJson, row.FlowName, row.Name),
-                row.OnChange.Equals("approve", StringComparison.OrdinalIgnoreCase) ? CacheChangeMode.Approve : CacheChangeMode.Auto));
+                row.OnChange.Equals("approve", StringComparison.OrdinalIgnoreCase) ? CacheChangeMode.Approve : CacheChangeMode.Auto,
+                CacheOrigins.Parse(row.Origin)));
         }
 
         return new CacheDeclaration(scope, declarations);
@@ -169,6 +170,18 @@ public sealed class OsduCacheStore : ICacheStore
             {
                 throw new DeliveryException(
                     $"Cache flow '{flowName}': type {type.Name} holds record {twice.Id} more than once, so the capture could not say which values it holds. Nothing was written to the cache of partition '{scope}'.");
+            }
+
+            // A lookup row is stored and matched under its key, so a key the catalog could not hold exactly once, or one a
+            // match would never find, is refused here whatever produced it.
+            if (type.IsLookup)
+            {
+                var bad = type.Items.Select(item => (item.Id, Problem: LookupKeys.Problem(item.Id))).Where(k => k.Problem is not null).Take(5).ToList();
+                if (bad.Count > 0)
+                {
+                    throw new DeliveryException(
+                        $"Cache flow '{flowName}': lookup table {type.Name} has keys the cache cannot hold: {string.Join("; ", bad.Select(k => k.Problem))}. Nothing was written to the cache of partition '{scope}'.");
+                }
             }
         }
 
@@ -345,7 +358,8 @@ public sealed class OsduCacheStore : ICacheStore
                 type.EntityType,
                 (byType.GetValueOrDefault(type.Name) ?? [])
                     .OrderBy(i => i.RecordId, StringComparer.Ordinal)
-                    .Select(i => new ReferenceItem(i.RecordId, Fields(i.FieldsJson, scope, row.Version)))))
+                    .Select(i => new ReferenceItem(i.RecordId, Fields(i.FieldsJson, scope, row.Version))),
+                type.Key))
             .ToList();
         var snapshot = new ReferenceSnapshot(
             row.Version,
@@ -466,7 +480,13 @@ public sealed class OsduCacheStore : ICacheStore
         var array = new JsonArray();
         foreach (var type in types)
         {
-            array.Add(new JsonObject { ["name"] = type.Name, ["entityType"] = type.EntityType, ["items"] = type.Items.Count });
+            var entry = new JsonObject { ["name"] = type.Name, ["entityType"] = type.EntityType, ["items"] = type.Items.Count };
+            if (type.Key is not null)
+            {
+                entry["key"] = type.Key;
+            }
+
+            array.Add(entry);
         }
 
         return array.ToJsonString();
@@ -537,7 +557,8 @@ public sealed class OsduCacheStore : ICacheStore
                 .Select(type => new CacheVersionType(
                     type["name"]?.GetValue<string>() ?? throw new DeliveryException($"Version {version} of the cache of partition '{scope}' lists a type without a name."),
                     type["entityType"]?.GetValue<string>() ?? string.Empty,
-                    type["items"]?.GetValue<long>() ?? 0))
+                    type["items"]?.GetValue<long>() ?? 0,
+                    type["key"]?.GetValue<string>()))
                 .ToList();
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)

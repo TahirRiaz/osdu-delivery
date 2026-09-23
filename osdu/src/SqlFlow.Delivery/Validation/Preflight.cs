@@ -446,6 +446,13 @@ public static partial class Preflight
             }
         }
 
+        if (source.ReadsRecordId && cached.IsLookup)
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name} reads cache.{cached.Name}.id, and {cached.Name} is a lookup table whose rows are not OSDU records, so it has no id to write. Read one of its fields: {string.Join(", ", cached.FieldNames)}."));
+            return;
+        }
+
         if (!source.ReadsRecordId && !cached.MeansRecordId(source.CacheField!) && cached.Items.All(item => cached.Value(item, source.CacheField!) is null))
         {
             issues.Add(ValidationIssue.Error($"{name} reads '{source.CacheField}' out of {cached.Name}, which cache version '{references.Version}' does not cache. Cached: {cachedFields}."));

@@ -93,7 +93,7 @@ public sealed class ReferenceSnapshot
         => new(
             Version,
             CapturedUtc,
-            _types.Values.Select(t => new ReferenceType(t.Name, t.EntityType, t.Items.OrderBy(i => i.Id, StringComparer.Ordinal))),
+            _types.Values.Select(t => new ReferenceType(t.Name, t.EntityType, t.Items.OrderBy(i => i.Id, StringComparer.Ordinal), t.Key)),
             SystemProperties);
 }
 
@@ -114,7 +114,11 @@ public sealed class ReferenceType
     private readonly ConcurrentDictionary<string, FieldIndex> _indexes = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<string>? _fieldNames;
 
-    public ReferenceType(string name, string entityType, IEnumerable<ReferenceItem> items)
+    /// <param name="name">The short name mappings use.</param>
+    /// <param name="entityType">The OSDU entity type, or <see cref="LookupEntityType"/> of the name for a lookup table.</param>
+    /// <param name="items">The records.</param>
+    /// <param name="key">For a lookup table, the name its key is kept under; null for a type of OSDU records.</param>
+    public ReferenceType(string name, string entityType, IEnumerable<ReferenceItem> items, string? key = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(entityType);
@@ -122,13 +126,34 @@ public sealed class ReferenceType
         Name = name;
         EntityType = entityType;
         _items = items.ToList();
+        var lookup = entityType.StartsWith(LookupEntityTypePrefix, StringComparison.Ordinal);
+        if (lookup != key is not null)
+        {
+            throw new DeliveryException(lookup
+                ? $"Lookup table '{name}' ({entityType}) names no key; every lookup row is kept under its key."
+                : $"Type '{name}' holds OSDU records ({entityType}), which are kept under their ids, so it names no key.");
+        }
+
+        Key = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
     }
+
+    /// <summary>The entity type a lookup table named <paramref name="name"/> is kept under.</summary>
+    public static string LookupEntityType(string name) => LookupEntityTypePrefix + name;
 
     /// <summary>Short name used by mappings (UnitOfMeasure, Wellbore).</summary>
     public string Name { get; }
 
-    /// <summary>OSDU entity type (reference-data--UnitOfMeasure, master-data--Wellbore).</summary>
+    /// <summary>OSDU entity type (reference-data--UnitOfMeasure, master-data--Wellbore), or lookup--&lt;Name&gt; for a lookup table.</summary>
     public string EntityType { get; }
+
+    /// <summary>
+    /// For a lookup table, the name its key is kept under: each row's id is its key, and the key is a field under this name
+    /// too, so a mapping matches on it by name. Null for a type of OSDU records.
+    /// </summary>
+    public string? Key { get; }
+
+    /// <summary>True for a table whose rows are not OSDU records: filled from an ingestion table or a dictionary, it has no ids to write.</summary>
+    public bool IsLookup => Key is not null;
 
     public IReadOnlyList<ReferenceItem> Items => _items;
 
@@ -308,7 +333,16 @@ public sealed class ReferenceType
             items.Add(o);
         }
 
-        return new JsonObject { ["entityType"] = EntityType, ["items"] = items };
+        // The key is written only for a lookup table, so a type of OSDU records hashes as it always has and every version
+        // written before lookup tables existed still loads.
+        var json = new JsonObject { ["entityType"] = EntityType };
+        if (Key is not null)
+        {
+            json["key"] = Key;
+        }
+
+        json["items"] = items;
+        return json;
     }
 
     public static ReferenceType FromJson(string name, JsonObject node)
@@ -335,7 +369,7 @@ public sealed class ReferenceType
             }
         }
 
-        return new ReferenceType(name, entityType, items);
+        return new ReferenceType(name, entityType, items, node["key"]?.GetValue<string>());
     }
 
     private sealed class FieldIndex

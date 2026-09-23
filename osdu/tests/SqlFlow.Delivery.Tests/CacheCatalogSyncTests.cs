@@ -241,6 +241,11 @@ public sealed class CacheCatalogSyncTests : IDisposable
         var wellbore = definitions[1];
         Assert.Equal("wells-osdu-00-reference-cache", wellbore.FlowName);
         Assert.Equal("dev", wellbore.Scope);
+        Assert.Equal("osdu", wellbore.Origin);
+        Assert.Null(wellbore.Connection);
+        Assert.Null(wellbore.SourceObject);
+        Assert.Null(wellbore.KeyField);
+        Assert.Null(wellbore.DictionaryPath);
         Assert.Equal("https://osdu.example.com", wellbore.Endpoint);
         Assert.Equal("cache/wells-osdu-00-reference-cache.yaml", wellbore.RelativePath);
         Assert.Equal("master-data--Wellbore", wellbore.EntityType);

@@ -13,6 +13,21 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The partition cache holds lookup tables beside OSDU records.** A cached type now has an origin: `osdu` (searched on
+  the platform, as before), `table` (an ingestion table) or `dictionary` (a dictionary document in the repository). A
+  lookup table's rows are kept under their keys as `lookup--<Name>`, and are versioned, traced and rolled out like every
+  cached value. `[osdu].[CacheDefinition]` records each declaration's origin and that origin's settings (migration
+  `LookupCacheTypes`, module version 1.12.0: `Origin`, `Connection`, `SourceObject`, `KeyField`, `DictionaryPath`, and
+  `Endpoint` and `Kind` optional). A lookup table is declared by one cache flow of a partition and its capture replaces
+  the whole type; a key is trimmed, not empty and at most 256 characters, and is never called `id`, since a lookup row's
+  key is its id. `cache.<Type>.id` on a lookup table is refused by the gate and holds at render: its rows are not OSDU
+  records, so it has no id to write. A refresh or a plan result names each type's origin and source
+  ([osdu/docs/cache-lookups-plan.md](osdu/docs/cache-lookups-plan.md)).
+- **A replace can give no value, and say what a value its table does not list becomes.** `NONE: ~` replaces with no
+  value, so `required` decides, and `otherwise`, written beside the table, makes an unlisted value no value (`~`) or a
+  fixed text instead of passing it on unchanged ([osdu/docs/documents.md](osdu/docs/documents.md#replace)). The mapping
+  builder writes and reopens both.
+
 - **Every capture of a partition's cache reads the partition's system properties, and a search asks regardless of case
   where the partition allows it.** A refresh, and a cache flow's plan, asks the indexer's and the search service's
   `GET /info` for the feature flags they report for the partition (`featureFlagStates`), and the refresh keeps them with
@@ -195,6 +210,14 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   assert the result contract, and a link can set the pipelines page's repo and kind filters.
 
 ### Changed
+
+- **Inline replace tables are matched by the cache's own rules.** One matcher serves inline and cached tables: an exact
+  key wins, and case is ignored only when that finds one key. A value several keys answer to only once case is ignored
+  now holds the record, naming them, unless they all give the same value; before, it passed on unchanged. Keys that are
+  the same once trimmed, or empty once trimmed, are refused when the mapping is read.
+- **`sqlflow cache import` accepts only OSDU records of the declared entity type in the flow's partition.** Every
+  imported id has to be `<partition>:<entityType>:<code>`, so an import cannot pass off hand-made rows as the
+  platform's, and a lookup table is never imported.
 
 - **The sample cache flow no longer captures wellbores.** They were 163,818 of the 165,381 records the `dev` cache held,
   and they are what the sample mappings now search for. The next refresh after the sync drops the type from the

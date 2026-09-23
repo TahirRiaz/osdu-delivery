@@ -228,6 +228,32 @@ public sealed class SnapshotVersioningTests : IDisposable
         Assert.Empty(await store.ListVersionsAsync(Scope));
     }
 
+    [Fact]
+    public async Task An_import_holds_only_records_of_the_declared_entity_type_in_the_partition_and_never_a_lookup_table()
+    {
+        var (builder, store, _) = NewBuilder();
+        var lookup = new ReferenceTypeSpec { Name = "RecallUnits", EntityType = ReferenceType.LookupEntityType("RecallUnits"), Origin = CacheOrigin.Dictionary, Dictionary = "RecallUnits" };
+
+        // A lookup table the flow declares is filled from its origin, so an import neither needs nor takes it.
+        var without = await builder.ImportDirectoryAsync(ReferenceDirectory(("UnitOfMeasure", OneItem)), [Units, lookup], Capture);
+        Assert.True(without.Written);
+        var offered = await Assert.ThrowsAsync<DeliveryException>(() => builder.ImportDirectoryAsync(
+            ReferenceDirectory(("UnitOfMeasure", OneItem), ("RecallUnits", """{ "entityType": "lookup--RecallUnits", "key": "key", "items": [ { "id": "M", "key": "M", "value": "m" } ] }""")),
+            [Units, lookup],
+            Capture));
+        Assert.Contains("RecallUnits.json holds RecallUnits, which cache flow 'units' fills from dictionary RecallUnits; a lookup table is captured from its origin, never imported", offered.Message, StringComparison.Ordinal);
+
+        // Records that are not OSDU records of the declared entity type in this partition are hand-made rows, and refused.
+        foreach (var id in new[] { "M", "other:reference-data--UnitOfMeasure:m", "dev:reference-data--UnitQuantity:length", "dev:reference-data--UnitOfMeasure:" })
+        {
+            var foreign = await Assert.ThrowsAsync<DeliveryException>(() => builder.ImportDirectoryAsync(
+                ReferenceDirectory(("UnitOfMeasure", OneItem.Replace("dev:reference-data--UnitOfMeasure:m", id, StringComparison.Ordinal))), [Units], Capture));
+            Assert.Contains($"whose ids are not ids of reference-data--UnitOfMeasure records in partition 'dev' ({id})", foreign.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Single(await store.ListVersionsAsync(Scope));
+    }
+
     private const string AliasedWellbore = """
         {
           "entityType": "master-data--Wellbore",

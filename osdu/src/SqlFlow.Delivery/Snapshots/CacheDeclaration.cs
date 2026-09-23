@@ -2,15 +2,23 @@ using System.Globalization;
 
 namespace SqlFlow.Delivery.Snapshots;
 
-/// <summary>One cached type as one cache flow declares it, the way the catalog holds it after the repository sync.</summary>
+/// <summary>
+/// One cached type as one cache flow declares it, the way the catalog holds it after the repository sync: where its records
+/// come from, and for an OSDU type the kind and query it is searched with.
+/// </summary>
 public sealed record CacheTypeDeclaration(
     string FlowName,
     string TypeName,
     string EntityType,
-    string Kind,
+    string? Kind,
     string Query,
     IReadOnlyList<ReferenceFieldSpec> Fields,
-    CacheChangeMode OnChange);
+    CacheChangeMode OnChange,
+    CacheOrigin Origin = CacheOrigin.Osdu)
+{
+    /// <summary>True for a table or a dictionary, whose rows are not OSDU records.</summary>
+    public bool IsLookup => Origin != CacheOrigin.Osdu;
+}
 
 /// <summary>
 /// What one partition's cache holds as every synced cache flow declares it (design.md section 6.2). Several flows may declare
@@ -78,7 +86,8 @@ public sealed class CacheDeclaration
     /// <summary>
     /// What makes <paramref name="type"/>, as <paramref name="flowName"/> declares it, disagree with another flow's declaration
     /// of the same type in the partition: a different entity type, or a name cached from a different path. Merged, either
-    /// would hold two meanings under one name.
+    /// would hold two meanings under one name. A lookup table, from a table or a dictionary, is declared by one flow only:
+    /// its capture replaces the whole type, so a second flow declaring it would replace the first one's rows with its own.
     /// </summary>
     public IReadOnlyList<string> Conflicts(string flowName, ReferenceTypeSpec type)
     {
@@ -87,6 +96,13 @@ public sealed class CacheDeclaration
         var problems = new List<string>();
         foreach (var other in Of(type.Name).Where(d => !string.Equals(d.FlowName, flowName, StringComparison.Ordinal)))
         {
+            if (type.IsLookup || other.IsLookup)
+            {
+                problems.Add(
+                    $"cache flow '{other.FlowName}' declares {type.Name} ({Describe(other)}) and '{flowName}' declares it too ({type.Describe()}); a lookup table from a table or a dictionary is declared by one cache flow of a partition only");
+                continue;
+            }
+
             if (!string.Equals(other.EntityType, type.EntityType, StringComparison.Ordinal))
             {
                 problems.Add($"cache flow '{other.FlowName}' declares {type.Name} as {other.EntityType}, and '{flowName}' declares it as {type.EntityType}");
@@ -123,15 +139,30 @@ public sealed class CacheDeclaration
         }
     }
 
-    /// <summary>A flow's type widened to every path the partition keeps for it, so its capture fills them all.</summary>
+    /// <summary>
+    /// A flow's type widened to every path the partition keeps for it, so its capture fills them all. A lookup table is
+    /// declared by one flow only, so it keeps what that flow declares.
+    /// </summary>
     public ReferenceTypeSpec Widen(ReferenceTypeSpec type)
     {
         ArgumentNullException.ThrowIfNull(type);
+        if (type.IsLookup)
+        {
+            return type;
+        }
+
         var fields = type.Fields.ToList();
         var names = fields.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         fields.AddRange(FieldsOf(type.Name).Where(field => names.Add(field.Name)));
         return type with { Fields = fields };
     }
+
+    private static string Describe(CacheTypeDeclaration declaration) => declaration.Origin switch
+    {
+        CacheOrigin.Table => "a table",
+        CacheOrigin.Dictionary => "a dictionary",
+        _ => $"kind {declaration.Kind}",
+    };
 }
 
 /// <summary>A cached record of a type, as the membership of the partition's cache names it.</summary>
@@ -205,6 +236,14 @@ public static class CacheMerge
                     $"The cache holds {existing.Name} as {existing.EntityType}, and cache flow '{flowName}' captured it as {capture.EntityType}. One name cannot hold both, so nothing was written; give one of the types another name.");
             }
 
+            // A lookup table is declared by one flow only and its capture holds every row its table or dictionary holds, so
+            // the capture is the type: a row it no longer holds is gone, and no other flow keeps one.
+            if (capture.IsLookup)
+            {
+                types[capture.Name] = new ReferenceType(existing?.Name ?? capture.Name, capture.EntityType, capture.Items, capture.Key);
+                continue;
+            }
+
             var items = new Dictionary<string, ReferenceItem>(StringComparer.Ordinal);
             foreach (var item in existing?.Items ?? [])
             {
@@ -227,7 +266,7 @@ public static class CacheMerge
                 }
             }
 
-            types[capture.Name] = new ReferenceType(existing?.Name ?? capture.Name, capture.EntityType, items.Values);
+            types[capture.Name] = new ReferenceType(existing?.Name ?? capture.Name, capture.EntityType, items.Values, capture.Key);
         }
 
         var removed = new List<string>();

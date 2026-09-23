@@ -6,8 +6,8 @@ namespace SqlFlow.Delivery.Snapshots;
 /// <param name="Origin">Where the content came from: the OSDU endpoint reference searched, or the directory imported.</param>
 public sealed record CacheCapture(Guid? RunId, string CapturedBy, string Origin);
 
-/// <summary>One type a cache version holds, and how many records of it.</summary>
-public sealed record CacheVersionType(string Name, string EntityType, long Items);
+/// <summary>One type a cache version holds, how many records of it, and for a lookup table the name its key is kept under.</summary>
+public sealed record CacheVersionType(string Name, string EntityType, long Items, string? Key = null);
 
 /// <summary>
 /// A version of a partition's cache as its row describes it, without its records: <c>Scope</c> is the partition whose cache

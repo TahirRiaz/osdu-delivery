@@ -540,8 +540,9 @@ internal static partial class EntryValues
 
             tried.Add((find, value));
 
-            // A value that already is an OSDU id names its record without a lookup.
-            if (OsduId().IsMatch(value))
+            // A value that already is an OSDU id names its record without a lookup. A lookup table holds no OSDU records, so
+            // there a value of that shape is matched like any other.
+            if (!type.IsLookup && OsduId().IsMatch(value))
             {
                 if (type.Match("id", value.TrimEnd(':')) is { } byId)
                 {
@@ -605,6 +606,15 @@ internal static partial class EntryValues
     private static object? Select(MappingEntry entry, ReferenceType type, ReferenceItem hit, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
     {
         var source = entry.Source!;
+        if (source.ReadsRecordId && type.IsLookup)
+        {
+            // A lookup row's id is its key, not an OSDU record id, and writing it as a reference would point at nothing. The
+            // gate refuses this mapping; a render that meets it anyway holds, whatever the entry's required flag says.
+            holds.Add(
+                $"{entry.Target.Text}: {type.Name} is a lookup table in {CacheLabel(renderer.Context)}, whose rows are not OSDU records, so it has no id to write; read one of its fields ({string.Join(", ", type.FieldNames)})");
+            return null;
+        }
+
         if (source.ReadsRecordId)
         {
             usages.Add(new CacheUsage(type.Name, hit.Id, "id", hit.Id, CacheUsageKind.Value));

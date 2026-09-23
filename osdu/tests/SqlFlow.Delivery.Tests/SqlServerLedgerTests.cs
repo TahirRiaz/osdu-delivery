@@ -207,6 +207,45 @@ public class SqlServerLedgerTests
         }
     }
 
+    [SkippableFact]
+    public async Task A_lookup_table_keeps_keys_that_differ_by_case_and_punctuation_apart_on_sql_server()
+    {
+        // The item and membership keys are binary on SQL Server, so keys a person would read as one (ft and fT, M and M.)
+        // are separate rows, and a key with spaces around it never reaches a unique index that would compare it trimmed.
+        var store = await CachesAsync();
+        var cache = "lookups-" + Guid.NewGuid().ToString("N");
+        var capture = new CacheCapture(Guid.NewGuid(), "tests", "dictionary dictionaries/RecallUnits.yaml");
+        var units = LookupCacheTests.Pairs("RecallUnits", ("ft", "foot"), ("fT", "femtotesla"), ("M", "m"), ("M.", "m"), ("METRES.", "m"), ("LFP_AI", "Equinor-AI"), ("NONE", null));
+
+        try
+        {
+            var write = await store.MergeAsync(cache, "lookups-cache", [units], capture, DateTimeOffset.UtcNow);
+            Assert.True(write.Written);
+
+            var back = (await new OsduCacheStore(Database).LoadAsync(cache, write.Snapshot.Version))!.Type("RecallUnits")!;
+            Assert.True(back.IsLookup);
+            Assert.Equal(["LFP_AI", "M", "M.", "METRES.", "NONE", "fT", "ft"], back.Items.Select(i => i.Id));
+            Assert.Equal("femtotesla", back.Value(back.Match("key", "fT")!, "value")!.Text);
+            Assert.Equal("foot", back.Value(back.Match("key", "ft")!, "value")!.Text);
+            Assert.Null(back.Value(back.Match("key", "NONE")!, "value"));
+
+            await using (var db = Database())
+            {
+                Assert.Equal(7, await db.DeliveryCacheItems.CountAsync(i => i.Scope == cache && i.EntityType == "lookup--RecallUnits"));
+                Assert.Equal(7, await db.DeliveryCacheMembers.CountAsync(m => m.Scope == cache));
+            }
+
+            var spaced = LookupCacheTests.Pairs("RecallUnits", ("ft ", "foot"));
+            var refused = await Assert.ThrowsAsync<DeliveryException>(() => store.MergeAsync(cache, "lookups-cache", [spaced], capture, DateTimeOffset.UtcNow));
+            Assert.Contains("has spaces around it", refused.Message, StringComparison.Ordinal);
+            Assert.Single(await store.ListVersionsAsync(cache));
+        }
+        finally
+        {
+            await CleanupCacheAsync(cache);
+        }
+    }
+
     private static async Task CleanupCacheAsync(string scope)
     {
         await using var db = Database();

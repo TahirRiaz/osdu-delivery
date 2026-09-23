@@ -99,7 +99,10 @@ public sealed partial class SnapshotBuilder
     private void CheckDeclared(IReadOnlyList<ReferenceType> types, IReadOnlyList<ReferenceTypeSpec> declared, CacheDeclaration partition, string directory)
     {
         var problems = new List<string>();
-        foreach (var spec in declared.Where(spec => !types.Any(t => t.Name.Equals(spec.Name, StringComparison.OrdinalIgnoreCase))))
+
+        // A lookup table is filled from its own origin, a table or a dictionary, wherever the flow runs, so it is neither
+        // required in an import nor accepted from one: the files stand in for OSDU alone.
+        foreach (var spec in declared.Where(spec => !spec.IsLookup && !types.Any(t => t.Name.Equals(spec.Name, StringComparison.OrdinalIgnoreCase))))
         {
             problems.Add($"{spec.Name}.json is missing, and cache flow '{_flow}' declares {spec.Name}");
         }
@@ -112,9 +115,24 @@ public sealed partial class SnapshotBuilder
                 continue;
             }
 
+            if (spec.IsLookup)
+            {
+                problems.Add($"{type.Name}.json holds {spec.Name}, which cache flow '{_flow}' fills from {spec.Describe()}; a lookup table is captured from its origin, never imported");
+                continue;
+            }
+
             if (!type.EntityType.Equals(spec.EntityType, StringComparison.Ordinal))
             {
                 problems.Add($"{type.Name}.json holds entity type {type.EntityType}, and cache flow '{_flow}' declares {spec.EntityType}");
+            }
+
+            // The files stand in for what a search of the partition would return, so every record is an OSDU record of the
+            // declared entity type in this partition. Anything else would pass off hand-made rows as the platform's.
+            var foreign = type.Items.Where(item => !IsRecordOf(item.Id, spec.EntityType)).Select(item => item.Id).Take(5).ToList();
+            if (foreign.Count > 0)
+            {
+                problems.Add(
+                    $"{type.Name}.json holds records whose ids are not ids of {spec.EntityType} records in partition '{_scope}' ({string.Join(", ", foreign)}); an import holds what a search of the partition would return, each id written {_scope}:{spec.EntityType}:<code>");
             }
 
             // The widened type is what a refresh of the flow would fetch: its own paths, then every path the partition keeps.
@@ -154,6 +172,16 @@ public sealed partial class SnapshotBuilder
         }
     }
 
+    /// <summary>Whether <paramref name="id"/> is an OSDU id (without version) of a record of <paramref name="entityType"/> in this partition.</summary>
+    private bool IsRecordOf(string id, string entityType)
+    {
+        var parts = id.Split(':', 3);
+        return parts.Length == 3
+            && string.Equals(parts[0], _scope, StringComparison.Ordinal)
+            && string.Equals(parts[1], entityType, StringComparison.Ordinal)
+            && parts[2].TrimEnd(':').Length > 0;
+    }
+
     /// <summary>
     /// Captures every type of <paramref name="spec"/> through the OSDU search service, reads the partition's system
     /// properties from the platform's services (<see cref="SystemPropertyCapture"/>), which every capture does whatever
@@ -178,11 +206,15 @@ public sealed partial class SnapshotBuilder
     /// Merges the types into the partition's cache, which writes the next version unless the merge changes no cached content.
     /// A version label is a timestamp and it enters the render context, so writing one for a capture that found nothing new
     /// would change the metadata hash of every record built from the cache and deliver them all again for no reason.
-    /// Comparing content makes refreshing a cache as often as anyone likes free.
+    /// Comparing content makes refreshing a cache as often as anyone likes free. Every producer ends here, whatever the origin
+    /// of the types it captured, so one refresh of a flow writes one version.
     /// </summary>
-    private async Task<CacheWrite> WriteAsync(
-        IReadOnlyList<ReferenceType> types, CacheCapture capture, IReadOnlyList<SystemPropertyReading> readings, CancellationToken ct)
+    public async Task<CacheWrite> WriteAsync(
+        IReadOnlyList<ReferenceType> types, CacheCapture capture, IReadOnlyList<SystemPropertyReading> readings, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(types);
+        ArgumentNullException.ThrowIfNull(capture);
+        ArgumentNullException.ThrowIfNull(readings);
         var write = await _store.MergeAsync(_scope, _flow, types, capture, _time.GetUtcNow(), readings, ct).ConfigureAwait(false);
         if (write.Written)
         {

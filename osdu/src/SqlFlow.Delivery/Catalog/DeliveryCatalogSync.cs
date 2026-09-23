@@ -445,14 +445,15 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         var names = flows.Keys.ToList();
         var elsewhere = await context.DeliveryCacheDefinitions.AsNoTracking()
             .Where(c => c.RepoId != repoId && scopes.Contains(c.Scope) && !names.Contains(c.FlowName))
-            .Select(c => new { c.Scope, c.FlowName, c.Name, c.EntityType, c.Kind, c.Query, c.FieldsJson, c.Endpoint })
+            .Select(c => new { c.Scope, c.FlowName, c.Name, c.EntityType, c.Kind, c.Query, c.FieldsJson, c.Endpoint, c.Origin })
             .ToListAsync(ct).ConfigureAwait(false);
         var declared = scopes.ToDictionary(
             scope => scope,
             scope => elsewhere
                 .Where(c => c.Scope == scope)
                 .Select(c => new Snapshots.CacheTypeDeclaration(
-                    c.FlowName, c.Name, c.EntityType, c.Kind, c.Query ?? "*", OsduCacheStore.ParseFields(c.FieldsJson, c.FlowName, c.Name), Snapshots.CacheChangeMode.Auto))
+                    c.FlowName, c.Name, c.EntityType, c.Kind, c.Query ?? "*", OsduCacheStore.ParseFields(c.FieldsJson, c.FlowName, c.Name), Snapshots.CacheChangeMode.Auto,
+                    Snapshots.CacheOrigins.Parse(c.Origin)))
                 .ToList(),
             StringComparer.Ordinal);
 
@@ -463,7 +464,6 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             // reference records it as written: the declaration is then found by a node that resolves it the same way, and
             // one that does not fails naming the partition it could not find rather than writing under two keys.
             var scope = scopeOf[cache.Name];
-            var endpoint = Clip(cache.Source.Endpoint, 1000);
             foreach (var type in cache.Types)
             {
                 var problems = new Snapshots.CacheDeclaration(scope, declared[scope]).Conflicts(cache.Name, type);
@@ -475,20 +475,17 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                     continue;
                 }
 
-                declared[scope].Add(new Snapshots.CacheTypeDeclaration(cache.Name, type.Name, type.EntityType, type.Kind, type.Query, type.Fields, type.OnChange));
+                declared[scope].Add(new Snapshots.CacheTypeDeclaration(cache.Name, type.Name, type.EntityType, type.Kind, type.Query, type.Fields, type.OnChange, type.Origin));
                 var id = FlowIdentity.FromName($"delivery-cache/{repoId:N}/{cache.Name}/{type.Name}");
                 seen.Add(id);
-                var fields = JsonSerializer.Serialize(type.Fields.Select(f => new { f.Path, As = f.Name }).ToList(), SummaryJson);
-                var onChange = type.OnChange == Snapshots.CacheChangeMode.Auto ? "auto" : "approve";
+                var declaration = Declaration(cache, type, relative);
                 if (!existing.TryGetValue(id, out var row))
                 {
                     row = new DeliveryCacheDefinition { Id = id, RepoId = repoId, FirstSeenUtc = nowUtc };
                     context.DeliveryCacheDefinitions.Add(row);
                     added++;
                 }
-                else if (row.Kind == type.Kind && row.Query == type.Query && row.FieldsJson == fields && row.EntityType == type.EntityType
-                         && row.RelativePath == relative && row.OnChange == onChange && row.FlowName == cache.Name && row.Scope == scope
-                         && row.Endpoint == endpoint)
+                else if (declaration.Matches(row) && row.FlowName == cache.Name && row.Scope == scope)
                 {
                     row.LastSeenUtc = nowUtc;
                     unchanged++;
@@ -501,14 +498,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
                 row.FlowName = cache.Name;
                 row.Scope = scope;
-                row.Endpoint = endpoint;
-                row.RelativePath = relative;
-                row.Name = type.Name;
-                row.EntityType = type.EntityType;
-                row.Kind = type.Kind;
-                row.Query = type.Query;
-                row.FieldsJson = fields;
-                row.OnChange = onChange;
+                declaration.WriteTo(row);
                 row.LastSeenUtc = nowUtc;
             }
         }
@@ -541,11 +531,14 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 .ExecuteDeleteAsync(ct).ConfigureAwait(false);
         }
 
-        // A partition has one cache holding what every one of its cache flows captures, so those flows should search one platform.
+        // A partition has one cache holding what every one of its cache flows captures, so the flows searching it should search
+        // one platform. A table or a dictionary is not searched, and says nothing about the platform.
         foreach (var scope in scopes)
         {
-            var endpoints = parsed.Where(p => p.Cache.Scope == scope).Select(p => Clip(p.Cache.Source.Endpoint, 1000))
-                .Concat(elsewhere.Where(c => c.Scope == scope).Select(c => c.Endpoint))
+            var endpoints = parsed
+                .Where(p => scopeOf[p.Cache.Name] == scope && p.Cache.Types.Any(t => t.Origin == Snapshots.CacheOrigin.Osdu) && p.Cache.Source.Endpoint is not null)
+                .Select(p => Clip(p.Cache.Source.Endpoint!, 1000))
+                .Concat(elsewhere.Where(c => c.Scope == scope && c.Endpoint is not null).Select(c => c.Endpoint!))
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal)
                 .ToList();
@@ -732,4 +725,52 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         => Path.GetRelativePath(root, path).Replace('\\', '/');
 
     private static string Clip(string text, int length) => text.Length <= length ? text : text[..length];
+
+    private static string? ClipOrNull(string? text, int length) => text is null ? null : Clip(text, length);
+
+    /// <summary>
+    /// What the catalog records of one declared type, computed once so the check for an unchanged row and the write agree:
+    /// the origin, and only the settings of that origin, so a type that changes origin leaves nothing of the old one behind.
+    /// </summary>
+    private static CacheDefinitionRow Declaration(CacheDefinition cache, Snapshots.ReferenceTypeSpec type, string relative) => new(
+        Snapshots.CacheOrigins.Text(type.Origin),
+        type.Origin == Snapshots.CacheOrigin.Osdu ? ClipOrNull(cache.Source.Endpoint, 1000) : null,
+        type.Origin == Snapshots.CacheOrigin.Table ? ClipOrNull(cache.Source.Connection, 1000) : null,
+        type.Origin == Snapshots.CacheOrigin.Table ? type.Table : null,
+        type.IsLookup ? type.Key : null,
+        type.Origin == Snapshots.CacheOrigin.Dictionary ? ClipOrNull(type.DictionaryPath, 1000) : null,
+        relative,
+        type.Name,
+        type.EntityType,
+        type.Origin == Snapshots.CacheOrigin.Osdu ? type.Kind : null,
+        type.Origin == Snapshots.CacheOrigin.Osdu ? type.Query : null,
+        JsonSerializer.Serialize(type.Fields.Select(f => new { f.Path, As = f.Name }).ToList(), SummaryJson),
+        type.OnChange == Snapshots.CacheChangeMode.Auto ? "auto" : "approve");
+
+    private sealed record CacheDefinitionRow(
+        string Origin, string? Endpoint, string? Connection, string? SourceObject, string? KeyField, string? DictionaryPath, string RelativePath,
+        string Name, string EntityType, string? Kind, string? Query, string FieldsJson, string OnChange)
+    {
+        public bool Matches(DeliveryCacheDefinition row)
+            => row.Origin == Origin && row.Endpoint == Endpoint && row.Connection == Connection && row.SourceObject == SourceObject
+               && row.KeyField == KeyField && row.DictionaryPath == DictionaryPath && row.RelativePath == RelativePath && row.Name == Name
+               && row.EntityType == EntityType && row.Kind == Kind && row.Query == Query && row.FieldsJson == FieldsJson && row.OnChange == OnChange;
+
+        public void WriteTo(DeliveryCacheDefinition row)
+        {
+            row.Origin = Origin;
+            row.Endpoint = Endpoint;
+            row.Connection = Connection;
+            row.SourceObject = SourceObject;
+            row.KeyField = KeyField;
+            row.DictionaryPath = DictionaryPath;
+            row.RelativePath = RelativePath;
+            row.Name = Name;
+            row.EntityType = EntityType;
+            row.Kind = Kind;
+            row.Query = Query;
+            row.FieldsJson = FieldsJson;
+            row.OnChange = OnChange;
+        }
+    }
 }

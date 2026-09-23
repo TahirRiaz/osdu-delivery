@@ -25,7 +25,7 @@ public sealed record CacheFlowDocument : RegisteredFlowDocument
 
     public override string? Batch => Flow.Batch;
 
-    public override string? SourceReference => Flow.Source.Endpoint;
+    public override string? SourceReference => Flow.Source.Endpoint ?? Flow.Source.Connection;
 
     public override string? TargetReference => CatalogTarget;
 

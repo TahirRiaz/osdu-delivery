@@ -138,7 +138,14 @@ public sealed record DeliveryMappingDto(
 public sealed record DeliveryMappingDetailDto(DeliveryMappingDto Mapping, string Yaml);
 
 /// <summary>One cache flow's declaration of a type: the kind it searches, its query, and what a change does in its declaration.</summary>
-public sealed record DeliveryCacheTypeSourceDto(string Flow, string Kind, string? Query, string OnChange);
+/// <summary>
+/// One cache flow's declaration of a type: where it takes the records from (<c>Origin</c>: osdu, table or dictionary), for an
+/// OSDU type the kind and query it searches, for a table type the connection reference and table it reads and the key column,
+/// and for a dictionary type the document's file and the name of its key.
+/// </summary>
+public sealed record DeliveryCacheTypeSourceDto(
+    string Flow, string Origin, string? Kind, string? Query, string OnChange, string? Connection = null, string? SourceObject = null, string? KeyField = null,
+    string? DictionaryPath = null);
 
 /// <summary>One path the cache keeps for a type: the path, the name it is cached under, and the cache flows that declare it.</summary>
 public sealed record DeliveryCacheFieldDto(string Path, string As, IReadOnlyList<string> Flows);
@@ -149,18 +156,20 @@ public sealed record DeliveryCacheFieldDto(string Path, string As, IReadOnlyList
 /// version holds.
 /// </summary>
 public sealed record DeliveryCacheTypeDto(
-    string Name, string EntityType, IReadOnlyList<DeliveryCacheTypeSourceDto> Sources, IReadOnlyList<DeliveryCacheFieldDto> Fields, string OnChange, long Items);
+    string Name, string EntityType, IReadOnlyList<DeliveryCacheTypeSourceDto> Sources, IReadOnlyList<DeliveryCacheFieldDto> Fields, string OnChange, long Items,
+    string Origin = CacheOrigins.OsduText, string? Key = null);
 
 /// <summary>A schedule that refreshes a cache flow: its cadence, or that it fires behind other schedules.</summary>
 public sealed record DeliveryCacheScheduleDto(Guid Id, string Name, string? Cron, int? IntervalSeconds, bool Chained);
 
 /// <summary>
 /// A cache flow that fills a partition's cache: the repository and file that define it (the file is where what it caches is
-/// changed), its pipeline, the OSDU endpoint reference it searches, the schedules that refresh it, and the types it declares.
+/// changed), its pipeline, the OSDU endpoint reference its OSDU types are searched on and the connection reference its table
+/// types are read from (each null when it declares none of those), the schedules that refresh it, and the types it declares.
 /// </summary>
 public sealed record DeliveryCacheFlowDto(
-    string Name, Guid RepoId, string RepoName, string RelativePath, Guid? PipelineId, string Endpoint, IReadOnlyList<DeliveryCacheScheduleDto> Schedules,
-    IReadOnlyList<string> Types);
+    string Name, Guid RepoId, string RepoName, string RelativePath, Guid? PipelineId, string? Endpoint, IReadOnlyList<DeliveryCacheScheduleDto> Schedules,
+    IReadOnlyList<string> Types, string? Connection = null);
 
 /// <summary>
 /// The cache of one OSDU partition: every cache flow that fills it, the types it holds as those flows together declare them,
@@ -191,8 +200,8 @@ public sealed record DeliveryCacheUseDto(string Scope, string TypeName, string I
 public sealed record DeliveryCachedItemDto(
     long ItemId, string Scope, string Version, string TypeName, string EntityType, string RecordId, JsonElement Fields);
 
-/// <summary>One type a cache version holds, and how many records of it.</summary>
-public sealed record DeliveryCacheVersionTypeDto(string Name, string EntityType, long Items);
+/// <summary>One type a cache version holds, how many records of it, and for a lookup table the name its key is kept under.</summary>
+public sealed record DeliveryCacheVersionTypeDto(string Name, string EntityType, long Items, string? Key = null);
 
 /// <summary>
 /// One of the partition's system properties as a cache version holds it: a setting of the platform for the partition,
@@ -957,6 +966,8 @@ public static class DeliveryEndpoints
                 var current = currentRows.FirstOrDefault(v => v.Scope == scope) is { } row ? OsduCacheStore.Info(row) : null;
                 var held = current?.Types.ToDictionary(t => t.Name, t => t.Items, StringComparer.OrdinalIgnoreCase)
                     ?? new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                var keys = current?.Types.Where(t => t.Key is not null).ToDictionary(t => t.Name, t => t.Key, StringComparer.OrdinalIgnoreCase)
+                    ?? new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
                 var flows = group
                     .GroupBy(d => (d.RepoId, d.FlowName))
@@ -973,7 +984,9 @@ public static class DeliveryEndpoints
                                 .ToList();
                         return new DeliveryCacheFlowDto(
                             first.FlowName, first.RepoId, repoNames.GetValueOrDefault(first.RepoId, string.Empty), first.RelativePath, pipeline?.Id,
-                            first.Endpoint, refreshedBy, declared.Select(d => d.Name).Order(StringComparer.Ordinal).ToList());
+                            declared.Select(d => d.Endpoint).FirstOrDefault(e => e is not null), refreshedBy,
+                            declared.Select(d => d.Name).Order(StringComparer.Ordinal).ToList(),
+                            declared.Select(d => d.Connection).FirstOrDefault(c => c is not null));
                     })
                     .OrderBy(f => f.Name, StringComparer.Ordinal)
                     .ToList();
@@ -1004,9 +1017,10 @@ public static class DeliveryEndpoints
                         var onChange = ordered.Any(d => d.OnChange.Equals("approve", StringComparison.OrdinalIgnoreCase)) ? "approve" : "auto";
                         return new DeliveryCacheTypeDto(
                             first.Name, first.EntityType,
-                            ordered.Select(d => new DeliveryCacheTypeSourceDto(d.FlowName, d.Kind, d.Query, d.OnChange)).ToList(),
+                            ordered.Select(d => new DeliveryCacheTypeSourceDto(
+                                d.FlowName, d.Origin, d.Kind, d.Query, d.OnChange, d.Connection, d.SourceObject, d.KeyField, d.DictionaryPath)).ToList(),
                             fields.Select(f => new DeliveryCacheFieldDto(f.Path, f.As, f.Flows)).ToList(),
-                            onChange, held.GetValueOrDefault(first.Name));
+                            onChange, held.GetValueOrDefault(first.Name), first.Origin, keys.GetValueOrDefault(first.Name) ?? first.KeyField);
                     })
                     .OrderBy(t => t.Name, StringComparer.Ordinal)
                     .ToList();
@@ -1098,7 +1112,7 @@ public static class DeliveryEndpoints
     private static DeliveryCacheVersionDto ToVersionDto(CacheVersionInfo version)
         => new(
             version.Scope, version.Version, version.Sequence, version.CapturedUtc, version.Current, version.PreviousVersion, version.FlowName, version.RunId,
-            version.CapturedBy, version.Origin, version.Items, version.Types.Select(t => new DeliveryCacheVersionTypeDto(t.Name, t.EntityType, t.Items)).ToList(),
+            version.CapturedBy, version.Origin, version.Items, version.Types.Select(t => new DeliveryCacheVersionTypeDto(t.Name, t.EntityType, t.Items, t.Key)).ToList(),
             version.SystemProperties.Select(p => new DeliveryCacheSystemPropertyDto(p.Service, p.Name, p.State.ToString(), p.Source, p.Detail)).ToList());
 
     private static ProblemHttpResult NoCacheNamed()

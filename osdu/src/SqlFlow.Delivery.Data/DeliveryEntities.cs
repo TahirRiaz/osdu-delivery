@@ -669,8 +669,26 @@ public sealed class DeliveryCacheDefinition
     /// <summary>The partition whose cache the flow fills: its <c>source.headers.data-partition-id</c>.</summary>
     public string Scope { get; set; } = string.Empty;
 
-    /// <summary>The OSDU endpoint the flow searches, as declared (a reference, never a resolved value).</summary>
-    public string Endpoint { get; set; } = string.Empty;
+    /// <summary>
+    /// Where the type's records come from: <c>osdu</c> (searched on the platform), <c>table</c> (an ingestion table) or
+    /// <c>dictionary</c> (a dictionary document in the repository). Rows written before origins existed are osdu.
+    /// </summary>
+    public string Origin { get; set; } = "osdu";
+
+    /// <summary>For an OSDU type: the endpoint the flow searches, as declared (a reference, never a resolved value).</summary>
+    public string? Endpoint { get; set; }
+
+    /// <summary>For a table type: the flow's source connection, as declared (a reference, never a resolved value).</summary>
+    public string? Connection { get; set; }
+
+    /// <summary>For a table type: the three-part name of the ingestion table read.</summary>
+    public string? SourceObject { get; set; }
+
+    /// <summary>For a table or dictionary type: the name each row's key is kept under.</summary>
+    public string? KeyField { get; set; }
+
+    /// <summary>For a dictionary type: the dictionary document's file, relative to the repository root.</summary>
+    public string? DictionaryPath { get; set; }
 
     /// <summary>The cache flow's file, relative to the repository root.</summary>
     public string RelativePath { get; set; } = string.Empty;
@@ -678,16 +696,19 @@ public sealed class DeliveryCacheDefinition
     /// <summary>The short name mappings use (UnitOfMeasure).</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>The OSDU entity type (reference-data--UnitOfMeasure).</summary>
+    /// <summary>The OSDU entity type (reference-data--UnitOfMeasure), or lookup--&lt;Name&gt; for a table or dictionary type.</summary>
     public string EntityType { get; set; } = string.Empty;
 
-    /// <summary>The search kind the capture sweeps.</summary>
-    public string Kind { get; set; } = string.Empty;
+    /// <summary>For an OSDU type: the search kind the capture sweeps.</summary>
+    public string? Kind { get; set; }
 
-    /// <summary>The search query narrowing the capture.</summary>
+    /// <summary>For an OSDU type: the search query narrowing the capture.</summary>
     public string? Query { get; set; }
 
-    /// <summary>The captured paths as JSON: <c>[{ "path": "data.Code", "as": "Code" }]</c>.</summary>
+    /// <summary>
+    /// What the cache keeps of each record as JSON: <c>[{ "path": "data.Code", "as": "Code" }]</c>, the path a column for a
+    /// table type, and for a dictionary type the fields its document names.
+    /// </summary>
     public string FieldsJson { get; set; } = "[]";
 
     /// <summary>approve or auto: what a changed cached value of this type does to the records already built from it.</summary>
@@ -1507,11 +1528,16 @@ public static class DeliveryModel
             e.HasKey(c => c.Id);
             e.Property(c => c.FlowName).HasMaxLength(200).IsRequired();
             e.Property(c => c.Scope).HasMaxLength(200).IsRequired();
-            e.Property(c => c.Endpoint).HasMaxLength(1000).IsRequired();
+            e.Property(c => c.Origin).HasMaxLength(16).IsRequired().HasDefaultValue("osdu");
+            e.Property(c => c.Endpoint).HasMaxLength(1000);
+            e.Property(c => c.Connection).HasMaxLength(1000);
+            e.Property(c => c.SourceObject).HasMaxLength(400);
+            e.Property(c => c.KeyField).HasMaxLength(128);
+            e.Property(c => c.DictionaryPath).HasMaxLength(1000);
             e.Property(c => c.RelativePath).HasMaxLength(1000).IsRequired();
             e.Property(c => c.Name).HasMaxLength(200).IsRequired();
             e.Property(c => c.EntityType).HasMaxLength(200).IsRequired();
-            e.Property(c => c.Kind).HasMaxLength(400).IsRequired();
+            e.Property(c => c.Kind).HasMaxLength(400);
             e.Property(c => c.Query).HasMaxLength(4000);
             e.Property(c => c.FieldsJson).IsRequired();
             e.Property(c => c.OnChange).HasMaxLength(16).IsRequired();

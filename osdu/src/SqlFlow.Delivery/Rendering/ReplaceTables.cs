@@ -96,9 +96,6 @@ internal static class ReplaceTables
             rows.Add(new ReferenceItem(from, fields));
         }
 
-        return new ReferenceType("replace", LookupEntityType("replace"), rows);
+        return new ReferenceType("replace", ReferenceType.LookupEntityType("replace"), rows, KeyField);
     }
-
-    /// <summary>The entity type a table that holds no OSDU records is kept under: no OSDU group is called lookup.</summary>
-    public static string LookupEntityType(string name) => ReferenceType.LookupEntityTypePrefix + name;
 }

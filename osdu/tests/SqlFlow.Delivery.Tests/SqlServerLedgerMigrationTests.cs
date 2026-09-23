@@ -158,6 +158,41 @@ public sealed class SqlServerLedgerMigrationTests
     }
 
     [SkippableFact]
+    public async Task A_cache_declaration_written_before_origins_existed_is_an_osdu_type_afterwards_and_the_migration_goes_back()
+    {
+        const string BeforeLookups = "20260923132848_CacheSystemProperties";
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeLookups);
+        var id = Guid.NewGuid();
+        await database.ExecuteAsync(
+            """
+            INSERT INTO [osdu].[CacheDefinition] ([Id], [RepoId], [FlowName], [Scope], [Endpoint], [RelativePath], [Name], [EntityType], [Kind], [Query],
+                [FieldsJson], [OnChange], [FirstSeenUtc], [LastSeenUtc])
+            VALUES (@id, @logs, N'wells-osdu-00-reference-cache', N'dev', N'${env:OSDU_URL}', N'cache/wells.yaml', N'UnitOfMeasure',
+                N'reference-data--UnitOfMeasure', N'osdu:wks:reference-data--UnitOfMeasure:*', N'*', N'[]', N'auto', @now, @now);
+            """,
+            ("id", id));
+
+        await database.MigrateAsync(null);
+        await using (var db = database.Context())
+        {
+            var row = await db.DeliveryCacheDefinitions.SingleAsync(d => d.Id == id);
+            Assert.Equal("osdu", row.Origin);
+            Assert.Equal("${env:OSDU_URL}", row.Endpoint);
+            Assert.Equal("osdu:wks:reference-data--UnitOfMeasure:*", row.Kind);
+            Assert.Null(row.Connection);
+            Assert.Null(row.SourceObject);
+            Assert.Null(row.KeyField);
+            Assert.Null(row.DictionaryPath);
+        }
+
+        // Going back drops the origin columns and keeps the declaration an OSDU type always was.
+        await database.MigrateAsync(BeforeLookups);
+        Assert.Equal(1, await database.ScalarAsync("SELECT COUNT(*) FROM [osdu].[CacheDefinition] WHERE [Kind] = N'osdu:wks:reference-data--UnitOfMeasure:*'"));
+        Assert.Equal(0, await database.ScalarAsync("SELECT COUNT(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[CacheDefinition]') AND [name] = N'Origin'"));
+    }
+
+    [SkippableFact]
     public async Task Two_records_holding_one_osdu_id_stop_the_migration()
     {
         await using var database = await ScratchDatabase.CreateAsync();

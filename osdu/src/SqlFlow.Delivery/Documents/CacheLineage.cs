@@ -1,5 +1,6 @@
 using SqlFlow.Core.Lineage;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Yaml;
 
 namespace SqlFlow.Delivery.Documents;
@@ -24,7 +25,8 @@ public static class CacheLineage
         {
             foreach (var type in flow.Types)
             {
-                if (OsduLineage.Type(LineageRelation.Reads, flow.Source.Endpoint, partition, type.Kind, who, $"type '{type.Name}'", warnings) is { } read)
+                if (type is { Origin: CacheOrigin.Osdu, Kind: { } kind } && flow.Source.Endpoint is { } endpoint
+                    && OsduLineage.Type(LineageRelation.Reads, endpoint, partition, kind, who, $"type '{type.Name}'", warnings) is { } read)
                 {
                     datasets.Add(read);
                 }

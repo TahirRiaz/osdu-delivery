@@ -58,9 +58,14 @@ public sealed record CacheDefinition
             yield return new("source.auth.secondarySecretRef", secondary);
         }
 
-        if (IsReference(Source.Endpoint))
+        if (Source.Endpoint is { } endpoint && IsReference(endpoint))
         {
-            yield return new("source.endpoint", Source.Endpoint);
+            yield return new("source.endpoint", endpoint);
+        }
+
+        if (Source.Connection is { } connection && IsReference(connection))
+        {
+            yield return new("source.connection", connection);
         }
 
         foreach (var (name, value) in Source.Headers.Where(kv => IsReference(kv.Value)).OrderBy(kv => kv.Key, StringComparer.Ordinal))
@@ -80,11 +85,21 @@ public sealed record CacheDefinition
     private static bool IsReference(string value) => value.Contains("${", StringComparison.Ordinal);
 }
 
-/// <summary>The OSDU side of a cache: the platform the declared types are searched on, and how to authenticate there.</summary>
+/// <summary>
+/// Where a cache flow's types come from: the OSDU platform its OSDU types are searched on and how to authenticate there, and
+/// the database its table types are read from. The headers name the partition whose cache the flow fills, whatever the
+/// origins of its types.
+/// </summary>
 public sealed record CacheSource
 {
-    /// <summary>The platform base URL; ${env:NAME} and ${keyvault:NAME} references allowed.</summary>
-    public required string Endpoint { get; init; }
+    /// <summary>The platform base URL, declared when the flow has an OSDU type; ${env:NAME} and ${keyvault:NAME} references allowed.</summary>
+    public string? Endpoint { get; init; }
+
+    /// <summary>
+    /// The database the flow's table types are read from, declared exactly as a delivery flow's <c>source.connection</c> is:
+    /// a whole secret reference, or a SQL Server connection string whose secrets are references.
+    /// </summary>
+    public string? Connection { get; init; }
 
     public TargetAuth Auth { get; init; } = new() { Type = TargetAuthType.None };
 
