@@ -1,0 +1,8 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>SqlFlow.Delivery.Search</RootNamespace>
+    <Description>The query strings OSDU Delivery sends to the OSDU search service, built canonically: the right sub-field for the match asked for, escaped for the Lucene syntax the service parses, and a refusal where a value cannot match at all.</Description>
+  </PropertyGroup>
+
+</Project>
