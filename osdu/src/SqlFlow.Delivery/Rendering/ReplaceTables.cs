@@ -1,5 +1,7 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Json;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Rendering;
@@ -25,6 +27,9 @@ internal readonly record struct ReplaceLookup(ReplaceLookupKind Kind, ReferenceV
 {
     public static ReplaceLookup NotListed { get; } = new(ReplaceLookupKind.NotListed, null, []);
 }
+
+/// <summary>The fields a replace reading a cached table matches the incoming value on, and takes its replacement from.</summary>
+internal readonly record struct ReplaceFields(string Match, string Field);
 
 /// <summary>
 /// The one way a replace looks a value up, whether its table is written in the mapping or read from the cache. A table is a
@@ -77,6 +82,61 @@ internal static class ReplaceTables
         return distinct == 1
             ? new ReplaceLookup(ReplaceLookupKind.Found, values[0], found.CaseVariants)
             : new ReplaceLookup(ReplaceLookupKind.Ambiguous, null, found.CaseVariants);
+    }
+
+    /// <summary>
+    /// The fields a replace reading <paramref name="type"/> matches on and replaces by: those it names, or those the table
+    /// settles. A lookup table matches on its key and replaces by the one field it holds beside its key (<c>value</c>, for
+    /// a dictionary of pairs, and for a table whose rows give no value at all). A type of OSDU records has no key and many
+    /// fields, so a replace reading one names both. Null, with the reason, when a field cannot be settled.
+    /// </summary>
+    public static ReplaceFields? Fields(CachedReplaceTable table, ReferenceType type, out string? problem)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        ArgumentNullException.ThrowIfNull(type);
+        problem = null;
+        var match = table.Match ?? type.Key;
+        if (match is null)
+        {
+            problem = $"cache.{type.Name} holds OSDU records ({type.EntityType}), which have no key for a replace to match on; name the field the incoming value is compared with, such as match: Code";
+            return null;
+        }
+
+        var field = table.Field;
+        if (field is null)
+        {
+            if (!type.IsLookup)
+            {
+                problem = $"cache.{type.Name} holds OSDU records ({type.EntityType}); name the field that replaces the value, such as field: id";
+                return null;
+            }
+
+            var beside = type.FieldNames.Where(name => !name.Equals(type.Key, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (beside.Count > 1)
+            {
+                problem = $"lookup table {type.Name} holds {beside.Count} fields beside its key {type.Key} ({string.Join(", ", beside)}); name the one that replaces the value, such as field: {beside[0]}";
+                return null;
+            }
+
+            field = beside.Count == 1 ? beside[0] : ValueField;
+        }
+
+        return new ReplaceFields(ReferenceField.Normalize(match), ReferenceField.Normalize(field));
+    }
+
+    /// <summary>
+    /// The one text a cached value gives a replace: a scalar, or the only value of a set. Null when it holds several
+    /// values or an object, which a replace cannot turn one value into.
+    /// </summary>
+    public static string? SingleText(ReferenceValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return value.Node switch
+        {
+            JsonValue => value.Text,
+            JsonArray { Count: 1 } single when single[0] is JsonValue => value.Text,
+            _ => null,
+        };
     }
 
     /// <summary>A value as text two rows can be compared by; no value compares as itself and never equals a text.</summary>

@@ -459,16 +459,18 @@ public class ReferenceCacheTests
     /// <summary>
     /// The sample mapping once declared the source unit `V/V` as `%`, so a neutron porosity of 0.21 was published as 0.21
     /// percent, a hundredth of what the curve carries. `V/V` is a volume fraction, which OSDU's reference data calls
-    /// `m3/m3`. The sample mapping's own curve unit entry is rendered here against the sample template and cache, so the
-    /// mapping and the cached reference data have to agree for this to pass. The cache holds `%` as well as `m3/m3`, so
-    /// replacing the unit back with `%` would resolve rather than hold: only the rendered id catches it.
+    /// `m3/m3`. The sample mapping's own curve unit entry is rendered here against the sample template and cache, through
+    /// the unit dictionary it reads from the cache, so the dictionary and the cached reference data have to agree for this
+    /// to pass. The cache holds `%` as well as `m3/m3`, so replacing the unit back with `%` would resolve rather than
+    /// hold: only the rendered id catches it.
     /// </summary>
     [Fact]
     public async Task The_sample_mapping_renders_the_porosity_unit_as_a_volume_fraction()
     {
         var mapping = new MappingCatalog(Samples.Mappings, new DeliveryDocumentLoader()).Load("WellLog@1.4.0");
         var curveUnit = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].CurveUnit");
-        Assert.Equal("m3/m3", curveUnit.Modifiers.Single(m => m.Kind == ModifierKind.Replace).Replacements["V/V"]);
+        Assert.Equal("RecallUnits", curveUnit.Modifiers.Single(m => m.Kind == ModifierKind.Replace).Table!.CacheType);
+        Assert.Equal("m3/m3", Samples.SampleDictionary("RecallUnits").Entries.Single(e => e.Key == "V/V").Values["value"]);
 
         var version = await Samples.SampleCache.CurrentVersionAsync(Samples.SampleCacheScope);
         Assert.NotNull(version);

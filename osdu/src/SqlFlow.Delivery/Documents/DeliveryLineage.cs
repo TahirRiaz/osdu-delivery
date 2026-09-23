@@ -127,28 +127,14 @@ public static class DeliveryLineage
     }
 
     /// <summary>
-    /// The partition cache types a mapping reads, from its cache sources and their lookups, in name order. A search
-    /// source's lookups name a search, not a cache type, and are not among them.
+    /// The partition cache types a mapping reads, from its cache sources and their lookups and from the tables its replaces
+    /// read, in name order (<see cref="MappingDefinition.CacheTypesRead"/>). A search source's lookups name a search, not a
+    /// cache type, and are not among them.
     /// </summary>
     public static IReadOnlyList<string> CacheTypes(MappingDefinition mapping)
     {
         ArgumentNullException.ThrowIfNull(mapping);
-        var types = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in mapping.Entries)
-        {
-            if (entry.Source is not { Kind: MappingSourceKind.Cache, CacheType: { } type })
-            {
-                continue;
-            }
-
-            types.Add(type);
-            foreach (var find in entry.FindBy)
-            {
-                types.Add(find.Type);
-            }
-        }
-
-        return types.ToList();
+        return mapping.CacheTypesRead();
     }
 
     /// <summary>

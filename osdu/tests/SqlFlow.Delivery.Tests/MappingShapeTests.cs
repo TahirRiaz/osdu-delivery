@@ -97,6 +97,31 @@ public class MappingShapeTests
     }
 
     [Fact]
+    public void A_replace_reading_a_cached_table_is_drawn_with_the_table_it_reads()
+    {
+        var shape = MappingRenderer.Shape(TestSchema.Mapping("""
+              - target: osdu.data.Symbol
+                source: dataset.unit
+                modifiers:
+                  - replace: cache.CurveClasses
+                    field: curve_family
+                    otherwise: ~
+              - target: osdu.data.Unit
+                source: cache.UnitOfMeasure.id
+                findBy: cache.UnitOfMeasure.Code = dataset.unit
+                modifiers:
+                  - replace: cache.RecallUnits
+            """), TestSchema.Build(), Dev);
+
+        Assert.Equal(
+            "<string from dataset.unit | replace from cache.CurveClasses (its key to curve_family), otherwise ~>",
+            shape.Document["data"]!["Symbol"]!.GetValue<string>());
+        Assert.Equal(
+            "<string from cache.UnitOfMeasure.id by Code = (dataset.unit | replace from cache.RecallUnits)>",
+            shape.Document["data"]!["Unit"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void A_single_value_on_an_object_is_noted_and_left_out_as_a_render_holds_it()
     {
         var shape = MappingRenderer.Shape(TestSchema.Mapping("  - { target: osdu.data.Nested, source: dataset.name }"), TestSchema.Build(), Dev);

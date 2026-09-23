@@ -18,6 +18,7 @@ using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Delivery.Tests;
 using SqlFlow.Delivery.Validation;
 using Xunit;
 
@@ -193,9 +194,16 @@ public sealed class DeliveryTemplateApiTests
 
             var caches = await ReadAsync<List<DeliveryBuilderCacheDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/mapping-builder/caches"));
             var cache = Assert.Single(caches, c => c.Scope == scope);
-            Assert.Equal([cacheFlowName], cache.Flows);
+            Assert.Equal([cacheFlowName, cacheFlowName + "-lookups"], cache.Flows);
             Assert.Equal(ReferenceVersion, cache.CurrentVersion);
             Assert.Equal(["Code", "Name"], Assert.Single(cache.Types, c => c.Name == "VerticalMeasurementType").Fields);
+            Assert.Null(Assert.Single(cache.Types, c => c.Name == "VerticalMeasurementType").Key);
+
+            // A lookup table names its key, so the builder can say what a replace reading it matches on by default.
+            var units = Assert.Single(cache.Types, c => c.Name == "RecallUnits");
+            Assert.Equal(("lookup--RecallUnits", "key"), (units.EntityType, units.Key));
+            Assert.Equal(["value"], units.Fields);
+            Assert.Equal("mnemonic", Assert.Single(cache.Types, c => c.Name == "CurveClasses").Key);
 
             // Wellbores are searched for on the platform, so no cache holds them.
             Assert.DoesNotContain(cache.Types, c => c.Name == "Wellbore");
@@ -205,8 +213,8 @@ public sealed class DeliveryTemplateApiTests
             var listed = await ReadAsync<List<DeliveryCacheDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/caches?repoId=" + repoId));
             var described = Assert.Single(listed);
             Assert.Equal(scope, described.Scope);
-            var filler = Assert.Single(described.Flows);
-            Assert.Equal(cacheFlowName, filler.Name);
+            Assert.Equal([cacheFlowName, cacheFlowName + "-lookups"], described.Flows.Select(f => f.Name).Order(StringComparer.Ordinal));
+            var filler = Assert.Single(described.Flows, f => f.Name == cacheFlowName);
             Assert.Equal("cache/" + cacheFlowName + ".yaml", filler.RelativePath);
             Assert.Equal(ReferenceVersion, described.Current!.Version);
             Assert.Equal("tests", described.Current.CapturedBy);
@@ -244,6 +252,13 @@ public sealed class DeliveryTemplateApiTests
             var parsed = await ReadAsync<DeliveryMappingParseResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/parse", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml" }));
             Assert.Empty(parsed.Issues);
             Assert.NotNull(parsed.Draft);
+
+            // A replace reading a cached table opens with the table and the fields it names, and nothing the table settles.
+            var family = Assert.Single(Assert.Single(parsed.Draft.Entries, e => e.Target == "osdu.data.Curves[].LogCurveFamilyID").Modifiers);
+            Assert.Equal(("replace", "CurveClasses", (string?)null, "curve_family", "empty"), (family.Kind, family.Table, family.Match, family.Field, family.OtherwiseKind));
+            Assert.Null(family.Replacements);
+            var unit = Assert.Single(Assert.Single(parsed.Draft.Entries, e => e.Target == "osdu.data.Curves[].CurveUnit").Modifiers);
+            Assert.Equal(("RecallUnits", (string?)null, (string?)null), (unit.Table, unit.Match, unit.Field));
             var parameters = new Dictionary<string, string>
             {
                 ["dataPartition"] = "dev",
@@ -254,6 +269,18 @@ public sealed class DeliveryTemplateApiTests
             var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = parsed.Draft, parameters }));
             Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
             Assert.Contains("target: osdu.data.WellboreID", checkedSample.Yaml, StringComparison.Ordinal);
+            Assert.Contains("      - replace: cache.CurveClasses\n        field: curve_family\n        otherwise: ~\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+
+            // A cached table the partition's cache does not hold is refused by the check, naming what it does hold.
+            var missingTable = parsed.Draft with
+            {
+                Entries = parsed.Draft.Entries.Select(e => e.Target == "osdu.data.Curves[].CurveUnit"
+                    ? e with { Modifiers = [e.Modifiers[0] with { Table = "NoSuchUnits" }] }
+                    : e).ToList(),
+            };
+            var missing = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope, draft = missingTable, parameters }));
+            Assert.False(missing.Valid);
+            Assert.Contains(missing.Issues, i => i.Severity == "error" && i.Message.Contains("replace reads cache.NoSuchUnits, which cache version", StringComparison.Ordinal));
 
             // The same document drawn as the shape of the records it renders: the identity and the envelope as a render
             // writes them, and a placeholder wherever a value comes from a row or the cache.
@@ -609,6 +636,7 @@ public sealed class DeliveryTemplateApiTests
         {
             ["UnitOfMeasure"] = """[{"path":"data.Code","as":"Code"},{"path":"data.Name","as":"Name"},{"path":"data.ID","as":"ID"}]""",
             ["LogCurveBusinessValue"] = """[{"path":"data.Code","as":"Code"},{"path":"data.Name","as":"Name"}]""",
+            ["LogCurveFamily"] = """[{"path":"data.Code","as":"Code"},{"path":"data.Name","as":"Name"}]""",
             ["VerticalMeasurementType"] = """[{"path":"data.Code","as":"Code"},{"path":"data.Name","as":"Name"}]""",
         };
 
@@ -633,6 +661,32 @@ public sealed class DeliveryTemplateApiTests
                 LastSeenUtc = now,
             });
             types.Add(ReferenceType.FromJson(type, file));
+        }
+
+        // The lookup tables the mapping translates source spellings through, declared by the partition's lookups flow as a
+        // sync records them: the unit dictionary, and the curve dictionary's ingestion table.
+        foreach (var lookup in Samples.SampleLookups())
+        {
+            var dictionary = lookup.Name == "RecallUnits";
+            osdu.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
+            {
+                Id = Guid.NewGuid(),
+                RepoId = repoId,
+                FlowName = cacheFlowName + "-lookups",
+                Scope = scope,
+                Origin = dictionary ? "dictionary" : "table",
+                Connection = dictionary ? null : SourceConnectionReference,
+                SourceObject = dictionary ? null : "OsduSample.ing.CurveDictionary",
+                KeyField = lookup.Key,
+                DictionaryPath = dictionary ? "dictionaries/RecallUnits.yaml" : null,
+                RelativePath = "cache/" + cacheFlowName + "-lookups.yaml",
+                Name = lookup.Name,
+                EntityType = lookup.EntityType,
+                FieldsJson = JsonSerializer.Serialize(lookup.FieldNames.Where(f => f != lookup.Key).Select(f => new { path = f, @as = f })),
+                FirstSeenUtc = now,
+                LastSeenUtc = now,
+            });
+            types.Add(lookup);
         }
 
         await db.SaveChangesAsync();

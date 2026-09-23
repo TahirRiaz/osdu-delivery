@@ -4,7 +4,8 @@ import type { DeliveryCachedItem } from "../../api/delivery";
 import { CopyButton } from "@/components/CopyButton";
 import { TruncatedText } from "@/components/TruncatedText";
 import {
-  CACHE_ID_FIELD, cacheEntryExample, cacheReference, cachedCell, isLookupEntityType, lookupEntryExample, type CachedTypeSummary,
+  CACHE_ID_FIELD, cacheEntryExample, cacheReference, cachedCell, isLookupEntityType, lookupEntryExample, lookupReplaceExample,
+  type CachedTypeSummary,
 } from "./cacheFormat";
 
 /** What cache.<Type>.id renders: the record's OSDU id with the trailing colon an OSDU relationship carries. */
@@ -151,6 +152,12 @@ function LookupRowReference({ item, names }: { item: DeliveryCachedItem; names: 
           </>
         )}
         .
+        {valueName !== null && (
+          <>
+            {" "}Under <span className="font-mono">replace: cache.{item.typeName}</span>, the same value becomes it on its way to any
+            entry.
+          </>
+        )}
       </p>
     </section>
   );
@@ -198,6 +205,15 @@ export function CacheMappingGuide({ types, scope }: { types: CachedTypeSummary[]
           <Snippet
             text={lookupEntryExample(table.name, table.key!, table.fields.find((field) => field.as !== table.key)?.as ?? null)}
             testId="delivery-cache-mapping-guide-lookup-entry"
+          />
+          <p className="text-[12.5px] text-muted-foreground" data-testid="delivery-cache-mapping-guide-replace">
+            It also translates a dataset value on its way to any entry, as a replace modifier: the value is matched on the key
+            and becomes the row's value. A value the table does not list stays as it is, unless the replace's{" "}
+            <span className="font-mono text-foreground">otherwise</span> says what it becomes; a row with no value gives none.
+          </p>
+          <Snippet
+            text={lookupReplaceExample(table.name, table.key!, table.fields.map((field) => field.as))}
+            testId="delivery-cache-mapping-guide-replace-entry"
           />
         </>
       )}

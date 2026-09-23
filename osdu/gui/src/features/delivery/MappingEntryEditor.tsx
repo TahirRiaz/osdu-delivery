@@ -17,9 +17,10 @@ import type {
   DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftConditionOperator,
   MappingDraftEntry, MappingDraftInput, MappingDraftIssue, MappingDraftModifier, MappingDraftModifierKind, MappingDraftOtherwiseKind,
 } from "../../api/delivery";
+import { isLookupEntityType } from "./cacheFormat";
 import {
-  DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, inputsFor, KEY_NAME, knownColumns, MODIFIER_KINDS, newModifier, NO_GROUP, parseJson,
-  repeaterOf, staticModeFor,
+  cachedReplaceFields, DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, inputsFor, isCachedReplace, KEY_NAME, knownColumns, MODIFIER_KINDS,
+  newModifier, NO_GROUP, parseJson, repeaterOf, staticModeFor,
   type StaticMode,
 } from "./mappingDraft";
 import { shapeText } from "./templateFormat";
@@ -231,6 +232,284 @@ function ChoiceOrText({
           data-testid={`${testId}-text`}
         />
       )}
+    </div>
+  );
+}
+
+const DEFAULT_FIELD = "__default__";
+
+/**
+ * A field of a cached table, picked from those it holds or typed, with the field the table settles on its own offered
+ * first when there is one: a lookup table's key to match on, and the one field it holds beside its key to replace by.
+ */
+function CachedFieldSelect({
+  value, settled, settledLabel, options, onChange, placeholder, testId,
+}: {
+  value: string | null;
+  settled: string | null;
+  settledLabel: string;
+  options: string[];
+  onChange: (value: string | null) => void;
+  placeholder: string;
+  testId: string;
+}) {
+  const named = value !== null && value.trim() !== "";
+  const known = named && options.includes(value);
+  const [typing, setTyping] = useState(named && !known);
+  const showInput = typing || (named && !known);
+  const selected = showInput ? OTHER : named ? value : settled !== null ? DEFAULT_FIELD : "";
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <Select
+        value={selected}
+        onValueChange={(next) => {
+          if (next === OTHER) {
+            setTyping(true);
+            onChange("");
+          } else {
+            setTyping(false);
+            onChange(next === DEFAULT_FIELD ? null : next);
+          }
+        }}
+      >
+        <SelectTrigger size="sm" className="h-7 min-w-40" data-testid={testId}>
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          {settled !== null && (
+            <SelectItem value={DEFAULT_FIELD}>
+              {settledLabel}
+              <span className="font-mono text-[11px] text-muted-foreground">{settled}</span>
+            </SelectItem>
+          )}
+          {options.length > 0 && (
+            <SelectGroup>
+              <SelectLabel>Cached fields</SelectLabel>
+              {options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}
+            </SelectGroup>
+          )}
+          <SelectItem value={OTHER}>Type a name</SelectItem>
+        </SelectContent>
+      </Select>
+      {showInput && (
+        <Input
+          className="h-7 w-44 font-mono text-[12px]"
+          placeholder={placeholder}
+          value={value ?? ""}
+          onChange={(event) => onChange(event.target.value)}
+          data-testid={`${testId}-text`}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * A replace: the pairs written in the mapping, or a table read from the partition's cache (a dictionary, an ingestion
+ * table, or OSDU reference data), and what a value the table does not list becomes.
+ */
+function ReplaceEditor({
+  modifier, index, cacheTypes, onChange,
+}: {
+  modifier: MappingDraftModifier;
+  index: number;
+  cacheTypes: DeliveryCachedType[];
+  onChange: (patch: Partial<MappingDraftModifier>) => void;
+}) {
+  const cached = isCachedReplace(modifier) || modifier.table === "";
+  const tableName = (modifier.table ?? "").trim();
+  const type = cacheTypes.find((candidate) => candidate.name === tableName);
+  const lookupTables = cacheTypes.filter((candidate) => isLookupEntityType(candidate.entityType));
+  const osduTypes = cacheTypes.filter((candidate) => !isLookupEntityType(candidate.entityType));
+  const tableOptions: ChoiceOption[] = [
+    ...lookupTables.map((candidate) => ({
+      value: candidate.name,
+      hint: candidate.key === null ? undefined : `key ${candidate.key}`,
+      group: "Lookup tables (dictionaries and ingestion tables)",
+    })),
+    ...osduTypes.map((candidate) => ({ value: candidate.name, hint: candidate.entityType, group: "OSDU types" })),
+  ];
+  const fields = cachedReplaceFields(modifier, type);
+  const key = type?.key ?? null;
+  const lookup = type !== undefined && key !== null;
+  const matchOptions = type === undefined ? [] : key !== null ? [...new Set([key, ...type.fields])] : [...new Set([...type.fields, "id"])];
+  const fieldOptions = type === undefined ? [] : key !== null ? type.fields.filter((name) => name !== key) : [...new Set([...type.fields, "id"])];
+
+  const switchTo = (next: string) => {
+    if (next === "cache" && !cached) {
+      onChange({ replacements: null, table: lookupTables[0]?.name ?? cacheTypes[0]?.name ?? "", match: null, field: null });
+    } else if (next === "pairs" && cached) {
+      onChange({ replacements: [{ from: "", to: "" }], table: null, match: null, field: null });
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        size="sm"
+        value={cached ? "cache" : "pairs"}
+        onValueChange={(next) => { if (next !== "") { switchTo(next); } }}
+        className="self-start"
+        data-testid={`mapping-builder-entry-modifier-source-${index}`}
+      >
+        <ToggleGroupItem value="pairs" data-testid={`mapping-builder-entry-modifier-source-pairs-${index}`}>Values listed here</ToggleGroupItem>
+        <ToggleGroupItem value="cache" data-testid={`mapping-builder-entry-modifier-source-cache-${index}`}>A table in the cache</ToggleGroupItem>
+      </ToggleGroup>
+
+      {cached ? (
+        <div className="flex flex-col gap-2 text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-28">Table</span>
+            <ChoiceOrText
+              value={modifier.table ?? ""}
+              options={tableOptions}
+              onChange={(value) => onChange({ table: value, match: null, field: null })}
+              placeholder="RecallUnits"
+              testId={`mapping-builder-entry-modifier-table-${index}`}
+            />
+          </div>
+          {tableName !== "" && cacheTypes.length > 0 && type === undefined && (
+            <p className="text-warning" data-testid={`mapping-builder-entry-modifier-table-missing-${index}`}>
+              The cache picked for this mapping holds no type {tableName}. A cache flow declares it, as a dictionary, an ingestion table or an OSDU kind.
+            </p>
+          )}
+          {tableName !== "" && cacheTypes.length === 0 && (
+            <p>No cache is picked for this mapping, so the table cannot be checked here; the check against the partition's cache does it.</p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-28">Match the value on</span>
+            <CachedFieldSelect
+              value={modifier.match ?? null}
+              settled={key}
+              settledLabel="the table's key"
+              options={matchOptions}
+              onChange={(value) => onChange({ match: value })}
+              placeholder={key !== null ? `the key, ${key}` : "Code"}
+              testId={`mapping-builder-entry-modifier-match-${index}`}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-28">Replace it by</span>
+            <CachedFieldSelect
+              value={modifier.field ?? null}
+              settled={fields.fieldSettled ? fields.field : null}
+              settledLabel={fieldOptions.length === 0 ? "the dictionary's value" : "the table's only field"}
+              options={fieldOptions}
+              onChange={(value) => onChange({ field: value })}
+              placeholder={lookup ? "the field" : "id"}
+              testId={`mapping-builder-entry-modifier-field-${index}`}
+            />
+          </div>
+          {type !== undefined && (fields.match === null || fields.field === null) && (
+            <p className="text-warning" data-testid={`mapping-builder-entry-modifier-fields-missing-${index}`}>
+              {fields.match === null
+                ? `${type.name} holds OSDU records, which have no key: choose the field a value is compared with, and the field that replaces it.`
+                : `${type.name} holds ${fieldOptions.length} fields beside its key: choose the one that replaces the value.`}
+            </p>
+          )}
+          <p>
+            Each value is looked up in the version of the cache a render reads: an exact match first, then the one row that
+            matches ignoring case. A row with nothing in that field gives no value. The rows a record used are recorded, so a
+            later change to the table flags the records built from it.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1">
+          {(modifier.replacements ?? []).map((pair, pairIndex) => (
+            <div key={pairIndex} className="flex items-center gap-1">
+              <Input
+                className="h-7 font-mono text-[12px]"
+                placeholder="incoming value"
+                value={pair.from}
+                onChange={(event) => onChange({
+                  replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, from: event.target.value } : old)),
+                })}
+                data-testid={`mapping-builder-entry-modifier-from-${index}-${pairIndex}`}
+              />
+              <span className="text-xs text-muted-foreground">becomes</span>
+              <Input
+                className="h-7 font-mono text-[12px]"
+                placeholder={pair.to === null ? "no value" : "what it becomes"}
+                value={pair.to ?? ""}
+                disabled={pair.to === null}
+                onChange={(event) => onChange({
+                  replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, to: event.target.value } : old)),
+                })}
+                data-testid={`mapping-builder-entry-modifier-to-${index}-${pairIndex}`}
+              />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Switch
+                      checked={pair.to === null}
+                      onCheckedChange={(none) => onChange({
+                        replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, to: none ? null : "" } : old)),
+                      })}
+                      aria-label="Replace with no value"
+                      data-testid={`mapping-builder-entry-modifier-none-${index}-${pairIndex}`}
+                    />
+                    none
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>No value: the entry's required flag decides what an empty value does.</TooltipContent>
+              </Tooltip>
+              <IconAction
+                label="Remove this pair"
+                onClick={() => onChange({ replacements: (modifier.replacements ?? []).filter((_, i) => i !== pairIndex) })}
+                testId={`mapping-builder-entry-modifier-pair-remove-${index}-${pairIndex}`}
+              >
+                <X />
+              </IconAction>
+            </div>
+          ))}
+          <Button
+            variant="ghost"
+            size="xs"
+            className="self-start"
+            onClick={() => onChange({ replacements: [...(modifier.replacements ?? []), { from: "", to: "" }] })}
+            data-testid={`mapping-builder-entry-modifier-pair-add-${index}`}
+          >
+            <Plus />
+            Add a pair
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            Values are matched trimmed: an exact key first, then the one key that matches ignoring case. A list kept in one
+            place for many mappings belongs in a dictionary, read here as a table in the cache.
+          </p>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span>{cached ? "A value the table does not list" : "A value the pairs do not list"}</span>
+        <Select
+          value={modifier.otherwiseKind ?? "keep"}
+          onValueChange={(value) => onChange({
+            otherwiseKind: value as MappingDraftOtherwiseKind,
+            otherwiseText: value === "text" ? (modifier.otherwiseText ?? "") : null,
+          })}
+        >
+          <SelectTrigger size="sm" className="h-7 w-40" data-testid={`mapping-builder-entry-modifier-otherwise-${index}`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="keep">is left as it is</SelectItem>
+            <SelectItem value="empty">gives no value</SelectItem>
+            <SelectItem value="text">becomes</SelectItem>
+          </SelectContent>
+        </Select>
+        {modifier.otherwiseKind === "text" && (
+          <Input
+            className="h-7 w-48 font-mono text-[12px]"
+            placeholder="what it becomes"
+            value={modifier.otherwiseText ?? ""}
+            onChange={(event) => onChange({ otherwiseText: event.target.value })}
+            data-testid={`mapping-builder-entry-modifier-otherwise-text-${index}`}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -822,94 +1101,12 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                   </div>
                 )}
                 {modifier.kind === "replace" && (
-                  <div className="flex flex-col gap-1">
-                    {(modifier.replacements ?? []).map((pair, pairIndex) => (
-                      <div key={pairIndex} className="flex items-center gap-1">
-                        <Input
-                          className="h-7 font-mono text-[12px]"
-                          placeholder="incoming value"
-                          value={pair.from}
-                          onChange={(event) => updateModifier(index, {
-                            replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, from: event.target.value } : old)),
-                          })}
-                          data-testid={`mapping-builder-entry-modifier-from-${index}-${pairIndex}`}
-                        />
-                        <span className="text-xs text-muted-foreground">becomes</span>
-                        <Input
-                          className="h-7 font-mono text-[12px]"
-                          placeholder={pair.to === null ? "no value" : "what it becomes"}
-                          value={pair.to ?? ""}
-                          disabled={pair.to === null}
-                          onChange={(event) => updateModifier(index, {
-                            replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, to: event.target.value } : old)),
-                          })}
-                          data-testid={`mapping-builder-entry-modifier-to-${index}-${pairIndex}`}
-                        />
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                              <Switch
-                                checked={pair.to === null}
-                                onCheckedChange={(none) => updateModifier(index, {
-                                  replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, to: none ? null : "" } : old)),
-                                })}
-                                aria-label="Replace with no value"
-                                data-testid={`mapping-builder-entry-modifier-none-${index}-${pairIndex}`}
-                              />
-                              none
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent>No value: the entry's required flag decides what an empty value does.</TooltipContent>
-                        </Tooltip>
-                        <IconAction
-                          label="Remove this pair"
-                          onClick={() => updateModifier(index, { replacements: (modifier.replacements ?? []).filter((_, i) => i !== pairIndex) })}
-                          testId={`mapping-builder-entry-modifier-pair-remove-${index}-${pairIndex}`}
-                        >
-                          <X />
-                        </IconAction>
-                      </div>
-                    ))}
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      className="self-start"
-                      onClick={() => updateModifier(index, { replacements: [...(modifier.replacements ?? []), { from: "", to: "" }] })}
-                      data-testid={`mapping-builder-entry-modifier-pair-add-${index}`}
-                    >
-                      <Plus />
-                      Add a pair
-                    </Button>
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <span>A value the pairs do not list</span>
-                      <Select
-                        value={modifier.otherwiseKind ?? "keep"}
-                        onValueChange={(value) => updateModifier(index, {
-                          otherwiseKind: value as MappingDraftOtherwiseKind,
-                          otherwiseText: value === "text" ? (modifier.otherwiseText ?? "") : null,
-                        })}
-                      >
-                        <SelectTrigger size="sm" className="h-7 w-40" data-testid={`mapping-builder-entry-modifier-otherwise-${index}`}>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="keep">is left as it is</SelectItem>
-                          <SelectItem value="empty">gives no value</SelectItem>
-                          <SelectItem value="text">becomes</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {modifier.otherwiseKind === "text" && (
-                        <Input
-                          className="h-7 w-48 font-mono text-[12px]"
-                          placeholder="what it becomes"
-                          value={modifier.otherwiseText ?? ""}
-                          onChange={(event) => updateModifier(index, { otherwiseText: event.target.value })}
-                          data-testid={`mapping-builder-entry-modifier-otherwise-text-${index}`}
-                        />
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground">Values are matched trimmed: an exact key first, then the one key that matches ignoring case.</p>
-                  </div>
+                  <ReplaceEditor
+                    modifier={modifier}
+                    index={index}
+                    cacheTypes={repoTypes}
+                    onChange={(patch) => updateModifier(index, patch)}
+                  />
                 )}
                 {modifier.kind === "equals" && (
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">

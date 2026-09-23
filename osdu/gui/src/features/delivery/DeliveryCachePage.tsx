@@ -22,12 +22,24 @@ import { PageHeader } from "@/components/PageHeader";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
 import { TriggerRunDialog } from "@/features/runs/TriggerRunDialog";
-import { scheduleCadence, summarizeTypes } from "./cacheFormat";
+import { scheduleCadence, summarizeTypes, type CachedTypeSummary } from "./cacheFormat";
 import { DeliveryCacheApprovals } from "./DeliveryCacheApprovals";
 import { DeliveryCacheDefinition } from "./DeliveryCacheDefinition";
 import { DeliveryCacheHistory } from "./DeliveryCacheHistory";
 import { DeliveryCacheRecords } from "./DeliveryCacheRecords";
 import { DeliveryCacheSystemProperties } from "./DeliveryCacheSystemProperties";
+
+/**
+ * What the type picker says beside a type: its family and how much the current version holds of it. A lookup table says
+ * where its rows come from and counts rows, since they are not OSDU records; a type whose changes wait says so.
+ */
+function typeHint(type: CachedTypeSummary): string {
+  const count = type.items.toLocaleString();
+  const held = type.key === null
+    ? `${type.family.toLowerCase()} · ${count} record${type.items === 1 ? "" : "s"}`
+    : `lookup table from ${type.origin === "dictionary" ? "a dictionary" : "an ingestion table"} · ${count} row${type.items === 1 ? "" : "s"}`;
+  return held + (type.onChange === "approve" ? " · changes need approval" : "");
+}
 
 type Tab = "records" | "versions" | "changes" | "definition" | "system";
 
@@ -38,7 +50,7 @@ function isTab(value: string | null): value is Tab {
 }
 
 /**
- * The OSDU cache: the reference and master data every delivered document is built from, one cache per OSDU partition. The
+ * The OSDU cache: the reference data, master data and lookup tables every delivered document is built from, one cache per OSDU partition. The
  * header names the partition and the cache flow files that fill it, with Cache files and Refresh for them; a summary row says
  * which version deliveries read, how much it holds, how it is refreshed and whether anything waits for a decision. Below
  * are the working tabs: the records, the versions, the changes a refresh found, the definition, and the partition's system
@@ -86,7 +98,7 @@ export default function DeliveryCachePage() {
       <PageHeader
         title="OSDU cache"
         subtitle={cache === null
-          ? "The reference and master data mappings resolve against, one cache per OSDU partition."
+          ? "The reference data and lookup tables mappings resolve against, one cache per OSDU partition."
           : <CacheSubtitle cache={cache} />}
         actions={cache === null ? undefined : (
           <>
@@ -127,7 +139,7 @@ export default function DeliveryCachePage() {
               <EmptyState
                 icon={<DatabaseZap />}
                 title="No cache is defined yet"
-                description="A cache is filled by cache flows: YAML files in a repository with flowType: cache, listing the OSDU types to cache and the paths of each record to keep. Each fills the cache of the partition in its data-partition-id. Sync the repository and the partition's cache appears here; refresh a flow to capture the first version."
+                description="A cache is filled by cache flows: YAML files in a repository with flowType: cache, listing the OSDU types to cache and the paths of each record to keep, and the dictionaries and ingestion tables to hold as lookup tables. Each fills the cache of the partition in its data-partition-id. Sync the repository and the partition's cache appears here; refresh a flow to capture the first version."
                 data-testid="delivery-cache-none"
               />
             </Card>
@@ -158,19 +170,32 @@ export default function DeliveryCachePage() {
   );
 }
 
-/** The partition, the files that fill its cache, and where to change what is cached. */
+/**
+ * The partition, the files that fill its cache, and where to change what is cached. A few files are named, since a cache is
+ * often filled by one flow capturing OSDU reference data and one holding the estate's own lookup tables; many are counted.
+ */
 function CacheSubtitle({ cache }: { cache: DeliveryCache }) {
-  const files = cache.flows.map((flow) => flow.relativePath).join(", ");
+  const paths = cache.flows.map((flow) => flow.relativePath);
+  const files = paths.join(", ");
   return (
     <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
       <span>Partition</span>
       <span className="font-mono text-foreground" data-testid="delivery-cache-name">{cache.scope}</span>
       <span>is filled by</span>
-      {cache.flows.length === 1
-        ? <span className="font-mono text-foreground" data-testid="delivery-cache-defined-in">{files}</span>
+      {paths.length <= 3
+        ? (
+          <span className="text-foreground" data-testid="delivery-cache-defined-in">
+            {paths.map((path, index) => (
+              <span key={path}>
+                {index > 0 && <span className="text-muted-foreground">{index === paths.length - 1 ? " and " : ", "}</span>}
+                <span className="font-mono">{path}</span>
+              </span>
+            ))}
+          </span>
+        )
         : (
           <span className="text-foreground" title={files} data-testid="delivery-cache-defined-in">
-            {cache.flows.length} cache flows
+            {paths.length} cache flows
           </span>
         )}
       <span>and read by every delivery flow that delivers to it. Edit a cache flow file to change what it caches.</span>
@@ -285,8 +310,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
   const typeOptions: FilterOption[] = types.map((candidate) => ({
     value: candidate.name,
     label: candidate.name,
-    hint: `${candidate.family.toLowerCase()} · ${candidate.items.toLocaleString()} record${candidate.items === 1 ? "" : "s"}`
-      + (candidate.onChange === "approve" ? " · changes need approval" : ""),
+    hint: typeHint(candidate),
   }));
 
   const changesCell: SummaryCell = approvalTypes.length === 0 && pendingTotal === 0

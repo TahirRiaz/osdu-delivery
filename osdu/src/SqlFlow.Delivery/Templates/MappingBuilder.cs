@@ -110,13 +110,15 @@ public sealed record MappingDraftEntry
 public sealed record MappingDraftFind(string Field, string? Column, string? Literal);
 
 /// <summary>
-/// One modifier: trim, upper, lower, split, replace, equals, date or number, with its settings. A replace carries its pairs
-/// and what an unlisted value becomes: <see cref="OtherwiseKind"/> is keep (the default), empty (no value) or text, with the
-/// text in <see cref="OtherwiseText"/>.
+/// One modifier: trim, upper, lower, split, replace, equals, date or number, with its settings. A replace carries its pairs,
+/// or the cached type it reads its table from in <see cref="Table"/> with the fields it matches on (<see cref="Match"/>)
+/// and replaces by (<see cref="Field"/>), either left out for the table to settle; and what an unlisted value becomes:
+/// <see cref="OtherwiseKind"/> is keep (the default), empty (no value) or text, with the text in <see cref="OtherwiseText"/>.
 /// </summary>
 public sealed record MappingDraftModifier(
     string Kind, string? Separator = null, int? Part = null, IReadOnlyList<MappingDraftReplacement>? Replacements = null, string? Text = null,
-    string? DecimalSeparator = null, string? GroupSeparator = null, string? OtherwiseKind = null, string? OtherwiseText = null);
+    string? DecimalSeparator = null, string? GroupSeparator = null, string? OtherwiseKind = null, string? OtherwiseText = null,
+    string? Table = null, string? Match = null, string? Field = null);
 
 /// <summary>One pair of a replace: the incoming value, and what it becomes; a null <see cref="To"/> is no value.</summary>
 public sealed record MappingDraftReplacement(string From, string? To);
@@ -140,8 +142,11 @@ public sealed record MappingDraftIssue(string Severity, string Message, string? 
     public const string WarningSeverity = "warning";
 }
 
-/// <summary>A type a cache holds: the name mappings read it by, its entity type, and the fields it captures.</summary>
-public sealed record CachedTypeInfo(string Name, string EntityType, IReadOnlyList<string> Fields);
+/// <summary>
+/// A type a cache holds: the name mappings read it by, its entity type, the fields it captures, and for a lookup table the
+/// name its key is kept under (null for a type of OSDU records).
+/// </summary>
+public sealed record CachedTypeInfo(string Name, string EntityType, IReadOnlyList<string> Fields, string? Key = null);
 
 /// <summary>
 /// The mapping builder's logic (docs/delivery/mapping-templates.md, The mapping builder): a draft prefilled from the
@@ -534,7 +539,10 @@ public static partial class MappingBuilder
                 m.DecimalSeparator,
                 m.GroupSeparator,
                 m.Kind == ModifierKind.Replace ? FallbackKind(m.Otherwise) : null,
-                m.Kind == ModifierKind.Replace && m.Otherwise.Kind == ReplaceFallbackKind.Text ? m.Otherwise.Text : null)).ToList(),
+                m.Kind == ModifierKind.Replace && m.Otherwise.Kind == ReplaceFallbackKind.Text ? m.Otherwise.Text : null,
+                m.Table?.CacheType,
+                m.Table?.Match,
+                m.Table?.Field)).ToList(),
             AppliesWhen = entry.AppliesWhen is { } condition
                 ? new MappingDraftCondition(
                     ColumnText(condition.Column),
@@ -808,10 +816,26 @@ public static partial class MappingBuilder
                 break;
             case "split":
                 break;
-            case "replace" when modifier.Replacements is not { Count: > 0 } || modifier.Replacements.Any(r => string.IsNullOrWhiteSpace(r.From)):
-                error($"{target}: replace needs at least one incoming value and what it becomes.", target);
+            case "replace" when !string.IsNullOrWhiteSpace(modifier.Table) && modifier.Replacements is { Count: > 0 }:
+                error($"{target}: a replace reads its table from the cache or lists its values, not both.", target);
                 break;
-            case "replace" when modifier.Replacements.GroupBy(r => r.From.Trim(), StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1) is { } twice:
+            case "replace" when !string.IsNullOrWhiteSpace(modifier.Table) && !ColumnName().IsMatch(modifier.Table.Trim()):
+                error($"{target}: replace reads cache type '{modifier.Table}', and a cached type is named by letters, digits, '_' and '-', such as RecallUnits.", target);
+                break;
+            case "replace" when !string.IsNullOrWhiteSpace(modifier.Match) && !FieldPath().IsMatch(modifier.Match.Trim()):
+                error($"{target}: replace's match names the cached field a value is compared with, such as mnemonic, not '{modifier.Match}'.", target);
+                break;
+            case "replace" when !string.IsNullOrWhiteSpace(modifier.Field) && !FieldPath().IsMatch(modifier.Field.Trim()):
+                error($"{target}: replace's field names the cached field that replaces a value, such as curve_family, not '{modifier.Field}'.", target);
+                break;
+            case "replace" when string.IsNullOrWhiteSpace(modifier.Table) && (!string.IsNullOrWhiteSpace(modifier.Match) || !string.IsNullOrWhiteSpace(modifier.Field)):
+                error($"{target}: match and field choose the fields of a table read from the cache; choose the cached type too.", target);
+                break;
+            case "replace" when string.IsNullOrWhiteSpace(modifier.Table)
+                && (modifier.Replacements is not { Count: > 0 } || modifier.Replacements.Any(r => string.IsNullOrWhiteSpace(r.From))):
+                error($"{target}: replace needs at least one incoming value and what it becomes, or a cached table to read them from.", target);
+                break;
+            case "replace" when (modifier.Replacements ?? []).GroupBy(r => r.From.Trim(), StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1) is { } twice:
                 error($"{target}: replace lists '{twice.Key}' more than once; a value is matched trimmed, so each incoming value is listed once.", target);
                 break;
             case "replace" when modifier.OtherwiseKind is not (null or FallbackKeep or FallbackEmpty or FallbackText):
@@ -848,22 +872,41 @@ public static partial class MappingBuilder
 
     /// <summary>
     /// A modifier as the lines of its list item: the modifier itself, then the settings written beside it. Only a replace has
-    /// any, its <c>otherwise</c>, written beside the table so no incoming value is ever read as a setting.
+    /// any: the fields of a cached table it names, and its <c>otherwise</c>, written beside the table so no incoming value is
+    /// ever read as a setting.
     /// </summary>
     private static IReadOnlyList<string> ModifierLines(MappingDraftModifier modifier)
     {
-        var first = ModifierText(modifier);
+        var lines = new List<string> { ModifierText(modifier) };
         if (modifier.Kind != "replace")
         {
-            return [first];
+            return lines;
         }
 
-        return modifier.OtherwiseKind switch
+        if (!string.IsNullOrWhiteSpace(modifier.Table))
         {
-            FallbackEmpty => [first, "otherwise: ~"],
-            FallbackText when !string.IsNullOrWhiteSpace(modifier.OtherwiseText) => [first, "otherwise: " + Scalar(modifier.OtherwiseText)],
-            _ => [first],
-        };
+            if (!string.IsNullOrWhiteSpace(modifier.Match))
+            {
+                lines.Add("match: " + modifier.Match.Trim());
+            }
+
+            if (!string.IsNullOrWhiteSpace(modifier.Field))
+            {
+                lines.Add("field: " + modifier.Field.Trim());
+            }
+        }
+
+        switch (modifier.OtherwiseKind)
+        {
+            case FallbackEmpty:
+                lines.Add("otherwise: ~");
+                break;
+            case FallbackText when !string.IsNullOrWhiteSpace(modifier.OtherwiseText):
+                lines.Add("otherwise: " + Scalar(modifier.OtherwiseText));
+                break;
+        }
+
+        return lines;
     }
 
     /// <summary>A replacement as a flow scalar: its text, or <c>~</c> for no value.</summary>
@@ -872,6 +915,7 @@ public static partial class MappingBuilder
     private static string ModifierText(MappingDraftModifier modifier) => modifier.Kind switch
     {
         "split" => "split: { separator: " + FlowScalar(modifier.Separator ?? string.Empty) + ", part: " + (modifier.Part ?? 0).ToString(CultureInfo.InvariantCulture) + " }",
+        "replace" when !string.IsNullOrWhiteSpace(modifier.Table) => $"replace: {MappingSource.CachePrefix}.{modifier.Table.Trim()}",
         "replace" => "replace: { " + string.Join(", ", (modifier.Replacements ?? []).Select(r => FlowScalar(r.From) + ": " + ReplacementText(r.To))) + " }",
         "equals" => "equals: " + Scalar(modifier.Text ?? string.Empty),
         "date" when !string.IsNullOrEmpty(modifier.Text) => "date: " + Scalar(modifier.Text),

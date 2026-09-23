@@ -269,6 +269,56 @@ public class MappingBuilderTests
         Assert.Contains("lists 'M' more than once", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m"), new(" M ", "metre")])), StringComparison.Ordinal);
         Assert.Contains("not 'sometimes'", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m")], OtherwiseKind: "sometimes")), StringComparison.Ordinal);
         Assert.Contains("needs the text an unlisted value becomes", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m")], OtherwiseKind: "text", OtherwiseText: " ")), StringComparison.Ordinal);
+
+        // A table read from the cache is named and not listed, and its fields go with it.
+        Assert.Contains("reads its table from the cache or lists its values, not both", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m")], Table: "RecallUnits")), StringComparison.Ordinal);
+        Assert.Contains("replace reads cache type 'Recall Units'", Issue(new MappingDraftModifier("replace", Table: "Recall Units")), StringComparison.Ordinal);
+        Assert.Contains("replace's match names the cached field", Issue(new MappingDraftModifier("replace", Table: "CurveClasses", Match: "a b")), StringComparison.Ordinal);
+        Assert.Contains("replace's field names the cached field", Issue(new MappingDraftModifier("replace", Table: "CurveClasses", Field: "family?")), StringComparison.Ordinal);
+        Assert.Contains("match and field choose the fields of a table read from the cache; choose the cached type too", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m")], Field: "value")), StringComparison.Ordinal);
+        Assert.Contains("or a cached table to read them from", Issue(new MappingDraftModifier("replace")), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null, null, null)]
+    [InlineData(null, "curve_family", "empty")]
+    [InlineData("mnemonic", "curve_family", "text")]
+    public void A_replace_reading_a_cached_table_writes_its_fields_and_reads_them_back(string? match, string? field, string? otherwiseKind)
+    {
+        var draft = BaseDraft() with
+        {
+            Entries =
+            [
+                .. BaseDraft().Entries,
+                new MappingDraftEntry
+                {
+                    Target = "osdu.data.Symbol",
+                    Input = MappingDraftInput.Dataset,
+                    Column = "name",
+                    Required = false,
+                    Modifiers =
+                    [
+                        new MappingDraftModifier("replace", Table: "CurveClasses", Match: match, Field: field, OtherwiseKind: otherwiseKind, OtherwiseText: otherwiseKind == "text" ? "Unknown" : null),
+                    ],
+                },
+            ],
+        };
+        Assert.DoesNotContain(MappingBuilder.Incomplete(draft), issue => issue.Target == "osdu.data.Symbol");
+
+        var yaml = MappingBuilder.ToYaml(draft).ReplaceLineEndings("\n");
+        Assert.Contains("      - replace: cache.CurveClasses\n", yaml, StringComparison.Ordinal);
+        Assert.Equal(match is not null, yaml.Contains("        match: mnemonic\n", StringComparison.Ordinal));
+        Assert.Equal(field is not null, yaml.Contains("        field: curve_family\n", StringComparison.Ordinal));
+
+        var modifier = new DeliveryDocumentLoader().ParseMapping(yaml, "cached-replace.yaml").Entries.Single(e => e.Target.Text == "osdu.data.Symbol").Modifiers.Single();
+        Assert.Equal(new CachedReplaceTable("CurveClasses", match, field), modifier.Table);
+        Assert.Empty(modifier.Replacements);
+        Assert.Equal(otherwiseKind switch { "empty" => ReplaceFallback.Empty, "text" => ReplaceFallback.Of("Unknown"), _ => ReplaceFallback.Keep }, modifier.Otherwise);
+
+        // The builder reopens exactly what it wrote: the table and the fields it names, and no pairs.
+        var reopened = Assert.Single(MappingBuilder.FromDefinition(new DeliveryDocumentLoader().ParseMapping(yaml, "cached-replace.yaml")).Entries.Single(e => e.Target == "osdu.data.Symbol").Modifiers);
+        Assert.Equal(("CurveClasses", match, field), (reopened.Table, reopened.Match, reopened.Field));
+        Assert.Null(reopened.Replacements);
     }
 
     [Fact]

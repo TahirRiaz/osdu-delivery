@@ -5,6 +5,11 @@
 # variable it fills and where the value comes from: dataset.<column>, cache.<type>.<field>, search.<name>.id (a record
 # found on the platform), or a static value. A variable without an entry is left out of the record. Editing this file re-renders every record that uses it, so
 # changes go through `plan` and a canary before promotion (design.md section 10.5).
+#
+# Source spellings are translated through lookup tables in the partition's cache, never through lists kept here: the
+# unit spellings of dictionaries/RecallUnits.yaml, and the curve families of the curve dictionary's ingestion table
+# (CurveClasses), both held by the cache flow wells-lookups-00-cache. One edit to either reaches every mapping that reads
+# it, and the records a changed entry was used by are tagged for delivery again.
 documentType: mapping
 name: WellLog
 version: 1.4.0
@@ -120,7 +125,7 @@ mappings:
       - cache.UnitOfMeasure.id = dataset.elev_meas_ref
     modifiers:
       - split: { separator: " ", part: 2 }
-      - replace: { M: m, FT: ft }
+      - replace: cache.RecallUnits
   - target: osdu.data.VerticalMeasurement.VerticalMeasurementTypeID
     static: "{param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"
 
@@ -137,9 +142,8 @@ mappings:
       - cache.UnitOfMeasure.ID = dataset.curves.curve_unit
       - cache.UnitOfMeasure.id = dataset.curves.curve_unit
     modifiers:
-      # V/V is a volume fraction, which OSDU's reference data calls m3/m3. Replacing it with % would declare values that
-      # are hundredths of what the curve actually carries (a 0.21 neutron porosity read as 0.21 percent).
-      - replace: { M: m, METRE: m, METER: m, FT: ft, FEET: ft, GAPI: gAPI, G/CM3: g/cm3, V/V: m3/m3 }
+      # The source's spelling becomes the partition's unit code: GAPI becomes gAPI, V/V the volume fraction m3/m3.
+      - replace: cache.RecallUnits
   - target: osdu.data.Curves[].DepthUnit
     source: cache.UnitOfMeasure.id
     findBy:
@@ -148,7 +152,7 @@ mappings:
       - cache.UnitOfMeasure.ID = dataset.curves.index_unit
       - cache.UnitOfMeasure.id = dataset.curves.index_unit
     modifiers:
-      - replace: { M: m, FT: ft }
+      - replace: cache.RecallUnits
   - target: osdu.data.Curves[].TopDepth
     source: dataset.curves.index_min
   - target: osdu.data.Curves[].BaseDepth
@@ -163,6 +167,18 @@ mappings:
       - cache.LogCurveBusinessValue.Code = dataset.curves.business_value
       - cache.LogCurveBusinessValue.Name = dataset.curves.business_value
     # A depth curve has no business value, and that is not a reason to hold its log.
+    required: false
+  - target: osdu.data.Curves[].LogCurveFamilyID
+    source: cache.LogCurveFamily.id
+    findBy:
+      - cache.LogCurveFamily.Name = dataset.curves.curve_id
+    modifiers:
+      # The mnemonic becomes the family the curve dictionary gives it (GR is Gamma Ray), which is then found among the
+      # partition's LogCurveFamily records by name. A mnemonic the dictionary does not list gives no family, and the
+      # curve goes out without one rather than holding its log.
+      - replace: cache.CurveClasses
+        field: curve_family
+        otherwise: ~
     required: false
 
 # Example rows and the exact record each must render to under the pinned template and cache. They are the mapping's
@@ -235,7 +251,8 @@ fixtures:
               "TopDepth": 1000,
               "BaseDepth": 1004,
               "CurveDescription": "Measured depth",
-              "CurveVersion": "1"
+              "CurveVersion": "1",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:MeasuredDepth:"
             },
             {
               "CurveID": "GR",
@@ -245,7 +262,8 @@ fixtures:
               "BaseDepth": 1004,
               "CurveDescription": "Gamma ray",
               "CurveVersion": "1",
-              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:"
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:GammaRay:"
             },
             {
               "CurveID": "RHOB",
@@ -255,7 +273,8 @@ fixtures:
               "BaseDepth": 1004,
               "CurveDescription": "Bulk density",
               "CurveVersion": "1",
-              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:"
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:BulkDensity:"
             }
           ]
         }
@@ -327,7 +346,8 @@ fixtures:
               "TopDepth": 1500,
               "BaseDepth": 1501.5,
               "CurveDescription": "Measured depth",
-              "CurveVersion": "1"
+              "CurveVersion": "1",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:MeasuredDepth:"
             },
             {
               "CurveID": "NPHI",
@@ -337,7 +357,8 @@ fixtures:
               "BaseDepth": 1501.5,
               "CurveDescription": "Neutron porosity",
               "CurveVersion": "1",
-              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:Medium:"
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:Medium:",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:NeutronPorosity:"
             }
           ]
         }

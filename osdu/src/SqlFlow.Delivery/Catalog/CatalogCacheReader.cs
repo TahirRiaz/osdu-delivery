@@ -22,7 +22,7 @@ public static class CatalogCacheReader
             .Select(name =>
             {
                 var first = declaration.Of(name)[0];
-                return new CachedTypeInfo(first.TypeName, first.EntityType, declaration.FieldsOf(name).Select(f => f.Name).ToList());
+                return new CachedTypeInfo(first.TypeName, first.EntityType, declaration.FieldsOf(name).Select(f => f.Name).ToList(), first.Key);
             })
             .ToList();
 
@@ -35,7 +35,7 @@ public static class CatalogCacheReader
             {
                 if (!types.Any(t => string.Equals(t.Name, held.Name, StringComparison.OrdinalIgnoreCase)))
                 {
-                    types.Add(new CachedTypeInfo(held.Name, held.EntityType, []));
+                    types.Add(new CachedTypeInfo(held.Name, held.EntityType, [], held.Key));
                 }
             }
         }

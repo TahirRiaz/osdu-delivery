@@ -1499,6 +1499,62 @@ written as YAML spells it, `true` or `false`.
 A table used by one field of one mapping is written here. A table shared by mappings, or one another team maintains,
 belongs in the partition's cache, where every mapping reads it the same way.
 
+##### A table read from the cache
+
+A dictionary of pairs: the key matches, and its value replaces.
+
+```yaml
+modifiers:
+  - replace: cache.RecallUnits
+```
+
+A lookup table read from an ingestion table: `match` defaults to its key, `mnemonic`, and `field` names the one of its
+fields that replaces.
+
+```yaml
+modifiers:
+  - replace: cache.CurveClasses
+    field: curve_family
+    otherwise: ~
+```
+
+OSDU reference data: a type of OSDU records has no key, so both fields are named.
+
+```yaml
+modifiers:
+  - replace: cache.UnitOfMeasure
+    match: Name
+    field: Code
+```
+
+`replace: cache.<Type>` reads its table from the version of the partition's cache the render reads: a
+[dictionary](#dictionary), an ingestion table, or any OSDU type a [cache flow](#cache-flow) declares. The incoming value
+is matched on the `match` field by the same rules as a written table, and replaced by what the matched row holds at
+`field`. The mapping names the type, never the cache, so every flow delivering to a partition reads the same table.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `match` | the table's key | The cached field the incoming value is compared with. A type of OSDU records has no key, so it names one. |
+| `field` | the one field a lookup table holds beside its key (`value` for a dictionary of pairs) | The cached field that replaces the value. A lookup table with several fields, and a type of OSDU records, names one. |
+| `otherwise` | the value passes on unchanged | What a value no row holds becomes, exactly as for a written table. |
+
+A matched row with nothing in `field` gives no value; `otherwise` applies only when no row holds the value. A row that
+holds several values in `field`, or an object, holds the record, since a replace gives one value; so does a value two
+rows answer to only once case is ignored when they give different values, a type the cache version does not hold, and a
+field the table cannot settle. `match` and `field` are refused beside a written table.
+
+Every row a replacement was decided by is recorded with the record's other cache dependencies: the value it matched,
+and what it gave or that it gave nothing. A key a lookup table does not list is recorded too, when the replace matches
+on the key. So a new version of the table that changes an entry, empties or removes it, or comes to list a key that
+records looked up and did not find, tags exactly the records built from it, as any other change to the cache does. A
+value no row of a type of OSDU records holds, matched on another field, depends on no row, so a record built without it
+is delivered again only when its source changes or an operator redelivers it.
+
+The preflight checks that the type is in the cache version, that it holds `match` and `field`, and warns about rows
+that hold several values. Where the replaced value is then looked up in the cache by the entry's `findBy`, every value
+the replace can give (a written table's values, a cached table's `field` values, and a text `otherwise`) is looked up
+there as well, and the ones that find nothing are listed as a warning before any row arrives.
+
 #### date
 
 `date` writes a value in the form the template's `format` names. OSDU schemas are JSON Schema draft-07, where the

@@ -1,10 +1,11 @@
-import { CACHE, SOURCE } from "./global-setup";
+import { CACHE, LOOKUPS, SOURCE } from "./global-setup";
 import { expect, test } from "./helpers";
 
 // The OSDU cache page: the header names the cache and the file that defines it, a summary row says which version is
 // read and what it holds, and the records, versions, changes and definition are tabs, with a searchable type picker in
-// the tab bar. Runs after the seed (03), so the fixture repo is synced, its cache flow declares
-// five types (none asking for approval), and the sample records were imported through the CLI as the first version.
+// the tab bar. Runs after the seed (03), so the fixture repo is synced, its two cache flows declare seven types (none
+// asking for approval), the sample records were imported through the CLI as the first version, and the lookups flow's
+// refresh of the unit dictionary and the curve dictionary table wrote the second.
 
 /** The partition the sample cache flow fills, and so the cache the page shows. */
 const PARTITION = "dev";
@@ -15,11 +16,14 @@ test.describe.serial("osdu cache", () => {
     await expect(adminPage.getByTestId("page-delivery-cache")).toBeVisible();
 
     await expect(adminPage.getByTestId("delivery-cache-name")).toHaveText(PARTITION, { timeout: 30_000 });
-    await expect(adminPage.getByTestId("delivery-cache-defined-in")).toHaveText(`${SOURCE}/cache/${CACHE}.yaml`);
+    // Two cache flows fill the partition, and the header names both files rather than counting them.
+    const definedIn = adminPage.getByTestId("delivery-cache-defined-in");
+    await expect(definedIn).toContainText(`${SOURCE}/cache/${CACHE}.yaml`);
+    await expect(definedIn).toContainText(`${SOURCE}/cache/${LOOKUPS}.yaml`);
 
     // The summary: the version deliveries read, how much it holds, how it is refreshed, and that changes need no one.
     await expect(adminPage.getByTestId("delivery-cache-current-value")).toHaveText(/\d{8}T\d{6}Z/);
-    await expect(adminPage.getByTestId("delivery-cache-summary")).toContainText("cli:");
+    await expect(adminPage.getByTestId("delivery-cache-summary")).toContainText(`written by ${LOOKUPS}`);
     await expect(adminPage.getByTestId("delivery-cache-records-value")).toHaveText(/^\d+$/);
     await expect(adminPage.getByTestId("delivery-cache-schedules-value")).toHaveText("on demand");
     await expect(adminPage.getByTestId("delivery-cache-approval-value")).toHaveText("automatic", { timeout: 30_000 });
@@ -30,10 +34,13 @@ test.describe.serial("osdu cache", () => {
     await expect(picker).toHaveText(/All types/);
     await picker.click();
     const options = adminPage.getByRole("listbox");
-    for (const name of ["UnitOfMeasure", "LogCurveBusinessValue", "VerticalMeasurementType", "TrajectoryStationPropertyType"]) {
+    for (const name of ["UnitOfMeasure", "LogCurveBusinessValue", "LogCurveFamily", "VerticalMeasurementType", "TrajectoryStationPropertyType", "RecallUnits", "CurveClasses"]) {
       await expect(options.getByRole("option").filter({ hasText: name }).first()).toBeVisible();
     }
     await expect(options.getByText(/reference data · \d+ records?/).first()).toBeVisible();
+    // A lookup table says where its rows come from, and counts rows: they are kept under their keys, not OSDU records.
+    await expect(options.getByText(/lookup table from a dictionary · \d+ rows?/).first()).toBeVisible();
+    await expect(options.getByText(/lookup table from an ingestion table · \d+ rows?/).first()).toBeVisible();
 
     // Wellbores are searched for on the platform as a record needs one, never captured.
     await expect(options.getByRole("option").filter({ hasText: "Wellbore" })).toHaveCount(0);
@@ -51,19 +58,26 @@ test.describe.serial("osdu cache", () => {
     await expect(definition).toContainText(`${SOURCE}/cache/${CACHE}.yaml`, { timeout: 30_000 });
     await expect(definition).toContainText("goes out on the next run");
     const rows = definition.getByTestId("delivery-cache-definition-types").getByTestId("table-row");
-    await expect(rows).toHaveCount(4);
+    await expect(rows).toHaveCount(7);
     await expect(rows.filter({ hasText: "reference-data--UnitOfMeasure" })).toContainText("data.Code");
     await expect(rows.filter({ hasText: "master-data--Wellbore" })).toHaveCount(0);
-    await expect(definition.getByTestId("delivery-cache-definition-flows").getByTestId("table-row")).toHaveCount(1);
+    // A lookup table says where its rows come from and what they are kept under.
+    await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("dictionaries/RecallUnits.yaml");
+    await expect(rows.filter({ hasText: "CurveClasses" })).toContainText("CurveDictionary");
+    await expect(definition.getByTestId("delivery-cache-definition-flows").getByTestId("table-row")).toHaveCount(2);
 
-    // The guide says how a mapping reads the cache, with an entry to start from, and never names the cache.
+    // The guide says how a mapping reads the cache, with an entry to start from, and never names the cache; a lookup table
+    // is read by a findBy on its key, or translates a value as a replace.
     const guide = definition.getByTestId("delivery-cache-mapping-guide");
     await expect(guide).toContainText(PARTITION);
     await expect(guide.getByTestId("delivery-cache-mapping-guide-entry")).toContainText(/source: cache\.\w+\.id/);
+    await expect(guide.getByTestId("delivery-cache-mapping-guide-replace-entry")).toContainText(/- replace: cache\.\w+/);
 
-    // Refresh now opens the trigger dialog on the cache flow with the refresh operation, and no delivery-only fields.
-    // The suite never submits it: a refresh searches the OSDU target.
+    // Two flows fill the partition, so Refresh asks which one: a refresh captures what one flow declares. The suite never
+    // submits the reference cache's refresh, which searches the OSDU target.
     await adminPage.getByTestId("delivery-cache-refresh").click();
+    await expect(adminPage.getByTestId(`delivery-cache-refresh-${LOOKUPS}`)).toContainText("RecallUnits");
+    await adminPage.getByTestId(`delivery-cache-refresh-${CACHE}`).click();
     const dialog = adminPage.getByTestId("trigger-run-dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByTestId("trigger-operation")).toContainText("Refresh");
@@ -72,7 +86,7 @@ test.describe.serial("osdu cache", () => {
     await expect(dialog).toHaveCount(0);
 
     // Cache files lists every cache flow file as a filter on Pipelines, since a partition can be filled by several.
-    await expect(adminPage.getByTestId("delivery-cache-files")).toContainText("1");
+    await expect(adminPage.getByTestId("delivery-cache-files")).toContainText("2");
     await adminPage.getByTestId("delivery-cache-files").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
     await expect(adminPage.getByTestId("filter-kind")).toHaveText(/cache/);
@@ -171,17 +185,24 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("nav-delivery-cache").click();
     await adminPage.getByTestId("delivery-cache-tab-versions").click();
 
+    // The newest version is the lookups flow's refresh, which added the lookup tables to what the import held.
     const versions = adminPage.getByTestId("delivery-cache-history-versions").getByTestId("table-row");
-    await expect(versions.first()).toContainText(/\d{8}T\d{6}Z/, { timeout: 30_000 });
+    await expect(versions).toHaveCount(2, { timeout: 30_000 });
+    await expect(versions.first()).toContainText(/\d{8}T\d{6}Z/);
     await expect(versions.first()).toContainText("current");
-    await expect(versions.first()).toContainText("files under");
-    await expect(versions.first()).toContainText("first version");
+    await expect(versions.first()).toContainText("added");
+    await expect(versions.nth(1)).toContainText("files under");
+    await expect(versions.nth(1)).toContainText("first version");
 
-    // The imported version is the first, so there is nothing before it to compare with.
+    // The refresh is compared with the import before it: its rows arrived as added.
     await versions.first().click();
     const detail = adminPage.getByTestId("delivery-cache-history-detail");
     await expect(detail).toBeVisible();
     await expect(detail).toContainText("Changes in");
+    await expect(detail.getByTestId("delivery-cache-history-uncomparable")).toHaveCount(0);
+
+    // The imported version is the first, so there is nothing before it to compare with.
+    await versions.nth(1).click();
     await expect(detail.getByTestId("delivery-cache-history-uncomparable")).toBeVisible();
 
     // Closing the panel leaves the list where it was; leaving the tab closes it.

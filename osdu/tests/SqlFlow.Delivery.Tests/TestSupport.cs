@@ -595,6 +595,9 @@ public static class Samples
     /// <summary>The sample cache flow: what the sample cache holds.</summary>
     public static string CacheFlow => Path.Combine(Source, "cache", "wells-osdu-00-reference-cache.yaml");
 
+    /// <summary>The sample lookups cache flow: the lookup tables the sample mappings translate source values through.</summary>
+    public static string LookupsCacheFlow => Path.Combine(Source, "cache", "wells-lookups-00-cache.yaml");
+
     /// <summary>
     /// The sample cache records, one file per cached type. They sit beside the source folders rather than inside one,
     /// for the same reason <see cref="TemplateFiles"/> does: a cache lives in the module's database, captured there by
@@ -623,6 +626,9 @@ public static class Samples
     /// <summary>The name of the sample cache flow, which fills the cache of <see cref="SampleCacheScope"/>.</summary>
     public const string SampleCacheFlowName = "wells-osdu-00-reference-cache";
 
+    /// <summary>The name of the sample lookups cache flow, which holds the lookup tables in the same cache.</summary>
+    public const string SampleLookupsFlowName = "wells-lookups-00-cache";
+
     /// <summary>When the sample cache records were captured: the version label the sample cache is imported under.</summary>
     public static readonly DateTimeOffset SampleCacheCaptured = new(2026, 9, 8, 21, 27, 27, TimeSpan.Zero);
 
@@ -637,13 +643,77 @@ public static class Samples
         return (database, store, new FixedCacheStore(SampleCacheScope, SampleCacheFlowName, version, SampleCacheDeclaration()));
     });
 
-    /// <summary>What the sample cache flow declares for its partition, as the module's database holds it after a sync.</summary>
+    /// <summary>
+    /// What the sample cache flows declare for their partition, as the module's database holds it after a sync: the
+    /// reference data of the reference cache flow, and the lookup tables of the lookups flow with the key and fields a sync
+    /// reads out of each dictionary.
+    /// </summary>
     public static CacheDeclaration SampleCacheDeclaration()
     {
-        var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
-        return new CacheDeclaration(
-            SampleCacheScope,
-            flow.Types.Select(t => new CacheTypeDeclaration(flow.Name, t.Name, t.EntityType, t.Kind, t.Query, t.Fields, t.OnChange)));
+        var loader = new DeliveryDocumentLoader();
+        var flow = loader.LoadCache(CacheFlow);
+        var lookups = loader.LoadCache(LookupsCacheFlow);
+        var declared = flow.Types.Select(t => new CacheTypeDeclaration(flow.Name, t.Name, t.EntityType, t.Kind, t.Query, t.Fields, t.OnChange)).ToList();
+        foreach (var type in lookups.Types)
+        {
+            var (key, fields) = type.Origin == CacheOrigin.Dictionary
+                ? (SampleDictionary(type.Dictionary!).Key, SampleDictionary(type.Dictionary!).FieldSpecs())
+                : (type.Key, type.Fields);
+            declared.Add(new CacheTypeDeclaration(lookups.Name, type.Name, type.EntityType, null, "*", fields, type.OnChange, type.Origin, key));
+        }
+
+        return new CacheDeclaration(SampleCacheScope, declared);
+    }
+
+    /// <summary>A dictionary of the sample estate, read from its file under the estate's dictionaries folder.</summary>
+    public static DictionaryDefinition SampleDictionary(string name)
+    {
+        var path = Path.Combine(Source, DictionaryCatalog.DirectoryName, name + ".yaml");
+        return new DeliveryDocumentLoader().LoadDictionary(path, $"{DictionaryCatalog.DirectoryName}/{name}.yaml");
+    }
+
+    /// <summary>
+    /// The lookup tables the sample lookups cache flow captures, built from the sample estate's own files as a refresh
+    /// builds them: each dictionary type from its dictionary, and the curve dictionary's table type from the file its
+    /// ingestion flow loads into that table, keyed and trimmed as a capture of the table keys and trims it.
+    /// </summary>
+    public static IReadOnlyList<ReferenceType> SampleLookups()
+    {
+        var flow = new DeliveryDocumentLoader().LoadCache(LookupsCacheFlow);
+        var types = new List<ReferenceType>();
+        foreach (var type in flow.Types)
+        {
+            if (type.Origin == CacheOrigin.Dictionary)
+            {
+                types.Add(SampleDictionary(type.Dictionary!).ToLookup(type.Name));
+                continue;
+            }
+
+            var file = Directory.GetFiles(Path.Combine(Data, "curve-dictionary"), "*.csv").Single();
+            var lines = File.ReadAllLines(file).Where(line => line.Trim().Length > 0).ToList();
+            var header = lines[0].Split(',').Select(column => column.Trim()).ToList();
+            var rows = new List<ReferenceItem>();
+            foreach (var line in lines.Skip(1))
+            {
+                var cells = line.Split(',');
+                var key = cells[header.IndexOf(type.Key!)].Trim();
+                var fields = new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase) { [type.Key!] = ReferenceValue.Of(key) };
+                foreach (var field in type.Fields)
+                {
+                    var value = cells[header.IndexOf(field.Path)];
+                    if (value.Length > 0)
+                    {
+                        fields[field.Name] = ReferenceValue.Of(value);
+                    }
+                }
+
+                rows.Add(new ReferenceItem(key, fields));
+            }
+
+            types.Add(new ReferenceType(type.Name, type.EntityType, rows.OrderBy(r => r.Id, StringComparer.Ordinal), type.Key));
+        }
+
+        return types;
     }
 
     /// <summary>A template store holding the sample templates, shared by the engine tests.</summary>
@@ -654,8 +724,9 @@ public static class Samples
 
     /// <summary>
     /// Imports the sample cache records into <paramref name="store"/> as a version of the sample partition's cache, checked
-    /// against what the sample cache flow declares, exactly as 'sqlflow cache import' writes them; returns the version as
-    /// loaded back.
+    /// against what the sample cache flow declares, exactly as 'sqlflow cache import' writes them, over the sample lookup
+    /// tables written a minute before as the lookups flow's refresh writes them; returns the version as loaded back: the
+    /// current one, labelled <see cref="SampleCacheCaptured"/>, which holds both.
     /// </summary>
     public static async Task<ReferenceSnapshot> ImportSampleCacheAsync(ICacheStore store)
     {
@@ -663,6 +734,9 @@ public static class Samples
         var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
         // The estate names its partition as a reference; a cache is keyed by what that resolves to, as a capture and a
         // render both key it.
+        var lookups = new SnapshotBuilder(
+            store, SampleCacheScope, SampleLookupsFlowName, new TestClock(SampleCacheCaptured.AddMinutes(-1)), Logger<SnapshotBuilder>());
+        await lookups.WriteAsync(SampleLookups(), new CacheCapture(null, "tests", "sample dictionaries and curve dictionary"), []);
         var builder = new SnapshotBuilder(store, SampleCacheScope, flow.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());
         var write = await builder.ImportDirectoryAsync(CacheRecords, flow.Types, new CacheCapture(null, "tests", "sample files"));
         return (await store.LoadAsync(SampleCacheScope, write.Snapshot.Version))!;

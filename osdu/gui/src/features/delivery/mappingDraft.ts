@@ -3,7 +3,7 @@
 // the YAML and checks it.
 
 import type {
-  DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftEntry, MappingDraftFind, MappingDraftInput,
+  DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftEntry, MappingDraftFind, MappingDraftInput,
   MappingDraftModifier, MappingDraftModifierKind,
 } from "../../api/delivery";
 
@@ -238,7 +238,7 @@ export function propertyRow(entry: MappingDraftEntry): PropertyRow {
     lookup,
     lookupDetail: lookupLines(entry),
     modifiers,
-    modifierKinds: entry.modifiers.map((modifier) => modifier.kind).join(", "),
+    modifierKinds: entry.modifiers.map((modifier) => (isCachedReplace(modifier) ? "replace from cache" : modifier.kind)).join(", "),
     condition,
     description: entry.description,
     required: entry.required,
@@ -252,12 +252,48 @@ function quoted(text: string): string {
   return text.includes("'") ? `"${text}"` : `'${text}'`;
 }
 
+/** True for a replace that reads its table from the cache rather than listing its pairs. */
+export function isCachedReplace(modifier: MappingDraftModifier): boolean {
+  return modifier.kind === "replace" && (modifier.table ?? "").trim() !== "";
+}
+
+/**
+ * The fields a replace reading a cached table matches on and replaces by, as a render settles them: those it names, or,
+ * for a lookup table, its key and the one field it holds beside its key (`value` for a dictionary of pairs). Null where the
+ * table cannot settle one: a type of OSDU records has no key and many fields, and a lookup table with several fields
+ * beside its key does not say which replaces. `settled` says the field came from the table, not the replace.
+ */
+export function cachedReplaceFields(
+  modifier: MappingDraftModifier,
+  type: DeliveryCachedType | undefined,
+): { match: string | null; field: string | null; matchSettled: boolean; fieldSettled: boolean } {
+  const named = (text: string | null | undefined) => (text ?? "").trim() === "" ? null : (text ?? "").trim();
+  const match = named(modifier.match);
+  const field = named(modifier.field);
+  const key = type?.key ?? null;
+  const beside = type === undefined || key === null ? [] : type.fields.filter((name) => name.toLowerCase() !== key.toLowerCase());
+  const fieldDefault = key === null ? null : beside.length === 1 ? beside[0] : beside.length === 0 ? "value" : null;
+  return {
+    match: match ?? key,
+    field: field ?? fieldDefault,
+    matchSettled: match === null && key !== null,
+    fieldSettled: field === null && fieldDefault !== null,
+  };
+}
+
 /** One modifier in one short line, with the settings its kind carries: `split on ',', part 1`, `replace M to m`. */
 export function modifierText(modifier: MappingDraftModifier): string {
   switch (modifier.kind) {
     case "split":
       return `split on ${quoted(modifier.separator ?? "")}, part ${modifier.part ?? 0}`;
     case "replace": {
+      if (isCachedReplace(modifier)) {
+        const match = (modifier.match ?? "").trim();
+        const field = (modifier.field ?? "").trim();
+        const fields = match === "" && field === "" ? "" : ` (${match === "" ? "its key" : match} to ${field === "" ? "its value" : field})`;
+        return `replace from cache.${(modifier.table ?? "").trim()}${fields}${otherwiseText(modifier)}`;
+      }
+
       const pairs = (modifier.replacements ?? []).map((pair) => `${pair.from} to ${pair.to === null ? "no value" : pair.to}`).join(", ");
       return `replace ${pairs}${otherwiseText(modifier)}`;
     }

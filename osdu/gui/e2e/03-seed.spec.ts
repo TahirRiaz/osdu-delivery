@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E, connectionParts, connectionValue, hostRun } from "../playwright.config";
-import { CACHE, FixtureMeta, LOADING_FLOWS, REPO_NAME, SOURCE } from "./global-setup";
+import { CACHE, FixtureMeta, LOADING_FLOWS, LOOKUPS, REPO_NAME, SOURCE } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
 // Seeds the estate THROUGH the product: saves the templates the sample mappings pin, imports the sample cache records as the
@@ -19,7 +19,7 @@ function fixtureMeta(): FixtureMeta {
 }
 
 /** The ingestion tables the chain loads, each keyed by the identity column the delivery flows page and fan out by. */
-const INGESTION_TABLES = ["WellLog", "WellLogCurve", "Wellbore", "WellboreAlias"] as const;
+const INGESTION_TABLES = ["WellLog", "WellLogCurve", "Wellbore", "WellboreAlias", "CurveDictionary"] as const;
 
 /**
  * Runs one batch against the database a connection string names, or against master beside it. sqlcmd is used because
@@ -221,6 +221,46 @@ test.describe.serial("seed the estate via repo source sync", () => {
       );
       expect(output, `${flow} reported nothing`).not.toBe("");
     }
+  });
+
+  // The lookup tables the mappings translate source spellings through: the unit dictionary of the repository, and the
+  // curve dictionary the chain has just keyed into its ingestion table. Neither reaches OSDU, so the lookups cache flow is
+  // refreshed for real through the CLI host, as a node runs it, and writes the next version of the partition's cache.
+  test("refresh the lookup tables from the dictionary and the curve dictionary", async ({ request }) => {
+    test.setTimeout(420_000);
+    const meta = fixtureMeta();
+    const output = execFileSync(
+      "dotnet",
+      [
+        ...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--",
+        "run", `${meta.sourceDir}/cache/${LOOKUPS}.yaml`,
+        "--db", "${env:SQLFLOW_E2E_CATALOG_CONNECTION}", "--repo", REPO_NAME,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 400_000,
+        env: {
+          ...process.env,
+          ...E2E.osdu,
+          OSDU_SAMPLE_DB: meta.sampleDb,
+          SQLFLOW_OSDU_DB: meta.osduDb,
+          SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,
+        },
+      },
+    );
+    expect(output, `${LOOKUPS} reported nothing`).not.toBe("");
+
+    // The partition's cache now holds both lookup tables beside the imported reference data, each kept under its key.
+    const session = await adminSession(request);
+    const response = await request.get(`${E2E.apiBaseUrl}/api/v1/delivery/mapping-builder/caches`, {
+      headers: { Authorization: `Bearer ${session.token}` },
+    });
+    expect(response.status(), await response.text()).toBe(200);
+    const caches = (await response.json()) as { scope: string; flows: string[]; types: { name: string; key: string | null }[] }[];
+    const cache = caches.find((candidate) => candidate.flows.includes(LOOKUPS));
+    expect(cache, `no cache is filled by ${LOOKUPS}`).toBeDefined();
+    expect(cache?.types.find((type) => type.name === "RecallUnits")?.key).toBe("key");
+    expect(cache?.types.find((type) => type.name === "CurveClasses")?.key).toBe("mnemonic");
   });
 
   test("the synced pipeline appears in the catalog", async ({ adminPage }) => {

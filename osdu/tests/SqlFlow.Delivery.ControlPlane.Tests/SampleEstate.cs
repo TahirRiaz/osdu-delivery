@@ -8,6 +8,7 @@ using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Hosting;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Delivery.Tests;
 
 namespace SqlFlow.ControlPlane.Tests;
 
@@ -151,8 +152,9 @@ internal static class SampleEstate
 
     /// <summary>
     /// Merges the sample cache records into the cache of the sample partition in the module's database, checked against
-    /// the sample cache flow, exactly as 'sqlflow cache import' does. The well log flow reads the cache of the partition
-    /// it delivers to. A database that already holds the same content keeps its current version.
+    /// the sample cache flow, exactly as 'sqlflow cache import' does, and the sample lookup tables as the lookups flow's
+    /// refresh writes them. The well log flow reads the cache of the partition it delivers to. A database that already
+    /// holds the same content keeps its current version.
     /// </summary>
     public static async Task SaveCacheAsync(string connectionString)
     {
@@ -164,6 +166,11 @@ internal static class SampleEstate
         // The flow document is all a repository holds about a cache; the records that stand in for a capture sit
         // beside the source folders, because the cache itself belongs to the database.
         await builder.ImportDirectoryAsync(Path.Combine(Locate(), "cache-records"), flow.Types, new CacheCapture(null, "tests", "sample files"));
+
+        // The lookup tables the mappings translate source spellings through, from the sample dictionaries and the curve
+        // dictionary file, as the lookups flow captures them.
+        var lookups = new SnapshotBuilder(store, flow.Scope, Samples.SampleLookupsFlowName, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
+        await lookups.WriteAsync(Samples.SampleLookups(), new CacheCapture(null, "tests", "sample dictionaries and curve dictionary"), []);
     }
 
     /// <summary>A context over the module's schema in the catalog database the suite was given.</summary>

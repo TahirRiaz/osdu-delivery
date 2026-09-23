@@ -112,7 +112,7 @@ public sealed class OsduCacheStore : ICacheStore
         var rows = await db.DeliveryCacheDefinitions.AsNoTracking()
             .Where(d => d.Scope == scope)
             .OrderBy(d => d.FlowName).ThenBy(d => d.Name).ThenBy(d => d.RepoId)
-            .Select(d => new { d.FlowName, d.Name, d.EntityType, d.Kind, d.Query, d.FieldsJson, d.OnChange, d.Origin })
+            .Select(d => new { d.FlowName, d.Name, d.EntityType, d.Kind, d.Query, d.FieldsJson, d.OnChange, d.Origin, d.KeyField })
             .ToListAsync(ct).ConfigureAwait(false);
 
         // A flow is named once per catalog; the sync warns when two repositories declare the same one, and the first row wins here.
@@ -129,7 +129,8 @@ public sealed class OsduCacheStore : ICacheStore
                 row.FlowName, row.Name, row.EntityType, row.Kind, string.IsNullOrWhiteSpace(row.Query) ? "*" : row.Query,
                 ParseFields(row.FieldsJson, row.FlowName, row.Name),
                 row.OnChange.Equals("approve", StringComparison.OrdinalIgnoreCase) ? CacheChangeMode.Approve : CacheChangeMode.Auto,
-                CacheOrigins.Parse(row.Origin)));
+                CacheOrigins.Parse(row.Origin),
+                row.KeyField));
         }
 
         return new CacheDeclaration(scope, declarations);

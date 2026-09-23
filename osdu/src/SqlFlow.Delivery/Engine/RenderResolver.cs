@@ -179,7 +179,7 @@ public sealed class RenderResolver
     private async Task<(ReferenceSnapshot References, string? Scope, IReadOnlyList<SystemProperty> SystemProperties)> CacheAsync(
         FlowDefinition flow, MappingDefinition mapping, string where, CancellationToken ct)
     {
-        var readsCache = mapping.Entries.Any(e => e.Source?.Kind == MappingSourceKind.Cache);
+        var readsCache = mapping.CacheTypesRead().Count > 0;
         var searches = mapping.Searches.Count > 0;
         if (!readsCache && !searches)
         {

@@ -598,7 +598,7 @@ public sealed record UpdateTag
 
     public required string Path { get; init; }
 
-    /// <summary>changed, removed or unmatched.</summary>
+    /// <summary>changed, removed, unmatched, or listed (a lookup table now lists a key records looked up and found no row under).</summary>
     public required string Change { get; init; }
 
     public string? OldValue { get; init; }
@@ -642,6 +642,10 @@ public sealed record UpdateTag
     {
         "removed" => $"{TypeName} '{ItemId}' is no longer in the cache (it held {Path} = '{OldValue}')",
         "unmatched" => $"{TypeName} '{ItemId}' no longer matches by {Path} = '{OldValue}'",
+        "listed" => NewValue is null
+            ? $"{TypeName} now lists '{OldValue}' as '{ItemId}', which gives no {Path}"
+            : $"{TypeName} now lists '{OldValue}' as '{ItemId}', giving {Path} = '{NewValue}'",
+        _ when OldValue is null => $"{TypeName} '{ItemId}': {Path} gave no value and now gives '{NewValue}'",
         _ => $"{TypeName} '{ItemId}': {Path} changed from '{OldValue}' to '{NewValue}'",
     };
 }

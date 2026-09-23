@@ -63,12 +63,12 @@ public sealed class CacheFlowKind : IFlowDocumentKind
 
     public string FlowType => CacheDefinition.FlowTypeName;
 
-    public string Description => "capture the reference and master data of OSDU kinds into a versioned cache in the module database, which delivery flows render against";
+    public string Description => "capture OSDU reference data, dictionaries and ingestion tables into a versioned cache in the module database, which delivery flows render against";
 
     public IReadOnlyList<FlowKindOperation> Operations { get; } =
     [
-        new(DeliveryOperations.Refresh, "Refresh", "Capture every declared type from OSDU and merge it into the partition's cache, writing a version when the content moved.", WritesTarget: true),
-        new(DeliveryOperations.Plan, "Plan", "Count what each declared type's search matches, writing nothing.", WritesTarget: false),
+        new(DeliveryOperations.Refresh, "Refresh", "Capture every declared type, from OSDU, a dictionary or an ingestion table, and merge it into the partition's cache, writing a version when the content moved.", WritesTarget: true),
+        new(DeliveryOperations.Plan, "Plan", "Count what each declared type would hold (the records an OSDU search matches, the entries of a dictionary, the rows of a table), writing nothing.", WritesTarget: false),
     ];
 
     public RegisteredFlowDocument Parse(string yaml, string source)

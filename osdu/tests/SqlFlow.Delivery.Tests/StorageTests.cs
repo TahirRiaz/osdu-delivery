@@ -678,9 +678,15 @@ public sealed class OsduCacheStoreTests : IDisposable
         var version = await Samples.ImportSampleCacheAsync(store);
         Assert.Equal("20260908T212727Z", version.Version);
         Assert.Equal(version.Version, await store.CurrentVersionAsync(Samples.SampleCacheScope));
-        Assert.Equal(Samples.SampleCacheFlowName, Assert.Single(await store.ListVersionsAsync(Samples.SampleCacheScope)).FlowName);
+        // The lookups flow wrote its tables first, and the reference data import added to them: one partition, one cache.
+        Assert.Equal(
+            [Samples.SampleCacheFlowName, Samples.SampleLookupsFlowName],
+            (await store.ListVersionsAsync(Samples.SampleCacheScope)).Select(v => v.FlowName));
         Assert.True(version.HasType("UnitOfMeasure"));
         Assert.True(version.HasType("VerticalMeasurementType"));
+        Assert.Equal("key", version.Type("RecallUnits")!.Key);
+        Assert.Equal("m3/m3", version.Type("RecallUnits")!.Value(version.Type("RecallUnits")!.Match("key", "V/V")!, "value")!.Text);
+        Assert.Equal("Gamma Ray", version.Type("CurveClasses")!.Value(version.Type("CurveClasses")!.Match("mnemonic", "GR")!, "curve_family")!.Text);
 
         // Wellbores are searched for on the platform rather than captured, so the sample cache holds none.
         Assert.False(version.HasType("Wellbore"));

@@ -113,8 +113,11 @@ public sealed record DeliveryTemplateSavedDto(DeliveryTemplateDto Template, stri
 public sealed record DeliveryBuilderFlowDto(
     Guid PipelineId, string Name, string Mapping, IReadOnlyDictionary<string, string> Parameters, string Endpoint, string? CacheScope);
 
-/// <summary>A type a cache holds: the name a mapping reads it by, its entity type, and the names its values are cached under.</summary>
-public sealed record DeliveryCachedTypeDto(string Name, string EntityType, IReadOnlyList<string> Fields);
+/// <summary>
+/// A type a cache holds: the name a mapping reads it by, its entity type, the names its values are cached under, and for a
+/// lookup table the name its key is kept under (null for a type of OSDU records).
+/// </summary>
+public sealed record DeliveryCachedTypeDto(string Name, string EntityType, IReadOnlyList<string> Fields, string? Key);
 
 /// <summary>A repository as the mapping builder offers it: the source a proposal is opened against, and its delivery flows.</summary>
 public sealed record DeliveryBuilderRepoDto(Guid RepoId, string Name, Guid? SourceId, string? SourceBranch, IReadOnlyList<DeliveryBuilderFlowDto> Flows);
@@ -477,7 +480,7 @@ public static class DeliveryTemplateEndpoints
     }
 
     private static async Task<Ok<IReadOnlyList<DeliveryBuilderRepoDto>>> ListBuilderReposAsync(
-        CatalogDbContext db, DeliveryDocumentLoader documents, CancellationToken ct)
+        CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, CancellationToken ct)
     {
         var repos = await db.Repos.AsNoTracking().OrderBy(r => r.Name).Select(r => new { r.Id, r.Name }).Take(MaxBuilderRepos).ToListAsync(ct).ConfigureAwait(false);
         var sources = await db.RepoSources.AsNoTracking().Select(s => new { s.Id, s.Name, s.Branch }).ToListAsync(ct).ConfigureAwait(false);
@@ -507,7 +510,8 @@ public static class DeliveryTemplateEndpoints
                     foreach (var flow in documents.ParseSource(pipeline.Yaml, pipeline.RelativePath).Interfaces)
                     {
                         flows.Add(new DeliveryBuilderFlowDto(
-                            pipeline.Id, flow.Label, flow.Render.Mapping, flow.Render.Parameters, flow.Target.Endpoint, CacheScopeOf(flow)));
+                            pipeline.Id, flow.Label, flow.Render.Mapping, flow.Render.Parameters, flow.Target.Endpoint,
+                            await CacheScopeOfAsync(flow, engine.Secrets, ct).ConfigureAwait(false)));
                     }
                 }
                 catch (FlowValidationException)
@@ -523,16 +527,32 @@ public static class DeliveryTemplateEndpoints
         return TypedResults.Ok<IReadOnlyList<DeliveryBuilderRepoDto>>(result);
     }
 
-    /// <summary>The partition whose cache a delivery flow reads: the partition it delivers to, or null when its target names none a cache is kept under.</summary>
-    private static string? CacheScopeOf(FlowDefinition flow)
+    /// <summary>
+    /// The partition whose cache a delivery flow reads: the partition it delivers to, with a reference resolved as the
+    /// repository sync resolves a cache flow's (so a flow naming <c>${env:OSDU_DATA_PARTITION}</c> finds the cache its
+    /// partition is kept under), the reference as it is written when it cannot be resolved here, or null when its target
+    /// names none a cache is kept under.
+    /// </summary>
+    private static async Task<string?> CacheScopeOfAsync(FlowDefinition flow, SqlFlow.Core.Secrets.ISecretResolver secrets, CancellationToken ct)
     {
+        var where = flow.SourcePath ?? flow.Name;
+        string declared;
         try
         {
-            return CacheScope.Of(flow.Target.Headers, flow.SourcePath ?? flow.Name);
+            declared = CacheScope.Of(flow.Target.Headers, where);
         }
         catch (FlowValidationException)
         {
             return null;
+        }
+
+        try
+        {
+            return CacheScope.Normalize(await secrets.ResolveAsync(declared, ct).ConfigureAwait(false), where);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return declared;
         }
     }
 
@@ -556,7 +576,7 @@ public static class DeliveryTemplateEndpoints
                 scope,
                 declared.Where(c => c.Scope == scope).Select(c => c.FlowName).Distinct().Order(StringComparer.Ordinal).ToList(),
                 current.GetValueOrDefault(scope),
-                types.Select(t => new DeliveryCachedTypeDto(t.Name, t.EntityType, t.Fields)).ToList()));
+                types.Select(t => new DeliveryCachedTypeDto(t.Name, t.EntityType, t.Fields, t.Key)).ToList()));
         }
 
         return TypedResults.Ok<IReadOnlyList<DeliveryBuilderCacheDto>>(result);

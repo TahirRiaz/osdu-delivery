@@ -146,7 +146,7 @@ mappings:
     source: cache.UnitOfMeasure.id
     findBy: cache.UnitOfMeasure.Code = dataset.curves.curve_unit
     modifiers:
-      - replace: { GAPI: gAPI, G/CM3: g/cm3 }
+      - replace: cache.RecallUnits      # the source's unit spellings, a dictionary held in the cache
 
   - target: osdu.data.Curves[].LogCurveBusinessValueID
     source: cache.LogCurveBusinessValue.id
@@ -347,6 +347,7 @@ is compared or searched for. Cache values and platform records are OSDU's own an
 | upper, lower | `- upper` | `"gapi"` | `"GAPI"` |
 | split | `- split: { separator: ",", part: 1 }` | `"MAIN,REPEAT"` | `"MAIN"` |
 | replace | `- replace: { GAPI: gAPI, NONE: ~ }` | `"GAPI"`, `"NONE"` | `"gAPI"`, no value |
+| replace from the cache | `- replace: cache.CurveClasses` with `field: curve_family` | `"GR"` | `"Gamma Ray"`, as the cached row keyed `GR` gives it |
 | equals | `- equals: REGULAR` | `"REGULAR"` or `"DISCRETE"` | `true` or `false` |
 | date | `- date` or `- date: dd.MM.yyyy` | `"01.09.2026"` | `"2026-09-01T00:00:00Z"`, or `"2026-09-01"` where the template takes a date |
 | number | `- number` or `- number: { decimal: ",", group: " " }` | `"1 234,5"` | `1234.5` |
@@ -354,7 +355,10 @@ is compared or searched for. Cache values and platform records are OSDU's own an
 `part` counts from one. A separator of a single space splits on any run of whitespace. `replace` matches the trimmed
 value by the cache's rules (an exact key, then the one key that matches ignoring case); `~` replaces with no value; and
 `otherwise`, written beside it, says what a value the table does not list becomes: unchanged when it is left out, no
-value for `~`, or a text ([documents.md](documents.md#replace)). `equals` compares trimmed text and ignores case. `date` writes the RFC 3339 form the
+value for `~`, or a text ([documents.md](documents.md#replace)). A replace reading `cache.<Type>` takes its table from the
+partition's cache: a dictionary, an ingestion table or OSDU reference data, matched on `match` (by default the table's key)
+and replaced by `field` (by default a lookup table's one field beside its key); every row it used is recorded, so a changed
+entry tags the records built from it ([documents.md](documents.md#a-table-read-from-the-cache)). `equals` compares trimmed text and ignores case. `date` writes the RFC 3339 form the
 property's `format` names: a full-date for `date`, and a UTC date-time otherwise. Without a format it reads ISO 8601
 only and never guesses at a form such as `01/02/2026`; [documents.md](documents.md#date) has the rules. `number` reads
 text written with the separators it is given; how any value becomes a number, an integer in its format's range, or text
@@ -524,7 +528,9 @@ An existing mapping opens in the builder with its entries filled in.
 
 - The property list format: `source`/`identity`/`envelope`/`properties`/`definitions` blocks, per-property
   `examples`, and the `constant`, `template`, `map`, `reference`, `lookup` and `deliveredReference` transforms.
-  `replace`, `equals`, `split`, `date` and cache sources cover what the sample estate used.
+  `replace`, `equals`, `split`, `date` and cache sources cover what the sample estate used, and what the `map` and
+  `lookup` transforms did now lives in the partition's cache: a table a replace reads (`replace: cache.<Type>`) from a
+  dictionary, an ingestion table or OSDU reference data, and a cache source a `findBy` resolves.
 - Schema snapshots in the repository's snapshot store, and the `sqlflow snapshot <flow> schema` verb. Templates
   replace them.
 - Manual submission: the API that took records in a request, the page and dialog that sent them, and the source contract

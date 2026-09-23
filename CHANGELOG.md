@@ -13,6 +13,23 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A replace reads its table from the partition's cache.** `replace: cache.<Type>` matches the incoming value on
+  `match` (by default the table's key) and replaces it by the matched row's `field` (by default the one field a lookup
+  table holds beside its key, `value` for a dictionary of pairs); `otherwise` works as for a written table. Any cached
+  type is a table: a dictionary, an ingestion table, or OSDU reference data naming both fields. A row with nothing at
+  `field` gives no value; a row holding several values there, rows that answer to the value only once case is ignored
+  and give different values, a type the cache version does not hold, and fields the table cannot settle hold the
+  record. Every row a replacement used is recorded with the record's cache dependencies, and so is a key a lookup table
+  does not list, so a new version of the table that changes, empties, removes or comes to list an entry tags exactly
+  the records built from it: a change a record read and found empty now reads as `changed` from no value, and a key a
+  table comes to list as `listed`. A mapping that reads the cache only through a replace renders against the cache
+  version, and lineage orders it after the flow that fills the table. The gate checks the table and its fields, and,
+  where the replaced value is looked up in the cache, lists the values a replace (written or cached) can give that find
+  nothing there. The mapping builder offers a replace as values listed in the mapping or a table in the cache, with the
+  partition's lookup tables and their fields to pick from, and the builder's cache types carry a lookup table's key. The
+  sample WellLog and WellboreTrajectory mappings translate units through `cache.RecallUnits`, and WellLog fills
+  `LogCurveFamilyID` through `CurveClasses` and the reference cache's new `LogCurveFamily` type
+  ([osdu/docs/documents.md](osdu/docs/documents.md#a-table-read-from-the-cache)).
 - **A cache flow reads lookup tables out of ingestion tables.** A type with `table:` (a three-part name), `key:` (the
   column rows are keyed by) and `fields:` (columns, bare or `{ column, as }`) is read over the flow's
   `source.connection`, declared and checked as a delivery flow's is, so the same estate that loads a table through its
@@ -354,6 +371,9 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   shared locks while it runs, so a claim or a lease recovery on one node could fail with a deadlock against another
   node's claim. Every ledger read now retries a deadlock a few times with a growing, jittered pause, as its writes
   already did; the two concurrent chain suites that met it intermittently pass run after run.
+- **The OSDU cache page names the flows that fill a partition.** With two or three cache flows (one capturing OSDU
+  reference data and one holding the estate's lookup tables, say) the header names each file instead of counting them.
+  The cache flow's operations say that a refresh and a plan cover dictionaries and ingestion tables as well as OSDU.
 - **The mapping document kind is registered where the loader, the CLI and the proposal preflight look for it.** The
   delivery kind owns the mapping documents, but was registered only as a flow kind, so in a composed host a proposed
   mapping met "unknown documentType 'mapping'". It is now registered as the companion document kind as well, beside the

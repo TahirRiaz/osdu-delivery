@@ -156,10 +156,14 @@ public sealed class LineageTests : IDisposable
         Assert.Equal(
             "osdu-type/${env:OSDU_DATA_PARTITION}/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0",
             Datasets(lineage, LineageRelation.Writes));
-        // The units and business values come out of the partition's cache; the wellbores are searched for on the platform,
-        // so the flow reads the wellbore kind itself and is ordered after whatever delivers wellbores there.
+        // The units, families and business values come out of the partition's cache, and so do the lookup tables the
+        // mapping's replaces translate the source's spellings through (read by nothing but a replace); the wellbores are
+        // searched for on the platform, so the flow reads the wellbore kind itself and is ordered after whatever delivers
+        // wellbores there.
         Assert.Equal(
-            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, "
+            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/CurveClasses, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, "
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveFamily, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/RecallUnits, "
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, "
             + "osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:*",
             Datasets(lineage, LineageRelation.Reads));
         var written = lineage.Datasets.Single(d => d.Relation == LineageRelation.Writes);
@@ -202,10 +206,12 @@ public sealed class LineageTests : IDisposable
         Assert.Empty(lineage.Files);
         Assert.Equal(
             "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
+            + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--LogCurveFamily:*, "
             + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*",
             Datasets(lineage, LineageRelation.Reads));
         Assert.Equal(
-            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/VerticalMeasurementType, "
+            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, "
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveFamily, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/VerticalMeasurementType, "
             + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/TrajectoryStationPropertyType",
             Datasets(lineage, LineageRelation.Writes));
     }

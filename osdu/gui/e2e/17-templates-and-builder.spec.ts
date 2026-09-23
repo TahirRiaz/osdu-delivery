@@ -416,7 +416,8 @@ test.describe.serial("templates and the mapping builder", () => {
     await properties.getByTestId("templates-view-variable-osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID").click();
     const modifiers = entry.getByTestId("delivery-mapping-property-detail-modifiers");
     await expect(modifiers).toContainText("split on ' ', part 2");
-    await expect(modifiers).toContainText("replace M to m, FT to ft");
+    // The unit spelling is translated through the unit dictionary the partition's cache holds, not a list in the mapping.
+    await expect(modifiers).toContainText("replace from cache.RecallUnits");
     await expect(modifiers).toContainText("the value the lookup compares");
 
     // The search reads what fills a variable too, so a source column answers with every variable it reaches: the
@@ -462,5 +463,25 @@ test.describe.serial("templates and the mapping builder", () => {
     // The sample mapping renders its fixtures against the imported cache exactly, so it loads, passes and can be proposed.
     await expect(adminPage.getByTestId("mapping-builder-valid")).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("mapping-builder-propose")).toBeEnabled();
+
+    // A replace reading a cached table opens as one: the table, the field it names, and the key it matches on by default,
+    // which the table settles, so the draft leaves it out.
+    await rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.Curves[].LogCurveFamilyID").click();
+    await expect(adminPage.getByTestId("mapping-builder-entry-target")).toHaveText("osdu.data.Curves[].LogCurveFamilyID");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-source-cache-0")).toHaveAttribute("data-state", "on");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-table-0")).toContainText("CurveClasses");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-match-0")).toContainText("the table's key");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("curve_family");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-otherwise-0")).toContainText("gives no value");
+
+    // Switching to values listed in the mapping leaves the table behind; switching back offers the partition's lookup tables.
+    await adminPage.getByTestId("mapping-builder-entry-modifier-source-pairs-0").click();
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-from-0-0")).toBeVisible();
+    await adminPage.getByTestId("mapping-builder-entry-modifier-source-cache-0").click();
+    await adminPage.getByTestId("mapping-builder-entry-modifier-table-0").click();
+    await expect(adminPage.getByRole("option").filter({ hasText: "RecallUnits" })).toBeVisible();
+    await expect(adminPage.getByRole("option").filter({ hasText: "key mnemonic" })).toBeVisible();
+    await adminPage.keyboard.press("Escape");
+    await adminPage.keyboard.press("Escape");
   });
 });

@@ -284,9 +284,12 @@ a type the flow stops declaring. What each version held is in `osdu.CacheItem`.
 A `osdu.CacheSet` is one distinct combination of cached values a render consumed, shared by every record that read
 the same values through the record's `CacheSetId`. Each `osdu.CacheSetEntry` is one value in it: the partition
 whose cache it was read from (`Scope`, the partition the delivery flow delivers to), the type, the cached record, the
-path, and the value as it was read. A `osdu.UpdateTag` is one change a refresh found in values delivered records
+path, the value as it was read, and `Kind`: `match` (what the record was found by), `value` (what went into the
+document), `empty` (a field read that held nothing), or `unlisted` (a key a lookup table listed no row under, held
+without case as the cached record, with the field a row would have given as the path). A `osdu.UpdateTag` is one change a refresh found in values delivered records
 were built from: the partition (`Scope`), the type, the cached record, the
-path, the value before and after, the versions it moved between, `Mode` (`approve` or `auto`), `Status` (`pending`,
+path, `Change` (`changed`, `removed`, `unmatched`, or `listed` for a key a lookup table now lists), the value before
+and after, the versions it moved between, `Mode` (`approve` or `auto`), `Status` (`pending`,
 `approved`, `rejected`, `rolling`, `applied`), how many delivered records it reaches and how far the rollout has got
 ([design.md](design.md) section 6.2).
 

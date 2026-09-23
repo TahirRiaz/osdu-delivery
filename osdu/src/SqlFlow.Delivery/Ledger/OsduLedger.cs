@@ -1944,10 +1944,19 @@ public sealed partial class OsduLedger : ILedger
     private static string SetHash(string scope, IReadOnlyList<Snapshots.CacheUsage> entries)
         => Hashing.ContentHash.Of(scope + "\n" + string.Join('\n', entries.Select(e => $"{e.TypeName}|{e.ItemId}|{e.Path}|{KindText(e.Kind)}|{e.ValueHash}")));
 
-    private static string KindText(Snapshots.CacheUsageKind kind) => kind == Snapshots.CacheUsageKind.Match ? "match" : "value";
+    private static string KindText(Snapshots.CacheUsageKind kind) => kind switch
+    {
+        Snapshots.CacheUsageKind.Match => "match",
+        Snapshots.CacheUsageKind.Empty => "empty",
+        Snapshots.CacheUsageKind.Unlisted => "unlisted",
+        _ => "value",
+    };
 
     private static Snapshots.CacheUsageKind ToKind(string kind)
-        => kind.Equals("match", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Match : Snapshots.CacheUsageKind.Value;
+        => kind.Equals("match", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Match
+            : kind.Equals("empty", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Empty
+            : kind.Equals("unlisted", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Unlisted
+            : Snapshots.CacheUsageKind.Value;
 
     private static List<long> ParseSets(string setIds)
         => setIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)

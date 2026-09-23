@@ -38,6 +38,15 @@ const changeTone: Record<string, string> = {
   changed: "bg-info/15 text-info",
   removed: "bg-destructive/15 text-destructive",
   unmatched: "bg-warning/15 text-warning",
+  listed: "bg-info/15 text-info",
+};
+
+/** What each kind of change means for the records built from the cached value, as the detail panel says it. */
+const changeMeaning: Record<string, string> = {
+  changed: "A value delivered records were built from reads differently in the new version of the cache.",
+  removed: "The cached record delivered records were built from is no longer in the cache.",
+  unmatched: "The value delivered records found this cached record by no longer matches it.",
+  listed: "The lookup table now lists a key delivered records looked up and found no row under, so they were built without what the row gives.",
 };
 
 /**
@@ -60,17 +69,34 @@ function useDecideTags(onDecided?: () => void) {
   });
 }
 
-/** The value before and after, as one line: what OSDU holds now struck through, what the cache holds now beside it. */
+/**
+ * The value before and after, as one line: what OSDU holds now struck through, what the cache holds now beside it. For a
+ * key a lookup table now lists, the key the records looked up, and what its row gives them.
+ */
 function ValueChange({ row, maxWidth }: { row: DeliveryUpdateTag; maxWidth: number }) {
+  const listed = row.change === "listed";
   return (
     <span className="inline-flex items-center gap-1.5 font-mono text-[12px]">
-      <TruncatedText text={row.oldValue} mono maxWidth={maxWidth} className="text-muted-foreground line-through" />
+      {row.oldValue === null
+        ? <span className="font-sans text-muted-foreground">no value</span>
+        : <TruncatedText text={row.oldValue} mono maxWidth={maxWidth} className={cn("text-muted-foreground", !listed && "line-through")} />}
       <ArrowRight className="size-3.5 shrink-0 text-muted-foreground" />
-      {row.newValue === null
-        ? <span className="text-destructive">gone</span>
-        : <TruncatedText text={row.newValue} mono maxWidth={maxWidth} />}
+      <NewValue tag={row} maxWidth={maxWidth} />
     </span>
   );
+}
+
+/** What the cache holds now: a removed record or a lost match is gone; a newly listed row may give no value. */
+function NewValue({ tag, maxWidth }: { tag: DeliveryUpdateTag; maxWidth?: number }) {
+  if (tag.newValue !== null) {
+    return maxWidth === undefined
+      ? <span className="break-all font-mono text-[12px]">{tag.newValue}</span>
+      : <TruncatedText text={tag.newValue} mono maxWidth={maxWidth} />;
+  }
+
+  return tag.change === "listed"
+    ? <span className="font-sans text-[12px] text-muted-foreground">no value</span>
+    : <span className="font-mono text-[12px] text-destructive">gone</span>;
 }
 
 /** How far the rollout has carried the change, or why it has not started. */
@@ -205,14 +231,22 @@ function TagDetail({ tag, onDecided }: { tag: DeliveryUpdateTag; onDecided: () =
           : <span className="text-[12px] text-muted-foreground">{statusLabel[tag.status] ?? tag.status}</span>}
       </div>
 
+      {changeMeaning[tag.change] !== undefined && (
+        <p className="text-[12.5px] text-muted-foreground" data-testid="delivery-cache-tag-meaning">{changeMeaning[tag.change]}</p>
+      )}
+
       <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(200px,1fr))]">
-        <DetailPair label="Was">
-          <span className="break-all font-mono text-[12px] text-muted-foreground line-through">{tag.oldValue ?? "-"}</span>
+        <DetailPair label={tag.change === "listed" ? "Looked up" : "Was"}>
+          {tag.oldValue === null
+            ? <span className="text-[12px] text-muted-foreground">no value</span>
+            : (
+              <span className={cn("break-all font-mono text-[12px] text-muted-foreground", tag.change !== "listed" && "line-through")}>
+                {tag.oldValue}
+              </span>
+            )}
         </DetailPair>
-        <DetailPair label="Is now">
-          {tag.newValue === null
-            ? <span className="font-mono text-[12px] text-destructive">gone</span>
-            : <span className="break-all font-mono text-[12px]">{tag.newValue}</span>}
+        <DetailPair label={tag.change === "listed" ? "Now gives" : "Is now"}>
+          <NewValue tag={tag} />
         </DetailPair>
         <DetailPair label="Versions">
           <span className="inline-flex items-center gap-1.5 font-mono text-[12px]">

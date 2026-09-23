@@ -72,6 +72,20 @@ export function lookupEntryExample(typeName: string, keyField: string, valueFiel
 }
 
 /**
+ * A replace modifier that turns a dataset value into what a lookup table gives for it, on its way to the entry: matched on
+ * the table's key and replaced by the one value a row holds beside it; a table holding several names the one it replaces by.
+ */
+export function lookupReplaceExample(typeName: string, keyField: string, valueFields: string[]): string {
+  const beside = valueFields.filter((name) => name !== keyField);
+  const lines = ["modifiers:", `  - replace: cache.${typeName}`];
+  if (beside.length > 1) {
+    lines.push(`    field: ${beside[0]}`);
+  }
+
+  return lines.join("\n");
+}
+
+/**
  * An OSDU record id in two parts: the partition and entity type that every id of a type repeats, and the part that
  * tells the records apart. A column of ids reads by its tails once the repeated prefix steps back.
  */

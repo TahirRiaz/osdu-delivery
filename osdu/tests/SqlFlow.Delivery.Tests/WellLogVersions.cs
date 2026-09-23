@@ -68,7 +68,8 @@ internal static class WellLogVersions
 
     /// <summary>
     /// Imports the sample cache records as the cache of <paramref name="partition"/>, under that partition's ids, as the
-    /// capture of the cache flow <paramref name="flowName"/>. The files are written under <paramref name="root"/>.
+    /// capture of the cache flow <paramref name="flowName"/>, over the sample lookup tables. The files are written under
+    /// <paramref name="root"/>.
     /// </summary>
     public static async Task ImportPartitionCacheAsync(ICacheStore caches, string partition, string flowName, string root)
     {
@@ -81,6 +82,12 @@ internal static class WellLogVersions
             Assert.Contains(Samples.SamplePartition + ":", text, StringComparison.Ordinal);
             File.WriteAllText(Path.Combine(directory, Path.GetFileName(file)), text.Replace(Samples.SamplePartition + ":", partition + ":", StringComparison.Ordinal));
         }
+
+        // The lookup tables the mapping translates source spellings through hold no ids, so the partition's copy is the
+        // sample's own, written first as the sample cache writes them.
+        var lookups = new SnapshotBuilder(
+            caches, partition, flowName + "-lookups", new TestClock(Samples.SampleCacheCaptured.AddMinutes(-1)), Samples.Logger<SnapshotBuilder>());
+        await lookups.WriteAsync(Samples.SampleLookups(), new CacheCapture(null, "tests", "sample lookups for " + partition), []);
 
         var cacheFlow = new DeliveryDocumentLoader().LoadCache(Samples.CacheFlow);
         var builder = new SnapshotBuilder(caches, partition, flowName, new TestClock(Samples.SampleCacheCaptured), Samples.Logger<SnapshotBuilder>());

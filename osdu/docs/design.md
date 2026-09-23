@@ -402,9 +402,12 @@ never over the records.
 
 A refresh compares the new version against the one it replaces, and for the items that
 moved it asks which sets hold their values. A set is touched when a value a record wrote
-into its document now reads differently, when the cached record it used is gone, or when
-the value it matched by no longer resolves; anything else the change does not touch,
-including a record that only ever read the id of an item whose name changed. Each set is
+into its document now reads differently, when the cached record it used is gone, when
+the value it matched by no longer resolves, or when a field it read and found empty now
+gives a value; anything else the change does not touch, including a record that only ever
+read the id of an item whose name changed. A lookup table is asked about the keys it newly
+lists too: a replace that looked a key up and found no row records the key, so a table
+that comes to list it touches the records built without it. Each set is
 judged by the value it holds, since sets built against different cache versions can hold
 different values of one path: a set already holding the new value is not touched.
 

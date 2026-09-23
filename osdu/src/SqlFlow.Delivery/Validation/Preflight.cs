@@ -215,6 +215,7 @@ public static partial class Preflight
         }
 
         CheckWrittenForm(entry, variable, renderer, issues, name);
+        CheckReplaces(entry, references, issues, name);
 
         if (entry.IsStatic)
         {
@@ -477,6 +478,184 @@ public static partial class Preflight
             issues.Add(ValidationIssue.Warning($"{name} writes an OSDU reference, but the template does not mark {entry.Target.Text} as a relationship."));
         }
     }
+
+    /// <summary>
+    /// 7b. Every replace reading a cached table reads one the cache version holds, on fields it can settle and holds. And
+    /// where the replaced value is then found in the cache, as a findBy value, every value a replace can give (inline or
+    /// cached) is looked up in the type found, and the ones that find nothing are listed: each is a record a render holds,
+    /// or leaves without its reference, and the listing names them before any row arrives.
+    /// </summary>
+    private static void CheckReplaces(MappingEntry entry, ReferenceSnapshot references, List<ValidationIssue> issues, string name)
+    {
+        for (var i = 0; i < entry.Modifiers.Count; i++)
+        {
+            var modifier = entry.Modifiers[i];
+            if (modifier.Kind != ModifierKind.Replace)
+            {
+                continue;
+            }
+
+            IReadOnlyCollection<string> gives;
+            if (modifier.Table is { } table)
+            {
+                if (CachedReplaceValues(table, references, issues, name) is not { } produced)
+                {
+                    continue;
+                }
+
+                gives = produced;
+            }
+            else
+            {
+                gives = modifier.Replacements.Values.OfType<string>().Distinct(StringComparer.Ordinal).ToList();
+            }
+
+            if (modifier.Otherwise.Kind == ReplaceFallbackKind.Text)
+            {
+                gives = gives.Append(modifier.Otherwise.Text!).Distinct(StringComparer.Ordinal).ToList();
+            }
+
+            CheckReplacedValuesResolve(entry, i, gives, references, issues, name);
+        }
+    }
+
+    /// <summary>
+    /// The values a replace reading <paramref name="table"/> can give, each once, or null (with the error) when the cache
+    /// version does not hold the table or it cannot be read as the replace names it.
+    /// </summary>
+    private static List<string>? CachedReplaceValues(CachedReplaceTable table, ReferenceSnapshot references, List<ValidationIssue> issues, string name)
+    {
+        if (references.Type(table.CacheType) is not { } type)
+        {
+            var available = references.Types.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
+            issues.Add(ValidationIssue.Error(
+                $"{name}: replace reads cache.{table.CacheType}, which cache version '{references.Version}' does not hold. Cached: {(available.Count == 0 ? "nothing" : string.Join(", ", available))}."));
+            return null;
+        }
+
+        if (ReplaceTables.Fields(table, type, out var problem) is not { } fields)
+        {
+            issues.Add(ValidationIssue.Error($"{name}: {problem}, in cache version '{references.Version}'."));
+            return null;
+        }
+
+        var cachedFields = string.Join(", ", type.FieldNames.Prepend("id"));
+        if (type.Items.Count == 0)
+        {
+            issues.Add(ValidationIssue.Warning(
+                $"{name}: replace reads cache.{type.Name}, which holds no rows in cache version '{references.Version}', so every value becomes what its otherwise says."));
+            return [];
+        }
+
+        if (!type.HasField(fields.Match) && !type.MeansRecordId(fields.Match))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name}: replace matches the value on '{fields.Match}' of {type.Name}, which cache version '{references.Version}' does not cache. Cached: {cachedFields}."));
+            return null;
+        }
+
+        // A field the replace names has to be one some row holds. One it settles is held by definition, or is the value of a
+        // dictionary whose every entry gives no value, which is exactly what it says.
+        if (table.Field is not null && !type.MeansRecordId(fields.Field) && type.Items.All(item => type.Value(item, fields.Field) is null))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name}: replace replaces the value by '{fields.Field}' of {type.Name}, which cache version '{references.Version}' does not cache. Cached: {cachedFields}."));
+            return null;
+        }
+
+        if (type.IsAmbiguous(fields.Match))
+        {
+            issues.Add(ValidationIssue.Warning(
+                $"{name}: several {type.Name} rows hold the same {fields.Match} in cache version '{references.Version}', and a value they give differently replaces nothing: the record is held."));
+        }
+
+        var gives = new SortedSet<string>(StringComparer.Ordinal);
+        var several = new List<string>();
+        foreach (var item in type.Items)
+        {
+            if (type.Value(item, fields.Field) is not { } value || value.Node is JsonArray { Count: 0 })
+            {
+                continue;
+            }
+
+            if (ReplaceTables.SingleText(value) is { } text)
+            {
+                gives.Add(text);
+            }
+            else
+            {
+                several.Add(item.Id);
+            }
+        }
+
+        if (several.Count > 0)
+        {
+            issues.Add(ValidationIssue.Warning(
+                $"{name}: {several.Count} {type.Name} row(s) hold several values or an object at '{fields.Field}' in cache version '{references.Version}' ({Listed(several)}); a value matching one of them holds its record, since a replace gives one value."));
+        }
+
+        return gives.ToList();
+    }
+
+    /// <summary>
+    /// When the value the replace at <paramref name="index"/> gives is what the entry's findBy lines look up in the cache,
+    /// the values it can give that find nothing, listed as a warning. Only a replace followed by nothing, or by case and
+    /// spacing modifiers the check applies itself, is checked; any other modifier after it changes the value in a way only
+    /// a row shows.
+    /// </summary>
+    private static void CheckReplacedValuesResolve(
+        MappingEntry entry, int index, IReadOnlyCollection<string> gives, ReferenceSnapshot references, List<ValidationIssue> issues, string name)
+    {
+        if (gives.Count == 0 || entry.Source is not { Kind: MappingSourceKind.Cache, CacheType: { } typeName } || references.Type(typeName) is not { } target)
+        {
+            return;
+        }
+
+        var lines = entry.FindBy.Where(f => f.Column is not null).ToList();
+        if (lines.Count == 0)
+        {
+            return;
+        }
+
+        var after = entry.Modifiers.Skip(index + 1).ToList();
+        if (after.Any(m => m.Kind is not (ModifierKind.Trim or ModifierKind.Upper or ModifierKind.Lower)))
+        {
+            return;
+        }
+
+        var unresolved = new List<string>();
+        foreach (var given in gives)
+        {
+            var value = after.Aggregate(given, (text, m) => m.Kind switch
+            {
+                ModifierKind.Upper => text.ToUpperInvariant(),
+                ModifierKind.Lower => text.ToLowerInvariant(),
+                _ => text.Trim(),
+            }).Trim();
+            if (value.Length == 0)
+            {
+                continue;
+            }
+
+            var resolves = (!target.IsLookup && RecordId().Match(value) is { Success: true } id && target.Match("id", id.Groups["id"].Value) is not null)
+                || lines.Any(find => target.Find(find.Field, value, entry.IgnoreSeparators).Item is not null);
+            if (!resolves)
+            {
+                unresolved.Add(value);
+            }
+        }
+
+        if (unresolved.Count > 0)
+        {
+            var by = string.Join("/", lines.Select(f => ReferenceField.Normalize(f.Field)).Distinct(StringComparer.OrdinalIgnoreCase));
+            issues.Add(ValidationIssue.Warning(
+                $"{name}: {unresolved.Count} of the {gives.Count} value(s) its replace can give find no {target.Name} by {by} in cache version '{references.Version}': {Listed(unresolved)}. A record whose value becomes one of them is {(entry.Required ? "held" : "left without it")}."));
+        }
+    }
+
+    /// <summary>Values as a finding lists them: the first ten, quoted, and how many more.</summary>
+    private static string Listed(IReadOnlyList<string> values)
+        => string.Join(", ", values.Take(10).Select(v => $"'{v}'")) + (values.Count > 10 ? $" and {values.Count - 10} more" : string.Empty);
 
     /// <summary>Whether an entity type (<c>master-data--Wellbore</c>) is one a relationship allows; a group type alone (<c>dataset</c>) allows every entity of the group.</summary>
     private static bool Points(IReadOnlyList<string> relationships, string entityType)

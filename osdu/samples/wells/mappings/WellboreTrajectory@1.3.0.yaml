@@ -99,7 +99,7 @@ mappings:
       - cache.UnitOfMeasure.id = dataset.elev_meas_ref
     modifiers:
       - split: { separator: " ", part: 2 }
-      - replace: { M: m, FT: ft }
+      - replace: cache.RecallUnits
   - target: osdu.data.VerticalMeasurement.VerticalMeasurementTypeID
     static: "{param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"
 
@@ -122,8 +122,8 @@ mappings:
       - cache.UnitOfMeasure.ID = dataset.stations.property_unit
       - cache.UnitOfMeasure.id = dataset.stations.property_unit
     modifiers:
-      # OSDU's unit for an angle in degrees is dega.
-      - replace: { M: m, FT: ft, DEG: dega }
+      # The source's spelling becomes the partition's unit code (dictionaries/RecallUnits.yaml): DEG becomes dega.
+      - replace: cache.RecallUnits
 
 # Example rows and the exact record each must render to under the pinned template and cache. They are the mapping's
 # regression suite, which the preflight gate runs before every render (design.md section 10.3).

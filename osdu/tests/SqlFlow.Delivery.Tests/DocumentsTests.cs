@@ -275,7 +275,8 @@ public class YamlDocumentLoaderTests
         Assert.Equal("replace(M: m, NONE: ~; otherwise ~)", Only("      - replace: { M: m, NONE: ~ }\n        otherwise: ~").ToString());
 
         string Refused(string modifiers) => Assert.Throws<FlowValidationException>(() => Only(modifiers)).Message;
-        Assert.Contains("replace takes 'otherwise' beside it, not 'match'", Refused("      - replace: { M: m }\n        match: Code"), StringComparison.Ordinal);
+        Assert.Contains("replace takes 'otherwise', 'match' and 'field' beside it, not 'fields'", Refused("      - replace: { M: m }\n        fields: Code"), StringComparison.Ordinal);
+        Assert.Contains("'match' and 'field' choose the fields of a table read from the cache", Refused("      - replace: { M: m }\n        match: Code"), StringComparison.Ordinal);
         Assert.Contains("otherwise is one text", Refused("      - replace: { M: m }\n        otherwise: [a, b]"), StringComparison.Ordinal);
         Assert.Contains("which are the same value once surrounding spaces are removed", Refused("      - replace: { M: m, \" M \": metre }"), StringComparison.Ordinal);
         Assert.Contains("lists an empty incoming value", Refused("      - replace: { \"  \": x }"), StringComparison.Ordinal);

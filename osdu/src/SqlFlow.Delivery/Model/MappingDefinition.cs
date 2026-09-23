@@ -38,6 +38,38 @@ public sealed record MappingDefinition
     /// <summary>The entries, in the order the document lists them.</summary>
     public required IReadOnlyList<MappingEntry> Entries { get; init; }
 
+    /// <summary>
+    /// Every type of the partition's cache the mapping reads, in name order: those its cache sources read and their findBy
+    /// lines compare, and those a replace reads its table from, whatever the entry's source. A mapping that reads none of
+    /// them renders against no cache at all; one that reads any renders against a version, whose label enters its records'
+    /// render context. The render, lineage and the intake all ask this one question, so none of them misses a type.
+    /// </summary>
+    public IReadOnlyList<string> CacheTypesRead()
+    {
+        var types = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in Entries)
+        {
+            if (entry.Source is { Kind: MappingSourceKind.Cache, CacheType: { } type })
+            {
+                types.Add(type);
+                foreach (var find in entry.FindBy)
+                {
+                    types.Add(find.Type);
+                }
+            }
+
+            foreach (var modifier in entry.Modifiers)
+            {
+                if (modifier.Table is { } table)
+                {
+                    types.Add(table.CacheType);
+                }
+            }
+        }
+
+        return types.ToList();
+    }
+
     /// <summary>The access list and legal block, as the static entries for them declare them (parameter tokens unexpanded).</summary>
     public required MappingEnvelope Envelope { get; init; }
 
@@ -235,6 +267,12 @@ public sealed record Modifier
     /// <summary>For replace: what a value the table does not list becomes; by default it passes on unchanged.</summary>
     public ReplaceFallback Otherwise { get; init; } = ReplaceFallback.Keep;
 
+    /// <summary>
+    /// For replace: the cached type the table is read from, in place of <see cref="Replacements"/>: a value is matched on
+    /// one of its fields and replaced by another of the matched row. Null for a table written in the mapping.
+    /// </summary>
+    public CachedReplaceTable? Table { get; init; }
+
     /// <summary>For equals: the text the value is compared with; for date: the .NET format the value is written in, or null for an ISO 8601 date or date-time.</summary>
     public string? Text { get; init; }
 
@@ -247,6 +285,8 @@ public sealed record Modifier
     public override string ToString() => Kind switch
     {
         ModifierKind.Split => $"split(separator '{Separator}', part {Part})",
+        ModifierKind.Replace when Table is { } table => $"replace from {table}"
+            + (Otherwise.Kind == ReplaceFallbackKind.Keep ? string.Empty : $", otherwise {Otherwise}"),
         ModifierKind.Replace => "replace(" + string.Join(", ", Replacements.Select(kv => kv.Key + ": " + (kv.Value ?? "~")))
             + (Otherwise.Kind == ReplaceFallbackKind.Keep ? string.Empty : $"; otherwise {Otherwise}") + ")",
         ModifierKind.Equals => $"equals({Text})",
@@ -255,6 +295,22 @@ public sealed record Modifier
         ModifierKind.Number => $"number(decimal '{DecimalSeparator ?? "."}'" + (GroupSeparator is null ? string.Empty : $", group '{GroupSeparator}'") + ")",
         _ => Kind.ToString().ToLowerInvariant(),
     };
+}
+
+/// <summary>
+/// A replace reading its table from the partition's cache (<c>replace: cache.CurveClasses</c>): the value is matched on
+/// <see cref="Match"/> and replaced by the matched row's <see cref="Field"/>. Either may be left for the cached type to
+/// decide: a lookup table matches on its key, and replaces by the one field it holds beside it (a dictionary of pairs'
+/// value).
+/// </summary>
+/// <param name="CacheType">The cached type the table is read from.</param>
+/// <param name="Match">The field a value is matched on, or null for the type's key.</param>
+/// <param name="Field">The field of the matched row a value is replaced by, or null for the one field beside the key.</param>
+public sealed record CachedReplaceTable(string CacheType, string? Match, string? Field)
+{
+    /// <summary>The table as the mapping names it, with the fields it names: <c>cache.CurveClasses (mnemonic to curve_family)</c>.</summary>
+    public override string ToString()
+        => $"{MappingSource.CachePrefix}.{CacheType}" + (Match is null && Field is null ? string.Empty : $" ({Match ?? "its key"} to {Field ?? "its value"})");
 }
 
 /// <summary>What a replace does with a value its table does not list.</summary>

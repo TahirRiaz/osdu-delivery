@@ -4,7 +4,7 @@ namespace SqlFlow.Delivery.Snapshots;
 
 /// <summary>
 /// One cached type as one cache flow declares it, the way the catalog holds it after the repository sync: where its records
-/// come from, and for an OSDU type the kind and query it is searched with.
+/// come from, for an OSDU type the kind and query it is searched with, and for a lookup table the name its key is kept under.
 /// </summary>
 public sealed record CacheTypeDeclaration(
     string FlowName,
@@ -14,7 +14,8 @@ public sealed record CacheTypeDeclaration(
     string Query,
     IReadOnlyList<ReferenceFieldSpec> Fields,
     CacheChangeMode OnChange,
-    CacheOrigin Origin = CacheOrigin.Osdu)
+    CacheOrigin Origin = CacheOrigin.Osdu,
+    string? Key = null)
 {
     /// <summary>True for a table or a dictionary, whose rows are not OSDU records.</summary>
     public bool IsLookup => Origin != CacheOrigin.Osdu;

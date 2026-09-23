@@ -393,6 +393,22 @@ is (`IngestionConnection.CheckDeclared`).
 **Closes when** the suites above pass, the sample chain delivers with units and families resolved through the lookups
 cache, and fixtures match.
 
+**As built.**
+
+- `field` defaults to the one field a lookup table holds beside its key, which is `value` for a dictionary of pairs and
+  also covers a table type with one field; a table whose rows hold no field beside the key reads `value`, which gives
+  no value for every row, exactly as such a dictionary says.
+- Two usage kinds join `Match` and `Value`, stored as `empty` and `unlisted` in the existing `Kind` column (no
+  migration): `Empty` records a field a render read and found empty (a dictionary entry of `~`, and a cache source's
+  field too), and `Unlisted` records a key a lookup table did not list, folded without case. The impact analyzer tags
+  an `Empty` read that gains a value as `changed` from no value, and asks the ledger about keys a lookup table newly
+  lists, tagging an `Unlisted` read as `listed`. A value a type of OSDU records does not hold on a non-key field depends
+  on no row and is not recorded.
+- The builder's cache types carry a lookup table's key (`CachedTypeInfo.Key`, read from `[osdu].[CacheDefinition]`),
+  so the replace editor can show the settled match and field.
+- Found on the way: ledger reads did not retry a deadlock, which the concurrent chain suites met intermittently; every
+  ledger read now retries one, as the writes did.
+
 ## Stage 6: OSDU ids held in cached fields
 
 This is what makes OSDU's own `ExternalUnitOfMeasure` and `ExternalReferenceValueMapping` usable.

@@ -555,7 +555,7 @@ export interface DeliveryUpdateTag {
   typeName: string;
   itemId: string;
   path: string;
-  /** changed, removed or unmatched. */
+  /** changed, removed, unmatched, or listed (a lookup table now lists a key records looked up and found no row under). */
   change: string;
   oldValue: string | null;
   newValue: string | null;
@@ -585,7 +585,10 @@ export interface DeliveryCacheUse {
   typeName: string;
   itemId: string;
   path: string;
-  /** match (what it resolved by) or value (what went into the document). */
+  /**
+   * match (what it resolved by), value (what went into the document), empty (a field read that held nothing) or unlisted
+   * (a key a lookup table listed no row under).
+   */
   kind: string;
   value: string;
 }
@@ -994,11 +997,15 @@ export interface DeliveryOsduComparison {
   referencedFiles: DeliveryOsduReferencedFile[];
 }
 
-/** A type a cache holds: the name mappings read it by, its entity type, and the names its values are cached under. */
+/**
+ * A type a cache holds: the name mappings read it by, its entity type, and the names its values are cached under. A lookup
+ * table (entity type lookup--<name>) names its key too; a type of OSDU records has none.
+ */
 export interface DeliveryCachedType {
   name: string;
   entityType: string;
   fields: string[];
+  key: string | null;
 }
 
 /** A delivery flow of a repository: its OSDU connection, the mapping and parameters it renders with, and the partition whose cache it reads. */
@@ -1064,8 +1071,9 @@ export interface MappingDraftReplacement {
 export type MappingDraftOtherwiseKind = "keep" | "empty" | "text";
 
 /**
- * One modifier with its settings: split takes a separator and a part, replace its pairs and what an unlisted value becomes,
- * equals its text, date an optional format in text, and number its decimal and group separators.
+ * One modifier with its settings: split takes a separator and a part, replace its pairs (or the cached table it reads them
+ * from) and what an unlisted value becomes, equals its text, date an optional format in text, and number its decimal and
+ * group separators.
  */
 export interface MappingDraftModifier {
   kind: MappingDraftModifierKind;
@@ -1081,6 +1089,12 @@ export interface MappingDraftModifier {
   otherwiseKind?: MappingDraftOtherwiseKind | null;
   /** replace: the text an unlisted value becomes when otherwiseKind is text. */
   otherwiseText?: string | null;
+  /** replace: the cached type the table is read from (replace: cache.<table>), instead of pairs; null for pairs. */
+  table?: string | null;
+  /** replace from the cache: the field a value is matched on; null for the table's key. */
+  match?: string | null;
+  /** replace from the cache: the field that replaces a value; null for the one field a lookup table holds beside its key. */
+  field?: string | null;
 }
 
 /** An appliesWhen: the dataset column (without `dataset.`), the operator, and the text for is and isNot. */

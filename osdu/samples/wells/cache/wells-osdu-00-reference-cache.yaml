@@ -43,6 +43,9 @@ types:
   - kind: "osdu:wks:reference-data--LogCurveBusinessValue:*"
     name: LogCurveBusinessValue
     fields: [data.Code, data.Name]
+  - kind: "osdu:wks:reference-data--LogCurveFamily:*"
+    name: LogCurveFamily
+    fields: [data.Code, data.Name]
   - kind: "osdu:wks:reference-data--VerticalMeasurementType:*"
     name: VerticalMeasurementType
     fields: [data.Code, data.Name]

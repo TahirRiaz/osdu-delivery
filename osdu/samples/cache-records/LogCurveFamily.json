@@ -1,0 +1,11 @@
+{
+  "entityType": "reference-data--LogCurveFamily",
+  "items": [
+    { "id": "dev:reference-data--LogCurveFamily:MeasuredDepth", "Code": "MeasuredDepth", "Name": "Measured Depth" },
+    { "id": "dev:reference-data--LogCurveFamily:GammaRay", "Code": "GammaRay", "Name": "Gamma Ray" },
+    { "id": "dev:reference-data--LogCurveFamily:BulkDensity", "Code": "BulkDensity", "Name": "Bulk Density" },
+    { "id": "dev:reference-data--LogCurveFamily:NeutronPorosity", "Code": "NeutronPorosity", "Name": "Neutron Porosity" },
+    { "id": "dev:reference-data--LogCurveFamily:CompressionalSlowness", "Code": "CompressionalSlowness", "Name": "Compressional Slowness" },
+    { "id": "dev:reference-data--LogCurveFamily:AcousticImpedanceCompressional", "Code": "AcousticImpedanceCompressional", "Name": "EQ-Acoustic Impedance Compressional" }
+  ]
+}

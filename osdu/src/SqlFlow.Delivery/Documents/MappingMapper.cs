@@ -836,6 +836,8 @@ internal static partial class MappingMapper
     {
         object? table = null;
         var fallback = ReplaceFallback.Keep;
+        string? match = null;
+        string? field = null;
         foreach (var (key, value) in item)
         {
             switch (KeyText(key))
@@ -852,9 +854,27 @@ internal static partial class MappingMapper
                         _ => ReplaceFallback.Of(ScalarText(value)),
                     };
                     break;
+                case "match":
+                    match = ReplaceField(value, "match", where);
+                    break;
+                case "field":
+                    field = ReplaceField(value, "field", where);
+                    break;
                 case var other:
-                    throw new FlowValidationException($"{where}: replace takes 'otherwise' beside it, not '{other}'.");
+                    throw new FlowValidationException($"{where}: replace takes 'otherwise', 'match' and 'field' beside it, not '{other}'.");
             }
+        }
+
+        // A table read from the cache is named, not written: replace: cache.<Type>.
+        if (table is string named)
+        {
+            return new Modifier { Kind = ModifierKind.Replace, Table = CachedTable(named, match, field, where), Otherwise = fallback };
+        }
+
+        if (match is not null || field is not null)
+        {
+            throw new FlowValidationException(
+                $"{where}: 'match' and 'field' choose the fields of a table read from the cache (replace: cache.<Type>); a table written in the mapping matches on its keys and replaces with what each lists.");
         }
 
         if (table is not IDictionary<object, object> pairs || pairs.Count == 0)
@@ -889,6 +909,31 @@ internal static partial class MappingMapper
         }
 
         return new Modifier { Kind = ModifierKind.Replace, Replacements = replacements, Otherwise = fallback };
+    }
+
+    /// <summary>The cached table a replace names: <c>cache.&lt;Type&gt;</c>, with the fields it matches on and replaces by.</summary>
+    private static CachedReplaceTable CachedTable(string named, string? match, string? field, string where)
+    {
+        var parts = named.Trim().Split('.');
+        if (parts.Length != 2 || parts[0] != MappingSource.CachePrefix || !NamePattern().IsMatch(parts[1]))
+        {
+            throw new FlowValidationException(
+                $"{where}: replace names '{named}', and a table read from the cache is named cache.<Type>, such as replace: cache.RecallUnits; a table written here is a map, such as {Example("replace")}.");
+        }
+
+        return new CachedReplaceTable(parts[1], match, field);
+    }
+
+    /// <summary>A replace's match or field: the name of a cached field, or a path into one.</summary>
+    private static string ReplaceField(object? value, string setting, string where)
+    {
+        var text = value is null or IDictionary<object, object> or IList<object> ? null : ScalarText(value).Trim();
+        if (string.IsNullOrEmpty(text) || text.Split('.').Any(part => !FieldPattern().IsMatch(part)))
+        {
+            throw new FlowValidationException($"{where}: replace's {setting} names a field of the cached table, such as {setting}: {(setting == "match" ? "mnemonic" : "family")}.");
+        }
+
+        return text;
     }
 
     private static string Example(string modifier) => modifier switch

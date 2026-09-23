@@ -26,6 +26,9 @@ const WELLBORE = "osdu:wks:master-data--Wellbore:1.3.0";
  */
 const CACHE_SYSTEM = "osdu-cache";
 
+/** The partition the estate's flows name, as lineage keeps it: the reference they write, lower-cased as every namespace is. */
+const PARTITION = "${env:osdu_data_partition}";
+
 test.describe.serial("lineage", () => {
   test("the synced estate lists the OSDU types and cache types its flows write and read", async ({ request }) => {
     const session = await adminSession(request);
@@ -40,7 +43,9 @@ test.describe.serial("lineage", () => {
     const wellLog = named("osdu-type", WELL_LOG);
     expect(wellLog, `no ${WELL_LOG} among ${datasets.map((d) => d.name).join(", ")}`).toBeDefined();
     // Two flows deliver well logs: wells-welllog-03-header-delivery in the single form, and the welllogs interface of wells-source-03-interfaces-delivery.
-    expect([wellLog!.namespace, wellLog!.group, wellLog!.writers]).toEqual(["dev", "work-product-component", 2]);
+    // The estate names its partition as a reference, and lineage keeps a reference as its text rather than resolving it,
+    // so every flow naming the partition the same way meets on the same node.
+    expect([wellLog!.namespace, wellLog!.group, wellLog!.writers]).toEqual([PARTITION, "work-product-component", 2]);
 
     const wellbore = named("osdu-type", WELLBORE);
     expect(wellbore).toBeDefined();
@@ -51,7 +56,13 @@ test.describe.serial("lineage", () => {
 
     const units = named(CACHE_SYSTEM, "UnitOfMeasure");
     expect(units).toBeDefined();
-    expect([units!.namespace, units!.group, units!.writers]).toEqual(["dev", "cache", 1]);
+    expect([units!.namespace, units!.group, units!.writers]).toEqual([PARTITION, "cache", 1]);
+
+    // The lookup tables sit in the same partition's cache, written by the lookups flow and read by the mappings that
+    // translate through them.
+    const recallUnits = named(CACHE_SYSTEM, "RecallUnits");
+    expect([recallUnits?.namespace, recallUnits?.group, recallUnits?.writers]).toEqual([PARTITION, "cache", 1]);
+    expect(recallUnits!.readers).toBeGreaterThanOrEqual(1);
     expect(units!.readers).toBeGreaterThanOrEqual(1);
   });
 

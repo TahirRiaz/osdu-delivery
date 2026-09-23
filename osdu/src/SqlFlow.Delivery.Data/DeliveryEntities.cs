@@ -909,7 +909,10 @@ public sealed class DeliveryUpdateTag
 
     public string Path { get; set; } = string.Empty;
 
-    /// <summary>changed (the value moved), removed (the cached record is gone) or unmatched (what it matched by is gone).</summary>
+    /// <summary>
+    /// changed (the value moved, or a path that gave none gives one), removed (the cached record is gone), unmatched (what it
+    /// matched by is gone) or listed (a lookup table now lists a key records looked up and found no row under).
+    /// </summary>
     public string Change { get; set; } = "changed";
 
     public string? OldValue { get; set; }

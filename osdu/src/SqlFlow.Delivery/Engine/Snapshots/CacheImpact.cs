@@ -30,8 +30,9 @@ public sealed class CacheImpactAnalyzer
 
     /// <summary>
     /// Compares one refreshed type against the version it replaces and tags what the difference touches. A cached
-    /// value matters when a record wrote it into its document, when the cached record it used is gone, or when the
-    /// value it matched by no longer resolves; a value nothing read changes nothing.
+    /// value matters when a record wrote it into its document, when the cached record it used is gone, when the
+    /// value it matched by no longer resolves, or when a path it read and found empty now gives a value; a value
+    /// nothing read changes nothing.
     /// </summary>
     public async Task<CacheImpactResult> AnalyzeAsync(
         string scope, ReferenceType? previous, ReferenceType current, CacheChangeMode mode, string? fromVersion, string toVersion, CancellationToken ct = default)
@@ -48,20 +49,39 @@ public sealed class CacheImpactAnalyzer
         var before = previous.Items.ToDictionary(i => i.Id, i => i, StringComparer.Ordinal);
         var after = current.Items.ToDictionary(i => i.Id, i => i, StringComparer.Ordinal);
 
-        // Only the items that actually moved are worth asking the ledger about.
+        // Only the items that actually moved are worth asking the ledger about, and, for a lookup table, the keys it lists
+        // now and did not before: a record that looked one of them up found no row, and was built without it.
         var moved = before.Keys.Where(id => !after.ContainsKey(id) || Differs(previous, before[id], current, after[id])).ToList();
-        if (moved.Count == 0)
+        var listed = current.IsLookup
+            ? after.Keys.Where(id => !before.ContainsKey(id)).Select(CacheUsage.ListingKey).Distinct(StringComparer.Ordinal).ToList()
+            : [];
+        if (moved.Count == 0 && listed.Count == 0)
         {
             return new CacheImpactResult(current.Name, 0, 0, 0, 0);
         }
 
-        var holders = await _ledger.FindCacheSetsAsync(scope, current.Name, moved, ct).ConfigureAwait(false);
+        // A key a record found no row under is held folded, so it is asked for by the added keys alone, and a moved item
+        // answers only for the rows a record read.
+        var holders = new List<CacheSetUse>();
+        if (moved.Count > 0)
+        {
+            holders.AddRange((await _ledger.FindCacheSetsAsync(scope, current.Name, moved, ct).ConfigureAwait(false))
+                .Where(use => use.Kind != CacheUsageKind.Unlisted));
+        }
+
+        if (listed.Count > 0)
+        {
+            holders.AddRange((await _ledger.FindCacheSetsAsync(scope, current.Name, listed, ct).ConfigureAwait(false))
+                .Where(use => use.Kind == CacheUsageKind.Unlisted));
+        }
+
+        var changedItems = moved.Count + listed.Count;
         if (holders.Count == 0)
         {
             _logger.LogInformation(
                 "Cache of partition {Scope} type {Type}: {Moved} item(s) changed in {Version}, none of them held by a set any delivered record was built from.",
-                scope, current.Name, moved.Count, toVersion);
-            return new CacheImpactResult(current.Name, moved.Count, 0, 0, 0);
+                scope, current.Name, changedItems, toVersion);
+            return new CacheImpactResult(current.Name, changedItems, 0, 0, 0);
         }
 
         // One tag per changed value, whatever the number of sets or records behind it: an operator decides about a
@@ -92,7 +112,7 @@ public sealed class CacheImpactAnalyzer
             {
                 Scope = scope,
                 TypeName = sample.TypeName,
-                ItemId = sample.ItemId,
+                ItemId = outcome.ItemId,
                 Path = sample.Path,
                 Change = outcome.Change,
                 OldValue = OldValue(sample, change.Select(held => held.Use), previous, before),
@@ -108,44 +128,79 @@ public sealed class CacheImpactAnalyzer
         var written = await _ledger.TagUpdatesAsync(tags, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
         _logger.LogInformation(
             "Cache of partition {Scope} type {Type}: {Moved} item(s) changed in {Version}; {Tags} change(s) reach {Records} delivered record(s) ({Mode}), {Written} new tag(s).",
-            scope, current.Name, moved.Count, toVersion, tags.Count, records, mode.ToString().ToLowerInvariant(), written);
-        return new CacheImpactResult(current.Name, moved.Count, tags.Count, records, written);
+            scope, current.Name, changedItems, toVersion, tags.Count, records, mode.ToString().ToLowerInvariant(), written);
+        return new CacheImpactResult(current.Name, changedItems, tags.Count, records, written);
     }
 
-    /// <summary>What the new version does to one cached value a set holds, or null when it still reads the same.</summary>
-    private static (string Change, string? NewValue)? Describe(CacheSetUse use, ReferenceItem? item, ReferenceType current)
+    /// <summary>
+    /// What the new version does to one cached value a set holds, and the cached record the change is told of, or null when
+    /// it still reads the same.
+    /// </summary>
+    private static (string Change, string? NewValue, string ItemId)? Describe(CacheSetUse use, ReferenceItem? item, ReferenceType current)
     {
+        if (use.Kind == CacheUsageKind.Unlisted)
+        {
+            // A key no row was listed under: the table lists it now when a render would find a row for it. What that row
+            // gives, if anything, is what the record would carry; several rows answering to it would hold the record,
+            // which changes it as surely.
+            if (current.Key is null)
+            {
+                return null;
+            }
+
+            var found = current.Find(current.Key, use.ValueText);
+            if (found.Item is { } row)
+            {
+                return ("listed", current.Value(row, use.Path)?.Text, row.Id);
+            }
+
+            return found.IsCaseAmbiguous ? ("listed", null, found.CaseVariants[0].Id) : null;
+        }
+
+        if (use.Kind == CacheUsageKind.Empty)
+        {
+            // The document was built without a value here: it changes only when the path now gives one. A cached record
+            // that is gone is told by the match that found it, which every such read sits beside.
+            return item is not null && current.Value(item, use.Path) is { } given ? ("changed", given.Text, use.ItemId) : null;
+        }
+
         if (item is null)
         {
-            return ("removed", null);
+            return ("removed", null, use.ItemId);
         }
 
         var value = current.Value(item, use.Path);
         if (value is null)
         {
-            return (use.Kind == CacheUsageKind.Match ? "unmatched" : "removed", null);
+            return (use.Kind == CacheUsageKind.Match ? "unmatched" : "removed", null, use.ItemId);
         }
 
         if (use.Kind == CacheUsageKind.Match)
         {
             // A match still holds as long as the value the source resolved by is still one of this item's.
-            return value.Terms.Contains(use.ValueText, StringComparer.OrdinalIgnoreCase) ? null : ("unmatched", value.Text);
+            return value.Terms.Contains(use.ValueText, StringComparer.OrdinalIgnoreCase) ? null : ("unmatched", value.Text, use.ItemId);
         }
 
         return Hashing.ContentHash.Of(value.Text) == use.ValueHash || string.Equals(value.Text, use.ValueText, StringComparison.Ordinal)
             ? null
-            : ("changed", value.Text);
+            : ("changed", value.Text, use.ItemId);
     }
 
     /// <summary>
     /// The value a change moved away from. For a written value, what the version being replaced held, so a tag reads from
     /// its <c>FromVersion</c> to its <c>ToVersion</c> even while some of its sets were built against an older version; a
     /// path that version did not hold falls back to the value of the most recently built set. For a match, the terms the
-    /// sources resolved by that no longer resolve.
+    /// sources resolved by that no longer resolve, and for keys a table now lists, the keys as the sources looked them up.
+    /// For a path that gave no value, none.
     /// </summary>
-    private static string OldValue(CacheSetUse sample, IEnumerable<CacheSetUse> uses, ReferenceType previous, Dictionary<string, ReferenceItem> before)
+    private static string? OldValue(CacheSetUse sample, IEnumerable<CacheSetUse> uses, ReferenceType previous, Dictionary<string, ReferenceItem> before)
     {
-        if (sample.Kind == CacheUsageKind.Match)
+        if (sample.Kind == CacheUsageKind.Empty)
+        {
+            return null;
+        }
+
+        if (sample.Kind is CacheUsageKind.Match or CacheUsageKind.Unlisted)
         {
             return string.Join(", ", uses.Select(u => u.ValueText).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase));
         }

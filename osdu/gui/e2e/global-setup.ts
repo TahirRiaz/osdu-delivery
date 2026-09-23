@@ -19,7 +19,8 @@ import { E2E, databaseOf } from "../playwright.config";
  *
  * Templates are not repository content. They are catalog objects, captured from OSDU's schema service through the
  * Templates page, so the seed spec saves the bundled schemas in `osdu/samples/templates` through the API instead. Cache
- * versions are catalog objects too, so the seed spec imports the sample records as the cache's first version.
+ * versions are catalog objects too, so the seed spec imports the sample records as the cache's first version, and then
+ * refreshes the lookups cache flow, whose dictionary and ingestion table types need no OSDU, as a node would.
  *
  * Runs use the plan operation, which renders records against the templates, the cache and the ledger without touching an
  * OSDU target.
@@ -39,9 +40,10 @@ export default function globalSetup(): void {
   rmSync(repoDir, { recursive: true, force: true });
   mkdirSync(join(sourceDir, "flows"), { recursive: true });
 
-  // The mappings the flows pin and the sample files the pre flows read. The data folder is the source's drop-off point:
-  // it is what makes the chain runnable, because without it a pre flow has nothing to land.
-  for (const part of ["mappings", "data"]) {
+  // The mappings the flows pin, the dictionaries the lookups cache flow holds, and the sample files the pre flows read.
+  // The data folder is the source's drop-off point: it is what makes the chain runnable, because without it a pre flow
+  // has nothing to land.
+  for (const part of ["mappings", "dictionaries", "data"]) {
     cpSync(join(samplesDir, part), join(sourceDir, part), { recursive: true });
   }
 
@@ -68,6 +70,14 @@ export default function globalSetup(): void {
   writeFileSync(
     join(sourceDir, "cache", `${CACHE}.yaml`),
     withoutSchedule(readFileSync(join(samplesDir, "cache", `${CACHE}.yaml`), "utf8"), CACHE),
+  );
+
+  // The lookup tables the mappings translate source spellings through fill the same partition's cache from this
+  // repository's dictionaries and from the curve dictionary's ingestion table, so nothing of them reaches OSDU and the
+  // seed refreshes them for real. The table lives in the sample database, like every other ingestion table of the estate.
+  writeFileSync(
+    join(sourceDir, "cache", `${LOOKUPS}.yaml`),
+    inSampleDatabase(withoutSchedule(readFileSync(join(samplesDir, "cache", `${LOOKUPS}.yaml`), "utf8"), LOOKUPS), LOOKUPS, sampleDatabase),
   );
 
   const git = (...args: string[]) =>
@@ -109,6 +119,9 @@ export const SOURCE = "wells";
 /** The cache the source's mappings resolve against: the flow file `<SOURCE>/cache/<CACHE>.yaml`, and the folder of sample records beside it. */
 export const CACHE = "wells-osdu-00-reference-cache";
 
+/** The cache flow holding the lookup tables in the same partition's cache: `<SOURCE>/cache/<LOOKUPS>.yaml`. */
+export const LOOKUPS = "wells-lookups-00-cache";
+
 /** What globalSetup leaves behind for the specs, which run in a process of their own and so cannot be told directly. */
 export interface FixtureMeta {
   /** The fixture git repository, which the suite registers as a repo source. */
@@ -145,6 +158,8 @@ export const CHAIN = [
   "wells-trajectory-01-stations-pre",
   "wells-trajectory-02-header-ing",
   "wells-trajectory-02-stations-ing",
+  "wells-curvedictionary-01-pre",
+  "wells-curvedictionary-02-ing",
   // The same estate in the shape a source takes: two interfaces, each with a ledger of its own. It is synced and read,
   // never run, so it adds a multi-interface source to the catalog without delivering anything twice.
   "wells-source-03-interfaces-delivery",
@@ -167,6 +182,8 @@ export const LOADING_FLOWS = [
   "wells-trajectory-01-stations-pre",
   "wells-trajectory-02-header-ing",
   "wells-trajectory-02-stations-ing",
+  "wells-curvedictionary-01-pre",
+  "wells-curvedictionary-02-ing",
 ] as const;
 
 /**
@@ -200,15 +217,15 @@ const SHIPPED_DATABASE = "OsduSample";
 
 /**
  * A sample flow whose tables live in the given database rather than the shipped OsduSample: every
- * `object: OsduSample.<schema>.<table>` becomes the bracketed three-part name in that database. Any other mention of
- * OsduSample fails the setup, so a shipped document that names it somewhere new cannot leave the estate reading a
- * database the suite never loaded.
+ * `object: OsduSample.<schema>.<table>`, and every cache flow's `table: OsduSample.<schema>.<table>`, becomes the
+ * bracketed three-part name in that database. Any other mention of OsduSample fails the setup, so a shipped document that
+ * names it somewhere new cannot leave the estate reading a database the suite never loaded.
  */
 function inSampleDatabase(yaml: string, flow: string, database: string): string {
   const quoted = `[${database.replace(/]/g, "]]")}]`;
   const rewritten = yaml.replace(
-    /^([ \t]*)object:[ \t]*OsduSample\.(\w+)\.(\w+)[ \t]*$/gm,
-    (_match, indent: string, schema: string, table: string) => `${indent}object: "${quoted}.[${schema}].[${table}]"`,
+    /^([ \t]*(?:- )?)(object|table):[ \t]*OsduSample\.(\w+)\.(\w+)[ \t]*$/gm,
+    (_match, indent: string, key: string, schema: string, table: string) => `${indent}${key}: "${quoted}.[${schema}].[${table}]"`,
   );
   if (rewritten.includes(`${SHIPPED_DATABASE}.`)) {
     throw new Error(
