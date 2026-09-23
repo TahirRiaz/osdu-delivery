@@ -57,7 +57,16 @@ public static class CacheLineage
             }
         }
 
-        return new RegisteredFlowLineage { Datasets = datasets, Files = files, Warnings = warnings };
+        return new RegisteredFlowLineage { Objects = DeclaredObjects(flow), Datasets = datasets, Files = files, Warnings = warnings };
+    }
+
+    /// <summary>The ingestion tables the flow's table types read, on the connection its source declares, in declaration order.</summary>
+    public static IReadOnlyList<DeclaredDataObject> DeclaredObjects(CacheDefinition flow)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        return flow.Source.Connection is not { } connection
+            ? []
+            : flow.Types.Where(t => t.Origin == CacheOrigin.Table).Select(t => DeclaredDataObject.Reads(connection, t.Table!)).Distinct().ToList();
     }
 
     /// <summary>The dictionary's file relative to the flow's folder, as a file location is declared, or null when there is none.</summary>

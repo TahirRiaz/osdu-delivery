@@ -1,6 +1,7 @@
 using SqlFlow.Core;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Source;
 
 namespace SqlFlow.Delivery.Documents;
 
@@ -52,6 +53,25 @@ internal static class CacheMapper
                 $"{source}: source.endpoint and source.auth reach the OSDU platform, and the flow declares no type searched there; every type it declares is a lookup table. Remove them.");
         }
 
+        // The database is reached only for the table types, checked the way a delivery flow's connection is: references
+        // only, never a literal secret.
+        var tables = types.Any(t => t.Origin == CacheOrigin.Table);
+        var connection = string.IsNullOrWhiteSpace(src.Connection) ? null : src.Connection.Trim();
+        if (tables && connection is null)
+        {
+            throw new FlowValidationException($"{source}: source.connection is required: the flow declares a type read from an ingestion table.");
+        }
+
+        if (!tables && connection is not null)
+        {
+            throw new FlowValidationException($"{source}: source.connection reaches the ingestion database, and the flow declares no type read from a table there. Remove it.");
+        }
+
+        if (connection is not null)
+        {
+            IngestionConnection.CheckDeclared(connection, source);
+        }
+
         return new CacheDefinition
         {
             SourcePath = source == "<inline>" ? null : source,
@@ -62,6 +82,7 @@ internal static class CacheMapper
             Source = new CacheSource
             {
                 Endpoint = endpoint,
+                Connection = connection,
                 Auth = FlowMapper.MapAuth(src.Auth, source, "source.auth"),
                 Headers = headers,
             },
@@ -81,7 +102,7 @@ internal static class CacheMapper
         if (declared is null || declared.Count == 0)
         {
             throw new FlowValidationException(
-                $"{source}: types is required: list the types the cache holds, each an OSDU kind with the paths of a record to keep, or a dictionary.");
+                $"{source}: types is required: list the types the cache holds, each an OSDU kind with the paths of a record to keep, a dictionary, or an ingestion table.");
         }
 
         var types = new List<ReferenceTypeSpec>(declared.Count);
@@ -89,14 +110,33 @@ internal static class CacheMapper
         {
             var where = $"types[{i}]";
             var type = declared[i];
+            var origins = new[] { type.Kind, type.Dictionary, type.Table }.Count(v => !string.IsNullOrWhiteSpace(v));
+            if (origins > 1)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where} names more than one origin; a type has one: a kind searched on OSDU, a dictionary kept in the repository, or a table an ingestion flow loads.");
+            }
+
             if (!string.IsNullOrWhiteSpace(type.Dictionary))
             {
                 types.Add(Validated(DictionaryType(type, defaultMode, where, source), where, source));
                 continue;
             }
 
+            if (!string.IsNullOrWhiteSpace(type.Table))
+            {
+                types.Add(Validated(TableType(type, defaultMode, where, source), where, source));
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(type.Key))
+            {
+                throw new FlowValidationException($"{source}: {where} names a key, which only a table type takes: an OSDU record is kept under its id.");
+            }
+
             var kind = string.IsNullOrWhiteSpace(type.Kind)
-                ? throw new FlowValidationException($"{source}: {where} needs a kind (the OSDU kind whose records the type caches) or a dictionary (a lookup table kept in the repository).")
+                ? throw new FlowValidationException(
+                    $"{source}: {where} needs a kind (the OSDU kind whose records the type caches), a dictionary (a lookup table kept in the repository) or a table (an ingestion table SQLFlow's flows load).")
                 : type.Kind!.Trim();
 
             if (!OsduKind.IsValid(kind))
@@ -162,6 +202,91 @@ internal static class CacheMapper
             Dictionary = dictionary,
             OnChange = FlowMapper.ParseEnum(type.OnChange, defaultMode, $"{where}.onChange", source),
         };
+    }
+
+    /// <summary>
+    /// A type reading an ingestion table: the table, the column each row is keyed by, and the columns kept beside it, each
+    /// bare or as <c>{ column: ..., as: ... }</c>. Named after the table unless it says otherwise, and kept as a lookup table.
+    /// </summary>
+    private static ReferenceTypeSpec TableType(CachedTypeYaml type, CacheChangeMode defaultMode, string where, string source)
+    {
+        var table = type.Table!.Trim();
+        FlowMapper.CheckObject(table, $"{where}.table", source);
+        foreach (var (setting, value) in new (string, object?)[] { ("entityType", type.EntityType), ("query", type.Query) })
+        {
+            if (value is not null)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where} reads table {table}, which takes no '{setting}': it is kept as a lookup table holding every row of the table, not searched for.");
+            }
+        }
+
+        var key = string.IsNullOrWhiteSpace(type.Key)
+            ? throw new FlowValidationException($"{source}: {where}.key is required: the column of {table} each row is keyed by and a mapping finds the row by.")
+            : type.Key!;
+        FlowMapper.CheckColumn(key, $"{where}.key", source);
+        var name = string.IsNullOrWhiteSpace(type.Name) ? SourceObjectName.Parse(table).Name : type.Name!.Trim();
+        return new ReferenceTypeSpec
+        {
+            Name = name,
+            EntityType = ReferenceType.LookupEntityType(name),
+            Origin = CacheOrigin.Table,
+            Table = table,
+            Key = key,
+            Fields = MapColumns(type.Fields, $"{where}.fields", table, source),
+            OnChange = FlowMapper.ParseEnum(type.OnChange, defaultMode, $"{where}.onChange", source),
+        };
+    }
+
+    /// <summary>A table type's columns: each a column name, kept under it, or a column with the name to keep it under.</summary>
+    private static List<ReferenceFieldSpec> MapColumns(IReadOnlyList<object>? fields, string where, string table, string source)
+    {
+        if (fields is null || fields.Count == 0)
+        {
+            throw new FlowValidationException($"{source}: {where} lists no column of {table} to keep beside the key; list the columns a mapping reads.");
+        }
+
+        var mapped = new List<ReferenceFieldSpec>(fields.Count);
+        for (var i = 0; i < fields.Count; i++)
+        {
+            string? column = null;
+            string? name = null;
+            switch (fields[i])
+            {
+                case string bare:
+                    column = bare;
+                    break;
+                case IDictionary<object, object?> entry:
+                    foreach (var (settingKey, value) in entry)
+                    {
+                        switch (settingKey.ToString())
+                        {
+                            case "column":
+                                column = value?.ToString();
+                                break;
+                            case "as":
+                                name = value?.ToString();
+                                break;
+                            default:
+                                throw new FlowValidationException($"{source}: {where}[{i}] has no '{settingKey}' setting; a table column takes 'column' and 'as'.");
+                        }
+                    }
+
+                    break;
+                default:
+                    throw new FlowValidationException($"{source}: {where}[{i}] is neither a column name nor a 'column'/'as' pair.");
+            }
+
+            if (string.IsNullOrWhiteSpace(column))
+            {
+                throw new FlowValidationException($"{source}: {where}[{i}] needs a column.");
+            }
+
+            FlowMapper.CheckColumn(column, $"{where}[{i}]", source);
+            mapped.Add(new ReferenceFieldSpec(column, string.IsNullOrWhiteSpace(name) ? column : name.Trim()));
+        }
+
+        return mapped;
     }
 
     private static ReferenceTypeSpec Validated(ReferenceTypeSpec spec, string where, string source)

@@ -263,7 +263,7 @@ public sealed class LineageTests : IDisposable
         var files = report.Objects.Where(o => o.Kind == LineageNodeKind.File).Select(o => o.Name).Order(StringComparer.Ordinal).ToList();
         Assert.Equal(
             [
-                InRepo("data/curves"), InRepo("data/curves-meta"), InRepo("data/document-files"), InRepo("data/documents"),
+                InRepo("data/curve-dictionary"), InRepo("data/curves"), InRepo("data/curves-meta"), InRepo("data/document-files"), InRepo("data/documents"),
                 InRepo("data/stations"), InRepo("data/trajectory"), InRepo("data/trajectory-stations"), InRepo("data/wellbore"),
                 InRepo("data/wellbore-aliases"), InRepo("data/welllog"), InRepo("dictionaries/RecallUnits.yaml"),
                 InRepo("flows/samples/wells/out/metadata"),
@@ -274,6 +274,11 @@ public sealed class LineageTests : IDisposable
         Assert.Contains(report.Edges, e => e.Flow == "wells-lookups-00-cache" && e.Relation == LineageRelation.Reads
             && report.Objects.Any(o => o.Key == e.ObjectKey && o.Name == InRepo("dictionaries/RecallUnits.yaml")));
         Assert.Contains(report.Edges, e => e.Flow == "wells-lookups-00-cache" && e.Relation == LineageRelation.Writes && e.ObjectKey == CacheKey("RecallUnits"));
+
+        // Its table type reads the curve dictionary the estate's own flows load, so it runs after them.
+        Assert.True(WaveOf(report, "wells-curvedictionary-01-pre") < WaveOf(report, "wells-curvedictionary-02-ing"));
+        Assert.True(WaveOf(report, "wells-curvedictionary-02-ing") < WaveOf(report, "wells-lookups-00-cache"));
+        Assert.Contains(report.Edges, e => e.Flow == "wells-lookups-00-cache" && e.Relation == LineageRelation.Writes && e.ObjectKey == CacheKey("CurveClasses"));
 
         // One node per exact OSDU type written, one per pattern read, and one per cache type, each captioned by its system.
         var types = report.Objects.Where(o => o.Kind == LineageNodeKind.Dataset).ToDictionary(o => o.Key, StringComparer.Ordinal);

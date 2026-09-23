@@ -355,7 +355,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
 
         var repoId = Guid.NewGuid();
         var warnings = await SyncAsync(repoId);
-        Assert.Contains(warnings, w => w.Contains("needs a kind (the OSDU kind whose records the type caches) or a dictionary", StringComparison.Ordinal));
+        Assert.Contains(warnings, w => w.Contains("needs a kind (the OSDU kind whose records the type caches), a dictionary", StringComparison.Ordinal));
         await using var db = _catalog.CreateDbContext();
         Assert.Empty(await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ToListAsync());
     }

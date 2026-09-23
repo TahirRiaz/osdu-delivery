@@ -1,0 +1,233 @@
+using Microsoft.Data.SqlClient;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine.Snapshots;
+using SqlFlow.Delivery.Model;
+using Xunit;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>
+/// A cache flow's table type read out of a real ingestion table on SQL Server: the rows its ingestion flow has not marked
+/// deleted, each keyed by its key column and kept as the text the delivery reader gives its values, and a table the cache
+/// could not hold refused whole. Runs when <c>SQLFLOW_TEST_DB</c> points at a reachable, disposable database; every test
+/// works in a schema of its own, dropped afterwards, and keeps its cache in memory.
+/// </summary>
+public sealed class SqlServerTableCaptureTests : IAsyncLifetime, IDisposable
+{
+    private static readonly Lazy<string?> ConnectionText = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
+
+    private static readonly Lazy<bool> Reachable = new(() =>
+    {
+        if (string.IsNullOrWhiteSpace(ConnectionText.Value))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var connection = new SqlConnection(ConnectionText.Value);
+            connection.Open();
+            return true;
+        }
+        catch (SqlException)
+        {
+            return false;
+        }
+    });
+
+    private readonly string _suffix = Guid.NewGuid().ToString("N")[..8];
+    private readonly string _root = Samples.NewTempDirectory();
+    private readonly SqliteOsdu _db = new();
+
+    private string Schema => "lk_" + _suffix;
+
+    private string Variable => "SQLFLOW_LOOKUP_DB_" + _suffix;
+
+    private static string Database => new SqlConnectionStringBuilder(ConnectionText.Value!).InitialCatalog;
+
+    private string Table => $"{Database}.{Schema}.CurveDictionary";
+
+    public async Task InitializeAsync()
+    {
+        if (!Reachable.Value)
+        {
+            return;
+        }
+
+        Environment.SetEnvironmentVariable(Variable, ConnectionText.Value);
+        await ExecuteAsync($"""
+            CREATE SCHEMA [{Schema}];
+            """);
+        await ExecuteAsync($"""
+            CREATE TABLE [{Schema}].[CurveDictionary] (
+                mnemonic nvarchar(100) NULL,
+                curve_family nvarchar(200) NULL,
+                curve_version int NULL,
+                sampled datetime2 NULL,
+                DeletedDate_DW datetime2 NULL,
+                notes ntext NULL);
+            """);
+    }
+
+    public void Dispose()
+    {
+        _db.Dispose();
+        if (Directory.Exists(_root))
+        {
+            Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    public async Task DisposeAsync()
+    {
+        if (!Reachable.Value)
+        {
+            return;
+        }
+
+        await ExecuteAsync($"DROP TABLE IF EXISTS [{Schema}].[CurveDictionary]; DROP SCHEMA IF EXISTS [{Schema}];");
+        Environment.SetEnvironmentVariable(Variable, null);
+    }
+
+    private static void RequireDatabase()
+        => Skip.IfNot(
+            Reachable.Value,
+            "The SQL Server table capture tests need a reachable, disposable database. Set SQLFLOW_TEST_DB, for example through the git-ignored .sqlflow/env file.");
+
+    private static async Task ExecuteAsync(string sql)
+    {
+        await using var connection = new SqlConnection(ConnectionText.Value);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.CommandTimeout = 120;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>The cache flow reading the test's table, written beside the test's files.</summary>
+    private CacheDefinition Flow(string key = "mnemonic", string fields = "[curve_family, { column: curve_version, as: version }, sampled]")
+    {
+        var path = Path.Combine(_root, "cache", "lookups.yaml");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, $$"""
+            flowType: cache
+            name: lookups-{{_suffix}}
+            source:
+              connection: ${env:{{Variable}}}
+              headers: { data-partition-id: dev }
+            types:
+              - name: CurveClasses
+                table: {{Table}}
+                key: {{key}}
+                fields: {{fields}}
+            """);
+        return new DeliveryDocumentLoader().LoadCache(path);
+    }
+
+    private CacheRefresher Refresher()
+        => new(Samples.Engine(ledger: null, cache: _db.Caches()), Samples.Logger<CacheRefresher>());
+
+    private Task<CacheRefreshOutcome> RefreshAsync(CacheDefinition flow)
+        => Refresher().RefreshAsync(flow, new Dictionary<string, string>(), Guid.NewGuid(), "chain tests", CancellationToken.None);
+
+    [SkippableFact]
+    public async Task A_table_type_captures_every_live_row_keyed_by_its_key_with_its_values_as_the_reader_gives_them()
+    {
+        RequireDatabase();
+        await ExecuteAsync($"""
+            INSERT INTO [{Schema}].[CurveDictionary] (mnemonic, curve_family, curve_version, sampled, DeletedDate_DW) VALUES
+                (N'GR', N'Gamma Ray', 2, '2026-09-01T10:15:30', NULL),
+                (N' RHOB ', N'Bulk Density', NULL, NULL, NULL),
+                (N'fT', N'femtotesla', 1, NULL, NULL),
+                (N'ft', N'foot', 1, NULL, NULL),
+                (N'OLD', N'Retired', 1, NULL, '2026-01-01');
+            """);
+        var flow = Flow();
+
+        var plan = await Refresher().PlanAsync(flow, new Dictionary<string, string>(), CancellationToken.None);
+        var planned = Assert.Single(plan.Types);
+        Assert.Equal(4, planned.Records);
+        Assert.Equal("table", planned.Origin);
+        Assert.Equal(["mnemonic", "curve_family", "version", "sampled"], planned.Fields);
+
+        var outcome = await RefreshAsync(flow);
+        Assert.True(outcome.Written);
+        var type = Assert.Single(outcome.Types);
+        Assert.Equal("table", type.Origin);
+        Assert.Equal($"table {Table}", type.Source);
+        Assert.Equal(4, type.Items);
+
+        var cached = (await _db.Caches().LoadAsync("dev", outcome.Version))!.Type("CurveClasses")!;
+        Assert.True(cached.IsLookup);
+        Assert.Equal("mnemonic", cached.Key);
+        Assert.Equal(["GR", "RHOB", "fT", "ft"], cached.Items.Select(i => i.Id));
+
+        // A key is trimmed, and keys that differ only by case are two rows; a deleted row is left out.
+        var gr = cached.Match("mnemonic", "GR")!;
+        Assert.Equal("Gamma Ray", cached.Value(gr, "curve_family")!.Text);
+        Assert.Equal("2", cached.Value(gr, "version")!.Text);
+        Assert.Equal("2026-09-01T10:15:30Z", cached.Value(gr, "sampled")!.Text);
+        Assert.Null(cached.Value(cached.Match("mnemonic", "RHOB")!, "version"));
+        Assert.Equal("femtotesla", cached.Value(cached.Match("mnemonic", "fT")!, "curve_family")!.Text);
+        Assert.Null(cached.Match("mnemonic", "OLD"));
+        Assert.Equal($"table {Table}", (await _db.Caches().ListVersionsAsync("dev")).Single().Origin);
+
+        // The same rows again write no version; a changed row writes one.
+        Assert.False((await RefreshAsync(flow)).Written);
+        await ExecuteAsync($"UPDATE [{Schema}].[CurveDictionary] SET curve_family = N'Gamma Ray (total)' WHERE mnemonic = N'GR';");
+        var changed = await RefreshAsync(flow);
+        Assert.True(changed.Written);
+        var now = (await _db.Caches().LoadAsync("dev", changed.Version))!.Type("CurveClasses")!;
+        Assert.Equal("Gamma Ray (total)", now.Value(now.Match("mnemonic", "GR")!, "curve_family")!.Text);
+    }
+
+    [SkippableFact]
+    public async Task A_table_whose_rows_the_cache_could_not_key_captures_nothing_and_names_the_rows()
+    {
+        RequireDatabase();
+        await ExecuteAsync($"""
+            INSERT INTO [{Schema}].[CurveDictionary] (mnemonic, curve_family) VALUES
+                (N'GR', N'Gamma Ray'), (N'GR ', N'Gamma Ray again'), (NULL, N'nameless'), (N'  ', N'blank');
+            """);
+
+        var ex = await Assert.ThrowsAsync<DeliveryException>(() => RefreshAsync(Flow()));
+        Assert.Contains("has rows type CurveClasses could not be keyed by mnemonic, so nothing was captured", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("the key is empty", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("keys held by more than one row once trimmed: 'GR'", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(await _db.Caches().ListVersionsAsync("dev"));
+    }
+
+    [SkippableFact]
+    public async Task A_table_type_naming_what_the_table_does_not_hold_is_refused_with_the_tables_columns()
+    {
+        RequireDatabase();
+        var missing = await Assert.ThrowsAsync<DeliveryException>(() => RefreshAsync(Flow(fields: "[curve_family, colour]")));
+        Assert.Contains("keeps column 'colour', which table", missing.Message, StringComparison.Ordinal);
+        Assert.Contains("Columns: DeletedDate_DW, curve_family, curve_version, mnemonic, notes, sampled", missing.Message, StringComparison.Ordinal);
+
+        var key = await Assert.ThrowsAsync<DeliveryException>(() => RefreshAsync(Flow(key: "code")));
+        Assert.Contains("is keyed by column 'code', which table", key.Message, StringComparison.Ordinal);
+
+        var uncomparable = await Assert.ThrowsAsync<DeliveryException>(() => RefreshAsync(Flow(key: "notes", fields: "[curve_family]")));
+        Assert.Contains("whose type ntext cannot be compared as a key", uncomparable.Message, StringComparison.Ordinal);
+
+        await ExecuteAsync($"DROP TABLE [{Schema}].[CurveDictionary];");
+        var absent = await Assert.ThrowsAsync<DeliveryException>(() => RefreshAsync(Flow()));
+        Assert.Contains("was not found on the source database, or the identity this node connects with cannot see it", absent.Message, StringComparison.Ordinal);
+        Assert.Empty(await _db.Caches().ListVersionsAsync("dev"));
+    }
+
+    [SkippableFact]
+    public async Task A_table_over_the_limit_a_lookup_table_holds_captures_nothing()
+    {
+        RequireDatabase();
+        await ExecuteAsync($"""
+            WITH n AS (SELECT TOP ({Snapshots.LookupKeys.MaxRows + 1}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
+            INSERT INTO [{Schema}].[CurveDictionary] (mnemonic, curve_family) SELECT CONCAT(N'k', i), N'family' FROM n;
+            """);
+
+        var ex = await Assert.ThrowsAsync<DeliveryException>(() => RefreshAsync(Flow()));
+        Assert.Contains($"holds more than {Snapshots.LookupKeys.MaxRows} rows for type CurveClasses", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(await _db.Caches().ListVersionsAsync("dev"));
+    }
+}

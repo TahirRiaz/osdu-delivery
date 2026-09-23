@@ -271,6 +271,73 @@ public sealed class LookupCacheTests : IDisposable
     };
 
     [Fact]
+    public void A_cache_flow_reads_a_table_type_over_its_connection_and_refuses_what_a_delivery_flow_would()
+    {
+        var loader = new Documents.DeliveryDocumentLoader();
+        const string Tables = """
+            flowType: cache
+            name: lookups
+            source:
+              connection: ${env:OSDU_SAMPLE_DB}
+              headers: { data-partition-id: dev }
+            types:
+              - table: OsduSample.ing.CurveDictionary
+                key: mnemonic
+                fields: [curve_family, { column: curve_main_family, as: mainFamily }]
+            """;
+        var flow = loader.ParseCache(Tables, "cache/lookups.yaml");
+        Assert.Equal("${env:OSDU_SAMPLE_DB}", flow.Source.Connection);
+        Assert.Null(flow.Source.Endpoint);
+        var type = Assert.Single(flow.Types);
+        Assert.Equal("CurveDictionary", type.Name);
+        Assert.Equal(CacheOrigin.Table, type.Origin);
+        Assert.Equal("lookup--CurveDictionary", type.EntityType);
+        Assert.Equal("mnemonic", type.Key);
+        Assert.Equal(["curve_family", "mainFamily"], type.Fields.Select(f => f.Name));
+        Assert.Equal(["curve_family", "curve_main_family"], type.Fields.Select(f => f.Path));
+        Assert.Contains(flow.CredentialReferences(), r => r.Key == "source.connection");
+        var document = new Documents.CacheFlowDocument { Flow = flow };
+        Assert.False(document.RequiresRepoTree);
+        Assert.Equal("${env:OSDU_SAMPLE_DB}", document.SourceConnectionReference);
+        var read = Assert.Single(document.DeclaredObjects);
+        Assert.Equal(("OsduSample", "ing", "CurveDictionary"), (read.Database, read.Schema, read.Name));
+
+        string Refused(string yaml) => Assert.Throws<FlowValidationException>(() => loader.ParseCache(yaml, "cache/lookups.yaml")).Message;
+        Assert.Contains("source.connection is required", Refused(Tables.Replace("  connection: ${env:OSDU_SAMPLE_DB}\n", string.Empty, StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.Contains("carries a literal password", Refused(Tables.Replace("${env:OSDU_SAMPLE_DB}", "Server=db;Database=x;User Id=u;Password=secret", StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.Contains("must be a three-part name", Refused(Tables.Replace("OsduSample.ing.CurveDictionary", "ing.CurveDictionary", StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.Contains("types[0].key is required", Refused(Tables.Replace("    key: mnemonic\n", string.Empty, StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.Contains("names a column '[mnemonic]'", Refused(Tables.Replace("key: mnemonic", "key: \"[mnemonic]\"", StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.Contains("which takes no 'query'", Refused(Tables.Replace("    key: mnemonic\n", "    key: mnemonic\n    query: \"*\"\n", StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.Contains("a table column takes 'column' and 'as'", Refused(Tables.Replace("{ column: curve_main_family, as: mainFamily }", "{ path: curve_main_family }", StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.Contains("names more than one origin", Refused(Tables.Replace("  - table: OsduSample.ing.CurveDictionary\n", "  - table: OsduSample.ing.CurveDictionary\n    dictionary: RecallUnits\n", StringComparison.Ordinal)), StringComparison.Ordinal);
+
+        // A connection with no table to read, and a key on a type of OSDU records, are settings that would do nothing.
+        Assert.Contains("declares no type read from a table there", Refused("""
+            flowType: cache
+            name: units
+            source:
+              endpoint: https://osdu.example.com
+              connection: ${env:OSDU_SAMPLE_DB}
+              headers: { data-partition-id: dev }
+            types:
+              - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+                fields: [data.Code]
+            """), StringComparison.Ordinal);
+        Assert.Contains("names a key, which only a table type takes", Refused("""
+            flowType: cache
+            name: units
+            source:
+              endpoint: https://osdu.example.com
+              headers: { data-partition-id: dev }
+            types:
+              - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+                key: Code
+                fields: [data.Code]
+            """), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_lookup_table_json_carries_its_key_between_entity_type_and_items()
     {
         var json = Pairs("RecallUnits", ("M", "m")).ToJson();

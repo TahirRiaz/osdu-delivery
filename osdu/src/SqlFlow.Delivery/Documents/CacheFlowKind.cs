@@ -27,6 +27,12 @@ public sealed record CacheFlowDocument : RegisteredFlowDocument
 
     public override string? SourceReference => Flow.Source.Endpoint ?? Flow.Source.Connection;
 
+    /// <summary>The ingestion database the flow's table types are read from, or null when it declares none.</summary>
+    public override string? SourceConnectionReference => Flow.Source.Connection;
+
+    /// <summary>The ingestion tables the flow's table types read, so SQLFlow orders the ingestion flows that load them first.</summary>
+    public override IReadOnlyList<DeclaredDataObject> DeclaredObjects => CacheLineage.DeclaredObjects(Flow);
+
     public override string? TargetReference => CatalogTarget;
 
     public override IEnumerable<KeyValuePair<string, string>> CredentialReferences => Flow.CredentialReferences();

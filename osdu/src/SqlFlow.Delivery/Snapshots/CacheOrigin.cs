@@ -52,6 +52,12 @@ public static class LookupKeys
     /// <summary>The longest key a lookup row may have.</summary>
     public const int MaxLength = 256;
 
+    /// <summary>
+    /// The most rows a lookup table may hold, from a table or a dictionary: every row is loaded with the cache version a
+    /// render reads, so a table beyond this belongs in the ingestion tables a delivery joins, not in the cache.
+    /// </summary>
+    public const int MaxRows = 100_000;
+
     /// <summary>What is wrong with <paramref name="key"/> as a lookup key, or null when nothing is.</summary>
     public static string? Problem(string? key)
     {

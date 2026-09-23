@@ -959,6 +959,9 @@ internal sealed class CacheSourceYaml
 {
     public string? Endpoint { get; set; }
 
+    /// <summary>The database the flow's table types are read from, declared as a delivery flow's source.connection is.</summary>
+    public string? Connection { get; set; }
+
     public TargetAuthYaml? Auth { get; set; }
 
     public Dictionary<string, string>? Headers { get; set; }
@@ -981,6 +984,12 @@ internal sealed class CachedTypeYaml
 
     /// <summary>The dictionary document the type holds, in place of a kind: a lookup table kept in the repository.</summary>
     public string? Dictionary { get; set; }
+
+    /// <summary>The ingestion table the type reads, in place of a kind: a lookup table SQLFlow's own flows load.</summary>
+    public string? Table { get; set; }
+
+    /// <summary>For a table type: the column each row is keyed by.</summary>
+    public string? Key { get; set; }
 }
 
 internal sealed class RetrievalSourceYaml

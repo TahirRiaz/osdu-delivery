@@ -7,6 +7,8 @@
 #
 # A dictionary type holds a dictionary document from this repository's dictionaries/ folder, read at the commit the run
 # was given, so a change reaches the cache when this flow next runs: on its schedule, or run it after merging an edit.
+# A table type reads an ingestion table the estate's own flows load (here the curve dictionary, landed by
+# wells-curvedictionary-01-pre and keyed by wells-curvedictionary-02-ing), so lineage runs this flow after them.
 # Nothing here reaches the platform, so the flow needs no endpoint or credentials; the partition is still named, because
 # it says whose cache the tables belong to.
 flowType: cache
@@ -14,13 +16,20 @@ name: wells-lookups-00-cache
 batch: wells
 
 source:
+  # The ingestion database the table types are read from, resolved on the node that runs the flow.
+  connection: ${env:OSDU_SAMPLE_DB}
   headers:
     data-partition-id: ${env:OSDU_DATA_PARTITION}
 
 types:
   # Unit spellings, dictionaries/RecallUnits.yaml.
   - dictionary: RecallUnits
+  # What each curve mnemonic measures, from the curve dictionary's ingestion table.
+  - name: CurveClasses
+    table: OsduSample.ing.CurveDictionary
+    key: mnemonic
+    fields: [curve_type, curve_family, curve_main_family, unit]
 
-# Nightly, before the reference cache's own refresh and the hourly delivery runs.
+# Nightly, after the curve dictionary's own load and before the reference cache's refresh and the hourly delivery runs.
 schedule:
   cron: "30 1 * * *"

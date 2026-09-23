@@ -1,0 +1,37 @@
+# Pre-ingestion: the curve dictionary files into the pre layer.
+#
+# One row per curve mnemonic: the curve type the company catalogue files it under, the family and main family of what it
+# measures, and the unit a curve of that type carries. The file is exported from the petrophysics team's catalogue; the
+# lookups cache flow reads the keyed table the next flow loads, so a mapping can classify a curve by its mnemonic.
+name: wells-curvedictionary-01-pre
+batch: wells
+
+source:
+  type: csv
+  location: ../data/curve-dictionary
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_SAMPLE_DB}
+  schema: pre
+  table: CurveDictionary
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: mnemonic, type: varchar(100) }
+    - { name: unit, expr: "NULLIF(@ColName, '')", type: varchar(50) }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append

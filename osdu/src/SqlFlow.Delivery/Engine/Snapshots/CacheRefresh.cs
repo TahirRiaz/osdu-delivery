@@ -72,6 +72,12 @@ public sealed class CacheRefresher
             origins.Add(flow.Source.Endpoint!);
         }
 
+        foreach (var type in spec.Types.Where(t => t.Origin == CacheOrigin.Table))
+        {
+            captured.Add(await TableCapture.CaptureAsync(flow, type, _context.Secrets, _logger, ct).ConfigureAwait(false));
+            origins.Add($"table {type.Table}");
+        }
+
         foreach (var type in spec.Types.Where(t => t.Origin == CacheOrigin.Dictionary))
         {
             ct.ThrowIfCancellationRequested();
@@ -136,6 +142,14 @@ public sealed class CacheRefresher
         var current = _context.Cache is { } cache ? await cache.VersionAsync(scope, version: null, ct).ConfigureAwait(false) : null;
 
         var types = new List<CachePlanType>(spec.Types.Count);
+        foreach (var type in spec.Types.Where(t => t.Origin == CacheOrigin.Table))
+        {
+            var total = await TableCapture.CountAsync(flow, type, _context.Secrets, ct).ConfigureAwait(false);
+            _logger.LogInformation("plan {Type}: table {Table} holds {Total} row(s)", type.Name, type.Table, total);
+            types.Add(new CachePlanType(
+                type.Name, CacheOrigins.Text(type.Origin), type.Describe(), null, "*", type.Fields.Select(f => f.Name).Prepend(type.Key!).ToList(), total));
+        }
+
         foreach (var type in spec.Types.Where(t => t.Origin == CacheOrigin.Dictionary))
         {
             var loaded = LoadDictionary(flow, type);

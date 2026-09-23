@@ -1281,7 +1281,7 @@ internal static partial class FlowMapper
         CheckTokens(flow, src.Work, "source.work", source);
     }
 
-    private static void CheckObject(string declared, string key, string source)
+    internal static void CheckObject(string declared, string key, string source)
     {
         if (!SourceObjectName.TryParse(declared, out _, out var problem))
         {
@@ -1289,7 +1289,7 @@ internal static partial class FlowMapper
         }
     }
 
-    private static void CheckColumn(string column, string key, string source)
+    internal static void CheckColumn(string column, string key, string source)
     {
         if (string.IsNullOrWhiteSpace(column) || column.Length > MaxColumnLength || column.Any(char.IsControl)
             || column.Contains('[', StringComparison.Ordinal) || column.Contains(']', StringComparison.Ordinal) || column.Trim().Length != column.Length)

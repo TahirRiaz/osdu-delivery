@@ -1,0 +1,11 @@
+mnemonic,curve_type,curve_family,curve_main_family,unit
+MD,Equinor-DEPTH,Measured Depth,Depth,m
+GR,Equinor-GR,Gamma Ray,GammaRay,gAPI
+LFP_GR,Equinor-GR,Gamma Ray,GammaRay,gAPI
+RHOB,Equinor-RHOB,Bulk Density,Density,g/cm3
+LFP_RHOB,Equinor-RHOB,Bulk Density,Density,g/cm3
+NPHI,Equinor-NPHI,Neutron Porosity,Porosity,m3/m3
+LFP_NPHI,Equinor-NPHI,Neutron Porosity,Porosity,m3/m3
+DT,Equinor-DT,Compressional Slowness,Slowness,us/ft
+LFP_DT,Equinor-DT,Compressional Slowness,Slowness,us/ft
+LFP_AI,Equinor-AI,EQ-Acoustic Impedance Compressional,Geophysics,kPa.s/m

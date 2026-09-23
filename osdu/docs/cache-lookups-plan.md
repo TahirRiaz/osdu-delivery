@@ -309,11 +309,12 @@ is (`IngestionConnection.CheckDeclared`).
 - Opens with `IngestionConnection.OpenAsync` (95-134) and the run's secret resolver.
 - Checks the table and every column against `sys.columns` (`IngestionSql.Columns`), and refuses a key column of a type
   that cannot be compared, with the same messages as the delivery reader.
-- Selects the key and the fields only, under snapshot isolation, and leaves out rows whose `DeletedDate_DW` is set when
-  the table has that column.
-- Values go through `SourceValues.Normalize`, the delivery reader's own rules; a null is an absent field.
-- A null, empty, duplicate or over-long key refuses the capture, naming the keys; so does a table over the row limit,
-  naming its count. Nothing is written.
+- Selects the key and the fields only, in one statement (so no snapshot isolation is needed on the database), and
+  leaves out rows whose `DeletedDate_DW` is set when the table has that column.
+- Values go through `SourceValues.Normalize` and `SourceRow.Stringify`, the delivery reader's own rules, and are kept as
+  that text, like a dictionary's; a null is an absent field.
+- A key is trimmed. A null, empty or over-long key, or one two rows hold once trimmed, refuses the capture, naming the
+  rows; so does a table over the row limit. Nothing is written.
 
 **Changes.**
 

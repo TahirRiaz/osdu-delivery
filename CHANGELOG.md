@@ -13,6 +13,16 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A cache flow reads lookup tables out of ingestion tables.** A type with `table:` (a three-part name), `key:` (the
+  column rows are keyed by) and `fields:` (columns, bare or `{ column, as }`) is read over the flow's
+  `source.connection`, declared and checked as a delivery flow's is, so the same estate that loads a table through its
+  pre-ingestion and ingestion flows can classify records by it. A refresh reads every row the ingestion flow has not
+  marked deleted in one statement, keeps each value as the text the delivery reader gives it, trims keys, and refuses
+  the capture, naming the rows, when a key is empty, over 256 characters or held by two rows, or when the table holds
+  more than 100,000 rows. A plan counts the rows. Lineage orders the cache flow after the ingestion flow that loads its
+  table. The sample estate lands a curve dictionary (`data/curve-dictionary`, `wells-curvedictionary-01-pre`,
+  `wells-curvedictionary-02-ing`) and holds it as `CurveClasses` in `wells-lookups-00-cache`
+  ([osdu/docs/documents.md](osdu/docs/documents.md#cache-flow)).
 - **Dictionary documents: lookup tables kept in the repository and held in the partition cache.** A dictionary
   (`documentType: dictionary`, one table per file, `dictionaries/<name>.yaml`) is a dictionary of pairs, or gives each
   key the named values its `fields` list; every key and value is text exactly as written, and `~` is no value. A cache
