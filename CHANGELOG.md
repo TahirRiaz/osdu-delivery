@@ -350,6 +350,10 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **A ledger read the database chose as a deadlock victim is read again.** Without snapshot isolation a read holds
+  shared locks while it runs, so a claim or a lease recovery on one node could fail with a deadlock against another
+  node's claim. Every ledger read now retries a deadlock a few times with a growing, jittered pause, as its writes
+  already did; the two concurrent chain suites that met it intermittently pass run after run.
 - **The mapping document kind is registered where the loader, the CLI and the proposal preflight look for it.** The
   delivery kind owns the mapping documents, but was registered only as a flow kind, so in a composed host a proposed
   mapping met "unknown documentType 'mapping'". It is now registered as the companion document kind as well, beside the

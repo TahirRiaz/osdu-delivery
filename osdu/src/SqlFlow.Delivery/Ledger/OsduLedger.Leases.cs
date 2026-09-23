@@ -777,13 +777,33 @@ public sealed partial class OsduLedger
     /// needs a record and its lease together asks for both in one statement (<see cref="ReadLeasedAsync"/>), so nothing
     /// here depends on the database allowing snapshot isolation.
     /// </summary>
+    /// <remarks>
+    /// Without snapshot isolation a read holds shared locks while its statement runs, so a writer taking the same rows in
+    /// another order (a claim or a recovery on another node) can make it the victim of a deadlock. A read changes nothing,
+    /// so it is read again, as a write the database rolled back is written again (<see cref="SqlServerLedgerBulk.IsContention"/>).
+    /// </remarks>
     private async Task<T> ReadAsync<T>(Func<OsduDbContext, Task<T>> read, CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        await using var db = Open();
-        db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
-        return await read(db).ConfigureAwait(false);
+        for (var attempt = 1; ; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                await using var db = Open();
+                db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
+                return await read(db).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (attempt < ReadDeadlockAttempts && SqlServerLedgerBulk.IsDeadlock(ex))
+            {
+                // Waiting a moment, longer each time and never the same for two readers, keeps the read from meeting the
+                // same writer the same way again.
+                await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(10, 50) * attempt), ct).ConfigureAwait(false);
+            }
+        }
     }
+
+    /// <summary>How many times a read the database chose as a deadlock victim is made before the deadlock is reported.</summary>
+    private const int ReadDeadlockAttempts = 5;
 
     private static string NewToken(string owner)
     {
