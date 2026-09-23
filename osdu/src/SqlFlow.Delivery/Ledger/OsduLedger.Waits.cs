@@ -336,8 +336,8 @@ public sealed partial class OsduLedger
     }
 
     /// <summary>
-    /// Runs <paramref name="decide"/> in a transaction holding the lock every decision to wait is taken under, so no two
-    /// run at once: on SQL Server an application lock, elsewhere the database's own single writer.
+    /// Runs <paramref name="decide"/> in a transaction holding the lock every decision to wait is taken under, an
+    /// application lock, so no two run at once.
     /// </summary>
     private static async Task<T> InWaitLockAsync<T>(OsduDbContext db, Func<Task<T>> decide, CancellationToken ct)
     {
@@ -345,11 +345,7 @@ public sealed partial class OsduLedger
         return await strategy.ExecuteAsync(async () =>
         {
             await using var tx = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
-            if (SqlServerLedgerBulk.Applies(db))
-            {
-                await SqlServerLedgerBulk.TakeWaitLockAsync(db, WaitLockResource, WaitLockTimeoutMs, ct).ConfigureAwait(false);
-            }
-
+            await SqlServerLedgerBulk.TakeWaitLockAsync(db, WaitLockResource, WaitLockTimeoutMs, ct).ConfigureAwait(false);
             var result = await decide().ConfigureAwait(false);
             await tx.CommitAsync(ct).ConfigureAwait(false);
             return result;
@@ -368,39 +364,10 @@ public sealed partial class OsduLedger
             return marked;
         }
 
-        if (SqlServerLedgerBulk.Applies(db))
+        foreach (var slice in decisions.Chunk(WriteSlice))
         {
-            foreach (var slice in decisions.Chunk(WriteSlice))
-            {
-                marked.UnionWith(await SqlServerLedgerBulk.MarkWaitingAsync(
-                    db, flowId, slice.Select(d => (d.DeliveryKey, d.DocumentRef, d.WaitingFor, d.Reason)).ToList(), nowUtc, ct).ConfigureAwait(false));
-            }
-
-            return marked;
-        }
-
-        var pending = StatusText.Of(RecordStatus.Pending);
-        var waiting = StatusText.Of(RecordStatus.Waiting);
-        foreach (var decision in decisions)
-        {
-            var key = decision.DeliveryKey;
-            var reference = decision.DocumentRef;
-            var waitingFor = decision.WaitingFor;
-            var reason = decision.Reason;
-            var written = await db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && r.DeliveryKey == key && r.Status == pending && r.LeaseOwner == null && r.PendingDocumentRef == reference)
-                .ExecuteUpdateAsync(
-                    s => s
-                        .SetProperty(r => r.Status, waiting)
-                        .SetProperty(r => r.WaitingFor, waitingFor)
-                        .SetProperty(r => r.LastError, reason)
-                        .SetProperty(r => r.UpdatedUtc, nowUtc),
-                    ct)
-                .ConfigureAwait(false);
-            if (written > 0)
-            {
-                marked.Add(key);
-            }
+            marked.UnionWith(await SqlServerLedgerBulk.MarkWaitingAsync(
+                db, flowId, slice.Select(d => (d.DeliveryKey, d.DocumentRef, d.WaitingFor, d.Reason)).ToList(), nowUtc, ct).ConfigureAwait(false));
         }
 
         return marked;
@@ -449,70 +416,22 @@ public sealed partial class OsduLedger
     private async Task<IReadOnlyList<Guid>> ReleaseResolvedAsync(Guid flowId, IReadOnlyList<Guid>? keys, DateTime nowUtc, CancellationToken ct)
     {
         await using var db = Open();
-        if (SqlServerLedgerBulk.Applies(db))
+        var released = new List<Guid>();
+        IEnumerable<IReadOnlyList<Guid>?> slices = keys is null ? [null] : keys.Distinct().Chunk(WriteSlice).Select(c => (IReadOnlyList<Guid>?)c).ToList();
+        foreach (var slice in slices)
         {
-            var released = new List<Guid>();
-            IEnumerable<IReadOnlyList<Guid>?> slices = keys is null ? [null] : keys.Distinct().Chunk(WriteSlice).Select(c => (IReadOnlyList<Guid>?)c).ToList();
-            foreach (var slice in slices)
+            while (true)
             {
-                while (true)
+                var written = await RetryDeadlockAsync(
+                    () => SqlServerLedgerBulk.ReleaseResolvedWaitsAsync(db, flowId, slice, WriteSlice, nowUtc, ct), ct).ConfigureAwait(false);
+                released.AddRange(written);
+                if (written.Count < WriteSlice)
                 {
-                    var written = await RetryDeadlockAsync(
-                        () => SqlServerLedgerBulk.ReleaseResolvedWaitsAsync(db, flowId, slice, WriteSlice, nowUtc, ct), ct).ConfigureAwait(false);
-                    released.AddRange(written);
-                    if (written.Count < WriteSlice)
-                    {
-                        break;
-                    }
+                    break;
                 }
             }
-
-            return released;
         }
 
-        var waiting = StatusText.Of(RecordStatus.Waiting);
-        var pending = StatusText.Of(RecordStatus.Pending);
-        var query = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId && r.Status == waiting);
-        if (keys is not null)
-        {
-            var wanted = keys.ToList();
-            query = query.Where(r => wanted.Contains(r.DeliveryKey));
-        }
-
-        var rows = await query.Select(r => new { r.DeliveryKey, r.WaitingFor }).ToListAsync(ct).ConfigureAwait(false);
-        var holders = await HoldersAsync(db, rows.Select(r => r.WaitingFor).OfType<string>().Distinct(StringComparer.Ordinal).ToList(), ct).ConfigureAwait(false);
-        var deleted = StatusText.Of(RecordStatus.Deleted);
-        var result = new List<Guid>();
-        foreach (var row in rows)
-        {
-            var over = row.WaitingFor is null
-                || !holders.TryGetValue(row.WaitingFor, out var list)
-                || list.Any(h => h.Landed)
-                || list.All(h => h.Status == deleted || (h.FlowId == flowId && h.DeliveryKey == row.DeliveryKey));
-            if (!over)
-            {
-                continue;
-            }
-
-            var key = row.DeliveryKey;
-            var waitingFor = row.WaitingFor;
-            var written = await db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && r.DeliveryKey == key && r.Status == waiting && r.WaitingFor == waitingFor)
-                .ExecuteUpdateAsync(
-                    s => s
-                        .SetProperty(r => r.Status, pending)
-                        .SetProperty(r => r.WaitingFor, (string?)null)
-                        .SetProperty(r => r.NextAttemptUtc, (DateTime?)null)
-                        .SetProperty(r => r.LastError, (string?)null)
-                        .SetProperty(r => r.UpdatedUtc, nowUtc),
-                    ct)
-                .ConfigureAwait(false);
-            if (written > 0)
-            {
-                result.Add(key);
-            }
-        }
-
-        return result;
+        return released;
     }
 }

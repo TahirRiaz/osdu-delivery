@@ -222,10 +222,8 @@ public static class CacheVersions
             .Where(x => x.Before.ItemId != x.After.ItemId);
 
         // SQL Server's default collation folds case, which would hide a corrected "Metre" to "metre"; the binary collation
-        // the model keys OSDU ids with compares the text exactly. SQLite compares ordinally already.
-        var changed = db.Database.IsSqlServer()
-            ? joined.Where(x => EF.Functions.Collate(x.Before.FieldsJson, DeliveryModel.OsduIdCollation) != EF.Functions.Collate(x.After.FieldsJson, DeliveryModel.OsduIdCollation))
-            : joined.Where(x => x.Before.FieldsJson != x.After.FieldsJson);
+        // the model keys OSDU ids with compares the text exactly.
+        var changed = joined.Where(x => EF.Functions.Collate(x.Before.FieldsJson, DeliveryModel.OsduIdCollation) != EF.Functions.Collate(x.After.FieldsJson, DeliveryModel.OsduIdCollation));
 
         if (!string.IsNullOrWhiteSpace(query.Search))
         {

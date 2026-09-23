@@ -31,6 +31,17 @@ public sealed class SqlServerLedgerMigrationTests
 
     private static readonly Guid Wellbores = FlowId.Of("wells-wellbore-03-header-delivery");
 
+    /// <summary>
+    /// The model the code builds is exactly the one the last migration leaves, so no change to it reaches a deployment
+    /// without the migration that makes it. Comparing the model with the migrations' snapshot needs no connection.
+    /// </summary>
+    [Fact]
+    public void The_model_is_the_one_the_last_migration_leaves()
+    {
+        using var db = new OsduDbContext(OsduDbContext.SqlServerOptions(OsduTestServer.LocalDefault));
+        Assert.False(db.Database.HasPendingModelChanges(), "The module's model differs from its last migration's snapshot: add the migration that makes the change.");
+    }
+
     [Fact]
     public async Task An_existing_ledger_is_keyed_per_flow_with_every_attempt_claim_and_cursor_placed()
     {

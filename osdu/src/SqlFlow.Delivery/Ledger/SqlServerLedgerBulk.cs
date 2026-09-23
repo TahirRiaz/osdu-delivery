@@ -9,10 +9,10 @@ using SqlFlow.Delivery.Identity;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// The writes that carry the volume of a submission, as bulk copies and set-based statements when the module database is
-/// SQL Server (design.md section 16.2): staging the pending records, appending what workers learn under their leases
-/// (attempts and record events), and applying those events to the records. Every other provider takes the entity path in
-/// <see cref="OsduLedger"/>, which is the same write row by row. A record is its flow and its delivery key together, and
+/// The writes that carry the volume of a submission, as bulk copies and set-based statements on the module's SQL Server
+/// database (design.md section 16.2): staging the pending records, appending what workers learn under their leases
+/// (attempts and record events), and applying those events to the records. SQL Server is the only provider the module
+/// runs on, so these are the ledger's only write path for them. A record is its flow and its delivery key together, and
 /// every statement that writes one matches on both.
 /// <para>Many nodes write these tables at once, so no write takes a lock on a range of keys, and no statement touches more
 /// rows than the caller's slice: SQL Server turns the row locks of a statement that takes 5,000 of them on one index into a
@@ -23,8 +23,6 @@ namespace SqlFlow.Delivery.Ledger;
 /// </summary>
 internal static class SqlServerLedgerBulk
 {
-    public const string ProviderName = "Microsoft.EntityFrameworkCore.SqlServer";
-
     private const int BulkBatchSize = 5000;
 
     private const int BulkTimeoutSeconds = 600;
@@ -40,8 +38,6 @@ internal static class SqlServerLedgerBulk
 
     /// <summary>How many times one slice of staging is tried when a concurrent writer got there first.</summary>
     private const int ContentionAttempts = 5;
-
-    public static bool Applies(OsduDbContext db) => string.Equals(db.Database.ProviderName, ProviderName, StringComparison.Ordinal);
 
     // The batch is copied once, sorted by key and numbered into slices, so each slice is one contiguous key range and a
     // statement reads its slice by the stage's clustered key. Existing marks the records the slice found, and locked.
@@ -221,7 +217,7 @@ internal static class SqlServerLedgerBulk
         DROP TABLE #Landed;
         """;
 
-    // The same write as OsduLedger.ApplyCompletion. A record now carrying other pending work than the try claimed
+    // How a try's completion settles its record. A record now carrying other pending work than the try claimed
     // (newer work queued behind it) promotes what the try delivered from the claim and goes back to pending, keeping
     // the newer work and its step progress; any other record settles as the completion says, promoting its own
     // pending columns. A promotion carries the origin of the version it delivered: the claim's when superseded, the

@@ -273,6 +273,11 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The ledger has one write path.** Staging pending records, appending and applying a lease's events, and marking
+  and releasing waits each had an entity path beside the set-based SQL Server statements, for a provider no deployment
+  runs on; the entity paths are gone, and so are the model built per provider (the binary collation on OSDU ids always
+  applies) and the provider switch in comparing cache versions. The model on SQL Server is unchanged, so there is no
+  migration, and a new test fails whenever the model and its last migration differ.
 - **The module's suites run on SQL Server, the only provider the module supports.** The ledger, store and engine suites
   ran on an in-memory SQLite copy of the module's database, which proved nothing about the provider production runs
   on. Every suite now runs on SQL Server: each test takes a database of its own from a pool beside the test database

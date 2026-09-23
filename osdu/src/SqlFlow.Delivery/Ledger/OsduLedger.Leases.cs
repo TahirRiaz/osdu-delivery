@@ -315,16 +315,9 @@ public sealed partial class OsduLedger
             .ToList();
         var attempts = append.Completions.Select(c => ToEntity(flowId, c.Attempt)).ToList();
         await using var db = Open();
-        if (SqlServerLedgerBulk.Applies(db))
-        {
-            // A deadlock rolls the whole append back, attempts included, and the append is written again.
-            await RetryDeadlockAsync(() => SqlServerLedgerBulk.AppendAsync(db, attempts, events, ct), ct).ConfigureAwait(false);
-            return;
-        }
 
-        db.DeliveryAttempts.AddRange(attempts);
-        db.DeliveryRecordEvents.AddRange(events);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        // A deadlock rolls the whole append back, attempts included, and the append is written again.
+        await RetryDeadlockAsync(() => SqlServerLedgerBulk.AppendAsync(db, attempts, events, ct), ct).ConfigureAwait(false);
     }
 
     public async Task<LeaseApplied> CheckpointLeaseAsync(string token, DateTime nowUtc, CancellationToken ct = default)
@@ -560,9 +553,7 @@ public sealed partial class OsduLedger
             (int Records, int Applied, IReadOnlyList<string> Landed) slice;
             await using (var db = Open())
             {
-                slice = SqlServerLedgerBulk.Applies(db)
-                    ? await RetryDeadlockAsync(() => SqlServerLedgerBulk.ApplyEventsAsync(db, token, WriteSlice, nowUtc, ct), ct).ConfigureAwait(false)
-                    : await ApplyEventsInModelAsync(db, token, WriteSlice, nowUtc, ct).ConfigureAwait(false);
+                slice = await RetryDeadlockAsync(() => SqlServerLedgerBulk.ApplyEventsAsync(db, token, WriteSlice, nowUtc, ct), ct).ConfigureAwait(false);
             }
 
             // After the commit, never inside it: a claim deciding to wait for one of these records meanwhile either saw it
@@ -575,174 +566,6 @@ public sealed partial class OsduLedger
             }
         }
     }
-
-    /// <summary>
-    /// The entity path of <see cref="SqlServerLedgerBulk.ApplyEventsAsync"/>, for the providers without it: the same write,
-    /// record by record, with the events deleted in the same save.
-    /// </summary>
-    private static async Task<(int Records, int Applied, IReadOnlyList<string> Landed)> ApplyEventsInModelAsync(OsduDbContext db, string token, int slice, DateTime nowUtc, CancellationToken ct)
-    {
-        var keys = await db.DeliveryRecordEvents
-            .Where(e => e.LeaseToken == token)
-            .Select(e => new { e.FlowId, e.DeliveryKey })
-            .Distinct()
-            .Take(slice)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-        if (keys.Count == 0)
-        {
-            return (0, 0, []);
-        }
-
-        var flowIds = keys.Select(k => k.FlowId).Distinct().ToList();
-        var deliveryKeys = keys.Select(k => k.DeliveryKey).Distinct().ToList();
-        var wanted = keys.Select(k => (k.FlowId, k.DeliveryKey)).ToHashSet();
-        var events = (await db.DeliveryRecordEvents
-                .Where(e => e.LeaseToken == token && deliveryKeys.Contains(e.DeliveryKey))
-                .ToListAsync(ct)
-                .ConfigureAwait(false))
-            .Where(e => wanted.Contains((e.FlowId, e.DeliveryKey)))
-            .ToList();
-        var records = (await db.DeliveryRecords
-                .Where(r => flowIds.Contains(r.FlowId) && deliveryKeys.Contains(r.DeliveryKey))
-                .ToListAsync(ct)
-                .ConfigureAwait(false))
-            .ToDictionary(r => (r.FlowId, r.DeliveryKey));
-        var applied = 0;
-        var landed = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var recordEvents in events.GroupBy(e => (e.FlowId, e.DeliveryKey)))
-        {
-            var latest = recordEvents.MaxBy(e => e.EventId)!;
-            // A record another lease holds now is that lease's to settle; its own completion will.
-            if (!records.TryGetValue(recordEvents.Key, out var record) || (record.LeaseOwner is not null && record.LeaseOwner != token))
-            {
-                continue;
-            }
-
-            if (latest.Kind == CompletionEvent)
-            {
-                ApplyCompletion(record, latest, nowUtc);
-                applied++;
-                if (latest.Promote && record.TargetId is { } landedId)
-                {
-                    landed.Add(landedId);
-                }
-            }
-            else if (HoldsClaimedWork(record, latest))
-            {
-                record.PendingStepJson = latest.StepJson;
-            }
-        }
-
-        db.DeliveryRecordEvents.RemoveRange(events);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return (keys.Count, applied, landed.ToList());
-    }
-
-    /// <summary>Settles a record as a try's completion says (the same write as the SQL Server path's set-based update).</summary>
-    private static void ApplyCompletion(DeliveryRecord entity, DeliveryRecordEvent completion, DateTime now)
-    {
-        entity.LeaseOwner = null;
-        entity.UpdatedUtc = now;
-
-        // What the try did to the target is true whatever happened to the queue in the meantime.
-        entity.TargetId = completion.TargetId ?? entity.TargetId;
-        entity.TargetVersion = completion.TargetVersion ?? entity.TargetVersion;
-        entity.TargetStateJson = completion.TargetStateJson ?? entity.TargetStateJson;
-        var status = completion.Status ?? throw new DeliveryException($"The completion event {completion.EventId} of record {completion.DeliveryKey} names no status.");
-
-        if (completion.ClaimDocumentRef is not null && !HoldsClaimedWork(entity, completion) && entity.PendingDocumentRef is not null)
-        {
-            // Newer work was queued while this try was in flight. What the try delivered is now what OSDU holds, and the
-            // newer work stays pending with its own step progress and a fresh retry budget: the next pass sends it, after
-            // the final hash check against what just landed.
-            if (completion.Promote)
-            {
-                entity.RenderContext = completion.ClaimRenderContext ?? entity.RenderContext;
-                entity.SourceFingerprint = completion.ClaimSourceFingerprint ?? entity.SourceFingerprint;
-                entity.SourceModifiedUtc = completion.ClaimSourceModifiedUtc ?? entity.SourceModifiedUtc;
-                if (completion.ClaimSourceUpdatedUtc is not null || completion.ClaimSourceFileName is not null)
-                {
-                    entity.SourceFileName = completion.ClaimSourceFileName;
-                    entity.SourceRowNumber = completion.ClaimSourceRowNumber;
-                    entity.SourceUpdatedUtc = completion.ClaimSourceUpdatedUtc;
-                }
-
-                if (completion.ClaimMetadata)
-                {
-                    entity.MetadataHash = completion.ClaimMetadataHash;
-                }
-
-                if (completion.ClaimPayload)
-                {
-                    entity.PayloadHash = completion.ClaimPayloadHash;
-                    entity.PayloadModifiedUtc = completion.ClaimPayloadModifiedUtc ?? entity.PayloadModifiedUtc;
-                }
-
-                if (!completion.NothingSent)
-                {
-                    entity.LastDeliveredUtc = completion.AtUtc;
-                    entity.LastVerifiedUtc = null;
-                    entity.LastVerifyOutcome = null;
-                }
-            }
-
-            entity.Status = StatusText.Of(RecordStatus.Pending);
-            entity.Blocked = false;
-            entity.NextAttemptUtc = null;
-            entity.LastError = null;
-            entity.AttemptCount = 0;
-            return;
-        }
-
-        entity.Status = status;
-        entity.Blocked = status == StatusText.Of(RecordStatus.Held) || status == StatusText.Of(RecordStatus.Failed);
-        entity.NextAttemptUtc = completion.NextAttemptUtc;
-        entity.LastError = completion.Error;
-        entity.PendingStepJson = completion.PendingStepJson;
-        if (completion.Promote)
-        {
-            entity.RenderContext = entity.PendingRenderContext ?? entity.RenderContext;
-            entity.SourceFingerprint = entity.PendingSourceFingerprint ?? entity.SourceFingerprint;
-            entity.SourceModifiedUtc = entity.PendingSourceModifiedUtc ?? entity.SourceModifiedUtc;
-            if (entity.PendingSourceUpdatedUtc is not null || entity.PendingSourceFileName is not null)
-            {
-                entity.SourceFileName = entity.PendingSourceFileName;
-                entity.SourceRowNumber = entity.PendingSourceRowNumber;
-                entity.SourceUpdatedUtc = entity.PendingSourceUpdatedUtc;
-            }
-
-            if (entity.PendingMetadata)
-            {
-                entity.MetadataHash = entity.PendingMetadataHash;
-            }
-
-            if (entity.PendingPayload)
-            {
-                entity.PayloadHash = entity.PendingPayloadHash;
-                entity.PayloadModifiedUtc = entity.PendingPayloadModifiedUtc ?? entity.PayloadModifiedUtc;
-            }
-
-            if (!completion.NothingSent)
-            {
-                entity.LastDeliveredUtc = completion.AtUtc;
-                entity.LastVerifiedUtc = null;
-                entity.LastVerifyOutcome = null;
-            }
-
-            entity.PendingDocumentRef = null;
-            entity.WorkBatch = null;
-            entity.PendingMetadata = false;
-            entity.PendingPayload = false;
-            entity.PendingPayloadLocation = null;
-            entity.PendingReferences = null;
-            entity.AttemptCount = 0;
-        }
-    }
-
-    /// <summary>Whether the record still holds the pending work an event's try was claimed with.</summary>
-    private static bool HoldsClaimedWork(DeliveryRecord entity, DeliveryRecordEvent evt)
-        => string.Equals(entity.PendingDocumentRef, evt.ClaimDocumentRef, StringComparison.Ordinal) && entity.LastSubmissionId == evt.ClaimSubmissionId;
 
     /// <summary>The records a lease holds, with its expiry.</summary>
     private async Task<IReadOnlyList<RecordState>> LeasedAsync(LeaseState lease, CancellationToken ct)

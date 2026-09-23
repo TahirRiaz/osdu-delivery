@@ -12,11 +12,11 @@ namespace SqlFlow.Delivery.Ledger;
 /// (design.md section 16.2): the worker takes a work batch, or a group of records due for a retry, under a new token in
 /// one compare-and-swap, the records it holds carry the token, and a crashed worker's lease simply runs out and is
 /// recovered by the next claim of its flow. While it delivers, a worker renews its one row and appends what it learns;
-/// the lease applies that to the records a slice at a time. Reads run under snapshot isolation on SQL Server, so they
-/// never wait for a writer. Every query the GUI issues is index-backed (see <see cref="DeliveryModel"/>). Each operation
-/// opens its own context from the factory, so the ledger is safe to share across the worker's bounded concurrency. The
-/// volume writes (staging pending records, appending and applying a lease's events) go through a bulk copy and
-/// set-based statements on SQL Server (<see cref="SqlServerLedgerBulk"/>) and through the entity path everywhere else.
+/// the lease applies that to the records a slice at a time. Reads run under snapshot isolation, so they never wait for
+/// a writer. Every query the GUI issues is index-backed (see <see cref="DeliveryModel"/>). Each operation opens its own
+/// context from the factory, so the ledger is safe to share across the worker's bounded concurrency. The ledger runs on
+/// SQL Server alone, and the volume writes (staging pending records, appending and applying a lease's events) go through
+/// a bulk copy and set-based statements (<see cref="SqlServerLedgerBulk"/>).
 /// </summary>
 public sealed partial class OsduLedger : ILedger
 {
@@ -206,112 +206,9 @@ public sealed partial class OsduLedger : ILedger
 
         var now = Now;
         await using var db = Open();
-        if (SqlServerLedgerBulk.Applies(db))
-        {
-            var bulk = await SqlServerLedgerBulk.UpsertPendingAsync(db, flowId, records, WriteSlice, now, ct).ConfigureAwait(false);
-            await WriteIdentitiesAsync(db, flowId, Staged(records, bulk), ct).ConfigureAwait(false);
-            return bulk;
-        }
-
-        var delivering = StatusText.Of(RecordStatus.Delivering);
-        var staged = 0;
-        var refused = new List<DeliveryKey>();
-        var conflicts = new List<TargetIdConflict>();
-        foreach (var chunk in records.Chunk(ChunkSize))
-        {
-            var keys = chunk.Select(r => r.DeliveryKey.Value).ToArray();
-            var existing = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
-            var claims = await ClaimsOfOtherFlowsAsync(
-                db, flowId, chunk.Select(r => existing.GetValueOrDefault(r.DeliveryKey.Value)?.TargetId ?? r.TargetId), ct).ConfigureAwait(false);
-            var tokens = existing.Values.Where(r => r.Status == delivering).Select(r => r.LeaseOwner).OfType<string>().Distinct(StringComparer.Ordinal).ToList();
-            var live = (await db.DeliveryLeases.Where(l => tokens.Contains(l.Token) && l.ExpiresUtc > now).Select(l => l.Token).ToListAsync(ct).ConfigureAwait(false))
-                .ToHashSet(StringComparer.Ordinal);
-            foreach (var record in chunk)
-            {
-                var inFlight = false;
-                existing.TryGetValue(record.DeliveryKey.Value, out var entity);
-                if (entity is not null && HoldsNewerThan(entity, record))
-                {
-                    refused.Add(record.DeliveryKey);
-                    continue;
-                }
-
-                // The id the record is delivered to: the one it already carries, or the one this work was rendered with.
-                var targetId = entity?.TargetId ?? record.TargetId;
-                if (targetId is not null && claims.TryGetValue(targetId, out var owner))
-                {
-                    conflicts.Add(new TargetIdConflict(record.DeliveryKey, targetId, owner.FlowId, owner.FlowName));
-                    continue;
-                }
-
-                if (entity is null)
-                {
-                    entity = new DeliveryRecord
-                    {
-                        DeliveryKey = record.DeliveryKey.Value,
-                        FlowId = flowId,
-                        SourceKey = record.SourceKey,
-                        MappingName = record.MappingName,
-                        CreatedUtc = now,
-                    };
-                    db.DeliveryRecords.Add(entity);
-                    existing[entity.DeliveryKey] = entity;
-                }
-                else
-                {
-                    inFlight = entity.Status == delivering && entity.LeaseOwner is { } token && live.Contains(token);
-                }
-
-                // Current-state columns (what OSDU holds) are preserved; only the pending work is (re)written. A record
-                // another worker is delivering right now keeps its status, lease and retry count: the new work queues
-                // behind the delivery, whose completion leaves it pending for the next pass.
-                entity.SourceKey = Truncate(record.SourceKey, 400)!;
-                entity.Label = Truncate(record.Label, 400);
-                entity.MappingName = record.MappingName;
-                entity.TargetId ??= record.TargetId;
-                // Queueing a document is what claims the id for the flow; the claim stays with the record from then on.
-                entity.ClaimedTargetId ??= entity.TargetId;
-                entity.LastSubmissionId = record.LastSubmissionId;
-                entity.NextAttemptUtc = null;
-                if (!inFlight)
-                {
-                    entity.Status = StatusText.Of(RecordStatus.Pending);
-                    entity.AttemptCount = 0;
-                    entity.LastError = null;
-                    entity.LeaseOwner = null;
-                }
-
-                entity.PendingDocumentRef = record.PendingDocumentRef;
-                entity.WorkBatch = record.WorkBatch;
-                entity.PendingStepJson = null;
-                entity.PendingRenderContext = record.PendingRenderContext;
-                entity.SourceKeyJson = Truncate(record.SourceKeyJson, 2000) ?? entity.SourceKeyJson;
-                entity.PendingSourceFingerprint = record.PendingSourceFingerprint;
-                entity.PendingSourceModifiedUtc = record.PendingSourceModifiedUtc;
-                entity.PendingSourceFileName = Truncate(record.PendingSourceFileName, DeliveryModel.MaxSourceFileNameLength);
-                entity.PendingSourceRowNumber = record.PendingSourceRowNumber;
-                entity.PendingSourceUpdatedUtc = record.PendingSourceUpdatedUtc;
-                entity.PlanRequestedUtc = null;
-                entity.PendingMetadataHash = record.PendingMetadataHash;
-                entity.PendingPayloadHash = record.PendingPayloadHash;
-                entity.PendingPayloadModifiedUtc = record.PendingPayloadModifiedUtc;
-                entity.PendingPayloadLocation = record.PendingPayloadLocation;
-                entity.PendingMetadata = record.PendingMetadata;
-                entity.PendingPayload = record.PendingPayload;
-                entity.PendingReferences = RecordReferences.Encode(record.PendingReferences);
-                entity.WaitingFor = null;
-                entity.CacheSetId = record.CacheSetId;
-                entity.Blocked = false;
-                entity.UpdatedUtc = now;
-                staged++;
-            }
-
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        }
-
-        var result = new PendingStaging(staged, refused, conflicts);
-        await WriteIdentitiesAsync(db, flowId, Staged(records, result), ct).ConfigureAwait(false);
-        return result;
+        var staged = await SqlServerLedgerBulk.UpsertPendingAsync(db, flowId, records, WriteSlice, now, ct).ConfigureAwait(false);
+        await WriteIdentitiesAsync(db, flowId, Staged(records, staged), ct).ConfigureAwait(false);
+        return staged;
     }
 
     /// <summary>
@@ -506,27 +403,6 @@ public sealed partial class OsduLedger : ILedger
         }
 
         return claims;
-    }
-
-    /// <summary>
-    /// Whether the record already holds, delivered or queued, a source version or a payload newer than the work
-    /// carries. The planner decided against the record as it read it; another intake can have staged or delivered a
-    /// newer version since, and that version must stand. The SQL Server path applies the same test in set form.
-    /// </summary>
-    private static bool HoldsNewerThan(DeliveryRecord entity, RecordState work)
-    {
-        var queued = entity.PendingDocumentRef is not null
-            && (entity.Status == StatusText.Of(RecordStatus.Pending) || entity.Status == StatusText.Of(RecordStatus.Delivering));
-        if (work.PendingSourceModifiedUtc is { } source
-            && ((entity.SourceModifiedUtc is { } delivered && source < delivered)
-                || (queued && entity.PendingSourceModifiedUtc is { } pending && source < pending)))
-        {
-            return true;
-        }
-
-        return work.PendingPayload && work.PendingPayloadModifiedUtc is { } payload
-            && ((entity.PayloadModifiedUtc is { } deliveredPayload && payload < deliveredPayload)
-                || (queued && entity.PendingPayload && entity.PendingPayloadModifiedUtc is { } pendingPayload && payload < pendingPayload));
     }
 
     public async Task MarkSkippedAsync(Guid flowId, IReadOnlyList<SkippedRecord> records, Guid submissionId, CancellationToken ct = default)

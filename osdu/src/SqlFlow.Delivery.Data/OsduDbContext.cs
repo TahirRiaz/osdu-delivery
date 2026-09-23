@@ -1,6 +1,5 @@
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace SqlFlow.Delivery.Data;
 
@@ -97,21 +96,6 @@ public sealed class OsduDbContext : DbContext
             .Options;
     }
 
-    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-    {
-        ArgumentNullException.ThrowIfNull(optionsBuilder);
-        // The model differs by provider (OSDU id collations exist only on SQL Server), so it is cached per provider.
-        optionsBuilder.ReplaceService<IModelCacheKeyFactory, ProviderModelCacheKeyFactory>();
-    }
-
     protected override void OnModelCreating(ModelBuilder modelBuilder)
-        => DeliveryModel.Configure(modelBuilder, Database.IsSqlServer());
-
-    /// <summary>Keys the cached model on the provider as well as the context type, so a process that opens the context on
-    /// SQLite and on SQL Server builds a model for each.</summary>
-    private sealed class ProviderModelCacheKeyFactory : IModelCacheKeyFactory
-    {
-        public object Create(DbContext context, bool designTime)
-            => (context.GetType(), context.Database.ProviderName, designTime);
-    }
+        => DeliveryModel.Configure(modelBuilder);
 }

@@ -1099,7 +1099,7 @@ public static class DeliveryModel
     /// <summary>
     /// The collation of the columns that key on an OSDU record id. OSDU ids are case-sensitive:
     /// <c>...UnitOfMeasure:ft</c> (the foot) and <c>...UnitOfMeasure:fT</c> (the femtotesla) are two records, and SQL
-    /// Server's default collation folds case, which would make them one key. SQLite compares ordinally already.
+    /// Server's default collation folds case, which would make them one key.
     /// </summary>
     public const string OsduIdCollation = "Latin1_General_100_BIN2";
 
@@ -1120,8 +1120,7 @@ public static class DeliveryModel
     public const int MaxIdentityTokenLength = 200;
 
     /// <param name="modelBuilder">The model being built.</param>
-    /// <param name="sqlServer">Whether the model is for SQL Server, the provider whose default collation folds case.</param>
-    public static void Configure(ModelBuilder modelBuilder, bool sqlServer)
+    public static void Configure(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
 
@@ -1162,8 +1161,8 @@ public static class DeliveryModel
             e.Property(r => r.MetadataHash).HasMaxLength(64);
             e.Property(r => r.PayloadHash).HasMaxLength(64);
             e.Property(r => r.TargetId).HasMaxLength(500);
-            OptionalOsduId(e.Property(r => r.ClaimedTargetId), sqlServer).HasMaxLength(500);
-            OptionalOsduId(e.Property(r => r.WaitingFor), sqlServer).HasMaxLength(500);
+            OptionalOsduId(e.Property(r => r.ClaimedTargetId)).HasMaxLength(500);
+            OptionalOsduId(e.Property(r => r.WaitingFor)).HasMaxLength(500);
             e.Property(r => r.Status).HasMaxLength(16).IsRequired();
             e.Property(r => r.LastVerifyOutcome).HasMaxLength(16);
             e.Property(r => r.LeaseOwner).HasMaxLength(200);
@@ -1445,7 +1444,7 @@ public static class DeliveryModel
             e.Property(i => i.Scope).HasMaxLength(200).IsRequired();
             e.Property(i => i.TypeName).HasMaxLength(200).IsRequired();
             e.Property(i => i.EntityType).HasMaxLength(200).IsRequired();
-            OsduId(e.Property(i => i.RecordId), sqlServer).HasMaxLength(512).IsRequired();
+            OsduId(e.Property(i => i.RecordId)).HasMaxLength(512).IsRequired();
             e.Property(i => i.FieldsJson).IsRequired();
             e.Property(i => i.Terms).IsRequired();
             // A record holds one range per distinct content: the type listing is its prefix, so this index answers both a
@@ -1460,7 +1459,7 @@ public static class DeliveryModel
             e.ToTable("CacheMember", SchemaName);
             e.Property(m => m.Scope).HasMaxLength(200).IsRequired();
             e.Property(m => m.TypeName).HasMaxLength(200).IsRequired();
-            OsduId(e.Property(m => m.RecordId), sqlServer).HasMaxLength(512).IsRequired();
+            OsduId(e.Property(m => m.RecordId)).HasMaxLength(512).IsRequired();
             e.Property(m => m.FlowName).HasMaxLength(200).IsRequired();
             // A merge reads who holds each record of the captured types, and replaces one flow's rows of a type.
             e.HasKey(m => new { m.Scope, m.TypeName, m.RecordId, m.FlowName });
@@ -1482,7 +1481,7 @@ public static class DeliveryModel
             e.ToTable("CacheSetEntry", SchemaName);
             e.Property(c => c.Scope).HasMaxLength(200).IsRequired();
             e.Property(c => c.TypeName).HasMaxLength(200).IsRequired();
-            OsduId(e.Property(c => c.ItemId), sqlServer).HasMaxLength(512).IsRequired();
+            OsduId(e.Property(c => c.ItemId)).HasMaxLength(512).IsRequired();
             e.Property(c => c.Path).HasMaxLength(400).IsRequired();
             e.Property(c => c.Kind).HasMaxLength(16).IsRequired();
             e.Property(c => c.ValueHash).HasMaxLength(64).IsRequired();
@@ -1514,7 +1513,7 @@ public static class DeliveryModel
             e.Property(t => t.Kind).HasMaxLength(16).IsRequired();
             e.Property(t => t.Scope).HasMaxLength(200).IsRequired();
             e.Property(t => t.TypeName).HasMaxLength(200).IsRequired();
-            OsduId(e.Property(t => t.ItemId), sqlServer).HasMaxLength(512).IsRequired();
+            OsduId(e.Property(t => t.ItemId)).HasMaxLength(512).IsRequired();
             e.Property(t => t.Path).HasMaxLength(400).IsRequired();
             e.Property(t => t.Change).HasMaxLength(16).IsRequired();
             e.Property(t => t.OldValue).HasMaxLength(400);
@@ -1567,26 +1566,26 @@ public static class DeliveryModel
     }
 
     /// <summary>
-    /// A column keyed on an OSDU record id: compared exactly by the database (<see cref="OsduIdCollation"/> on SQL Server,
-    /// ordinally on SQLite) and exactly by the change tracker. Without the ordinal comparer, a context tracking the foot and
+    /// A column keyed on an OSDU record id: compared exactly by the database (<see cref="OsduIdCollation"/>) and exactly by
+    /// the change tracker. Without the ordinal comparer, a context tracking the foot and
     /// the femtotesla side by side (two memberships of one cache flow, say) takes them for one key and refuses the second.
     /// </summary>
-    private static PropertyBuilder<string> OsduId(PropertyBuilder<string> property, bool sqlServer)
+    private static PropertyBuilder<string> OsduId(PropertyBuilder<string> property)
     {
         property.Metadata.SetValueComparer(new ValueComparer<string>(
             (left, right) => string.Equals(left, right, StringComparison.Ordinal),
             value => StringComparer.Ordinal.GetHashCode(value),
             value => value));
-        return sqlServer ? property.UseCollation(OsduIdCollation) : property;
+        return property.UseCollation(OsduIdCollation);
     }
 
     /// <summary>A nullable column keyed on an OSDU record id, compared exactly as <see cref="OsduId"/> compares a required one.</summary>
-    private static PropertyBuilder<string?> OptionalOsduId(PropertyBuilder<string?> property, bool sqlServer)
+    private static PropertyBuilder<string?> OptionalOsduId(PropertyBuilder<string?> property)
     {
         property.Metadata.SetValueComparer(new ValueComparer<string?>(
             (left, right) => string.Equals(left, right, StringComparison.Ordinal),
             value => value == null ? 0 : StringComparer.Ordinal.GetHashCode(value),
             value => value));
-        return sqlServer ? property.UseCollation(OsduIdCollation) : property;
+        return property.UseCollation(OsduIdCollation);
     }
 }
