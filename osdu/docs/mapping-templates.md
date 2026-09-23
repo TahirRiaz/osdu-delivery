@@ -521,6 +521,11 @@ The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I w
    static, and adds modifiers, a condition and the required flag.
 5. The page shows the resulting YAML, checks it against the template and the current version of the picked partition's cache, and either
    copies it or opens a pull request against the repository through the existing proposal path.
+6. The check renders with the values a run of the repository's delivery flow would: what the flow writes under
+   `render.parameters`, and for each of `dataPartition`, `aclOwner`, `aclViewer` and `legalTag` it leaves out, the
+   kind's own reference, resolved from the repository's central configuration and then the control plane's
+   environment. Each value read from a reference names it; a reference the control plane cannot resolve (one only the
+   nodes hold) is named with a request for a value to check with. What is typed there is never written into the mapping.
 
 An existing mapping opens in the builder with its entries filled in.
 

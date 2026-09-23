@@ -382,6 +382,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **The mapping builder checks a synced mapping with the values a run would use.** Since the flow kind took over
+  `dataPartition`, `aclOwner`, `aclViewer` and `legalTag`, the sample flows no longer write them, and the builder
+  prefilled its check values only from what a flow writes: every synced mapping opened with those four empty and failed
+  its check. The builder now fills them as the render resolver does, from the kind's references resolved through the
+  repository's central configuration and then the control plane's environment, says which reference each value came
+  from, and names a reference only the nodes can resolve so the author gives a value in its place.
 - **A flow run from the CLI into a registered repository keeps its folder on the Pipelines page.** A run recorded
   with `--db` and `--repo` took the flow file's folder as the repository root, so the pipeline moved to the repository's
   top level, and the repo's root with it, until the next sync. It now records the path the sync gives the flow (SQLFlow

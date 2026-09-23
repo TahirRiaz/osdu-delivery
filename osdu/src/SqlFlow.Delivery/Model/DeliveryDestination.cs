@@ -59,4 +59,27 @@ public static class DeliveryDestination
         ArgumentException.ThrowIfNullOrWhiteSpace(parameter);
         return References.GetValueOrDefault(parameter);
     }
+
+    /// <summary>
+    /// What a flow renders <paramref name="parameters"/> with, as written and before any reference in it is resolved:
+    /// every value the flow supplies under <c>render.parameters</c>, and for each of <paramref name="parameters"/> the kind
+    /// owns that the flow leaves out, the reference the kind names for it. A value the flow supplies always wins.
+    /// </summary>
+    /// <param name="supplied">The flow's <c>render.parameters</c>.</param>
+    /// <param name="parameters">The parameters asked for: a mapping's declared ones, or every one the kind owns.</param>
+    public static IReadOnlyDictionary<string, string> Supplied(IReadOnlyDictionary<string, string> supplied, IEnumerable<string> parameters)
+    {
+        ArgumentNullException.ThrowIfNull(supplied);
+        ArgumentNullException.ThrowIfNull(parameters);
+        var result = new Dictionary<string, string>(supplied, StringComparer.Ordinal);
+        foreach (var parameter in parameters)
+        {
+            if (!result.ContainsKey(parameter) && References.GetValueOrDefault(parameter) is { } reference)
+            {
+                result[parameter] = reference;
+            }
+        }
+
+        return result;
+    }
 }

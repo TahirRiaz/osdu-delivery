@@ -44,6 +44,9 @@ public sealed class DeliveryTemplateApiTests
     /// <summary>The source connection of the seeded flow, as a flow declares one: a reference, never a connection string.</summary>
     private const string SourceConnectionReference = "${env:OSDU_SAMPLE_DB}";
 
+    /// <summary>A reference nothing sets, so the builder's repository listing cannot resolve it.</summary>
+    private const string UnsetReference = "${env:ODTEST_BUILDER_UNSET_LEGAL_TAG}";
+
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     /// <summary>The samples directory beside the binaries: the source folders, and the bundled schemas beside them.</summary>
@@ -181,8 +184,10 @@ public sealed class DeliveryTemplateApiTests
         var scope = "cp-tpl-" + suffix;
         var cacheFlowName = "cp-cache-" + suffix;
         await SeedRepositoryAsync(cs, repoName, repoId, sourceId, flowName, pipelineId, scope, cacheFlowName);
+        var config = new DeliveryConfigStore(() => SampleEstate.Context(cs));
         try
         {
+            await config.SetAsync(repoId, "OSDU_ACL_OWNER", "owners@" + suffix + ".example", null, "tests", DateTime.UtcNow);
             var repos = await ReadAsync<List<DeliveryBuilderRepoDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/mapping-builder/repos"));
             var repo = Assert.Single(repos, r => r.RepoId == repoId);
             Assert.Equal(sourceId, repo.SourceId);
@@ -190,7 +195,17 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal("WellLog@1.4.0", flow.Mapping);
             // The flow reads the cache of the partition it delivers to.
             Assert.Equal(scope, flow.CacheScope);
+
+            // The check renders with what a run would: the values the flow writes out, and for the aclOwner it leaves out the
+            // kind's own ${env:OSDU_ACL_OWNER}, resolved from the repository's central configuration as a run resolves it.
             Assert.Equal("dev", flow.Parameters["dataPartition"]);
+            Assert.Equal("data.default.viewers@dev.dataservices.energy", flow.Parameters["aclViewer"]);
+            Assert.Equal("owners@" + suffix + ".example", flow.Parameters["aclOwner"]);
+            // A reference the control plane cannot resolve leaves the value to the author, and the listing says which it is.
+            Assert.False(flow.Parameters.ContainsKey("legalTag"));
+            Assert.Equal(
+                new Dictionary<string, string> { ["aclOwner"] = "${env:OSDU_ACL_OWNER}", ["legalTag"] = UnsetReference },
+                flow.ParameterReferences);
 
             var caches = await ReadAsync<List<DeliveryBuilderCacheDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/mapping-builder/caches"));
             var cache = Assert.Single(caches, c => c.Scope == scope);
@@ -335,6 +350,7 @@ public sealed class DeliveryTemplateApiTests
         }
         finally
         {
+            await config.RemoveAsync(repoId, "OSDU_ACL_OWNER");
             await CleanupAsync(cs, repoId, flowName, scope);
         }
     }
@@ -616,9 +632,8 @@ public sealed class DeliveryTemplateApiTests
                   mapping: WellLog@1.4.0
                   parameters:
                     dataPartition: dev
-                    aclOwner: data.default.owners@dev.dataservices.energy
                     aclViewer: data.default.viewers@dev.dataservices.energy
-                    legalTag: dev-reference-data-default
+                    legalTag: {UnsetReference}
                 target:
                   endpoint: https://osdu.example.test
                   headers:

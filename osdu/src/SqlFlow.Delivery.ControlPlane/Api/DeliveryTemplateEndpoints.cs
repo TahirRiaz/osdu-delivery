@@ -110,8 +110,26 @@ public sealed record DeliveryTemplateSavedDto(DeliveryTemplateDto Template, stri
 /// A delivery flow of a repository, as the builder and the Templates page offer it: its connection, what it renders with, and
 /// the partition whose cache it reads (the partition it delivers to; null when its target declares none a cache can be kept under).
 /// </summary>
+/// <param name="PipelineId">The pipeline the flow is.</param>
+/// <param name="Name">The flow, or for a source with interfaces the interface as <c>flow/interface</c>.</param>
+/// <param name="Mapping">The mapping it pins, <c>name@version</c>.</param>
+/// <param name="Parameters">
+/// The values a run of the flow renders with: what it supplies under <c>render.parameters</c>, and the kind's own reference
+/// for each parameter the kind owns that it leaves out, resolved as a run of the flow resolves them (the repository's
+/// central configuration first, then the control plane's environment). A value whose reference cannot be resolved here is
+/// left out, and <paramref name="ParameterReferences"/> still names it.
+/// </param>
+/// <param name="ParameterReferences">The reference each value is read from, by parameter, for every value written as one.</param>
+/// <param name="Endpoint">The OSDU endpoint it delivers to, as the flow writes it.</param>
+/// <param name="CacheScope">The partition whose cache it reads, or null when its target names none a cache is kept under.</param>
 public sealed record DeliveryBuilderFlowDto(
-    Guid PipelineId, string Name, string Mapping, IReadOnlyDictionary<string, string> Parameters, string Endpoint, string? CacheScope);
+    Guid PipelineId,
+    string Name,
+    string Mapping,
+    IReadOnlyDictionary<string, string> Parameters,
+    IReadOnlyDictionary<string, string> ParameterReferences,
+    string Endpoint,
+    string? CacheScope);
 
 /// <summary>
 /// A type a cache holds: the name a mapping reads it by, its entity type, the names its values are cached under, and for a
@@ -480,7 +498,7 @@ public static class DeliveryTemplateEndpoints
     }
 
     private static async Task<Ok<IReadOnlyList<DeliveryBuilderRepoDto>>> ListBuilderReposAsync(
-        CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, CancellationToken ct)
+        CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, DeliveryConfigStore config, CancellationToken ct)
     {
         var repos = await db.Repos.AsNoTracking().OrderBy(r => r.Name).Select(r => new { r.Id, r.Name }).Take(MaxBuilderRepos).ToListAsync(ct).ConfigureAwait(false);
         var sources = await db.RepoSources.AsNoTracking().Select(s => new { s.Id, s.Name, s.Branch }).ToListAsync(ct).ConfigureAwait(false);
@@ -501,17 +519,24 @@ public static class DeliveryTemplateEndpoints
         var result = new List<DeliveryBuilderRepoDto>(repos.Count);
         foreach (var repo in repos)
         {
+            var repoPipelines = pipelines.Where(p => p.RepoId == repo.Id).ToList();
+            // A run of the repository's flows resolves references from its central configuration before the node's own
+            // environment, so the check resolves them the same way and renders with what a run would.
+            var secrets = repoPipelines.Count == 0
+                ? engine.Secrets
+                : SqlFlow.Delivery.Http.SuppliedReferenceResolver.For(await config.EffectiveAsync(repo.Id, ct).ConfigureAwait(false), engine.Secrets);
             var flows = new List<DeliveryBuilderFlowDto>();
-            foreach (var pipeline in pipelines.Where(p => p.RepoId == repo.Id))
+            foreach (var pipeline in repoPipelines)
             {
                 try
                 {
                     // A source offers one connection per interface: each pins its own mapping and render parameters.
                     foreach (var flow in documents.ParseSource(pipeline.Yaml, pipeline.RelativePath).Interfaces)
                     {
+                        var (parameters, references) = await RenderParametersOfAsync(flow, secrets, ct).ConfigureAwait(false);
                         flows.Add(new DeliveryBuilderFlowDto(
-                            pipeline.Id, flow.Label, flow.Render.Mapping, flow.Render.Parameters, flow.Target.Endpoint,
-                            await CacheScopeOfAsync(flow, engine.Secrets, ct).ConfigureAwait(false)));
+                            pipeline.Id, flow.Label, flow.Render.Mapping, parameters, references, flow.Target.Endpoint,
+                            await CacheScopeOfAsync(flow, secrets, ct).ConfigureAwait(false)));
                     }
                 }
                 catch (FlowValidationException)
@@ -528,10 +553,45 @@ public static class DeliveryTemplateEndpoints
     }
 
     /// <summary>
-    /// The partition whose cache a delivery flow reads: the partition it delivers to, with a reference resolved as the
-    /// repository sync resolves a cache flow's (so a flow naming <c>${env:OSDU_DATA_PARTITION}</c> finds the cache its
-    /// partition is kept under), the reference as it is written when it cannot be resolved here, or null when its target
-    /// names none a cache is kept under.
+    /// The values a run of <paramref name="flow"/> renders the kind's parameters and its own with (<see cref="DeliveryDestination.Supplied"/>,
+    /// the rule the render resolver applies), each reference resolved by <paramref name="secrets"/>; and the reference each
+    /// value is read from. A reference that cannot be resolved here (a variable only the nodes hold, a vault the control
+    /// plane does not reach) leaves its value out, so the check asks for one instead of rendering with the reference text,
+    /// and the builder says which reference it is.
+    /// </summary>
+    private static async Task<(IReadOnlyDictionary<string, string> Values, IReadOnlyDictionary<string, string> References)> RenderParametersOfAsync(
+        FlowDefinition flow, SqlFlow.Core.Secrets.ISecretResolver secrets, CancellationToken ct)
+    {
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        var references = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (name, supplied) in DeliveryDestination.Supplied(flow.Render.Parameters, DeliveryDestination.Parameters))
+        {
+            if (!supplied.Contains("${", StringComparison.Ordinal))
+            {
+                values[name] = supplied;
+                continue;
+            }
+
+            references[name] = supplied;
+            try
+            {
+                values[name] = await secrets.ResolveAsync(supplied, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Reported by the value's absence beside its reference; the resolver's message may quote what it read,
+                // so it is not passed on.
+            }
+        }
+
+        return (values, references);
+    }
+
+    /// <summary>
+    /// The partition whose cache a delivery flow reads: the partition it delivers to, with a reference resolved as a run of
+    /// the flow resolves it (so a flow naming <c>${env:OSDU_DATA_PARTITION}</c> finds the cache its partition is kept under),
+    /// the reference as it is written when it cannot be resolved here, or null when its target names none a cache is kept
+    /// under.
     /// </summary>
     private static async Task<string?> CacheScopeOfAsync(FlowDefinition flow, SqlFlow.Core.Secrets.ISecretResolver secrets, CancellationToken ct)
     {

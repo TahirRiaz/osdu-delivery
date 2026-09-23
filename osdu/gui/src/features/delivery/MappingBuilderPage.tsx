@@ -13,8 +13,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
-  deliveryApi, type DeliveryMappingComposeResult, type DeliveryTemplateVariable, type MappingDraft, type MappingDraftEntry,
-  type MappingDraftIssue,
+  deliveryApi, type DeliveryBuilderFlow, type DeliveryMappingComposeResult, type DeliveryTemplateVariable, type MappingDraft,
+  type MappingDraftEntry, type MappingDraftIssue,
 } from "../../api/delivery";
 import { useAuth } from "@/auth/AuthContext";
 import { CodeView } from "@/components/CodeView";
@@ -46,6 +46,31 @@ interface ComposeRequest {
 
 function bareColumn(text: string): string {
   return text.trim().replace(/^dataset\./, "");
+}
+
+/**
+ * Where a check value was prefilled from: the reference the flow's run reads it from, or, when the control plane cannot
+ * resolve that reference, which one it is and that the check needs a value in its place. Nothing is said for a value the
+ * flow writes out, or once the author has typed their own.
+ */
+function CheckValueSource({ flow, parameter, edited }: { flow: DeliveryBuilderFlow | null; parameter: string; edited: boolean }) {
+  const reference = flow?.parameterReferences[parameter];
+  if (flow === null || reference === undefined || edited) {
+    return null;
+  }
+
+  return flow.parameters[parameter] !== undefined
+    ? (
+        <p className="text-xs text-muted-foreground" data-testid={`mapping-builder-check-source-${parameter}`}>
+          Read from <span className="font-mono">{reference}</span>, as a run of the flow reads it.
+        </p>
+      )
+    : (
+        <p className="text-xs text-warning" data-testid={`mapping-builder-check-unresolved-${parameter}`}>
+          The flow reads this from <span className="font-mono">{reference}</span>, which a run resolves on its node and the
+          control plane cannot. Give a value to check with.
+        </p>
+      );
 }
 
 /**
@@ -613,6 +638,7 @@ export default function MappingBuilderPage() {
                       data-testid={`mapping-builder-check-${parameter.name}`}
                     />
                     {parameter.description !== null && <p className="text-xs text-muted-foreground">{parameter.description}</p>}
+                    <CheckValueSource flow={checkFlow} parameter={parameter.name} edited={checkEdits[parameter.name] !== undefined} />
                   </div>
                 ))}
               </div>

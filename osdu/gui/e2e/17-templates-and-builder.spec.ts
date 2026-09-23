@@ -471,6 +471,9 @@ test.describe.serial("templates and the mapping builder", () => {
 
     await expect(adminPage.getByTestId("page-delivery-mapping-builder")).toBeVisible();
     await expect(adminPage.getByTestId("mapping-builder-opened-from")).toContainText("mappings/WellLog@1.4.0.yaml", { timeout: 30_000 });
+    // The flow leaves the partition to the kind, so the check reads it from the kind's reference as a run would, and says so.
+    await expect(adminPage.getByTestId("mapping-builder-check-dataPartition")).toHaveValue("dev");
+    await expect(adminPage.getByTestId("mapping-builder-check-source-dataPartition")).toContainText("${env:OSDU_DATA_PARTITION}");
     // The sample mapping renders its fixtures against the imported cache exactly, so it loads, passes and can be proposed.
     await expect(adminPage.getByTestId("mapping-builder-valid")).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("mapping-builder-propose")).toBeEnabled();

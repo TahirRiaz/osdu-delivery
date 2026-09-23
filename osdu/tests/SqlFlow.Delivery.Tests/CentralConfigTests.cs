@@ -170,6 +170,29 @@ public sealed class CentralConfigTests
     }
 
     [Fact]
+    public void A_flow_renders_with_what_it_supplies_and_the_kinds_reference_for_what_it_leaves_out()
+    {
+        var flow = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["dataPartition"] = "dev",
+            ["region"] = "south",
+        };
+
+        var supplied = DeliveryDestination.Supplied(flow, ["dataPartition", "legalTag", "logSource"]);
+
+        // The flow's own value wins, and every value it supplies is kept whether or not it was asked for. The kind fills the
+        // parameter it owns that the flow left out, and nothing is invented for one only the flow can fill.
+        Assert.Equal(
+            new Dictionary<string, string> { ["dataPartition"] = "dev", ["region"] = "south", ["legalTag"] = "${env:OSDU_LEGAL_TAG}" },
+            supplied);
+
+        // Asking for every parameter the kind owns, as the builder does before it knows the mapping, fills each one left out.
+        Assert.Equal(
+            ["aclOwner", "aclViewer", "dataPartition", "legalTag", "region"],
+            DeliveryDestination.Supplied(flow, DeliveryDestination.Parameters).Keys.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
     public void A_run_says_which_references_came_from_the_control_plane_and_which_from_the_node()
     {
         var sources = ReferenceSource.Of(

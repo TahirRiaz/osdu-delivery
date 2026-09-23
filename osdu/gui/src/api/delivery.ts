@@ -1013,7 +1013,13 @@ export interface DeliveryBuilderFlow {
   pipelineId: string;
   name: string;
   mapping: string;
+  /**
+   * The values a run of the flow renders with: its own render parameters and the kind's defaults for the ones it leaves
+   * out, resolved as a run resolves them. A value whose reference the control plane cannot resolve is absent.
+   */
   parameters: Record<string, string>;
+  /** The reference each value is read from, by parameter, for every value written as one. */
+  parameterReferences: Record<string, string>;
   endpoint: string;
   /** The partition the flow delivers to, whose cache it reads; null when its target names none a cache is kept under. */
   cacheScope: string | null;
