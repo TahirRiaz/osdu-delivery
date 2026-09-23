@@ -689,7 +689,10 @@ export interface DeliveryRecordLookupQuery extends PageQuery {
   flowId?: string;
 }
 
-/** A flow the Records page can be narrowed to: the ledger identity its records carry, and the name the Flow column shows. */
+/**
+ * A flow the Records page can be narrowed to: a ledger identity that holds records, and the pipeline and interface the
+ * Flow column names it by.
+ */
 export interface DeliveryRecordFlow {
   flowId: string;
   pipelineId: string;

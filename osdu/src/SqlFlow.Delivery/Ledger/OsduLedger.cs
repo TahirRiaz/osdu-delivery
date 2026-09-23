@@ -1031,6 +1031,36 @@ public sealed partial class OsduLedger : ILedger
         return new BoundedCount(count, Exact: count < limit);
     }
 
+    /// <summary>How many identities one query of <see cref="FlowsWithRecordsAsync"/> asks about, well inside the server's parameter limit.</summary>
+    private const int FlowsWithRecordsBatch = 200;
+
+    public async Task<IReadOnlySet<Guid>> FlowsWithRecordsAsync(IReadOnlyCollection<Guid> flowIds, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(flowIds);
+        var found = new HashSet<Guid>();
+        foreach (var batch in flowIds.Distinct().Chunk(FlowsWithRecordsBatch))
+        {
+            var held = await ReadAsync(
+                db =>
+                {
+                    // One TOP (1) per identity on the key the records lead with, joined by UNION ALL into one round trip.
+                    // A DISTINCT over the identities would read every record of each to find that it has one.
+                    IQueryable<Guid>? query = null;
+                    foreach (var flowId in batch)
+                    {
+                        var one = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId).Select(r => r.FlowId).Take(1);
+                        query = query is null ? one : query.Concat(one);
+                    }
+
+                    return query!.ToListAsync(ct);
+                },
+                ct).ConfigureAwait(false);
+            found.UnionWith(held);
+        }
+
+        return found;
+    }
+
     /// <summary>
     /// The records the recency listing orders: every record, those in one custody state, those of one ledger identity, or
     /// those of one identity in one state. Each reads an index that ends with the update time ([UpdatedUtc],

@@ -144,6 +144,39 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task Flows_with_records_are_the_identities_asked_about_that_hold_one_in_any_state()
+    {
+        var submission = Guid.NewGuid();
+        var otherFlow = FlowId.Of("other-flow");
+        var emptyFlow = FlowId.Of("empty-flow");
+        await Ledger.UpsertPendingAsync(_flow, [Pending("WELL-1", submission), Pending("WELL-2", submission)]);
+        await Ledger.UpsertPendingAsync(otherFlow, [Pending("OTHER-1", submission) with { FlowId = otherFlow }]);
+
+        // Only the identities asked about, and of those only the ones holding a record; asking twice is asking once.
+        Assert.Equal(
+            new HashSet<Guid> { _flow, otherFlow },
+            await Ledger.FlowsWithRecordsAsync([_flow, emptyFlow, otherFlow, _flow]));
+        Assert.Equal(new HashSet<Guid> { otherFlow }, await Ledger.FlowsWithRecordsAsync([otherFlow, emptyFlow]));
+        Assert.Empty(await Ledger.FlowsWithRecordsAsync([emptyFlow]));
+        Assert.Empty(await Ledger.FlowsWithRecordsAsync([]));
+
+        // A record in any state counts, a held or deleted one as much as a pending one.
+        var key = DeliveryKey.Derive("test", ["OTHER-1"]);
+        await Ledger.CompleteAsync(otherFlow, new RecordCompletion
+        {
+            DeliveryKey = key,
+            Status = RecordStatus.Held,
+            Error = "held by the test",
+            Attempt = new AttemptRecord { DeliveryKey = key, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Held, Phase = "metadata" },
+        });
+        Assert.Contains(otherFlow, await Ledger.FlowsWithRecordsAsync([otherFlow]));
+
+        // More identities than one query asks about are asked in several, and the answer is the same.
+        var many = Enumerable.Range(0, 450).Select(i => FlowId.Of($"unused-{i}")).Append(otherFlow).ToList();
+        Assert.Equal(new HashSet<Guid> { otherFlow }, await Ledger.FlowsWithRecordsAsync(many));
+    }
+
+    [Fact]
     public async Task Recent_and_lookup_narrow_to_one_flow()
     {
         var submission = Guid.NewGuid();

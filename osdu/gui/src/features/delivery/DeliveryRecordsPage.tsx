@@ -152,17 +152,22 @@ export default function DeliveryRecordsPage() {
   const searching = term !== "";
   const columns = useMemo(() => columnsFor(searching), [searching]);
 
-  // The flow is a ledger identity: one per interface of a source, named as the Flow column names it.
+  // The flow is a ledger identity holding records: one per interface of a source. An interface's choice leads with the
+  // interface, since a source's interfaces share the flow's name and the picker is too narrow to show both whole.
   const flow = searchParams.get("flow") ?? "";
   const flows = useQuery({ queryKey: ["delivery", "record-flows"], queryFn: deliveryApi.recordFlows });
   const flowOptions = useMemo<FilterOption[]>(() => {
-    const options = (flows.data ?? []).map((f) => ({
+    const named = (flows.data ?? []).map((f) => ({
       value: f.flowId,
-      label: f.interface ? `${f.flowName} / ${f.interface}` : f.flowName,
+      label: f.interface ? `${f.interface} · ${f.flowName}` : f.flowName,
     }));
-    // A link can name a flow no synced pipeline holds any more; the filter still applies, and says so.
+    // Two identities named alike (a ledger an interface stopped adopting, say) are told apart by the identity itself.
+    const shared = new Set(named.map((o) => o.label).filter((label, i, all) => all.indexOf(label) !== i));
+    const options: FilterOption[] = named.map((o) => (shared.has(o.label) ? { ...o, hint: `ledger ${o.value}` } : o));
+    // A link can name a flow the list leaves out, because it holds no records or no synced pipeline names it any more;
+    // the filter still applies, and says so.
     return flow !== "" && flows.isSuccess && !options.some((o) => o.value === flow)
-      ? [{ value: flow, label: "Flow no longer synced", hint: flow }, ...options]
+      ? [{ value: flow, label: "Flow not listed", hint: `${flow}: no records, or no longer synced` }, ...options]
       : options;
   }, [flows.data, flows.isSuccess, flow]);
 

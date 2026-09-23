@@ -14,8 +14,10 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 ### Added
 
 - **The Records page narrows to one flow.** A searchable flow picker beside the status filter lists every flow the
-  synced repositories name (a source that delivers several interfaces offers one choice per interface), named as the
-  Flow column names them (`GET /api/v1/delivery/records/flows`). The choice narrows both the recency listing and a
+  synced repositories name that holds records (a source that delivers several interfaces offers one choice per
+  interface, and an interface that has delivered nothing is not offered), with an interface's choice led by the
+  interface so a source's choices never read alike (`GET /api/v1/delivery/records/flows`). Whether a flow holds a
+  record is one index seek per flow, whatever the ledger's size. The choice narrows both the recency listing and a
   search, and travels in the URL with the term and the status (`flowId` on `GET /api/v1/delivery/records`). A search
   narrowed to one flow reads that flow's own identity tokens (migration `RecordIdentityFlowToken`, module version
   1.12.1: `IX_RecordIdentity_FlowId_Token`), so a prefix other flows share cannot use up the candidate bound before

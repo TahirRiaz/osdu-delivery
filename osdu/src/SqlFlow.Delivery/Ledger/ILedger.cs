@@ -1273,6 +1273,11 @@ public interface ILedger
     /// <summary>How many records the recency listing has to show, counting no further than <paramref name="limit"/>.</summary>
     Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default);
 
+    /// <summary>The ledger identities among <paramref name="flowIds"/> that hold at least one record, in any state. It asks
+    /// whether each holds one, never how many, so it costs one index seek per identity however many records the ledger
+    /// holds.</summary>
+    Task<IReadOnlySet<Guid>> FlowsWithRecordsAsync(IReadOnlyCollection<Guid> flowIds, CancellationToken ct = default);
+
     /// <summary>Delivered records due for the drift pass, oldest verification first.</summary>
     Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default);
 

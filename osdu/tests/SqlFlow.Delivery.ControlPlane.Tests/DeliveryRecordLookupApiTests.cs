@@ -237,16 +237,18 @@ public sealed class DeliveryRecordLookupApiTests
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
-            // The choices: one per ledger identity, named by pipeline and interface as a hit is, and none for a ledger
-            // no synced pipeline holds.
+            // The choices: one per ledger identity that holds records, named by pipeline and interface as a hit is. The
+            // curves interface has delivered nothing, so narrowing to it could only show an empty page, and a ledger no
+            // synced pipeline holds is no choice either.
             using var flowsResponse = await GetAsync(client, token, "/api/v1/delivery/records/flows");
             Assert.Equal(HttpStatusCode.OK, flowsResponse.StatusCode);
             using var flowsJson = JsonDocument.Parse(await flowsResponse.Content.ReadAsStringAsync());
             var ours = flowsJson.RootElement.EnumerateArray().Where(f => f.GetProperty("flowName").GetString()!.StartsWith(marker, StringComparison.Ordinal)).ToList();
             Assert.Equal(
-                [(source, "curves", FlowId.Of($"{source}/curves")), (source, "header", headerFlow), (single, (string?)null, singleFlow)],
+                [(source, "header", headerFlow), (single, (string?)null, singleFlow)],
                 ours.Select(f => (f.GetProperty("flowName").GetString()!, f.GetProperty("interface").GetString(), f.GetProperty("flowId").GetGuid())).ToList());
-            Assert.Equal([sourcePipeline, sourcePipeline, singlePipeline], ours.Select(f => f.GetProperty("pipelineId").GetGuid()).ToList());
+            Assert.Equal([sourcePipeline, singlePipeline], ours.Select(f => f.GetProperty("pipelineId").GetGuid()).ToList());
+            Assert.DoesNotContain(flowsJson.RootElement.EnumerateArray(), f => f.GetProperty("flowId").GetGuid() == FlowId.Of($"{source}/curves"));
             Assert.DoesNotContain(flowsJson.RootElement.EnumerateArray(), f => f.GetProperty("flowId").GetGuid() == unsynced);
 
             // The recency listing of one flow is that flow's records alone.

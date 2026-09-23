@@ -106,7 +106,8 @@ public sealed record DeliveryRecordLinkDto(
 
 /// <summary>
 /// A flow the record lookup can be narrowed to: the ledger identity its records carry (<c>FlowId</c>, what the lookup's
-/// <c>flowId</c> takes), and the pipeline and interface (null for the single form) it is named by.
+/// <c>flowId</c> takes), and the pipeline and interface (null for the single form) it is named by. Only an identity that
+/// holds records is offered.
 /// </summary>
 public sealed record DeliveryRecordFlowDto(Guid FlowId, Guid PipelineId, string FlowName, string? Interface);
 
@@ -645,19 +646,22 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>
-    /// The flows the Records page can be narrowed to: every ledger identity the synced repositories name, with the
-    /// pipeline and interface a hit of it is named by, found the way a hit finds them, so the choice reads as the Flow
-    /// column does. A source that delivers several interfaces is one choice per interface, because its records are kept
-    /// per interface and never summed. A ledger no synced pipeline holds any more is not a choice; its records still
-    /// appear under every flow, as "no longer synced". Ordered by flow, then interface.
+    /// The flows the Records page can be narrowed to: every ledger identity the synced repositories name that holds at
+    /// least one record, with the pipeline and interface a hit of it is named by, found the way a hit finds them, so the
+    /// choice reads as the Flow column does. A source that delivers several interfaces is one choice per interface,
+    /// because its records are kept per interface and never summed; an interface that has delivered nothing yet is not a
+    /// choice, since narrowing to it could only show an empty page. A ledger no synced pipeline holds any more is not a
+    /// choice either; its records still appear under every flow, as "no longer synced". Ordered by flow, then interface.
     /// </summary>
     private static async Task<Ok<IReadOnlyList<DeliveryRecordFlowDto>>> ListRecordFlowsAsync(
-        CatalogDbContext db, OsduDbContext osdu, CancellationToken ct)
+        CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
     {
-        var ledgers = await osdu.DeliveryInterfaces.AsNoTracking()
+        var named = await osdu.DeliveryInterfaces.AsNoTracking()
             .Select(i => i.LedgerFlowId)
             .Distinct()
             .ToListAsync(ct).ConfigureAwait(false);
+        var holding = await ledger.FlowsWithRecordsAsync(named, ct).ConfigureAwait(false);
+        var ledgers = named.Where(holding.Contains).ToList();
         var found = await DeliveryPipelines.ForLedgersAsync(db, osdu, ledgers, ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryRecordFlowDto>>(found
             .Select(f => new DeliveryRecordFlowDto(f.Key, f.Value.Pipeline.Id, f.Value.Pipeline.Name, NamedInterface(f.Value)))
