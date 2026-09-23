@@ -700,18 +700,23 @@ internal static partial class MappingMapper
                     "lower" => new Modifier { Kind = ModifierKind.Lower },
                     "date" => new Modifier { Kind = ModifierKind.Date },
                     "number" => new Modifier { Kind = ModifierKind.Number, DecimalSeparator = Rendering.NumberValues.DecimalPoint },
-                    "split" or "replace" or "equals" => throw new FlowValidationException($"{where}: '{name}' needs settings, such as {Example(name)}."),
+                    "split" or "equals" => throw new FlowValidationException($"{where}: '{name}' needs settings, such as {Example(name)}."),
+                    "replace" => throw new FlowValidationException($"{where}: 'replace' needs a table, such as {Example(name)}."),
                     _ => throw new FlowValidationException($"{where}: '{name}' is not a modifier. The modifiers are trim, upper, lower, split, replace, equals, date and number."),
                 };
+
+            // A replace takes its settings beside it rather than inside its table, so no incoming value is ever read as a
+            // setting: every key of the table is a value to replace.
+            case IDictionary<object, object> map when map.Keys.Any(k => KeyText(k) == "replace"):
+                return Replace(map, where);
 
             case IDictionary<object, object> map when map.Count == 1:
                 {
                     var (key, settings) = map.First();
-                    var modifier = Convert.ToString(key, CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
+                    var modifier = KeyText(key);
                     return modifier switch
                     {
                         "split" => Split(settings, where),
-                        "replace" => Replace(settings, where),
                         "equals" => settings is null or IDictionary<object, object> or IList<object>
                             ? throw new FlowValidationException($"{where}: equals compares with one text, such as {Example("equals")}.")
                             : new Modifier { Kind = ModifierKind.Equals, Text = Convert.ToString(settings, CultureInfo.InvariantCulture) },
@@ -721,10 +726,26 @@ internal static partial class MappingMapper
                     };
                 }
 
+            case IDictionary<object, object> map when map.Count > 1:
+                throw new FlowValidationException(
+                    $"{where}: a modifier is one setting, such as {Example("split")}; {string.Join(" and ", map.Keys.Select(KeyText))} are written as one. Only replace takes a setting beside it (otherwise).");
+
             default:
                 throw new FlowValidationException($"{where}: a modifier is a name, such as trim, or one setting, such as {Example("split")}.");
         }
     }
+
+    private static string KeyText(object key) => Convert.ToString(key, CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
+
+    /// <summary>
+    /// A scalar as the text the document wrote: a boolean as <c>true</c> or <c>false</c>, which is how YAML spells it, and a
+    /// number in the invariant culture.
+    /// </summary>
+    private static string ScalarText(object value) => value switch
+    {
+        bool flag => flag ? "true" : "false",
+        _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty,
+    };
 
     /// <summary>A date modifier: no setting reads ISO 8601, and a format is refused when it could not read a whole date.</summary>
     private static Modifier Date(object? settings, string where)
@@ -806,26 +827,68 @@ internal static partial class MappingMapper
         return new Modifier { Kind = ModifierKind.Split, Separator = separator, Part = part };
     }
 
-    private static Modifier Replace(object? settings, string where)
+    /// <summary>
+    /// A replace: its table (<c>replace: { M: m, NONE: ~ }</c>) and, beside it, what a value the table does not list becomes
+    /// (<c>otherwise: ~</c>, or a text). A key is matched trimmed, so two keys that are the same once trimmed, or a key that
+    /// is empty once trimmed, are refused here rather than leaving a render to choose between them.
+    /// </summary>
+    private static Modifier Replace(IDictionary<object, object> item, string where)
     {
-        if (settings is not IDictionary<object, object> pairs || pairs.Count == 0)
+        object? table = null;
+        var fallback = ReplaceFallback.Keep;
+        foreach (var (key, value) in item)
+        {
+            switch (KeyText(key))
+            {
+                case "replace":
+                    table = value;
+                    break;
+                case "otherwise":
+                    fallback = value switch
+                    {
+                        null => ReplaceFallback.Empty,
+                        IDictionary<object, object> or IList<object> => throw new FlowValidationException(
+                            $"{where}: replace's otherwise is one text, or ~ for no value, such as otherwise: ~."),
+                        _ => ReplaceFallback.Of(ScalarText(value)),
+                    };
+                    break;
+                case var other:
+                    throw new FlowValidationException($"{where}: replace takes 'otherwise' beside it, not '{other}'.");
+            }
+        }
+
+        if (table is not IDictionary<object, object> pairs || pairs.Count == 0)
         {
             throw new FlowValidationException($"{where}: replace lists incoming values and what each becomes, such as {Example("replace")}.");
         }
 
-        var replacements = new Dictionary<string, string>(StringComparer.Ordinal);
+        var replacements = new Dictionary<string, string?>(StringComparer.Ordinal);
+        var trimmed = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (from, to) in pairs)
         {
-            var fromText = Convert.ToString(from, CultureInfo.InvariantCulture) ?? string.Empty;
-            if (to is null or IDictionary<object, object> or IList<object>)
+            var fromText = ScalarText(from);
+            var key = fromText.Trim();
+            if (key.Length == 0)
             {
-                throw new FlowValidationException($"{where}: replace maps '{fromText}' to something that is not text.");
+                throw new FlowValidationException($"{where}: replace lists an empty incoming value; an empty value is never replaced, it stays empty.");
             }
 
-            replacements[fromText] = Convert.ToString(to, CultureInfo.InvariantCulture) ?? string.Empty;
+            if (!trimmed.TryAdd(key, fromText))
+            {
+                throw new FlowValidationException(
+                    $"{where}: replace lists '{trimmed[key]}' and '{fromText}', which are the same value once surrounding spaces are removed, and a value is matched trimmed.");
+            }
+
+            replacements[fromText] = to switch
+            {
+                null => null,
+                IDictionary<object, object> or IList<object> => throw new FlowValidationException(
+                    $"{where}: replace maps '{fromText}' to something that is not text; write a text, or ~ for no value."),
+                _ => ScalarText(to),
+            };
         }
 
-        return new Modifier { Kind = ModifierKind.Replace, Replacements = replacements };
+        return new Modifier { Kind = ModifierKind.Replace, Replacements = replacements, Otherwise = fallback };
     }
 
     private static string Example(string modifier) => modifier switch

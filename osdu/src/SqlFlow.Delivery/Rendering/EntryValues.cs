@@ -156,7 +156,8 @@ internal static partial class EntryValues
     private static string ModifierText(IReadOnlyList<Modifier> modifiers) => string.Join(" | ", modifiers.Select(modifier => modifier.Kind switch
     {
         ModifierKind.Split => $"split('{modifier.Separator}', {modifier.Part})",
-        ModifierKind.Replace when modifier.Replacements.Count > 3 => $"replace({modifier.Replacements.Count} values)",
+        ModifierKind.Replace when modifier.Replacements.Count > 3 => $"replace({modifier.Replacements.Count} values"
+            + (modifier.Otherwise.Kind == ReplaceFallbackKind.Keep ? string.Empty : $"; otherwise {modifier.Otherwise}") + ")",
         _ => modifier.ToString(),
     }));
 
@@ -209,7 +210,11 @@ internal static partial class EntryValues
                     result = Split(text, modifier.Separator!, modifier.Part!.Value);
                     break;
                 case ModifierKind.Replace:
-                    result = Replace(text, modifier.Replacements);
+                    if (!TryReplace(modifier, text, path, holds, out result))
+                    {
+                        return false;
+                    }
+
                     break;
                 case ModifierKind.Equals:
                     result = text is null ? null : string.Equals(text.Trim(), modifier.Text?.Trim(), StringComparison.OrdinalIgnoreCase);
@@ -261,23 +266,51 @@ internal static partial class EntryValues
         return value.Length == 0 ? null : value;
     }
 
-    /// <summary>An exact match of the trimmed value wins; otherwise a key that matches ignoring case, when exactly one does; otherwise the value is unchanged.</summary>
-    private static string? Replace(string? text, IReadOnlyDictionary<string, string> replacements)
+    /// <summary>
+    /// Replaces the trimmed value by what the table lists for it (<see cref="ReplaceTables.Find"/>): an exact key first, then
+    /// the one key that matches once case is ignored. A listed value may become no value. An unlisted value becomes what
+    /// <c>otherwise</c> says, by default itself; an empty value stays empty, since there is nothing to look up. False, with a
+    /// hold, when several keys match only once case is ignored and give different values: taking one would write a value
+    /// nobody chose.
+    /// </summary>
+    private static bool TryReplace(Modifier modifier, string? text, string path, List<string> holds, out object? result)
     {
+        result = null;
         if (text is null)
         {
-            return null;
+            return true;
         }
 
         var value = text.Trim();
-        if (replacements.TryGetValue(value, out var exact))
+        if (value.Length == 0)
         {
-            return exact;
+            result = value;
+            return true;
         }
 
-        var loose = replacements.Where(kv => string.Equals(kv.Key, value, StringComparison.OrdinalIgnoreCase)).ToList();
-        return loose.Count == 1 ? loose[0].Value : value;
+        var lookup = ReplaceTables.Find(ReplaceTables.Of(modifier.Replacements), ReplaceTables.KeyField, ReplaceTables.ValueField, value);
+        switch (lookup.Kind)
+        {
+            case ReplaceLookupKind.Found:
+                result = lookup.Value?.Text;
+                return true;
+            case ReplaceLookupKind.Ambiguous:
+                var keys = string.Join(", ", lookup.Rows.Select(row => $"'{row.Id}'"));
+                holds.Add($"{path}: '{value}' matches the replace keys {keys} only once case is ignored, and they replace it with different values; make the incoming value exact");
+                return false;
+            default:
+                result = Otherwise(modifier.Otherwise, value);
+                return true;
+        }
     }
+
+    /// <summary>What an unlisted value becomes under a replace's <c>otherwise</c>.</summary>
+    private static string? Otherwise(ReplaceFallback fallback, string value) => fallback.Kind switch
+    {
+        ReplaceFallbackKind.Keep => value,
+        ReplaceFallbackKind.Empty => null,
+        _ => fallback.Text,
+    };
 
     /// <summary>
     /// Resolves a search source: each findBy line in turn asks the platform for the one record whose property is exactly

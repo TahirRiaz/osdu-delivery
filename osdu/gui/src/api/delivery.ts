@@ -1036,14 +1036,18 @@ export interface MappingDraftFind {
   literal: string | null;
 }
 
+/** One pair of a replace: the incoming value, and what it becomes; null is no value, so the entry's required flag decides. */
 export interface MappingDraftReplacement {
   from: string;
-  to: string;
+  to: string | null;
 }
 
+/** What a replace does with a value its pairs do not list: keep it (the default), give no value, or give a fixed text. */
+export type MappingDraftOtherwiseKind = "keep" | "empty" | "text";
+
 /**
- * One modifier with its settings: split takes a separator and a part, replace its pairs, equals its text, date an optional
- * format in text, and number its decimal and group separators.
+ * One modifier with its settings: split takes a separator and a part, replace its pairs and what an unlisted value becomes,
+ * equals its text, date an optional format in text, and number its decimal and group separators.
  */
 export interface MappingDraftModifier {
   kind: MappingDraftModifierKind;
@@ -1055,6 +1059,10 @@ export interface MappingDraftModifier {
   decimalSeparator: string | null;
   /** number: the separator between groups of three digits, or null when the value is written without one. */
   groupSeparator: string | null;
+  /** replace: what a value the pairs do not list becomes; null on every other modifier. */
+  otherwiseKind?: MappingDraftOtherwiseKind | null;
+  /** replace: the text an unlisted value becomes when otherwiseKind is text. */
+  otherwiseText?: string | null;
 }
 
 /** An appliesWhen: the dataset column (without `dataset.`), the operator, and the text for is and isNot. */

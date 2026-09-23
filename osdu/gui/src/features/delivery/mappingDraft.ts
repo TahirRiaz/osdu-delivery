@@ -70,7 +70,10 @@ export function newModifier(kind: MappingDraftModifierKind): MappingDraftModifie
     case "split":
       return { kind, separator: "", part: 1, replacements: null, text: null, decimalSeparator: null, groupSeparator: null };
     case "replace":
-      return { kind, separator: null, part: null, replacements: [{ from: "", to: "" }], text: null, decimalSeparator: null, groupSeparator: null };
+      return {
+        kind, separator: null, part: null, replacements: [{ from: "", to: "" }], text: null, decimalSeparator: null, groupSeparator: null,
+        otherwiseKind: "keep", otherwiseText: null,
+      };
     case "equals":
       return { kind, separator: null, part: null, replacements: null, text: "", decimalSeparator: null, groupSeparator: null };
     case "number":
@@ -254,8 +257,10 @@ export function modifierText(modifier: MappingDraftModifier): string {
   switch (modifier.kind) {
     case "split":
       return `split on ${quoted(modifier.separator ?? "")}, part ${modifier.part ?? 0}`;
-    case "replace":
-      return `replace ${(modifier.replacements ?? []).map((pair) => `${pair.from} to ${pair.to}`).join(", ")}`;
+    case "replace": {
+      const pairs = (modifier.replacements ?? []).map((pair) => `${pair.from} to ${pair.to === null ? "no value" : pair.to}`).join(", ");
+      return `replace ${pairs}${otherwiseText(modifier)}`;
+    }
     case "equals":
       return `equals ${modifier.text ?? ""}`;
     case "date":
@@ -268,6 +273,18 @@ export function modifierText(modifier: MappingDraftModifier): string {
     case "upper":
     case "lower":
       return modifier.kind;
+  }
+}
+
+/** What a replace says about the values its pairs do not list, when it says anything: `, otherwise no value`. */
+function otherwiseText(modifier: MappingDraftModifier): string {
+  switch (modifier.otherwiseKind) {
+    case "empty":
+      return ", otherwise no value";
+    case "text":
+      return `, otherwise ${modifier.otherwiseText ?? ""}`;
+    default:
+      return "";
   }
 }
 

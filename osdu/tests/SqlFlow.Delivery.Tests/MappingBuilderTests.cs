@@ -198,6 +198,79 @@ public class MappingBuilderTests
         }
     }
 
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("keep", null)]
+    [InlineData("empty", null)]
+    [InlineData("text", "Unevaluated")]
+    [InlineData("text", "~")]
+    [InlineData("text", "a: b")]
+    public void A_replace_writes_no_value_and_otherwise_and_reads_them_back(string? otherwiseKind, string? otherwiseText)
+    {
+        var draft = BaseDraft() with
+        {
+            Entries =
+            [
+                .. BaseDraft().Entries,
+                new MappingDraftEntry
+                {
+                    Target = "osdu.data.Symbol",
+                    Input = MappingDraftInput.Dataset,
+                    Column = "name",
+                    Required = false,
+                    Modifiers =
+                    [
+                        new MappingDraftModifier(
+                            "replace",
+                            Replacements: [new MappingDraftReplacement("M", "m"), new MappingDraftReplacement("NONE", null), new MappingDraftReplacement("~", "tilde")],
+                            OtherwiseKind: otherwiseKind,
+                            OtherwiseText: otherwiseText),
+                        new MappingDraftModifier("upper"),
+                    ],
+                },
+            ],
+        };
+
+        var yaml = MappingBuilder.ToYaml(draft);
+        var mapping = new DeliveryDocumentLoader().ParseMapping(yaml, "replace.yaml");
+        var modifiers = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Symbol").Modifiers;
+        Assert.Equal([ModifierKind.Replace, ModifierKind.Upper], modifiers.Select(m => m.Kind));
+        var replace = modifiers[0];
+        Assert.Equal("m", replace.Replacements["M"]);
+        Assert.Null(replace.Replacements["NONE"]);
+        Assert.Equal("tilde", replace.Replacements["~"]);
+        var expected = otherwiseKind switch
+        {
+            "empty" => ReplaceFallback.Empty,
+            "text" => ReplaceFallback.Of(otherwiseText),
+            _ => ReplaceFallback.Keep,
+        };
+        Assert.Equal(expected, replace.Otherwise);
+
+        // The draft read back from the document says the same, so the builder reopens what it wrote.
+        var reopened = MappingBuilder.FromDefinition(mapping).Entries.Single(e => e.Target == "osdu.data.Symbol").Modifiers[0];
+        Assert.Equal(otherwiseKind is null or "keep" ? "keep" : otherwiseKind, reopened.OtherwiseKind);
+        Assert.Equal(otherwiseKind == "text" ? otherwiseText : null, reopened.OtherwiseText);
+        Assert.Null(reopened.Replacements!.Single(r => r.From == "NONE").To);
+    }
+
+    [Fact]
+    public void A_replace_that_lists_a_value_twice_or_an_unknown_otherwise_is_an_issue()
+    {
+        string Issue(MappingDraftModifier modifier)
+        {
+            var draft = BaseDraft() with
+            {
+                Entries = [.. BaseDraft().Entries, new MappingDraftEntry { Target = "osdu.data.Symbol", Input = MappingDraftInput.Dataset, Column = "name", Modifiers = [modifier] }],
+            };
+            return Assert.Single(MappingBuilder.Incomplete(draft), issue => issue.Target == "osdu.data.Symbol").Message;
+        }
+
+        Assert.Contains("lists 'M' more than once", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m"), new(" M ", "metre")])), StringComparison.Ordinal);
+        Assert.Contains("not 'sometimes'", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m")], OtherwiseKind: "sometimes")), StringComparison.Ordinal);
+        Assert.Contains("needs the text an unlisted value becomes", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m")], OtherwiseKind: "text", OtherwiseText: " ")), StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Static_objects_and_lists_of_objects_are_written_as_yaml_and_read_back_as_the_same_json()
     {

@@ -226,8 +226,14 @@ public sealed record Modifier
     /// <summary>For split: which part to keep, counting from one.</summary>
     public int? Part { get; init; }
 
-    /// <summary>For replace: incoming values and what each becomes; values it does not list pass unchanged.</summary>
-    public IReadOnlyDictionary<string, string> Replacements { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    /// <summary>
+    /// For replace: incoming values and what each becomes. A null value becomes no value, so the entry's required flag
+    /// decides; what a value the table does not list becomes is <see cref="Otherwise"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, string?> Replacements { get; init; } = new Dictionary<string, string?>(StringComparer.Ordinal);
+
+    /// <summary>For replace: what a value the table does not list becomes; by default it passes on unchanged.</summary>
+    public ReplaceFallback Otherwise { get; init; } = ReplaceFallback.Keep;
 
     /// <summary>For equals: the text the value is compared with; for date: the .NET format the value is written in, or null for an ISO 8601 date or date-time.</summary>
     public string? Text { get; init; }
@@ -241,12 +247,50 @@ public sealed record Modifier
     public override string ToString() => Kind switch
     {
         ModifierKind.Split => $"split(separator '{Separator}', part {Part})",
-        ModifierKind.Replace => "replace(" + string.Join(", ", Replacements.Select(kv => kv.Key + ": " + kv.Value)) + ")",
+        ModifierKind.Replace => "replace(" + string.Join(", ", Replacements.Select(kv => kv.Key + ": " + (kv.Value ?? "~")))
+            + (Otherwise.Kind == ReplaceFallbackKind.Keep ? string.Empty : $"; otherwise {Otherwise}") + ")",
         ModifierKind.Equals => $"equals({Text})",
         ModifierKind.Date => Text is null ? "date" : $"date({Text})",
         ModifierKind.Number when GroupSeparator is null && DecimalSeparator is null or "." => "number",
         ModifierKind.Number => $"number(decimal '{DecimalSeparator ?? "."}'" + (GroupSeparator is null ? string.Empty : $", group '{GroupSeparator}'") + ")",
         _ => Kind.ToString().ToLowerInvariant(),
+    };
+}
+
+/// <summary>What a replace does with a value its table does not list.</summary>
+public enum ReplaceFallbackKind
+{
+    /// <summary>The value passes on unchanged, trimmed.</summary>
+    Keep,
+
+    /// <summary>The value becomes no value, so the entry's required flag decides what that does.</summary>
+    Empty,
+
+    /// <summary>The value becomes a fixed text.</summary>
+    Text,
+}
+
+/// <summary>
+/// A replace's <c>otherwise</c>: what a value its table does not list becomes. It applies only to a value that is there and
+/// unlisted; an empty incoming value stays empty, and a listed value that becomes no value is not "unlisted".
+/// </summary>
+public sealed record ReplaceFallback(ReplaceFallbackKind Kind, string? Text = null)
+{
+    /// <summary>An unlisted value passes on unchanged: what a replace without <c>otherwise</c> does.</summary>
+    public static ReplaceFallback Keep { get; } = new(ReplaceFallbackKind.Keep);
+
+    /// <summary>An unlisted value becomes no value (<c>otherwise: ~</c>).</summary>
+    public static ReplaceFallback Empty { get; } = new(ReplaceFallbackKind.Empty);
+
+    /// <summary>An unlisted value becomes <paramref name="text"/>; text that is empty or blank is no value.</summary>
+    public static ReplaceFallback Of(string? text)
+        => string.IsNullOrWhiteSpace(text) ? Empty : new ReplaceFallback(ReplaceFallbackKind.Text, text);
+
+    public override string ToString() => Kind switch
+    {
+        ReplaceFallbackKind.Keep => "keep",
+        ReplaceFallbackKind.Empty => "~",
+        _ => Text ?? string.Empty,
     };
 }
 

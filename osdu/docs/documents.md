@@ -1398,15 +1398,43 @@ one, and holds the record where it takes a single value, unless the set holds ex
 | trim | `- trim` | `" STAT_COMP "` | `"STAT_COMP"` |
 | upper, lower | `- upper` | `"gapi"` | `"GAPI"` |
 | split | `- split: { separator: ",", part: 1 }` | `"MAIN,REPEAT"` | `"MAIN"` |
-| replace | `- replace: { GAPI: gAPI }` | `"GAPI"` | `"gAPI"` |
+| replace | `- replace: { GAPI: gAPI, NONE: ~ }` | `"GAPI"`, `"NONE"` | `"gAPI"`, no value |
 | equals | `- equals: REGULAR` | `"REGULAR"` or `"DISCRETE"` | `true` or `false` |
 | date | `- date` or `- date: dd.MM.yyyy` | `"01.09.2026"` | `"2026-09-01T00:00:00Z"`, or `"2026-09-01"` where the template takes a date |
 | number | `- number` or `- number: { decimal: ",", group: " " }` | `"1 234,5"` | `1234.5` |
 
 `part` counts from one; a part the value does not have, or an empty one, gives an empty value. A separator of a single
-space splits on any run of whitespace. `replace` matches the trimmed value exactly, then ignoring case when exactly one
-listed value matches, and returns a value it does not list trimmed and otherwise as it is. `equals` compares trimmed
-text and ignores case, and an entry whose last modifier is `equals` must fill a boolean.
+space splits on any run of whitespace. `equals` compares trimmed text and ignores case, and an entry whose last modifier
+is `equals` must fill a boolean. `replace` has its own section below.
+
+#### replace
+
+```yaml
+modifiers:
+  - replace: { M: m, METRE: m, FT: ft, NONE: ~ }
+    otherwise: ~
+```
+
+A replace lists incoming values and what each becomes. A value is matched trimmed, by the cache's own rules: an exact
+key wins, case is ignored only when that finds one key, and a value that matches several keys only once case is ignored
+holds the record, naming them, unless they all replace it with the same value. Two keys that are the same once trimmed,
+and a key that is empty once trimmed, are refused when the mapping is read.
+
+| Written as | Result |
+| --- | --- |
+| `NONE: m` | The listed value becomes `m`. |
+| `NONE: ~` | The listed value becomes no value, and `required` decides what that does. |
+| no `otherwise` | A value the table does not list passes on unchanged, trimmed. |
+| `otherwise: ~` | A value the table does not list becomes no value. |
+| `otherwise: Unevaluated` | A value the table does not list becomes `Unevaluated`. |
+
+`otherwise` is written beside `replace`, never inside its table, so no incoming value is ever read as a setting; a
+replace takes no other setting beside it. It applies only to a value that is there and unlisted: an empty incoming value
+stays empty, and a listed value that becomes no value is not unlisted. A quoted `"~"` is the text `~`, and a boolean is
+written as YAML spells it, `true` or `false`.
+
+A table used by one field of one mapping is written here. A table shared by mappings, or one another team maintains,
+belongs in the partition's cache, where every mapping reads it the same way.
 
 #### date
 

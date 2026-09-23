@@ -252,6 +252,40 @@ public class YamlDocumentLoaderTests
     }
 
     [Fact]
+    public void Mapping_parse_reads_a_replace_with_no_value_and_otherwise_beside_its_table()
+    {
+        var loader = new DeliveryDocumentLoader();
+        Modifier Only(string modifiers) => Assert.Single(loader
+            .ParseMapping(TestSchema.MappingDocument($"  - target: osdu.data.Symbol\n    source: dataset.a\n    modifiers:\n{modifiers}"), "m.yaml")
+            .Entries.Single(e => e.Target.Text == "osdu.data.Symbol").Modifiers);
+
+        var plain = Only("      - replace: { M: m, NONE: ~, 1.5: one and a half, true: yes }");
+        Assert.Equal(ReplaceFallback.Keep, plain.Otherwise);
+        Assert.Equal("m", plain.Replacements["M"]);
+        Assert.Null(plain.Replacements["NONE"]);
+        Assert.Equal("one and a half", plain.Replacements["1.5"]);
+        Assert.Equal("yes", plain.Replacements["true"]);
+
+        Assert.Equal(ReplaceFallback.Empty, Only("      - replace: { M: m }\n        otherwise: ~").Otherwise);
+        Assert.Equal(ReplaceFallback.Empty, Only("      - replace: { M: m }\n        otherwise: \"  \"").Otherwise);
+        var text = Only("      - otherwise: Unevaluated\n        replace: { M: m }").Otherwise;
+        Assert.Equal(ReplaceFallbackKind.Text, text.Kind);
+        Assert.Equal("Unevaluated", text.Text);
+        Assert.Equal("~", Only("      - replace: { M: m }\n        otherwise: \"~\"").Otherwise.Text);
+        Assert.Equal("replace(M: m, NONE: ~; otherwise ~)", Only("      - replace: { M: m, NONE: ~ }\n        otherwise: ~").ToString());
+
+        string Refused(string modifiers) => Assert.Throws<FlowValidationException>(() => Only(modifiers)).Message;
+        Assert.Contains("replace takes 'otherwise' beside it, not 'match'", Refused("      - replace: { M: m }\n        match: Code"), StringComparison.Ordinal);
+        Assert.Contains("otherwise is one text", Refused("      - replace: { M: m }\n        otherwise: [a, b]"), StringComparison.Ordinal);
+        Assert.Contains("which are the same value once surrounding spaces are removed", Refused("      - replace: { M: m, \" M \": metre }"), StringComparison.Ordinal);
+        Assert.Contains("lists an empty incoming value", Refused("      - replace: { \"  \": x }"), StringComparison.Ordinal);
+        Assert.Contains("to something that is not text", Refused("      - replace: { M: [m] }"), StringComparison.Ordinal);
+        Assert.Contains("replace lists incoming values", Refused("      - replace: {}\n        otherwise: ~"), StringComparison.Ordinal);
+        Assert.Contains("'replace' needs a table", Refused("      - replace"), StringComparison.Ordinal);
+        Assert.Contains("Only replace takes a setting beside it", Refused("      - split: { separator: \",\", part: 1 }\n        otherwise: ~"), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Mapping_parse_reads_sources_and_refuses_what_is_malformed()
     {
         var loader = new DeliveryDocumentLoader();

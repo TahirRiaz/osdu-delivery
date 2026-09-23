@@ -109,12 +109,17 @@ public sealed record MappingDraftEntry
 /// <summary>One findBy line: the cached field, and the column (<c>column</c> or <c>child.column</c>) or literal it must equal.</summary>
 public sealed record MappingDraftFind(string Field, string? Column, string? Literal);
 
-/// <summary>One modifier: trim, upper, lower, split, replace, equals, date or number, with its settings.</summary>
+/// <summary>
+/// One modifier: trim, upper, lower, split, replace, equals, date or number, with its settings. A replace carries its pairs
+/// and what an unlisted value becomes: <see cref="OtherwiseKind"/> is keep (the default), empty (no value) or text, with the
+/// text in <see cref="OtherwiseText"/>.
+/// </summary>
 public sealed record MappingDraftModifier(
     string Kind, string? Separator = null, int? Part = null, IReadOnlyList<MappingDraftReplacement>? Replacements = null, string? Text = null,
-    string? DecimalSeparator = null, string? GroupSeparator = null);
+    string? DecimalSeparator = null, string? GroupSeparator = null, string? OtherwiseKind = null, string? OtherwiseText = null);
 
-public sealed record MappingDraftReplacement(string From, string To);
+/// <summary>One pair of a replace: the incoming value, and what it becomes; a null <see cref="To"/> is no value.</summary>
+public sealed record MappingDraftReplacement(string From, string? To);
 
 /// <summary>An appliesWhen: the column, the operator (is, isNot, isEmpty, isNotEmpty) and the text for is and isNot.</summary>
 public sealed record MappingDraftCondition(string Column, string Operator, string? Text);
@@ -527,7 +532,9 @@ public static partial class MappingBuilder
                 m.Replacements.Count == 0 ? null : m.Replacements.Select(kv => new MappingDraftReplacement(kv.Key, kv.Value)).ToList(),
                 m.Text,
                 m.DecimalSeparator,
-                m.GroupSeparator)).ToList(),
+                m.GroupSeparator,
+                m.Kind == ModifierKind.Replace ? FallbackKind(m.Otherwise) : null,
+                m.Kind == ModifierKind.Replace && m.Otherwise.Kind == ReplaceFallbackKind.Text ? m.Otherwise.Text : null)).ToList(),
             AppliesWhen = entry.AppliesWhen is { } condition
                 ? new MappingDraftCondition(
                     ColumnText(condition.Column),
@@ -586,7 +593,12 @@ public static partial class MappingBuilder
             line("    modifiers:");
             foreach (var modifier in entry.Modifiers)
             {
-                line("      - " + ModifierText(modifier));
+                var lines = ModifierLines(modifier);
+                line("      - " + lines[0]);
+                foreach (var setting in lines.Skip(1))
+                {
+                    line("        " + setting);
+                }
             }
         }
 
@@ -796,8 +808,17 @@ public static partial class MappingBuilder
                 break;
             case "split":
                 break;
-            case "replace" when modifier.Replacements is not { Count: > 0 } || modifier.Replacements.Any(r => string.IsNullOrEmpty(r.From)):
+            case "replace" when modifier.Replacements is not { Count: > 0 } || modifier.Replacements.Any(r => string.IsNullOrWhiteSpace(r.From)):
                 error($"{target}: replace needs at least one incoming value and what it becomes.", target);
+                break;
+            case "replace" when modifier.Replacements.GroupBy(r => r.From.Trim(), StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1) is { } twice:
+                error($"{target}: replace lists '{twice.Key}' more than once; a value is matched trimmed, so each incoming value is listed once.", target);
+                break;
+            case "replace" when modifier.OtherwiseKind is not (null or FallbackKeep or FallbackEmpty or FallbackText):
+                error($"{target}: replace's otherwise is keep, empty or text, not '{modifier.OtherwiseKind}'.", target);
+                break;
+            case "replace" when modifier.OtherwiseKind == FallbackText && string.IsNullOrWhiteSpace(modifier.OtherwiseText):
+                error($"{target}: replace's otherwise needs the text an unlisted value becomes; choose no value for none.", target);
                 break;
             case "replace":
                 break;
@@ -812,10 +833,46 @@ public static partial class MappingBuilder
         }
     }
 
+    private const string FallbackKeep = "keep";
+
+    private const string FallbackEmpty = "empty";
+
+    private const string FallbackText = "text";
+
+    private static string FallbackKind(ReplaceFallback fallback) => fallback.Kind switch
+    {
+        ReplaceFallbackKind.Keep => FallbackKeep,
+        ReplaceFallbackKind.Empty => FallbackEmpty,
+        _ => FallbackText,
+    };
+
+    /// <summary>
+    /// A modifier as the lines of its list item: the modifier itself, then the settings written beside it. Only a replace has
+    /// any, its <c>otherwise</c>, written beside the table so no incoming value is ever read as a setting.
+    /// </summary>
+    private static IReadOnlyList<string> ModifierLines(MappingDraftModifier modifier)
+    {
+        var first = ModifierText(modifier);
+        if (modifier.Kind != "replace")
+        {
+            return [first];
+        }
+
+        return modifier.OtherwiseKind switch
+        {
+            FallbackEmpty => [first, "otherwise: ~"],
+            FallbackText when !string.IsNullOrWhiteSpace(modifier.OtherwiseText) => [first, "otherwise: " + Scalar(modifier.OtherwiseText)],
+            _ => [first],
+        };
+    }
+
+    /// <summary>A replacement as a flow scalar: its text, or <c>~</c> for no value.</summary>
+    private static string ReplacementText(string? to) => to is null ? "~" : FlowScalar(to);
+
     private static string ModifierText(MappingDraftModifier modifier) => modifier.Kind switch
     {
         "split" => "split: { separator: " + FlowScalar(modifier.Separator ?? string.Empty) + ", part: " + (modifier.Part ?? 0).ToString(CultureInfo.InvariantCulture) + " }",
-        "replace" => "replace: { " + string.Join(", ", (modifier.Replacements ?? []).Select(r => FlowScalar(r.From) + ": " + FlowScalar(r.To))) + " }",
+        "replace" => "replace: { " + string.Join(", ", (modifier.Replacements ?? []).Select(r => FlowScalar(r.From) + ": " + ReplacementText(r.To))) + " }",
         "equals" => "equals: " + Scalar(modifier.Text ?? string.Empty),
         "date" when !string.IsNullOrEmpty(modifier.Text) => "date: " + Scalar(modifier.Text),
         "number" when modifier.GroupSeparator is not null || modifier.DecimalSeparator is not (null or ".")

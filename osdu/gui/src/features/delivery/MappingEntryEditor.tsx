@@ -15,7 +15,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import type {
   DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftConditionOperator,
-  MappingDraftEntry, MappingDraftInput, MappingDraftIssue, MappingDraftModifier, MappingDraftModifierKind,
+  MappingDraftEntry, MappingDraftInput, MappingDraftIssue, MappingDraftModifier, MappingDraftModifierKind, MappingDraftOtherwiseKind,
 } from "../../api/delivery";
 import {
   DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, inputsFor, KEY_NAME, knownColumns, MODIFIER_KINDS, newModifier, NO_GROUP, parseJson,
@@ -837,13 +837,30 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                         <span className="text-xs text-muted-foreground">becomes</span>
                         <Input
                           className="h-7 font-mono text-[12px]"
-                          placeholder="what it becomes"
-                          value={pair.to}
+                          placeholder={pair.to === null ? "no value" : "what it becomes"}
+                          value={pair.to ?? ""}
+                          disabled={pair.to === null}
                           onChange={(event) => updateModifier(index, {
                             replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, to: event.target.value } : old)),
                           })}
                           data-testid={`mapping-builder-entry-modifier-to-${index}-${pairIndex}`}
                         />
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                              <Switch
+                                checked={pair.to === null}
+                                onCheckedChange={(none) => updateModifier(index, {
+                                  replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, to: none ? null : "" } : old)),
+                                })}
+                                aria-label="Replace with no value"
+                                data-testid={`mapping-builder-entry-modifier-none-${index}-${pairIndex}`}
+                              />
+                              none
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>No value: the entry's required flag decides what an empty value does.</TooltipContent>
+                        </Tooltip>
                         <IconAction
                           label="Remove this pair"
                           onClick={() => updateModifier(index, { replacements: (modifier.replacements ?? []).filter((_, i) => i !== pairIndex) })}
@@ -863,7 +880,35 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                       <Plus />
                       Add a pair
                     </Button>
-                    <p className="text-xs text-muted-foreground">A value the pairs do not list is left as it is.</p>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <span>A value the pairs do not list</span>
+                      <Select
+                        value={modifier.otherwiseKind ?? "keep"}
+                        onValueChange={(value) => updateModifier(index, {
+                          otherwiseKind: value as MappingDraftOtherwiseKind,
+                          otherwiseText: value === "text" ? (modifier.otherwiseText ?? "") : null,
+                        })}
+                      >
+                        <SelectTrigger size="sm" className="h-7 w-40" data-testid={`mapping-builder-entry-modifier-otherwise-${index}`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="keep">is left as it is</SelectItem>
+                          <SelectItem value="empty">gives no value</SelectItem>
+                          <SelectItem value="text">becomes</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {modifier.otherwiseKind === "text" && (
+                        <Input
+                          className="h-7 w-48 font-mono text-[12px]"
+                          placeholder="what it becomes"
+                          value={modifier.otherwiseText ?? ""}
+                          onChange={(event) => updateModifier(index, { otherwiseText: event.target.value })}
+                          data-testid={`mapping-builder-entry-modifier-otherwise-text-${index}`}
+                        />
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">Values are matched trimmed: an exact key first, then the one key that matches ignoring case.</p>
                   </div>
                 )}
                 {modifier.kind === "equals" && (

@@ -389,13 +389,77 @@ public class MappingRendererTests
                 source: cache.UnitOfMeasure.id
                 findBy: cache.UnitOfMeasure.Code = dataset.unit
                 modifiers:
-                  - replace: { Metre: m, FEET: ft, feet: ft }
+                  - replace: { Metre: m, FEET: ft, feet: ft, Mtr: m, MTR: metre }
             """);
         Assert.Equal("dev:reference-data--UnitOfMeasure:m:", renderer.Render(Record(unit: "METRE")).Document["data"]!["Unit"]!.GetValue<string>());
         Assert.Equal("dev:reference-data--UnitOfMeasure:ft:", renderer.Render(Record(unit: "feet")).Document["data"]!["Unit"]!.GetValue<string>());
 
-        // Two keys match "Feet" once case is ignored, so the value passes unchanged and the cache does not hold it.
-        Assert.True(renderer.Render(Record(unit: "Feet")).IsHeld);
+        // Two keys match "Feet" once case is ignored, and both replace it with ft, so which one was meant makes no difference.
+        Assert.Equal("dev:reference-data--UnitOfMeasure:ft:", renderer.Render(Record(unit: "Feet")).Document["data"]!["Unit"]!.GetValue<string>());
+
+        // Two keys match "mTr" once case is ignored and they disagree, so the record is held, naming both keys.
+        var ambiguous = renderer.Render(Record(unit: "mTr"));
+        Assert.True(ambiguous.IsHeld);
+        var reason = Assert.Single(ambiguous.Holds);
+        Assert.Contains("'mTr' matches the replace keys", reason, StringComparison.Ordinal);
+        Assert.Contains("'Mtr'", reason, StringComparison.Ordinal);
+        Assert.Contains("'MTR'", reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Replace_gives_no_value_for_a_tilde_and_the_required_flag_decides()
+    {
+        var required = Renderer("""
+              - target: osdu.data.Symbol
+                source: dataset.unit
+                modifiers:
+                  - replace: { NONE: ~, M: m }
+                  - upper
+            """);
+        Assert.Equal("M", required.Render(Record(unit: "m")).Document["data"]!["Symbol"]!.GetValue<string>());
+        var held = required.Render(Record(unit: " none "));
+        Assert.True(held.IsHeld);
+        Assert.Contains("osdu.data.Symbol: dataset.unit is empty, and the entry is required", held.Holds, StringComparer.Ordinal);
+
+        var optional = Renderer("""
+              - target: osdu.data.Symbol
+                source: dataset.unit
+                required: false
+                modifiers:
+                  - replace: { NONE: ~ }
+            """);
+        var left = optional.Render(Record(unit: "NONE"));
+        Assert.False(left.IsHeld);
+        Assert.Null(left.Document["data"]!["Symbol"]);
+    }
+
+    [Fact]
+    public void Replace_otherwise_decides_what_an_unlisted_value_becomes()
+    {
+        string? Symbol(string otherwise, string unit)
+        {
+            var result = Renderer($$"""
+                  - target: osdu.data.Symbol
+                    source: dataset.unit
+                    required: false
+                    modifiers:
+                      - replace: { M: m }
+                        {{otherwise}}
+                """).Render(Record(unit: unit));
+            Assert.False(result.IsHeld);
+            return result.Document["data"]!["Symbol"]?.GetValue<string>();
+        }
+
+        // Without otherwise an unlisted value passes on trimmed; with it the value is dropped, or becomes a fixed text.
+        Assert.Equal("KB", Symbol(string.Empty, " KB "));
+        Assert.Null(Symbol("otherwise: ~", "KB"));
+        Assert.Equal("Unevaluated", Symbol("otherwise: Unevaluated", "KB"));
+        Assert.Equal("~", Symbol("otherwise: \"~\"", "KB"));
+        Assert.Equal("true", Symbol("otherwise: true", "KB"));
+
+        // A listed value is never an unlisted one, and an empty value stays empty rather than becoming the fixed text.
+        Assert.Equal("m", Symbol("otherwise: Unevaluated", "M"));
+        Assert.Null(Symbol("otherwise: Unevaluated", "   "));
     }
 
     [Fact]

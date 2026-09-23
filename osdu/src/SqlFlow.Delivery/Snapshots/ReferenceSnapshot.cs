@@ -100,6 +100,12 @@ public sealed class ReferenceSnapshot
 /// <summary>All items of one reference (or master-data) type, indexed on the fields a mapping may match by.</summary>
 public sealed class ReferenceType
 {
+    /// <summary>
+    /// The entity type prefix of a type whose records are not OSDU records: a lookup table filled from an ingestion table or
+    /// a dictionary file, or a replace's own table. No OSDU group is called lookup, so it can never be mistaken for one.
+    /// </summary>
+    public const string LookupEntityTypePrefix = "lookup--";
+
     private readonly List<ReferenceItem> _items;
 
     // Built lazily per field because a snapshot holds more fields than any one mapping matches by, and concurrently
