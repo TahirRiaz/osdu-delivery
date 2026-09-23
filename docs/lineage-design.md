@@ -42,8 +42,9 @@ Checked against the synced e2e catalog (`SQLFlow_E2E`, then named `SqlFlowCatalo
 | Table, view | As today | As today |
 
 An OSDU type is a node per exact kind, version included: that is what OSDU stores records under, and two versions of a
-type are two different things to deliver. A flow that reads with a wildcard (a cache type `osdu:wks:master-data--Wellbore:*`)
-has its own pattern node, which stands for everything of that type the platform holds, and is also bound to every exact
+type are two different things to deliver. A flow that reads with a wildcard (a cache type such as
+`osdu:wks:reference-data--UnitOfMeasure:*`, or a mapping's search such as `osdu:wks:master-data--Wellbore:*`) has its own
+pattern node, which stands for everything of that type the platform holds, and is also bound to every exact
 kind in the estate the pattern matches (section 5).
 
 The OSDU platform is part of an OSDU type's identity because it is part of what the record is: two environments may both
@@ -81,14 +82,15 @@ wells-welllog-03-header-delivery ──► osdu type: work-product-component--We
   ing.WellLog       ◄── wells-welllog-02-header-ing ◄── pre.WellLog, pre.v_WellLog ◄── wells-welllog-01-header-pre ◄── data/welllog
   ing.WellLogCurve  ◄── wells-welllog-02-curves-ing ◄── ...                        ◄── wells-welllog-01-curves-pre ◄── data/curves-meta
   data/curves (payload files, read at delivery rather than landed)
-  osdu cache: UnitOfMeasure, LogCurveBusinessValue, VerticalMeasurementType, Wellbore
+  osdu cache: UnitOfMeasure, LogCurveBusinessValue, VerticalMeasurementType
+  osdu type pattern: master-data--Wellbore:* (searched on the platform as each log is rendered)
 
 wells-wellbore-03-header-delivery ──► osdu type: master-data--Wellbore:1.3.0
   ing.Wellbore      ◄── wells-wellbore-02-header-ing  ◄── ... ◄── wells-wellbore-01-header-pre  ◄── data/wellbore
   ing.WellboreAlias ◄── wells-wellbore-02-aliases-ing ◄── ... ◄── wells-wellbore-01-aliases-pre ◄── data/wellbore-aliases
 
 wells-osdu-00-reference-cache ──► osdu cache types, which wells-welllog-03-header-delivery reads
-  osdu type patterns (reference-data--UnitOfMeasure:*, master-data--Wellbore:*, ...)
+  osdu type patterns (reference-data--UnitOfMeasure:*, reference-data--LogCurveBusinessValue:*, ...)
 
 wells-osdu-04-metadata-retrieval ──► out/metadata (files)
   the same osdu type patterns

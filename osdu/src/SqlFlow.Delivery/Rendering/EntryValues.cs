@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Search;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Rendering;
@@ -15,7 +16,7 @@ internal static partial class EntryValues
 {
     /// <summary>The value of <paramref name="entry"/> for the row, converted to its variable's type, or null when the variable is left out.</summary>
     public static JsonNode? Evaluate(
-        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
+        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, SearchTrail searched)
     {
         if (entry.AppliesWhen is { } condition && !Applies(condition, root, item))
         {
@@ -43,6 +44,14 @@ internal static partial class EntryValues
                     holds.Add($"{path}: {column} is empty, and the entry is required");
                 }
 
+                return null;
+            }
+        }
+        else if (entry.Source!.Kind == MappingSourceKind.Search)
+        {
+            raw = Searched(entry, root, item, renderer, holds, searched);
+            if (raw is null)
+            {
                 return null;
             }
         }
@@ -106,7 +115,7 @@ internal static partial class EntryValues
     private static string Placeholder(MappingEntry entry, string type)
     {
         var source = entry.Source!;
-        var origin = source.Kind == MappingSourceKind.Cache
+        var origin = source.Resolves
             ? entry.FindBy.Count == 0 ? source.ToString() : $"{source} by {FindText(entry)}"
             : entry.Modifiers.Count == 0 ? source.ToString() : $"{source} | {ModifierText(entry.Modifiers)}";
         var optional = entry.Required ? string.Empty : ", optional";
@@ -120,19 +129,23 @@ internal static partial class EntryValues
     /// </summary>
     private static string FindText(MappingEntry entry)
     {
+        // A cached field is stored without its data. root, so either spelling names it; a search compares the path
+        // exactly as it is written, so it is shown as written.
+        var searched = entry.Source?.Kind == MappingSourceKind.Search;
         var groups = new List<(List<string> Fields, string Operand)>();
         foreach (var find in entry.FindBy)
         {
+            var field = searched ? find.Field : ReferenceField.Normalize(find.Field);
             var operand = find.Literal is not null
                 ? $"'{find.Literal}'"
                 : entry.Modifiers.Count == 0 ? find.Column!.ToString() : $"({find.Column} | {ModifierText(entry.Modifiers)})";
             if (groups.Count > 0 && string.Equals(groups[^1].Operand, operand, StringComparison.Ordinal))
             {
-                groups[^1].Fields.Add(ReferenceField.Normalize(find.Field));
+                groups[^1].Fields.Add(field);
             }
             else
             {
-                groups.Add(([ReferenceField.Normalize(find.Field)], operand));
+                groups.Add(([field], operand));
             }
         }
 
@@ -264,6 +277,131 @@ internal static partial class EntryValues
 
         var loose = replacements.Where(kv => string.Equals(kv.Key, value, StringComparison.OrdinalIgnoreCase)).ToList();
         return loose.Count == 1 ? loose[0].Value : value;
+    }
+
+    /// <summary>
+    /// Resolves a search source: each findBy line in turn asks the platform for the one record whose property is exactly
+    /// the line's value, and the first line that finds exactly one wins. A line the run has not asked yet stops the render
+    /// there, naming the question, because what the later lines are asked depends on what this one finds. A value that is
+    /// already an OSDU id of the kind searched names its record without a search.
+    /// </summary>
+    /// <remarks>
+    /// Doubt holds the record whatever the entry's required flag says: a value several records answer to, a query the
+    /// platform refused, or a value that could not be asked for on a line when no other line found the record. Each of
+    /// those says nothing about which record was meant, and delivering the record without the reference, or with one
+    /// picked from several, would put a wrong document into OSDU with nothing to show it was a guess. Only a value every
+    /// line asked for and found nothing for is a clean miss, which an optional entry leaves out as a cache miss does.
+    /// </remarks>
+    private static object? Searched(MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, SearchTrail searched)
+    {
+        var path = entry.Target.Text;
+        var name = entry.Source!.CacheType!;
+        var outcomes = new List<string>();
+        var unaskable = false;
+        foreach (var find in entry.FindBy)
+        {
+            string? value;
+            if (find.Literal is not null)
+            {
+                value = find.Literal;
+            }
+            else
+            {
+                if (!TryModify(entry.Modifiers, Read(find.Column!, root, item), path, holds, out var modified))
+                {
+                    return null;
+                }
+
+                value = modified is bool flag ? (flag ? "true" : "false") : SourceRow.Stringify(modified);
+            }
+
+            value = value?.Trim();
+            if (string.IsNullOrEmpty(value))
+            {
+                continue;
+            }
+
+            if (!renderer.Searches.TryField(name, find.Field, out var search, out var field))
+            {
+                holds.Add(
+                    $"{path}: search.{name}.{find.Field} has not been resolved against the schema search '{name}' pins, so no query can be written for it; the mapping's preflight says why");
+                return null;
+            }
+
+            var kind = search!.Declaration.Kind;
+
+            // A value that already is an OSDU id names its record, so nothing is asked; an id of another entity type
+            // would be a reference to the wrong kind of record, which no search would have returned.
+            if (OsduId().IsMatch(value))
+            {
+                var entityType = value.Split(':')[1];
+                var searchedType = kind.Split(':')[2];
+                if (string.Equals(entityType, searchedType, StringComparison.Ordinal))
+                {
+                    return WithVersionSeparator(value);
+                }
+
+                holds.Add($"{path}: '{value}' is already an OSDU id, of a {entityType} record, and search.{name} looks for {searchedType} records ({kind})");
+                return null;
+            }
+
+            OsduQuery query;
+            try
+            {
+                query = OsduQuery.Equal(field!, value);
+            }
+            catch (OsduQueryException ex)
+            {
+                // The value cannot be asked for on this line; a later line may still find the record, and if none does the
+                // record is held, since nobody knows whether the platform holds it.
+                unaskable = true;
+                outcomes.Add($"{find.Field} '{value}' cannot be searched for: {ex.Message}");
+                continue;
+            }
+
+            var question = new SearchQuestion(kind, find.Field, value, query.Text);
+            if (!renderer.Search.TryAnswer(question, out var answer))
+            {
+                // Not asked yet. The render stops here rather than guessing, and the caller asks and renders again.
+                searched.Ask(question);
+                return null;
+            }
+
+            searched.Use(question, answer);
+            switch (answer.Outcome)
+            {
+                case SearchOutcome.Found:
+                    return WithVersionSeparator(answer.Id!);
+                case SearchOutcome.NotFound:
+                    outcomes.Add($"{find.Field} '{value}' {answer.Describe()}");
+                    continue;
+                default:
+                    holds.Add(
+                        $"{path}: searching {kind} for {find.Field} '{value}' {answer.Describe()}; a reference picked from several, or taken without an answer, would put a wrong document into OSDU, so the record is held. Make the incoming value name one record.");
+                    return null;
+            }
+        }
+
+        if (outcomes.Count == 0)
+        {
+            if (entry.Required)
+            {
+                var operands = string.Join(", ", entry.FindBy.Where(f => f.Column is not null).Select(f => f.Column!.ToString()).Distinct(StringComparer.Ordinal));
+                holds.Add($"{path}: {operands} is empty, so there is nothing to search for, and the entry is required");
+            }
+
+            return null;
+        }
+
+        var searchedKind = renderer.Searches.Searches.TryGetValue(name, out var declared) ? declared.Declaration.Kind : name;
+        var reason = $"{path}: no {name} on the platform ({searchedKind}) matches: {string.Join("; ", outcomes)}";
+        if (unaskable)
+        {
+            holds.Add(reason + ". A value that cannot be searched for proves nothing about whether the record exists, so the record is held whatever the entry's required flag says");
+            return null;
+        }
+
+        return Missing(entry, reason, holds);
     }
 
     /// <summary>

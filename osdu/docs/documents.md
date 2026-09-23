@@ -912,8 +912,8 @@ ledger name is at most 200 characters.
 
 An interface waits for another in two cases:
 
-- **Its records refer to what the other delivers.** A property its mapping fills (from a column, the cache or a static
-  value) refers to other records when the template's schema says so with `x-osdu-relationship`: `osdu.data.WellboreID`
+- **Its records refer to what the other delivers.** A property its mapping fills (from a column, the cache, a search
+  or a static value) refers to other records when the template's schema says so with `x-osdu-relationship`: `osdu.data.WellboreID`
   of a well log refers to `master-data--Wellbore`. The interface then waits for every other interface of the source
   whose mapping fills that entity type. A relationship that names only a group (`Datasets[]` refers to `dataset`) waits
   for every interface delivering a kind of that group. A reference to a kind no other interface delivers is not waited
@@ -1036,9 +1036,10 @@ captured by a cache flow.
 
 ## Cache flow
 
-The reference and master data the mappings resolve against ([design.md](design.md) section 6.2). A cache flow is the
-one place what is cached is defined: the OSDU platform to search, the types to cache, and for each type the paths of a
-record to keep. It fills the cache of the partition its `source.headers.data-partition-id` names, and a delivery flow
+The reference data the mappings resolve against ([design.md](design.md) section 6.2). A cache flow is the one place what
+is cached is defined: the OSDU platform to search, the types to cache, and for each type the paths of a record to keep.
+A cache is for closed vocabularies a capture can hold whole; records that are business data, such as the wellbores a
+well log names, are searched for by the mapping as each record needs one ([findBy and a search](#findby-and-a-search)). It fills the cache of the partition its `source.headers.data-partition-id` names, and a delivery flow
 reads the cache of the partition it delivers to ([The partition cache](#the-partition-cache)). The sample estate's
 cache flow, `samples/wells/cache/wells-osdu-00-reference-cache.yaml`, fills partition `dev`:
 
@@ -1074,14 +1075,9 @@ types:
   - kind: "osdu:wks:reference-data--VerticalMeasurementType:*"
     name: VerticalMeasurementType
     fields: [data.Code, data.Name]
-  - kind: "osdu:wks:master-data--Wellbore:*"
-    name: Wellbore
-    fields:
-      - data.FacilityName
-      # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a
-      # source row naming a wellbore by any one of them resolves to the same record.
-      - path: data.NameAliases.AliasName
-        as: Alias
+  - kind: "osdu:wks:reference-data--TrajectoryStationPropertyType:*"
+    name: TrajectoryStationPropertyType
+    fields: [data.Code, data.Name, data.ID]
 
 reliability:
   retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
@@ -1212,6 +1208,11 @@ parameters:                        # what the mapping accepts from the flow; val
   aclViewer: { required: true }
   legalTag: { required: true }
 
+searches:                          # record sets searched for on the platform as a record needs one, not cached
+  Wellbore:
+    kind: "osdu:wks:master-data--Wellbore:*"                 # one entity type, at one version or every version
+    schema: { kind: osdu:wks:master-data--Wellbore:1.3.0, version: 58d6bdbd9d066a06 }  # says how it is indexed
+
 mappings:
   - target: osdu.acl.owners        # the four access and legal variables take static, non-empty lists
     static: ["{param.aclOwner}"]
@@ -1227,8 +1228,10 @@ mappings:
     source: dataset.log_source       # a column of the dataset's row
     modifiers: [trim]
   - target: osdu.data.WellboreID
-    source: cache.Wellbore.id      # the id of the cached record findBy selects
-    findBy: cache.Wellbore.FacilityName = dataset.wellbore_uwi
+    source: search.Wellbore.id     # the id of the one record on the platform findBy finds
+    findBy:                        # tried in order; a line is asked only when every line before it found nothing
+      - search.Wellbore.data.FacilityName = dataset.wellbore_uwi
+      - search.Wellbore.data.NameAliases.AliasName = dataset.wellbore_uwi
   - target: osdu.data.VerticalMeasurement.VerticalMeasurementTypeID
     static: "{param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"
   - target: osdu.data.Curves       # the repeater: one item per row of the child dataset
@@ -1245,6 +1248,8 @@ mappings:
 fixtures:                          # whole-record regression fixtures, rendered by the preflight gate
   - name: ...
     parameters: { dataPartition: dev }
+    searches:                            # what the platform is assumed to answer; a fixture never asks it
+      - { search: Wellbore, field: data.FacilityName, value: NO 15/9-F-1, id: "dev:master-data--Wellbore:abc" }
     record: { column: value, ... }       # the dataset's row
     datasets: { curves: [ { ... } ] }    # child dataset rows by child dataset name
     expected: |
@@ -1264,8 +1269,9 @@ fixtures:                          # whole-record regression fixtures, rendered 
 | `dataset.label` | Optional display text for the ledger and the GUI, with `{dataset.<column>}` tokens, cut at 400 characters. It never enters the record. |
 | `dataset.identity` | Optional list of the dataset's own columns whose values identify the record to a person (a wellbore id, a log id). Every value is indexed by the ledger, so the Records page finds the record by any of them across every flow. Search only: it never enters the record. |
 | `parameters` | Values the flow supplies under `render.parameters`, each declared with `required`, `default` and `description`. `dataPartition` is always declared, and a flow value for a parameter the mapping does not declare is refused. |
+| `searches` | The record sets the mapping's `search.` sources look in: each a `kind` and the saved template (`schema.kind`, `schema.version`) whose schema says how that kind's properties are indexed. One search per kind, and each one is read by an entry. |
 | `mappings` | The entries, at least one. |
-| `fixtures` | Example rows and the exact record each must render to. |
+| `fixtures` | Example rows and the exact record each must render to, with `searches:` saying what the platform is assumed to answer to each search the render asks. |
 
 ### An entry
 
@@ -1274,7 +1280,7 @@ fixtures:                          # whole-record regression fixtures, rendered 
 | `target` | The template variable to fill: `osdu.` and the property's path in the record, with `[]` after an array of objects (`osdu.data.Curves[].CurveID`). A path steps into at most one array. |
 | `source` | Where the value comes from (below). An entry has `source` or `static`, never both. |
 | `static` | A fixed value: text, a number, a boolean, a list or an object. `{param.name}` tokens in its text are replaced with the flow's parameter values. |
-| `findBy` | With a cache source, and required there: which cached record to read. One line or a list. |
+| `findBy` | With a cache or a search source, and required there: which record to read. One line or a list. |
 | `modifiers` | Changes to the incoming dataset value, applied top to bottom. |
 | `appliesWhen` | When the entry applies to a row. When it does not, the variable is left out for that row. |
 | `required` | What an empty value does: `true` (the default) holds the record, `false` leaves the variable out. |
@@ -1292,6 +1298,7 @@ A static entry takes only `appliesWhen` and `description` besides its value. No 
 | `dataset.<child>` | On a target other entries step into (`osdu.data.Curves`): one array item per row of the child dataset. This is the repeater, and it takes no modifiers. |
 | `cache.<Type>.id` | The OSDU id of the cached record `findBy` selects, with the trailing `:` OSDU relationships use. |
 | `cache.<Type>.<field>` | A field of that cached record, or a path inside one (`Name`, `NameAliases.AliasName`). |
+| `search.<name>.id` | The OSDU id of the one record a search of the platform finds by `findBy`, with the trailing `:`. A search reads nothing else. |
 
 An entry inside a repeater (`osdu.data.Curves[].CurveID`) reads the rows of the child dataset the repeater names, and can
 read the dataset's own row with `dataset.<column>` too. A repeater inside a repeated item is not supported. Each child
@@ -1327,6 +1334,23 @@ anything else with one separator, on the cached values as well as on the incomin
 codes: `s/m` and `S.M` would fold together and must not. It runs only after the exact and case-insensitive comparisons
 have both found nothing, so it never moves a value that already resolved, and a folded value several records answer to
 selects none of them.
+
+### findBy and a search
+
+```yaml
+findBy:
+  - search.Wellbore.data.FacilityName = dataset.wellbore_uwi
+  - search.Wellbore.data.NameAliases.AliasName = dataset.wellbore_uwi
+```
+
+Each line names a property under `data` as the searched kind's schema names it, and asks the platform, under the flow's
+own target, credentials and partition, for the records whose property is exactly the line's value. The query follows
+how the pinned schema has the platform index the property: the `keyword` sub-field of text, the property itself for a
+keyword, and the service's `nested(...)` form inside a nested array. Exactly one record found is the answer; none on any
+line leaves the variable out or holds the record as `required` says; several records, a query the service refuses, or
+a value that cannot be asked for when no line found the record hold the record whatever `required` says; and a
+platform that cannot be asked fails the run. [mapping-templates.md](mapping-templates.md#searches) has the rules in
+full: what each property shape is asked as, which values are refused and why, and how a run asks.
 
 A value that already is an OSDU id names its record by id. When the cache does not hold it, a `cache.<Type>.id` source
 writes it as it is (ending in `:`), and an entry reading another field has no value. A cached field of its own called

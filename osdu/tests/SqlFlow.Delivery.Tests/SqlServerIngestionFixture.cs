@@ -492,6 +492,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Warning));
         services.AddSingleton<IProtocolFactory>(new FakeProtocolFactory(protocol));
+        services.AddSingleton<IRecordSearchFactory>(FixedRecordSearchFactory.SampleWellbores());
         services.AddSqlFlowEngine();
         services.AddDeliveryKind();
         services.AddDeliveryLedger(_ => () => new OsduDbContext(OsduDbContext.SqlServerOptions(connectionString)));

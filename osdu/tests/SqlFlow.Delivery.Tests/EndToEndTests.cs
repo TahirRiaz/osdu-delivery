@@ -35,11 +35,11 @@ public class EndToEndTests : IDisposable
 
     private async Task<(FlowRuntime Runtime, FakeProtocol Protocol, OsduLedger Ledger)> RuntimeAsync(
         MemoryIngestionTables tables, Func<FlowDefinition, FlowDefinition>? adjust = null, FakeProtocol? protocol = null,
-        FakeProtocolFactory? protocols = null)
+        FakeProtocolFactory? protocols = null, IRecordSearchFactory? searches = null)
     {
         var ledger = _db.Ledger(_clock);
         protocol ??= new FakeProtocol();
-        var engine = Samples.Engine(ledger, _clock, sources: tables) with { Protocols = protocols ?? new FakeProtocolFactory(protocol) };
+        var engine = Samples.Engine(ledger, _clock, sources: tables, searches: searches) with { Protocols = protocols ?? new FakeProtocolFactory(protocol) };
         var flow = adjust is null ? Samples.LocalFlow(_root) : adjust(Samples.LocalFlow(_root));
         var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
         return (runtime, protocol, ledger);
@@ -354,6 +354,34 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_batch_asks_every_name_once_in_one_round_and_a_wellbore_known_only_by_an_alias_in_the_next()
+    {
+        var tables = await EstateAsync();
+        tables.Records[2].Row["wellbore_uwi"] = "OLD-NAME-B";
+        var searches = new FixedRecordSearchFactory(
+            ("data.FacilityName", "OSDU-DEV-1-A", FixedRecordSearchFactory.Partition + ":master-data--Wellbore:OSDU-DEV-1-A"),
+            ("data.FacilityName", "OSDU-DEV-1-B", FixedRecordSearchFactory.Partition + ":master-data--Wellbore:OSDU-DEV-1-B"),
+            ("data.NameAliases.AliasName", "OLD-NAME-B", FixedRecordSearchFactory.Partition + ":master-data--Wellbore:OSDU-DEV-1-B"));
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables, searches: searches);
+        using (runtime)
+        {
+            var (summary, _) = await RunAsync(runtime, protocol, ledger);
+
+            Assert.Equal(3, summary.Delivered);
+            var byAlias = Assert.Single(protocol.Deliveries, w => w.Key == SampleEstate.Key(2));
+            Assert.Equal("dev:master-data--Wellbore:OSDU-DEV-1-B:", byAlias.Document["data"]!["WellboreID"]!.GetValue<string>());
+
+            // Every distinct name is asked once, and the one no wellbore is named by is asked again as an alias, after.
+            var asked = Assert.Single(searches.Created).Asked.ToList();
+            var names = asked.Where(q => q.Field == "data.FacilityName").Select(q => q.Value).ToList();
+            Assert.Equal(names.Distinct(StringComparer.Ordinal).Count(), names.Count);
+            Assert.Contains("OLD-NAME-B", names);
+            Assert.Equal(("data.NameAliases.AliasName", "OLD-NAME-B"), (asked[^1].Field, asked[^1].Value));
+            Assert.Single(asked, q => q.Field == "data.NameAliases.AliasName");
+        }
+    }
+
+    [Fact]
     public async Task Unresolvable_reference_holds_the_record_and_release_requeues_it()
     {
         var tables = await EstateAsync();
@@ -367,7 +395,8 @@ public class EndToEndTests : IDisposable
             Assert.Equal(1, submission!.Held);
             var held = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(2));
             Assert.Equal(RecordStatus.Held, held!.Status);
-            Assert.Contains("no Wellbore matches", held.LastError, StringComparison.Ordinal);
+            Assert.Contains("no Wellbore on the platform (osdu:wks:master-data--Wellbore:*) matches", held.LastError, StringComparison.Ordinal);
+            Assert.Contains("data.FacilityName 'NO 99/9-Z-1' found no record", held.LastError, StringComparison.Ordinal);
             Assert.Equal("NO 99/9-Z-1 / STAT_COMP / run 1 (L-2001)", held.Label);
             // The held record is traced to the row it was held at.
             Assert.Equal(SampleEstate.FileName, held.PendingSourceFileName);

@@ -404,11 +404,15 @@ test.describe.serial("templates and the mapping builder", () => {
 
     // What fills a variable is read beside the tree, whole: the origin, every line the lookup tries, and the modifiers
     // in order. A cache entry's modifiers change the value the lookup compares, which is the one thing a reader gets wrong.
+    // The wellbore is searched for on the platform, by its name and then by its aliases.
     await properties.getByTestId("templates-view-variable-osdu.data.WellboreID").click();
     const entry = properties.getByTestId("templates-view-properties-entry");
-    await expect(entry.getByTestId("delivery-mapping-property-detail-source")).toContainText("cache.Wellbore.id");
+    await expect(entry.getByTestId("delivery-mapping-property-detail-source")).toContainText("search.Wellbore.id");
+    await expect(entry.getByTestId("delivery-mapping-property-detail-source")).toContainText("Record found by searching the platform");
     await expect(entry.getByTestId("delivery-mapping-property-detail-lookup"))
-      .toContainText("cache.Wellbore.FacilityName = dataset.wellbore_uwi");
+      .toContainText("search.Wellbore.data.FacilityName = dataset.wellbore_uwi");
+    await expect(entry.getByTestId("delivery-mapping-property-detail-lookup"))
+      .toContainText("search.Wellbore.data.NameAliases.AliasName = dataset.wellbore_uwi");
     await properties.getByTestId("templates-view-variable-osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID").click();
     const modifiers = entry.getByTestId("delivery-mapping-property-detail-modifiers");
     await expect(modifiers).toContainText("split on ' ', part 2");

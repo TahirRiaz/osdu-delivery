@@ -8,7 +8,9 @@ import { defineConfig, devices } from "@playwright/test";
 //  1. the OSDU Delivery control plane host (dotnet), pointed at a dedicated local test metadata database; bootstrap
 //     provisioning applies SQLFlow's catalog migrations and the OSDU module's beside them, seeds roles, and creates the
 //     e2e admin the tests sign in with. The chain's source and ingestion tables are a database of their own;
-//  2. the GUI dev server, pointed at that control plane via VITE_API_BASE_URL (which wins in dev mode).
+//  2. the GUI dev server, pointed at that control plane via VITE_API_BASE_URL (which wins in dev mode);
+//  3. a stand-in for the OSDU platform the sample flows deliver to (e2e/osdu-standin.mjs), which answers the wellbore
+//     searches a WellLog or a trajectory makes when it renders, and nothing else, so no run reaches a real OSDU.
 // Requirements on the machine: a SQL Server the suite may create a database on, sqlcmd, and the .NET SDK, same as the
 // DB-backed xUnit suites. The default connection uses integrated security on a local server; SQLFLOW_E2E_CATALOG_DB
 // names any other, a SQL login included (CI runs the suite that way).
@@ -20,6 +22,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const apiPort = Number(process.env.SQLFLOW_E2E_API_PORT ?? 5299);
 const guiPort = Number(process.env.SQLFLOW_E2E_GUI_PORT ?? 5173);
+const osduPort = Number(process.env.SQLFLOW_E2E_OSDU_PORT ?? 5301);
 
 // Overridable so a run can provision its own catalog next to an existing one: a database left behind by an older
 // build cannot always be migrated forward, and pointing the suite at a fresh name is the non-destructive way past it.
@@ -95,6 +98,22 @@ export const E2E = {
   // Where the chain's source and ingestion tables live, which is where the volume is in a real estate. The pre and
   // ingestion flows create their own schemas in it; the seed spec creates the database itself.
   sampleDb: process.env.SQLFLOW_E2E_SAMPLE_DB ?? inDatabase(catalogDb, "OsduSample_E2E"),
+  // Where the sample flows deliver, as every process of the estate resolves their ${env:...} references: the stand-in
+  // platform on loopback, which a delivery host reaches only when told it may, and the partition, access groups and
+  // legal tag every sample mapping fixture pins. The estate is hermetic, so these are declared here rather than taken
+  // from whatever the shell that started the suite happens to hold.
+  osdu: {
+    OSDU_URL: `http://127.0.0.1:${osduPort}`,
+    OSDU_TOKEN_URL: `http://127.0.0.1:${osduPort}/token`,
+    OSDU_CLIENT_ID: "the-e2e-authenticates-with-nothing",
+    OSDU_CLIENT_SECRET: "the-e2e-authenticates-with-nothing",
+    OSDU_SCOPE: "the-e2e-authenticates-with-nothing",
+    OSDU_DATA_PARTITION: "dev",
+    OSDU_ACL_OWNER: "data.default.owners@dev.dataservices.energy",
+    OSDU_ACL_VIEWER: "data.default.viewers@dev.dataservices.energy",
+    OSDU_LEGAL_TAG: "dev-reference-data-default",
+    SQLFLOW_DELIVERY_ALLOW_LOOPBACK: "true",
+  },
 } as const;
 
 export default defineConfig({
@@ -118,6 +137,16 @@ export default defineConfig({
     },
   ],
   webServer: [
+    {
+      // First, so a plan the control plane runs as soon as it is up finds the platform its flows search.
+      command: "node e2e/osdu-standin.mjs",
+      url: `${E2E.osdu.OSDU_URL}/health`,
+      timeout: 30_000,
+      reuseExistingServer: !process.env.CI,
+      env: {
+        SQLFLOW_E2E_OSDU_PORT: String(osduPort),
+      },
+    },
     {
       command: ["dotnet", ...hostRun("../hosts/SqlFlow.Delivery.ControlPlane.Host")].join(" "),
       // Readiness, not liveness: liveness is up before bootstrap has created a thing, and an estate of three fresh
@@ -149,6 +178,8 @@ export default defineConfig({
         // The sample flows read their ingestion tables through this reference. Without it a plan cannot open the tables
         // the seed loaded, and every delivery run fails on a connection it cannot resolve.
         OSDU_SAMPLE_DB: E2E.sampleDb,
+        // Where the sample flows deliver: the stand-in platform, whose search a plan asks for the wellbores it renders.
+        ...E2E.osdu,
         ControlPlane__Jwt__SigningKey: "e2e-signing-key-0123456789abcdef-0123456789abcdef-PADDING",
         ControlPlane__Jwt__BootstrapSecret: E2E.bootstrapSecret,
         // The suite provisions a fresh, dedicated test catalog, so it opts into database creation explicitly.

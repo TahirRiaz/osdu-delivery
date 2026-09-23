@@ -44,6 +44,7 @@ const CHOICE_LABELS: Record<Choice, string> = {
   Repeat: "Repeat child rows",
   Cache: "Cache",
   Static: "Static value",
+  Search: "Platform search",
 };
 
 const OPERATOR_LABELS: Record<MappingDraftConditionOperator, string> = {
@@ -249,7 +250,10 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
   const { variable, entry, keyHolder, outside } = target;
   const known = useMemo(() => knownColumns(draft), [draft]);
 
-  const allowed: MappingDraftInput[] = outside !== null ? ["Dataset", "Repeat", "Cache", "Static"] : inputsFor(variable);
+  const searches = draft.searches;
+  const offered: MappingDraftInput[] = outside !== null ? ["Dataset", "Repeat", "Cache", "Search", "Static"] : inputsFor(variable);
+  // A search is offered once the mapping declares one to look in; the searches block says which kinds it looks in.
+  const allowed = offered.filter((input) => input !== "Search" || searches.length > 0);
   if (entry !== null && !allowed.includes(entry.input)) {
     allowed.push(entry.input);
   }
@@ -298,6 +302,14 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
       group: "Other cached types",
     })),
   ];
+  const searchOptions: ChoiceOption[] = searches.map((search) => ({ value: search.name, hint: search.kind, group: "The mapping's searches" }));
+  // The properties other entries already compare in the same search, which is where a new line most often looks.
+  const searchedFields: ChoiceOption[] = [...new Set(draft.entries
+    .filter((candidate) => candidate.input === "Search" && candidate.cacheType === cacheType.trim())
+    .flatMap((candidate) => candidate.findBy.map((find) => find.field))
+    .filter((field) => field !== ""))]
+    .map((field) => ({ value: field, group: "Compared by this search's entries" }));
+  const lookup = choice === "Cache" || choice === "Search";
 
   let keyError: string | null = null;
   if (keyHolder !== null) {
@@ -316,17 +328,33 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
   const childrenList = `${ids}-children`;
 
   const choose = (next: Choice) => {
+    const previous = choice;
     setChoice(next);
+    if (next === "Search") {
+      // A search reads the id of the record it finds, in one of the searches the mapping declares. The lines of a cache
+      // lookup name cached fields, not the properties a search compares, so they do not carry over.
+      if (!searches.some((search) => search.name === cacheType.trim())) {
+        setCacheType(searches[0]?.name ?? "");
+      }
+
+      setCacheField("id");
+      if (findBy.length === 0 || previous === "Cache") {
+        setFindBy([{ field: "", mode: "column", value: "" }]);
+      }
+
+      return;
+    }
+
     if (next !== "Cache") {
       return;
     }
 
-    const type = cacheType.trim() === "" ? variable.cacheTypes[0] ?? "" : cacheType;
+    const type = cacheType.trim() === "" || previous === "Search" ? variable.cacheTypes[0] ?? "" : cacheType;
     if (type !== cacheType) {
       setCacheType(type);
     }
 
-    if (findBy.length === 0) {
+    if (findBy.length === 0 || previous === "Search") {
       const fields = repoTypes.find((candidate) => candidate.name === type)?.fields ?? [];
       setFindBy([{ field: fields[0] ?? "id", mode: "column", value: "" }]);
     }
@@ -369,14 +397,14 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
       input: choice,
       column: choice === "Dataset" ? bare(column) : null,
       child: choice === "Repeat" ? bare(child) : null,
-      cacheType: choice === "Cache" ? cacheType.trim() : null,
-      cacheField: choice === "Cache" ? cacheField.trim() : null,
-      findBy: choice === "Cache"
+      cacheType: lookup ? cacheType.trim() : null,
+      cacheField: choice === "Cache" ? cacheField.trim() : choice === "Search" ? "id" : null,
+      findBy: lookup
         ? findBy.map((line) => (line.mode === "text"
           ? { field: line.field.trim(), column: null, literal: line.value }
           : { field: line.field.trim(), column: bare(line.value), literal: null }))
         : [],
-      modifiers: choice === "Dataset" || choice === "Cache"
+      modifiers: choice === "Dataset" || lookup
         ? modifiers.map((modifier) => (modifier.kind === "date" && (modifier.text ?? "").trim() === "" ? { ...modifier, text: null } : modifier))
         : [],
       appliesWhen: conditionOn
@@ -517,39 +545,62 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
         )}
 
         {choice === "Cache" && (
+          <Section
+            title="Cached record"
+            hint={repoTypes.length === 0
+              ? "The repository's cache holds no types, so the check cannot confirm the type or its fields."
+              : "The cached type to read, and the field to read from it. id reads the record's OSDU id in the form relationships use."}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <ChoiceOrText
+                value={cacheType}
+                options={typeOptions}
+                onChange={setCacheType}
+                placeholder="Cached type"
+                testId="mapping-builder-entry-cache-type"
+              />
+              <span className="font-mono text-[12px] text-muted-foreground">.</span>
+              <Input
+                className="h-8 w-44 font-mono"
+                placeholder="id"
+                value={cacheField}
+                onChange={(event) => setCacheField(event.target.value)}
+                data-testid="mapping-builder-entry-cache-field"
+              />
+            </div>
+          </Section>
+        )}
+
+        {choice === "Search" && (
+          <Section
+            title="Searched record"
+            hint="The search to look in, as the mapping declares it. A search reads the OSDU id of the one record it finds, in the form relationships use."
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <ChoiceOrText
+                value={cacheType}
+                options={searchOptions}
+                onChange={setCacheType}
+                placeholder="Search"
+                testId="mapping-builder-entry-search"
+              />
+              <span className="font-mono text-[12px] text-muted-foreground">.id</span>
+            </div>
+          </Section>
+        )}
+
+        {lookup && (
           <>
             <Section
-              title="Cached record"
-              hint={repoTypes.length === 0
-                ? "The repository's cache holds no types, so the check cannot confirm the type or its fields."
-                : "The cached type to read, and the field to read from it. id reads the record's OSDU id in the form relationships use."}
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <ChoiceOrText
-                  value={cacheType}
-                  options={typeOptions}
-                  onChange={setCacheType}
-                  placeholder="Cached type"
-                  testId="mapping-builder-entry-cache-type"
-                />
-                <span className="font-mono text-[12px] text-muted-foreground">.</span>
-                <Input
-                  className="h-8 w-44 font-mono"
-                  placeholder="id"
-                  value={cacheField}
-                  onChange={(event) => setCacheField(event.target.value)}
-                  data-testid="mapping-builder-entry-cache-field"
-                />
-              </div>
-            </Section>
-            <Section
               title="Find the record by"
-              hint="Tried in order. The first line that finds a record wins, and several matching records hold the record."
+              hint={choice === "Search"
+                ? "Tried in order. Each line asks the platform for the one record whose property is exactly the value, and the first that finds one wins. Several matching records, or a value that cannot be asked for, hold the record."
+                : "Tried in order. The first line that finds a record wins, and several matching records hold the record."}
               action={(
                 <Button
                   variant="outline"
                   size="xs"
-                  onClick={() => setFindBy((current) => [...current, { field: typeFields[0] ?? "id", mode: "column", value: "" }])}
+                  onClick={() => setFindBy((current) => [...current, { field: choice === "Search" ? "" : typeFields[0] ?? "id", mode: "column", value: "" }])}
                   data-testid="mapping-builder-entry-findby-add"
                 >
                   <Plus />
@@ -558,7 +609,11 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
               )}
               testId="mapping-builder-entry-findby"
             >
-              {findBy.length === 0 && <p className="text-xs text-destructive">Add at least one line, or no cached record can be found.</p>}
+              {findBy.length === 0 && (
+                <p className="text-xs text-destructive">
+                  {choice === "Search" ? "Add at least one line, or no record can be searched for." : "Add at least one line, or no cached record can be found."}
+                </p>
+              )}
               {findBy.map((line, index) => (
                 <div
                   key={index}
@@ -567,9 +622,9 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                 >
                   <ChoiceOrText
                     value={line.field}
-                    options={fieldOptions}
+                    options={choice === "Search" ? searchedFields : fieldOptions}
                     onChange={(field) => updateLine(index, { field })}
-                    placeholder="Cached field"
+                    placeholder={choice === "Search" ? "data.FacilityName" : "Cached field"}
                     testId={`mapping-builder-entry-findby-field-${index}`}
                   />
                   <span className="font-mono text-[12px] text-muted-foreground">=</span>
@@ -601,10 +656,12 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                   </IconAction>
                 </div>
               ))}
-              <Label className="flex items-center gap-2 text-[13px] font-normal">
-                <Switch checked={ignoreSeparators} onCheckedChange={setIgnoreSeparators} data-testid="mapping-builder-entry-ignore-separators" />
-                Also try with punctuation and spacing folded away (for names, never for codes)
-              </Label>
+              {choice === "Cache" && (
+                <Label className="flex items-center gap-2 text-[13px] font-normal">
+                  <Switch checked={ignoreSeparators} onCheckedChange={setIgnoreSeparators} data-testid="mapping-builder-entry-ignore-separators" />
+                  Also try with punctuation and spacing folded away (for names, never for codes)
+                </Label>
+              )}
             </Section>
           </>
         )}
@@ -704,12 +761,14 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
           </Section>
         )}
 
-        {(choice === "Dataset" || choice === "Cache") && (
+        {(choice === "Dataset" || lookup) && (
           <Section
             title="Modifiers"
             hint={choice === "Cache"
               ? "On a cache input, modifiers change the dataset value before it is compared. Cached values are never modified."
-              : "Applied to the dataset value, top to bottom."}
+              : choice === "Search"
+                ? "On a search input, modifiers change the dataset value before it is searched for."
+                : "Applied to the dataset value, top to bottom."}
             action={(
               <Select value="" onValueChange={(kind) => setModifiers((current) => [...current, newModifier(kind as MappingDraftModifierKind)])}>
                 <SelectTrigger size="sm" className="h-7 w-40" data-testid="mapping-builder-entry-modifier-add">

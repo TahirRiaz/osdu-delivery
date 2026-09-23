@@ -26,13 +26,41 @@ public sealed class MappingRenderer
     private readonly IReadOnlyList<MappingEntry> _recordEntries;
     private readonly IReadOnlyList<(MappingEntry Repeater, IReadOnlyList<MappingEntry> Items)> _repeaters;
     private readonly IReadOnlyList<string>? _owned;
+    private readonly ResolvedSearches _searches;
+    private readonly IRecordSearch _search;
 
-    public MappingRenderer(MappingDefinition mapping, SchemaSnapshot schema, ReferenceSnapshot references, RenderContext context)
-        : this(mapping, schema, references, context, requireParameters: true)
+    /// <param name="mapping">The mapping rendered.</param>
+    /// <param name="schema">The template the mapping pins.</param>
+    /// <param name="references">The version of the partition's cache a <c>cache.</c> source reads.</param>
+    /// <param name="context">What the render is pinned to, and the mapping's parameters.</param>
+    /// <param name="searches">
+    /// The mapping's searches resolved against the schemas they pin, which say how each property a <c>search.</c> source
+    /// compares is indexed. A mapping that searches nothing needs none; a search source whose property is not resolved
+    /// here holds its record rather than guess at a query.
+    /// </param>
+    /// <param name="search">
+    /// Where a <c>search.</c> source is answered. A mapping with no search never consults it, so a render of one may be
+    /// given none; a mapping that searches and is given none finds nothing and holds.
+    /// </param>
+    public MappingRenderer(
+        MappingDefinition mapping,
+        SchemaSnapshot schema,
+        ReferenceSnapshot references,
+        RenderContext context,
+        ResolvedSearches? searches = null,
+        IRecordSearch? search = null)
+        : this(mapping, schema, references, context, requireParameters: true, searches, search)
     {
     }
 
-    private MappingRenderer(MappingDefinition mapping, SchemaSnapshot schema, ReferenceSnapshot references, RenderContext context, bool requireParameters)
+    private MappingRenderer(
+        MappingDefinition mapping,
+        SchemaSnapshot schema,
+        ReferenceSnapshot references,
+        RenderContext context,
+        bool requireParameters,
+        ResolvedSearches? searches = null,
+        IRecordSearch? search = null)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(schema);
@@ -45,6 +73,8 @@ public sealed class MappingRenderer
         }
 
         _mapping = mapping;
+        _searches = searches ?? ResolvedSearches.None;
+        _search = search ?? NoRecordSearch.Instance;
         _schema = schema;
         _references = references;
         _context = context;
@@ -210,6 +240,9 @@ public sealed class MappingRenderer
         var holds = new List<string>();
         var usages = new List<CacheUsage>();
 
+        // What this render asks of the platform is its own: the plan renders on several threads over one renderer.
+        var searched = new SearchTrail();
+
         var key = DeriveKey(record.Row, out var keyValues);
         var sourceKey = SourceKey.Display(_mapping.Dataset.System, keyValues);
         if (key is null)
@@ -230,7 +263,7 @@ public sealed class MappingRenderer
             document["id"] = targetId;
         }
 
-        Assemble(document, new RowValues(this, record, holds, usages), holds);
+        Assemble(document, new RowValues(this, record, holds, usages, searched), holds);
 
         var normalized = (JsonObject)CanonicalJson.Normalize(document)!;
         string canonical;
@@ -258,10 +291,26 @@ public sealed class MappingRenderer
             MetadataHash = metadataHash,
             Holds = holds,
             CacheUsages = Distinct(usages),
+            SearchUsages = searched.Used,
+            Unanswered = searched.Unanswered,
         };
     }
 
+    /// <summary>
+    /// This renderer over the same mapping, template and cache with <paramref name="context"/> in place of its context
+    /// and <paramref name="search"/> in place of its search, where given: a fixture's own parameters, or the answers a
+    /// fixture assumes the platform gives.
+    /// </summary>
+    internal MappingRenderer With(RenderContext? context = null, IRecordSearch? search = null)
+        => new(_mapping, _schema, _references, context ?? _context, requireParameters: true, _searches, search ?? _search);
+
     internal ReferenceSnapshot References => _references;
+
+    /// <summary>The mapping's searches, resolved against the schemas they pin.</summary>
+    public ResolvedSearches Searches => _searches;
+
+    /// <summary>Where a search source is answered.</summary>
+    public IRecordSearch Search => _search;
 
     internal SchemaSnapshot Schema => _schema;
 
@@ -399,9 +448,9 @@ public sealed class MappingRenderer
     }
 
     /// <summary>A source record's values, as a delivery renders them.</summary>
-    private sealed class RowValues(MappingRenderer renderer, SourceRecord record, List<string> holds, List<CacheUsage> usages) : IRecordValues
+    private sealed class RowValues(MappingRenderer renderer, SourceRecord record, List<string> holds, List<CacheUsage> usages, SearchTrail searched) : IRecordValues
     {
-        public JsonNode? Value(MappingEntry entry, SourceRow? item) => EntryValues.Evaluate(entry, record.Row, item, renderer, holds, usages);
+        public JsonNode? Value(MappingEntry entry, SourceRow? item) => EntryValues.Evaluate(entry, record.Row, item, renderer, holds, usages, searched);
 
         public bool Applies(MappingEntry repeater) => repeater.AppliesWhen is not { } condition || EntryValues.Applies(condition, record.Row, item: null);
 
@@ -447,6 +496,19 @@ public sealed record RenderResult
 
     /// <summary>What the render consumed from the cache: the dependency trail a later cache version is checked against.</summary>
     public IReadOnlyList<CacheUsage> CacheUsages { get; init; } = [];
+
+    /// <summary>What the render resolved by searching the platform, beside what it read from the cache.</summary>
+    public IReadOnlyList<SearchUsage> SearchUsages { get; init; } = [];
+
+    /// <summary>
+    /// Questions the render needed answered and the run had not asked yet. A result carrying any of these is not
+    /// finished: the caller answers them and renders the row again, and the second render finds them known. It is never
+    /// delivered as it stands, because the values that depend on them are not in it.
+    /// </summary>
+    public IReadOnlyList<SearchQuestion> Unanswered { get; init; } = [];
+
+    /// <summary>True when the render could not finish because the platform has not been asked yet.</summary>
+    public bool IsIncomplete => Unanswered.Count > 0;
 
     public bool IsHeld => Holds.Count > 0 || Key is null;
 }

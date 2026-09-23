@@ -1,5 +1,6 @@
 using System.Text.Json;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Storage;
@@ -53,7 +54,8 @@ public class MappingBuilderTests
                 ["legalTag"] = "dev-reference-data-default",
             },
         };
-        var issues = Preflight.Check(reread, schema, references, context, sourceColumns: null);
+        var searches = await RenderResolver.SearchesAsync(Samples.SampleTemplates, reread);
+        var issues = Preflight.Check(reread, schema, references, context, sourceColumns: null, searches);
         Assert.True(issues.All(i => i.Severity != IssueSeverity.Error), string.Join(Environment.NewLine, issues));
     }
 
@@ -69,22 +71,25 @@ public class MappingBuilderTests
         Assert.Equal(MappingBuilder.EnvelopeTargets, draft.Entries.Take(4).Select(e => e.Target));
         Assert.All(draft.Entries.Take(4), e => Assert.Equal(MappingDraftInput.Static, e.Input));
 
-        var wellbore = Assert.Single(draft.Entries, e => e.Target == "osdu.data.WellboreID");
-        Assert.True(wellbore.Prefilled);
-        Assert.Equal(MappingDraftInput.Cache, wellbore.Input);
-        Assert.Equal("Wellbore", wellbore.CacheType);
-        Assert.Equal("id", wellbore.CacheField);
-        Assert.Equal("FacilityName", Assert.Single(wellbore.FindBy).Field);
+        var type = Assert.Single(draft.Entries, e => e.Target == "osdu.data.VerticalMeasurement.VerticalMeasurementTypeID");
+        Assert.True(type.Prefilled);
+        Assert.Equal(MappingDraftInput.Cache, type.Input);
+        Assert.Equal("VerticalMeasurementType", type.CacheType);
+        Assert.Equal("id", type.CacheField);
+        Assert.Equal("Code", Assert.Single(type.FindBy).Field);
 
         Assert.Equal("UnitOfMeasure", Assert.Single(draft.Entries, e => e.Target == "osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID").CacheType);
-        Assert.Equal("VerticalMeasurementType", Assert.Single(draft.Entries, e => e.Target == "osdu.data.VerticalMeasurement.VerticalMeasurementTypeID").CacheType);
         Assert.DoesNotContain(draft.Entries, e => e.Target.Contains("[]", StringComparison.Ordinal));
+
+        // Wellbores are searched for rather than cached, so nothing in the cache answers the wellbore reference, and the
+        // draft leaves it to be written as a search.
+        Assert.DoesNotContain(draft.Entries, e => e.Target == "osdu.data.WellboreID");
 
         // A draft says what is still missing: the envelope values, the key, and the dataset side of every cache entry.
         var missing = MappingBuilder.Incomplete(draft);
         Assert.Contains(missing, i => i.Target == "osdu.acl.owners" && i.Message.Contains("at least one value", StringComparison.Ordinal));
         Assert.Contains(missing, i => i.Target is null && i.Message.Contains("identify a record", StringComparison.Ordinal));
-        Assert.Contains(missing, i => i.Target == "osdu.data.WellboreID" && i.Message.Contains("findBy FacilityName needs the dataset column", StringComparison.Ordinal));
+        Assert.Contains(missing, i => i.Target == "osdu.data.VerticalMeasurement.VerticalMeasurementTypeID" && i.Message.Contains("findBy Code needs the dataset column", StringComparison.Ordinal));
     }
 
     [Fact]

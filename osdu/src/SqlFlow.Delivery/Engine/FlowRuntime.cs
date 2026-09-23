@@ -16,6 +16,7 @@ using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Storage;
@@ -36,7 +37,8 @@ public sealed record EngineContext(
     IDeliveryListener Listener,
     IFanOutDispatcher? FanOut = null,
     Templates.ITemplateStore? Templates = null,
-    ICacheStore? Cache = null)
+    ICacheStore? Cache = null,
+    IRecordSearchFactory? Searches = null)
 {
     /// <summary>The environment switch that lets a flow target a loopback address (local OSDU emulators, tests).</summary>
     public const string AllowLoopbackVariable = "SQLFLOW_DELIVERY_ALLOW_LOOPBACK";
@@ -47,6 +49,9 @@ public sealed record EngineContext(
 
     /// <summary>The fan-out dispatcher, never null: a run the platform gave no fan-out does its work itself.</summary>
     public IFanOutDispatcher Dispatcher => FanOut ?? NoFanOutDispatcher.Instance;
+
+    /// <summary>Where a flow's search sources are answered, never null: the platform the flow delivers to, unless composed otherwise.</summary>
+    public IRecordSearchFactory RecordSearches => Searches ?? new PlatformRecordSearchFactory(Loggers);
 
     /// <summary>A context with a different logger factory: the node swaps in the run log for one run.</summary>
     public EngineContext WithLoggers(ILoggerFactory loggers) => this with { Loggers = loggers };
@@ -93,7 +98,10 @@ public sealed class FlowRuntime : IDisposable
     private readonly EngineContext _context;
     private readonly ResolvedMapping? _mapping;
     private readonly ILogger _log;
-    private HttpRuntime? _http;
+    private readonly TargetConnection _target;
+
+    /// <summary>Where the mapping's search sources are answered; disposed with the runtime when it holds anything to release.</summary>
+    private readonly IRecordSearch? _search;
     private IDeliveryProtocol? _protocol;
     private IIngestionSource? _source;
     private Planner? _planner;
@@ -104,7 +112,15 @@ public sealed class FlowRuntime : IDisposable
     /// <summary>Which records this interface's records wait for, worked out once per runtime.</summary>
     private WaitRules? _waits;
 
-    private FlowRuntime(EngineContext context, FlowDefinition flow, DeliveryLayout layout, MappingCatalog mappings, IReadOnlyDictionary<string, string> parameters, ResolvedMapping? mapping)
+    private FlowRuntime(
+        EngineContext context,
+        FlowDefinition flow,
+        DeliveryLayout layout,
+        MappingCatalog mappings,
+        IReadOnlyDictionary<string, string> parameters,
+        ResolvedMapping? mapping,
+        TargetConnection target,
+        IRecordSearch? search)
     {
         _context = context;
         Flow = flow;
@@ -112,6 +128,8 @@ public sealed class FlowRuntime : IDisposable
         Mappings = mappings;
         Parameters = parameters;
         _mapping = mapping;
+        _target = target;
+        _search = search;
         _log = context.Loggers.CreateLogger("run");
     }
 
@@ -177,9 +195,24 @@ public sealed class FlowRuntime : IDisposable
         var values = FlowParameters.Resolve(flow, parameters);
         var layout = DeliveryLayout.Resolve(flow);
         var mappings = new MappingCatalog(layout.MappingsDirectory, context.Documents);
-        var resolver = new RenderResolver(mappings, context.Cache, context.Templates, context.Secrets);
-        var mapping = await resolver.ResolveAsync(flow, ct).ConfigureAwait(false);
-        return new FlowRuntime(context, flow, layout, mappings, values, mapping);
+
+        // A search source asks the platform the flow delivers to, under the flow's own auth and partition, over the
+        // connection the runtime delivers with; nothing is sent until a render asks its first question.
+        var target = new TargetConnection(context, flow);
+        IRecordSearch? search = null;
+        try
+        {
+            search = context.RecordSearches.Create(flow, target.ClientAsync);
+            var resolver = new RenderResolver(mappings, context.Cache, context.Templates, context.Secrets, search);
+            var mapping = await resolver.ResolveAsync(flow, ct).ConfigureAwait(false);
+            return new FlowRuntime(context, flow, layout, mappings, values, mapping, target, search);
+        }
+        catch
+        {
+            (search as IDisposable)?.Dispose();
+            target.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -194,7 +227,7 @@ public sealed class FlowRuntime : IDisposable
         var layout = DeliveryLayout.Resolve(flow);
         return new FlowRuntime(
             context, flow, layout, new MappingCatalog(layout.MappingsDirectory, context.Documents),
-            new Dictionary<string, string>(StringComparer.Ordinal), null);
+            new Dictionary<string, string>(StringComparer.Ordinal), null, new TargetConnection(context, flow), null);
     }
 
     /// <summary>
@@ -278,8 +311,7 @@ public sealed class FlowRuntime : IDisposable
             return _protocol;
         }
 
-        _http ??= new HttpRuntime(Flow.Reliability, _context.Secrets, _context.Time, allowLoopback: EngineContext.LoopbackAllowed);
-        _protocol = await _context.Protocols.CreateAsync(Flow, _http, ct).ConfigureAwait(false);
+        _protocol = await _context.Protocols.CreateAsync(Flow, _target.Http, ct).ConfigureAwait(false);
         return _protocol;
     }
 
@@ -300,8 +332,7 @@ public sealed class FlowRuntime : IDisposable
             return null;
         }
 
-        _ = await ProtocolAsync(ct).ConfigureAwait(false);
-        var client = await ProtocolFactory.ClientAsync(_http!, Flow.Target.Endpoint, Flow.Target.Auth, Flow.Target.Headers, _context.Secrets, ct).ConfigureAwait(false);
+        var client = await _target.ClientAsync(ct).ConfigureAwait(false);
         return new ReferenceCheck(RequireLedger(), client, Flow.Target.ProtocolOptions.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath);
     }
 
@@ -1063,5 +1094,9 @@ public sealed class FlowRuntime : IDisposable
     private ILedger RequireLedger()
         => _context.Ledger ?? throw new DeliveryException(DeliveryServices.NoLedgerMessage);
 
-    public void Dispose() => _http?.Dispose();
+    public void Dispose()
+    {
+        (_search as IDisposable)?.Dispose();
+        _target.Dispose();
+    }
 }

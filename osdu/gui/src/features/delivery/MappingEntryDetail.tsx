@@ -10,6 +10,7 @@ const SOURCE_LABEL: Record<MappingDraftInput, string> = {
   Repeat: "One item per row of",
   Cache: "Cached record",
   Static: "Static value",
+  Search: "Record found by searching the platform",
 };
 
 /** One end of the pipeline: where the value comes from, or the property it lands on. */
@@ -44,14 +45,14 @@ function Step({ text, index }: { text?: string; index?: number }) {
 }
 
 /**
- * One entry as the pipeline that fills its property: the value's origin, the cached record it is found by, the
- * modifiers in the order they run, and the property they land on. A cache entry's modifiers change the value the
- * lookup compares rather than the cached field, so they are drawn inside the lookup, where they act.
+ * One entry as the pipeline that fills its property: the value's origin, the record it is found by, the modifiers in the
+ * order they run, and the property they land on. A lookup's modifiers change the value it compares rather than the
+ * record's field, so they are drawn inside the lookup, where they act.
  *
  * `target` is left out where the view already says which property this fills, such as beside a tree of them.
  */
 export function EntryDetail({ row, target = true }: { row: PropertyRow; target?: boolean }) {
-  const lookupSteps = row.input === "Cache";
+  const lookupSteps = row.input === "Cache" || row.input === "Search";
   const steps = !lookupSteps && row.modifiers.length > 0
     ? (
       <div data-testid="delivery-mapping-property-detail-modifiers">
@@ -79,7 +80,9 @@ export function EntryDetail({ row, target = true }: { row: PropertyRow; target?:
         {lookupSteps && (
           <div className="mt-2 border-t pt-2" data-testid="delivery-mapping-property-detail-lookup">
             <p className="text-[11px] text-muted-foreground">
-              found by, in order, until a cached record matches
+              {row.input === "Search"
+                ? "found by searching, in order, until exactly one record on the platform matches"
+                : "found by, in order, until a cached record matches"}
             </p>
             <ul className="mt-1 flex flex-col gap-0.5">
               {row.lookupDetail.map((line, index) => (

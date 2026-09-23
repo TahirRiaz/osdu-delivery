@@ -14,6 +14,7 @@ teams can confirm or overturn it; the code isolates each one so overturning it i
 | [0006](0006-work-batches.md) | Rendered documents live in work batch files, not in the ledger; large submissions fan out. | Proposed |
 | [0007](0007-manifest-dataset-ids.md) | Manifest datasets take ids derived from their record's id. | Proposed |
 | [0008](0008-retrieval-lands-raw-records.md) | The retrieval kind lands records as OSDU holds them. | Proposed |
+| [0009](0009-searched-references.md) | References to business data are searched for on the platform, not cached. | Proposed |
 
 Not decided here, and still open: storage access grants (design 17.4), Change Data Feed (17.7), library
 ownership between osdu-client and osdu-csharp-client (17.8), and whether the other packages adopt the same

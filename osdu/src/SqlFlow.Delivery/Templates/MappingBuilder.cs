@@ -23,6 +23,9 @@ public enum MappingDraftInput
 
     /// <summary>A fixed value.</summary>
     Static,
+
+    /// <summary>The id of a record found on the platform by searching, as the render needs it.</summary>
+    Search,
 }
 
 /// <summary>A mapping as the builder edits it: the header, the parameters, the entries and the fixtures (docs/delivery/mapping-templates.md).</summary>
@@ -46,7 +49,13 @@ public sealed record MappingDraft
     /// <summary>The label as written, with <c>{dataset.column}</c> tokens.</summary>
     public string? Label { get; init; }
 
+    /// <summary>The dataset columns an operator finds a record by, without the <c>dataset.</c> prefix.</summary>
+    public IReadOnlyList<string> Identity { get; init; } = [];
+
     public IReadOnlyList<MappingDraftParameter> Parameters { get; init; } = [];
+
+    /// <summary>The record sets the mapping's search entries look in.</summary>
+    public IReadOnlyList<MappingDraftSearch> Searches { get; init; } = [];
 
     public IReadOnlyList<MappingDraftEntry> Entries { get; init; } = [];
 
@@ -54,6 +63,12 @@ public sealed record MappingDraft
 }
 
 public sealed record MappingDraftParameter(string Name, bool Required, string? Default, string? Description);
+
+/// <summary>One search: the name entries read it by, the kind it looks in, and the saved template whose schema says how that kind is indexed.</summary>
+public sealed record MappingDraftSearch(string Name, string Kind, string SchemaKind, string SchemaVersion, string? Description);
+
+/// <summary>What a fixture assumes the platform answers when a search compares <c>Field</c> with <c>Value</c>: the record found, or none.</summary>
+public sealed record MappingDraftFixtureSearch(string Search, string Field, string Value, string? Id);
 
 /// <summary>One entry as the builder edits it.</summary>
 public sealed record MappingDraftEntry
@@ -109,7 +124,8 @@ public sealed record MappingDraftFixture(
     IReadOnlyDictionary<string, string> Parameters,
     IReadOnlyDictionary<string, string?> Record,
     IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> Datasets,
-    string Expected);
+    string Expected,
+    IReadOnlyList<MappingDraftFixtureSearch>? Searches = null);
 
 /// <summary>What the builder found about a draft: an error stops the mapping from loading, a warning does not.</summary>
 public sealed record MappingDraftIssue(string Severity, string Message, string? Target = null)
@@ -232,6 +248,29 @@ public static partial class MappingBuilder
             Error("Name the dataset columns that identify a record, such as log_id.");
         }
 
+        if (draft.Identity.Any(k => !ColumnName().IsMatch(k)))
+        {
+            Error("Name each dataset column an operator finds a record by, such as wellbore_uwi.");
+        }
+
+        foreach (var search in draft.Searches)
+        {
+            if (!ColumnName().IsMatch(search.Name ?? string.Empty))
+            {
+                Error("Name each search with letters, digits, underscores and hyphens; entries read it as search.<name>.id.");
+            }
+
+            if (string.IsNullOrWhiteSpace(search.Kind))
+            {
+                Error($"Search '{search.Name}': give the kind it looks in, such as osdu:wks:master-data--Wellbore:*.");
+            }
+
+            if (string.IsNullOrWhiteSpace(search.SchemaKind) || string.IsNullOrWhiteSpace(search.SchemaVersion))
+            {
+                Error($"Search '{search.Name}': pick the saved template whose schema says how the kind it searches is indexed.");
+            }
+        }
+
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in draft.Entries)
         {
@@ -271,6 +310,35 @@ public static partial class MappingBuilder
                         if (!FieldPath().IsMatch(find.Field ?? string.Empty))
                         {
                             Error($"{target}: a findBy line needs the cached field it compares.", target);
+                        }
+                        else if (string.IsNullOrWhiteSpace(find.Literal) && !DatasetColumnPattern().IsMatch(find.Column ?? string.Empty))
+                        {
+                            Error($"{target}: findBy {find.Field} needs the dataset column, or a fixed text, it must equal.", target);
+                        }
+                    }
+
+                    break;
+                case MappingDraftInput.Search:
+                    if (!draft.Searches.Any(s => string.Equals(s.Name, entry.CacheType, StringComparison.Ordinal)))
+                    {
+                        Error($"{target}: choose one of the mapping's searches to look in.", target);
+                    }
+
+                    if (!string.Equals(entry.CacheField, "id", StringComparison.Ordinal))
+                    {
+                        Error($"{target}: a search reads the id of the record it finds.", target);
+                    }
+
+                    if (entry.FindBy.Count == 0)
+                    {
+                        Error($"{target}: say which record to find with at least one findBy line.", target);
+                    }
+
+                    foreach (var find in entry.FindBy)
+                    {
+                        if (!(find.Field ?? string.Empty).StartsWith("data.", StringComparison.Ordinal) || !Search.OsduPath.IsPath(find.Field))
+                        {
+                            Error($"{target}: a findBy line compares a property under data, such as data.FacilityName.", target);
                         }
                         else if (string.IsNullOrWhiteSpace(find.Literal) && !DatasetColumnPattern().IsMatch(find.Column ?? string.Empty))
                         {
@@ -341,6 +409,11 @@ public static partial class MappingBuilder
             Line("  label: " + Scalar(draft.Label.Trim()));
         }
 
+        if (draft.Identity.Count > 0)
+        {
+            Line("  identity: [" + string.Join(", ", draft.Identity.Select(k => FlowScalar(DatasetColumnText(k)))) + "]");
+        }
+
         Line(string.Empty);
         Line("parameters:");
         foreach (var parameter in draft.Parameters)
@@ -355,6 +428,24 @@ public static partial class MappingBuilder
             if (!string.IsNullOrWhiteSpace(parameter.Description))
             {
                 Line("    description: " + Scalar(parameter.Description.Trim()));
+            }
+        }
+
+        if (draft.Searches.Count > 0)
+        {
+            Line(string.Empty);
+            Line("searches:");
+            foreach (var search in draft.Searches)
+            {
+                Line("  " + Scalar(search.Name) + ":");
+                Line("    kind: " + Scalar(search.Kind));
+                Line("    schema:");
+                Line("      kind: " + Scalar(search.SchemaKind));
+                Line("      version: " + Scalar(search.SchemaVersion));
+                if (!string.IsNullOrWhiteSpace(search.Description))
+                {
+                    Line("    description: " + Scalar(search.Description.Trim()));
+                }
             }
         }
 
@@ -392,9 +483,20 @@ public static partial class MappingBuilder
             System = mapping.Dataset.System,
             Key = mapping.Dataset.Key,
             Label = mapping.Dataset.Label,
+            Identity = mapping.Dataset.Identity,
             Parameters = mapping.Parameters.Select(kv => new MappingDraftParameter(kv.Key, kv.Value.Required, kv.Value.Default, kv.Value.Description)).ToList(),
+            Searches = mapping.Searches.Values
+                .OrderBy(s => s.Name, StringComparer.Ordinal)
+                .Select(s => new MappingDraftSearch(s.Name, s.Kind, s.Schema.Kind, s.Schema.Version, s.Description))
+                .ToList(),
             Entries = mapping.Entries.Select(Draft).ToList(),
-            Fixtures = mapping.Fixtures.Select(f => new MappingDraftFixture(f.Name, f.Parameters, f.Record, f.Datasets, f.Expected)).ToList(),
+            Fixtures = mapping.Fixtures.Select(f => new MappingDraftFixture(
+                f.Name,
+                f.Parameters,
+                f.Record,
+                f.Datasets,
+                f.Expected,
+                f.Searches.Count == 0 ? null : f.Searches.Select(a => new MappingDraftFixtureSearch(a.Search, a.Field, a.Value, a.Id)).ToList())).ToList(),
         };
     }
 
@@ -410,6 +512,7 @@ public static partial class MappingBuilder
                 {
                     MappingSourceKind.DatasetColumn => MappingDraftInput.Dataset,
                     MappingSourceKind.DatasetRows => MappingDraftInput.Repeat,
+                    MappingSourceKind.Search => MappingDraftInput.Search,
                     _ => MappingDraftInput.Cache,
                 },
             Column = source?.Column is { } column ? ColumnText(column) : null,
@@ -455,9 +558,10 @@ public static partial class MappingBuilder
             case MappingDraftInput.Repeat:
                 line("    source: " + Scalar(DatasetColumnText(entry.Child ?? string.Empty)));
                 break;
-            case MappingDraftInput.Cache:
-                line("    source: " + Scalar($"{MappingSource.CachePrefix}.{entry.CacheType}.{entry.CacheField}"));
-                var lines = entry.FindBy.Select(f => FindByText(entry.CacheType ?? string.Empty, f)).ToList();
+            case MappingDraftInput.Cache or MappingDraftInput.Search:
+                var prefix = entry.Input == MappingDraftInput.Search ? MappingSource.SearchPrefix : MappingSource.CachePrefix;
+                line("    source: " + Scalar($"{prefix}.{entry.CacheType}.{entry.CacheField}"));
+                var lines = entry.FindBy.Select(f => FindByText(prefix, entry.CacheType ?? string.Empty, f)).ToList();
                 if (lines.Count == 1)
                 {
                     line("    findBy: " + Scalar(lines[0]));
@@ -631,6 +735,16 @@ public static partial class MappingBuilder
             }
         }
 
+        if (fixture.Searches is { Count: > 0 } searches)
+        {
+            line("    searches:");
+            foreach (var answer in searches)
+            {
+                var id = answer.Id is null ? string.Empty : ", id: " + FlowScalar(answer.Id);
+                line("      - { search: " + FlowScalar(answer.Search) + ", field: " + FlowScalar(answer.Field) + ", value: " + FlowScalar(answer.Value) + id + " }");
+            }
+        }
+
         line("    expected: |");
         foreach (var text in fixture.Expected.Replace("\r\n", "\n", StringComparison.Ordinal).TrimEnd('\n').Split('\n'))
         {
@@ -709,12 +823,12 @@ public static partial class MappingBuilder
         _ => modifier.Kind,
     };
 
-    private static string FindByText(string type, MappingDraftFind find)
+    private static string FindByText(string prefix, string type, MappingDraftFind find)
     {
         var operand = !string.IsNullOrWhiteSpace(find.Literal)
             ? (find.Literal.Contains('\'', StringComparison.Ordinal) ? "\"" + find.Literal + "\"" : "'" + find.Literal + "'")
             : DatasetColumnText(find.Column ?? string.Empty);
-        return $"{MappingSource.CachePrefix}.{type}.{find.Field} = {operand}";
+        return $"{prefix}.{type}.{find.Field} = {operand}";
     }
 
     private static string ConditionText(MappingDraftCondition condition)

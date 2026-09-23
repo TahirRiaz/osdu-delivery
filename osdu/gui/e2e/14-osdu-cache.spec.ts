@@ -30,10 +30,13 @@ test.describe.serial("osdu cache", () => {
     await expect(picker).toHaveText(/All types/);
     await picker.click();
     const options = adminPage.getByRole("listbox");
-    for (const name of ["UnitOfMeasure", "LogCurveBusinessValue", "VerticalMeasurementType", "TrajectoryStationPropertyType", "Wellbore"]) {
+    for (const name of ["UnitOfMeasure", "LogCurveBusinessValue", "VerticalMeasurementType", "TrajectoryStationPropertyType"]) {
       await expect(options.getByRole("option").filter({ hasText: name }).first()).toBeVisible();
     }
-    await expect(options.getByText(/master data · \d+ records?/).first()).toBeVisible();
+    await expect(options.getByText(/reference data · \d+ records?/).first()).toBeVisible();
+
+    // Wellbores are searched for on the platform as a record needs one, never captured.
+    await expect(options.getByRole("option").filter({ hasText: "Wellbore" })).toHaveCount(0);
     await adminPage.keyboard.press("Escape");
 
     // The records of every type, out of the current version.
@@ -48,8 +51,9 @@ test.describe.serial("osdu cache", () => {
     await expect(definition).toContainText(`${SOURCE}/cache/${CACHE}.yaml`, { timeout: 30_000 });
     await expect(definition).toContainText("goes out on the next run");
     const rows = definition.getByTestId("delivery-cache-definition-types").getByTestId("table-row");
-    await expect(rows).toHaveCount(5);
-    await expect(rows.filter({ hasText: "master-data--Wellbore" })).toContainText("NameAlias.AliasName");
+    await expect(rows).toHaveCount(4);
+    await expect(rows.filter({ hasText: "reference-data--UnitOfMeasure" })).toContainText("data.Code");
+    await expect(rows.filter({ hasText: "master-data--Wellbore" })).toHaveCount(0);
     await expect(definition.getByTestId("delivery-cache-definition-flows").getByTestId("table-row")).toHaveCount(1);
 
     // The guide says how a mapping reads the cache, with an entry to start from, and never names the cache.
@@ -97,16 +101,16 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("nav-delivery-cache").click();
     const picker = adminPage.getByTestId("delivery-cache-type");
     await picker.click();
-    await adminPage.getByRole("option").filter({ hasText: "Wellbore" }).first().click();
-    await expect(picker).toHaveText(/Wellbore/);
-    await expect(adminPage.getByTestId("delivery-cache-tab-records")).toHaveText("Wellbore records");
+    await adminPage.getByRole("option").filter({ hasText: "UnitOfMeasure" }).first().click();
+    await expect(picker).toHaveText(/UnitOfMeasure/);
+    await expect(adminPage.getByTestId("delivery-cache-tab-records")).toHaveText("UnitOfMeasure records");
 
     // A type in scope gives the table a column per captured name.
     const items = adminPage.getByTestId("delivery-cache-items-table");
-    await expect(items.getByRole("columnheader", { name: "Alias" })).toBeVisible({ timeout: 30_000 });
-    await expect(items.getByText("master-data--Wellbore:OSDU-DEV-1-A").first()).toBeVisible({ timeout: 30_000 });
+    await expect(items.getByRole("columnheader", { name: "Code" })).toBeVisible({ timeout: 30_000 });
+    await expect(items.getByText("reference-data--UnitOfMeasure:dega").first()).toBeVisible({ timeout: 30_000 });
 
-    await items.getByText("master-data--Wellbore:OSDU-DEV-1-A").first().click();
+    await items.getByText("reference-data--UnitOfMeasure:dega").first().click();
     const detail = adminPage.getByTestId("delivery-cache-item-detail");
     await expect(detail).toBeVisible();
     await expect(detail).toContainText("Captured values");
@@ -117,10 +121,10 @@ test.describe.serial("osdu cache", () => {
     // captured name, plus an entry that finds the record by one of its values.
     const mapping = adminPage.getByTestId("delivery-cache-item-mapping");
     const references = mapping.getByTestId("delivery-cache-item-reference");
-    await expect(references.filter({ hasText: "cache.Wellbore.id" })).toContainText("master-data--Wellbore:OSDU-DEV-1-A:");
-    await expect(references.filter({ hasText: "cache.Wellbore.Alias" })).toBeVisible();
-    await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("source: cache.Wellbore.id");
-    await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("findBy: cache.Wellbore.");
+    await expect(references.filter({ hasText: "cache.UnitOfMeasure.id" })).toContainText("reference-data--UnitOfMeasure:dega:");
+    await expect(references.filter({ hasText: "cache.UnitOfMeasure.Code" })).toBeVisible();
+    await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("source: cache.UnitOfMeasure.id");
+    await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("findBy: cache.UnitOfMeasure.");
     await detail.getByRole("button", { name: "Close" }).click();
 
     // Clearing the picker lifts the scope.
@@ -138,7 +142,7 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("delivery-cache-search").fill("metre");
     const rows = adminPage.getByTestId("delivery-cache-items-table").getByTestId("table-row");
     await expect(rows.filter({ hasText: "metre" }).first()).toBeVisible({ timeout: 30_000 });
-    await expect(rows.filter({ hasText: "Wellbore" })).toHaveCount(0);
+    await expect(rows.filter({ hasText: "LogCurveBusinessValue" })).toHaveCount(0);
   });
 
   test("the version picker reads the cache at one named version", async ({ adminPage }) => {

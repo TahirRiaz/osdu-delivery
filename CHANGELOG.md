@@ -13,6 +13,28 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A mapping can search the platform for the record a reference names, instead of reading it out of the cache.** A
+  `searches:` block declares the kind searched and pins the saved template whose schema says how that kind is indexed,
+  and an entry reads `search.<name>.id` found by `findBy` lines tried in order
+  ([osdu/docs/mapping-templates.md](osdu/docs/mapping-templates.md#searches), decision
+  [0009](osdu/docs/decisions/0009-searched-references.md)). Each lookup asks the search service, under the flow's own
+  target, credentials and partition, for the one record whose property is exactly the value, with the query written the
+  way the schema has the platform index the property. Exactly one record is the answer and none is a miss; several, a
+  refused query, or a value that cannot be asked for hold the record whatever `required` says; a platform that cannot be
+  asked fails the run. The render stays free of I/O: the plan asks a batch's questions once each and renders the
+  waiting rows again, and answers are kept for the run. Fixtures declare the answers they assume and never search. The
+  sample WellLog and WellboreTrajectory mappings find their wellbore by name and then by alias this way.
+- **`SqlFlow.Delivery.Search` builds the query strings the OSDU search service receives, canonically.** Every rule is
+  read from the indexer's and the search service's source: a string is asked through its `keyword` sub-field, a legacy
+  `^srn` link and a value inside a flattened array through the property itself, a property of a nested array through
+  the service's `nested(...)` form; and a value the index could never match (longer than the 256 characters the
+  keyword keeps, the text `null` a property with no value is indexed as, a control character) or the service's own
+  parser would misread (`nested(` anywhere; unbalanced parentheses or a word ending in AND, OR or NOT before a colon
+  inside a nested query) is refused rather than sent.
+- **The end-to-end suite runs a stand-in for the OSDU platform** (`osdu/gui/e2e/osdu-standin.mjs`), which answers a
+  token and the wellbore searches the sample mappings make, and declares the OSDU references every process of the
+  estate resolves, so the suite no longer depends on the shell that started it.
+
 - **A central configuration the control plane supplies to the runs it queues.** `[osdu].[ConfigProperty]` (migration
   `CentralConfigProperties`, module version 1.10.0) holds a property for the whole control plane, or for one
   repository, which overrides it for that estate's flows. Every run of a delivery, cache or retrieval flow is queued
@@ -156,6 +178,17 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   assert the result contract, and a link can set the pipelines page's repo and kind filters.
 
 ### Changed
+
+- **The sample cache flow no longer captures wellbores.** They were 163,818 of the 165,381 records the `dev` cache held,
+  and they are what the sample mappings now search for. The next refresh after the sync drops the type from the
+  partition's cache, as it drops any type no synced flow declares; `osdu/samples/cache-records/Wellbore.json` is gone,
+  since an import refuses a file for a type the flow does not declare.
+- **A delivery flow's lineage reads the kind its mapping searches**, so the flow that delivers those records to the
+  partition is ordered before it, as the cache flow used to order it. A search source's `findBy` lines no longer
+  count as reads of a cache type of the same name.
+- **The mapping builder carries searches, search entries, fixture answers and `dataset.identity` through a round
+  trip.** A mapping opened in the builder and written back kept none of them before: a search source came back as a
+  cache source, and a mapping's identity columns were dropped. The GUI edits a search entry beside a cache entry.
 
 - **The cache captures every field a reference record is named by, and a lookup matches on all of them.** A
   reference-data record is named by its code, its name or its own `ID`, and a source may use any of the three. The

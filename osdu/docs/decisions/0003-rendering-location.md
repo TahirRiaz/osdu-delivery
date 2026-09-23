@@ -19,7 +19,8 @@ on.
 
 - One interpreted mapping, one place, no generator drift.
 - The content hash is computable offline, which is what makes `plan` work without a network and what makes
-  change detection honest.
+  change detection honest. A mapping that searches the platform for the records it refers to needs the platform's
+  search to render ([0009](0009-searched-references.md)); one that searches nothing still plans offline.
 - The reference cache moves out of petrodb-api's per-replica memory into a versioned cache in the catalog, whose
   version the render context records.
 - petrodb-api's routes are reached through `protocolOptions` path overrides (`recordPath: /welllogs` and so

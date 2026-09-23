@@ -990,8 +990,11 @@ export interface DeliveryBuilderCache {
   types: DeliveryCachedType[];
 }
 
-/** Where a draft entry's value comes from: a dataset column, a child dataset's rows, a cached record, or a fixed value. */
-export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static";
+/**
+ * Where a draft entry's value comes from: a dataset column, a child dataset's rows, a cached record, a fixed value, or the
+ * id of a record found by searching the platform.
+ */
+export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static" | "Search";
 
 export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date" | "number";
 
@@ -1048,9 +1051,9 @@ export interface MappingDraftEntry {
   column: string | null;
   /** Repeat: the child dataset whose rows become the items. */
   child: string | null;
-  /** Cache: the cached type, such as UnitOfMeasure. */
+  /** Cache: the cached type, such as UnitOfMeasure. Search: the search, by the name the mapping declares it under. */
   cacheType: string | null;
-  /** Cache: the field to read, usually id. */
+  /** Cache: the field to read, usually id. Search: always id, the one thing a search returns. */
   cacheField: string | null;
   findBy: MappingDraftFind[];
   modifiers: MappingDraftModifier[];
@@ -1064,6 +1067,14 @@ export interface MappingDraftEntry {
   prefilled: boolean;
 }
 
+/** What a fixture assumes the platform answers when a search compares `field` with `value`: the record found, or none. */
+export interface MappingDraftFixtureSearch {
+  search: string;
+  field: string;
+  value: string;
+  id: string | null;
+}
+
 /** An example row and the exact record it must render to. */
 export interface MappingDraftFixture {
   name: string;
@@ -1071,6 +1082,20 @@ export interface MappingDraftFixture {
   record: Record<string, string | null>;
   datasets: Record<string, Record<string, string | null>[]>;
   expected: string;
+  /** What the fixture assumes the platform answers to each search its render asks; null when it searches nothing. */
+  searches: MappingDraftFixtureSearch[] | null;
+}
+
+/**
+ * One record set the mapping searches the platform for as a record needs one, rather than capturing it into the cache:
+ * the name entries read it by, the kind it looks in, and the saved template whose schema says how that kind is indexed.
+ */
+export interface MappingDraftSearch {
+  name: string;
+  kind: string;
+  schemaKind: string;
+  schemaVersion: string;
+  description: string | null;
 }
 
 /** A mapping as the builder edits it: the header, the parameters, the entries and the fixtures. */
@@ -1085,7 +1110,11 @@ export interface MappingDraft {
   key: string[];
   /** The label as written, with {dataset.column} tokens. */
   label: string | null;
+  /** The dataset columns an operator finds a record by, without `dataset.`. */
+  identity: string[];
   parameters: MappingDraftParameter[];
+  /** The record sets the mapping's search entries look in. */
+  searches: MappingDraftSearch[];
   entries: MappingDraftEntry[];
   fixtures: MappingDraftFixture[];
 }

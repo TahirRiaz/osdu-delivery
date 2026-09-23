@@ -141,7 +141,7 @@ public sealed class LineageTests : IDisposable
     }
 
     [Fact]
-    public void A_delivery_flow_reads_its_tables_payload_files_and_cache_types_and_writes_its_mappings_type()
+    public void A_delivery_flow_reads_its_tables_payload_files_cache_types_and_searched_kinds_and_writes_its_mappings_type()
     {
         var lineage = Describe("flows/wells-welllog-03-header-delivery.yaml");
 
@@ -156,12 +156,16 @@ public sealed class LineageTests : IDisposable
         Assert.Equal(
             "osdu-type/${env:OSDU_DATA_PARTITION}/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0",
             Datasets(lineage, LineageRelation.Writes));
+        // The units and business values come out of the partition's cache; the wellbores are searched for on the platform,
+        // so the flow reads the wellbore kind itself and is ordered after whatever delivers wellbores there.
         Assert.Equal(
-            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/Wellbore",
+            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, "
+            + "osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:*",
             Datasets(lineage, LineageRelation.Reads));
         var written = lineage.Datasets.Single(d => d.Relation == LineageRelation.Writes);
         Assert.Equal((Platform, (char?)':'), (written.Instance, written.Separator));
-        Assert.All(lineage.Datasets.Where(d => d.Relation == LineageRelation.Reads), d => Assert.Null(d.Instance));
+        Assert.All(lineage.Datasets.Where(d => d.Relation == LineageRelation.Reads && d.System == "osdu-cache"), d => Assert.Null(d.Instance));
+        Assert.Equal(Platform, lineage.Datasets.Single(d => d.Relation == LineageRelation.Reads && d.System == "osdu-type").Instance);
     }
 
     [Fact]
@@ -198,12 +202,11 @@ public sealed class LineageTests : IDisposable
         Assert.Empty(lineage.Files);
         Assert.Equal(
             "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
-            + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*, "
-            + "osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:*",
+            + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*",
             Datasets(lineage, LineageRelation.Reads));
         Assert.Equal(
             "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/VerticalMeasurementType, "
-            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/TrajectoryStationPropertyType, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/Wellbore",
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/TrajectoryStationPropertyType",
             Datasets(lineage, LineageRelation.Writes));
     }
 
@@ -251,8 +254,8 @@ public sealed class LineageTests : IDisposable
         Assert.True(WaveOf(report, "wells-welllog-02-curves-ing") < WaveOf(report, "wells-welllog-03-header-delivery"));
         Assert.True(WaveOf(report, "wells-wellbore-02-header-ing") < WaveOf(report, "wells-wellbore-03-header-delivery"));
 
-        // The cache captures the wellbores the wellbore flow delivers, and the well log flow renders against that cache.
-        Assert.True(WaveOf(report, "wells-wellbore-03-header-delivery") < WaveOf(report, "wells-osdu-00-reference-cache"));
+        // The well log flow searches for the wellbores the wellbore flow delivers, and renders its units against the cache.
+        Assert.True(WaveOf(report, "wells-wellbore-03-header-delivery") < WaveOf(report, "wells-welllog-03-header-delivery"));
         Assert.True(WaveOf(report, "wells-osdu-00-reference-cache") < WaveOf(report, "wells-welllog-03-header-delivery"));
         Assert.True(WaveOf(report, "wells-wellbore-03-header-delivery") < WaveOf(report, "wells-osdu-04-metadata-retrieval"));
 
@@ -271,12 +274,15 @@ public sealed class LineageTests : IDisposable
         Assert.Contains(TypeKey(Samples.WellLogKind), types.Keys);
         Assert.Contains(TypeKey(Samples.WellboreKind), types.Keys);
         Assert.Contains(TypeKey("osdu:wks:master-data--Wellbore:*"), types.Keys);
-        Assert.Contains(CacheKey("Wellbore"), types.Keys);
+
+        // Wellbores are searched for, never captured, so the cache holds no type for them.
+        Assert.DoesNotContain(CacheKey("Wellbore"), types.Keys);
         Assert.Equal("osdu-type", ServerIdentity.DatasetSystem(TypeKey(Samples.WellLogKind)));
 
         Assert.Contains(report.Edges, e => e.Flow == "wells-welllog-03-header-delivery" && e.Relation == LineageRelation.Writes && e.ObjectKey == TypeKey(Samples.WellLogKind));
         Assert.Contains(report.Edges, e => e.Flow == "wells-welllog-03-header-delivery" && e.Relation == LineageRelation.Reads && e.ObjectKey == CacheKey("UnitOfMeasure"));
-        Assert.Contains(report.Edges, e => e.Flow == "wells-osdu-00-reference-cache" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));
+        Assert.Contains(report.Edges, e => e.Flow == "wells-welllog-03-header-delivery" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));
+        Assert.DoesNotContain(report.Edges, e => e.Flow == "wells-osdu-00-reference-cache" && e.ObjectKey == TypeKey(Samples.WellboreKind));
         Assert.Contains(report.Edges, e => e.Flow == "wells-osdu-04-metadata-retrieval" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));
         Assert.DoesNotContain(report.Edges, e => e.Flow == "wells-osdu-00-reference-cache" && e.ObjectKey == TypeKey(Samples.WellLogKind));
 

@@ -12,8 +12,10 @@ namespace SqlFlow.Delivery.Documents;
 /// What a delivery flow contributes to SQLFlow's lineage (docs/lineage-design.md section 3). It reads its record table and
 /// every child dataset table on the server its <c>source.connection</c> names, so an ingestion flow writing those tables
 /// through the same reference is ordered before it. It reads the payload files under the root of the payload set its
-/// protocol streams, and every partition cache type its mapping resolves against. It writes the OSDU type its mapping fills
-/// in the partition it delivers to and, for the file and manifest protocols, the dataset kind it registers each file as.
+/// protocol streams, every partition cache type its mapping resolves against, and every OSDU kind its mapping's searches
+/// look in, so the flow that delivers the records it searches for is ordered before it. It writes the OSDU type its
+/// mapping fills in the partition it delivers to and, for the file and manifest protocols, the dataset kind it registers
+/// each file as.
 /// The mapping is the one the flow pins, read from the checkout being scanned and nowhere else; a mapping that cannot be read
 /// costs the flow its OSDU nodes with a warning, never the rest of its lineage.
 /// </summary>
@@ -88,6 +90,13 @@ public static class DeliveryLineage
                 {
                     Add(datasets, OsduLineage.CacheType(LineageRelation.Reads, partition, type, who, warnings));
                 }
+
+                // A search reads the platform's records of its kind as the delivery renders, not a capture of them.
+                foreach (var search in mapping.Searches.Values.OrderBy(s => s.Name, StringComparer.Ordinal))
+                {
+                    Add(datasets, OsduLineage.Type(
+                        LineageRelation.Reads, endpoint, partition, search.Kind, who, $"search '{search.Name}' of mapping '{mapping.Reference}'", warnings));
+                }
             }
 
             // The routes that register datasets beside the record write the dataset kind too; the workflow route writes
@@ -117,18 +126,22 @@ public static class DeliveryLineage
         };
     }
 
-    /// <summary>The partition cache types a mapping reads, from its cache sources and its lookups, in name order.</summary>
+    /// <summary>
+    /// The partition cache types a mapping reads, from its cache sources and their lookups, in name order. A search
+    /// source's lookups name a search, not a cache type, and are not among them.
+    /// </summary>
     public static IReadOnlyList<string> CacheTypes(MappingDefinition mapping)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         var types = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in mapping.Entries)
         {
-            if (entry.Source is { Kind: MappingSourceKind.Cache, CacheType: { } type })
+            if (entry.Source is not { Kind: MappingSourceKind.Cache, CacheType: { } type })
             {
-                types.Add(type);
+                continue;
             }
 
+            types.Add(type);
             foreach (var find in entry.FindBy)
             {
                 types.Add(find.Type);

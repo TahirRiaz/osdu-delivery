@@ -195,7 +195,10 @@ public sealed class DeliveryTemplateApiTests
             var cache = Assert.Single(caches, c => c.Scope == scope);
             Assert.Equal([cacheFlowName], cache.Flows);
             Assert.Equal(ReferenceVersion, cache.CurrentVersion);
-            Assert.Equal(["FacilityName"], Assert.Single(cache.Types, c => c.Name == "Wellbore").Fields);
+            Assert.Equal(["Code", "Name"], Assert.Single(cache.Types, c => c.Name == "VerticalMeasurementType").Fields);
+
+            // Wellbores are searched for on the platform, so no cache holds them.
+            Assert.DoesNotContain(cache.Types, c => c.Name == "Wellbore");
 
             // The cache page reads the same cache: the flow and file that fill it, its types with what the current version holds
             // of each, and the version with the flow that wrote it and who captured it.
@@ -209,10 +212,10 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal("tests", described.Current.CapturedBy);
             Assert.Equal(cacheFlowName, described.Current.Flow);
             Assert.Equal(1, described.Versions);
-            Assert.Equal(2, Assert.Single(described.Types, t => t.Name == "Wellbore").Items);
-            var wellbores = await ReadAsync<PagedResult<DeliveryCachedItemDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/items?scope={scope}&type=Wellbore"));
-            Assert.Equal(2, wellbores.Total);
-            Assert.All(wellbores.Items, item => Assert.Equal(ReferenceVersion, item.Version));
+            Assert.Equal(2, Assert.Single(described.Types, t => t.Name == "VerticalMeasurementType").Items);
+            var measurementTypes = await ReadAsync<PagedResult<DeliveryCachedItemDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/items?scope={scope}&type=VerticalMeasurementType"));
+            Assert.Equal(2, measurementTypes.Total);
+            Assert.All(measurementTypes.Items, item => Assert.Equal(ReferenceVersion, item.Version));
             var history = await ReadAsync<List<DeliveryCacheHistoryEntryDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/history?scope={scope}"));
             var only = Assert.Single(history);
             Assert.Null(only.Before);
@@ -228,10 +231,13 @@ public sealed class DeliveryTemplateApiTests
             {
                 scope,kind = WellLogKind, version = WellLogVersion, name = "WellLog", mappingVersion = "9.0.0", system = "wells",
             }));
-            var prefilled = Assert.Single(draft.Entries, e => e.Target == "osdu.data.WellboreID");
+            var prefilled = Assert.Single(draft.Entries, e => e.Target == "osdu.data.VerticalMeasurement.VerticalMeasurementTypeID");
             Assert.True(prefilled.Prefilled);
             Assert.Equal(MappingDraftInput.Cache, prefilled.Input);
-            Assert.Equal("FacilityName", Assert.Single(prefilled.FindBy).Field);
+            Assert.Equal("Code", Assert.Single(prefilled.FindBy).Field);
+
+            // Nothing in the cache answers the wellbore reference, which the sample mapping searches for instead.
+            Assert.DoesNotContain(draft.Entries, e => e.Target == "osdu.data.WellboreID");
 
             // The sample mapping, opened in the builder and written back, passes the check against the seeded cache.
             var sample = await File.ReadAllTextAsync(Path.Combine(SampleSource, "mappings", "WellLog@1.4.0.yaml"));
@@ -281,12 +287,15 @@ public sealed class DeliveryTemplateApiTests
             Assert.Empty(unsaved.Variables);
             Assert.Contains(unsaved.Issues, i => i.Severity == "error" && i.Message.Contains("which is not saved", StringComparison.Ordinal));
 
-            // A wellbore reference read from the unit cache is written, and refused by the check against the template.
+            // A wellbore reference read from the unit cache is written, and refused by the check against the template. The
+            // entry no longer searches for the wellbore, so the search it read goes with it.
             var wrong = parsed.Draft with
             {
+                Searches = [],
                 Entries = parsed.Draft.Entries.Select(e => e.Target == "osdu.data.WellboreID"
-                    ? e with { CacheType = "UnitOfMeasure", FindBy = [new MappingDraftFind("Code", "wellbore_uwi", null)] }
+                    ? e with { Input = MappingDraftInput.Cache, CacheType = "UnitOfMeasure", CacheField = "id", FindBy = [new MappingDraftFind("Code", "wellbore_uwi", null)] }
                     : e).ToList(),
+                Fixtures = [],
             };
             var refused = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = wrong, parameters }));
             Assert.False(refused.Valid);
@@ -295,7 +304,7 @@ public sealed class DeliveryTemplateApiTests
             // Without a partition named there is no cache to check the cache entries against, and the check says so.
             var noCache = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope = (string?)null, draft = parsed.Draft, parameters }));
             Assert.False(noCache.Valid);
-            Assert.Contains(noCache.Issues, i => i.Message.Contains("reads cache.Wellbore, which cache version 'none' does not hold", StringComparison.Ordinal));
+            Assert.Contains(noCache.Issues, i => i.Message.Contains("reads cache.UnitOfMeasure, which cache version 'none' does not hold", StringComparison.Ordinal));
         }
         finally
         {
@@ -601,7 +610,6 @@ public sealed class DeliveryTemplateApiTests
             ["UnitOfMeasure"] = """[{"path":"data.Code","as":"Code"},{"path":"data.Name","as":"Name"},{"path":"data.ID","as":"ID"}]""",
             ["LogCurveBusinessValue"] = """[{"path":"data.Code","as":"Code"},{"path":"data.Name","as":"Name"}]""",
             ["VerticalMeasurementType"] = """[{"path":"data.Code","as":"Code"},{"path":"data.Name","as":"Name"}]""",
-            ["Wellbore"] = """[{"path":"data.FacilityName","as":"FacilityName"}]""",
         };
 
         var types = new List<ReferenceType>();

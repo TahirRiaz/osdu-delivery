@@ -1,7 +1,9 @@
 # Cache flow: wells-osdu-00-reference-cache
 #
-# What this flow caches (docs/delivery/design.md section 6.2): the OSDU reference and master data the WellLog,
-# WellboreTrajectory and Wellbore mappings resolve against, and which paths of each record are kept. Add a type or a path here, and the next
+# What this flow caches (docs/delivery/design.md section 6.2): the OSDU reference data the WellLog, WellboreTrajectory
+# and Wellbore mappings resolve against, and which paths of each record are kept. A cache is for closed vocabularies a
+# capture can hold whole. The wellbores those mappings refer to are business data, hundreds of thousands of them in a
+# partition, so the mappings search the platform for the one each record names instead of capturing them all here. Add a type or a path here, and the next
 # refresh captures it. A run of this flow (the refresh operation; the schedule below runs one nightly) searches OSDU for
 # every declared type and merges what it finds into the cache of its partition (data-partition-id below) in the catalog,
 # which writes a new version when anything changed and records the flow and the run that wrote it. A partition has one
@@ -47,14 +49,6 @@ types:
   - kind: "osdu:wks:reference-data--TrajectoryStationPropertyType:*"
     name: TrajectoryStationPropertyType
     fields: [data.Code, data.Name, data.ID]
-  - kind: "osdu:wks:master-data--Wellbore:*"
-    name: Wellbore
-    fields:
-      - data.FacilityName
-      # A wellbore carries its aliases as an array of objects: the whole set is cached under one name, and a drop
-      # naming a wellbore by any one of them resolves to the same record.
-      - path: data.NameAliases.AliasName
-        as: Alias
 
 reliability:
   retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }

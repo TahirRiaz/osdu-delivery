@@ -84,9 +84,9 @@ export function newModifier(kind: MappingDraftModifierKind): MappingDraftModifie
 }
 
 /**
- * The inputs a variable takes, as the preflight allows them: a value or a list of values from a dataset column, the cache
- * or a static value; a list of objects from a repeater or a static list; an object only from a static value. The four
- * envelope variables are static lists.
+ * The inputs a variable takes, as the preflight allows them: a value or a list of values from a dataset column, the cache,
+ * a search of the platform or a static value; a list of objects from a repeater or a static list; an object only from a
+ * static value. The four envelope variables are static lists.
  */
 export function inputsFor(variable: Pick<DeliveryTemplateVariable, "shape" | "path">): MappingDraftInput[] {
   if (ENVELOPE_TARGETS.includes(variable.path)) {
@@ -96,7 +96,7 @@ export function inputsFor(variable: Pick<DeliveryTemplateVariable, "shape" | "pa
   switch (variable.shape) {
     case "Value":
     case "ValueList":
-      return ["Dataset", "Cache", "Static"];
+      return ["Dataset", "Cache", "Search", "Static"];
     case "GroupList":
       return ["Repeat", "Static"];
     case "Group":
@@ -158,14 +158,21 @@ export function entrySummary(entry: MappingDraftEntry): string {
       return `rows of dataset.${entry.child ?? ""}`;
     case "Cache":
       return `cache.${entry.cacheType ?? ""}.${entry.cacheField ?? ""}`;
+    case "Search":
+      return `search.${entry.cacheType ?? ""}.${entry.cacheField ?? "id"}`;
     case "Static":
       return `static ${entry.static ?? ""}`;
   }
 }
 
+/** Whether an entry finds a record by findBy lines: out of the cache, or by searching the platform. */
+export function looksUp(entry: Pick<MappingDraftEntry, "input">): boolean {
+  return entry.input === "Cache" || entry.input === "Search";
+}
+
 /**
  * An entry on one line, without the target it fills: where the value comes from, the lookup that finds it, what is done
- * to it, and when it applies. `dataset.facility_name | trim`, `cache.Wellbore.id by FacilityName = dataset.wellbore_uwi`.
+ * to it, and when it applies. `dataset.facility_name | trim`, `search.Wellbore.id by data.FacilityName = dataset.wellbore_uwi`.
  */
 export function entryText(entry: MappingDraftEntry): string {
   const lookup = lookupText(entry);
@@ -182,11 +189,11 @@ export interface PropertyRow {
   target: string;
   /** Where the value comes from, which decides what the rest of the entry means. */
   input: MappingDraftInput;
-  /** The value's origin: `dataset.log_source`, `cache.Wellbore.id`, `rows of dataset.curves`, `static "MD"`. */
+  /** The value's origin: `dataset.log_source`, `cache.UnitOfMeasure.id`, `search.Wellbore.id`, `rows of dataset.curves`, `static "MD"`. */
   source: string;
   /** The origin without the word that names its kind, for a view that says the kind itself. */
   sourceValue: string;
-  /** The cached record's lookup as one phrase, `Code/Name = dataset.elev_meas_ref`; empty when no cache is read. */
+  /** The record's lookup as one phrase, `Code/Name = dataset.elev_meas_ref`; empty when no record is looked up. */
   lookup: string;
   /** One line per findBy, as the YAML writes them, for the property's own view. */
   lookupDetail: string[];
@@ -270,20 +277,26 @@ function operandOf(find: MappingDraftFind): string {
 }
 
 /**
- * The lookup an entry reads a cached record by, one line per findBy, as the YAML writes them:
- * `cache.UnitOfMeasure.Code = dataset.elev_meas_ref`. Empty for an entry that reads no cache.
+ * The lookup an entry finds its record by, one line per findBy, as the YAML writes them:
+ * `cache.UnitOfMeasure.Code = dataset.elev_meas_ref`, `search.Wellbore.data.FacilityName = dataset.wellbore_uwi`. Empty
+ * for an entry that looks nothing up.
  */
 export function lookupLines(entry: MappingDraftEntry): string[] {
-  return entry.input !== "Cache" ? [] : entry.findBy.map((find) => `cache.${entry.cacheType ?? ""}.${find.field} = ${operandOf(find)}`);
+  if (!looksUp(entry)) {
+    return [];
+  }
+
+  const prefix = entry.input === "Search" ? "search" : "cache";
+  return entry.findBy.map((find) => `${prefix}.${entry.cacheType ?? ""}.${find.field} = ${operandOf(find)}`);
 }
 
 /**
  * The lookup as one phrase, the way the renderer words it: the fields that compare the same value run together, and
  * the phrases after the first read as alternatives. `Code/Name/id = dataset.elev_meas_ref`, and empty for an entry
- * that reads no cache. The cached type is left out: the entry's source already names it.
+ * that looks nothing up. The cached type or the search is left out: the entry's source already names it.
  */
 export function lookupText(entry: MappingDraftEntry): string {
-  if (entry.input !== "Cache") {
+  if (!looksUp(entry)) {
     return "";
   }
 

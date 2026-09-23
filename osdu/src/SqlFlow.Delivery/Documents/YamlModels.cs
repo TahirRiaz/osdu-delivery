@@ -782,9 +782,29 @@ internal sealed class MappingYaml
 
     public Dictionary<string, MappingParameterYaml>? Parameters { get; set; }
 
+    /// <summary>What each <c>search.&lt;name&gt;</c> source searches, by the name entries write it as.</summary>
+    public Dictionary<string, MappingSearchYaml>? Searches { get; set; }
+
     public List<MappingEntryYaml>? Mappings { get; set; }
 
     public List<MappingFixtureYaml>? Fixtures { get; set; }
+}
+
+/// <summary>
+/// One record set a mapping resolves against by searching the platform, rather than out of the partition's cache.
+/// A cache is for a closed vocabulary a capture can hold whole; this is for the records a delivery refers to, which
+/// are business data and grow without bound.
+/// </summary>
+internal sealed class MappingSearchYaml
+{
+    /// <summary>The OSDU kind searched, as a flow writes a kind (<c>osdu:wks:master-data--Wellbore:*</c>).</summary>
+    public string? Kind { get; set; }
+
+    /// <summary>The saved template whose schema says how the kind's properties are indexed, pinned like the mapping's own.</summary>
+    public MappingTemplateYaml? Schema { get; set; }
+
+    /// <summary>What this set is, shown wherever the mapping is listed.</summary>
+    public string? Description { get; set; }
 }
 
 internal sealed class MappingTemplateYaml
@@ -862,7 +882,23 @@ internal sealed class MappingFixtureYaml
 
     public Dictionary<string, string>? Parameters { get; set; }
 
+    /// <summary>What the fixture assumes the platform answers to each search its render asks.</summary>
+    public List<MappingFixtureSearchYaml>? Searches { get; set; }
+
     public string? Expected { get; set; }
+}
+
+/// <summary>One answer a fixture assumes: <c>{ search: Wellbore, field: data.FacilityName, value: NO 15/9-F-1, id: ... }</c>.</summary>
+internal sealed class MappingFixtureSearchYaml
+{
+    public string? Search { get; set; }
+
+    public string? Field { get; set; }
+
+    public string? Value { get; set; }
+
+    /// <summary>The one record found; left out when the platform holds no such record.</summary>
+    public string? Id { get; set; }
 }
 
 internal sealed class RetrievalYaml

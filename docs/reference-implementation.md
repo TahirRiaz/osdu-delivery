@@ -110,13 +110,15 @@ Four properties, in order of how much they matter here:
 
 1. **A cache miss is not a failure.** It constructs the id from the partition, the dataset, the entity type and the
    value. A record is always produced. OSDU Delivery does the opposite: a `findBy` that matches nothing **holds the
-   record**, and the run reports `no Wellbore matches 'X' by FacilityName in version ... of the cache of partition
-   'dev'`. Neither is wrong, and the difference is a policy decision worth making deliberately rather than inheriting:
+   record**, and the run says what was asked and what came back, such as `no Wellbore on the platform
+   (osdu:wks:master-data--Wellbore:*) matches: data.FacilityName 'X' found no record; data.NameAliases.AliasName 'X'
+   found no record` for a wellbore, which is searched for rather than cached. Neither is wrong, and the difference is a policy decision worth making deliberately rather than inheriting:
    construct-on-miss keeps delivery moving and can mint a reference to a record that does not exist;
    hold-on-miss guarantees every reference resolves and stops the run when reference data is incomplete.
 2. **A value matches on any of three fields**: `ID`, `Code` or `Name`. The cache is searched by all three, decoded and
    case-insensitively. A source saying `metre`, `m` or the id itself all land on the same record. OSDU Delivery's
-   `findBy` names one field, so `cache.Wellbore.FacilityName = dataset.wellbore_uwi` matches on `FacilityName` alone.
+   `findBy` lines name one field each and are tried in order: the sample WellLog mapping asks for the wellbore whose
+   `data.FacilityName` is the value, and then for the one with an alias of that value.
 3. **Comparison is URL-decoded on both sides.** `Uri.UnescapeDataString` is applied to the input and the candidate,
    which is what makes `m3%2Fm3` and `m3/m3` the same value. Any cache holding OSDU ids has to do this, because the
    id segment is percent-encoded and the source value is not.

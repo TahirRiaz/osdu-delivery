@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Azure\SqlFlow.Azure.csproj" />
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Sources\SqlFlow.Sources.csproj" />
     <ProjectReference Include="..\SqlFlow.Delivery.Data\SqlFlow.Delivery.Data.csproj" />
+    <ProjectReference Include="..\SqlFlow.Delivery.Search\SqlFlow.Delivery.Search.csproj" />
   </ItemGroup>
 
   <ItemGroup>

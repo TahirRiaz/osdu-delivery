@@ -70,6 +70,7 @@ public static class DeliveryServices
         // Protocols and the completion callback. The logging listener is always on; hosts add their own (a live
         // feed, metrics, a webhook) by registering more IDeliveryListener instances.
         services.TryAddSingleton<IProtocolFactory>(sp => new DefaultProtocolFactory(sp.GetRequiredService<ISecretResolver>(), sp.GetRequiredService<ILoggerFactory>()));
+        services.TryAddSingleton<IRecordSearchFactory>(sp => new PlatformRecordSearchFactory(sp.GetRequiredService<ILoggerFactory>()));
         services.AddSingleton<IDeliveryListener, LoggingDeliveryListener>();
 
         services.AddSingleton(sp => new EngineContext(
@@ -86,7 +87,8 @@ public static class DeliveryServices
             // The fan-out belongs to one run: the executor attaches the one the platform handed that run.
             FanOut: null,
             sp.GetService<DeliveryLedgerSource>()?.Templates(sp),
-            sp.GetService<DeliveryLedgerSource>()?.Cache(sp)));
+            sp.GetService<DeliveryLedgerSource>()?.Cache(sp),
+            sp.GetRequiredService<IRecordSearchFactory>()));
 
         // Execution: the run executors behind the platform's document executor, and the ad-hoc compute operations
         // a node runs for the control plane (target probe, record read-back, source row read-back and removal).

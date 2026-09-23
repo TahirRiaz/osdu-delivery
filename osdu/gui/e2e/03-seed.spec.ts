@@ -157,7 +157,8 @@ test.describe.serial("seed the estate via repo source sync", () => {
         "--db", "${env:SQLFLOW_E2E_CACHE_DB}",
         "--json",
       ],
-      { encoding: "utf8", timeout: 400_000, env: { ...process.env, SQLFLOW_E2E_CACHE_DB: E2E.catalogDb, SQLFLOW_OSDU_DB: E2E.osduDb } },
+      // The cache belongs to the partition the cache flow names, resolved as every other process of the estate resolves it.
+      { encoding: "utf8", timeout: 400_000, env: { ...process.env, ...E2E.osdu, SQLFLOW_E2E_CACHE_DB: E2E.catalogDb, SQLFLOW_OSDU_DB: E2E.osduDb } },
     );
     expect(output).toContain("wells-osdu-00-reference-cache");
   });
@@ -211,6 +212,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
           timeout: 600_000,
           env: {
             ...process.env,
+            ...E2E.osdu,
             OSDU_SAMPLE_DB: meta.sampleDb,
             SQLFLOW_OSDU_DB: meta.osduDb,
             SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,

@@ -23,12 +23,22 @@ public static partial class Preflight
     /// Runs every check and returns the issues. <paramref name="sourceColumns"/> maps a scope name (<c>record</c> or a child
     /// dataset) to the columns that table holds; pass null to check without a source.
     /// </summary>
+    /// <param name="mapping">The mapping checked.</param>
+    /// <param name="schema">The template it pins.</param>
+    /// <param name="references">The cache version it renders against.</param>
+    /// <param name="context">The render context, with the flow's parameters.</param>
+    /// <param name="sourceColumns">The flow's source tables and their columns, when known.</param>
+    /// <param name="searches">
+    /// The mapping's searches resolved against the schemas they pin. A mapping that declares searches is checked only
+    /// with them, since without them nothing says whether its lookups can be asked at all.
+    /// </param>
     public static IReadOnlyList<ValidationIssue> Check(
         MappingDefinition mapping,
         SchemaSnapshot schema,
         ReferenceSnapshot references,
         RenderContext context,
-        IReadOnlyDictionary<string, IReadOnlySet<string>>? sourceColumns)
+        IReadOnlyDictionary<string, IReadOnlySet<string>>? sourceColumns,
+        ResolvedSearches? searches = null)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(schema);
@@ -45,10 +55,23 @@ public static partial class Preflight
             return issues;
         }
 
+        // 4b. Every search resolves against the schema it pins, and every property it compares can be asked for.
+        if (mapping.Searches.Count > 0)
+        {
+            if (searches is null)
+            {
+                issues.Add(ValidationIssue.Error(
+                    $"{where}: the mapping searches {string.Join(", ", mapping.Searches.Keys.Order(StringComparer.Ordinal))}, and the schemas those searches pin were not loaded for this check, so nothing says whether its lookups can be asked."));
+                return issues;
+            }
+
+            issues.AddRange(searches.Problems.Select(problem => ValidationIssue.Error(problem)));
+        }
+
         MappingRenderer renderer;
         try
         {
-            renderer = new MappingRenderer(mapping, schema, references, context);
+            renderer = new MappingRenderer(mapping, schema, references, context, searches);
         }
         catch (FlowValidationException ex)
         {
@@ -96,6 +119,32 @@ public static partial class Preflight
         // 10. Every fixture renders exactly as declared under this context.
         CheckFixtures(mapping, renderer, issues, where);
         return issues;
+    }
+
+    /// <summary>
+    /// The answers a fixture declares, as a search: what it declares is known, and anything else was never asked, so a
+    /// render of the fixture that needs more comes back unfinished and names what it needed.
+    /// </summary>
+    private sealed class FixtureSearch : IRecordSearch
+    {
+        private readonly Dictionary<(string Kind, string Field, string Value), SearchAnswer> _answers = [];
+
+        public FixtureSearch(MappingDefinition mapping, MappingFixture fixture)
+        {
+            foreach (var answer in fixture.Searches)
+            {
+                if (mapping.Searches.TryGetValue(answer.Search, out var search))
+                {
+                    _answers[(search.Kind, answer.Field, answer.Value)] = answer.Id is { } id ? SearchAnswer.Found(id) : SearchAnswer.None;
+                }
+            }
+        }
+
+        public bool TryAnswer(SearchQuestion question, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out SearchAnswer? answer)
+            => _answers.TryGetValue((question.Kind, question.Field, question.Value), out answer);
+
+        public Task AnswerAsync(IReadOnlyCollection<SearchQuestion> questions, CancellationToken ct = default)
+            => throw new DeliveryException("A fixture renders against the answers it declares and never asks the platform.");
     }
 
     /// <summary>Throws a <see cref="FlowValidationException"/> listing every error when any is present.</summary>
@@ -174,6 +223,10 @@ public static partial class Preflight
         else if (entry.Source!.Kind == MappingSourceKind.Cache)
         {
             CheckCache(entry, variable, references, issues, name);
+        }
+        else if (entry.Source.Kind == MappingSourceKind.Search)
+        {
+            CheckSearch(entry, variable, renderer, issues, name);
         }
     }
 
@@ -270,6 +323,13 @@ public static partial class Preflight
                 : $"{entry.Source} is one value, and {target} is {Describe(variable)}; fill the properties inside it instead.";
         }
 
+        if (entry.Source.Kind == MappingSourceKind.Search)
+        {
+            return shape is TemplateVariableShape.Value or TemplateVariableShape.ValueList
+                ? null
+                : $"{entry.Source} is the id of the record a search finds, and {target} is {Describe(variable)}.";
+        }
+
         return shape == TemplateVariableShape.GroupList
             ? $"{target} is {Describe(variable)}, which a repeater fills from a child dataset, not a cache value."
             : null;
@@ -328,6 +388,34 @@ public static partial class Preflight
             {
                 issues.Add(ValidationIssue.Error($"{name}: '{value}' is not in cache version '{references.Version}', which caches {entityType} as {string.Join(", ", cached.Select(t => t.Name))}."));
             }
+        }
+    }
+
+    /// <summary>
+    /// 8, for a search: the id a search finds is of the entity type it searches, which has to be one the template points
+    /// the target to. Whether each property its findBy lines compare can be asked for at all is the searches' resolution
+    /// against their schemas, reported with the mapping's other problems.
+    /// </summary>
+    private static void CheckSearch(MappingEntry entry, TemplateVariable variable, MappingRenderer renderer, List<ValidationIssue> issues, string name)
+    {
+        var searchName = entry.Source!.CacheType!;
+        if (!renderer.Mapping.Searches.TryGetValue(searchName, out var search))
+        {
+            return;
+        }
+
+        var entityType = search.Kind.Split(':')[2];
+        if (variable.Relationships.Count > 0)
+        {
+            if (!Points(variable.Relationships, entityType))
+            {
+                issues.Add(ValidationIssue.Error(
+                    $"{name} writes the id of a {entityType} record search '{searchName}' finds, but the template points {entry.Target.Text} to {string.Join(" or ", variable.Relationships)}."));
+            }
+        }
+        else if (variable.Pattern is null)
+        {
+            issues.Add(ValidationIssue.Warning($"{name} writes an OSDU reference, but the template does not mark {entry.Target.Text} as a relationship."));
         }
     }
 
@@ -441,7 +529,7 @@ public static partial class Preflight
                 StringComparer.OrdinalIgnoreCase);
             var record = new SourceRecord { Row = SourceRow.FromStrings(fixture.Record), Scopes = datasets };
 
-            var fixtureRenderer = renderer;
+            RenderContext? fixtureContext = null;
             if (fixture.Parameters.Count > 0)
             {
                 var parameters = new Dictionary<string, string>(renderer.Context.Parameters, StringComparer.Ordinal);
@@ -450,8 +538,11 @@ public static partial class Preflight
                     parameters[kv.Key] = kv.Value;
                 }
 
-                fixtureRenderer = new MappingRenderer(mapping, renderer.Schema, renderer.References, renderer.Context with { Parameters = parameters });
+                fixtureContext = renderer.Context with { Parameters = parameters };
             }
+
+            // A fixture renders against the answers it declares, never the platform: what it checks is the mapping.
+            var fixtureRenderer = renderer.With(fixtureContext, new FixtureSearch(mapping, fixture));
 
             RenderResult result;
             try
@@ -461,6 +552,16 @@ public static partial class Preflight
             catch (DeliveryException ex)
             {
                 issues.Add(ValidationIssue.Error($"{where}: fixture '{fixture.Name}' failed to render: {ex.Message}"));
+                continue;
+            }
+
+            if (result.IsIncomplete)
+            {
+                var searchesOf = mapping.Searches.Values.ToDictionary(v => v.Kind, v => v.Name, StringComparer.Ordinal);
+                var missing = string.Join("; ", result.Unanswered.Select(q =>
+                    $"{{ search: {searchesOf.GetValueOrDefault(q.Kind, q.Kind)}, field: {q.Field}, value: {q.Value}, id: <the record found, or leave it out for none> }}"));
+                issues.Add(ValidationIssue.Error(
+                    $"{where}: fixture '{fixture.Name}' searches for what it declares no answer to; a fixture says what the platform answers to every search its render asks, under 'searches': {missing}"));
                 continue;
             }
 

@@ -29,6 +29,12 @@ public sealed record MappingDefinition
     /// <summary>Parameters the mapping accepts from the flow under <c>render.parameters</c>.</summary>
     public IReadOnlyDictionary<string, MappingParameter> Parameters { get; init; } = new Dictionary<string, MappingParameter>(StringComparer.Ordinal);
 
+    /// <summary>
+    /// What each <c>search.&lt;name&gt;</c> source searches, by the name entries write it as. Empty for a mapping that
+    /// resolves everything out of the cache.
+    /// </summary>
+    public IReadOnlyDictionary<string, MappingSearch> Searches { get; init; } = new Dictionary<string, MappingSearch>(StringComparer.Ordinal);
+
     /// <summary>The entries, in the order the document lists them.</summary>
     public required IReadOnlyList<MappingEntry> Entries { get; init; }
 
@@ -114,12 +120,23 @@ public enum MappingSourceKind
 
     /// <summary>A field of a cached record.</summary>
     Cache,
+
+    /// <summary>
+    /// A field of a record the platform is searched for as the run needs it, rather than one captured into the
+    /// partition's cache. For a set that is business data rather than a vocabulary: a partition's wellbores grow
+    /// without bound and change constantly, so capturing them to answer one lookup costs more every day, while the
+    /// units and the type codes a cache is for are closed sets that a capture holds cheaply.
+    /// </summary>
+    Search,
 }
 
 /// <summary>Where an entry's value comes from.</summary>
 public sealed record MappingSource
 {
     public const string CachePrefix = "cache";
+
+    /// <summary>The prefix of a source resolved by searching the platform: <c>search.Wellbore.id</c>.</summary>
+    public const string SearchPrefix = "search";
 
     public required MappingSourceKind Kind { get; init; }
 
@@ -135,22 +152,35 @@ public sealed record MappingSource
     /// <summary>The cached field a cache source reads: <c>id</c> for the record id, or a field or path into one.</summary>
     public string? CacheField { get; init; }
 
+    /// <summary>The prefix this source is written with: <c>cache</c> or <c>search</c>.</summary>
+    public string Prefix => Kind == MappingSourceKind.Search ? SearchPrefix : CachePrefix;
+
     public override string ToString() => Kind switch
     {
         MappingSourceKind.DatasetColumn => Column!.ToString(),
         MappingSourceKind.DatasetRows => $"{DatasetColumn.Prefix}.{Child}",
-        _ => $"{CachePrefix}.{CacheType}.{CacheField}",
+        _ => $"{Prefix}.{CacheType}.{CacheField}",
     };
 
-    /// <summary>True when a cache source reads the record id, which renders in the reference form OSDU relationships use.</summary>
-    public bool ReadsRecordId => Kind == MappingSourceKind.Cache && string.Equals(CacheField, "id", StringComparison.Ordinal);
+    /// <summary>True when a resolved source reads the record id, which renders in the reference form OSDU relationships use.</summary>
+    public bool ReadsRecordId
+        => Kind is MappingSourceKind.Cache or MappingSourceKind.Search && string.Equals(CacheField, "id", StringComparison.Ordinal);
+
+    /// <summary>True when this source is resolved by matching a record, whether from the cache or from a search.</summary>
+    public bool Resolves => Kind is MappingSourceKind.Cache or MappingSourceKind.Search;
 }
 
-/// <summary>One line of a cache source's <c>findBy</c>: the cached field compared, and the dataset value or literal it must equal.</summary>
+/// <summary>
+/// One line of a cache or a search source's <c>findBy</c>: the field compared, and the dataset value or literal it must
+/// equal. <see cref="Type"/> is the cached type, or the search, the line compares a record of.
+/// </summary>
 public sealed record FindBy(string Type, string Field, DatasetColumn? Column, string? Literal)
 {
+    /// <summary>The prefix the line is written with: <c>cache</c>, or <c>search</c> for a line of a search source.</summary>
+    public string Prefix { get; init; } = MappingSource.CachePrefix;
+
     public override string ToString()
-        => $"{MappingSource.CachePrefix}.{Type}.{Field} = {(Column is not null ? Column.ToString() : "'" + Literal + "'")}";
+        => $"{Prefix}.{Type}.{Field} = {(Column is not null ? Column.ToString() : "'" + Literal + "'")}";
 }
 
 public enum ConditionOperator
@@ -316,6 +346,46 @@ public sealed record MappingFixture
     /// <summary>Parameter values for the fixture render.</summary>
     public IReadOnlyDictionary<string, string> Parameters { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
 
+    /// <summary>
+    /// What the fixture assumes the platform answers to each search its render asks, so a fixture checks the mapping and
+    /// never the platform's data of the day. A render asking a question the fixture does not answer fails the fixture.
+    /// </summary>
+    public IReadOnlyList<FixtureSearchAnswer> Searches { get; init; } = [];
+
     /// <summary>The expected record (JSON text, compared canonically).</summary>
     public required string Expected { get; init; }
 }
+
+/// <summary>What a fixture assumes the platform answers when a search compares one property with one value.</summary>
+/// <param name="Search">The search, by the name the mapping declares it under.</param>
+/// <param name="Field">The property compared, as findBy writes it.</param>
+/// <param name="Value">The value compared, after the entry's modifiers.</param>
+/// <param name="Id">The one record found, or null when the platform holds no such record.</param>
+public sealed record FixtureSearchAnswer(string Search, string Field, string Value, string? Id);
+
+/// <summary>
+/// One record set a mapping resolves by searching the platform. The kind is what a search is issued against; the name
+/// is what entries write, so a mapping can search two sets of the same kind under different names.
+/// </summary>
+/// <param name="Name">The name entries write, as in <c>search.Wellbore.id</c>.</param>
+/// <param name="Kind">
+/// The OSDU kind searched: one entity type, at one version or at every version (<c>osdu:wks:master-data--Wellbore:*</c>).
+/// </param>
+/// <param name="Schema">
+/// The saved template whose schema says how the searched kind's properties are indexed, pinned the way a mapping pins its
+/// own template, so the query a render sends is fixed by the mapping's version and not by whatever the platform says on
+/// the day. It is a version of the same entity type as <paramref name="Kind"/>.
+/// </param>
+/// <param name="Description">What the set is, shown wherever the mapping is listed.</param>
+public sealed record MappingSearch(string Name, string Kind, TemplateReference Schema, string? Description);
+
+/// <summary>
+/// One question a render needs answered before it can finish: the query to run against a kind, with the property and
+/// value it compares for anyone reading the answer. Two renders asking the same question are the same question, so a run
+/// answers it once.
+/// </summary>
+/// <param name="Kind">The OSDU kind searched.</param>
+/// <param name="Field">The property compared, as the mapping writes it.</param>
+/// <param name="Value">What that property must equal, after the entry's modifiers have run.</param>
+/// <param name="Query">The query sent, built from the property as the searched kind's schema says it is indexed.</param>
+public sealed record SearchQuestion(string Kind, string Field, string Value, string Query);

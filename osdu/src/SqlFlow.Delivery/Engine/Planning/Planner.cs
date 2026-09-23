@@ -281,7 +281,7 @@ public sealed class Planner
         var where = KeyPaths.Where(flow);
         var source = await _source.OpenAsync(selection, stored, ct).ConfigureAwait(false);
 
-        var issues = Preflight.Check(resolved.Mapping, resolved.Schema, resolved.References, resolved.Context, source.Columns);
+        var issues = Preflight.Check(resolved.Mapping, resolved.Schema, resolved.References, resolved.Context, source.Columns, resolved.Renderer.Searches);
         Preflight.ThrowIfFailed(issues, where);
         SourceBindings.Check(flow, resolved.Mapping, source, where);
 
@@ -534,6 +534,10 @@ public sealed class Planner
             ? new Dictionary<DeliveryKey, RecordState>()
             : await _ledger.GetRecordsAsync(flow.Id, keyed.Where(k => k.Key is not null).Select(k => k.Key!.Value), ct).ConfigureAwait(false);
 
+        // Records whose documents refer to records the run has not looked up yet, and the questions they wait on.
+        var deferred = new List<PendingRender>();
+        var unanswered = new Questions();
+
         foreach (var (record, key, sourceKey, label, identities) in keyed)
         {
             ct.ThrowIfCancellationRequested();
@@ -712,155 +716,285 @@ public sealed class Planner
                 continue;
             }
 
-            var render = renderer.Render(record);
-            if (!render.IsHeld && EdsRecordRules.Hold(flow.Target.Eds, render.Document) is { } unusable)
+            var pending = new PendingRender
             {
-                // A record External Data Services could not use is held before anything is sent, whichever route writes it.
-                render = render with { Holds = [unusable] };
+                Record = record,
+                Basis = basis,
+                State = state,
+                HasPayload = hasPayload,
+                PayloadHash = payloadHash,
+                PayloadModifiedUtc = payloadModified,
+                PayloadLocation = payloadLocation,
+                ChunkCount = chunkCount,
+                Parts = resolvedParts,
+                CarriedComposite = carriedComposite,
+            };
+
+            var questions = await FinishRecordAsync(header, pending, payload, parts, roles, entries, final: false, ct).ConfigureAwait(false);
+            if (questions is not null)
+            {
+                // The document refers to records the run has not looked up yet. What the plan resolved about this
+                // record is kept as it stands, and the record finishes once the batch's questions have been asked.
+                deferred.Add(pending);
+                unanswered.AddRange(questions);
             }
+        }
 
-            if (render.IsHeld)
+        // The batch's questions are asked in one round, however many records asked them, and the waiting records render
+        // again. A record whose next findBy line now needs asking goes round again; every round answers at least one
+        // line of every record still waiting, so the rounds are bounded by the longest findBy list, and the last one
+        // holds whatever is still unanswered rather than loop.
+        var rounds = SearchRounds(resolved.Mapping);
+        for (var round = 1; deferred.Count > 0; round++)
+        {
+            await renderer.Search.AnswerAsync(unanswered.Asked, ct).ConfigureAwait(false);
+            var final = round >= rounds;
+            var waiting = new List<PendingRender>();
+            unanswered = new Questions();
+            foreach (var pending in deferred)
             {
-                entries.Add(basis with
+                ct.ThrowIfCancellationRequested();
+                var questions = await FinishRecordAsync(header, pending, payload, parts, roles, entries, final, ct).ConfigureAwait(false);
+                if (questions is not null)
                 {
-                    TargetId = render.TargetId,
-                    Reason = string.Join("; ", render.Holds),
-                    Render = render,
-                    PayloadHash = payloadHash,
-                    PayloadModifiedUtc = payloadModified,
-                });
-                continue;
-            }
-
-            var decision = ChangeDetector.DecideWithQueue(state, render.MetadataHash, payloadHash, hasPayload, flow.Change);
-            var carriedPayload = false;
-            if (decision.DeliverPayload && payloadModified is { } filesModified && ChangeDetector.NewestPayloadModified(state) is { } newestPayload && filesModified < newestPayload)
-            {
-                var why = $"the payload files are last modified {Moment(filesModified)}, older than the payload last modified {Moment(newestPayload)} already delivered or queued";
-                if (state is { HasPendingWork: true, PendingPayload: true } && state.PendingPayloadModifiedUtc == newestPayload)
-                {
-                    // The newer payload is still queued: the new document replaces the queue, but that payload goes with it.
-                    carriedPayload = true;
-                    payloadHash = state.PendingPayloadHash;
-                    payloadModified = state.PendingPayloadModifiedUtc;
-                    if (parts is not null)
-                    {
-                        carriedComposite = state.PendingPayloadLocation;
-                    }
-                    else
-                    {
-                        payloadLocation = state.PendingPayloadLocation is { } stored ? PayloadLocation.Parse(stored) : payloadLocation;
-                    }
-
-                    chunkCount = null;
-                    decision = decision with { Reason = $"{decision.Reason}; {why}, so the newer payload already queued is kept" };
-                }
-                else if (decision.DeliverMetadata)
-                {
-                    decision = decision with
-                    {
-                        Action = decision.Action == PlannedAction.Create ? PlannedAction.Create : PlannedAction.UpdateMetadata,
-                        DeliverPayload = false,
-                        Reason = $"{decision.Reason}; {why}, so only the metadata is sent",
-                    };
-                }
-                else
-                {
-                    decision = new ChangeDecision(PlannedAction.Skip, SkipTier.Stale, false, false, $"{why}; OSDU keeps the newer payload");
+                    waiting.Add(pending);
+                    unanswered.AddRange(questions);
                 }
             }
 
-            if (decision.Action == PlannedAction.Skip)
-            {
-                entries.Add(basis with
-                {
-                    TargetId = render.TargetId,
-                    Action = PlannedAction.Skip,
-                    SkipTier = decision.SkipTier,
-                    Reason = decision.Reason,
-                    Render = render,
-                    PayloadHash = payloadHash,
-                    PayloadModifiedUtc = payloadModified,
-                });
-                continue;
-            }
+            deferred = waiting;
+        }
+    }
 
-            string? payloadText = payloadLocation?.ToString();
-            if (decision.DeliverPayload && parts is not null)
-            {
-                // Each part's files are counted the way a single payload's are; the parts are listed with the parts the
-                // delivery sends whatever their hashes say, and that list is what the ledger keeps as the payload.
-                string? problem = null;
-                if (carriedComposite is not null)
-                {
-                    payloadText = carriedComposite;
-                }
-                else
-                {
-                    (chunkCount, problem) = await CountPartsAsync(flow, record.Row, resolvedParts!, ct).ConfigureAwait(false);
-                    payloadText = problem is null
-                        ? new CompositePayload(resolvedParts!.Select(r => r.Part).ToList(), PayloadParts.Forced(state?.PayloadHash, flow.Change, roles)).Encode()
-                        : null;
-                    problem ??= CompositePayload.TooLong(payloadText!);
-                }
+    /// <summary>
+    /// How many rounds of questions a batch can need: one per findBy line of the search entry with the most, since a
+    /// render asks a search entry's lines one at a time and each round answers the one it asked.
+    /// </summary>
+    private static int SearchRounds(MappingDefinition mapping)
+        => mapping.Entries.Where(e => e.Source?.Kind == MappingSourceKind.Search).Select(e => e.FindBy.Count).DefaultIfEmpty(1).Max();
 
-                if (problem is not null)
+    /// <summary>The distinct questions a batch's records wait on, in the order they were first asked.</summary>
+    private sealed class Questions
+    {
+        private readonly HashSet<SearchQuestion> _seen = [];
+        private readonly List<SearchQuestion> _asked = [];
+
+        public IReadOnlyCollection<SearchQuestion> Asked => _asked;
+
+        public void AddRange(IEnumerable<SearchQuestion> questions)
+        {
+            foreach (var question in questions)
+            {
+                if (_seen.Add(question))
                 {
-                    entries.Add(basis with
-                    {
-                        TargetId = render.TargetId,
-                        Reason = problem,
-                        Render = render,
-                        PayloadHash = payloadHash,
-                        PayloadModifiedUtc = payloadModified,
-                    });
-                    continue;
+                    _asked.Add(question);
                 }
             }
-            else if (decision.DeliverPayload)
-            {
-                // The record row can declare how many files the payload has, which spares a storage listing per
-                // record here (the drain lists them when it streams them anyway); without it they are listed. A
-                // payload carried over from the queue was prepared by an earlier read, so its count is listed too.
-                chunkCount ??= carriedPayload ? null : DeclaredChunkCount(payload!, record.Row);
-                if (chunkCount is null)
-                {
-                    var files = await _payloads.ListAsync(payloadLocation!.Value.Folder, payloadLocation.Value.Pattern, ct).ConfigureAwait(false);
-                    chunkCount = files.Count;
-                }
+        }
+    }
 
-                if (chunkCount == 0)
-                {
-                    entries.Add(basis with
-                    {
-                        TargetId = render.TargetId,
-                        Reason = $"payload hash present but no files under {payloadLocation}",
-                        Render = render,
-                        PayloadHash = payloadHash,
-                        PayloadModifiedUtc = payloadModified,
-                    });
-                    continue;
-                }
+    /// <summary>
+    /// The record's document, the change it amounts to, and the entry the plan records for it: everything after the
+    /// point where the record's payload has been resolved.
+    /// </summary>
+    /// <remarks>
+    /// A mapping that resolves a reference by searching the platform renders a record the run has asked nothing about
+    /// yet as unfinished, naming what it needs. That is returned rather than recorded, so the caller can ask the whole
+    /// batch's questions in one go and finish the record from here, without resolving its payload again. Called with
+    /// <paramref name="final"/>, the questions have been asked and an answer that never came holds the record instead.
+    /// </remarks>
+    /// <returns>The questions the record needs answered, or null when its entry has been recorded.</returns>
+    private async Task<IReadOnlyList<SearchQuestion>?> FinishRecordAsync(
+        PlanHeader header,
+        PendingRender pending,
+        FlowPayload? payload,
+        IReadOnlyList<PayloadPart>? parts,
+        IReadOnlyList<string> roles,
+        List<PlanEntry> entries,
+        bool final,
+        CancellationToken ct)
+    {
+        var record = pending.Record;
+        var basis = pending.Basis;
+        var state = pending.State;
+        var hasPayload = pending.HasPayload;
+        var payloadHash = pending.PayloadHash;
+        var payloadModified = pending.PayloadModifiedUtc;
+        var payloadLocation = pending.PayloadLocation;
+        var chunkCount = pending.ChunkCount;
+        var resolvedParts = pending.Parts;
+        var carriedComposite = pending.CarriedComposite;
+        var flow = header.Flow;
+        var payloadName = header.PayloadName;
+        var renderer = header.Mapping.Renderer;
+
+        var render = renderer.Render(record);
+        if (render.IsIncomplete)
+        {
+            if (!final)
+            {
+                return render.Unanswered;
             }
 
+            // Every question was put to the platform and some came back without an answer, which a search that answers
+            // all it is given never does. The references that depend on them are unknown, so the record is held rather
+            // than sent without them.
+            render = render with
+            {
+                Holds = [.. render.Holds, .. render.Unanswered.Select(q => $"searching {q.Kind} for {q.Field} '{q.Value}' got no answer from the platform")],
+                Unanswered = [],
+            };
+        }
+
+        if (!render.IsHeld && EdsRecordRules.Hold(flow.Target.Eds, render.Document) is { } unusable)
+        {
+            // A record External Data Services could not use is held before anything is sent, whichever route writes it.
+            render = render with { Holds = [unusable] };
+        }
+
+        if (render.IsHeld)
+        {
             entries.Add(basis with
             {
                 TargetId = render.TargetId,
-                Action = decision.Action,
+                Reason = string.Join("; ", render.Holds),
+                Render = render,
+                PayloadHash = payloadHash,
+                PayloadModifiedUtc = payloadModified,
+            });
+            return null;
+        }
+
+        var decision = ChangeDetector.DecideWithQueue(state, render.MetadataHash, payloadHash, hasPayload, flow.Change);
+        var carriedPayload = false;
+        if (decision.DeliverPayload && payloadModified is { } filesModified && ChangeDetector.NewestPayloadModified(state) is { } newestPayload && filesModified < newestPayload)
+        {
+            var why = $"the payload files are last modified {Moment(filesModified)}, older than the payload last modified {Moment(newestPayload)} already delivered or queued";
+            if (state is { HasPendingWork: true, PendingPayload: true } && state.PendingPayloadModifiedUtc == newestPayload)
+            {
+                // The newer payload is still queued: the new document replaces the queue, but that payload goes with it.
+                carriedPayload = true;
+                payloadHash = state.PendingPayloadHash;
+                payloadModified = state.PendingPayloadModifiedUtc;
+                if (parts is not null)
+                {
+                    carriedComposite = state.PendingPayloadLocation;
+                }
+                else
+                {
+                    payloadLocation = state.PendingPayloadLocation is { } stored ? PayloadLocation.Parse(stored) : payloadLocation;
+                }
+
+                chunkCount = null;
+                decision = decision with { Reason = $"{decision.Reason}; {why}, so the newer payload already queued is kept" };
+            }
+            else if (decision.DeliverMetadata)
+            {
+                decision = decision with
+                {
+                    Action = decision.Action == PlannedAction.Create ? PlannedAction.Create : PlannedAction.UpdateMetadata,
+                    DeliverPayload = false,
+                    Reason = $"{decision.Reason}; {why}, so only the metadata is sent",
+                };
+            }
+            else
+            {
+                decision = new ChangeDecision(PlannedAction.Skip, SkipTier.Stale, false, false, $"{why}; OSDU keeps the newer payload");
+            }
+        }
+
+        if (decision.Action == PlannedAction.Skip)
+        {
+            entries.Add(basis with
+            {
+                TargetId = render.TargetId,
+                Action = PlannedAction.Skip,
                 SkipTier = decision.SkipTier,
                 Reason = decision.Reason,
                 Render = render,
                 PayloadHash = payloadHash,
                 PayloadModifiedUtc = payloadModified,
-                PayloadLocation = decision.DeliverPayload ? payloadText : null,
-                ChunkCount = decision.DeliverPayload ? chunkCount : null,
-                DeliverMetadata = decision.DeliverMetadata,
-                DeliverPayload = decision.DeliverPayload,
-
-                // Only a document that is sent can point at a record that is not there yet; a payload alone changes no reference.
-                References = decision.DeliverMetadata ? header.References.Read(render.Document, render.TargetId) : [],
             });
+            return null;
         }
+
+        string? payloadText = payloadLocation?.ToString();
+        if (decision.DeliverPayload && parts is not null)
+        {
+            // Each part's files are counted the way a single payload's are; the parts are listed with the parts the
+            // delivery sends whatever their hashes say, and that list is what the ledger keeps as the payload.
+            string? problem = null;
+            if (carriedComposite is not null)
+            {
+                payloadText = carriedComposite;
+            }
+            else
+            {
+                (chunkCount, problem) = await CountPartsAsync(flow, record.Row, resolvedParts!, ct).ConfigureAwait(false);
+                payloadText = problem is null
+                    ? new CompositePayload(resolvedParts!.Select(r => r.Part).ToList(), PayloadParts.Forced(state?.PayloadHash, flow.Change, roles)).Encode()
+                    : null;
+                problem ??= CompositePayload.TooLong(payloadText!);
+            }
+
+            if (problem is not null)
+            {
+                entries.Add(basis with
+                {
+                    TargetId = render.TargetId,
+                    Reason = problem,
+                    Render = render,
+                    PayloadHash = payloadHash,
+                    PayloadModifiedUtc = payloadModified,
+                });
+                return null;
+            }
+        }
+        else if (decision.DeliverPayload)
+        {
+            // The record row can declare how many files the payload has, which spares a storage listing per
+            // record here (the drain lists them when it streams them anyway); without it they are listed. A
+            // payload carried over from the queue was prepared by an earlier read, so its count is listed too.
+            chunkCount ??= carriedPayload ? null : DeclaredChunkCount(payload!, record.Row);
+            if (chunkCount is null)
+            {
+                var files = await _payloads.ListAsync(payloadLocation!.Value.Folder, payloadLocation.Value.Pattern, ct).ConfigureAwait(false);
+                chunkCount = files.Count;
+            }
+
+            if (chunkCount == 0)
+            {
+                entries.Add(basis with
+                {
+                    TargetId = render.TargetId,
+                    Reason = $"payload hash present but no files under {payloadLocation}",
+                    Render = render,
+                    PayloadHash = payloadHash,
+                    PayloadModifiedUtc = payloadModified,
+                });
+                return null;
+            }
+        }
+
+        entries.Add(basis with
+        {
+            TargetId = render.TargetId,
+            Action = decision.Action,
+            SkipTier = decision.SkipTier,
+            Reason = decision.Reason,
+            Render = render,
+            PayloadHash = payloadHash,
+            PayloadModifiedUtc = payloadModified,
+            PayloadLocation = decision.DeliverPayload ? payloadText : null,
+            ChunkCount = decision.DeliverPayload ? chunkCount : null,
+            DeliverMetadata = decision.DeliverMetadata,
+            DeliverPayload = decision.DeliverPayload,
+
+            // Only a document that is sent can point at a record that is not there yet; a payload alone changes no reference.
+            References = decision.DeliverMetadata ? header.References.Read(render.Document, render.TargetId) : [],
+        });
+
+        return null;
     }
 
     /// <summary>
@@ -885,6 +1019,34 @@ public sealed class Planner
 
     /// <summary>One part of a record's payload as the plan resolved it, with the modified time of its files when they were listed.</summary>
     private sealed record ResolvedPart(CompositePayloadPart Part, PayloadPart Declared, DateTime? Modified);
+
+    /// <summary>
+    /// What the plan resolved about a record before its document was rendered: the record, what every entry says about
+    /// it, and its payload. A record whose references the run must look up first finishes from here, so its payload is
+    /// never resolved, or its files listed, twice.
+    /// </summary>
+    private sealed record PendingRender
+    {
+        public required SourceRecord Record { get; init; }
+
+        public required PlanEntry Basis { get; init; }
+
+        public required RecordState? State { get; init; }
+
+        public required bool HasPayload { get; init; }
+
+        public string? PayloadHash { get; init; }
+
+        public DateTime? PayloadModifiedUtc { get; init; }
+
+        public PayloadLocation? PayloadLocation { get; init; }
+
+        public int? ChunkCount { get; init; }
+
+        public List<ResolvedPart>? Parts { get; init; }
+
+        public string? CarriedComposite { get; init; }
+    }
 
     /// <summary>
     /// Each part's location and content hash, from the record's row as a single payload's are: the location column under

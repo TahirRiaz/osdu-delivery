@@ -13,6 +13,7 @@ using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
@@ -659,7 +660,9 @@ public static class DeliveryTemplateEndpoints
 
         try
         {
-            foreach (var issue in Preflight.Check(mapping, schema, references, context, sourceColumns: null))
+            // A search is checked against the schema it pins, as a delivery resolving the mapping would check it.
+            var searches = await RenderResolver.SearchesAsync(templates, mapping, ct).ConfigureAwait(false);
+            foreach (var issue in Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches))
             {
                 issues.Add(new MappingDraftIssue(
                     issue.Severity == IssueSeverity.Error ? MappingDraftIssue.ErrorSeverity : MappingDraftIssue.WarningSeverity, issue.Message, issue.Target));

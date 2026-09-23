@@ -48,7 +48,8 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
         Assert.Equal((3, 3), (currentRun.Delivered, nextRun.Delivered));
 
         // The same three rows, each sent twice: as WellLog 1.4.0 into the sample partition and as WellLog 1.5.0 into the
-        // next one, with the same curve files and, through each partition's own cache, each partition's own references.
+        // next one, with the same curve files and, through each partition's own cache and its own search, each
+        // partition's own references.
         for (var i = 0; i < 3; i++)
         {
             var key = SampleEstate.Key(i);

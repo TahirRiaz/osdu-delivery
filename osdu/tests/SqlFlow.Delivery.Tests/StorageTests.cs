@@ -680,6 +680,9 @@ public sealed class OsduCacheStoreTests : IDisposable
         Assert.Equal(version.Version, await store.CurrentVersionAsync(Samples.SampleCacheScope));
         Assert.Equal(Samples.SampleCacheFlowName, Assert.Single(await store.ListVersionsAsync(Samples.SampleCacheScope)).FlowName);
         Assert.True(version.HasType("UnitOfMeasure"));
-        Assert.True(version.HasType("Wellbore"));
+        Assert.True(version.HasType("VerticalMeasurementType"));
+
+        // Wellbores are searched for on the platform rather than captured, so the sample cache holds none.
+        Assert.False(version.HasType("Wellbore"));
     }
 }

@@ -18,6 +18,7 @@ using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Storage;
@@ -669,6 +670,27 @@ public static class Samples
         return saved;
     }
 
+    /// <summary>
+    /// Renders <paramref name="record"/> to the end, as the plan does: whatever a render asks of the renderer's search is
+    /// answered between renders until one finishes.
+    /// </summary>
+    public static async Task<RenderResult> RenderSettledAsync(MappingRenderer renderer, SourceRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(renderer);
+        for (var round = 0; round < 10; round++)
+        {
+            var result = renderer.Render(record);
+            if (!result.IsIncomplete)
+            {
+                return result;
+            }
+
+            await renderer.Search.AnswerAsync(result.Unanswered);
+        }
+
+        throw new InvalidOperationException("The render still asked the search something after ten rounds.");
+    }
+
     /// <summary>The sample schema of a kind, read from its bundled file.</summary>
     public static SchemaSnapshot SampleTemplate(string kind)
     {
@@ -701,7 +723,8 @@ public static class Samples
         ITemplateStore? templates = null,
         ICacheStore? cache = null,
         IIngestionSourceFactory? sources = null,
-        IPayloadFiles? payloads = null)
+        IPayloadFiles? payloads = null,
+        IRecordSearchFactory? searches = null)
     {
         var stores = Stores();
         var loader = new DeliveryDocumentLoader();
@@ -717,7 +740,8 @@ public static class Samples
             protocols ?? new DefaultProtocolFactory(new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance),
             CompositeDeliveryListener.Empty,
             Templates: templates ?? SampleTemplates,
-            Cache: cache ?? SampleCache);
+            Cache: cache ?? SampleCache,
+            Searches: searches ?? FixedRecordSearchFactory.SampleWellbores());
     }
 
     /// <summary>
@@ -928,4 +952,76 @@ public static class TestSchema
         """);
 
     public static JsonObject Doc(string json) => (JsonObject)JsonNode.Parse(json)!;
+}
+
+/// <summary>
+/// A search that answers from records it was given instead of a platform, keeping to the protocol a platform search keeps:
+/// a question is unknown until it has been asked, and anything it was not given is found nowhere.
+/// </summary>
+public sealed class FixedRecordSearch : IRecordSearch
+{
+    private readonly IReadOnlyList<(string Field, string Value, string Id)> _known;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<SearchQuestion, SearchAnswer> _answers = new();
+
+    public FixedRecordSearch(IReadOnlyList<(string Field, string Value, string Id)> known) => _known = known;
+
+    /// <summary>Every question asked of this search, in order, so a test can count the round trips.</summary>
+    public System.Collections.Concurrent.ConcurrentQueue<SearchQuestion> Asked { get; } = new();
+
+    public bool TryAnswer(SearchQuestion question, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out SearchAnswer? answer)
+        => _answers.TryGetValue(question, out answer);
+
+    public Task AnswerAsync(IReadOnlyCollection<SearchQuestion> questions, CancellationToken ct = default)
+    {
+        foreach (var question in questions.Where(q => !_answers.ContainsKey(q)))
+        {
+            Asked.Enqueue(question);
+            var ids = _known
+                .Where(k => string.Equals(k.Field, question.Field, StringComparison.Ordinal) && string.Equals(k.Value, question.Value, StringComparison.Ordinal))
+                .Select(k => k.Id)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            _answers[question] = ids.Count switch
+            {
+                0 => SearchAnswer.None,
+                1 => SearchAnswer.Found(ids[0]),
+                _ => SearchAnswer.Ambiguous(ids.Count, ids),
+            };
+        }
+
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Makes a <see cref="FixedRecordSearch"/> for every runtime, over the same records, and keeps each one it made. An id
+/// written with <see cref="Partition"/> in it is a record of the partition the flow delivers to, as a platform search
+/// finds only the records of the partition it is asked in.
+/// </summary>
+public sealed class FixedRecordSearchFactory(params (string Field, string Value, string Id)[] known) : IRecordSearchFactory
+{
+    /// <summary>Stands for the partition of the flow the search is made for.</summary>
+    public const string Partition = "{partition}";
+
+    /// <summary>
+    /// The sample wellbores, found by name in whichever partition the flow delivers to: what the sample estate's mappings
+    /// find when they look up the wellbores the sample drops name, the ids the sample cache held before wellbores were
+    /// searched for.
+    /// </summary>
+    public static FixedRecordSearchFactory SampleWellbores() => new(
+        ("data.FacilityName", "OSDU-DEV-1-A", Partition + ":master-data--Wellbore:OSDU-DEV-1-A"),
+        ("data.FacilityName", "OSDU-DEV-1-B", Partition + ":master-data--Wellbore:OSDU-DEV-1-B"));
+
+    public System.Collections.Concurrent.ConcurrentQueue<FixedRecordSearch> Created { get; } = new();
+
+    public IRecordSearch Create(FlowDefinition flow, Func<CancellationToken, Task<OsduHttpClient>> target)
+    {
+        var declared = flow.Target.Headers.FirstOrDefault(h => h.Key.Equals("data-partition-id", StringComparison.OrdinalIgnoreCase)).Value ?? string.Empty;
+        var partition = declared.StartsWith("${env:", StringComparison.Ordinal) && declared.EndsWith('}')
+            ? Environment.GetEnvironmentVariable(declared[6..^1]) ?? declared
+            : declared;
+        var search = new FixedRecordSearch(known.Select(k => (k.Field, k.Value, k.Id.Replace(Partition, partition, StringComparison.Ordinal))).ToList());
+        Created.Enqueue(search);
+        return search;
+    }
 }

@@ -8,9 +8,10 @@ Everything below is taken from the sample estate:
 | Input | File | What it decides |
 | --- | --- | --- |
 | The ingestion tables | `OsduSample.ing.WellLog` and `OsduSample.ing.WellLogCurve`, loaded by `wells-welllog-01-header-pre` and `wells-welllog-02-header-ing` from `samples/wells/data` | The values: one row per log, one row per curve. |
-| The mapping | `samples/wells/mappings/WellLog@1.4.0.yaml` | Which template variable each entry fills, and where its value comes from: a source column, the OSDU cache, or a static value. |
+| The mapping | `samples/wells/mappings/WellLog@1.4.0.yaml` | Which template variable each entry fills, and where its value comes from: a source column, the OSDU cache, a search of the platform, or a static value. |
 | The flow | `samples/wells/flows/wells-welllog-03-header-delivery.yaml` | Which mapping to use, the data partition, and where the record is sent. |
-| The OSDU cache | `samples/wells/cache/wells-osdu-00-reference-cache.yaml`, captured into the catalog by its runs (or imported from `samples/cache-records`) | The OSDU ids that reference properties resolve to (units, wellbores, business values). |
+| The OSDU cache | `samples/wells/cache/wells-osdu-00-reference-cache.yaml`, captured into the catalog by its runs (or imported from `samples/cache-records`) | The OSDU ids that reference properties resolve to (units, business values). |
+| The platform's search | The partition the flow delivers to, searched as a record needs it | The OSDU id of the wellbore each log names, found by its name or one of its aliases. |
 | The template | `samples/templates/osdu_wks_work-product-component--WellLog_1.4.0.json`, saved in the catalog as template version `26a3c3441882db4f` | The types and structure. It is the file 1 schema. |
 
 ## How a value gets from the ingestion tables into the record
@@ -115,7 +116,7 @@ Fifteen of the thirty-four properties are filled.
 | `SamplingStop` | Mapped | `source: dataset.index_max` | none | number | `1004` | Yes, but see the unit finding below. |
 | `TopMeasuredDepth` | Mapped | `source: dataset.index_min` | none | number | `1000` | Yes, but see the unit finding below. |
 | `VerticalMeasurement` | Mapped | entries for three of its properties, section 2.4.2 | | object | section 2.4.2 | Partly. |
-| `WellboreID` | Mapped | `source: cache.Wellbore.id` with `findBy: cache.Wellbore.FacilityName = dataset.wellbore_uwi`. The entry is required, so the record is held if no cached wellbore matches. | none | string, points to master-data--Wellbore | `"dev:master-data--Wellbore:OSDU-DEV-1-A:"` | Yes. |
+| `WellboreID` | Mapped | `source: search.Wellbore.id` with `findBy: search.Wellbore.data.FacilityName = dataset.wellbore_uwi`, then `search.Wellbore.data.NameAliases.AliasName` with the same value. Each line asks the platform for the one wellbore whose name, or one of whose aliases, is exactly the value. The entry is required, so the record is held if no wellbore matches, and held whatever `required` says if several do. | none | string, points to master-data--Wellbore | `"dev:master-data--Wellbore:OSDU-DEV-1-A:"` | Yes. |
 
 The other nineteen are not filled: `CandidateReferenceCurveIDs`, `CompanyID`, `ConveyanceMethodID`,
 `DrillingFluidProperty`, `FrameIdentifier`, `HoleTypeLogging`, `LogRemark`, `LogServiceDateInterval`,

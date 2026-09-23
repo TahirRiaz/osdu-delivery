@@ -20,8 +20,8 @@ public sealed record ResolvedMapping(
 /// <summary>
 /// Resolves a flow's <c>render</c> block into a <see cref="ResolvedMapping"/>: the pinned mapping from the repository, the
 /// template version the mapping pins from the catalog, the version of the cache of the partition the flow delivers to (its
-/// current version, or the one the flow pins) from the catalog, and the mapping parameters the flow supplies. The preflight
-/// runs before anything is returned.
+/// current version, or the one the flow pins) from the catalog, the schemas the mapping's searches pin, and the mapping
+/// parameters the flow supplies. The preflight runs before anything is returned.
 /// </summary>
 public sealed class RenderResolver
 {
@@ -29,8 +29,17 @@ public sealed class RenderResolver
     private readonly ICacheStore? _cache;
     private readonly ITemplateStore? _templates;
     private readonly ISecretResolver _secrets;
+    private readonly IRecordSearch? _search;
 
-    public RenderResolver(MappingCatalog mappings, ICacheStore? cache, ITemplateStore? templates, ISecretResolver secrets)
+    /// <param name="mappings">Where the flow's mapping is read from.</param>
+    /// <param name="cache">The partitions' caches, for a mapping that reads one.</param>
+    /// <param name="templates">The saved templates: the mapping's own, and those its searches pin.</param>
+    /// <param name="secrets">Resolves the references the flow supplies as parameters.</param>
+    /// <param name="search">
+    /// Where the mapping's search sources are answered: the platform the flow delivers to. A mapping that searches and is
+    /// resolved without one renders every search as finding nothing, which holds the records that need it.
+    /// </param>
+    public RenderResolver(MappingCatalog mappings, ICacheStore? cache, ITemplateStore? templates, ISecretResolver secrets, IRecordSearch? search = null)
     {
         ArgumentNullException.ThrowIfNull(mappings);
         ArgumentNullException.ThrowIfNull(secrets);
@@ -38,6 +47,7 @@ public sealed class RenderResolver
         _cache = cache;
         _templates = templates;
         _secrets = secrets;
+        _search = search;
     }
 
     public async Task<ResolvedMapping> ResolveAsync(FlowDefinition flow, CancellationToken ct = default)
@@ -99,10 +109,37 @@ public sealed class RenderResolver
             Parameters = parameters,
         };
 
-        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null);
+        var searches = await SearchesAsync(_templates, mapping, ct).ConfigureAwait(false);
+        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches);
         Preflight.ThrowIfFailed(issues, where);
-        var renderer = new MappingRenderer(mapping, schema, references, context);
+        var renderer = new MappingRenderer(mapping, schema, references, context, searches, _search);
         return new ResolvedMapping(mapping, schema, references, context, renderer);
+    }
+
+    /// <summary>
+    /// <paramref name="mapping"/>'s searches resolved against the templates they pin, read from
+    /// <paramref name="templates"/>: how each property a search compares is indexed. A pinned template that is not saved
+    /// is reported among the problems, with every other, for the preflight to list.
+    /// </summary>
+    public static async Task<ResolvedSearches> SearchesAsync(ITemplateStore templates, MappingDefinition mapping, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(templates);
+        ArgumentNullException.ThrowIfNull(mapping);
+        if (mapping.Searches.Count == 0)
+        {
+            return ResolvedSearches.None;
+        }
+
+        var schemas = new Dictionary<TemplateReference, SchemaSnapshot>();
+        foreach (var pinned in mapping.Searches.Values.Select(s => s.Schema).Distinct())
+        {
+            if (await templates.LoadAsync(pinned, ct).ConfigureAwait(false) is { } schema)
+            {
+                schemas[pinned] = schema;
+            }
+        }
+
+        return ResolvedSearches.Resolve(mapping, schemas);
     }
 
     /// <summary>

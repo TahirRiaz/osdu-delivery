@@ -37,6 +37,19 @@ parameters:
     required: true
     description: The legal tag every record this mapping renders carries (legal.legaltags).
 
+# The wellbores a record belongs to are looked up on the platform as each record needs one, never captured into the
+# cache: they are business data, a partition holds hundreds of thousands of them and gains more every day, and a record
+# names one. Each lookup asks for the one wellbore whose name, or one of whose aliases, is exactly the incoming value,
+# written the way the pinned Wellbore schema has the platform index those properties (osdu/docs/mapping-templates.md,
+# Searches).
+searches:
+  Wellbore:
+    kind: "osdu:wks:master-data--Wellbore:*"
+    schema:
+      kind: osdu:wks:master-data--Wellbore:1.3.0
+      version: 58d6bdbd9d066a06
+    description: The partition's wellbores, found by name or by any of their aliases.
+
 mappings:
   # Access and legal: every record carries them.
   - target: osdu.acl.owners
@@ -63,10 +76,10 @@ mappings:
     source: dataset.survey_version
     required: false
   - target: osdu.data.WellboreID
-    source: cache.Wellbore.id
+    source: search.Wellbore.id
     findBy:
-      - cache.Wellbore.FacilityName = dataset.wellbore_uwi
-      - cache.Wellbore.Alias = dataset.wellbore_uwi
+      - search.Wellbore.data.FacilityName = dataset.wellbore_uwi
+      - search.Wellbore.data.NameAliases.AliasName = dataset.wellbore_uwi
   - target: osdu.data.TopDepthMeasuredDepth
     source: dataset.top_md
   - target: osdu.data.BaseDepthMeasuredDepth
@@ -121,6 +134,9 @@ fixtures:
       aclOwner: data.default.owners@dev.dataservices.energy
       aclViewer: data.default.viewers@dev.dataservices.energy
       legalTag: dev-reference-data-default
+    # The platform holds the fixture's wellbore under its name; the lookup by alias is never reached.
+    searches:
+      - { search: Wellbore, field: data.FacilityName, value: OSDU-DEV-1-A, id: "dev:master-data--Wellbore:OSDU-DEV-1-A" }
     record:
       source_project: NO_15_9
       survey_id: T-1001

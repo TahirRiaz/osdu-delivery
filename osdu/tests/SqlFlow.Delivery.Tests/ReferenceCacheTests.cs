@@ -491,9 +491,12 @@ public class ReferenceCacheTests
                 ["legalTag"] = "dev-reference-data-default",
             },
         };
-        var renderer = new MappingRenderer(mapping, schema, references, context);
+        // The wellbore the log belongs to is searched for, and the sample platform holds it.
+        var searches = await RenderResolver.SearchesAsync(Samples.SampleTemplates, mapping);
+        var search = new FixedRecordSearch([("data.FacilityName", "OSDU-DEV-1-B", "dev:master-data--Wellbore:OSDU-DEV-1-B")]);
+        var renderer = new MappingRenderer(mapping, schema, references, context, searches, search);
         var fixture = mapping.Fixtures.Single(f => f.Name.StartsWith("L-2001", StringComparison.Ordinal));
-        var porosity = renderer.Render(new SourceRecord
+        var porosity = await Samples.RenderSettledAsync(renderer, new SourceRecord
         {
             Row = SourceRow.FromStrings(fixture.Record),
             Scopes = fixture.Datasets.ToDictionary(

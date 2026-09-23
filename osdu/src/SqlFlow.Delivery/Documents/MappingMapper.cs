@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Search;
 using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Documents;
@@ -79,10 +80,18 @@ internal static partial class MappingMapper
                 $"{source}: the mapping must declare the '{Snapshots.RenderContext.DataPartitionParameter}' parameter; record ids and references are minted in that partition.");
         }
 
+        // What each search.<name> source searches. Declared once here rather than on every entry, so two entries
+        // resolving against the same set cannot disagree about the kind they search or the schema it is read by.
+        var searches = (y.Searches ?? []).ToDictionary(
+            kv => kv.Key,
+            kv => ParseSearch(kv.Key, kv.Value, source),
+            StringComparer.Ordinal);
+
         var written = y.Mappings is { Count: > 0 } m ? m : throw new FlowValidationException($"{source}: 'mappings' must list at least one entry.");
         var parsed = written.Select((entry, i) => ParseEntry(entry, i, source)).ToList();
         var entries = ResolveRepeaters(parsed, source);
         Validate(entries, parameters, source);
+        ValidateSearches(entries, searches, source);
 
         return new MappingDefinition
         {
@@ -99,6 +108,7 @@ internal static partial class MappingMapper
                 Identity = identity,
             },
             Parameters = parameters,
+            Searches = searches,
             Entries = entries,
             Envelope = Envelope(entries, kind, source),
             Fixtures = (y.Fixtures ?? []).Select((f, i) => new MappingFixture
@@ -110,9 +120,78 @@ internal static partial class MappingMapper
                     kv => (IReadOnlyList<IReadOnlyDictionary<string, string?>>)(kv.Value ?? []).Select(r => (IReadOnlyDictionary<string, string?>)r).ToList(),
                     StringComparer.Ordinal),
                 Parameters = f.Parameters ?? new Dictionary<string, string>(StringComparer.Ordinal),
+                Searches = FixtureSearches(f.Searches, searches, entries, $"{source}: fixtures[{i}]"),
                 Expected = FlowMapper.Require(f.Expected, $"fixtures[{i}].expected", source),
             }).ToList(),
         };
+    }
+
+    /// <summary>
+    /// A fixture's assumed search answers, each naming a search the mapping declares, a property one of its findBy lines
+    /// compares, and at most one answer per question, so a fixture cannot say two things about the same lookup.
+    /// </summary>
+    private static List<FixtureSearchAnswer> FixtureSearches(
+        List<MappingFixtureSearchYaml>? written,
+        IReadOnlyDictionary<string, MappingSearch> searches,
+        IReadOnlyList<MappingEntry> entries,
+        string where)
+    {
+        var answers = new List<FixtureSearchAnswer>();
+        var seen = new HashSet<(string, string, string)>();
+        foreach (var (y, i) in (written ?? []).Select((y, i) => (y, i)))
+        {
+            var at = $"{where} searches[{i}]";
+            var name = y?.Search?.Trim();
+            if (string.IsNullOrEmpty(name) || !searches.TryGetValue(name, out var search))
+            {
+                throw new FlowValidationException(
+                    searches.Count == 0
+                        ? $"{at} answers a search, and the mapping declares none."
+                        : $"{at} names search '{name}', which the mapping does not declare; it declares {string.Join(", ", searches.Keys.Order(StringComparer.Ordinal))}.");
+            }
+
+            var field = y!.Field?.Trim();
+            var compared = entries
+                .Where(e => e.Source?.Kind == MappingSourceKind.Search && string.Equals(e.Source.CacheType, name, StringComparison.Ordinal))
+                .SelectMany(e => e.FindBy.Select(f => f.Field))
+                .ToHashSet(StringComparer.Ordinal);
+            if (string.IsNullOrEmpty(field) || !compared.Contains(field))
+            {
+                throw new FlowValidationException(
+                    $"{at} answers search '{name}' on '{field}', which no findBy line of that search compares; they compare {string.Join(", ", compared.Order(StringComparer.Ordinal))}.");
+            }
+
+            var value = y.Value?.Trim();
+            if (string.IsNullOrEmpty(value))
+            {
+                throw new FlowValidationException($"{at} gives no value; an answer is for one value of {field}, which a render never searches for when it is empty.");
+            }
+
+            if (!seen.Add((name, field, value)))
+            {
+                throw new FlowValidationException($"{at} answers search '{name}' on {field} '{value}' a second time; a fixture says one thing about each lookup.");
+            }
+
+            var id = y.Id?.Trim();
+            if (string.IsNullOrEmpty(id))
+            {
+                id = null;
+            }
+            else
+            {
+                var segments = id.Split(':');
+                var searched = search.Kind.Split(':')[2];
+                if (segments.Length < 3 || !string.Equals(segments[1], searched, StringComparison.Ordinal))
+                {
+                    throw new FlowValidationException(
+                        $"{at} answers with '{id}', which is not the id of a {searched} record; search '{name}' looks in {search.Kind}.");
+                }
+            }
+
+            answers.Add(new FixtureSearchAnswer(name, field, value, id));
+        }
+
+        return answers;
     }
 
     /// <summary>Every text inside a static value, where parameter tokens can appear.</summary>
@@ -183,9 +262,17 @@ internal static partial class MappingMapper
         }
 
         var parsedSource = Source(y.Source!.Trim(), where);
-        if (parsedSource.Kind != MappingSourceKind.Cache && y.FindBy is not null)
+        if (parsedSource.Kind == MappingSourceKind.Search && !parsedSource.ReadsRecordId)
         {
-            throw new FlowValidationException($"{where}: 'findBy' only applies to a cache source; {parsedSource} reads the dataset.");
+            // A search asks the platform for the id of the record that matches and nothing else, so an answer is one id
+            // whatever the mapping reads. What else a record needs comes from the dataset, the cache or a static value.
+            throw new FlowValidationException(
+                $"{where}: {parsedSource} reads '{parsedSource.CacheField}' of the record a search finds, and a search returns only the record's id; write search.{parsedSource.CacheType}.id.");
+        }
+
+        if (!parsedSource.Resolves && y.FindBy is not null)
+        {
+            throw new FlowValidationException($"{where}: 'findBy' only applies to a cache or a search source; {parsedSource} reads the dataset.");
         }
 
         if (parsedSource.Kind != MappingSourceKind.Cache && y.IgnoreSeparators is not null)
@@ -193,17 +280,18 @@ internal static partial class MappingMapper
             throw new FlowValidationException($"{where}: 'ignoreSeparators' loosens how a value is matched against the cache, so it only applies to a cache source.");
         }
 
-        var findBy = parsedSource.Kind == MappingSourceKind.Cache ? FindByLines(y.FindBy, parsedSource.CacheType!, where) : [];
-        if (parsedSource.Kind == MappingSourceKind.Cache && findBy.Count == 0)
+        var findBy = parsedSource.Resolves ? FindByLines(y.FindBy, parsedSource.CacheType!, where, parsedSource.Prefix) : [];
+        if (parsedSource.Resolves && findBy.Count == 0)
         {
             throw new FlowValidationException(
-                $"{where}: a cache source needs 'findBy', which says which cached record to read, such as findBy: cache.{parsedSource.CacheType}.Code = dataset.column.");
+                $"{where}: a {parsedSource.Prefix} source needs 'findBy', which says which record to read, such as findBy: {parsedSource.Prefix}.{parsedSource.CacheType}.Code = dataset.column.");
         }
 
         var modifiers = (y.Modifiers ?? []).Select((modifier, i) => ParseModifier(modifier, $"{where} modifiers[{i}]")).ToList();
-        if (modifiers.Count > 0 && parsedSource.Kind == MappingSourceKind.Cache && findBy.All(f => f.Column is null))
+        if (modifiers.Count > 0 && parsedSource.Resolves && findBy.All(f => f.Column is null))
         {
-            throw new FlowValidationException($"{where}: modifiers change incoming dataset values, and this entry's findBy reads none; cache values are never modified.");
+            var found = parsedSource.Kind == MappingSourceKind.Search ? "what a search finds is" : "cache values are";
+            throw new FlowValidationException($"{where}: modifiers change incoming dataset values, and this entry's findBy reads none; {found} never modified.");
         }
 
         return new MappingEntry
@@ -396,19 +484,133 @@ internal static partial class MappingMapper
             return new MappingSource { Kind = MappingSourceKind.Cache, CacheType = parts[1], CacheField = string.Join('.', parts.Skip(2)) };
         }
 
+        if (parts[0] == MappingSource.SearchPrefix)
+        {
+            if (parts.Length < 3 || !NamePattern().IsMatch(parts[1]) || parts.Skip(2).Any(p => !FieldPattern().IsMatch(p)))
+            {
+                throw new FlowValidationException($"{where}: source '{text}' must be search.<name>.<field>, such as search.Wellbore.id.");
+            }
+
+            return new MappingSource { Kind = MappingSourceKind.Search, CacheType = parts[1], CacheField = string.Join('.', parts.Skip(2)) };
+        }
+
         throw new FlowValidationException(
-            $"{where}: source '{text}' must start with 'dataset.' (the incoming dataset) or 'cache.' (the metadata cache); a fixed value is written with 'static'.");
+            $"{where}: source '{text}' must start with 'dataset.' (the incoming dataset), 'cache.' (the partition's cache) or 'search.' (a record found on the platform as the render needs it); a fixed value is written with 'static'.");
     }
 
-    private static List<FindBy> FindByLines(object? value, string type, string where)
+    /// <summary>The part of a record a search compares: its data, as the schema of the kind searched describes it.</summary>
+    private const string SearchDataPrefix = "data.";
+
+    /// <summary>
+    /// A <c>searches</c> entry: the kind searched and the saved schema that says how its properties are indexed. The
+    /// kind names one entity type, since one schema describes everything its query can reach, and the schema is a
+    /// version of that entity type: the one searched, when the kind names a version.
+    /// </summary>
+    private static MappingSearch ParseSearch(string name, MappingSearchYaml? y, string source)
+    {
+        var where = $"{source}: search '{name}'";
+        if (!NamePattern().IsMatch(name))
+        {
+            throw new FlowValidationException(
+                $"{where} is named with something other than letters, digits, underscores and hyphens; entries write the name in search.<name>.id.");
+        }
+
+        var kind = y?.Kind?.Trim();
+        if (string.IsNullOrEmpty(kind))
+        {
+            throw new FlowValidationException($"{where} declares no kind; a search names the OSDU kind it looks in, such as osdu:wks:master-data--Wellbore:*.");
+        }
+
+        var segments = kind.Split(':');
+        if (!OsduKind.IsValid(kind) || segments.Length != 4)
+        {
+            throw new FlowValidationException(
+                $"{where}: kind '{kind}' is not an OSDU kind; a kind is authority:source:entityType:version, such as osdu:wks:master-data--Wellbore:*.");
+        }
+
+        if (segments.Take(3).Any(s => s.Contains('*', StringComparison.Ordinal)))
+        {
+            throw new FlowValidationException(
+                $"{where}: kind '{kind}' leaves its authority, source or entity type open; a search looks in one entity type, whose schema says how the properties it compares are indexed, so only the version may be '*'.");
+        }
+
+        var schema = y!.Schema ?? throw new FlowValidationException(
+            $"{where} pins no schema; a search pins the saved template of the kind it searches (schema: {{ kind: {segments[0]}:{segments[1]}:{segments[2]}:<version>, version: <template version> }}), which says how each property it compares is indexed. Save the kind's schema on the Templates page, or with 'sqlflow template import'.");
+        var schemaKind = FlowMapper.Require(schema.Kind, $"searches.{name}.schema.kind", source);
+        if (!FlowMapper.IsRecordKind(schemaKind))
+        {
+            throw new FlowValidationException(
+                $"{where}: schema.kind '{schemaKind}' must be 'authority:source:entityType:major.minor.patch', the kind of a saved template.");
+        }
+
+        var schemaSegments = schemaKind.Split(':');
+        if (!segments.Take(3).SequenceEqual(schemaSegments.Take(3), StringComparer.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"{where} searches {kind} and pins the schema of {schemaKind}, another entity type; the schema has to describe the records the query reaches.");
+        }
+
+        if (!segments[3].Contains('*', StringComparison.Ordinal) && !string.Equals(segments[3], schemaSegments[3], StringComparison.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"{where} searches version {segments[3]} and pins the schema of version {schemaSegments[3]}; pin the schema of the version it searches.");
+        }
+
+        var schemaVersion = FlowMapper.Require(schema.Version, $"searches.{name}.schema.version", source);
+        if (!TemplateVersionPattern().IsMatch(schemaVersion))
+        {
+            throw new FlowValidationException(
+                $"{where}: schema.version '{schemaVersion}' is not a template version. A version is the 16 hexadecimal characters the Templates page shows for a saved template, such as 58d6bdbd9d066a06.");
+        }
+
+        var description = y.Description?.Trim();
+        return new MappingSearch(name, kind, new TemplateReference(schemaKind, schemaVersion), string.IsNullOrEmpty(description) ? null : description);
+    }
+
+    /// <summary>
+    /// Every <c>search.&lt;name&gt;</c> an entry reads names a set the mapping declares, and every set declared is read
+    /// by something. A name that is not declared would otherwise fail at render, one row at a time, against a platform.
+    /// </summary>
+    private static void ValidateSearches(
+        IReadOnlyList<MappingEntry> entries, IReadOnlyDictionary<string, MappingSearch> searches, string source)
+    {
+        foreach (var entry in entries.Where(e => e.Source?.Kind == MappingSourceKind.Search))
+        {
+            var name = entry.Source!.CacheType!;
+            if (!searches.ContainsKey(name))
+            {
+                throw new FlowValidationException(
+                    searches.Count == 0
+                        ? $"{source}: {entry.Target.Text} reads search.{name}, and the mapping declares no searches; add a 'searches' block naming the kind each one looks in."
+                        : $"{source}: {entry.Target.Text} reads search.{name}, which the mapping does not declare; it declares {string.Join(", ", searches.Keys.Order(StringComparer.Ordinal))}.");
+            }
+        }
+
+        // One declaration per kind: entries that look in the same kind read the same search, so a question and its answer
+        // always belong to one search.
+        foreach (var shared in searches.Values.GroupBy(s => s.Kind, StringComparer.Ordinal).Where(g => g.Count() > 1))
+        {
+            throw new FlowValidationException(
+                $"{source}: searches {string.Join(" and ", shared.Select(s => $"'{s.Name}'").Order(StringComparer.Ordinal))} both look in {shared.Key}; declare it once and have every entry that looks there read it.");
+        }
+
+        var read = entries.Where(e => e.Source?.Kind == MappingSourceKind.Search).Select(e => e.Source!.CacheType!).ToHashSet(StringComparer.Ordinal);
+        foreach (var unread in searches.Keys.Where(k => !read.Contains(k)).Order(StringComparer.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"{source}: search '{unread}' is declared and nothing reads it; a search costs a call to the platform for every value it is asked about, so one nothing reads is a mistake rather than spare capacity.");
+        }
+    }
+
+    private static List<FindBy> FindByLines(object? value, string type, string where, string prefix)
     {
         List<string> lines = value switch
         {
             null => [],
             string one => [one],
             IEnumerable<object> many => many.Select(line => line as string
-                ?? throw new FlowValidationException($"{where}: each findBy line is text, such as cache.{type}.Code = dataset.column.")).ToList(),
-            _ => throw new FlowValidationException($"{where}: findBy is one line or a list of lines, such as cache.{type}.Code = dataset.column."),
+                ?? throw new FlowValidationException($"{where}: each findBy line is text, such as {prefix}.{type}.Code = dataset.column.")).ToList(),
+            _ => throw new FlowValidationException($"{where}: findBy is one line or a list of lines, such as {prefix}.{type}.Code = dataset.column."),
         };
 
         var result = new List<FindBy>(lines.Count);
@@ -417,19 +619,30 @@ internal static partial class MappingMapper
             var match = FindByPattern().Match(line);
             if (!match.Success)
             {
-                throw new FlowValidationException($"{where}: findBy '{line}' must read cache.<type>.<field> = dataset.<column>, or = 'text' for a fixed text.");
+                throw new FlowValidationException($"{where}: findBy '{line}' must read {prefix}.<name>.<field> = dataset.<column>, or = 'text' for a fixed text.");
             }
 
-            if (!string.Equals(match.Groups["type"].Value, type, StringComparison.Ordinal))
+            if (!string.Equals(match.Groups["prefix"].Value, prefix, StringComparison.Ordinal)
+                || !string.Equals(match.Groups["type"].Value, type, StringComparison.Ordinal))
             {
                 throw new FlowValidationException(
-                    $"{where}: findBy '{line}' compares cache.{match.Groups["type"].Value}, but the entry reads cache.{type}; findBy selects a record of the type the entry reads.");
+                    $"{where}: findBy '{line}' compares {match.Groups["prefix"].Value}.{match.Groups["type"].Value}, but the entry reads {prefix}.{type}; findBy selects a record of the set the entry reads.");
             }
 
             var field = match.Groups["field"].Value;
             if (field.Split('.').Any(p => !FieldPattern().IsMatch(p)))
             {
-                throw new FlowValidationException($"{where}: findBy '{line}' names an invalid cached field '{field}'.");
+                throw new FlowValidationException($"{where}: findBy '{line}' names an invalid field '{field}'.");
+            }
+
+            // A search compares a property of the records' data, named the way a query names it: unquoted, so only
+            // letters, digits and underscores, and never the record's own metadata, which the indexer maps apart from
+            // the schema and a lookup has no business comparing.
+            if (prefix == MappingSource.SearchPrefix
+                && (!field.StartsWith(SearchDataPrefix, StringComparison.Ordinal) || !OsduPath.IsPath(field)))
+            {
+                throw new FlowValidationException(
+                    $"{where}: findBy '{line}' compares '{field}', and a search compares a property under data, named by dotted names of letters, digits and underscores, such as {prefix}.{type}.data.FacilityName.");
             }
 
             var operand = match.Groups["operand"].Value.Trim();
@@ -440,11 +653,11 @@ internal static partial class MappingMapper
                     throw new FlowValidationException($"{where}: findBy '{line}' compares with empty text.");
                 }
 
-                result.Add(new FindBy(type, field, null, literal));
+                result.Add(new FindBy(type, field, null, literal) { Prefix = prefix });
                 continue;
             }
 
-            result.Add(new FindBy(type, field, Column(operand, $"{where}: findBy '{line}'"), null));
+            result.Add(new FindBy(type, field, Column(operand, $"{where}: findBy '{line}'"), null) { Prefix = prefix });
         }
 
         return result;
@@ -683,7 +896,7 @@ internal static partial class MappingMapper
     [GeneratedRegex(@"^[A-Za-z0-9_\-\$]+$")]
     private static partial Regex FieldPattern();
 
-    [GeneratedRegex(@"^\s*cache\.(?<type>[A-Za-z0-9_\-]+)\.(?<field>[^=\s]+)\s*=\s*(?<operand>.+?)\s*$")]
+    [GeneratedRegex(@"^\s*(?<prefix>cache|search)\.(?<type>[A-Za-z0-9_\-]+)\.(?<field>[^=\s]+)\s*=\s*(?<operand>.+?)\s*$")]
     private static partial Regex FindByPattern();
 
     [GeneratedRegex(@"^(?<column>dataset\.\S+)\s+is\s+(?<not>not\s+)?(?<rest>.+)$")]
