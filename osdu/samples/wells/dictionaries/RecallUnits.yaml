@@ -1,0 +1,28 @@
+# Dictionary: RecallUnits (osdu/docs/documents.md, Dictionary)
+#
+# How the Recall source spells its units, and the code each is in the partition's UnitOfMeasure reference data. One
+# dictionary per file, filed under its name. The cache flow wells-lookups-00-cache holds it in the cache of its partition,
+# where a mapping reads it through a replace (replace: cache.RecallUnits) before it looks the unit up among the partition's
+# UnitOfMeasure records. Edit this file, and the next refresh of that cache flow writes a new cache version: the records a
+# changed entry reaches are tagged, and only those are delivered again.
+#
+# Keys and values are text exactly as written. A key is matched as the source writes it, then ignoring case when that finds
+# one key, so METRE here also answers for metre and Metre. ~ means no value: NONE gives no unit at all, and the entry's
+# required flag decides what that does.
+documentType: dictionary
+name: RecallUnits
+description: Unit spellings in the Recall source, as the codes of the partition's UnitOfMeasure records.
+entries:
+  M: m
+  METRE: m
+  METRES.: m
+  METER: m
+  FT: ft
+  FEET: ft
+  GAPI: gAPI
+  G/CM3: g/cm3
+  # A volume fraction. Replacing it with % would declare values a hundredth of what the curve carries.
+  V/V: m3/m3
+  # An angle in degrees, which OSDU's unit catalogue calls dega.
+  DEG: dega
+  NONE: ~

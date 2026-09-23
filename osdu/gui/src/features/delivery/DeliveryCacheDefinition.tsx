@@ -1,7 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { Play, ScrollText, ShieldCheck } from "lucide-react";
 import { Card } from "@/components/ui/card";
-import type { DeliveryCache, DeliveryCacheFlow } from "../../api/delivery";
+import type { DeliveryCache, DeliveryCacheFlow, DeliveryCacheTypeSource } from "../../api/delivery";
 import { ConnectionRef } from "@/components/ConnectionRef";
 import { DataTable, type Column } from "@/components/DataTable";
 import { DetailPair } from "@/components/DetailPair";
@@ -10,6 +10,31 @@ import { StatePill } from "@/components/StatusBadge";
 import { CacheMappingGuide } from "./CacheMappingReference";
 import { KindText } from "./KindText";
 import { cacheReference, scheduleCadence, summarizeTypes, type CachedTypeSummary } from "./cacheFormat";
+
+/**
+ * Where one flow's declaration of a type takes its records from: the kind it searches on OSDU, the ingestion table it reads
+ * and the column rows are keyed by, or the dictionary document it holds and the name of its key.
+ */
+function SourceText({ source }: { source: DeliveryCacheTypeSource }) {
+  switch (source.origin) {
+    case "table":
+      return (
+        <span className="flex min-w-0 flex-col font-mono text-[12px]">
+          <span className="truncate" title={source.sourceObject ?? undefined}>table {source.sourceObject}</span>
+          <span className="truncate text-[11px] text-muted-foreground">keyed by {source.keyField}</span>
+        </span>
+      );
+    case "dictionary":
+      return (
+        <span className="flex min-w-0 flex-col font-mono text-[12px]">
+          <span className="truncate" title={source.dictionaryPath ?? undefined}>dictionary {source.dictionaryPath}</span>
+          <span className="truncate text-[11px] text-muted-foreground">keyed by {source.keyField}</span>
+        </span>
+      );
+    default:
+      return source.kind === null ? null : <KindText kind={source.kind} />;
+  }
+}
 
 /** What a changed value of a type does: nothing to show when it goes out on its own, a state pill when it waits. */
 function ChangeRule({ onChange }: { onChange: string }) {
@@ -20,9 +45,10 @@ function ChangeRule({ onChange }: { onChange: string }) {
 
 /**
  * What the partition's cache is filled with, read back from the last sync: the cache flow files that fill it (each with its
- * repository, the endpoint it searches, what refreshes it and the types it declares), then every type the cache holds as
- * those flows together declare it: which flow searches it with which kind and query, every path kept (with the flows asking
- * for it), and what a changed value does. Read only: what is cached is changed in the files.
+ * repository, the endpoint or connection it captures from, what refreshes it and the types it declares), then every type the
+ * cache holds as those flows together declare it: where it comes from (a kind searched on OSDU, an ingestion table, or a
+ * dictionary), every value kept (with the flows asking for it), and what a changed value does. Read only: what is cached is
+ * changed in the files.
  */
 export function DeliveryCacheDefinition({ cache, onRefresh }: {
   cache: DeliveryCache;
@@ -52,7 +78,19 @@ export function DeliveryCacheDefinition({ cache, onRefresh }: {
       floor: 160,
       render: (flow) => <span className="block truncate font-mono text-[12px]" title={flow.relativePath}>{flow.relativePath}</span>,
     },
-    { id: "endpoint", header: "Captured from", render: (flow) => <ConnectionRef value={flow.endpoint} maxWidth={160} /> },
+    {
+      id: "endpoint",
+      header: "Captured from",
+      render: (flow) => (
+        <span className="flex flex-col gap-0.5">
+          {flow.endpoint !== null && <ConnectionRef value={flow.endpoint} maxWidth={160} />}
+          {flow.connection !== null && <ConnectionRef value={flow.connection} maxWidth={160} />}
+          {flow.endpoint === null && flow.connection === null && (
+            <span className="text-[12px] text-muted-foreground">the repository</span>
+          )}
+        </span>
+      ),
+    },
     {
       id: "schedules",
       header: "Refreshed by",
@@ -107,14 +145,14 @@ export function DeliveryCacheDefinition({ cache, onRefresh }: {
     },
     {
       id: "kind",
-      header: "Searched as",
+      header: "Comes from",
       fill: true,
       floor: 160,
       render: (row) => (
         <span className="flex min-w-0 flex-col gap-0.5">
           {row.sources.map((source) => (
-            <span key={source.flow} className="flex min-w-0 flex-col">
-              <KindText kind={source.kind} />
+            <span key={source.flow} className="flex min-w-0 flex-col" data-testid={`delivery-cache-source-${source.origin}`}>
+              <SourceText source={source} />
               {(several || (source.query !== null && source.query !== "*")) && (
                 <span className="truncate font-mono text-[11px] text-muted-foreground" title={source.query ?? undefined}>
                   {several && <span>{source.flow}</span>}
@@ -134,6 +172,16 @@ export function DeliveryCacheDefinition({ cache, onRefresh }: {
       floor: 200,
       render: (row) => (
         <span className="flex min-w-0 flex-wrap gap-1 py-0.5">
+          {row.key !== null && (
+            <span
+              className="inline-flex min-w-0 max-w-full items-baseline gap-1 rounded-sm border border-primary/40 bg-primary/5 px-1.5 font-mono text-[11px]"
+              title={`${cacheReference(row.name, row.key)} is each row's key: a lookup row is found by it and kept under it`}
+              data-testid="delivery-cache-type-key"
+            >
+              <span className="shrink-0">{row.key}</span>
+              <span className="font-sans text-muted-foreground">key</span>
+            </span>
+          )}
           {row.fields.map((field) => (
             <span
               key={field.as}

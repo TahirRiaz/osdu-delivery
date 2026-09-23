@@ -342,18 +342,30 @@ export interface DeliveryCacheField {
   flows: string[];
 }
 
-/** One cache flow's declaration of a type: the kind it searches, its query, and what a change does in its declaration. */
+/** Where a cached type's records come from: searched on OSDU, read from an ingestion table, or held from a dictionary document. */
+export type DeliveryCacheOrigin = "osdu" | "table" | "dictionary";
+
+/**
+ * One cache flow's declaration of a type: where it takes the records from, for an OSDU type the kind it searches and its
+ * query, for a table type the connection reference, table and key column it reads, for a dictionary type the document's
+ * file and key, and what a change does in its declaration.
+ */
 export interface DeliveryCacheTypeSource {
   flow: string;
-  kind: string;
+  origin: DeliveryCacheOrigin;
+  kind: string | null;
   query: string | null;
   /** approve or auto, as this flow declares it. */
   onChange: string;
+  connection: string | null;
+  sourceObject: string | null;
+  keyField: string | null;
+  dictionaryPath: string | null;
 }
 
 /**
- * One type of a partition's cache, as its cache flows together declare it: each flow's kind and query, every path any of
- * them keeps, what a change does, and what the current version holds of it.
+ * One type of a partition's cache, as its cache flows together declare it: where its records come from, each flow's
+ * declaration, every path any of them keeps, what a change does, and what the current version holds of it.
  */
 export interface DeliveryCacheType {
   name: string;
@@ -364,6 +376,9 @@ export interface DeliveryCacheType {
   onChange: string;
   /** How many records the current version holds of the type. */
   items: number;
+  origin: DeliveryCacheOrigin;
+  /** For a lookup table (a table or a dictionary), the name each row's key is kept under; null for OSDU records. */
+  key: string | null;
 }
 
 /** A schedule that refreshes a cache flow: its cadence, or that it fires behind other schedules. */
@@ -377,7 +392,8 @@ export interface DeliveryCacheSchedule {
 
 /**
  * A cache flow filling a partition's cache: the repository and file that define it (the file is where what it caches is
- * changed), its pipeline, the OSDU endpoint reference it searches, the schedules that refresh it, and the types it declares.
+ * changed), its pipeline, the OSDU endpoint reference its OSDU types are searched on and the connection reference its table
+ * types are read from (each null when it declares none of those), the schedules that refresh it, and the types it declares.
  */
 export interface DeliveryCacheFlow {
   name: string;
@@ -385,9 +401,10 @@ export interface DeliveryCacheFlow {
   repoName: string;
   relativePath: string;
   pipelineId: string | null;
-  endpoint: string;
+  endpoint: string | null;
   schedules: DeliveryCacheSchedule[];
   types: string[];
+  connection: string | null;
 }
 
 /**
@@ -417,11 +434,12 @@ export interface DeliveryCachedItem {
   fields: Record<string, unknown>;
 }
 
-/** One type a cache version holds, and how many records of it. */
+/** One type a cache version holds, how many records of it, and for a lookup table the name its key is kept under. */
 export interface DeliveryCacheVersionType {
   name: string;
   entityType: string;
   items: number;
+  key: string | null;
 }
 
 /** Whether a platform service reports a system property on for the partition. */

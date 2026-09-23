@@ -36,7 +36,7 @@ public sealed class LineageTests : IDisposable
     public LineageTests()
     {
         Directory.CreateDirectory(_root);
-        foreach (var folder in new[] { "flows", "cache", "mappings", "data" })
+        foreach (var folder in new[] { "flows", "cache", "mappings", "dictionaries", "data" })
         {
             Copy(Path.Combine(Samples.Source, folder), Path.Combine(_root, Source, folder));
         }
@@ -265,9 +265,15 @@ public sealed class LineageTests : IDisposable
             [
                 InRepo("data/curves"), InRepo("data/curves-meta"), InRepo("data/document-files"), InRepo("data/documents"),
                 InRepo("data/stations"), InRepo("data/trajectory"), InRepo("data/trajectory-stations"), InRepo("data/wellbore"),
-                InRepo("data/wellbore-aliases"), InRepo("data/welllog"), InRepo("flows/samples/wells/out/metadata"),
+                InRepo("data/wellbore-aliases"), InRepo("data/welllog"), InRepo("dictionaries/RecallUnits.yaml"),
+                InRepo("flows/samples/wells/out/metadata"),
             ],
             files);
+
+        // The lookups cache flow reads its dictionary's file in the repository and writes the lookup table into the cache.
+        Assert.Contains(report.Edges, e => e.Flow == "wells-lookups-00-cache" && e.Relation == LineageRelation.Reads
+            && report.Objects.Any(o => o.Key == e.ObjectKey && o.Name == InRepo("dictionaries/RecallUnits.yaml")));
+        Assert.Contains(report.Edges, e => e.Flow == "wells-lookups-00-cache" && e.Relation == LineageRelation.Writes && e.ObjectKey == CacheKey("RecallUnits"));
 
         // One node per exact OSDU type written, one per pattern read, and one per cache type, each captioned by its system.
         var types = report.Objects.Where(o => o.Kind == LineageNodeKind.Dataset).ToDictionary(o => o.Key, StringComparer.Ordinal);

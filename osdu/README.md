@@ -21,7 +21,7 @@ the committed tree (no build output, no local files).
 | `tests/SqlFlow.Delivery.Tests/` | The delivery domain suites |
 | `tests/SqlFlow.Delivery.ControlPlane.Tests/` | The module, plan run, record origin and template API suites, and the sample estate they use |
 | `docs/` | `docs/delivery/` and `docs/reference/cli/delivery.md` |
-| `samples/wells/` | The sample estate, laid out the way a repository is: one folder for the wells source, holding its flows, mappings, cache flow with its sample records, and drop-off folder |
+| `samples/wells/` | The sample estate, laid out the way a repository is: one folder for the wells source, holding its flows, mappings, cache flows (the reference data, and the lookup tables its dictionaries hold) with the sample records, dictionaries, and drop-off folder |
 | `samples/templates/` | The bundled OSDU schemas the suites and the e2e seed save as templates, beside the source folders rather than inside one: a template is a catalog object, not repository content |
 
 ## What was left behind, and why

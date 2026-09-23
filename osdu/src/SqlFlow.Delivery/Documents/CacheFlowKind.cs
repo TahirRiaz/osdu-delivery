@@ -7,10 +7,10 @@ using SqlFlow.Yaml;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// A cache flow as the platform sees it: the OSDU endpoint is the source reference, the catalog the target, and the
-/// source's secret references are what the hygiene check inspects. It needs no repository tree: everything a refresh
-/// needs is in the document. Its lineage is the OSDU types it reads and the partition cache types it writes
-/// (<see cref="CacheLineage"/>).
+/// A cache flow as the platform sees it: the OSDU endpoint (or, for a flow of table types, the connection) is the source
+/// reference, the catalog the target, and the source's secret references are what the hygiene check inspects. It needs the
+/// repository tree only when it holds a dictionary, whose file a refresh reads. Its lineage is the OSDU types, tables and
+/// dictionary files it reads and the partition cache types it writes (<see cref="CacheLineage"/>).
 /// </summary>
 public sealed record CacheFlowDocument : RegisteredFlowDocument
 {
@@ -31,12 +31,16 @@ public sealed record CacheFlowDocument : RegisteredFlowDocument
 
     public override IEnumerable<KeyValuePair<string, string>> CredentialReferences => Flow.CredentialReferences();
 
-    public override bool RequiresRepoTree => false;
+    /// <summary>
+    /// A flow holding a dictionary reads the dictionary's file from the repository, so its node needs the repository's tree
+    /// at the run's commit; a flow of OSDU and table types has everything it needs in the document.
+    /// </summary>
+    public override bool RequiresRepoTree => Flow.Types.Any(t => t.Origin == Snapshots.CacheOrigin.Dictionary);
 
     public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return CacheLineage.Describe(Flow);
+        return CacheLineage.Describe(Flow, context);
     }
 }
 

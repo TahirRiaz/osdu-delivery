@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
+using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
@@ -71,6 +72,16 @@ public sealed class CacheRefresher
             origins.Add(flow.Source.Endpoint!);
         }
 
+        foreach (var type in spec.Types.Where(t => t.Origin == CacheOrigin.Dictionary))
+        {
+            ct.ThrowIfCancellationRequested();
+            var loaded = LoadDictionary(flow, type);
+            captured.Add(loaded.Dictionary.ToLookup(type.Name));
+            origins.Add($"dictionary {loaded.ShownPath}");
+            _logger.LogInformation(
+                "Captured {Count} {Type} row(s) from dictionary {Dictionary}, keyed by {Key}.", loaded.Dictionary.Entries.Count, type.Name, loaded.ShownPath, loaded.Dictionary.Key);
+        }
+
         var write = await builder.WriteAsync(captured, new CacheCapture(runId, actor, string.Join("; ", origins)), readings, ct).ConfigureAwait(false);
         var snapshot = write.Snapshot;
         var previousVersion = write.Previous?.Version;
@@ -89,9 +100,11 @@ public sealed class CacheRefresher
                 : await new CacheImpactAnalyzer(_context.Ledger, _context.Time, _logger)
                     .AnalyzeAsync(scope, write.Previous?.Type(type.Name), type, mode, previousVersion, snapshot.Version, ct)
                     .ConfigureAwait(false);
+            // A lookup table's fields are what its origin holds; an OSDU type's are the paths the flow declares.
+            var fields = typeSpec.IsLookup ? type.FieldNames.ToList() : typeSpec.Fields.Select(f => f.Name).ToList();
             types.Add(new CachedTypeOutcome(
                 type.Name, type.EntityType, CacheOrigins.Text(typeSpec.Origin), typeSpec.Describe(), typeSpec.Kind, type.Items.Count,
-                typeSpec.Fields.Select(f => f.Name).ToList(), ModeText(mode), impact.ChangedItems, impact.Changes, impact.AffectedRecords));
+                fields, ModeText(mode), impact.ChangedItems, impact.Changes, impact.AffectedRecords));
         }
 
         var outcome = new CacheRefreshOutcome(
@@ -123,10 +136,19 @@ public sealed class CacheRefresher
         var current = _context.Cache is { } cache ? await cache.VersionAsync(scope, version: null, ct).ConfigureAwait(false) : null;
 
         var types = new List<CachePlanType>(spec.Types.Count);
+        foreach (var type in spec.Types.Where(t => t.Origin == CacheOrigin.Dictionary))
+        {
+            var loaded = LoadDictionary(flow, type);
+            _logger.LogInformation("plan {Type}: dictionary {Dictionary} holds {Total} entry(ies)", type.Name, loaded.ShownPath, loaded.Dictionary.Entries.Count);
+            types.Add(new CachePlanType(
+                type.Name, CacheOrigins.Text(type.Origin), $"dictionary {loaded.ShownPath}", null, "*", [loaded.Dictionary.Key, .. loaded.Dictionary.Fields],
+                loaded.Dictionary.Entries.Count));
+        }
+
         var searched = spec.Types.Where(t => t.Origin == CacheOrigin.Osdu).ToList();
         if (searched.Count == 0)
         {
-            return new CachePlanOutcome(DeliveryOperations.Plan, scope, flow.Name, current?.Version, types, 0, current?.SystemProperties ?? []);
+            return new CachePlanOutcome(DeliveryOperations.Plan, scope, flow.Name, current?.Version, types, types.Sum(t => t.Records), current?.SystemProperties ?? []);
         }
 
         using var osdu = await ConnectAsync(flow, ct).ConfigureAwait(false);
@@ -152,6 +174,36 @@ public sealed class CacheRefresher
     /// </summary>
     private static ReferenceCaptureSpec CaptureSpec(CacheDefinition flow, IReadOnlyDictionary<string, string> values, CacheDeclaration declaration)
         => new() { Types = flow.Types.Select(type => declaration.Widen(type) with { Query = FlowParameters.Substitute(type.Query, values) }).ToList() };
+
+    /// <summary>
+    /// The dictionary a type holds, found beside the flow's file as the repository sync found it: in the nearest dictionaries
+    /// directory walking up. A node running the flow has the repository's tree at the run's commit, because a flow holding a
+    /// dictionary requires it, so the file read is the one that commit holds.
+    /// </summary>
+    private DictionaryFile LoadDictionary(CacheDefinition flow, ReferenceTypeSpec type)
+    {
+        var folder = flow.SourcePath is { } path
+            ? Path.GetDirectoryName(Path.GetFullPath(path)) ?? Directory.GetCurrentDirectory()
+            : throw new DeliveryException(
+                $"Cache flow '{flow.Name}' holds dictionary {type.Dictionary}, which is found beside the flow's file, and this flow was not loaded from a file.");
+        try
+        {
+            return new DictionaryCatalog(_context.Documents).Load(
+                type.Dictionary!, folder, full => Shown(full, folder));
+        }
+        catch (FlowValidationException ex)
+        {
+            throw new DeliveryException($"Cache flow '{flow.Name}' could not read dictionary {type.Dictionary} for type {type.Name}, so nothing was captured: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>A path as a message names it: from the folder holding the dictionaries directory, so it reads dictionaries/Name.yaml.</summary>
+    private static string Shown(string full, string flowFolder)
+    {
+        var directory = DictionaryCatalog.Locate(flowFolder);
+        var root = directory is null ? flowFolder : Path.GetDirectoryName(directory) ?? flowFolder;
+        return Path.GetRelativePath(root, full).Replace('\\', '/');
+    }
 
     private Task<OsduConnection> ConnectAsync(CacheDefinition flow, CancellationToken ct)
         => OsduConnection.CreateAsync(

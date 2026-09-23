@@ -464,8 +464,25 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             // reference records it as written: the declaration is then found by a node that resolves it the same way, and
             // one that does not fails naming the partition it could not find rather than writing under two keys.
             var scope = scopeOf[cache.Name];
-            foreach (var type in cache.Types)
+            foreach (var declaredType in cache.Types)
             {
+                // A dictionary type is recorded as its document says: its key, its fields and its file, found the way a
+                // refresh finds it. One that cannot be found or read is left out now, not discovered by the next refresh.
+                var type = declaredType;
+                if (type.Origin == Snapshots.CacheOrigin.Dictionary)
+                {
+                    try
+                    {
+                        type = ResolveDictionary(root, relative, type);
+                    }
+                    catch (FlowValidationException ex)
+                    {
+                        invalid++;
+                        warnings.Add($"{relative}: {type.Name} is left out of the cache of partition '{scope}', because its dictionary could not be read: {ex.Message}");
+                        continue;
+                    }
+                }
+
                 var problems = new Snapshots.CacheDeclaration(scope, declared[scope]).Conflicts(cache.Name, type);
                 if (problems.Count > 0)
                 {
@@ -654,27 +671,38 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             : null;
 
     /// <summary>A cheap textual pre-check, so only candidate documents are parsed: every mapping declares its type.</summary>
-    private static bool LooksLikeMapping(string yaml)
-        => yaml.Contains("documentType:", StringComparison.Ordinal) && yaml.Contains("mapping", StringComparison.Ordinal);
+    /// <summary>
+    /// A cheap textual pre-check for a mapping: a top-level <c>documentType: mapping</c>. The value is matched exactly, so a
+    /// dictionary or any other document that merely mentions the word is not taken for a mapping and stored as a broken one.
+    /// </summary>
+    private static bool LooksLikeMapping(string yaml) => DeclaresTopLevel(yaml, "documentType", MappingDefinition.DocumentTypeName);
 
     /// <summary>A cheap textual pre-check: a top-level <c>flowType:</c> line whose value is <paramref name="flowType"/>, quoted or not.</summary>
-    private static bool DeclaresFlowType(string yaml, string flowType)
+    private static bool DeclaresFlowType(string yaml, string flowType) => DeclaresTopLevel(yaml, "flowType", flowType);
+
+    /// <summary>
+    /// Whether the first top-level <paramref name="key"/> line holds <paramref name="value"/>, quoted or not, ignoring a
+    /// trailing comment and a byte order mark before the first line.
+    /// </summary>
+    private static bool DeclaresTopLevel(string yaml, string key, string value)
     {
-        foreach (var line in yaml.AsSpan().EnumerateLines())
+        var prefix = key + ":";
+        foreach (var raw in yaml.AsSpan().EnumerateLines())
         {
-            if (!line.StartsWith("flowType:", StringComparison.Ordinal))
+            var line = raw.TrimStart('﻿');
+            if (!line.StartsWith(prefix, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            var value = line["flowType:".Length..].Trim().Trim('"').Trim('\'');
-            var comment = value.IndexOf('#');
+            var declared = line[prefix.Length..].Trim().Trim('"').Trim('\'');
+            var comment = declared.IndexOf('#');
             if (comment >= 0)
             {
-                value = value[..comment].TrimEnd().Trim('"').Trim('\'');
+                declared = declared[..comment].TrimEnd().Trim('"').Trim('\'');
             }
 
-            return value.Equals(flowType, StringComparison.OrdinalIgnoreCase);
+            return declared.Equals(value, StringComparison.OrdinalIgnoreCase);
         }
 
         return false;
@@ -727,6 +755,28 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     private static string Clip(string text, int length) => text.Length <= length ? text : text[..length];
 
     private static string? ClipOrNull(string? text, int length) => text is null ? null : Clip(text, length);
+
+    /// <summary>
+    /// A dictionary type as its document makes it: the dictionary found for the cache flow at <paramref name="relative"/>
+    /// inside the repository at <paramref name="root"/>, and the type given the document's key, fields and file.
+    /// </summary>
+    private Snapshots.ReferenceTypeSpec ResolveDictionary(string root, string relative, Snapshots.ReferenceTypeSpec type)
+    {
+        var fullRoot = Path.GetFullPath(root);
+        var folder = Path.GetDirectoryName(Path.GetFullPath(Path.Combine(fullRoot, relative))) ?? fullRoot;
+        var loaded = new DictionaryCatalog(_documents).Load(
+            type.Dictionary!, folder, full => Relative(fullRoot, full), within: path => IsWithin(fullRoot, path));
+        var resolved = type with { Key = loaded.Dictionary.Key, Fields = loaded.Dictionary.FieldSpecs(), DictionaryPath = loaded.ShownPath };
+        resolved.Validate();
+        return resolved;
+    }
+
+    private static bool IsWithin(string root, string path)
+    {
+        var full = Path.GetFullPath(path);
+        return full.Equals(root, StringComparison.OrdinalIgnoreCase)
+            || full.StartsWith(root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// What the catalog records of one declared type, computed once so the check for an unchanged row and the write agree:

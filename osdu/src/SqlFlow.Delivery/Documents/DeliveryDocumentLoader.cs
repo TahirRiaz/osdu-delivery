@@ -99,7 +99,7 @@ public sealed class DeliveryDocumentLoader
             return probe!.DocumentType!;
         }
 
-        throw new FlowValidationException($"{source}: the document declares no 'flowType' (delivery, retrieval, cache) and no 'documentType: mapping'.");
+        throw new FlowValidationException($"{source}: the document declares no 'flowType' (delivery, retrieval, cache) and no 'documentType' (mapping, dictionary).");
     }
 
     /// <summary>Parses a delivery flow document as a source: every interface it declares, or the one its single form is.</summary>
@@ -159,6 +159,33 @@ public sealed class DeliveryDocumentLoader
 
         var y = Deserialize<CacheYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
         return CacheMapper.Map(y, source);
+    }
+
+    /// <summary>Loads the dictionary file at <paramref name="path"/>, naming it <paramref name="source"/> in every message.</summary>
+    public DictionaryDefinition LoadDictionary(string path, string source)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentException.ThrowIfNullOrWhiteSpace(source);
+        if (!File.Exists(path))
+        {
+            throw new FlowValidationException($"Dictionary file not found: '{source}'.");
+        }
+
+        return ParseDictionary(File.ReadAllText(path), source);
+    }
+
+    /// <summary>Parses a dictionary document (<c>documentType: dictionary</c>): one lookup table a cache flow holds.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Performance",
+        "CA1822:Mark members as static",
+        Justification = "An instance member beside the loader's other Parse methods: every document type is read through the one loader instance a host registers.")]
+    public DictionaryDefinition ParseDictionary(string yaml, string source = "<inline>")
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+
+        // The dictionary reader checks documentType itself, node by node, so a malformed file is refused with the line
+        // it is wrong on rather than by the typed probe every other document goes through.
+        return DictionaryMapper.Map(yaml, source);
     }
 
     public MappingDefinition ParseMapping(string yaml, string source = "<inline>")

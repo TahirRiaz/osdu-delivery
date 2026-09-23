@@ -52,6 +52,7 @@
     <Content Include="..\..\samples\wells\flows\**" Link="samples\wells\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\wells\mappings\**" Link="samples\wells\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\wells\cache\**" Link="samples\wells\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\wells\dictionaries\**" Link="samples\wells\dictionaries\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\wells\data\**" Link="samples\wells\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- Beside the source folder, not inside it: a template and a cache both live in the module's database, so neither
          is repository content. These files stand in for what a capture against OSDU would have written. -->

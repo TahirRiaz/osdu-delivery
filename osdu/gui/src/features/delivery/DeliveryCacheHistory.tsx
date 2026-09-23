@@ -23,7 +23,7 @@ import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { cachedFieldsText, cachedText } from "./cacheFormat";
-import { RecordId } from "./DeliveryCacheRecords";
+import { CachedRecordId } from "./DeliveryCacheRecords";
 
 const ALL = "all";
 
@@ -133,7 +133,7 @@ const typeColumn: Column<DeliveryCacheDiffItem> = {
 };
 
 const recordColumns: Column<DeliveryCacheDiffItem>[] = [
-  { id: "recordId", header: "OSDU id", render: (row) => <RecordId id={row.recordId} maxWidth={300} /> },
+  { id: "recordId", header: "Record", render: (row) => <CachedRecordId id={row.recordId} entityType={row.entityType} maxWidth={300} /> },
   { id: "difference", header: "What differs", render: (row) => <Difference row={row} /> },
 ];
 

@@ -57,7 +57,13 @@ public static class DeliveryServices
 
         // Documents: the delivery loader behind the platform's envelope probe.
         services.AddSingleton<DeliveryDocumentLoader>();
-        services.AddSingleton<IFlowDocumentKind, DeliveryFlowKind>();
+        // The delivery kind also owns the mapping documents its flows pin, so the one instance is registered both as a flow
+        // kind and as the companion kind the loader, the CLI and the proposal preflight read mappings through; the dictionary
+        // documents cache flows hold are a companion kind of their own.
+        services.AddSingleton<DeliveryFlowKind>();
+        services.AddSingleton<IFlowDocumentKind>(sp => sp.GetRequiredService<DeliveryFlowKind>());
+        services.AddSingleton<ICompanionDocumentKind>(sp => sp.GetRequiredService<DeliveryFlowKind>());
+        services.AddSingleton<ICompanionDocumentKind, DictionaryDocumentKind>();
         services.AddSingleton<IFlowDocumentKind, RetrievalFlowKind>();
         services.AddSingleton<IFlowDocumentKind, CacheFlowKind>();
         // The repository sync's delivery half. It is given the module database when the host registered one, since

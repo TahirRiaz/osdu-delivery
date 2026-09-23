@@ -17,7 +17,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { useClipped } from "@/components/useClipped";
 import { parseUtc } from "@/lib/time";
 import { RecordMappingReference } from "./CacheMappingReference";
-import { cachedCell, splitRecordId } from "./cacheFormat";
+import { cachedCell, isLookupEntityType, splitRecordId } from "./cacheFormat";
 
 /** The picker's value for "whichever version is current", which is what the records open on. */
 export const CURRENT = "current";
@@ -55,6 +55,21 @@ export function RecordId({ id, maxWidth = 360, tailOnly = false }: {
   );
 
   return prefixClipped || tailClipped ? <RichTooltip body={id} mono>{body}</RichTooltip> : body;
+}
+
+/**
+ * A cached record's identity as its type keeps it: a lookup row's key whole, since it has no repeated prefix to step back,
+ * and an OSDU record's id with its partition and entity type stepped back.
+ */
+export function CachedRecordId({ id, entityType, maxWidth = 360, tailOnly = false }: {
+  id: string;
+  entityType: string;
+  maxWidth?: number;
+  tailOnly?: boolean;
+}) {
+  return isLookupEntityType(entityType)
+    ? <TruncatedText text={id} mono maxWidth={maxWidth} />
+    : <RecordId id={id} maxWidth={maxWidth} tailOnly={tailOnly} />;
 }
 
 /** The captured values of one record, name by name, for the view over every type where the columns cannot be fixed. */
@@ -117,10 +132,12 @@ export function CacheVersionPicker({ versions, value, onChange, className }: {
  * per captured name, so a unit's code, name and id read down the page; over every type the values fold into one column,
  * since the names differ from type to type.
  */
-export function DeliveryCacheRecords({ scope, type, fields, versions }: {
+export function DeliveryCacheRecords({ scope, type, keyName = null, fields, versions }: {
   /** The partition whose cache the records belong to. */
   scope: string;
   type: string | null;
+  /** For a lookup table in scope, the name its rows' keys are kept under; null for OSDU records or no type in scope. */
+  keyName?: string | null;
   /** The names the type in scope caches its paths under, in declaration order; empty without a type in scope. */
   fields: string[];
   /** The cache's versions, newest first, for the version picker. */
@@ -143,10 +160,10 @@ export function DeliveryCacheRecords({ scope, type, fields, versions }: {
       return [
         {
           id: "recordId",
-          header: "OSDU id",
+          header: keyName === null ? "OSDU id" : `Key (${keyName})`,
           fill: true,
           floor: 200,
-          render: (row) => <RecordId id={row.recordId} maxWidth={1200} />,
+          render: (row) => <CachedRecordId id={row.recordId} entityType={row.entityType} maxWidth={1200} />,
         },
         ...fields.map((name): Column<DeliveryCachedItem> => ({
           id: `field:${name}`,
@@ -160,10 +177,10 @@ export function DeliveryCacheRecords({ scope, type, fields, versions }: {
     // type, so the id shows only the part that tells the records apart.
     const id: Column<DeliveryCachedItem> = {
       id: "recordId",
-      header: type === null ? "Record" : "OSDU id",
+      header: type === null ? "Record" : keyName === null ? "OSDU id" : `Key (${keyName})`,
       render: (row) => (type === null
-        ? <RecordId id={row.recordId} maxWidth={220} tailOnly />
-        : <RecordId id={row.recordId} maxWidth={240} />),
+        ? <CachedRecordId id={row.recordId} entityType={row.entityType} maxWidth={220} tailOnly />
+        : <CachedRecordId id={row.recordId} entityType={row.entityType} maxWidth={240} />),
     };
     const values: Column<DeliveryCachedItem> = {
       id: "values", header: "Cached values", fill: true, floor: 200, render: (row) => <FieldPairs fields={row.fields} />,
@@ -171,7 +188,7 @@ export function DeliveryCacheRecords({ scope, type, fields, versions }: {
     return type === null
       ? [{ id: "type", header: "Type", render: (row) => <span className="font-mono text-[12px]">{row.typeName}</span> }, id, values]
       : [id, values];
-  }, [type, fields]);
+  }, [type, keyName, fields]);
 
   // The sheet lists the declared names first, in their order, then anything else the record carries.
   const detailNames = item === null
@@ -249,7 +266,7 @@ export function DeliveryCacheRecords({ scope, type, fields, versions }: {
                 </SheetTitle>
                 <SheetDescription className="flex items-center gap-1 font-mono text-[12px] text-foreground">
                   <span className="break-all">{item.recordId}</span>
-                  <CopyButton iconOnly label="Copy the OSDU id" text={item.recordId} testId="delivery-cache-item-copy-id" />
+                  <CopyButton iconOnly label={isLookupEntityType(item.entityType) ? "Copy the key" : "Copy the OSDU id"} text={item.recordId} testId="delivery-cache-item-copy-id" />
                 </SheetDescription>
                 <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground" data-testid="delivery-cache-item-version">
                   <span>

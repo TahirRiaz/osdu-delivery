@@ -978,6 +978,9 @@ internal sealed class CachedTypeYaml
 
     // A path ("data.Code") or a mapping of path and as ({ path: data.NameAlias.AliasName, as: Alias }).
     public List<object>? Fields { get; set; }
+
+    /// <summary>The dictionary document the type holds, in place of a kind: a lookup table kept in the repository.</summary>
+    public string? Dictionary { get; set; }
 }
 
 internal sealed class RetrievalSourceYaml

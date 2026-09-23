@@ -355,7 +355,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
 
         var repoId = Guid.NewGuid();
         var warnings = await SyncAsync(repoId);
-        Assert.Contains(warnings, w => w.Contains("kind is required", StringComparison.Ordinal));
+        Assert.Contains(warnings, w => w.Contains("needs a kind (the OSDU kind whose records the type caches) or a dictionary", StringComparison.Ordinal));
         await using var db = _catalog.CreateDbContext();
         Assert.Empty(await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ToListAsync());
     }
@@ -371,6 +371,89 @@ public sealed class CacheCatalogSyncTests : IDisposable
         Assert.Contains(warnings, w => w.Contains("cache flow 'wells-osdu-00-reference-cache' is already declared by cache/a.yaml", StringComparison.Ordinal));
         await using var db = _catalog.CreateDbContext();
         Assert.Equal(2, await db.DeliveryCacheDefinitions.CountAsync(c => c.RepoId == repoId));
+    }
+
+    private const string LookupsFlow = """
+        flowType: cache
+        name: lookups
+        source:
+          headers: { data-partition-id: dev }
+        types:
+          - dictionary: RecallUnits
+          - name: Curves
+            dictionary: CurveDictionary
+        """;
+
+    [Fact]
+    public async Task A_dictionary_type_is_recorded_as_its_document_makes_it_and_one_that_cannot_be_read_is_left_out()
+    {
+        Write("estate/cache/lookups.yaml", LookupsFlow);
+        // A dictionary mentioning the word mapping is not a mapping document, and is never stored as one.
+        Write("estate/dictionaries/RecallUnits.yaml", "# Not a mapping.\ndocumentType: dictionary\nname: RecallUnits\nentries:\n  M: m\n  NONE: ~\n");
+        var repoId = Guid.NewGuid();
+
+        var (warnings, result) = await SyncWithResultAsync(repoId);
+
+        var warning = Assert.Single(warnings);
+        Assert.StartsWith("estate/cache/lookups.yaml: Curves is left out of the cache of partition 'dev', because its dictionary could not be read:", warning, StringComparison.Ordinal);
+        Assert.Contains("Dictionary 'CurveDictionary' was not found under 'estate/dictionaries'", warning, StringComparison.Ordinal);
+        Assert.Equal(1, result.Invalid);
+
+        await using var db = _catalog.CreateDbContext();
+        var units = await db.DeliveryCacheDefinitions.SingleAsync(c => c.RepoId == repoId);
+        Assert.Equal("RecallUnits", units.Name);
+        Assert.Equal("dictionary", units.Origin);
+        Assert.Equal("lookup--RecallUnits", units.EntityType);
+        Assert.Equal("key", units.KeyField);
+        Assert.Equal("estate/dictionaries/RecallUnits.yaml", units.DictionaryPath);
+        Assert.Null(units.Endpoint);
+        Assert.Null(units.Kind);
+        Assert.Null(units.Query);
+        using (var fields = JsonDocument.Parse(units.FieldsJson))
+        {
+            Assert.Equal(["value"], fields.RootElement.EnumerateArray().Select(f => f.GetProperty("as").GetString()));
+        }
+
+        Assert.Empty(await db.DeliveryMappings.Where(m => m.RepoId == repoId).ToListAsync());
+        var declaration = await OsduCacheStore.DeclarationAsync(db, "dev");
+        Assert.Equal(CacheOrigin.Dictionary, Assert.Single(declaration.Of("RecallUnits")).Origin);
+
+        // Once the dictionary is there, the next sync records it; a dictionary that changes its fields changes the row.
+        Write("estate/dictionaries/CurveDictionary.yaml", "documentType: dictionary\nname: CurveDictionary\nkey: mnemonic\nfields: [family]\nentries:\n  GR: { family: Gamma Ray }\n");
+        Assert.Empty(await SyncAsync(repoId));
+        var curves = await db.DeliveryCacheDefinitions.AsNoTracking().SingleAsync(c => c.RepoId == repoId && c.Name == "Curves");
+        Assert.Equal("mnemonic", curves.KeyField);
+        Assert.Equal("estate/dictionaries/CurveDictionary.yaml", curves.DictionaryPath);
+    }
+
+    [Fact]
+    public async Task A_lookup_table_declared_by_two_cache_flows_of_a_partition_is_left_out_of_the_second()
+    {
+        Write("cache/lookups.yaml", LookupsFlow);
+        Write("cache/more-lookups.yaml", LookupsFlow.Replace("name: lookups", "name: more-lookups", StringComparison.Ordinal));
+        Write("dictionaries/RecallUnits.yaml", "documentType: dictionary\nname: RecallUnits\nentries:\n  M: m\n");
+        Write("dictionaries/CurveDictionary.yaml", "documentType: dictionary\nname: CurveDictionary\nentries:\n  GR: Gamma Ray\n");
+        var repoId = Guid.NewGuid();
+
+        var warnings = await SyncAsync(repoId);
+
+        Assert.Equal(2, warnings.Count);
+        Assert.All(warnings, w => Assert.Contains("a lookup table from a table or a dictionary is declared by one cache flow of a partition only", w, StringComparison.Ordinal));
+        await using var db = _catalog.CreateDbContext();
+        Assert.Equal(["lookups", "lookups"], await db.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).Select(c => c.FlowName).ToListAsync());
+    }
+
+    [Fact]
+    public async Task A_mapping_after_a_byte_order_mark_is_still_found_and_a_document_naming_mapping_elsewhere_is_not()
+    {
+        Write("mappings/Thing@1.0.0.yaml", "﻿" + TestSchema.MappingDocument());
+        Write("notes.yaml", "documentType: notes\ndescription: how the mapping works\n");
+        var repoId = Guid.NewGuid();
+
+        await SyncAsync(repoId);
+
+        await using var db = _catalog.CreateDbContext();
+        Assert.Equal(["mappings/Thing@1.0.0.yaml"], await db.DeliveryMappings.Where(m => m.RepoId == repoId).Select(m => m.RelativePath).ToListAsync());
     }
 
     [Fact]

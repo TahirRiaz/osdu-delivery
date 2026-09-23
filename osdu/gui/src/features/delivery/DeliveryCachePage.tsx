@@ -397,6 +397,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
           <DeliveryCacheRecords
             scope={cache.scope}
             type={scoped?.name ?? null}
+            keyName={scoped?.key ?? null}
             fields={scoped?.fields.map((field) => field.as) ?? []}
             versions={versions.data ?? []}
           />

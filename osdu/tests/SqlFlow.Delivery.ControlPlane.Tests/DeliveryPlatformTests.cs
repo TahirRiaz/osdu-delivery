@@ -32,6 +32,24 @@ public sealed class DeliveryPlatformTests
     }
 
     [Fact]
+    public void DictionaryInAProposal_IsCheckedAsTheCompanionDocumentItIs()
+    {
+        var documents = new DeliveryDocumentLoader();
+        var loader = YamlDocumentLoader.CreateDefault([Kind], [Kind, new DictionaryDocumentKind(documents)]);
+        const string Units = "documentType: dictionary\nname: RecallUnits\nentries:\n  M: m\n  NONE: ~\n";
+
+        var valid = FlowProposalPreflight.Run([new ProposalFile("dictionaries/RecallUnits.yaml", Units)], [], loader);
+        Assert.Empty(valid.Errors);
+        Assert.Empty(valid.Warnings);
+
+        // A key written twice is refused before anything is pushed, naming the line.
+        var twice = FlowProposalPreflight.Run([new ProposalFile("dictionaries/RecallUnits.yaml", Units + "  M: metre\n")], [], loader);
+        var error = Assert.Single(twice.Errors);
+        Assert.Equal("dictionaries/RecallUnits.yaml", error.Path);
+        Assert.Contains("Duplicate key M", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MappingThatDoesNotLoad_IsAnError_NamingWhyTheSyncWouldRecordItInvalid()
     {
         // A target written without its origin is not a template variable, so the sync would record the mapping as invalid.

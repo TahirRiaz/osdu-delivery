@@ -3,7 +3,9 @@ import { Card } from "@/components/ui/card";
 import type { DeliveryCachedItem } from "../../api/delivery";
 import { CopyButton } from "@/components/CopyButton";
 import { TruncatedText } from "@/components/TruncatedText";
-import { CACHE_ID_FIELD, cacheEntryExample, cacheReference, cachedCell, type CachedTypeSummary } from "./cacheFormat";
+import {
+  CACHE_ID_FIELD, cacheEntryExample, cacheReference, cachedCell, isLookupEntityType, lookupEntryExample, type CachedTypeSummary,
+} from "./cacheFormat";
 
 /** What cache.<Type>.id renders: the record's OSDU id with the trailing colon an OSDU relationship carries. */
 function relationshipId(recordId: string): string {
@@ -40,6 +42,10 @@ export function RecordMappingReference({ item, names }: {
   /** The captured names in the order the sheet lists them. */
   names: string[];
 }) {
+  if (isLookupEntityType(item.entityType)) {
+    return <LookupRowReference item={item} names={names} />;
+  }
+
   const rows = [
     { name: CACHE_ID_FIELD, value: relationshipId(item.recordId) },
     ...names.map((name) => ({ name, value: cachedCell(item.fields[name]) })),
@@ -94,31 +100,111 @@ export function RecordMappingReference({ item, names }: {
 }
 
 /**
+ * How a mapping reads one row of a lookup table: each of its values by name, and an entry that finds the row by its key. A
+ * lookup row is not an OSDU record, so there is no id to read or copy; its key is the value it is found by.
+ */
+function LookupRowReference({ item, names }: { item: DeliveryCachedItem; names: string[] }) {
+  const keyName = names.find((name) => item.fields[name] === item.recordId) ?? names[0] ?? null;
+  const valueName = names.find((name) => name !== keyName) ?? null;
+  const rows = names.map((name) => ({ name, value: cachedCell(item.fields[name]) }));
+  return (
+    <section className="flex flex-col gap-2" data-testid="delivery-cache-item-mapping">
+      <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">In a mapping</h3>
+      <div className="overflow-x-auto rounded-md border border-border">
+        <table className="w-full text-[12px]">
+          <thead className="bg-muted/40 text-left text-[11px] text-muted-foreground">
+            <tr>
+              <th className="px-3 py-1.5 font-medium">Source</th>
+              <th className="px-3 py-1.5 font-medium">Reads, for this row</th>
+              <th className="w-8" aria-label="Copy" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const reference = cacheReference(item.typeName, row.name);
+              return (
+                <tr key={row.name} className="border-t border-border" data-testid="delivery-cache-item-reference">
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono">
+                    {reference}
+                    {row.name === keyName && <span className="ml-1.5 font-sans text-[11px] text-muted-foreground">the key</span>}
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <TruncatedText text={row.value} mono maxWidth={320} />
+                  </td>
+                  <td className="px-1 py-1 text-right">
+                    <CopyButton iconOnly label={`Copy ${reference}`} text={reference} testId="delivery-cache-item-reference-copy" />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {keyName !== null && <Snippet text={lookupEntryExample(item.typeName, keyName, valueName)} testId="delivery-cache-item-entry" />}
+      <p className="text-[12px] text-muted-foreground">
+        This row belongs to a lookup table, filled from an ingestion table or a dictionary: it is not an OSDU record and has no
+        id to write. A row whose <span className="font-mono">dataset.&lt;column&gt;</span> holds{" "}
+        <span className="font-mono text-foreground">{item.recordId}</span> selects it
+        {valueName !== null && (
+          <>
+            , and the entry renders <span className="break-all font-mono text-foreground">{cachedCell(item.fields[valueName]) ?? "no value"}</span>
+          </>
+        )}
+        .
+      </p>
+    </section>
+  );
+}
+
+/**
  * How a mapping reads the partition's cache, for the Definition tab: the source and findBy forms, with a working entry for
- * the type in scope (or the first type), since every name the table lists is readable as cache.<Type>.<name>.
+ * an OSDU type and one for a lookup table when the cache holds either, since every name the table lists is readable as
+ * cache.<Type>.<name>.
  */
 export function CacheMappingGuide({ types, scope }: { types: CachedTypeSummary[]; scope: string }) {
-  const example = types.find((type) => type.fields.length > 0) ?? types[0] ?? null;
-  if (example === null) {
+  const records = types.filter((type) => type.key === null);
+  const lookups = types.filter((type) => type.key !== null);
+  const example = records.find((type) => type.fields.length > 0) ?? records[0] ?? null;
+  const table = lookups[0] ?? null;
+  if (example === null && table === null) {
     return null;
   }
 
-  const lookup = example.fields[0]?.as ?? null;
   return (
     <Card className="flex flex-col gap-2 rounded-lg p-4" data-testid="delivery-cache-mapping-guide">
       <h3 className="flex items-center gap-1.5 text-[13px] font-medium">
         <BookOpen className="size-4 text-muted-foreground" />
         Reading the cache in a mapping
       </h3>
+      {example !== null && (
+        <>
+          <p className="text-[12.5px] text-muted-foreground">
+            A mapping entry reads a cached OSDU record with <span className="font-mono text-foreground">cache.&lt;Type&gt;.id</span> (its
+            OSDU id, as a relationship) or <span className="font-mono text-foreground">cache.&lt;Type&gt;.&lt;name&gt;</span> (a
+            value it keeps, by the names below), and says which record with <span className="font-mono text-foreground">findBy</span>:
+            lines comparing a kept value with a dataset column or a quoted text, tried in order.
+          </p>
+          <Snippet text={cacheEntryExample(example.name, example.fields[0]?.as ?? null)} testId="delivery-cache-mapping-guide-entry" />
+        </>
+      )}
+      {table !== null && (
+        <>
+          <p className="text-[12.5px] text-muted-foreground" data-testid="delivery-cache-mapping-guide-lookups">
+            A lookup table, filled from an ingestion table or a dictionary, holds rows that are not OSDU records, so it has no
+            id to write. A mapping reads one of a row's values with{" "}
+            <span className="font-mono text-foreground">cache.&lt;Type&gt;.&lt;name&gt;</span>, found by the row's key (its{" "}
+            <span className="font-mono text-foreground">{table.key}</span>) matching a dataset column.
+          </p>
+          <Snippet
+            text={lookupEntryExample(table.name, table.key!, table.fields.find((field) => field.as !== table.key)?.as ?? null)}
+            testId="delivery-cache-mapping-guide-lookup-entry"
+          />
+        </>
+      )}
       <p className="text-[12.5px] text-muted-foreground">
-        A mapping entry reads a cached record with <span className="font-mono text-foreground">cache.&lt;Type&gt;.id</span> (its
-        OSDU id, as a relationship) or <span className="font-mono text-foreground">cache.&lt;Type&gt;.&lt;name&gt;</span> (a
-        value it keeps, by the names below), and says which record with <span className="font-mono text-foreground">findBy</span>:
-        lines comparing a kept value with a dataset column or a quoted text, tried in order. The mapping never names a cache:
-        every delivery flow delivering to <span className="font-mono text-foreground">{scope}</span> reads this one. Open a
-        record under Records to see the values each reference reads.
+        The mapping never names a cache: every delivery flow delivering to <span className="font-mono text-foreground">{scope}</span>{" "}
+        reads this one. Open a record under Records to see the values each reference reads.
       </p>
-      <Snippet text={cacheEntryExample(example.name, lookup)} testId="delivery-cache-mapping-guide-entry" />
     </Card>
   );
 }

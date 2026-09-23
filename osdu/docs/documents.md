@@ -1047,7 +1047,10 @@ captured by a cache flow.
 The reference data the mappings resolve against ([design.md](design.md) section 6.2). A cache flow is the one place what
 is cached is defined: the OSDU platform to search, the types to cache, and for each type the paths of a record to keep.
 A cache is for closed vocabularies a capture can hold whole; records that are business data, such as the wellbores a
-well log names, are searched for by the mapping as each record needs one ([findBy and a search](#findby-and-a-search)). It fills the cache of the partition its `source.headers.data-partition-id` names, and a delivery flow
+well log names, are searched for by the mapping as each record needs one ([findBy and a search](#findby-and-a-search)).
+Beside OSDU's own records, a partition's cache holds lookup tables this estate keeps itself, such as how a source spells
+its units: a cache flow fills one from a dictionary document in the repository ([Dictionary](#dictionary)), and every
+mapping reads it the way it reads any cached type. It fills the cache of the partition its `source.headers.data-partition-id` names, and a delivery flow
 reads the cache of the partition it delivers to ([The partition cache](#the-partition-cache)). The sample estate's
 cache flow, `samples/wells/cache/wells-osdu-00-reference-cache.yaml`, fills partition `dev`:
 
@@ -1101,9 +1104,10 @@ schedule:
 | `name` | Required. The cache flow's name: its pipeline identity, and the name the versions it writes and the records it holds in the partition's cache are recorded under. A cache flow is named globally: the sync warns when a second file in the repository declares the same name (the first file wins), and when another repository declares it too (rename one of them). |
 | `description` | Optional text describing the cache. |
 | `parameters` | Optional, as on a delivery flow; `{name}` tokens usable in a type's `query`. A token no parameter declares is refused. |
-| `source.endpoint`, `source.auth`, `source.headers` | The OSDU platform the types are searched on, written as `target` is on a delivery flow: `${env:NAME}` and `${keyvault:vault/secret}` references and the same auth types. `data-partition-id` is required, because every search carries it, and it names the partition whose cache the flow fills: an id segment (letters, digits, underscore, hyphen and dot) or a `${env:...}` or `${keyvault:...}` reference. |
-| `types` | Required, at least one: the OSDU types the flow caches. Each type's name is unique within the flow, because a mapping reads a type by its name. Another cache flow of the same partition may declare the same name, and the cache then holds one type under it ([The partition cache](#the-partition-cache)). |
-| `types[].kind` | Required. The kind searched, `authority:source:entityType:version` with wildcards per segment. |
+| `source.endpoint`, `source.auth`, `source.headers` | The OSDU platform the OSDU types are searched on, written as `target` is on a delivery flow: `${env:NAME}` and `${keyvault:vault/secret}` references and the same auth types. `source.endpoint` is required when the flow declares a type with a `kind`, and refused, with `source.auth`, when every type it declares is a lookup table. `data-partition-id` is always required: it names the partition whose cache the flow fills, an id segment (letters, digits, underscore, hyphen and dot) or a `${env:...}` or `${keyvault:...}` reference, and every search carries it. |
+| `types` | Required, at least one: the types the flow caches, each from one origin: a `kind` searched on OSDU, or a `dictionary` (a lookup table kept in the repository, [Dictionary](#dictionary)). Each type's name is unique within the flow, because a mapping reads a type by its name. Another cache flow of the same partition may declare the same OSDU type, and the cache then holds one type under it ([The partition cache](#the-partition-cache)); a lookup table is declared by one cache flow of a partition. |
+| `types[].kind` | For an OSDU type: the kind searched, `authority:source:entityType:version` with wildcards per segment. |
+| `types[].dictionary` | For a lookup table kept in the repository: the name of the dictionary document it holds, `dictionaries/<name>.yaml` in the nearest `dictionaries/` folder above the flow. The type is named after the dictionary unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query` or `fields`: the document names its key and its values. A flow holding a dictionary needs the repository's tree when it runs, and reads the file at the run's commit. |
 | `types[].name`, `types[].entityType` | Optional. The entity type is derived from the kind, and the name from the entity type (`reference-data--UnitOfMeasure` gives `UnitOfMeasure`). A kind that names no entity type needs `entityType`. |
 | `types[].query` | Optional Lucene query narrowing the type; `*` when omitted. |
 | `types[].fields` | Required: the paths to keep, written bare (`data.Code`, cached as `Code`) or as `{ path: ..., as: ... }`. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object. A path crosses arrays implicitly, so `data.NameAliases.AliasName` reaches through an array of objects and caches the set of aliases it finds. A path that yields nothing on every record is reported at capture. |
@@ -1213,6 +1217,60 @@ of the type lets go of records no remaining flow holds.
 Versions form one line per partition, and the newest version is always current. `makeCurrent` is not a setting any
 more, and a cache flow that still declares it is refused when it loads; a delivery flow that has to stay on an earlier
 version pins it with `render.cacheVersion`.
+
+## Dictionary
+
+A dictionary is one lookup table kept in the repository: how a source spells a unit and what the partition calls it, or
+what each curve mnemonic measures. It is filed as `dictionaries/<name>.yaml`, one table per file, and a cache flow holds
+it in the partition's cache (`types: [{ dictionary: <name> }]`), where a mapping reads it the way it reads any cached
+type. Editing the file changes nothing until the cache flow runs; that refresh writes a new cache version, and only the
+records a changed entry reaches are tagged and delivered again ([Cache flow](#cache-flow)). The sample estate's
+`samples/wells/dictionaries/RecallUnits.yaml` is held by `samples/wells/cache/wells-lookups-00-cache.yaml`.
+
+A dictionary of pairs maps each key to one value:
+
+```yaml
+documentType: dictionary
+name: RecallUnits
+description: Unit spellings in the Recall source, as the codes of the partition's UnitOfMeasure records.
+entries:
+  M: m
+  METRES.: m
+  V/V: m3/m3
+  NONE: ~           # no value: the entry's required flag decides what that does
+```
+
+A dictionary with `fields` gives each key several named values:
+
+```yaml
+documentType: dictionary
+name: CurveDictionary
+key: mnemonic
+fields: [type, family, mainFamily, unit]
+entries:
+  GR: { type: Equinor-GR, family: Gamma Ray, mainFamily: GammaRay, unit: gAPI }
+  LFP_AI: { type: Equinor-AI, family: EQ-Acoustic Impedance Compressional, mainFamily: Geophysics }
+```
+
+| Key | Meaning |
+| --- | --- |
+| `documentType` | Always `dictionary`. |
+| `name` | Required. A letter followed by letters, digits, `_` or `-`. The file is named by it, and a cache flow declares the dictionary by it. |
+| `description` | Free text. |
+| `key` | The name each entry's key is kept under, `key` when left out. A mapping matches on it by that name. |
+| `fields` | The names of the values each entry gives. Left out, the dictionary is one of pairs and each value is kept as `value`. |
+| `entries` | Required: at least one entry, at most 100,000, since every entry is loaded with the cache version a render reads. A table larger than that belongs in an ingestion table. |
+
+Every key and value is text exactly as it is written: `NO`, `true` and `1.10` are those texts, never a boolean or a
+number, and the template decides the type a value is written as. An unquoted `~`, `null` or empty value is no value;
+a quoted `"~"` is the text. A key is at most 256 characters, not empty, and has no spaces around it, and two entries
+never share a key: a key written twice is refused, naming its line. A key or a field is never called `id` in any
+casing, because a lookup row's key is its id, and the key's own name is never listed among the fields. A value is one
+text; a list or a map is refused, and so is a value under a name `fields` does not list.
+
+The repository sync reads every dictionary a cache flow declares, and leaves a type whose dictionary is missing or
+invalid out of the cache with a warning naming the file, so a broken file is reported when it is pushed, not by the next
+refresh. The proposal preflight checks a dictionary document before it is pushed, like a mapping.
 
 ## Mapping
 

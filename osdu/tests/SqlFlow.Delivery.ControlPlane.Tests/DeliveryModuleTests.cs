@@ -54,6 +54,24 @@ public sealed class DeliveryModuleTests
     }
 
     [Fact]
+    public async Task TheModule_RegistersItsCompanionDocuments_SoTheLoaderAndTheProposalPreflightReadMappingsAndDictionaries()
+    {
+        await using var factory = Host();
+        using var client = factory.CreateClient();
+
+        // The delivery kind owns the mapping documents; the dictionary documents cache flows hold are a companion of their own.
+        var companions = factory.Services.GetServices<ICompanionDocumentKind>().Select(k => k.DocumentType).Order(StringComparer.Ordinal).ToList();
+        Assert.Equal([DictionaryDefinition.DocumentTypeName, MappingDefinition.DocumentTypeName], companions);
+        Assert.Same(
+            factory.Services.GetServices<IFlowDocumentKind>().OfType<DeliveryFlowKind>().Single(),
+            factory.Services.GetServices<ICompanionDocumentKind>().OfType<DeliveryFlowKind>().Single());
+
+        // The loader every consumer shares reads both under their own type.
+        var loader = factory.Services.GetRequiredService<YamlDocumentLoader>();
+        Assert.Equal([DictionaryDefinition.DocumentTypeName, MappingDefinition.DocumentTypeName], loader.CompanionKinds.Select(k => k.DocumentType).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
     public async Task TheModule_JoinsTheRepositorySync_SoItsMappingAndCacheDocumentsAreReconciledWithTheFlows()
     {
         await using var factory = Host();

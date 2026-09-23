@@ -332,7 +332,7 @@ public class ReferenceCacheTests
                 entityType: master-data--Wellbore
                 fields: [data.FacilityName]
             """));
-        Assert.Contains("types[0].kind is required", noKind.Message, StringComparison.Ordinal);
+        Assert.Contains("types[0] needs a kind (the OSDU kind whose records the type caches) or a dictionary", noKind.Message, StringComparison.Ordinal);
 
         var token = Assert.Throws<FlowValidationException>(() => CacheFlow("""
               - kind: osdu:wks:master-data--Wellbore:1.0.0

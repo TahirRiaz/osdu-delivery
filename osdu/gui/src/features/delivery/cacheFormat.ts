@@ -1,4 +1,17 @@
-import type { DeliveryCache, DeliveryCacheField, DeliveryCacheSchedule, DeliveryCacheTypeSource } from "../../api/delivery";
+import type { DeliveryCache, DeliveryCacheField, DeliveryCacheOrigin, DeliveryCacheSchedule, DeliveryCacheTypeSource } from "../../api/delivery";
+
+/** The entity type prefix of a lookup table: a type filled from an ingestion table or a dictionary, holding no OSDU records. */
+export const LOOKUP_ENTITY_PREFIX = "lookup--";
+
+/** Whether a cached type is a lookup table, whose rows are kept under their keys rather than OSDU ids. */
+export function isLookupEntityType(entityType: string): boolean {
+  return entityType.startsWith(LOOKUP_ENTITY_PREFIX);
+}
+
+/** What a cached record is identified by: a lookup row by its key, an OSDU record by its id. */
+export function recordIdLabel(entityType: string): string {
+  return isLookupEntityType(entityType) ? "Key" : "OSDU id";
+}
 
 /** A cached value on one line: a scalar as itself, a set as its values, an object as its JSON. */
 export function cachedText(value: unknown): string {
@@ -48,6 +61,17 @@ export function cacheEntryExample(typeName: string, lookupField: string | null):
 }
 
 /**
+ * A mapping entry that reads a value of a lookup table's row, found by its key matching a dataset column. A lookup row has
+ * no OSDU id, so the entry reads one of its values; the column is a placeholder the author renames.
+ */
+export function lookupEntryExample(typeName: string, keyField: string, valueField: string | null): string {
+  return [
+    `source: ${cacheReference(typeName, valueField ?? keyField)}`,
+    `findBy: ${cacheReference(typeName, keyField)} = dataset.<column>`,
+  ].join("\n");
+}
+
+/**
  * An OSDU record id in two parts: the partition and entity type that every id of a type repeats, and the part that
  * tells the records apart. A column of ids reads by its tails once the repeated prefix steps back.
  */
@@ -62,6 +86,10 @@ export function splitRecordId(id: string): { prefix: string; tail: string } {
 
 /** The family an entity type belongs to, as a group heading: reference-data--UnitOfMeasure is "Reference data". */
 export function entityFamily(entityType: string): string {
+  if (isLookupEntityType(entityType)) {
+    return "Lookup tables";
+  }
+
   const at = entityType.indexOf("--");
   if (at <= 0) {
     return "Other";
@@ -72,11 +100,11 @@ export function entityFamily(entityType: string): string {
 }
 
 /** Families in the order the type picker lists them: what mappings look up first, then the master data they point at. */
-const familyRank: Record<string, number> = { "Reference data": 0, "Master data": 1 };
+const familyRank: Record<string, number> = { "Reference data": 0, "Master data": 1, "Lookup tables": 2 };
 
 export function compareFamilies(a: string, b: string): number {
-  const rankA = familyRank[a] ?? 2;
-  const rankB = familyRank[b] ?? 2;
+  const rankA = familyRank[a] ?? 3;
+  const rankB = familyRank[b] ?? 3;
   return rankA !== rankB ? rankA - rankB : a.localeCompare(b);
 }
 
@@ -85,8 +113,12 @@ export interface CachedTypeSummary {
   name: string;
   entityType: string;
   family: string;
-  /** Every cache flow's declaration of the type: the kind it searches and its query. */
+  /** Every cache flow's declaration of the type: where it takes the records from. */
   sources: DeliveryCacheTypeSource[];
+  /** Where the records come from: searched on OSDU, read from an ingestion table, or held from a dictionary. */
+  origin: DeliveryCacheOrigin;
+  /** For a lookup table, the name each row's key is kept under; null for OSDU records. */
+  key: string | null;
   /** The records the current version holds of the type. */
   items: number;
   /** Every path the cache keeps for the type, by the name it is cached under, with the flows that declare it. */
@@ -103,6 +135,8 @@ export function summarizeTypes(cache: DeliveryCache | null): CachedTypeSummary[]
       entityType: type.entityType,
       family: entityFamily(type.entityType),
       sources: type.sources,
+      origin: type.origin,
+      key: type.key,
       items: type.items,
       fields: type.fields,
       onChange: type.onChange,

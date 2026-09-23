@@ -35,6 +35,22 @@ internal static class CacheMapper
             kv => new FlowParameter { Required = kv.Value.Required, Default = kv.Value.Default, Description = kv.Value.Description },
             StringComparer.Ordinal);
         var defaultMode = FlowMapper.ParseEnum(y.OnChange, CacheChangeMode.Auto, "onChange", source);
+        var types = MapTypes(y.Types, defaultMode, parameters, source);
+
+        // The platform is reached only for the types searched on it, so a flow of lookup tables alone needs no endpoint, and
+        // a flow that names one it never searches is told so rather than left holding a setting that does nothing.
+        var searched = types.Any(t => t.Origin == CacheOrigin.Osdu);
+        var endpoint = string.IsNullOrWhiteSpace(src.Endpoint) ? null : src.Endpoint.Trim();
+        if (searched && endpoint is null)
+        {
+            throw new FlowValidationException($"{source}: source.endpoint is required: the flow declares a type searched on OSDU, by its kind.");
+        }
+
+        if (!searched && (endpoint is not null || src.Auth is not null))
+        {
+            throw new FlowValidationException(
+                $"{source}: source.endpoint and source.auth reach the OSDU platform, and the flow declares no type searched there; every type it declares is a lookup table. Remove them.");
+        }
 
         return new CacheDefinition
         {
@@ -45,11 +61,11 @@ internal static class CacheMapper
             Parameters = parameters,
             Source = new CacheSource
             {
-                Endpoint = FlowMapper.Require(src.Endpoint, "source.endpoint", source),
+                Endpoint = endpoint,
                 Auth = FlowMapper.MapAuth(src.Auth, source, "source.auth"),
                 Headers = headers,
             },
-            Types = MapTypes(y.Types, defaultMode, parameters, source),
+            Types = types,
             OnChange = defaultMode,
             Reliability = FlowMapper.MapReliability(y.Reliability, source),
         };
@@ -65,7 +81,7 @@ internal static class CacheMapper
         if (declared is null || declared.Count == 0)
         {
             throw new FlowValidationException(
-                $"{source}: types is required: list the OSDU types the cache holds, each with its kind and the paths of a record to keep.");
+                $"{source}: types is required: list the types the cache holds, each an OSDU kind with the paths of a record to keep, or a dictionary.");
         }
 
         var types = new List<ReferenceTypeSpec>(declared.Count);
@@ -73,8 +89,14 @@ internal static class CacheMapper
         {
             var where = $"types[{i}]";
             var type = declared[i];
+            if (!string.IsNullOrWhiteSpace(type.Dictionary))
+            {
+                types.Add(Validated(DictionaryType(type, defaultMode, where, source), where, source));
+                continue;
+            }
+
             var kind = string.IsNullOrWhiteSpace(type.Kind)
-                ? throw new FlowValidationException($"{source}: {where}.kind is required: the OSDU kind whose records the type caches.")
+                ? throw new FlowValidationException($"{source}: {where} needs a kind (the OSDU kind whose records the type caches) or a dictionary (a lookup table kept in the repository).")
                 : type.Kind!.Trim();
 
             if (!OsduKind.IsValid(kind))
@@ -104,16 +126,7 @@ internal static class CacheMapper
                 Fields = MapFields(type.Fields, $"{where}.fields", source),
             };
 
-            try
-            {
-                spec.Validate();
-            }
-            catch (FlowValidationException ex)
-            {
-                throw new FlowValidationException($"{source}: {where}: {ex.Message}", ex);
-            }
-
-            types.Add(spec);
+            types.Add(Validated(spec, where, source));
         }
 
         if (types.Select(t => t.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != types.Count)
@@ -122,6 +135,47 @@ internal static class CacheMapper
         }
 
         return types;
+    }
+
+    /// <summary>
+    /// A type holding a dictionary document: named after the dictionary unless it says otherwise, kept as a lookup table, and
+    /// taking none of an OSDU type's settings, because the document itself names the key and the fields.
+    /// </summary>
+    private static ReferenceTypeSpec DictionaryType(CachedTypeYaml type, CacheChangeMode defaultMode, string where, string source)
+    {
+        var dictionary = type.Dictionary!.Trim();
+        foreach (var (setting, value) in new (string, object?)[] { ("kind", type.Kind), ("entityType", type.EntityType), ("query", type.Query), ("fields", type.Fields) })
+        {
+            if (value is not null)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where} holds dictionary {dictionary}, which takes no '{setting}': the dictionary document names its key and its fields, and it is kept as a lookup table, not searched for.");
+            }
+        }
+
+        var name = string.IsNullOrWhiteSpace(type.Name) ? dictionary : type.Name!.Trim();
+        return new ReferenceTypeSpec
+        {
+            Name = name,
+            EntityType = ReferenceType.LookupEntityType(name),
+            Origin = CacheOrigin.Dictionary,
+            Dictionary = dictionary,
+            OnChange = FlowMapper.ParseEnum(type.OnChange, defaultMode, $"{where}.onChange", source),
+        };
+    }
+
+    private static ReferenceTypeSpec Validated(ReferenceTypeSpec spec, string where, string source)
+    {
+        try
+        {
+            spec.Validate();
+        }
+        catch (FlowValidationException ex)
+        {
+            throw new FlowValidationException($"{source}: {where}: {ex.Message}", ex);
+        }
+
+        return spec;
     }
 
     /// <summary>Reads a field list where an entry is either a path or a path with the name to cache it under.</summary>

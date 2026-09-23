@@ -13,6 +13,17 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Dictionary documents: lookup tables kept in the repository and held in the partition cache.** A dictionary
+  (`documentType: dictionary`, one table per file, `dictionaries/<name>.yaml`) is a dictionary of pairs, or gives each
+  key the named values its `fields` list; every key and value is text exactly as written, and `~` is no value. A cache
+  flow holds one with `types: [{ dictionary: <name> }]`, needing no endpoint when it holds only lookup tables, and a
+  refresh reads the file at the run's commit (such a flow asks the node for the repository's tree) and captures it into
+  the same version as the flow's other types, so an edited entry tags only the records it reaches. The repository sync
+  records each dictionary type's key, fields and file, and leaves one whose file is missing or invalid out with a
+  warning; lineage shows the file the cache flow reads; the proposal preflight checks a dictionary before it is pushed.
+  The OSDU cache page shows where each type comes from, a lookup table's key, and how a mapping reads a lookup row. The
+  sample estate holds `dictionaries/RecallUnits.yaml` through `cache/wells-lookups-00-cache.yaml`
+  ([osdu/docs/documents.md](osdu/docs/documents.md#dictionary)).
 - **The partition cache holds lookup tables beside OSDU records.** A cached type now has an origin: `osdu` (searched on
   the platform, as before), `table` (an ingestion table) or `dictionary` (a dictionary document in the repository). A
   lookup table's rows are kept under their keys as `lookup--<Name>`, and are versioned, traced and rolled out like every
@@ -328,6 +339,14 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   together with rows of its own, went with it.
 
 ### Fixed
+
+- **The mapping document kind is registered where the loader, the CLI and the proposal preflight look for it.** The
+  delivery kind owns the mapping documents, but was registered only as a flow kind, so in a composed host a proposed
+  mapping met "unknown documentType 'mapping'". It is now registered as the companion document kind as well, beside the
+  new dictionary kind.
+- **The repository sync takes only a top-level `documentType: mapping` for a mapping.** Any YAML that held the text
+  `documentType:` and the word `mapping` anywhere was stored as a broken mapping row; a file starting with a byte
+  order mark is now read as it should be.
 
 - A cache flow's `plan` operation read the partition's cache under the text its `data-partition-id` is written with,
   so a flow naming its partition `${env:...}` planned against a cache no capture writes to; it now resolves the
