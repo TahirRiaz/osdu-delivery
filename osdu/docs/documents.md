@@ -1226,8 +1226,11 @@ A dictionary is one lookup table kept in the repository: how a source spells a u
 what each curve mnemonic measures. It is filed as `dictionaries/<name>.yaml`, one table per file, and a cache flow holds
 it in the partition's cache (`types: [{ dictionary: <name> }]`), where a mapping reads it the way it reads any cached
 type. Editing the file changes nothing until the cache flow runs; that refresh writes a new cache version, and only the
-records a changed entry reaches are tagged and delivered again ([Cache flow](#cache-flow)). The sample estate's
-`samples/wells/dictionaries/RecallUnits.yaml` is held by `samples/wells/cache/wells-lookups-00-cache.yaml`.
+records a changed entry reaches are tagged and delivered again ([Cache flow](#cache-flow)). A table another system
+keeps, or one too large to review as a document, is better held as an ingestion table: the sample estate keeps
+petrodb-api's unit maps and curve dictionary as CSV files in `samples/wells/cache/data/`, which its own pre and ing flows
+load into `OsduSample.ing.RecallUnits`, `RecallDepthUnits` and `CurveDictionary`, and
+`samples/wells/cache/wells-lookups-00-cache.yaml` captures those tables.
 
 A dictionary of pairs maps each key to one value:
 
@@ -1419,6 +1422,23 @@ A value several records answer to, exactly or once case is ignored, selects none
 one record, the record is held whatever `required` says, with a reason naming the candidates, and a `replace` modifier
 makes the incoming value exact.
 
+A line on `id`, on a type that caches no field of its own called `ID`, compares the record id, and the code the id ends
+with as well: a reference to OSDU reference data is the partition, the entity type and that code
+(`dev:reference-data--LogCurveFamily:Gamma%20Ray:`), so a table that names reference data by its code finds the record
+it names, whether the code is written as the id encodes it (`Gamma%20Ray`) or decoded (`Gamma Ray`). The sample well log
+mapping fills each curve's type, main family and family that way: the curve dictionary gives the code for the curve's
+mnemonic, and the line finds the record with that id in the partition's cache.
+
+```yaml
+- target: osdu.data.Curves[].LogCurveFamilyID
+  source: cache.LogCurveFamily.id
+  findBy: cache.LogCurveFamily.id = dataset.curves.curve_id
+  modifiers:
+    - replace: cache.CurveDictionary     # GR gives Gamma%20Ray
+      field: log_curve_family_id
+      otherwise: ~
+```
+
 `ignoreSeparators: true` adds a last attempt, for a name rather than a code. Source systems and OSDU write the same
 facility name differently, because each grew its own convention for the spaces, slashes, underscores and hyphens
 between the parts that carry the meaning: with the fold on, `NO 15/9-19 SR`, `NO_15_9-19_SR` and `no-15-9-19-sr` all
@@ -1485,7 +1505,7 @@ Only identical mappings are kept because only those can replace the reference an
 the same concept with different conversion parameters, so the values measured in it have to be converted before the
 reference changes, and an `unsupported` one has no equivalent at all (its `UnitOfMeasureID` is not expected to be
 given). A unit the query leaves out finds no alias, which leaves the variable out or holds the record as `required`
-says; a dictionary replace (`replace: cache.RecallUnits`) is the way to name what the source's spellings are where
+says; a lookup table replace (`replace: cache.RecallUnits`) is the way to name what the source's spellings are where
 OSDU keeps no translation.
 
 A cached field written to a relationship, or to a list of them, is checked as a reference:
@@ -1546,20 +1566,21 @@ belongs in the partition's cache, where every mapping reads it the same way.
 
 ##### A table read from the cache
 
-A dictionary of pairs: the key matches, and its value replaces.
+A lookup table with one field beside its key (a unit map, or a dictionary of pairs): the key matches, and that field
+replaces.
 
 ```yaml
 modifiers:
   - replace: cache.RecallUnits
 ```
 
-A lookup table read from an ingestion table: `match` defaults to its key, `mnemonic`, and `field` names the one of its
-fields that replaces.
+A lookup table with several fields: `match` defaults to its key, `mnemonic`, and `field` names the one of its fields that
+replaces.
 
 ```yaml
 modifiers:
-  - replace: cache.CurveClasses
-    field: curve_family
+  - replace: cache.CurveDictionary
+    field: log_curve_family_id
     otherwise: ~
 ```
 

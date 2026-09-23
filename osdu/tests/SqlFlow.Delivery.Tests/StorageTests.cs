@@ -684,9 +684,12 @@ public sealed class OsduCacheStoreTests : IDisposable
             (await store.ListVersionsAsync(Samples.SampleCacheScope)).Select(v => v.FlowName));
         Assert.True(version.HasType("UnitOfMeasure"));
         Assert.True(version.HasType("VerticalMeasurementType"));
-        Assert.Equal("key", version.Type("RecallUnits")!.Key);
-        Assert.Equal("m3/m3", version.Type("RecallUnits")!.Value(version.Type("RecallUnits")!.Match("key", "V/V")!, "value")!.Text);
-        Assert.Equal("Gamma Ray", version.Type("CurveClasses")!.Value(version.Type("CurveClasses")!.Match("mnemonic", "GR")!, "curve_family")!.Text);
+        // petrodb-api's translations, loaded from the files in cache/data: the curve unit map, the depth unit map, and the
+        // curve dictionary giving each mnemonic the codes of the records it is filed under.
+        Assert.Equal("source_unit", version.Type("RecallUnits")!.Key);
+        Assert.Equal("v/v", version.Type("RecallUnits")!.Value(version.Type("RecallUnits")!.Match("source_unit", "V/V")!, "osdu_unit")!.Text);
+        Assert.Equal("ft", version.Type("RecallDepthUnits")!.Value(version.Type("RecallDepthUnits")!.Match("source_unit", "FEET")!, "osdu_unit")!.Text);
+        Assert.Equal("Gamma%20Ray", version.Type("CurveDictionary")!.Value(version.Type("CurveDictionary")!.Match("mnemonic", "GR")!, "log_curve_family_id")!.Text);
 
         // Wellbores are searched for on the platform rather than captured, so the sample cache holds none.
         Assert.False(version.HasType("Wellbore"));

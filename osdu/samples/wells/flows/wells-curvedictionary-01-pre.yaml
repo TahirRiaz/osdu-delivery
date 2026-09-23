@@ -1,14 +1,16 @@
-# Pre-ingestion: the curve dictionary files into the pre layer.
+# Pre-ingestion: the curve dictionary file into the pre layer.
 #
-# One row per curve mnemonic: the curve type the company catalogue files it under, the family and main family of what it
-# measures, and the unit a curve of that type carries. The file is exported from the petrophysics team's catalogue; the
-# lookups cache flow reads the keyed table the next flow loads, so a mapping can classify a curve by its mnemonic.
+# One row per curve mnemonic, as petrodb-api's curve dictionary gives it (src/PetroDb/Api.Core/Mapping/CurveDictionary.json,
+# built from a CSV with these columns): the OSDU LogCurveType, LogCurveMainFamily and LogCurveFamily each mnemonic is filed
+# under, written as the code the record's id ends with, and the unit quantity and unit of a curve of that type. The file
+# sits in the cache folder, because it is reference data the lookups cache flow holds: this flow lands it, the next keys it,
+# and wells-lookups-00-cache captures that table so a mapping classifies a curve by its mnemonic exactly as petrodb-api does.
 name: wells-curvedictionary-01-pre
 batch: wells
 
 source:
   type: csv
-  location: ../data/curve-dictionary
+  location: ../cache/data/curve-dictionary
   options:
     delimiter: ","
     header: true
@@ -28,6 +30,8 @@ transform:
   columns:
     - { name: mnemonic, type: varchar(100) }
     - { name: unit, expr: "NULLIF(@ColName, '')", type: varchar(50) }
+    # The export writes the word null where an entry has no comment.
+    - { name: comment, expr: "NULLIF(NULLIF(@ColName, ''), 'null')", type: nvarchar(200) }
 
 incremental:
   dateColumn: FileDate_DW

@@ -13,6 +13,24 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The sample estate translates Recall values with petrodb-api's own tables.** Its unit maps and curve dictionary were
+  stand-ins written for the samples; they are now the tables petrodb-api applies, held as data rather than code. The
+  curve unit map (78 entries), the depth and vertical unit map (8) and the curve dictionary (498 mnemonics) are CSV files
+  in `samples/wells/cache/data/`, each loaded into an ingestion table by a pre and an ing flow of its own
+  (`wells-units-01/02-curve`, `wells-units-01/02-depth`, `wells-curvedictionary-01/02`) and captured by the lookups
+  cache flow as `RecallUnits`, `RecallDepthUnits` and `CurveDictionary`. petrodb-api matches a unit spelling ignoring
+  case, so its spellings that differ only by case (`MPA` and `mpa`) are one row, as the tables' keys hold them. The well
+  log mapping renders what petrodb-api renders from them: curve units through the curve map, depth and vertical units
+  through the depth map, each resolved against the partition's units by `ID`, `Code`, then `Name`, and every curve's
+  `LogCurveTypeID`, `LogCurveMainFamilyID` and `LogCurveFamilyID` from the dictionary by its mnemonic, which the reference
+  cache flow now captures the two new types for. The sample cache records carry a record for every code the tables give.
+  The dictionary document `RecallUnits.yaml` is gone from the samples; the dictionary form itself is unchanged.
+- **A `findBy` on a cached type's `id` finds the record by the code its id ends with.** A reference to OSDU reference
+  data is the partition, the entity type and a code (`dev:reference-data--LogCurveFamily:Gamma%20Ray:`), so a lookup
+  table that names reference data by its code (a curve dictionary giving each mnemonic its family) finds the record it
+  names, whether the code is written as the id encodes it or decoded. It applies to a type that caches no field of its own
+  called `ID`, and keeps the rule every match keeps: case is ignored only when that finds exactly one record.
+
 - **The Records page narrows to one flow.** A searchable flow picker beside the status filter lists every flow the
   synced repositories name that holds records (a source that delivers several interfaces offers one choice per
   interface, and an interface that has delivered nothing is not offered), with an interface's choice led by the

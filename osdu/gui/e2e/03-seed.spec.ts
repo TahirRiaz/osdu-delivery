@@ -19,7 +19,7 @@ function fixtureMeta(): FixtureMeta {
 }
 
 /** The ingestion tables the chain loads, each keyed by the identity column the delivery flows page and fan out by. */
-const INGESTION_TABLES = ["WellLog", "WellLogCurve", "Wellbore", "WellboreAlias", "CurveDictionary"] as const;
+const INGESTION_TABLES = ["WellLog", "WellLogCurve", "Wellbore", "WellboreAlias", "CurveDictionary", "RecallUnits", "RecallDepthUnits"] as const;
 
 /**
  * Runs one batch against the database a connection string names, or against master beside it. sqlcmd is used because
@@ -250,7 +250,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
     );
     expect(output, `${LOOKUPS} reported nothing`).not.toBe("");
 
-    // The partition's cache now holds both lookup tables beside the imported reference data, each kept under its key.
+    // The partition's cache now holds the lookup tables beside the imported reference data, each kept under its key.
     const session = await adminSession(request);
     const response = await request.get(`${E2E.apiBaseUrl}/api/v1/delivery/mapping-builder/caches`, {
       headers: { Authorization: `Bearer ${session.token}` },
@@ -259,8 +259,9 @@ test.describe.serial("seed the estate via repo source sync", () => {
     const caches = (await response.json()) as { scope: string; flows: string[]; types: { name: string; key: string | null }[] }[];
     const cache = caches.find((candidate) => candidate.flows.includes(LOOKUPS));
     expect(cache, `no cache is filled by ${LOOKUPS}`).toBeDefined();
-    expect(cache?.types.find((type) => type.name === "RecallUnits")?.key).toBe("key");
-    expect(cache?.types.find((type) => type.name === "CurveClasses")?.key).toBe("mnemonic");
+    expect(cache?.types.find((type) => type.name === "RecallUnits")?.key).toBe("source_unit");
+    expect(cache?.types.find((type) => type.name === "RecallDepthUnits")?.key).toBe("source_unit");
+    expect(cache?.types.find((type) => type.name === "CurveDictionary")?.key).toBe("mnemonic");
   });
 
   test("the synced pipeline appears in the catalog", async ({ adminPage }) => {

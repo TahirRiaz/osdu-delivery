@@ -46,6 +46,12 @@ types:
   - kind: "osdu:wks:reference-data--LogCurveFamily:*"
     name: LogCurveFamily
     fields: [data.Code, data.Name]
+  - kind: "osdu:wks:reference-data--LogCurveMainFamily:*"
+    name: LogCurveMainFamily
+    fields: [data.Code, data.Name]
+  - kind: "osdu:wks:reference-data--LogCurveType:*"
+    name: LogCurveType
+    fields: [data.Code, data.Name]
   - kind: "osdu:wks:reference-data--VerticalMeasurementType:*"
     name: VerticalMeasurementType
     fields: [data.Code, data.Name]

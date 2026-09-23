@@ -161,9 +161,10 @@ public sealed class LineageTests : IDisposable
         // searched for on the platform, so the flow reads the wellbore kind itself and is ordered after whatever delivers
         // wellbores there.
         Assert.Equal(
-            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/CurveClasses, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, "
-            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveFamily, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/RecallUnits, "
-            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, "
+            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/CurveDictionary, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, "
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveFamily, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveMainFamily, "
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveType, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/RecallDepthUnits, "
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/RecallUnits, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, "
             + "osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:*",
             Datasets(lineage, LineageRelation.Reads));
         var written = lineage.Datasets.Single(d => d.Relation == LineageRelation.Writes);
@@ -207,11 +208,14 @@ public sealed class LineageTests : IDisposable
         Assert.Equal(
             "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
             + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--LogCurveFamily:*, "
+            + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--LogCurveMainFamily:*, "
+            + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--LogCurveType:*, "
             + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*",
             Datasets(lineage, LineageRelation.Reads));
         Assert.Equal(
             "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveBusinessValue, "
-            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveFamily, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/VerticalMeasurementType, "
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveFamily, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveMainFamily, "
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/LogCurveType, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/VerticalMeasurementType, "
             + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/TrajectoryStationPropertyType",
             Datasets(lineage, LineageRelation.Writes));
     }
@@ -269,22 +273,26 @@ public sealed class LineageTests : IDisposable
         var files = report.Objects.Where(o => o.Kind == LineageNodeKind.File).Select(o => o.Name).Order(StringComparer.Ordinal).ToList();
         Assert.Equal(
             [
-                InRepo("data/curve-dictionary"), InRepo("data/curves"), InRepo("data/curves-meta"), InRepo("data/document-files"), InRepo("data/documents"),
+                InRepo("cache/data/curve-dictionary"), InRepo("cache/data/curve-units"), InRepo("cache/data/depth-units"),
+                InRepo("data/curves"), InRepo("data/curves-meta"), InRepo("data/document-files"), InRepo("data/documents"),
                 InRepo("data/stations"), InRepo("data/trajectory"), InRepo("data/trajectory-stations"), InRepo("data/wellbore"),
-                InRepo("data/wellbore-aliases"), InRepo("data/welllog"), InRepo("dictionaries/RecallUnits.yaml"),
-                InRepo("flows/samples/wells/out/metadata"),
+                InRepo("data/wellbore-aliases"), InRepo("data/welllog"), InRepo("flows/samples/wells/out/metadata"),
             ],
             files);
 
-        // The lookups cache flow reads its dictionary's file in the repository and writes the lookup table into the cache.
-        Assert.Contains(report.Edges, e => e.Flow == "wells-lookups-00-cache" && e.Relation == LineageRelation.Reads
-            && report.Objects.Any(o => o.Key == e.ObjectKey && o.Name == InRepo("dictionaries/RecallUnits.yaml")));
-        Assert.Contains(report.Edges, e => e.Flow == "wells-lookups-00-cache" && e.Relation == LineageRelation.Writes && e.ObjectKey == CacheKey("RecallUnits"));
-
-        // Its table type reads the curve dictionary the estate's own flows load, so it runs after them.
-        Assert.True(WaveOf(report, "wells-curvedictionary-01-pre") < WaveOf(report, "wells-curvedictionary-02-ing"));
-        Assert.True(WaveOf(report, "wells-curvedictionary-02-ing") < WaveOf(report, "wells-lookups-00-cache"));
-        Assert.Contains(report.Edges, e => e.Flow == "wells-lookups-00-cache" && e.Relation == LineageRelation.Writes && e.ObjectKey == CacheKey("CurveClasses"));
+        // The lookups cache flow's tables are loaded from the files in cache/data by the estate's own flows, each file landed
+        // and keyed by a pre and an ing flow of its own, so it runs after them and writes each table into the cache.
+        foreach (var (pre, ing, table) in new[]
+        {
+            ("wells-units-01-curve-pre", "wells-units-02-curve-ing", "RecallUnits"),
+            ("wells-units-01-depth-pre", "wells-units-02-depth-ing", "RecallDepthUnits"),
+            ("wells-curvedictionary-01-pre", "wells-curvedictionary-02-ing", "CurveDictionary"),
+        })
+        {
+            Assert.True(WaveOf(report, pre) < WaveOf(report, ing), $"{pre} runs before {ing}");
+            Assert.True(WaveOf(report, ing) < WaveOf(report, "wells-lookups-00-cache"), $"{ing} runs before the lookups cache flow");
+            Assert.Contains(report.Edges, e => e.Flow == "wells-lookups-00-cache" && e.Relation == LineageRelation.Writes && e.ObjectKey == CacheKey(table));
+        }
 
         // One node per exact OSDU type written, one per pattern read, and one per cache type, each captioned by its system.
         var types = report.Objects.Where(o => o.Kind == LineageNodeKind.Dataset).ToDictionary(o => o.Key, StringComparer.Ordinal);

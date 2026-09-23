@@ -146,7 +146,7 @@ mappings:
     source: cache.UnitOfMeasure.id
     findBy: cache.UnitOfMeasure.Code = dataset.curves.curve_unit
     modifiers:
-      - replace: cache.RecallUnits      # the source's unit spellings, a dictionary held in the cache
+      - replace: cache.RecallUnits      # the source's unit spellings, a lookup table held in the cache
 
   - target: osdu.data.Curves[].LogCurveBusinessValueID
     source: cache.LogCurveBusinessValue.id
@@ -347,7 +347,7 @@ is compared or searched for. Cache values and platform records are OSDU's own an
 | upper, lower | `- upper` | `"gapi"` | `"GAPI"` |
 | split | `- split: { separator: ",", part: 1 }` | `"MAIN,REPEAT"` | `"MAIN"` |
 | replace | `- replace: { GAPI: gAPI, NONE: ~ }` | `"GAPI"`, `"NONE"` | `"gAPI"`, no value |
-| replace from the cache | `- replace: cache.CurveClasses` with `field: curve_family` | `"GR"` | `"Gamma Ray"`, as the cached row keyed `GR` gives it |
+| replace from the cache | `- replace: cache.CurveDictionary` with `field: log_curve_family_id` | `"GR"` | `"Gamma%20Ray"`, as the cached row keyed `GR` gives it |
 | equals | `- equals: REGULAR` | `"REGULAR"` or `"DISCRETE"` | `true` or `false` |
 | date | `- date` or `- date: dd.MM.yyyy` | `"01.09.2026"` | `"2026-09-01T00:00:00Z"`, or `"2026-09-01"` where the template takes a date |
 | number | `- number` or `- number: { decimal: ",", group: " " }` | `"1 234,5"` | `1234.5` |

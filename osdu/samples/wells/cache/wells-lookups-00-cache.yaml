@@ -5,12 +5,12 @@
 # the reference data wells-osdu-00-reference-cache captures, and a mapping reads it the same way it reads any cached type.
 # A lookup table is declared by one cache flow of a partition, and a refresh replaces it whole.
 #
-# A dictionary type holds a dictionary document from this repository's dictionaries/ folder, read at the commit the run
-# was given, so a change reaches the cache when this flow next runs: on its schedule, or run it after merging an edit.
-# A table type reads an ingestion table the estate's own flows load (here the curve dictionary, landed by
-# wells-curvedictionary-01-pre and keyed by wells-curvedictionary-02-ing), so lineage runs this flow after them.
-# Nothing here reaches the platform, so the flow needs no endpoint or credentials; the partition is still named, because
-# it says whose cache the tables belong to.
+# The tables are the translations petrodb-api applies when it turns a Recall well log into an OSDU record, held as data
+# instead of code: its unit maps and its curve dictionary. Their files sit in cache/data/, each landed and keyed into an
+# ingestion table by a pre and an ing flow of its own (wells-units-01/02-curve, wells-units-01/02-depth,
+# wells-curvedictionary-01/02), and this flow captures those tables, so lineage runs it after them. Nothing here reaches
+# the platform, so the flow needs no endpoint or credentials; the partition is still named, because it says whose cache
+# the tables belong to.
 flowType: cache
 name: wells-lookups-00-cache
 batch: wells
@@ -22,14 +22,20 @@ source:
     data-partition-id: ${env:OSDU_DATA_PARTITION}
 
 types:
-  # Unit spellings, dictionaries/RecallUnits.yaml.
-  - dictionary: RecallUnits
-  # What each curve mnemonic measures, from the curve dictionary's ingestion table.
-  - name: CurveClasses
-    table: OsduSample.ing.CurveDictionary
+  # The spellings a curve's unit is written in, as the partition's UnitOfMeasure codes (petrodb-api's CurveUnit map).
+  - table: OsduSample.ing.RecallUnits
+    key: source_unit
+    fields: [osdu_unit]
+  # The spellings a depth's unit is written in (petrodb-api's DepthUnit and VerticalMeasurementUnitOfMeasureID map).
+  - table: OsduSample.ing.RecallDepthUnits
+    key: source_unit
+    fields: [osdu_unit]
+  # What each curve mnemonic is: the codes of the LogCurveType, LogCurveMainFamily and LogCurveFamily records it is filed
+  # under, and its unit quantity and unit (petrodb-api's curve dictionary).
+  - table: OsduSample.ing.CurveDictionary
     key: mnemonic
-    fields: [curve_type, curve_family, curve_main_family, unit]
+    fields: [log_curve_type_id, log_curve_main_family_id, log_curve_family_id, unit_quantity_id, unit]
 
-# Nightly, after the curve dictionary's own load and before the reference cache's refresh and the hourly delivery runs.
+# Nightly, after the lookup tables' own loads and before the reference cache's refresh and the hourly delivery runs.
 schedule:
   cron: "30 1 * * *"

@@ -40,10 +40,10 @@ export default function globalSetup(): void {
   rmSync(repoDir, { recursive: true, force: true });
   mkdirSync(join(sourceDir, "flows"), { recursive: true });
 
-  // The mappings the flows pin, the dictionaries the lookups cache flow holds, and the sample files the pre flows read.
-  // The data folder is the source's drop-off point: it is what makes the chain runnable, because without it a pre flow
-  // has nothing to land.
-  for (const part of ["mappings", "dictionaries", "data"]) {
+  // The mappings the flows pin, and the sample files the pre flows read. The data folder is the source's drop-off point:
+  // it is what makes the chain runnable, because without it a pre flow has nothing to land. The lookup tables' files sit in
+  // the cache folder, beside the cache flow that holds them, and their own pre flows land them from there.
+  for (const part of ["mappings", "data", join("cache", "data")]) {
     cpSync(join(samplesDir, part), join(sourceDir, part), { recursive: true });
   }
 
@@ -72,9 +72,9 @@ export default function globalSetup(): void {
     withoutSchedule(readFileSync(join(samplesDir, "cache", `${CACHE}.yaml`), "utf8"), CACHE),
   );
 
-  // The lookup tables the mappings translate source spellings through fill the same partition's cache from this
-  // repository's dictionaries and from the curve dictionary's ingestion table, so nothing of them reaches OSDU and the
-  // seed refreshes them for real. The table lives in the sample database, like every other ingestion table of the estate.
+  // The lookup tables the mappings translate source spellings through (the unit maps and the curve dictionary) fill the
+  // same partition's cache from the ingestion tables their flows load from cache/data, so nothing of them reaches OSDU and
+  // the seed refreshes them for real. The tables live in the sample database, like every other ingestion table of the estate.
   writeFileSync(
     join(sourceDir, "cache", `${LOOKUPS}.yaml`),
     inSampleDatabase(withoutSchedule(readFileSync(join(samplesDir, "cache", `${LOOKUPS}.yaml`), "utf8"), LOOKUPS), LOOKUPS, sampleDatabase),
@@ -160,6 +160,10 @@ export const CHAIN = [
   "wells-trajectory-02-stations-ing",
   "wells-curvedictionary-01-pre",
   "wells-curvedictionary-02-ing",
+  "wells-units-01-curve-pre",
+  "wells-units-02-curve-ing",
+  "wells-units-01-depth-pre",
+  "wells-units-02-depth-ing",
   // The same estate in the shape a source takes: two interfaces, each with a ledger of its own. It is synced and read,
   // never run, so it adds a multi-interface source to the catalog without delivering anything twice.
   "wells-source-03-interfaces-delivery",
@@ -184,6 +188,10 @@ export const LOADING_FLOWS = [
   "wells-trajectory-02-stations-ing",
   "wells-curvedictionary-01-pre",
   "wells-curvedictionary-02-ing",
+  "wells-units-01-curve-pre",
+  "wells-units-02-curve-ing",
+  "wells-units-01-depth-pre",
+  "wells-units-02-depth-ing",
 ] as const;
 
 /**

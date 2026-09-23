@@ -1,0 +1,29 @@
+# Ingestion: the typed curve unit map view into the keyed table the lookups cache flow reads.
+#
+# One row per spelling. A newer file replaces a spelling's row, so the table always holds the map as its latest file has
+# it, and the cache flow wells-lookups-00-cache captures it whole into the partition's cache as RecallUnits.
+flowType: ing
+name: wells-units-02-curve-ing
+batch: wells
+
+connections:
+  sample: ${env:OSDU_SAMPLE_DB}
+
+source:
+  server: sample
+  object: OsduSample.pre.v_RecallUnits
+
+target:
+  server: sample
+  object: OsduSample.ing.RecallUnits
+  identityColumn: RecId
+
+load:
+  keyColumns: [source_unit]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]

@@ -66,6 +66,43 @@ public class ReferenceCacheTests
     }
 
     [Fact]
+    public void A_record_is_found_by_the_code_its_id_ends_with_as_a_reference_writes_it_or_decoded()
+    {
+        static ReferenceItem Item(string id, string code) => new(id, new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Code"] = ReferenceValue.Of(code),
+        });
+
+        const string GammaRay = "dev:reference-data--LogCurveFamily:Gamma%20Ray";
+        const string Impedance = "dev:reference-data--LogCurveFamily:EQ-Acoustic%20Impedance%20Compressional";
+        var families = new ReferenceType("LogCurveFamily", "reference-data--LogCurveFamily",
+            [Item(GammaRay, "Gamma Ray"), Item(Impedance, "EQ-Acoustic Impedance Compressional")]);
+
+        // A curve dictionary names a family by the code its id ends with, encoded as ids encode it: the record id, that
+        // code and the code decoded all find the one record.
+        Assert.Equal(GammaRay, families.Match("id", GammaRay)?.Id);
+        Assert.Equal(GammaRay, families.Match("id", "Gamma%20Ray")?.Id);
+        Assert.Equal(GammaRay, families.Match("id", "Gamma Ray")?.Id);
+        Assert.Equal(Impedance, families.Match("id", "EQ-Acoustic%20Impedance%20Compressional")?.Id);
+
+        // Case is ignored only when that finds exactly one record, as for any other field, and a part of a code is no code.
+        Assert.Equal(GammaRay, families.Match("id", "gamma%20ray")?.Id);
+        Assert.Null(families.Match("id", "Gamma"));
+        Assert.Null(families.Match("id", "reference-data--LogCurveFamily:Gamma%20Ray"));
+
+        // A type caching a field of its own called ID is matched on that field under the name, never on its ids' codes.
+        var units = new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure",
+        [
+            new ReferenceItem("dev:reference-data--UnitOfMeasure:g%2Fcm3", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["ID"] = ReferenceValue.Of("gcc"),
+            }),
+        ]);
+        Assert.Null(units.Match("id", "g%2Fcm3"));
+        Assert.Equal("dev:reference-data--UnitOfMeasure:g%2Fcm3", units.Match("id", "gcc")?.Id);
+    }
+
+    [Fact]
     public void A_set_matches_by_any_of_its_values()
     {
         var type = new ReferenceType("Wellbore", "master-data--Wellbore",
@@ -458,10 +495,10 @@ public class ReferenceCacheTests
 
     /// <summary>
     /// The sample mapping once declared the source unit `V/V` as `%`, so a neutron porosity of 0.21 was published as 0.21
-    /// percent, a hundredth of what the curve carries. `V/V` is a volume fraction, which OSDU's reference data calls
-    /// `m3/m3`. The sample mapping's own curve unit entry is rendered here against the sample template and cache, through
-    /// the unit dictionary it reads from the cache, so the dictionary and the cached reference data have to agree for this
-    /// to pass. The cache holds `%` as well as `m3/m3`, so replacing the unit back with `%` would resolve rather than
+    /// percent, a hundredth of what the curve carries. `V/V` is a volume fraction, which petrodb-api's curve unit map writes
+    /// as the partition's `v/v`. The sample mapping's own curve unit entry is rendered here against the sample template and
+    /// cache, through the curve unit map it reads from the cache, so the map and the cached reference data have to agree for
+    /// this to pass. The cache holds `%` as well as `v/v`, so replacing the unit back with `%` would resolve rather than
     /// hold: only the rendered id catches it.
     /// </summary>
     [Fact]
@@ -470,7 +507,8 @@ public class ReferenceCacheTests
         var mapping = new MappingCatalog(Samples.Mappings, new DeliveryDocumentLoader()).Load("WellLog@1.4.0");
         var curveUnit = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].CurveUnit");
         Assert.Equal("RecallUnits", curveUnit.Modifiers.Single(m => m.Kind == ModifierKind.Replace).Table!.CacheType);
-        Assert.Equal("m3/m3", Samples.SampleDictionary("RecallUnits").Entries.Single(e => e.Key == "V/V").Values["value"]);
+        var units = Samples.SampleLookups().Single(t => t.Name == "RecallUnits");
+        Assert.Equal("v/v", units.Match("source_unit", "V/V")!.Select("osdu_unit")!.Text);
 
         var version = await Samples.SampleCache.CurrentVersionAsync(Samples.SampleCacheScope);
         Assert.NotNull(version);
@@ -509,7 +547,7 @@ public class ReferenceCacheTests
 
         Assert.False(porosity.IsHeld, string.Join("; ", porosity.Holds));
         var nphi = porosity.Document["data"]!["Curves"]!.AsArray().Single(c => c!["CurveID"]!.GetValue<string>() == "NPHI");
-        Assert.Equal("dev:reference-data--UnitOfMeasure:m3%2Fm3:", nphi!["CurveUnit"]!.GetValue<string>());
+        Assert.Equal("dev:reference-data--UnitOfMeasure:v%2Fv:", nphi!["CurveUnit"]!.GetValue<string>());
     }
 }
 

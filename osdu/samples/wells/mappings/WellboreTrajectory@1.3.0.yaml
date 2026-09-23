@@ -93,13 +93,13 @@ mappings:
   - target: osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID
     source: cache.UnitOfMeasure.id
     findBy:
+      - cache.UnitOfMeasure.ID = dataset.elev_meas_ref
       - cache.UnitOfMeasure.Code = dataset.elev_meas_ref
       - cache.UnitOfMeasure.Name = dataset.elev_meas_ref
-      - cache.UnitOfMeasure.ID = dataset.elev_meas_ref
       - cache.UnitOfMeasure.id = dataset.elev_meas_ref
     modifiers:
       - split: { separator: " ", part: 2 }
-      - replace: cache.RecallUnits
+      - replace: cache.RecallDepthUnits
   - target: osdu.data.VerticalMeasurement.VerticalMeasurementTypeID
     static: "{param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"
 
@@ -117,12 +117,12 @@ mappings:
   - target: osdu.data.AvailableTrajectoryStationProperties[].StationPropertyUnitID
     source: cache.UnitOfMeasure.id
     findBy:
+      - cache.UnitOfMeasure.ID = dataset.stations.property_unit
       - cache.UnitOfMeasure.Code = dataset.stations.property_unit
       - cache.UnitOfMeasure.Name = dataset.stations.property_unit
-      - cache.UnitOfMeasure.ID = dataset.stations.property_unit
       - cache.UnitOfMeasure.id = dataset.stations.property_unit
     modifiers:
-      # The source's spelling becomes the partition's unit code (dictionaries/RecallUnits.yaml): DEG becomes dega.
+      # The source's spelling becomes the partition's unit code through the curve unit map: DEG becomes dega.
       - replace: cache.RecallUnits
 
 # Example rows and the exact record each must render to under the pinned template and cache. They are the mapping's

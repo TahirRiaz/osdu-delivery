@@ -489,9 +489,9 @@ test.describe.serial("templates and the mapping builder", () => {
     await rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.Curves[].LogCurveFamilyID").click();
     await expect(adminPage.getByTestId("mapping-builder-entry-target")).toHaveText("osdu.data.Curves[].LogCurveFamilyID");
     await expect(adminPage.getByTestId("mapping-builder-entry-modifier-source-cache-0")).toHaveAttribute("data-state", "on");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-table-0")).toContainText("CurveClasses");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-table-0")).toContainText("CurveDictionary");
     await expect(adminPage.getByTestId("mapping-builder-entry-modifier-match-0")).toContainText("the table's key");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("curve_family");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("log_curve_family_id");
     await expect(adminPage.getByTestId("mapping-builder-entry-modifier-otherwise-0")).toContainText("gives no value");
 
     // Switching to values listed in the mapping leaves the table behind; switching back offers the partition's lookup tables.

@@ -580,9 +580,20 @@ public static class Samples
     }
 
     /// <summary>
+    /// The folder under <c>cache/data</c> holding the file each lookup table of the sample estate is loaded from, by the
+    /// table's name: the location of the pre-ingestion flow that lands it.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> LookupDataFolders = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["RecallUnits"] = "curve-units",
+        ["RecallDepthUnits"] = "depth-units",
+        ["CurveDictionary"] = "curve-dictionary",
+    };
+
+    /// <summary>
     /// The lookup tables the sample lookups cache flow captures, built from the sample estate's own files as a refresh
-    /// builds them: each dictionary type from its dictionary, and the curve dictionary's table type from the file its
-    /// ingestion flow loads into that table, keyed and trimmed as a capture of the table keys and trims it.
+    /// builds them: each dictionary type from its dictionary, and each table type from the file in <c>cache/data</c> its
+    /// pre-ingestion and ingestion flows load into that table, keyed and trimmed as a capture of the table keys and trims it.
     /// </summary>
     public static IReadOnlyList<ReferenceType> SampleLookups()
     {
@@ -596,13 +607,19 @@ public static class Samples
                 continue;
             }
 
-            var file = Directory.GetFiles(Path.Combine(Data, "curve-dictionary"), "*.csv").Single();
+            var folder = Path.Combine(Source, "cache", "data", LookupDataFolders[type.Name]);
+            var file = Directory.GetFiles(folder, "*.csv").Single();
             var lines = File.ReadAllLines(file).Where(line => line.Trim().Length > 0).ToList();
             var header = lines[0].Split(',').Select(column => column.Trim()).ToList();
             var rows = new List<ReferenceItem>();
             foreach (var line in lines.Skip(1))
             {
+                // The sample files quote nothing; a row whose cells do not line up with the header would be read wrongly.
                 var cells = line.Split(',');
+                if (cells.Length != header.Count)
+                {
+                    throw new InvalidOperationException($"{file}: '{line}' has {cells.Length} cells and the header {header.Count}; the sample lookup files quote nothing.");
+                }
                 var key = cells[header.IndexOf(type.Key!)].Trim();
                 var fields = new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase) { [type.Key!] = ReferenceValue.Of(key) };
                 foreach (var field in type.Fields)

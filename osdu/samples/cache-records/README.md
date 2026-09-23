@@ -26,3 +26,9 @@ merges them into the cache of partition `dev`, the partition the cache flow fill
 as a refresh against OSDU would: when that changes what the cache holds, a version is written and becomes current.
 
 Ids are OSDU record ids without the trailing version colon; the renderer appends it.
+
+`LogCurveType.json`, `LogCurveMainFamily.json` and `LogCurveFamily.json` hold one record for every code petrodb-api's
+curve dictionary (`wells/cache/data/curve-dictionary`) gives, and `UnitOfMeasure.json` one for every unit its unit maps
+(`wells/cache/data/curve-units`, `depth-units`) give, each id ending with that code exactly as the lookup table writes it.
+They stand in for the reference data a partition that petrodb-api delivers to holds, so every translation the sample
+lookup tables make resolves in the sample cache, as it does on that platform.

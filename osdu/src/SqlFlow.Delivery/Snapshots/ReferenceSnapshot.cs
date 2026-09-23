@@ -274,6 +274,7 @@ public sealed class ReferenceType
         // later would mean a second pass over every item of a type that can hold hundreds of thousands of them.
         var separatorFolded = new Dictionary<string, List<ReferenceItem>>(StringComparer.Ordinal);
         var ambiguous = false;
+        var recordId = MeansRecordId(field);
         foreach (var item in _items)
         {
             if (Value(item, field) is not { } value)
@@ -282,8 +283,8 @@ public sealed class ReferenceType
             }
 
             // Every value the field holds is a term: a scalar contributes one, a set one per element, so an item
-            // with three aliases is found by any of them.
-            foreach (var term in value.Terms)
+            // with three aliases is found by any of them. The record id is found by its code as well.
+            foreach (var term in recordId ? RecordIdTerms(item.Id) : value.Terms)
             {
                 if (!exact.TryAdd(term, item) && exact[term] != item)
                 {
@@ -332,6 +333,31 @@ public sealed class ReferenceType
         }
 
         return new FieldIndex(exact, duplicates, folded, separatorFolded, ambiguous);
+    }
+
+    /// <summary>
+    /// The terms a record is found by through its id: the id itself, and the code it ends with, both as the id writes it
+    /// (<c>Gamma%20Ray</c>) and decoded (<c>Gamma Ray</c>). A reference to OSDU reference data is the partition, the entity
+    /// type and that code (<c>{partition}:reference-data--LogCurveFamily:Gamma%20Ray:</c>), so a table that names reference
+    /// data by its code (a curve dictionary giving each mnemonic its family) finds the one record of the type it names.
+    /// </summary>
+    private static IEnumerable<string> RecordIdTerms(string id)
+    {
+        yield return id;
+        var parts = id.Split(':');
+        if (parts.Length != 3 || parts[2].Length == 0)
+        {
+            yield break;
+        }
+
+        var code = parts[2];
+        yield return code;
+        // A malformed escape is left as the id writes it.
+        var decoded = Uri.UnescapeDataString(code);
+        if (!string.Equals(decoded, code, StringComparison.Ordinal))
+        {
+            yield return decoded;
+        }
     }
 
     public JsonObject ToJson()

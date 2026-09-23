@@ -298,7 +298,7 @@ public sealed record Modifier
 }
 
 /// <summary>
-/// A replace reading its table from the partition's cache (<c>replace: cache.CurveClasses</c>): the value is matched on
+/// A replace reading its table from the partition's cache (<c>replace: cache.CurveDictionary</c>): the value is matched on
 /// <see cref="Match"/> and replaced by the matched row's <see cref="Field"/>. Either may be left for the cached type to
 /// decide: a lookup table matches on its key, and replaces by the one field it holds beside it (a dictionary of pairs'
 /// value).
@@ -308,7 +308,7 @@ public sealed record Modifier
 /// <param name="Field">The field of the matched row a value is replaced by, or null for the one field beside the key.</param>
 public sealed record CachedReplaceTable(string CacheType, string? Match, string? Field)
 {
-    /// <summary>The table as the mapping names it, with the fields it names: <c>cache.CurveClasses (mnemonic to curve_family)</c>.</summary>
+    /// <summary>The table as the mapping names it, with the fields it names: <c>cache.CurveDictionary (mnemonic to log_curve_family_id)</c>.</summary>
     public override string ToString()
         => $"{MappingSource.CachePrefix}.{CacheType}" + (Match is null && Field is null ? string.Empty : $" ({Match ?? "its key"} to {Field ?? "its value"})");
 }

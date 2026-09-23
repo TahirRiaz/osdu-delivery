@@ -3,9 +3,9 @@ import { expect, test } from "./helpers";
 
 // The OSDU cache page: the header names the cache and the file that defines it, a summary row says which version is
 // read and what it holds, and the records, versions, changes and definition are tabs, with a searchable type picker in
-// the tab bar. Runs after the seed (03), so the fixture repo is synced, its two cache flows declare seven types (none
+// the tab bar. Runs after the seed (03), so the fixture repo is synced, its two cache flows declare ten types (none
 // asking for approval), the sample records were imported through the CLI as the first version, and the lookups flow's
-// refresh of the unit dictionary and the curve dictionary table wrote the second.
+// refresh of the unit map and curve dictionary tables, loaded from cache/data by their own flows, wrote the second.
 
 /** The partition the sample cache flow fills, and so the cache the page shows. */
 const PARTITION = "dev";
@@ -34,12 +34,14 @@ test.describe.serial("osdu cache", () => {
     await expect(picker).toHaveText(/All types/);
     await picker.click();
     const options = adminPage.getByRole("listbox");
-    for (const name of ["UnitOfMeasure", "LogCurveBusinessValue", "LogCurveFamily", "VerticalMeasurementType", "TrajectoryStationPropertyType", "RecallUnits", "CurveClasses"]) {
+    for (const name of [
+      "UnitOfMeasure", "LogCurveBusinessValue", "LogCurveFamily", "LogCurveMainFamily", "LogCurveType", "VerticalMeasurementType",
+      "TrajectoryStationPropertyType", "RecallUnits", "RecallDepthUnits", "CurveDictionary",
+    ]) {
       await expect(options.getByRole("option").filter({ hasText: name }).first()).toBeVisible();
     }
     await expect(options.getByText(/reference data · \d+ records?/).first()).toBeVisible();
     // A lookup table says where its rows come from, and counts rows: they are kept under their keys, not OSDU records.
-    await expect(options.getByText(/lookup table from a dictionary · \d+ rows?/).first()).toBeVisible();
     await expect(options.getByText(/lookup table from an ingestion table · \d+ rows?/).first()).toBeVisible();
 
     // Wellbores are searched for on the platform as a record needs one, never captured.
@@ -58,15 +60,16 @@ test.describe.serial("osdu cache", () => {
     await expect(definition).toContainText(`${SOURCE}/cache/${CACHE}.yaml`, { timeout: 30_000 });
     await expect(definition).toContainText("goes out on the next run");
     const rows = definition.getByTestId("delivery-cache-definition-types").getByTestId("table-row");
-    await expect(rows).toHaveCount(7);
+    await expect(rows).toHaveCount(10);
     // Each kept path shows by the name a mapping reads it by, with the path it reads on hover.
     const units = rows.filter({ hasText: "reference-data--UnitOfMeasure" });
     await expect(units).toContainText("Code");
     await expect(units.getByTitle("cache.UnitOfMeasure.Code reads data.Code")).toBeVisible();
     await expect(rows.filter({ hasText: "master-data--Wellbore" })).toHaveCount(0);
     // A lookup table says where its rows come from and what they are kept under.
-    await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("dictionaries/RecallUnits.yaml");
-    await expect(rows.filter({ hasText: "CurveClasses" })).toContainText("CurveDictionary");
+    await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("ing.RecallUnits");
+    await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("source_unit");
+    await expect(rows.filter({ hasText: "CurveDictionary" })).toContainText("ing.CurveDictionary");
     await expect(definition.getByTestId("delivery-cache-definition-flows").getByTestId("table-row")).toHaveCount(2);
 
     // The guide says how a mapping reads the cache, with an entry to start from, and never names the cache; a lookup table
