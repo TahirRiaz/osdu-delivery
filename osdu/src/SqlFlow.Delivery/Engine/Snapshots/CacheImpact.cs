@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Engine.Snapshots;
@@ -167,6 +168,13 @@ public sealed class CacheImpactAnalyzer
         if (item is null)
         {
             return ("removed", null, use.ItemId);
+        }
+
+        // A render that wrote a record's id, or found the record by it, recorded that id: it reads the same as long as the
+        // record is there, whatever the type caches under a field of its own called ID, which would otherwise be read here.
+        if (ReferenceField.IsId(use.Path) && CachedReferences.Parse(use.ValueText) is { } named && string.Equals(named.Id, use.ItemId, StringComparison.Ordinal))
+        {
+            return null;
         }
 
         var value = current.Value(item, use.Path);

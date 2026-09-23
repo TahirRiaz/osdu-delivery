@@ -1448,11 +1448,56 @@ a value that cannot be asked for when no line found the record hold the record w
 platform that cannot be asked fails the run. [mapping-templates.md](mapping-templates.md#searches) has the rules in
 full: what each property shape is asked as, which values are refused and why, and how a run asks.
 
-A value that already is an OSDU id names its record by id. When the cache does not hold it, a `cache.<Type>.id` source
-writes it as it is (ending in `:`), and an entry reading another field has no value. A cached field of its own called
-`ID` shadows the record id under that name, so `cache.UnitOfMeasure.ID` reads what OSDU calls `data.ID`, while `id` on a
-type caching no such field reads the record id. A cached field holding a set writes a list where the template takes
-one, and holds the record where it takes a single value, unless the set holds exactly one.
+A value that already is an OSDU id names its record by id, and the record is looked for by its record id, even on a
+type that caches a field of its own called `ID`. When the cache does not hold it, a `cache.<Type>.id` source writes it
+as it is (ending in `:`), and an entry reading another field has no value. In a `findBy` line or a source, a cached field
+of its own called `ID` shadows the record id under that name, so `cache.UnitOfMeasure.ID` reads what OSDU calls
+`data.ID`, while `id` on a type caching no such field reads the record id. A cached field holding a set writes a list
+where the template takes one, and holds the record where it takes a single value, unless the set holds exactly one.
+
+### Record ids held in cached fields
+
+Where OSDU already models a translation, its records cache the id of the platform record a source value stands for, and
+a mapping writes that id as the reference. `ExternalUnitOfMeasure` maps a unit of an external system to the partition's
+`UnitOfMeasure` through `data.UnitOfMeasureID`, within the catalog namespace `data.NamespaceID` names, and says how exact
+the mapping is in `data.MapStateID` (a `CatalogMapStateType`). `ExternalReferenceValueMapping` does the same for any
+reference value, in `data.SimpleMap.ReferenceValueID`.
+
+The cache flow keeps the external code and the id, and its query keeps only the records of the source's namespace
+whose mapping is identical. The ids in the query are the partition's own; write them as the partition holds its
+`ExternalCatalogNamespace` and `CatalogMapStateType` records:
+
+```yaml
+types:
+  - kind: "osdu:wks:reference-data--ExternalUnitOfMeasure:*"
+    name: RecallUnitAliases
+    query: 'data.NamespaceID:"dev:reference-data--ExternalCatalogNamespace:Recall:" AND data.MapStateID:"dev:reference-data--CatalogMapStateType:identical:"'
+    fields: [data.Code, data.UnitOfMeasureID]
+```
+
+```yaml
+  - target: osdu.data.Curves[].CurveUnit
+    source: cache.RecallUnitAliases.UnitOfMeasureID
+    findBy: cache.RecallUnitAliases.Code = dataset.curves.curve_unit
+```
+
+Only identical mappings are kept because only those can replace the reference and nothing else: a `corrected` unit is
+the same concept with different conversion parameters, so the values measured in it have to be converted before the
+reference changes, and an `unsupported` one has no equivalent at all (its `UnitOfMeasureID` is not expected to be
+given). A unit the query leaves out finds no alias, which leaves the variable out or holds the record as `required`
+says; a dictionary replace (`replace: cache.RecallUnits`) is the way to name what the source's spellings are where
+OSDU keeps no translation.
+
+A cached field written to a relationship, or to a list of them, is checked as a reference:
+
+- The gate refuses the mapping when a value the field holds in the cache version is not an OSDU record id, or names a
+  record of an entity type the relationship does not allow, naming how many and the first of them.
+- Where the cache holds records of the entity type an id names, an id it holds no record for is listed as a warning, and
+  a render meeting it holds the record whatever `required` says: the reference would point at nothing. Where the cache
+  holds no records of that type, the id is written as it is, since nothing says whether the record exists.
+- An id is written with the colon that separates a version, added where the cached value leaves it out; an id naming a
+  version is written as it is. The record it names is recorded among the record's cache dependencies, so a version of
+  the cache without it reaches the records that point at it.
 
 ### Modifiers
 

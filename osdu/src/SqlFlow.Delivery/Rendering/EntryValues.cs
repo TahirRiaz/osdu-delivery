@@ -638,11 +638,12 @@ internal static partial class EntryValues
 
             tried.Add((find, value));
 
-            // A value that already is an OSDU id names its record without a lookup. A lookup table holds no OSDU records, so
-            // there a value of that shape is matched like any other.
+            // A value that already is an OSDU id names its record without a lookup, found by its record id whatever the type
+            // caches under a field called ID. A lookup table holds no OSDU records, so there a value of that shape is matched
+            // like any other.
             if (!type.IsLookup && OsduId().IsMatch(value))
             {
-                if (type.Match("id", value.TrimEnd(':')) is { } byId)
+                if (CachedReferences.Parse(value) is { } named && type.ById(named.Id) is { } byId)
                 {
                     usages.Add(new CacheUsage(typeName, byId.Id, "id", value, CacheUsageKind.Match));
                     return Select(entry, type, byId, renderer, holds, usages);
@@ -731,7 +732,64 @@ internal static partial class EntryValues
         }
 
         usages.Add(new CacheUsage(type.Name, hit.Id, ReferenceField.Normalize(field), cached.Text, CacheUsageKind.Value));
+        if (TakesReference(renderer, entry))
+        {
+            return References(entry, type, hit, field, cached, renderer, holds, usages);
+        }
+
         return cached.Node.DeepClone();
+    }
+
+    /// <summary>Whether the entry's variable is a relationship, or a list of them: what it takes is an OSDU record id.</summary>
+    private static bool TakesReference(MappingRenderer renderer, MappingEntry entry)
+        => renderer.Schema.Resolve(entry.Target.SchemaPath) is { } property
+            && (property.IsRelationship || property.Items?["x-osdu-relationship"] is JsonArray);
+
+    /// <summary>
+    /// A cached field written to a relationship: OSDU's own translations cache the id of the record a value stands for
+    /// (<c>ExternalUnitOfMeasure.UnitOfMeasureID</c>), and the mapping writes it as the reference, with the colon that
+    /// separates a version added where the cached id leaves it out. Where the cache holds records of the entity type an
+    /// id names, the record it names is one of them, and it is recorded among the render's dependencies, so a version
+    /// that drops it reaches this record.
+    /// </summary>
+    /// <remarks>
+    /// A value that is not an OSDU record id, or one naming a record the cache holds that type of and not that record,
+    /// holds the record whatever the entry's required flag says: writing it would put a reference to nothing into OSDU.
+    /// The gate refuses a mapping whose cached field holds such values; this holds a render that meets one anyway.
+    /// </remarks>
+    private static object? References(
+        MappingEntry entry, ReferenceType type, ReferenceItem hit, string field, ReferenceValue cached, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
+    {
+        var path = entry.Target.Text;
+        var version = CacheLabel(renderer.Context);
+        var written = new List<JsonNode?>();
+        foreach (var node in cached.Node is JsonArray set ? set.ToList() : [cached.Node])
+        {
+            var text = node is JsonValue value && value.TryGetValue<string>(out var held) ? held.Trim() : null;
+            if (CachedReferences.Parse(text) is not { } reference)
+            {
+                holds.Add(
+                    $"{path}: {type.Name} '{hit.Id}' holds {Clip(node?.ToJsonString() ?? "null")} at '{field}' in {version}, which is not an OSDU record id, and {path} takes a reference to a record");
+                return null;
+            }
+
+            var holding = CachedReferences.Holding(renderer.References, reference.EntityType);
+            if (holding.Count > 0)
+            {
+                if (CachedReferences.Find(holding, reference) is not { } found)
+                {
+                    holds.Add(
+                        $"{path}: {type.Name} '{hit.Id}' names {reference.Id} at '{field}', and {version} holds no such {reference.EntityType} record in {string.Join(", ", holding.Select(t => t.Name))}, so the reference would point at nothing");
+                    return null;
+                }
+
+                usages.Add(new CacheUsage(found.Type.Name, found.Item.Id, "id", found.Item.Id, CacheUsageKind.Match));
+            }
+
+            written.Add(JsonValue.Create(CachedReferences.Written(text!)));
+        }
+
+        return cached.Node is JsonArray ? new JsonArray(written.ToArray()) : written[0];
     }
 
     /// <summary>A value the cache does not have: a required entry holds the record, an optional one leaves the variable out.</summary>

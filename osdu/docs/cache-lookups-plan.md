@@ -413,6 +413,15 @@ cache, and fixtures match.
 
 This is what makes OSDU's own `ExternalUnitOfMeasure` and `ExternalReferenceValueMapping` usable.
 
+**As built.** Checked against the published schemas: `ExternalUnitOfMeasure` 1.0.0 holds `NamespaceID`, `MapStateID`
+(a `CatalogMapStateType`: identical, corrected, unsupported) and `UnitOfMeasureID`; `ExternalReferenceValueMapping`
+1.0.0 holds the target in `SimpleMap.ReferenceValueID`. A shared helper (`CachedReferences`) reads an id the same way in
+the gate and the render. Found on the way: a record id was looked for through `Match("id", ...)`, which on a type caching
+a field of its own called `ID` (the sample's `UnitOfMeasure`) reads that field instead, so a static reference to a unit
+was refused and a value that already was a unit id recorded no dependency; and the impact analyzer read a written id
+back through the same field, raising a false `changed` tag whenever such a record moved. `ReferenceType.ById` answers by
+the record id, and the analyzer treats a usage of a record's own id as unchanged while the record is there.
+
 **Changes.**
 
 - Gate, `Preflight.cs` `CheckCache`: it stops returning early (455-458) for a field that is not `id` when the target

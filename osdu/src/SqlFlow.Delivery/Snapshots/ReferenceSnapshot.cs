@@ -113,6 +113,7 @@ public sealed class ReferenceType
     // keeps one; the loser is discarded, which is wasted work rather than a wrong answer.
     private readonly ConcurrentDictionary<string, FieldIndex> _indexes = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<string>? _fieldNames;
+    private Dictionary<string, ReferenceItem>? _byId;
 
     /// <param name="name">The short name mappings use.</param>
     /// <param name="entityType">The OSDU entity type, or <see cref="LookupEntityType"/> of the name for a lookup table.</param>
@@ -246,6 +247,20 @@ public sealed class ReferenceType
 
     /// <summary>True when two or more items hold exactly the same value under this field, so matching on it is order-dependent.</summary>
     public bool IsAmbiguous(string field) => Index(field).Ambiguous;
+
+    /// <summary>
+    /// The item whose record id is exactly <paramref name="id"/>, whatever the type caches under a field of its own called
+    /// <c>ID</c>: where a value already is an OSDU record id, the record it names is looked for by that id, never by a
+    /// captured field that happens to share the name. Built once, on first use, and shared by every render worker.
+    /// </summary>
+    public ReferenceItem? ById(string id)
+    {
+        ArgumentNullException.ThrowIfNull(id);
+        var byId = LazyInitializer.EnsureInitialized(
+            ref _byId,
+            () => _items.GroupBy(item => item.Id, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal));
+        return byId.GetValueOrDefault(id);
+    }
 
     private FieldIndex Index(string field) => _indexes.GetOrAdd(ReferenceField.Normalize(field), BuildIndex);
 

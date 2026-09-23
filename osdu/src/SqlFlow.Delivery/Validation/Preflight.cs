@@ -384,8 +384,8 @@ public static partial class Preflight
 
             // Only an entity type the cache holds can be checked. Many fixed ids point at reference data nobody caches
             // (alias name types, say), and a finding on every plan for a value that cannot be checked is noise.
-            var cached = references.Types.Where(t => string.Equals(t.EntityType, entityType, StringComparison.Ordinal)).ToList();
-            if (cached.Count > 0 && cached.All(t => t.Match("id", match.Groups["id"].Value) is null))
+            var cached = CachedReferences.Holding(references, entityType);
+            if (cached.Count > 0 && CachedReferences.Find(cached, new CachedReference(match.Groups["id"].Value, entityType)) is null)
             {
                 issues.Add(ValidationIssue.Error($"{name}: '{value}' is not in cache version '{references.Version}', which caches {entityType} as {string.Join(", ", cached.Select(t => t.Name))}."));
             }
@@ -459,9 +459,15 @@ public static partial class Preflight
             issues.Add(ValidationIssue.Error($"{name} reads '{source.CacheField}' out of {cached.Name}, which cache version '{references.Version}' does not cache. Cached: {cachedFields}."));
         }
 
-        // 8. A cached id resolves to the entity type the schema expects for the target.
+        // 8. A cached id resolves to the entity type the schema expects for the target; so does every id a cached field
+        //    written to a relationship holds.
         if (!source.ReadsRecordId)
         {
+            if (variable.Relationships.Count > 0)
+            {
+                CheckCachedReferences(entry, variable, cached, references, issues, name);
+            }
+
             return;
         }
 
@@ -656,6 +662,64 @@ public static partial class Preflight
     /// <summary>Values as a finding lists them: the first ten, quoted, and how many more.</summary>
     private static string Listed(IReadOnlyList<string> values)
         => string.Join(", ", values.Take(10).Select(v => $"'{v}'")) + (values.Count > 10 ? $" and {values.Count - 10} more" : string.Empty);
+
+    /// <summary>
+    /// 8, for a cached field written to a relationship (OSDU's own translations cache the id of the record a value stands
+    /// for, <c>ExternalUnitOfMeasure.UnitOfMeasureID</c>): every value the field holds in the cache version is an OSDU record
+    /// id of an entity type the relationship allows, or the mapping is refused, since a render would write a reference that
+    /// is no reference, or one to the wrong kind of record. Where the cache holds the entity type an id names, an id it holds
+    /// no record for is listed as a warning: a render holds the records that meet it.
+    /// </summary>
+    private static void CheckCachedReferences(
+        MappingEntry entry, TemplateVariable variable, ReferenceType cached, ReferenceSnapshot references, List<ValidationIssue> issues, string name)
+    {
+        var field = entry.Source!.CacheField!;
+        var values = cached.Items
+            .Select(item => cached.Value(item, field))
+            .OfType<ReferenceValue>()
+            .SelectMany(value => value.Terms)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        if (values.Count == 0)
+        {
+            return;
+        }
+
+        var points = string.Join(" or ", variable.Relationships);
+        var parsed = values.Select(value => (Value: value, Reference: CachedReferences.Parse(value))).ToList();
+        var notIds = parsed.Where(p => p.Reference is null).Select(p => p.Value).ToList();
+        if (notIds.Count > 0)
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name} writes '{field}' of {cached.Name} to {entry.Target.Text}, which points to {points}, and {notIds.Count} of the {values.Count} value(s) it holds in cache version '{references.Version}' are not OSDU record ids: {Listed(notIds)}. Read a field that holds record ids, or the id of the cached record."));
+        }
+
+        var ids = parsed.Where(p => p.Reference is not null).Select(p => (p.Value, Reference: p.Reference!.Value)).ToList();
+        var otherType = ids.Where(p => !Points(variable.Relationships, p.Reference.EntityType)).ToList();
+        if (otherType.Count > 0)
+        {
+            var kinds = string.Join(", ", otherType.Select(p => p.Reference.EntityType).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
+            issues.Add(ValidationIssue.Error(
+                $"{name} writes '{field}' of {cached.Name} to {entry.Target.Text}, which points to {points}, and {otherType.Count} of the ids it holds in cache version '{references.Version}' name records of another entity type ({kinds}): {Listed(otherType.Select(p => p.Value).ToList())}."));
+        }
+
+        var missing = new List<string>();
+        foreach (var (value, reference) in ids.Where(p => Points(variable.Relationships, p.Reference.EntityType)))
+        {
+            var holding = CachedReferences.Holding(references, reference.EntityType);
+            if (holding.Count > 0 && CachedReferences.Find(holding, reference) is null)
+            {
+                missing.Add(value);
+            }
+        }
+
+        if (missing.Count > 0)
+        {
+            issues.Add(ValidationIssue.Warning(
+                $"{name} writes '{field}' of {cached.Name} to {entry.Target.Text}, and {missing.Count} of the ids it holds name records cache version '{references.Version}' does not hold: {Listed(missing)}. A record whose value is one of them is held, since its reference would point at nothing."));
+        }
+    }
 
     /// <summary>Whether an entity type (<c>master-data--Wellbore</c>) is one a relationship allows; a group type alone (<c>dataset</c>) allows every entity of the group.</summary>
     private static bool Points(IReadOnlyList<string> relationships, string entityType)

@@ -13,6 +13,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A cached field holding OSDU record ids is written to a relationship.** OSDU's own translations
+  (`ExternalUnitOfMeasure.UnitOfMeasureID`, `ExternalReferenceValueMapping.SimpleMap.ReferenceValueID`) cache the id of
+  the platform record a source value stands for, and a mapping can now write that field as the reference. The gate
+  refuses the mapping when a value the field holds is not an OSDU record id or names a record of an entity type the
+  relationship does not allow, and warns about ids naming records the cache holds that type of and not that record; a
+  render meeting one holds the record whatever `required` says. An id is written with the version colon added where
+  the cached value leaves it out, and the record it names is recorded among the record's cache dependencies. The
+  documents describe caching only the mappings OSDU marks identical
+  ([osdu/docs/documents.md](osdu/docs/documents.md#record-ids-held-in-cached-fields)).
 - **A replace reads its table from the partition's cache.** `replace: cache.<Type>` matches the incoming value on
   `match` (by default the table's key) and replaces it by the matched row's `field` (by default the one field a lookup
   table holds beside its key, `value` for a dictionary of pairs); `otherwise` works as for a written table. Any cached
@@ -367,6 +376,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **A record id is looked for by the id, even on a type that caches a field called `ID`.** OSDU reference data caches
+  its own `data.ID` (the sample's `UnitOfMeasure` does), and a record-id lookup read that field instead: a static
+  reference to a cached unit was refused by the gate as not in the cache, a value that already was a unit's id was
+  written without the dependency on the unit it named, and a record that wrote a unit's id was tagged as changed (from
+  the id to the unit's `ID`) whenever anything else about the unit moved. The id now answers by the record id, and a
+  usage of a record's own id reads the same as long as the record is there.
 - **A ledger read the database chose as a deadlock victim is read again.** Without snapshot isolation a read holds
   shared locks while it runs, so a claim or a lease recovery on one node could fail with a deadlock against another
   node's claim. Every ledger read now retries a deadlock a few times with a growing, jittered pause, as its writes
