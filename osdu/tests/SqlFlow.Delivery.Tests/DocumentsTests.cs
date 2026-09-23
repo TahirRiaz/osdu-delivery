@@ -231,6 +231,27 @@ public class YamlDocumentLoaderTests
         Assert.Contains("no payload files", noPayload.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("detect: renderedHash", null)]
+    [InlineData("detect: always", null)]
+    [InlineData("payloadDetect: contentHash", null)]
+    [InlineData("payloadDetect: always", null)]
+    [InlineData("detect: contentHash", "change.detect is contentHash, which is how a payload is compared")]
+    [InlineData("payloadDetect: renderedHash", "change.payloadDetect is renderedHash, which is how a document is compared")]
+    public void Each_change_key_takes_its_own_name_for_comparing_hashes(string change, string? refusal)
+    {
+        var loader = new DeliveryDocumentLoader();
+        var yaml = Flow + "\nchange: { " + change + " }";
+        if (refusal is null)
+        {
+            loader.ParseFlow(yaml, "f");
+            return;
+        }
+
+        var refused = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(yaml, "f"));
+        Assert.Contains(refusal, refused.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Mapping_parse_reads_the_number_modifier_and_its_separators()
     {

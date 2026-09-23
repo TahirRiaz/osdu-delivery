@@ -521,6 +521,13 @@ internal static partial class FlowMapper
                 + "Remove target.dspdm, or route the interfaces it is meant for through it.");
         }
 
+        if (target.Etp is not null && !flows.Any(f => f.Target.Protocol == DeliveryProtocol.Etp))
+        {
+            throw new FlowValidationException(
+                $"{source}: target.etp declares the Reservoir DDMS the etp route writes Energistics objects to, and no interface is delivered by it (route: etp). "
+                + "Remove target.etp, or route the interfaces it is meant for through it.");
+        }
+
         if (!string.IsNullOrWhiteSpace(target.VerifyReferences) && flows.All(f => f.Target.Protocol == DeliveryProtocol.Dspdm))
         {
             throw new FlowValidationException(
@@ -790,6 +797,15 @@ internal static partial class FlowMapper
                     DeliveryProtocol.Dspdm,
                     null,
                     $"{at}.route names the dspdm route: each record is a row of a Production DDMS business object, found again by its unique key and saved through DSPDM");
+            case DeliveryProtocol.Etp:
+                // Only named: an Energistics object is told from an OSDU record by its kind, not by what beside it the
+                // interface declares. Its XML and its arrays are optional parts, since a mapping can render either into
+                // the document instead.
+                return new InterfaceRoute(
+                    DeliveryProtocol.Etp,
+                    null,
+                    $"{at}.route names the etp route: each record is an Energistics object written over ETP 1.2 into a dataspace of the Reservoir DDMS"
+                    + (files && bulk ? ", its XML and its arrays sent with it" : files ? ", its XML sent with it" : bulk ? ", its arrays sent with it" : string.Empty));
             case DeliveryProtocol.Workflow:
                 Refuse(!workflow, $"{at}.route is workflow, and the interface declares no workflow under {workflowKey}.");
                 Refuse(bulk, $"{at}.route is workflow, which writes no DDMS bulk data, so {bulkKey} would never be sent.");
@@ -1318,6 +1334,20 @@ internal static partial class FlowMapper
         {
             throw new FlowValidationException(
                 $"{source}: {paths.Shared("change.detect")} cannot be lastModified. A document is always decided by the hash of what it renders to; the source row's business version column is source.lastModified.");
+        }
+
+        // Each key has its own name for comparing hashes. The other key's name would behave the same, which is exactly why
+        // it is refused: the document would read as saying something it does not, and the editor documents one name only.
+        if (flow.Change.Detect == ChangeDetection.ContentHash)
+        {
+            throw new FlowValidationException(
+                $"{source}: {paths.Shared("change.detect")} is contentHash, which is how a payload is compared. A document is compared by the hash of what it renders to: write renderedHash, or always.");
+        }
+
+        if (flow.Change.PayloadDetect == ChangeDetection.RenderedHash)
+        {
+            throw new FlowValidationException(
+                $"{source}: {paths.Shared("change.payloadDetect")} is renderedHash, which is how a document is compared. A payload is compared by its content hash: write contentHash, lastModified or always.");
         }
 
         if (flow.Change.PayloadDetect == ChangeDetection.LastModified && !SendsFiles(flow))

@@ -56,8 +56,8 @@ render:                            # the only block that changes what a document
     legalTag: ${env:OSDU_LEGAL_TAG}
 
 change:
-  detect: renderedHash             # renderedHash | always
-  payloadDetect: contentHash       # contentHash | lastModified | always
+  detect: renderedHash             # renderedHash | always (a document is compared by what it renders to)
+  payloadDetect: contentHash       # contentHash | lastModified | always (a payload by its content hash)
   onUnchanged: skip                # skip | deliver
   useSourceVersions: true          # tier-0 gate: skip the run when no row changed in the window
 
@@ -174,7 +174,7 @@ reliability:
   leaseSeconds: 300
   batchSize: 50
   batchRecords: 500                # rendered documents per work batch file
-  renderParallelism: 0             # renderers in the intake pipeline (0 = the machine's cores)
+  renderParallelism: 0             # renderers in the intake pipeline (0 = half the machine's processors, at least one)
   fanOut: 0                        # member runs a large submission spreads over (0 = none; at most 64; needs source.record.primaryKey)
   fanOutMinRecords: 1000           # below this a submission never fans out
 

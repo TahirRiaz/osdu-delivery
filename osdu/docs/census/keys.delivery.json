@@ -24,7 +24,7 @@
       "path": "change.detect",
       "type": "enum(renderedHash|always)",
       "required": false,
-      "description": "How a document change is decided: `renderedHash` compares the hash of the rendered document with what the ledger holds; `always` delivers every record read. `lastModified` is refused here: the source row's business version column is `source.lastModified`.",
+      "description": "How a document change is decided: `renderedHash` compares the hash of the rendered document with what the ledger holds; `always` delivers every record read. `lastModified` is refused here: the source row's business version column is `source.lastModified`. `contentHash` is refused too: it is how a payload is compared, under `change.payloadDetect`.",
       "enumValues": [
         "renderedHash",
         "always"
@@ -46,7 +46,7 @@
       "path": "change.payloadDetect",
       "type": "enum(contentHash|lastModified|always)",
       "required": false,
-      "description": "How a payload change is decided: `contentHash` compares the payload's hash column; `lastModified` takes the files as the watermark (a file modified after the delivered ones, or a changed set of files), at one storage listing per record per run; `always` sends the payload every time. `lastModified` is refused on a route that delivers no payload files.",
+      "description": "How a payload change is decided: `contentHash` compares the payload's hash column; `lastModified` takes the files as the watermark (a file modified after the delivered ones, or a changed set of files), at one storage listing per record per run; `always` sends the payload every time. `lastModified` is refused on a route that delivers no payload files. `renderedHash` is refused: it is how a document is compared, under `change.detect`.",
       "enumValues": [
         "contentHash",
         "lastModified",
@@ -181,7 +181,7 @@
       "path": "interfaces.<name>.change.detect",
       "type": "enum(renderedHash|always)",
       "required": false,
-      "description": "How a document change is decided: `renderedHash` compares the hash of the rendered document with what the ledger holds; `always` delivers every record read. `lastModified` is refused here: the source row's business version column is `source.lastModified`. Set here, it overrides the source's value for this interface.",
+      "description": "How a document change is decided: `renderedHash` compares the hash of the rendered document with what the ledger holds; `always` delivers every record read. `lastModified` is refused here: the source row's business version column is `source.lastModified`. `contentHash` is refused too: it is how a payload is compared, under `change.payloadDetect`. Set here, it overrides the source's value for this interface.",
       "enumValues": [
         "renderedHash",
         "always"
@@ -203,7 +203,7 @@
       "path": "interfaces.<name>.change.payloadDetect",
       "type": "enum(contentHash|lastModified|always)",
       "required": false,
-      "description": "How a payload change is decided: `contentHash` compares the payload's hash column; `lastModified` takes the files as the watermark (a file modified after the delivered ones, or a changed set of files), at one storage listing per record per run; `always` sends the payload every time. `lastModified` is refused on a route that delivers no payload files. Set here, it overrides the source's value for this interface.",
+      "description": "How a payload change is decided: `contentHash` compares the payload's hash column; `lastModified` takes the files as the watermark (a file modified after the delivered ones, or a changed set of files), at one storage listing per record per run; `always` sends the payload every time. `lastModified` is refused on a route that delivers no payload files. `renderedHash` is refused: it is how a document is compared, under `change.detect`. Set here, it overrides the source's value for this interface.",
       "enumValues": [
         "contentHash",
         "lastModified",

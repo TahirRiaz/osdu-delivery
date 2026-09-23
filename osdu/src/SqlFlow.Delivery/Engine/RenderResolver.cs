@@ -137,11 +137,6 @@ public sealed class RenderResolver
     }
 
     /// <summary>
-    /// The version of the cache a render reads, and the partition it belongs to: the partition the flow delivers to
-    /// (<c>target.headers.data-partition-id</c>). A mapping that reads nothing from the cache renders against no cache at all,
-    /// so refreshing a cache never moves the render context of records that never read it.
-    /// </summary>
-    /// <summary>
     /// The partition a flow's requests carry, resolved: its <c>data-partition-id</c> header with every reference expanded,
     /// checked to be a partition a cache can be named by.
     /// </summary>
@@ -163,6 +158,9 @@ public sealed class RenderResolver
     /// searches are written under (<see cref="SystemProperties.Pinned"/>; none when it declares no searches).
     /// </summary>
     /// <remarks>
+    /// The cache is the one of the partition the flow delivers to (<c>target.headers.data-partition-id</c>). A mapping that
+    /// neither reads the cache nor searches renders against no cache at all, so refreshing a cache never moves the render
+    /// context of records that never read it.
     /// A mapping that reads the cache renders against a version, the current one or the one the flow pins, and its
     /// searches under that version's properties. A mapping that only searches reads no cached record, so it renders
     /// against no version and is pinned to the properties alone: those of the version the flow names, read without its

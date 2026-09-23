@@ -333,10 +333,10 @@ public sealed record FlowRender
 
 public enum ChangeDetection
 {
-    /// <summary>Compare the hash of the rendered document (metadata) or the logical payload content.</summary>
+    /// <summary>Documents only (<c>change.detect</c>): compare the hash of the rendered document with the ledger's.</summary>
     RenderedHash,
 
-    /// <summary>Same as <see cref="RenderedHash"/> for payloads; kept as the documented name.</summary>
+    /// <summary>Payloads only (<c>change.payloadDetect</c>): compare the payload's content hash with the ledger's.</summary>
     ContentHash,
 
     /// <summary>Always deliver.</summary>

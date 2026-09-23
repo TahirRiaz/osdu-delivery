@@ -382,6 +382,18 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **An interface that names the etp route is delivered by it.** `route: etp` on an interface fell through to the route
+  its payloads implied, so an Energistics object was sent to the storage service (or the file service, or a DDMS) and
+  refused there. It now goes by the etp route, with its XML and its arrays as optional parts, as the single form does.
+- **A source's `target.etp` is refused when no interface takes the etp route**, as its `target.dspdm` is when no
+  interface takes the dspdm route. It was dropped without a word.
+- **`change.detect` and `change.payloadDetect` each take their own name for comparing hashes.** `detect: contentHash`
+  and `payloadDetect: renderedHash` were accepted and behaved like the other key's name, while the documentation and
+  the editor named one value each; the loader now refuses the other key's name and says which to write.
+- **`reliability.renderParallelism: 0` is documented as the code sets it**: half the machine's processors, at least one,
+  not every core.
+- **The YAML editor's hover heads a key with its type as `key`: `type`**, without the em dash SQLFlow's engine wrote
+  there (a SQLFlow fix, recorded in `docs/sqlflow-changes.md`).
 - **The mapping builder checks a synced mapping with the values a run would use.** Since the flow kind took over
   `dataPartition`, `aclOwner`, `aclViewer` and `legalTag`, the sample flows no longer write them, and the builder
   prefilled its check values only from what a flow writes: every synced mapping opened with those four empty and failed

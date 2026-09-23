@@ -70,6 +70,35 @@ public class EtpDocumentsTests
     }
 
     [Fact]
+    public void A_sources_block_goes_to_its_etp_interfaces_and_is_refused_when_none_takes_the_route()
+    {
+        // An interface naming the etp route goes by it, with nothing beside the record: a mapping can render the object's
+        // XML and arrays into the document.
+        var source = _loader.ParseSource(Source("  etp:\n    dataspace: volve/study", "route: etp"), "estate.yaml");
+        var grids = Assert.Single(source.Interfaces, i => i.Target.Protocol == DeliveryProtocol.Etp);
+        Assert.Equal("volve/study", grids.Target.Etp.Dataspace);
+        Assert.Contains("names the etp route", grids.RouteReason, StringComparison.Ordinal);
+        // The storage interface has no use for the Reservoir DDMS, so it keeps the defaults rather than the source's block.
+        Assert.Null(Assert.Single(source.Interfaces, i => i.Target.Protocol == DeliveryProtocol.Storage).Target.Etp.Dataspace);
+
+        // Declaring the XML and the arrays keeps the etp route, which sends both as parts, rather than composing another.
+        var parts = _loader.ParseSource(
+            Source(
+                string.Empty,
+                "route: etp\n    files: { root: /objects, locationColumn: object_path, hashColumn: object_hash }\n    bulk: { root: /arrays, locationColumn: array_path, hashColumn: array_hash }"),
+            "estate.yaml");
+        var withParts = Assert.Single(parts.Interfaces, i => i.Target.Protocol == DeliveryProtocol.Etp);
+        Assert.Equal([PayloadParts.Files, PayloadParts.Bulk], PayloadParts.Of(withParts)!.Select(p => p.Role));
+        Assert.Contains("its XML and its arrays sent with it", withParts.RouteReason, StringComparison.Ordinal);
+
+        var unused = Assert.Throws<FlowValidationException>(
+            () => _loader.ParseSource(Source("  etp:\n    dataspace: volve/study", "route: storage"), "estate.yaml"));
+        Assert.Contains("target.etp declares the Reservoir DDMS", unused.Message, StringComparison.Ordinal);
+        Assert.Contains("no interface is delivered by it (route: etp)", unused.Message, StringComparison.Ordinal);
+        Assert.StartsWith("estate.yaml:", unused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void An_energistics_object_and_an_osdu_record_never_travel_by_each_other_route()
     {
         var etp = _loader.ParseFlow(Flow(string.Empty), "grids.yaml");
@@ -145,5 +174,26 @@ public class EtpDocumentsTests
           headers: { data-partition-id: dev }
           protocol: etp
         {{etp}}
+        """).ReplaceLineEndings("\n");
+
+    /// <summary>A source with <paramref name="etp"/> in its target block, whose grids interface takes <paramref name="grids"/> as its route and whose wells go to storage.</summary>
+    private static string Source(string etp, string grids) => ($$"""
+        flowType: delivery
+        name: estate
+        source:
+          connection: ${env:OSDU_SAMPLE_DB}
+          work: work
+        target:
+          endpoint: https://osdu.example.com
+          headers: { data-partition-id: dev }
+        {{etp}}
+        interfaces:
+          grids:
+            record: { object: Db.ing.Grid, key: [grid_id] }
+            {{grids}}
+            mapping: Grid@1.0.0
+          wells:
+            record: { object: Db.ing.Well, key: [uwi] }
+            mapping: Well@1.0.0
         """).ReplaceLineEndings("\n");
 }
