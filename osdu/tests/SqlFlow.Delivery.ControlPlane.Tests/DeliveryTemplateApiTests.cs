@@ -55,10 +55,10 @@ public sealed class DeliveryTemplateApiTests
     /// <summary>The sample source's own folder, which is what a repository sync would read.</summary>
     private static string SampleSource => Path.Combine(SampleRoot, SampleEstate.SourceFolder);
 
-    [SkippableFact]
+    [Fact]
     public async Task A_template_is_saved_once_by_a_signed_in_caller_and_read_as_variables_and_as_its_schema()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await ProvisionAsync(cs);
         await using var factory = Factory(cs);
         using var client = factory.CreateClient();
@@ -98,10 +98,10 @@ public sealed class DeliveryTemplateApiTests
         Assert.Contains("declares no 'data' property", await notRecord.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_template_version_a_synced_mapping_pins_is_refused_deletion_until_nothing_pins_it()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await ProvisionAsync(cs);
         await using var factory = Factory(cs);
         using var client = factory.CreateClient();
@@ -161,10 +161,10 @@ public sealed class DeliveryTemplateApiTests
         Assert.Equal(HttpStatusCode.NotFound, gone.StatusCode);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task The_builder_drafts_from_a_cache_and_checks_what_it_writes()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await ProvisionAsync(cs);
         await using var factory = Factory(cs);
         using var client = factory.CreateClient();
@@ -355,10 +355,10 @@ public sealed class DeliveryTemplateApiTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task The_cache_page_lists_one_cache_per_partition_with_every_cache_flow_that_fills_it()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await ProvisionAsync(cs);
         await using var factory = Factory(cs);
         using var client = factory.CreateClient();
@@ -487,10 +487,10 @@ public sealed class DeliveryTemplateApiTests
         {types}
         """;
 
-    [SkippableFact]
+    [Fact]
     public async Task A_reader_browses_the_OSDU_data_definitions_and_gets_a_kind_bundled_with_where_it_came_from()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await ProvisionAsync(cs);
         using var handler = new DataDefinitionsHandler();
         using var http = new HttpClient(handler, disposeHandler: false);

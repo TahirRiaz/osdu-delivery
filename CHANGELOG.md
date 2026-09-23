@@ -273,6 +273,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The module's suites run on SQL Server, the only provider the module supports.** The ledger, store and engine suites
+  ran on an in-memory SQLite copy of the module's database, which proved nothing about the provider production runs
+  on. Every suite now runs on SQL Server: each test takes a database of its own from a pool beside the test database
+  (`<database>_osdu_NN`), built by the module's migrations and emptied when a test takes it, held through a session
+  lock so two suites running at once never share one. Development and testing expect a local SQL Server: without
+  `SQLFLOW_TEST_DB` the suites use `localhost` under Windows authentication and the database `OsduDeliveryTests`,
+  created when missing. A server that does not answer fails the suites; none skips any more. The SQLite package is
+  gone from the solution. The SQL Server chain suite takes a database of its own as well: a run whose process died
+  left its flow's claims on OSDU ids in the shared database, and every later run's identical records were held for them.
 - **Inline replace tables are matched by the cache's own rules.** One matcher serves inline and cached tables: an exact
   key wins, and case is ignored only when that finds one key. A value several keys answer to only once case is ignored
   now holds the record, naming them, unless they all give the same value; before, it passed on unchanged. Keys that are
@@ -391,6 +400,11 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **The Records flow picker no longer crashes the control plane when an estate holds many flows.** It asked which
+  flows hold records with one query per flow joined by `UNION`, which nested as deep as the flow list was long, and
+  the SQL Server provider's query translation overflowed the stack walking it, taking the host down. It is one
+  statement now, an `EXISTS` per flow over the list passed as JSON, for any number of flows. Moving the suites to SQL
+  Server found it: the in-memory stand-in never ran that translation.
 - **An interface that names the etp route is delivered by it.** `route: etp` on an interface fell through to the route
   its payloads implied, so an Energistics object was sent to the storage service (or the file service, or a DDMS) and
   refused there. It now goes by the etp route, with its XML and its arrays as optional parts, as the single form does.

@@ -10,11 +10,7 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
-    <PackageReference Include="Xunit.SkippableFact" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
-    <!-- The linked delivery fixtures run the module's model on an in-memory SQLite database, so the suites that need a
-         ledger (the search category, the schema version row) need no SQL Server. -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
   </ItemGroup>
 
   <ItemGroup>
@@ -31,14 +27,14 @@
          API suites boot the host exactly as SQLFlow's own suites do. -->
     <Compile Include="..\..\..\sqlflow\tests\SqlFlow.ControlPlane.Tests\ControlPlaneAppFactory.cs" Link="Host\ControlPlaneAppFactory.cs" />
     <Compile Include="..\..\..\sqlflow\tests\SqlFlow.ControlPlane.Tests\CapturingLoggerProvider.cs" Link="Host\CapturingLoggerProvider.cs" />
-    <Compile Include="..\..\..\sqlflow\tests\SqlFlow.ControlPlane.Tests\CatalogTestDb.cs" Link="Host\CatalogTestDb.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- The delivery suite's own fixtures, linked rather than copied: the in-memory ingestion tables a run reads, the
-         sample well logs they hold, and the SQLite copies of the module's database. One fixture, two suites, so the API
+         sample well logs they hold, and the SQL Server test databases of the module. One fixture, two suites, so the API
          tests run a flow against exactly what the engine tests run it against. -->
     <Compile Include="..\SqlFlow.Delivery.Tests\TestSupport.cs" Link="Fixtures\TestSupport.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\OsduTestDatabase.cs" Link="Fixtures\OsduTestDatabase.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\MemoryIngestionTables.cs" Link="Fixtures\MemoryIngestionTables.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\SampleWellLogs.cs" Link="Fixtures\SampleWellLogs.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\PandasMetadata.cs" Link="Fixtures\PandasMetadata.cs" />

@@ -19,7 +19,7 @@ public sealed class CacheVersionComparisonTests : IDisposable
 
     private static readonly CacheCapture Capture = new(null, "tests", "seeded");
 
-    private readonly SqliteOsdu _catalog = new();
+    private readonly OsduTestDatabase _catalog = new();
 
     public void Dispose() => _catalog.Dispose();
 

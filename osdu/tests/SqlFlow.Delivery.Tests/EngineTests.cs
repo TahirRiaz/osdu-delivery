@@ -819,7 +819,7 @@ public class DeliverOutcomeTests
 /// <summary>The run boundary: a run ends as a recorded failure whatever stopped it.</summary>
 public sealed class DeliveryRunBoundaryTests : IDisposable
 {
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
 
     private sealed class UnbuildableProtocolFactory : IProtocolFactory
     {

@@ -10,6 +10,7 @@ using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Tests;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -24,10 +25,10 @@ public sealed class DeliveryRecordLookupApiTests
 {
     private const string FlowName = "wells-wellbore-03-header-delivery";
 
-    [SkippableFact]
+    [Fact]
     public async Task A_record_is_found_across_flows_by_what_an_operator_holds_and_narrowed_by_state()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 
@@ -131,10 +132,10 @@ public sealed class DeliveryRecordLookupApiTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task With_nothing_to_look_for_the_records_the_system_last_took_in_are_listed_newest_first()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 
@@ -187,10 +188,10 @@ public sealed class DeliveryRecordLookupApiTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task The_listing_and_the_lookup_narrow_to_one_flow_the_page_offers()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 

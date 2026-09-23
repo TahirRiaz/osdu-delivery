@@ -33,7 +33,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
             fields: [data.Code, data.Name]
         """;
 
-    private readonly SqliteOsdu _catalog = new();
+    private readonly OsduTestDatabase _catalog = new();
     private readonly string _root = Path.Combine(Path.GetTempPath(), "sqlflow-cache-sync-" + Guid.NewGuid().ToString("N"));
 
     public void Dispose()

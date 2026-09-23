@@ -14,7 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// attempt given its record's flow, the OSDU ids already written claimed, an interrupted rollout's cursor completed, and
 /// the ledgers it cannot convert refused with a message that says why. <c>LeasesAndRecordEvents</c>: the leases stopped
 /// workers left behind kept as lease rows, and a revert refused while an appended event is not on its record. Each test
-/// works in a database of its own, created on the server <c>SQLFLOW_TEST_DB</c> names and dropped afterwards: a migration
+/// works in a database of its own, created on the suites' test server (<see cref="OsduTestServer"/>) and dropped afterwards: a migration
 /// has to start from the schema it upgrades, and the suite's shared database is already past it.
 /// </summary>
 public sealed class SqlServerLedgerMigrationTests
@@ -25,35 +25,13 @@ public sealed class SqlServerLedgerMigrationTests
 
     private const string BeforeWaits = "20260916221306_DeliveryInterfaces";
 
-    private static readonly Lazy<string?> TestDatabase = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
-
-    private static readonly Lazy<bool> Reachable = new(() =>
-    {
-        var cs = TestDatabase.Value;
-        if (string.IsNullOrWhiteSpace(cs))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var connection = new SqlConnection(cs);
-            connection.Open();
-            return true;
-        }
-        catch (SqlException)
-        {
-            return false;
-        }
-    });
-
     private static readonly DateTime Now = new(2026, 9, 16, 12, 0, 0, DateTimeKind.Utc);
 
     private static readonly Guid Logs = FlowId.Of("wells-welllog-03-header-delivery");
 
     private static readonly Guid Wellbores = FlowId.Of("wells-wellbore-03-header-delivery");
 
-    [SkippableFact]
+    [Fact]
     public async Task An_existing_ledger_is_keyed_per_flow_with_every_attempt_claim_and_cursor_placed()
     {
         await using var database = await ScratchDatabase.CreateAsync();
@@ -136,7 +114,7 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.views WHERE [name] = N'RecordCount' AND SCHEMA_NAME([schema_id]) = N'osdu';"));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task An_attempt_that_no_record_or_submission_places_stops_the_migration_and_says_how_to_find_it()
     {
         await using var database = await ScratchDatabase.CreateAsync();
@@ -157,7 +135,7 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[Attempt]') AND [name] = N'FlowId';"));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_cache_declaration_written_before_origins_existed_is_an_osdu_type_afterwards_and_the_migration_goes_back()
     {
         const string BeforeLookups = "20260923132848_CacheSystemProperties";
@@ -192,7 +170,7 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(0, await database.ScalarAsync("SELECT COUNT(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[CacheDefinition]') AND [name] = N'Origin'"));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Two_records_holding_one_osdu_id_stop_the_migration()
     {
         await using var database = await ScratchDatabase.CreateAsync();
@@ -212,7 +190,7 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(["DeliveryKey"], await database.KeyColumnsAsync());
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Leases_in_flight_become_lease_rows_and_going_back_waits_until_every_appended_event_is_applied()
     {
         await using var database = await ScratchDatabase.CreateAsync();
@@ -297,7 +275,7 @@ public sealed class SqlServerLedgerMigrationTests
     /// A worker writes the record table only when it claims, checkpoints, closes or recovers a lease, and a record and
     /// its lease are read in one statement, so the reads need no isolation level of their own.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task A_ledger_claims_delivers_and_lists_on_a_database_that_does_not_allow_snapshot_isolation()
     {
         await using var database = await ScratchDatabase.CreateAsync();
@@ -321,7 +299,7 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.NotNull(listed.LeaseExpiresUtc);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_ledger_written_before_records_could_wait_takes_the_columns_and_waits_after_the_migration()
     {
         await using var database = await ScratchDatabase.CreateAsync();
@@ -413,11 +391,8 @@ public sealed class SqlServerLedgerMigrationTests
 
         public static async Task<ScratchDatabase> CreateAsync()
         {
-            Skip.IfNot(
-                Reachable.Value,
-                "The ledger migration tests need a reachable SQL Server whose login may create databases. Set SQLFLOW_TEST_DB, for example through the git-ignored .sqlflow/env file.");
             var name = "osdu_ledger_migration_" + Guid.NewGuid().ToString("N")[..12];
-            var master = new SqlConnectionStringBuilder(TestDatabase.Value!) { InitialCatalog = "master" }.ConnectionString;
+            var master = new SqlConnectionStringBuilder(OsduTestServer.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
             await using (var connection = new SqlConnection(master))
             {
                 await connection.OpenAsync();
@@ -426,7 +401,7 @@ public sealed class SqlServerLedgerMigrationTests
                 await command.ExecuteNonQueryAsync();
             }
 
-            return new ScratchDatabase(master, new SqlConnectionStringBuilder(TestDatabase.Value!) { InitialCatalog = name }.ConnectionString, name);
+            return new ScratchDatabase(master, new SqlConnectionStringBuilder(OsduTestServer.ConnectionString) { InitialCatalog = name }.ConnectionString, name);
         }
 
         public OsduDbContext Context() => new(OsduDbContext.SqlServerOptions(ConnectionString));

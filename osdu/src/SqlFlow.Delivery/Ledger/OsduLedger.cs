@@ -1031,34 +1031,18 @@ public sealed partial class OsduLedger : ILedger
         return new BoundedCount(count, Exact: count < limit);
     }
 
-    /// <summary>How many identities one query of <see cref="FlowsWithRecordsAsync"/> asks about, well inside the server's parameter limit.</summary>
-    private const int FlowsWithRecordsBatch = 200;
-
     public async Task<IReadOnlySet<Guid>> FlowsWithRecordsAsync(IReadOnlyCollection<Guid> flowIds, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flowIds);
-        var found = new HashSet<Guid>();
-        foreach (var batch in flowIds.Distinct().Chunk(FlowsWithRecordsBatch))
+        if (flowIds.Count == 0)
         {
-            var held = await ReadAsync(
-                db =>
-                {
-                    // One TOP (1) per identity on the key the records lead with, joined by UNION ALL into one round trip.
-                    // A DISTINCT over the identities would read every record of each to find that it has one.
-                    IQueryable<Guid>? query = null;
-                    foreach (var flowId in batch)
-                    {
-                        var one = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId).Select(r => r.FlowId).Take(1);
-                        query = query is null ? one : query.Concat(one);
-                    }
-
-                    return query!.ToListAsync(ct);
-                },
-                ct).ConfigureAwait(false);
-            found.UnionWith(held);
+            return new HashSet<Guid>();
         }
 
-        return found;
+        // One statement with an EXISTS per identity, never a DISTINCT over the records, which would read every record of
+        // each identity to learn that it has one.
+        var held = await ReadAsync(db => SqlServerLedgerBulk.FlowsWithRecordsAsync(db, flowIds, ct), ct).ConfigureAwait(false);
+        return held.ToHashSet();
     }
 
     /// <summary>

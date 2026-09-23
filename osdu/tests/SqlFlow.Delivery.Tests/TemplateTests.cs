@@ -130,7 +130,7 @@ public class OsduTemplateTests
 /// <summary>The template store over the catalog: immutable versions, pinned by mappings.</summary>
 public sealed class OsduTemplateStoreTests : IDisposable
 {
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
 
     public void Dispose() => _db.Dispose();
 

@@ -26,7 +26,7 @@ public sealed class DdmsSourceTests : IDisposable
     private const string WellLogTable = "OsduSample.ing.WellLog";
     private const string Root = "/api/os-wellbore-ddms";
 
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new(new DateTimeOffset(2026, 9, 1, 7, 0, 0, TimeSpan.Zero));
     private readonly string _root = Samples.NewTempDirectory();
 

@@ -10,7 +10,7 @@ namespace SqlFlow.Delivery.Tests;
 
 public class SqlLedgerTests : IDisposable
 {
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("test-flow");
 
@@ -171,8 +171,9 @@ public class SqlLedgerTests : IDisposable
         });
         Assert.Contains(otherFlow, await Ledger.FlowsWithRecordsAsync([otherFlow]));
 
-        // More identities than one query asks about are asked in several, and the answer is the same.
-        var many = Enumerable.Range(0, 450).Select(i => FlowId.Of($"unused-{i}")).Append(otherFlow).ToList();
+        // Thousands of identities are asked about in one statement: a query per identity joined by UNION nested as deep as
+        // the list was long, and the provider's translation overflowed the stack walking it.
+        var many = Enumerable.Range(0, 3000).Select(i => FlowId.Of($"unused-{i}")).Append(otherFlow).ToList();
         Assert.Equal(new HashSet<Guid> { otherFlow }, await Ledger.FlowsWithRecordsAsync(many));
     }
 
@@ -1057,7 +1058,7 @@ public class SqlLedgerTests : IDisposable
     [Fact]
     public async Task Flow_statistics_count_statuses_drift_and_the_last_24_hours_to_the_tick()
     {
-        // The SQLite catalog has no indexed view and counts the records; the SQL Server test of the view runs the same timeline.
+        // The counts come from the ledger's indexed statistics view, which its migration builds, checked here to the tick.
         _clock.Advance(TimeSpan.FromMinutes(30));
         var now = Now;
         var s1 = Guid.NewGuid();

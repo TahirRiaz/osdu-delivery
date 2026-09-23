@@ -8,6 +8,7 @@ using SqlFlow.Delivery.ControlPlane;
 using SqlFlow.Delivery.ControlPlane.Api;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Tests;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -40,10 +41,10 @@ public sealed class DeliveryRetentionApiTests
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_cut_off_below_a_day_is_refused_before_anything_is_deleted()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 
@@ -64,10 +65,10 @@ public sealed class DeliveryRetentionApiTests
     /// try inside the window survive; every audit row survives with its actor, parameters and outcome, and only the logs
     /// of the settled activities outside the window are gone.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task The_retention_pass_ages_out_old_tries_and_run_logs_and_keeps_what_a_record_is_reconstructible_from()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 

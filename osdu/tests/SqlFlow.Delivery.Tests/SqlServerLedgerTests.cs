@@ -12,8 +12,8 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// The ledger's SQL Server bulk path against the module's own database: staging and completion as set-based statements,
-/// which an in-memory SQLite database never takes, and the statistics view the provider builds. Runs when
-/// <c>SQLFLOW_TEST_DB</c> points at a reachable, disposable database and skips otherwise; it writes only in the
+/// and the statistics view the provider builds. Runs on the suites' test database (<see cref="OsduTestServer"/>); it
+/// writes only in the
 /// <c>osdu</c> schema its own migration creates, and every run works under a flow and keys of its own, so runs never
 /// see each other's rows.
 /// <para>Some of these tests watch the database as a whole (how often it locked a whole ledger table), which the suite's
@@ -23,29 +23,7 @@ namespace SqlFlow.Delivery.Tests;
 [Collection(SqlServerLedgerIsolation.Name)]
 public class SqlServerLedgerTests
 {
-    private static readonly Lazy<string?> ConnectionString = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
-
-    private static readonly Lazy<bool> Reachable = new(() =>
-    {
-        var cs = ConnectionString.Value;
-        if (string.IsNullOrWhiteSpace(cs))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var connection = new SqlConnection(cs);
-            connection.Open();
-            return true;
-        }
-        catch (SqlException)
-        {
-            return false;
-        }
-    });
-
-    /// <summary>The module's schema, brought up to date once per test run; the database itself is never created here.</summary>
+    /// <summary>The module's schema, brought up to date once per test run.</summary>
     private static readonly Lazy<Task> Migrated = new(async () =>
     {
         await using var db = Database();
@@ -58,29 +36,22 @@ public class SqlServerLedgerTests
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
-    /// <summary>A context over the module's database named by <c>SQLFLOW_TEST_DB</c>.</summary>
-    private static OsduDbContext Database() => new(OsduDbContext.SqlServerOptions(ConnectionString.Value!));
-
-    private static void RequireDatabase()
-        => Skip.IfNot(
-            Reachable.Value,
-            "The SQL Server ledger tests need a reachable, disposable database. Set SQLFLOW_TEST_DB, for example through the git-ignored .sqlflow/env file.");
+    /// <summary>A context over the module's schema in the suites' test database.</summary>
+    private static OsduDbContext Database() => new(OsduDbContext.SqlServerOptions(OsduTestServer.ConnectionString));
 
     private static async Task<OsduLedger> LedgerAsync(TimeProvider clock)
     {
-        RequireDatabase();
         await Migrated.Value;
         return new OsduLedger(Database, clock);
     }
 
     private static async Task<OsduCacheStore> CachesAsync()
     {
-        RequireDatabase();
         await Migrated.Value;
         return new OsduCacheStore(Database);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Cached_records_whose_osdu_ids_differ_only_by_case_are_two_rows()
     {
         // A live partition holds ...UnitOfMeasure:ft (the foot) and ...UnitOfMeasure:fT (the femtotesla). Under the
@@ -119,7 +90,7 @@ public class SqlServerLedgerTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Refreshes_of_different_partitions_at_the_same_time_neither_block_nor_deadlock_each_other_on_sql_server()
     {
         // Every partition's refresh writes its own version rows, and two partitions refreshing together must each touch only
@@ -160,7 +131,7 @@ public class SqlServerLedgerTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_cache_version_writes_and_reads_its_ranges_on_sql_server()
     {
         // The store's transaction, its range updates and the binary comparison of stored values, on the real server.
@@ -207,7 +178,7 @@ public class SqlServerLedgerTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_lookup_table_keeps_keys_that_differ_by_case_and_punctuation_apart_on_sql_server()
     {
         // The item and membership keys are binary on SQL Server, so keys a person would read as one (ft and fT, M and M.)
@@ -301,7 +272,7 @@ public class SqlServerLedgerTests
         },
     };
 
-    [SkippableFact]
+    [Fact]
     public async Task A_record_waits_for_the_record_it_refers_to_and_is_sent_once_that_one_lands()
     {
         var ledger = await LedgerAsync(_clock);
@@ -340,7 +311,7 @@ public class SqlServerLedgerTests
         Assert.Empty(again.Waiting);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Flow_statistics_come_from_the_indexed_view_and_count_the_last_24_hours_to_the_tick()
     {
         // Half past the hour: the 24-hour window then opens part way through an hour, so both halves of its count run (the
@@ -385,7 +356,7 @@ public class SqlServerLedgerTests
         Assert.Equal(5, await db.DeliveryRecords.CountAsync(r => r.FlowId == _flow));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Record_listing_searches_and_counts_run_bounded_on_sql_server()
     {
         // The bounded shapes (a TOP per identity index under UNION ALL, a TOP inside a count) as SQL Server runs them.
@@ -417,7 +388,7 @@ public class SqlServerLedgerTests
         Assert.Equal(12, (await ledger.ListAsync(_flow, new RecordQuery { Search = "welllog_2026", Max = 20 })).Count);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Bulk_staging_queues_behind_an_in_flight_delivery_and_refuses_older_work_and_bulk_completion_keeps_them_apart()
     {
         var ledger = await LedgerAsync(_clock);
@@ -491,7 +462,7 @@ public class SqlServerLedgerTests
         Assert.Equal(1, await ledger.CountAttemptsAsync(s2, AttemptOutcome.Skipped, AttemptPhases.Unchanged));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Two_flows_stage_and_complete_the_same_row_apart_and_an_osdu_id_keeps_one_owner_on_sql_server()
     {
         var ledger = await LedgerAsync(_clock);
@@ -558,7 +529,7 @@ public class SqlServerLedgerTests
         });
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Pruning_deletes_in_bounded_statements_and_keeps_each_flow_s_last_attempt_on_sql_server()
     {
         // The attempts are dated before anything else the shared database holds, so the prune reaches this test's alone.
@@ -588,7 +559,7 @@ public class SqlServerLedgerTests
         Assert.Equal(ancient.AddDays(2), Assert.Single(await ledger.ListAttemptsAsync(other, key, 10)).StartedUtc);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Flows_racing_for_one_osdu_id_leave_one_owner_and_name_it_to_the_other_on_sql_server()
     {
         // Two intakes of different flows stage the same new ids at the same moment. Whichever order the database puts them
@@ -616,7 +587,7 @@ public class SqlServerLedgerTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_batch_wider_than_a_slice_is_staged_leased_released_and_redelivered_a_slice_at_a_time_on_sql_server()
     {
         var ledger = await LedgerAsync(_clock);
@@ -745,7 +716,7 @@ public class SqlServerLedgerTests
         Assert.True(await LockEscalationsAsync(scratch.ConnectionString) > before, "One statement over 6,000 records should have locked the whole record table within a minute of trying.");
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_record_another_staging_inserts_while_a_slice_runs_is_compared_and_never_overwritten_on_sql_server()
     {
         // Staging locks the records that exist, never a range of keys, so another staging can insert a record after a slice
@@ -764,7 +735,7 @@ public class SqlServerLedgerTests
         var s1 = Guid.NewGuid();
         var older = Work("late", s1, "0:10:10", "mh-older", Now.AddDays(-2));
 
-        await using var other = new SqlConnection(ConnectionString.Value);
+        await using var other = new SqlConnection(OsduTestServer.ConnectionString);
         await other.OpenAsync();
         await using var transaction = (SqlTransaction)await other.BeginTransactionAsync();
         short session;
@@ -810,7 +781,7 @@ public class SqlServerLedgerTests
     /// a thousand rows, so a reader that does want a row a writer holds waits for one chunked transaction, not for a
     /// database setting to have been turned on.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task A_writer_holding_one_record_does_not_hold_up_a_read_of_another_on_sql_server()
     {
         var ledger = await LedgerAsync(_clock);
@@ -818,7 +789,7 @@ public class SqlServerLedgerTests
         await ledger.UpsertPendingAsync(_flow, [Work("held", s1, "0:0:10", "mh", Now), Work("other", s1, "0:10:10", "mh", Now)]);
 
         // Another session changes one record of the flow and keeps its transaction open.
-        await using var writer = new SqlConnection(ConnectionString.Value);
+        await using var writer = new SqlConnection(OsduTestServer.ConnectionString);
         await writer.OpenAsync();
         await using var transaction = (SqlTransaction)await writer.BeginTransactionAsync();
         await using (var write = writer.CreateCommand())
@@ -852,20 +823,14 @@ public class SqlServerLedgerTests
     private DeliveryKey Key(string name) => DeliveryKey.Derive("sqlserver-ledger-test", [_run, name]);
 
     /// <summary>
-    /// How many times the database has locked the whole record, event or attempt table instead of its rows. It counts an escalation on the
-    /// index whose locks reached the threshold; attempts are counted on every index of a statement that holds many locks in
-    /// all, and say nothing on their own.
-    /// </summary>
-    /// <summary>
     /// A migrated ledger database of this test's own on the test server, dropped when the test ends. A test that measures
     /// a database-wide counter cannot share a database with anything else, or it measures the other writer too.
     /// </summary>
     private static async Task<ScratchLedger> ScratchLedgerAsync()
     {
-        RequireDatabase();
         var name = "osdu_lock_escalation_" + Guid.NewGuid().ToString("N")[..12];
-        var master = new SqlConnectionStringBuilder(ConnectionString.Value!) { InitialCatalog = "master" }.ConnectionString;
-        var connectionString = new SqlConnectionStringBuilder(ConnectionString.Value!) { InitialCatalog = name }.ConnectionString;
+        var master = new SqlConnectionStringBuilder(OsduTestServer.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
+        var connectionString = new SqlConnectionStringBuilder(OsduTestServer.ConnectionString) { InitialCatalog = name }.ConnectionString;
 
         await ExecuteOnAsync(master, $"CREATE DATABASE [{name}];");
         try
@@ -923,6 +888,11 @@ public class SqlServerLedgerTests
         }
     }
 
+    /// <summary>
+    /// How many times the database has locked the whole record, event or attempt table instead of its rows. It counts an escalation on the
+    /// index whose locks reached the threshold; attempts are counted on every index of a statement that holds many locks in
+    /// all, and say nothing on their own.
+    /// </summary>
     private static async Task<long> LockEscalationsAsync(string connectionString)
     {
         await using var connection = new SqlConnection(connectionString);
@@ -947,7 +917,7 @@ public class SqlServerLedgerTests
     /// <summary>Waits until a request of another session is blocked by <paramref name="session"/>, failing if <paramref name="work"/> ends first.</summary>
     private static async Task WaitUntilBlockedAsync(short session, Task work)
     {
-        await using var connection = new SqlConnection(ConnectionString.Value);
+        await using var connection = new SqlConnection(OsduTestServer.ConnectionString);
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE [blocking_session_id] = @session;";
@@ -966,7 +936,7 @@ public class SqlServerLedgerTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_redelivery_of_payload_parts_names_them_on_the_delivered_payload_hash_on_sql_server()
     {
         var ledger = await LedgerAsync(_clock);
@@ -991,7 +961,7 @@ public class SqlServerLedgerTests
         Assert.Null((await ledger.GetRecordAsync(_flow, key))!.PayloadHash);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task The_scope_watermark_and_the_records_waiting_to_be_planned_round_trip_on_sql_server()
     {
         var ledger = await LedgerAsync(_clock);

@@ -11,6 +11,7 @@ using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Tests;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -25,10 +26,10 @@ public sealed class DeliveryRecordChainApiTests
 {
     private const string FlowName = "wells-welllog-03-header-delivery";
 
-    [SkippableFact]
+    [Fact]
     public async Task A_record_names_the_runs_that_carried_its_file_through_pre_ingestion_and_ingestion()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 
@@ -152,10 +153,10 @@ public sealed class DeliveryRecordChainApiTests
     /// run that loaded it. A row stamped when no such run was executing leaves the stage out rather than naming the
     /// table's latest load.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task The_ingestion_run_is_the_one_that_was_writing_the_record_table_when_the_row_was_stamped()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 

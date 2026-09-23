@@ -16,7 +16,7 @@ using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
 
-/// <summary>The retrieval kind: its document, and the runner against a fake search and storage service, a temp lake and a SQLite ledger.</summary>
+/// <summary>The retrieval kind: its document, and the runner against a fake search and storage service, a temp lake and the ledger on SQL Server.</summary>
 public sealed class RetrievalTests : IDisposable
 {
     private const string Wellbore = "osdu:wks:master-data--Wellbore:1.*.*";
@@ -43,7 +43,7 @@ public sealed class RetrievalTests : IDisposable
         reliability: { concurrency: 1, retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 1 } }
         """;
 
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
 
     private static (OsduHttpClient Client, HttpRuntime Runtime) Client(FakeHttpHandler handler, RetrievalDefinition flow, TestClock clock)

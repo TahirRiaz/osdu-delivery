@@ -81,45 +81,14 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>The database the shipped documents name their ingestion tables in, which every generated one replaces.</summary>
     private const string SampleDatabase = "OsduSample.";
 
-    private static readonly Lazy<string?> ConnectionText = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
-
-    private static readonly Lazy<bool> Reachable = new(() =>
-    {
-        var cs = ConnectionText.Value;
-        if (string.IsNullOrWhiteSpace(cs))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var connection = new SqlConnection(cs);
-            connection.Open();
-            return true;
-        }
-        catch (SqlException)
-        {
-            return false;
-        }
-    });
-
-    /// <summary>The module's schema, brought up to date once per test run; the database itself is never created here.</summary>
-    private static readonly Lazy<Task> Migrated = new(async () =>
-    {
-        await using var db = new OsduDbContext(OsduDbContext.SqlServerOptions(ConnectionText.Value!));
-        await db.Database.MigrateAsync();
-    });
-
-    /// <summary>Serializes the one-time template and cache import across the fixtures of this process.</summary>
-    private static readonly SemaphoreSlim RenderInputs = new(1, 1);
-
-    private static bool _renderInputsImported;
+    private readonly OsduTestDatabase _database;
 
     private readonly ServiceProvider _provider;
 
-    private SqlServerIngestionFixture(string connectionString, string databaseName, string suffix, string root, ServiceProvider provider, FakeProtocol protocol)
+    private SqlServerIngestionFixture(OsduTestDatabase database, string databaseName, string suffix, string root, ServiceProvider provider, FakeProtocol protocol)
     {
-        ConnectionString = connectionString;
+        _database = database;
+        ConnectionString = database.ConnectionString;
         DatabaseName = databaseName;
         Suffix = suffix;
         Root = root;
@@ -128,7 +97,12 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         Ledger = new OsduLedger(Context, TimeProvider.System);
     }
 
-    /// <summary>The disposable database the suite was given, as <c>SQLFLOW_TEST_DB</c> names it.</summary>
+    /// <summary>
+    /// The fixture's own database from the suites' pool (<see cref="OsduTestDatabases"/>), its module schema empty when the
+    /// fixture starts. The chain's records are the same every run, and so are the OSDU ids they render to: in a database
+    /// shared across runs, a run whose process died before it cleaned up would leave those ids claimed by its flow, and
+    /// every later run's records would be held for them.
+    /// </summary>
     public string ConnectionString { get; }
 
     /// <summary>Its Initial Catalog: what the generated three-part names are written with.</summary>
@@ -203,18 +177,6 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             .Replace("wells-wellbore-03-header-delivery", "wb" + suffix, StringComparison.Ordinal);
 
     /// <summary>
-    /// Refuses the suite when the database it needs is not there, naming what to set. The SQL Server chain runs against a
-    /// real server or not at all: there is no in-memory stand-in for what it proves.
-    /// </summary>
-    private static string Require()
-    {
-        Skip.IfNot(
-            Reachable.Value,
-            "The SQL Server chain tests need a reachable, disposable database. Set SQLFLOW_TEST_DB, for example through the git-ignored .sqlflow/env file.");
-        return ConnectionText.Value!;
-    }
-
-    /// <summary>
     /// Brings up one fixture: its schemas, its generated estate and the host that runs it.
     /// </summary>
     /// <param name="fanOut">How many member runs the OSDU flow's document declares beside a coordinating run; 0 declares none.</param>
@@ -223,18 +185,12 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// whose interfaces read them beside the well logs.</param>
     public static async Task<SqlServerIngestionFixture> StartAsync(int fanOut = 0, int batchRecords = 0, bool wellboreChain = false, CancellationToken ct = default)
     {
-        var connectionString = Require();
-        await Migrated.Value.ConfigureAwait(false);
-
-        var builder = new SqlConnectionStringBuilder(connectionString);
-        var databaseName = builder.InitialCatalog;
-        if (string.IsNullOrWhiteSpace(databaseName))
-        {
-            throw new InvalidOperationException(
-                "SQLFLOW_TEST_DB names no Initial Catalog, and the chain's flows read three-part names. Point it at a database, for example Server=localhost,1433;Database=OsduDeliveryTest;...");
-        }
-
-        await RequireSnapshotIsolationAsync(connectionString, databaseName, ct).ConfigureAwait(false);
+        // The chain runs against a real server or not at all: there is no in-memory stand-in for what it proves. Its
+        // database is its own, migrated and empty, allowing the snapshot isolation a record and its child rows are read
+        // under; its catalog name is what the chain's flows write three-part names with.
+        var database = new OsduTestDatabase();
+        var connectionString = database.ConnectionString;
+        var databaseName = new SqlConnectionStringBuilder(connectionString).InitialCatalog;
 
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var root = Samples.NewTempDirectory();
@@ -249,7 +205,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             GenerateEstate(root, databaseName, suffix, variable, fanOut, batchRecords, wellboreChain);
             provider = Compose(connectionString, protocol);
             await ImportRenderInputsAsync(connectionString, ct).ConfigureAwait(false);
-            return new SqlServerIngestionFixture(connectionString, databaseName, suffix, root, provider, protocol);
+            return new SqlServerIngestionFixture(database, databaseName, suffix, root, provider, protocol);
         }
         catch
         {
@@ -261,6 +217,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             Environment.SetEnvironmentVariable(variable, null);
             await DropSchemasAsync(connectionString, "pre_" + suffix, "ing_" + suffix, CancellationToken.None).ConfigureAwait(false);
             Delete(root);
+            database.Dispose();
             throw;
         }
     }
@@ -399,8 +356,8 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
 
     /// <summary>
     /// Drops everything this fixture created: its two schemas with the tables and views the flows put in them, the ledger
-    /// rows of its flow, its environment variable and its estate on disk. The module's templates and its partition cache
-    /// are left alone: they are shared, identical for every fixture, and what a run renders with.
+    /// rows of its flow, its environment variable and its estate on disk, and gives its database back to the pool, which
+    /// empties the module's schema before the next test takes it.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
@@ -409,6 +366,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         await DropSchemasAsync(ConnectionString, PreSchema, IngSchema, CancellationToken.None).ConfigureAwait(false);
         Environment.SetEnvironmentVariable(ConnectionVariable, null);
         Delete(Root);
+        _database.Dispose();
     }
 
     private Task ClearLedgerAsync() => ForgetFlowAsync(FlowId);
@@ -500,46 +458,15 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     }
 
     /// <summary>
-    /// Saves the templates the sample mappings pin and the sample partition's cache into the module's schema, once per
-    /// test run. A render reads both from that database, so a chain run needs them there; the content is the repository's
-    /// own, so a second fixture importing it again changes nothing.
+    /// Saves the templates the sample mappings pin and the sample partition's cache into the fixture's database, which
+    /// starts empty. A render reads both from that database, so a chain run needs them there.
     /// </summary>
     private static async Task ImportRenderInputsAsync(string connectionString, CancellationToken ct)
     {
-        await RenderInputs.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            if (_renderInputsImported)
-            {
-                return;
-            }
-
-            OsduDbContext Contexts() => new(OsduDbContext.SqlServerOptions(connectionString));
-            await Samples.ImportSampleTemplatesAsync(new OsduTemplateStore(Contexts, TimeProvider.System)).ConfigureAwait(false);
-            await Samples.ImportSampleCacheAsync(new OsduCacheStore(Contexts)).ConfigureAwait(false);
-            _renderInputsImported = true;
-        }
-        finally
-        {
-            RenderInputs.Release();
-        }
-    }
-
-    /// <summary>
-    /// Refuses the suite when the database does not allow snapshot isolation, which is how a record and its child rows are
-    /// read as one moment. The setting is the database's own and is never changed here: a suite does not reconfigure the
-    /// database it was lent.
-    /// </summary>
-    private static async Task RequireSnapshotIsolationAsync(string connectionString, string databaseName, CancellationToken ct)
-    {
-        await using var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync(ct).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT snapshot_isolation_state FROM sys.databases WHERE database_id = DB_ID();";
-        var state = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
-        Skip.If(
-            state is not byte on || on == 0,
-            $"The chain reads its ingestion tables under snapshot isolation. Enable it once with ALTER DATABASE [{databaseName}] SET ALLOW_SNAPSHOT_ISOLATION ON.");
+        ct.ThrowIfCancellationRequested();
+        OsduDbContext Contexts() => new(OsduDbContext.SqlServerOptions(connectionString));
+        await Samples.ImportSampleTemplatesAsync(new OsduTemplateStore(Contexts, TimeProvider.System)).ConfigureAwait(false);
+        await Samples.ImportSampleCacheAsync(new OsduCacheStore(Contexts)).ConfigureAwait(false);
     }
 
     private static async Task CreateSchemasAsync(string connectionString, string preSchema, string ingSchema, CancellationToken ct)

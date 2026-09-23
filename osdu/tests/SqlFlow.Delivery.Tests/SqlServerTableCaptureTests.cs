@@ -9,52 +9,26 @@ namespace SqlFlow.Delivery.Tests;
 /// <summary>
 /// A cache flow's table type read out of a real ingestion table on SQL Server: the rows its ingestion flow has not marked
 /// deleted, each keyed by its key column and kept as the text the delivery reader gives its values, and a table the cache
-/// could not hold refused whole. Runs when <c>SQLFLOW_TEST_DB</c> points at a reachable, disposable database; every test
+/// could not hold refused whole. Runs on the suites' test database (<see cref="OsduTestServer"/>); every test
 /// works in a schema of its own, dropped afterwards, and keeps its cache in memory.
 /// </summary>
 public sealed class SqlServerTableCaptureTests : IAsyncLifetime, IDisposable
 {
-    private static readonly Lazy<string?> ConnectionText = new(() => Environment.GetEnvironmentVariable("SQLFLOW_TEST_DB"));
-
-    private static readonly Lazy<bool> Reachable = new(() =>
-    {
-        if (string.IsNullOrWhiteSpace(ConnectionText.Value))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var connection = new SqlConnection(ConnectionText.Value);
-            connection.Open();
-            return true;
-        }
-        catch (SqlException)
-        {
-            return false;
-        }
-    });
-
     private readonly string _suffix = Guid.NewGuid().ToString("N")[..8];
     private readonly string _root = Samples.NewTempDirectory();
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
 
     private string Schema => "lk_" + _suffix;
 
     private string Variable => "SQLFLOW_LOOKUP_DB_" + _suffix;
 
-    private static string Database => new SqlConnectionStringBuilder(ConnectionText.Value!).InitialCatalog;
+    private static string Database => new SqlConnectionStringBuilder(OsduTestServer.ConnectionString).InitialCatalog;
 
     private string Table => $"{Database}.{Schema}.CurveDictionary";
 
     public async Task InitializeAsync()
     {
-        if (!Reachable.Value)
-        {
-            return;
-        }
-
-        Environment.SetEnvironmentVariable(Variable, ConnectionText.Value);
+        Environment.SetEnvironmentVariable(Variable, OsduTestServer.ConnectionString);
         await ExecuteAsync($"""
             CREATE SCHEMA [{Schema}];
             """);
@@ -80,23 +54,13 @@ public sealed class SqlServerTableCaptureTests : IAsyncLifetime, IDisposable
 
     public async Task DisposeAsync()
     {
-        if (!Reachable.Value)
-        {
-            return;
-        }
-
         await ExecuteAsync($"DROP TABLE IF EXISTS [{Schema}].[CurveDictionary]; DROP SCHEMA IF EXISTS [{Schema}];");
         Environment.SetEnvironmentVariable(Variable, null);
     }
 
-    private static void RequireDatabase()
-        => Skip.IfNot(
-            Reachable.Value,
-            "The SQL Server table capture tests need a reachable, disposable database. Set SQLFLOW_TEST_DB, for example through the git-ignored .sqlflow/env file.");
-
     private static async Task ExecuteAsync(string sql)
     {
-        await using var connection = new SqlConnection(ConnectionText.Value);
+        await using var connection = new SqlConnection(OsduTestServer.ConnectionString);
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -130,10 +94,9 @@ public sealed class SqlServerTableCaptureTests : IAsyncLifetime, IDisposable
     private Task<CacheRefreshOutcome> RefreshAsync(CacheDefinition flow)
         => Refresher().RefreshAsync(flow, new Dictionary<string, string>(), Guid.NewGuid(), "chain tests", CancellationToken.None);
 
-    [SkippableFact]
+    [Fact]
     public async Task A_table_type_captures_every_live_row_keyed_by_its_key_with_its_values_as_the_reader_gives_them()
     {
-        RequireDatabase();
         await ExecuteAsync($"""
             INSERT INTO [{Schema}].[CurveDictionary] (mnemonic, curve_family, curve_version, sampled, DeletedDate_DW) VALUES
                 (N'GR', N'Gamma Ray', 2, '2026-09-01T10:15:30', NULL),
@@ -181,10 +144,9 @@ public sealed class SqlServerTableCaptureTests : IAsyncLifetime, IDisposable
         Assert.Equal("Gamma Ray (total)", now.Value(now.Match("mnemonic", "GR")!, "curve_family")!.Text);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_table_whose_rows_the_cache_could_not_key_captures_nothing_and_names_the_rows()
     {
-        RequireDatabase();
         await ExecuteAsync($"""
             INSERT INTO [{Schema}].[CurveDictionary] (mnemonic, curve_family) VALUES
                 (N'GR', N'Gamma Ray'), (N'GR ', N'Gamma Ray again'), (NULL, N'nameless'), (N'  ', N'blank');
@@ -197,10 +159,9 @@ public sealed class SqlServerTableCaptureTests : IAsyncLifetime, IDisposable
         Assert.Empty(await _db.Caches().ListVersionsAsync("dev"));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_table_type_naming_what_the_table_does_not_hold_is_refused_with_the_tables_columns()
     {
-        RequireDatabase();
         var missing = await Assert.ThrowsAsync<DeliveryException>(() => RefreshAsync(Flow(fields: "[curve_family, colour]")));
         Assert.Contains("keeps column 'colour', which table", missing.Message, StringComparison.Ordinal);
         Assert.Contains("Columns: DeletedDate_DW, curve_family, curve_version, mnemonic, notes, sampled", missing.Message, StringComparison.Ordinal);
@@ -217,10 +178,9 @@ public sealed class SqlServerTableCaptureTests : IAsyncLifetime, IDisposable
         Assert.Empty(await _db.Caches().ListVersionsAsync("dev"));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_table_over_the_limit_a_lookup_table_holds_captures_nothing()
     {
-        RequireDatabase();
         await ExecuteAsync($"""
             WITH n AS (SELECT TOP ({Snapshots.LookupKeys.MaxRows + 1}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
             INSERT INTO [{Schema}].[CurveDictionary] (mnemonic, curve_family) SELECT CONCAT(N'k', i), N'family' FROM n;

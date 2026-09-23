@@ -20,7 +20,7 @@ public sealed class CacheChangeTests : IDisposable
     /// <summary>The partition whose cache the records under test were built from.</summary>
     private const string Scope = "dev";
 
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("test-flow");
     private readonly OsduLedger _ledger;

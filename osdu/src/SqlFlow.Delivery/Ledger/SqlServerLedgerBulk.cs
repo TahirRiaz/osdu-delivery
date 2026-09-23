@@ -555,6 +555,32 @@ internal static class SqlServerLedgerBulk
         }
     }
 
+    // Which of the listed ledger identities hold a record at all: an EXISTS per identity, a seek on the key the records
+    // lead with, so it costs the same whatever the ledger holds. One statement for any number of identities; a UNION of
+    // one query per identity nests as deep as the list is long, which the provider's query translation cannot walk.
+    private const string FlowsWithRecordsSql = """
+        SELECT f.[FlowId]
+        FROM (SELECT DISTINCT CAST(j.[value] AS uniqueidentifier) AS [FlowId] FROM OPENJSON(@flows) AS j) AS f
+        WHERE EXISTS (SELECT 1 FROM [osdu].[Record] AS r WHERE r.[FlowId] = f.[FlowId]);
+        """;
+
+    /// <summary>The ledger identities among <paramref name="flowIds"/> that hold at least one record, in any state.</summary>
+    public static async Task<IReadOnlyList<Guid>> FlowsWithRecordsAsync(OsduDbContext db, IReadOnlyCollection<Guid> flowIds, CancellationToken ct)
+    {
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var connection = (SqlConnection)db.Database.GetDbConnection();
+            await using var command = Command(connection, null, FlowsWithRecordsSql, slice: null);
+            command.Parameters.Add(new SqlParameter("@flows", SqlDbType.NVarChar, -1) { Value = System.Text.Json.JsonSerializer.Serialize(flowIds) });
+            return await GuidsAsync(command, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
     /// <summary>The context's open connection and the transaction it is in, for a statement that belongs to that transaction.</summary>
     private static (SqlConnection Connection, SqlTransaction? Transaction) Current(OsduDbContext db)
     {

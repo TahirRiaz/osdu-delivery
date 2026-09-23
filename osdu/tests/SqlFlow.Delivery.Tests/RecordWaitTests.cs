@@ -13,7 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public class RecordWaitTests : IDisposable
 {
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _logs = FlowId.Of("well-logs");
     private readonly Guid _wellbores = FlowId.Of("wellbores");

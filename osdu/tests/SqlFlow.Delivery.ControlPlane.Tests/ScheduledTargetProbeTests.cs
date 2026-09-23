@@ -82,11 +82,11 @@ public sealed class ScheduledTargetProbeTests
     /// probed through <c>delivery-probe</c> once it runs, and the next pass records what each node answered as the
     /// flow's own audit entry and counts it, a refusing target and a probe that could not run included.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "Integration")]
     public async Task Each_interface_is_probed_and_what_came_back_is_recorded_counted_and_redacted()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 

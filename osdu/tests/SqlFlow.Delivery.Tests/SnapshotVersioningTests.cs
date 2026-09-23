@@ -39,7 +39,7 @@ public sealed class SnapshotVersioningTests : IDisposable
         Fields = [new ReferenceFieldSpec("data.FacilityName")],
     };
 
-    private readonly SqliteOsdu _catalog = new();
+    private readonly OsduTestDatabase _catalog = new();
 
     public void Dispose() => _catalog.Dispose();
 

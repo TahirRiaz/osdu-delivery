@@ -22,7 +22,7 @@ public class ReferenceCheckTests : IDisposable
 {
     private static readonly SecretResolver Secrets = new([new EnvSecretProvider()]);
 
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly FakeOsduPlatform _platform = new();
     private readonly HttpRuntime _runtime;

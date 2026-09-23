@@ -9,6 +9,7 @@ using SqlFlow.Delivery.ControlPlane;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Tests;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -28,10 +29,10 @@ public sealed class DeliveryRecordOriginApiTests
 
     private const string PendingFile = "wellbore_20260902.csv";
 
-    [SkippableFact]
+    [Fact]
     public async Task A_record_and_its_attempts_carry_the_ingestion_file_and_row_they_came_from()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 

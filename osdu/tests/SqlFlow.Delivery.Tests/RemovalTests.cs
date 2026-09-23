@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using System.Net;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
@@ -271,7 +272,7 @@ public class RemovalProtocolTests
 /// <summary>What each scope does to the ledger, which is not the same question as what it does to OSDU.</summary>
 public class RemovalLedgerTests : IDisposable
 {
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("test-flow");
 
@@ -370,8 +371,10 @@ public class RemovalLedgerTests : IDisposable
             keys.Add(await DeliveredAsync(name, submission));
         }
 
+        // Key order is the order the database keeps the keys in, which is the order the removal's pages walk: SQL Server
+        // orders a uniqueidentifier by its last group of bytes first, exactly as SqlGuid compares, not as Guid does.
         var listed = await Ledger.ListKeysAsync(_flow, new RecordQuery(), 100);
-        Assert.Equal(keys.OrderBy(k => k.Value).ToList(), listed);
+        Assert.Equal(keys.OrderBy(k => new SqlGuid(k.Value)).ToList(), listed);
         Assert.Equal(2, (await Ledger.ListKeysAsync(_flow, new RecordQuery(), 2)).Count);
     }
 
@@ -448,7 +451,7 @@ public class RemovalLedgerTests : IDisposable
 /// <summary>The runtime's removal: the ledger settled per record, and a selection that is a filter resolved here.</summary>
 public class RemovalRuntimeTests : IDisposable
 {
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly string _root = Samples.NewTempDirectory();
 

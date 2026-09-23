@@ -12,6 +12,7 @@ using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Tests;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -25,10 +26,10 @@ namespace SqlFlow.ControlPlane.Tests;
 [Trait("Category", "Integration")]
 public sealed class DeliveryInterfacesApiTests
 {
-    [SkippableFact]
+    [Fact]
     public async Task A_source_s_interfaces_are_listed_counted_and_named_on_every_request_about_one()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 

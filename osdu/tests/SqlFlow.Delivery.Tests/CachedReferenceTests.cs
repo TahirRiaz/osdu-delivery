@@ -21,7 +21,7 @@ public sealed class CachedReferenceTests : IDisposable
 {
     private static readonly DateTimeOffset T0 = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
 
     public void Dispose() => _db.Dispose();

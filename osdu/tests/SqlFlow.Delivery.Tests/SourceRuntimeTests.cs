@@ -91,7 +91,7 @@ public sealed class SourceRuntimeTests : IDisposable
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new(new DateTimeOffset(2026, 9, 1, 7, 0, 0, TimeSpan.Zero));
     private readonly string _root = Samples.NewTempDirectory();
     private readonly InterfaceProtocols _protocols = new();
@@ -587,7 +587,7 @@ public sealed class SourceRuntimeTests : IDisposable
         // stop wins every time, so the record behind it is handed back untried.
         for (var attempt = 0; attempt < 10; attempt++)
         {
-            using var db = new SqliteOsdu();
+            using var db = new OsduTestDatabase();
             var root = Path.Combine(_root, "attempt-" + attempt.ToString(System.Globalization.CultureInfo.InvariantCulture));
             var protocols = new InterfaceProtocols();
             protocols[string.Empty].FailWith = _ => new DeliveryException("HTTP transport failure", new HttpRequestException("refused"));

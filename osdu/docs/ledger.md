@@ -653,5 +653,5 @@ result sets, and a flow reads them as one instant unless it says otherwise ([doc
 
 The control plane applies pending migrations on start, and `sqlflow db migrate --db <ref>` does it by hand. Both
 hosts and `sqlflow db status` refuse to run against pending migrations, a database newer than the code, or a catalog
-older than the module requires, naming the migration or version. The SQLite database the tests use is created from
-the model directly, and counts the records exactly as SQL Server does.
+older than the module requires, naming the migration or version. The module runs on SQL Server alone, and so do its
+tests: every suite's database is built by the same migrations a deployment applies.

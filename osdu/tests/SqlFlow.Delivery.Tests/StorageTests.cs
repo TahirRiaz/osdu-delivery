@@ -407,7 +407,7 @@ public sealed class OsduCacheStoreTests : IDisposable
         Fields = [new ReferenceFieldSpec("data.Code"), new ReferenceFieldSpec("data.Name")],
     };
 
-    private readonly SqliteOsdu _catalog = new();
+    private readonly OsduTestDatabase _catalog = new();
 
     public void Dispose() => _catalog.Dispose();
 

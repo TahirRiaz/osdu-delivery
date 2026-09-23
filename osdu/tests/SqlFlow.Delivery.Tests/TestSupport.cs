@@ -2,7 +2,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json.Nodes;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -53,101 +52,8 @@ public sealed class TestClock : TimeProvider
 }
 
 /// <summary>
-/// An in-memory SQLite copy of the module's own database (schema <c>osdu</c>), created from the model and shared across
-/// contexts on one open connection: the ledger under test is the real <see cref="OsduLedger"/> over the real model.
-/// </summary>
-public sealed class SqliteOsdu : IDisposable
-{
-    private readonly SqliteConnection _connection;
-    private readonly DbContextOptions<OsduDbContext> _options;
-
-    public SqliteOsdu()
-    {
-        _connection = new SqliteConnection("DataSource=:memory:");
-        _connection.Open();
-        _options = new DbContextOptionsBuilder<OsduDbContext>().UseSqlite(_connection).Options;
-        using var db = new OsduDbContext(_options);
-        db.Database.EnsureCreated();
-    }
-
-    public OsduDbContext CreateDbContext() => new(_options);
-
-    public OsduLedger Ledger(TimeProvider? time = null) => new(CreateDbContext, time);
-
-    public OsduTemplateStore Templates(TimeProvider? time = null) => new(CreateDbContext, time);
-
-    public OsduCacheStore Caches() => new(CreateDbContext);
-
-    /// <summary>
-    /// Declares what <paramref name="flowName"/> caches for <paramref name="scope"/> exactly as the repository sync leaves it:
-    /// one <c>osdu.CacheDefinition</c> row per type, replacing every row the flow had. No types declares nothing for the flow.
-    /// </summary>
-    public async Task DeclareCacheAsync(string scope, string flowName, params ReferenceTypeSpec[] types)
-    {
-        ArgumentNullException.ThrowIfNull(types);
-        await using var db = CreateDbContext();
-        await db.DeliveryCacheDefinitions.Where(d => d.FlowName == flowName).ExecuteDeleteAsync();
-        var repoId = Guid.NewGuid();
-        var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-        foreach (var type in types)
-        {
-            db.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
-            {
-                Id = Guid.NewGuid(),
-                RepoId = repoId,
-                FlowName = flowName,
-                Scope = scope,
-                Origin = CacheOrigins.Text(type.Origin),
-                Endpoint = type.Origin == CacheOrigin.Osdu ? "https://osdu.example.test" : null,
-                Connection = type.Origin == CacheOrigin.Table ? "${env:INGESTION_DB}" : null,
-                SourceObject = type.Table,
-                KeyField = type.Key,
-                DictionaryPath = type.DictionaryPath,
-                RelativePath = "cache/" + flowName + ".yaml",
-                Name = type.Name,
-                EntityType = type.EntityType,
-                Kind = type.Kind,
-                Query = type.Origin == CacheOrigin.Osdu ? type.Query : null,
-                FieldsJson = new JsonArray(type.Fields.Select(f => (JsonNode)new JsonObject { ["path"] = f.Path, ["as"] = f.Name }).ToArray()).ToJsonString(),
-                OnChange = type.OnChange == CacheChangeMode.Approve ? "approve" : "auto",
-                FirstSeenUtc = now,
-                LastSeenUtc = now,
-            });
-        }
-
-        await db.SaveChangesAsync();
-    }
-
-    public void Dispose() => _connection.Dispose();
-}
-
-/// <summary>
-/// An in-memory SQLite copy of the platform's catalog, for the one seam the module shares with it: the catalog sync
-/// extension, which joins the catalog's own transaction.
-/// </summary>
-public sealed class SqliteCatalog : IDisposable
-{
-    private readonly SqliteConnection _connection;
-    private readonly DbContextOptions<CatalogDbContext> _options;
-
-    public SqliteCatalog()
-    {
-        _connection = new SqliteConnection("DataSource=:memory:");
-        _connection.Open();
-        _options = new DbContextOptionsBuilder<CatalogDbContext>().UseSqlite(_connection).Options;
-        using var db = new CatalogDbContext(_options);
-        db.Database.EnsureCreated();
-    }
-
-    public CatalogDbContext CreateDbContext() => new(_options);
-
-    public void Dispose() => _connection.Dispose();
-}
-
-/// <summary>
 /// One version of one partition's cache held in memory, as a render reads it. The engine suites share the sample cache
-/// through it, so no suite reads a database another suite is writing on the same SQLite connection; the store itself is
-/// covered by its own suite.
+/// through it, so no suite reads a database another suite is writing; the store itself is covered by its own suite.
 /// </summary>
 public sealed class FixedCacheStore : ICacheStore
 {
@@ -633,10 +539,11 @@ public static class Samples
     public static readonly DateTimeOffset SampleCacheCaptured = new(2026, 9, 8, 21, 27, 27, TimeSpan.Zero);
 
     // One database holding the sample templates and the sample cache for the whole run: templates and cache versions are
-    // immutable, and after the warm-up a render never reaches the database behind them.
-    private static readonly Lazy<(SqliteOsdu Database, OsduTemplateStore Store, ICacheStore Cache)> SampleDatabase = new(() =>
+    // immutable, and after the warm-up a render never reaches the database behind them. It holds its pool database until
+    // the process ends, which ends the session holding it.
+    private static readonly Lazy<(OsduTestDatabase Database, OsduTemplateStore Store, ICacheStore Cache)> SampleDatabase = new(() =>
     {
-        var database = new SqliteOsdu();
+        var database = new OsduTestDatabase();
         var store = database.Templates();
         ImportSampleTemplatesAsync(store).GetAwaiter().GetResult();
         var version = ImportSampleCacheAsync(database.Caches()).GetAwaiter().GetResult();
@@ -891,7 +798,7 @@ public static class Samples
                 // The partition stays: it is what names the cache the render reads.
                 Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [CacheScope.PartitionHeader] = SampleCacheScope },
             },
-            // SQLite in-memory shares one connection, so the test worker runs one record at a time and one renderer.
+            // One record at a time and one renderer, so a suite's outcome never depends on how the server interleaves claims.
             Reliability = flow.Reliability with { Concurrency = 1, RenderParallelism = 1, Retry = flow.Reliability.Retry with { Attempts = 3, RecordBaseDelayMinutes = 1 } },
         };
     }

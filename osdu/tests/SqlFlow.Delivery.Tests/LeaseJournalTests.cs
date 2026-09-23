@@ -17,7 +17,7 @@ public sealed class LeaseJournalTests : IDisposable
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);
 
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("journal-flow");
     private readonly Guid _submission = Guid.NewGuid();

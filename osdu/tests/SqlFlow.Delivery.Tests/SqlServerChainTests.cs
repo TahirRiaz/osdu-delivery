@@ -52,7 +52,7 @@ public class SqlServerChainTests
     private const string CurveFile = "welllog_curves_20260901.csv";
 
     /// <summary>Case 1: the first run of the chain, from files to delivered records.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task A_first_run_loads_the_tables_renders_what_the_mapping_fixtures_pin_and_delivers_every_log()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();
@@ -147,7 +147,7 @@ public class SqlServerChainTests
     }
 
     /// <summary>Case 2: a second run with no new file sends nothing and writes no attempt.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task A_re_run_with_no_new_files_skips_the_window_and_writes_no_attempt()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();
@@ -173,7 +173,7 @@ public class SqlServerChainTests
     }
 
     /// <summary>Case 3: a changed curve re-plans its own log and nothing else, and the record's origin does not move.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task A_changed_curve_updates_only_its_own_log_and_leaves_the_record_origin_on_the_log_file()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();
@@ -213,7 +213,7 @@ public class SqlServerChainTests
     }
 
     /// <summary>Case 4: landing the same rows again changes nothing, because the ingestion checksum leaves them alone.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task An_identical_re_land_leaves_the_ingestion_rows_and_the_record_origin_untouched()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();
@@ -244,7 +244,7 @@ public class SqlServerChainTests
     }
 
     /// <summary>Case 5: a row whose business version went backwards is a stale skip, never a delivery.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task A_row_landed_with_an_older_business_version_is_skipped_as_stale_and_never_sent()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();
@@ -279,7 +279,7 @@ public class SqlServerChainTests
     }
 
     /// <summary>Case 6: a fan-out over key slices plans every record exactly once and writes one watermark.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task A_fan_out_over_key_slices_plans_every_record_once_with_disjoint_batches_and_one_watermark()
     {
         const int Records = 2000;
@@ -338,7 +338,7 @@ public class SqlServerChainTests
     /// Case 8: one input, two OSDU pipelines on two versions of the WellLog schema, both running at once, each fanned out
     /// over several nodes that push rows concurrently, and each keeping its own ledger.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task One_input_fans_out_to_two_pipelines_on_two_schema_versions_whose_nodes_push_concurrently()
     {
         const int Records = 400;
@@ -415,7 +415,7 @@ public class SqlServerChainTests
     /// When the stalled worker next renews, it finds the lease no longer its own and stops sending; what it held is back
     /// in the queue, and the next worker sends the whole batch.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task A_worker_whose_lease_was_recovered_while_it_stalled_stops_sending_and_the_next_worker_sends_the_batch()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();
@@ -466,7 +466,7 @@ public class SqlServerChainTests
     /// Case 10: while a batch runs, each renewal of its lease applies what the worker has sent so far, so the records show
     /// their outcomes before the batch ends, and the batch's progress reaches the run's trace.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task A_running_batch_applies_what_it_sent_at_each_renewal_and_reports_its_progress()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();
@@ -515,7 +515,7 @@ public class SqlServerChainTests
     /// as a node runs it: each interface plans and sends across member runs that the same executor runs beside it, each
     /// member told which interface it works on, and each interface keeps a ledger of its own.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task A_source_fans_each_interface_out_over_nodes_in_the_order_its_interfaces_wait_for_each_other()
     {
         const int Wellbores = 60;
@@ -758,7 +758,7 @@ public class SqlServerChainTests
     }
 
     /// <summary>Case 7: lineage orders the estate's waves pre, then ingestion, then the OSDU flow.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task Lineage_orders_the_chain_pre_then_ingestion_then_the_osdu_flow()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();

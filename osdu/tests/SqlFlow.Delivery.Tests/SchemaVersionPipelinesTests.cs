@@ -29,7 +29,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
 
     private const string NextFlowName = "wells-welllog-next";
 
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly string _root = Samples.NewTempDirectory();
 

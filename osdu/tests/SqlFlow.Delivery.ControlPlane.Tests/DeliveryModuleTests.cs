@@ -187,8 +187,8 @@ public sealed class DeliveryModuleTests
 
         // The after-migrate and read-version hooks are the module's own, and they keep exactly one row.
         var database = OsduModuleDatabase.Create();
-        using var sqlite = new SqliteOsdu();
-        await using var context = sqlite.CreateDbContext();
+        using var osdu = new OsduTestDatabase();
+        await using var context = osdu.CreateDbContext();
         var applied = new ModuleMigrationApplied(
             OsduSchema.Module, "1.0.0", "20260915214130_InitialOsduSchema", "control plane module tests", new DateTime(2026, 9, 16, 8, 0, 0, DateTimeKind.Utc),
             OsduDbContext.MinimumCatalogMigration);
@@ -210,14 +210,13 @@ public sealed class DeliveryModuleTests
     [Fact]
     public async Task TheSearchCategory_AnswersFromTheLedger_WithTheRecordsDetailAndItsRoute()
     {
-        using var sqlite = new SqliteOsdu();
-        using var catalog = new SqliteCatalog();
-        var ledger = sqlite.Ledger();
+        using var database = new OsduTestDatabase();
+        var ledger = database.Ledger();
         var flowName = "wells-wellbore-03-header-delivery";
         var flowId = FlowId.Of(flowName);
         var pipelineId = Guid.NewGuid();
         var repoId = Guid.NewGuid();
-        await using (var db = catalog.CreateDbContext())
+        await using (var db = database.CreateCatalogContext())
         {
             db.Pipelines.Add(new CatalogPipeline
             {
@@ -237,8 +236,22 @@ public sealed class DeliveryModuleTests
             await db.SaveChangesAsync();
         }
 
+        try
+        {
+            await AnswersFromTheLedgerAsync(database, ledger, flowName, flowId, pipelineId, repoId);
+        }
+        finally
+        {
+            // Only the module's schema is emptied between tests; the catalog row this test wrote is its own to remove.
+            await using var db = database.CreateCatalogContext();
+            await db.Pipelines.Where(p => p.Id == pipelineId).ExecuteDeleteAsync();
+        }
+    }
+
+    private static async Task AnswersFromTheLedgerAsync(OsduTestDatabase database, OsduLedger ledger, string flowName, Guid flowId, Guid pipelineId, Guid repoId)
+    {
         // The read model of sources and interfaces is what leads a ledger identity to its pipeline.
-        await using (var osdu = sqlite.CreateDbContext())
+        await using (var osdu = database.CreateDbContext())
         {
             osdu.DeliveryInterfaces.Add(new DeliveryInterface
             {
@@ -274,8 +287,8 @@ public sealed class DeliveryModuleTests
             },
         ]);
 
-        await using var context = catalog.CreateDbContext();
-        await using var module = sqlite.CreateDbContext();
+        await using var context = database.CreateCatalogContext();
+        await using var module = database.CreateDbContext();
         var contributor = new RecordSearchContributor(ledger, context, module);
         var contribution = await contributor.SearchAsync(
             new SearchContributionRequest("OSDU-DEV-1", ["OSDU-DEV-1"], 1, 5, new ClaimsPrincipal()), CancellationToken.None);

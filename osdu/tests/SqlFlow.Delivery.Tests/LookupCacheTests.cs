@@ -19,7 +19,7 @@ public sealed class LookupCacheTests : IDisposable
 
     private static readonly CacheCapture Capture = new(null, "cli:tester", "dictionary dictionaries/RecallUnits.yaml");
 
-    private readonly SqliteOsdu _catalog = new();
+    private readonly OsduTestDatabase _catalog = new();
 
     public void Dispose() => _catalog.Dispose();
 

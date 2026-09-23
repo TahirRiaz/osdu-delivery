@@ -21,11 +21,11 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// End to end over the sample mapping, the real WellLog 1.4.0 schema snapshot, the sample estate in the in-memory
-/// ingestion tables, a SQLite copy of the module's database and a fake protocol.
+/// ingestion tables, the module's database on SQL Server and a fake protocol.
 /// </summary>
 public class EndToEndTests : IDisposable
 {
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly string _root = Samples.NewTempDirectory();
 

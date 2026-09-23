@@ -18,7 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 /// <summary>The engine at scale, in miniature: work batches, step resumption, and the fan-out choreography.</summary>
 public class ScaleEngineTests : IDisposable
 {
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly string _root = Samples.NewTempDirectory();
 

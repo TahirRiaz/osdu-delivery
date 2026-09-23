@@ -14,7 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public sealed class InterfaceCatalogSyncTests : IDisposable
 {
-    private readonly SqliteOsdu _module = new();
+    private readonly OsduTestDatabase _module = new();
     private readonly string _root = Path.Combine(Path.GetTempPath(), "sqlflow-interface-sync-" + Guid.NewGuid().ToString("N"));
     private readonly Guid _repo = Guid.NewGuid();
 

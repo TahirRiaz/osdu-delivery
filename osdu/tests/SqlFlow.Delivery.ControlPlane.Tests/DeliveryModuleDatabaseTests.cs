@@ -9,6 +9,7 @@ using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Hosting;
+using SqlFlow.Delivery.Tests;
 using Xunit;
 
 namespace SqlFlow.ControlPlane.Tests;
@@ -21,7 +22,8 @@ namespace SqlFlow.ControlPlane.Tests;
 /// module's connection. Both are proven here, over the sample estate, with the catalog database watched for anything
 /// the module might have written into it.
 /// <para>These tests need a reachable SQL Server whose login may create a database: they create two of their own beside
-/// the one <c>SQLFLOW_TEST_DB</c> names, and drop both when they end. They skip when there is no such server.</para>
+/// the suites' test database (<see cref="OsduTestServer"/>), and drop both when they end. A server that refuses to
+/// create them fails the tests.</para>
 /// </summary>
 public sealed class DeliveryModuleDatabaseTests
 {
@@ -49,7 +51,7 @@ public sealed class DeliveryModuleDatabaseTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_module_database_of_its_own_takes_the_rows_and_the_catalog_database_never_sees_them()
     {
         await using var estate = await TestEstate.CreateAsync(separateDatabases: true);
@@ -82,7 +84,7 @@ public sealed class DeliveryModuleDatabaseTests
         Assert.Equal(0, await ScalarAsync(estate.CatalogConnectionString, "SELECT COUNT(*) FROM sys.schemas WHERE name = 'osdu'"));
     }
 
-    [SkippableTheory]
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task In_one_database_the_rows_commit_and_roll_back_with_the_sync(bool moduleDatabaseDeclared)
@@ -111,7 +113,7 @@ public sealed class DeliveryModuleDatabaseTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_mapping_change_is_read_from_wherever_the_module_database_is()
     {
         await using var estate = await TestEstate.CreateAsync(separateDatabases: true);
@@ -193,7 +195,7 @@ public sealed class DeliveryModuleDatabaseTests
     }
 
     /// <summary>
-    /// The databases a test runs against, created on the server <c>SQLFLOW_TEST_DB</c> names and dropped when the test
+    /// The databases a test runs against, created on the suites' test server and dropped when the test
     /// ends: SQLFlow's catalog, and the OSDU Delivery module either beside it in the same database or in one of its own.
     /// The module's schema is migrated exactly as a host migrates it, into a database provisioned first, which is what
     /// a deployment does.
@@ -223,7 +225,7 @@ public sealed class DeliveryModuleDatabaseTests
         /// </summary>
         public static async Task<TestEstate> CreateAsync(bool separateDatabases, bool declareModule = true)
         {
-            var builder = new SqlConnectionStringBuilder(CatalogTestDb.Require());
+            var builder = new SqlConnectionStringBuilder(OsduTestServer.Require());
             var master = new SqlConnectionStringBuilder(builder.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
             var suffix = Guid.NewGuid().ToString("N")[..8];
 
@@ -309,9 +311,10 @@ public sealed class DeliveryModuleDatabaseTests
             }
             catch (SqlException ex)
             {
-                throw new SkipException(
+                throw new InvalidOperationException(
                     "These tests prove where the module's rows land by giving it a database of its own, so they create two databases "
-                    + $"beside the one SQLFLOW_TEST_DB names and drop them again. This server refused: {ex.Message}");
+                    + $"beside the suites' test database and drop them again. This server refused: {ex.Message}",
+                    ex);
             }
 
             _created.Add(name);

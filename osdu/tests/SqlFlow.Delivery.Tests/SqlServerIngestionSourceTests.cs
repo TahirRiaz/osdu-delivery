@@ -10,7 +10,7 @@ namespace SqlFlow.Delivery.Tests;
 /// <summary>
 /// The SQL Server source over record tables of their own, in the chain fixture's database and ingestion schema: a read
 /// paged and cut on the table's identity primary key, and the tables whose declared primary key a read cannot rely on.
-/// Runs when <c>SQLFLOW_TEST_DB</c> points at a reachable, disposable database and skips otherwise.
+/// Runs on the suites' test database (<see cref="OsduTestServer"/>).
 /// </summary>
 public sealed class SqlServerIngestionSourceTests
 {
@@ -20,7 +20,7 @@ public sealed class SqlServerIngestionSourceTests
 
     private static readonly IReadOnlyDictionary<string, string> NoValues = new Dictionary<string, string>(StringComparer.Ordinal);
 
-    [SkippableFact]
+    [Fact]
     public async Task A_read_is_cut_on_the_identity_key_into_ranges_that_hold_every_candidate_once()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();
@@ -97,7 +97,7 @@ public sealed class SqlServerIngestionSourceTests
         Assert.Contains("was cut on the record key", foreign.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_primary_key_a_read_cannot_rely_on_is_refused_with_what_it_lacks()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();

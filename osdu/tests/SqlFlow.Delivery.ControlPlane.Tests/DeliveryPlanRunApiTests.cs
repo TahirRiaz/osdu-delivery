@@ -28,10 +28,10 @@ namespace SqlFlow.ControlPlane.Tests;
 [Trait("Category", "Integration")]
 public sealed class DeliveryPlanRunApiTests
 {
-    [SkippableFact]
+    [Fact]
     public async Task A_plan_run_of_the_sample_flow_executes_end_to_end()
     {
-        var cs = CatalogTestDb.Require();
+        var cs = OsduTestServer.Require();
         var estate = await Estate.SeedAsync(cs);
         var tables = new MemoryIngestionTables();
         tables.Add(new MemoryRecord

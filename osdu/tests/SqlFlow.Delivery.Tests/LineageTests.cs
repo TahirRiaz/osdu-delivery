@@ -467,7 +467,7 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public async Task A_mapping_change_is_a_lineage_input_change_and_a_second_declaration_is_not()
     {
-        using var catalog = new SqliteOsdu();
+        using var catalog = new OsduTestDatabase();
         var sync = new DeliveryCatalogSync(new DeliveryDocumentLoader());
         var repoId = Guid.NewGuid();
 

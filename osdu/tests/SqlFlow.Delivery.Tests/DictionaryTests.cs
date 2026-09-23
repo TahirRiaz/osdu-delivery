@@ -45,7 +45,7 @@ public sealed class DictionaryTests : IDisposable
         """;
 
     private readonly string _root = Samples.NewTempDirectory();
-    private readonly SqliteOsdu _db = new();
+    private readonly OsduTestDatabase _db = new();
 
     public void Dispose()
     {
