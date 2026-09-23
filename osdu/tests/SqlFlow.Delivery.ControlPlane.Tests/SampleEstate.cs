@@ -58,7 +58,7 @@ internal static class SampleEstate
     /// and the drop-off folder. Neither the templates nor the cache records are among them, because neither is
     /// repository content: both live in the module's database, and the repository holds only what declares them.
     /// </summary>
-    private static readonly string[] Parts = ["flows", "cache", "mappings", "dictionaries", "data"];
+    private static readonly string[] Parts = ["flows", "cache", "mappings", "data"];
 
     /// <summary>
     /// Copies the estate into <paramref name="destination"/> and returns it. Nothing about the flows is rewritten: what
@@ -167,10 +167,10 @@ internal static class SampleEstate
         // beside the source folders, because the cache itself belongs to the database.
         await builder.ImportDirectoryAsync(Path.Combine(Locate(), "cache-records"), flow.Types, new CacheCapture(null, "tests", "sample files"));
 
-        // The lookup tables the mappings translate source spellings through, from the sample dictionaries and the curve
+        // The lookup tables the mappings translate source spellings through, from the sample unit maps and the curve
         // dictionary file, as the lookups flow captures them.
         var lookups = new SnapshotBuilder(store, flow.Scope, Samples.SampleLookupsFlowName, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
-        await lookups.WriteAsync(Samples.SampleLookups(), new CacheCapture(null, "tests", "sample dictionaries and curve dictionary"), []);
+        await lookups.WriteAsync(Samples.SampleLookups(), new CacheCapture(null, "tests", "sample unit maps and curve dictionary"), []);
     }
 
     /// <summary>A context over the module's schema in the catalog database the suite was given.</summary>

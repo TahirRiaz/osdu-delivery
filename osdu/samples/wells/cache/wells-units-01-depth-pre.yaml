@@ -3,13 +3,14 @@
 # The units a depth is measured in: a curve's depth index, and a log's or a survey's vertical measurement. Each row maps one spelling the Recall source writes to the code of the partition's UnitOfMeasure record, as
 # petrodb-api's DepthUnit and VerticalMeasurementUnitOfMeasureID valueMap maps it (src/PetroDb/MappingGenerator/mappings/WellLog1_4_0.json). petrodb-api
 # matches a spelling ignoring case, so spellings that differ only by case are one row here, as the table's key holds them.
-# The file sits in the cache folder: this flow lands it, the next keys it, and wells-lookups-00-cache holds that table.
+# The file is static reference data, so it and the flows that load it sit in the cache folder: this flow lands
+# data/depth-units, wells-units-02-depth-ing keys it, and wells-lookups-00-cache holds that table.
 name: wells-units-01-depth-pre
 batch: wells
 
 source:
   type: csv
-  location: ../cache/data/depth-units
+  location: data/depth-units
   options:
     delimiter: ","
     header: true

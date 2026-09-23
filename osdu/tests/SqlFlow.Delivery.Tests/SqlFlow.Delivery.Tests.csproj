@@ -36,7 +36,6 @@
          from OSDU's schema service, not a file a repository sync reads. -->
     <Content Include="..\..\samples\wells\mappings\**" Link="samples\wells\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\wells\cache\**" Link="samples\wells\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\wells\dictionaries\**" Link="samples\wells\dictionaries\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- The key census files the editor analyses the module's documents with, checked against the loaders. -->
     <Content Include="..\..\docs\census\*.json" Link="census\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\wells\flows\**" Link="samples\wells\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />

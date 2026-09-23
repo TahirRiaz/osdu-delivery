@@ -15,7 +15,8 @@ import { E2E, databaseOf } from "../playwright.config";
  *
  * The repository is laid out per source: one top-level folder for the source, holding its flows, the mappings they pin,
  * the cache they resolve against and the drop-off folder the pre flows load from. That folder is what the catalog and
- * the GUI call a project, so the Repos page shows one project per source.
+ * the GUI call a project, so the Repos page shows one project per source. The cache folder holds everything static: the
+ * cache flows, the lookup tables' files in `cache/data`, and the pre and ingestion flows that load those files.
  *
  * Templates are not repository content. They are catalog objects, captured from OSDU's schema service through the
  * Templates page, so the seed spec saves the bundled schemas in `osdu/samples/templates` through the API instead. Cache
@@ -39,10 +40,11 @@ export default function globalSetup(): void {
 
   rmSync(repoDir, { recursive: true, force: true });
   mkdirSync(join(sourceDir, "flows"), { recursive: true });
+  mkdirSync(join(sourceDir, "cache"), { recursive: true });
 
   // The mappings the flows pin, and the sample files the pre flows read. The data folder is the source's drop-off point:
-  // it is what makes the chain runnable, because without it a pre flow has nothing to land. The lookup tables' files sit in
-  // the cache folder, beside the cache flow that holds them, and their own pre flows land them from there.
+  // it is what makes the chain runnable, because without it a pre flow has nothing to land. The lookup tables' files are
+  // static data and sit in the cache folder, beside the cache flow that holds them, and their own pre flows land them.
   for (const part of ["mappings", "data", join("cache", "data")]) {
     cpSync(join(samplesDir, part), join(sourceDir, part), { recursive: true });
   }
@@ -55,9 +57,9 @@ export default function globalSetup(): void {
   // volume in an estate, and it has a database of its own.
   const sampleDatabase = databaseOf(E2E.sampleDb);
   for (const flow of CHAIN) {
-    const shipped = readFileSync(join(samplesDir, "flows", `${flow}.yaml`), "utf8");
+    const shipped = readFileSync(join(samplesDir, folderOf(flow), `${flow}.yaml`), "utf8");
     writeFileSync(
-      join(sourceDir, "flows", `${flow}.yaml`),
+      join(sourceDir, folderOf(flow), `${flow}.yaml`),
       withoutTheLegalCheck(inSampleDatabase(withoutSchedule(shipped, flow), flow, sampleDatabase)),
     );
   }
@@ -66,7 +68,6 @@ export default function globalSetup(): void {
   // document is the whole of what a repository holds about a cache: the cache itself lives in the module's database,
   // captured there by a run. The flow comes along without its schedule, because the suite never refreshes it (that
   // would need an OSDU target), and the seed spec imports the sample records from osdu/samples as its first version.
-  mkdirSync(join(sourceDir, "cache"), { recursive: true });
   writeFileSync(
     join(sourceDir, "cache", `${CACHE}.yaml`),
     withoutSchedule(readFileSync(join(samplesDir, "cache", `${CACHE}.yaml`), "utf8"), CACHE),
@@ -140,6 +141,24 @@ export interface FixtureMeta {
  */
 export const REPO_NAME = "e2e-repo";
 
+/**
+ * The flows that load the lookup tables' static files. They sit in the source's cache folder, beside those files and the
+ * cache flow that holds the tables, rather than among the flows of the source's data.
+ */
+export const CACHE_LOADING_FLOWS = [
+  "wells-curvedictionary-01-pre",
+  "wells-curvedictionary-02-ing",
+  "wells-units-01-curve-pre",
+  "wells-units-02-curve-ing",
+  "wells-units-01-depth-pre",
+  "wells-units-02-depth-ing",
+] as const;
+
+/** The folder of the source a flow of the estate sits in. */
+export function folderOf(flow: string): "cache" | "flows" {
+  return (CACHE_LOADING_FLOWS as readonly string[]).includes(flow) ? "cache" : "flows";
+}
+
 /** The delivery flows of the fixture estate, and the pre and ingestion flows that fill the tables they read. */
 export const CHAIN = [
   "wells-welllog-01-header-pre",
@@ -158,12 +177,7 @@ export const CHAIN = [
   "wells-trajectory-01-stations-pre",
   "wells-trajectory-02-header-ing",
   "wells-trajectory-02-stations-ing",
-  "wells-curvedictionary-01-pre",
-  "wells-curvedictionary-02-ing",
-  "wells-units-01-curve-pre",
-  "wells-units-02-curve-ing",
-  "wells-units-01-depth-pre",
-  "wells-units-02-depth-ing",
+  ...CACHE_LOADING_FLOWS,
   // The same estate in the shape a source takes: two interfaces, each with a ledger of its own. It is synced and read,
   // never run, so it adds a multi-interface source to the catalog without delivering anything twice.
   "wells-source-03-interfaces-delivery",
@@ -186,12 +200,7 @@ export const LOADING_FLOWS = [
   "wells-trajectory-01-stations-pre",
   "wells-trajectory-02-header-ing",
   "wells-trajectory-02-stations-ing",
-  "wells-curvedictionary-01-pre",
-  "wells-curvedictionary-02-ing",
-  "wells-units-01-curve-pre",
-  "wells-units-02-curve-ing",
-  "wells-units-01-depth-pre",
-  "wells-units-02-depth-ing",
+  ...CACHE_LOADING_FLOWS,
 ] as const;
 
 /**

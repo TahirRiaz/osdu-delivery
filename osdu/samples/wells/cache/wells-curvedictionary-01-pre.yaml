@@ -3,14 +3,15 @@
 # One row per curve mnemonic, as petrodb-api's curve dictionary gives it (src/PetroDb/Api.Core/Mapping/CurveDictionary.json,
 # built from a CSV with these columns): the OSDU LogCurveType, LogCurveMainFamily and LogCurveFamily each mnemonic is filed
 # under, written as the code the record's id ends with, and the unit quantity and unit of a curve of that type. The file
-# sits in the cache folder, because it is reference data the lookups cache flow holds: this flow lands it, the next keys it,
-# and wells-lookups-00-cache captures that table so a mapping classifies a curve by its mnemonic exactly as petrodb-api does.
+# is static reference data the lookups cache flow holds, so it and the flows that load it sit in the cache folder: this
+# flow lands data/curve-dictionary, wells-curvedictionary-02-ing keys it, and wells-lookups-00-cache captures that table so
+# a mapping classifies a curve by its mnemonic exactly as petrodb-api does.
 name: wells-curvedictionary-01-pre
 batch: wells
 
 source:
   type: csv
-  location: ../cache/data/curve-dictionary
+  location: data/curve-dictionary
   options:
     delimiter: ","
     header: true

@@ -36,7 +36,7 @@ public sealed class LineageTests : IDisposable
     public LineageTests()
     {
         Directory.CreateDirectory(_root);
-        foreach (var folder in new[] { "flows", "cache", "mappings", "dictionaries", "data" })
+        foreach (var folder in new[] { "flows", "cache", "mappings", "data" })
         {
             Copy(Path.Combine(Samples.Source, folder), Path.Combine(_root, Source, folder));
         }

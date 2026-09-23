@@ -6,9 +6,10 @@
 # A lookup table is declared by one cache flow of a partition, and a refresh replaces it whole.
 #
 # The tables are the translations petrodb-api applies when it turns a Recall well log into an OSDU record, held as data
-# instead of code: its unit maps and its curve dictionary. Their files sit in cache/data/, each landed and keyed into an
-# ingestion table by a pre and an ing flow of its own (wells-units-01/02-curve, wells-units-01/02-depth,
-# wells-curvedictionary-01/02), and this flow captures those tables, so lineage runs it after them. Nothing here reaches
+# instead of code: its unit maps and its curve dictionary. They are static data, so everything of them sits in this cache
+# folder: their files in data/, and beside this flow the pre and ing flows that land and key each file into an ingestion
+# table (wells-units-01/02-curve, wells-units-01/02-depth, wells-curvedictionary-01/02). This flow captures those tables,
+# so lineage runs it after them. Nothing here reaches
 # the platform, so the flow needs no endpoint or credentials; the partition is still named, because it says whose cache
 # the tables belong to.
 flowType: cache

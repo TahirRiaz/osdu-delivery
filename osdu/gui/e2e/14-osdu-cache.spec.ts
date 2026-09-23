@@ -24,7 +24,7 @@ test.describe.serial("osdu cache", () => {
     // The summary: the version deliveries read, how much it holds, how it is refreshed, and that changes need no one.
     await expect(adminPage.getByTestId("delivery-cache-current-value")).toHaveText(/\d{8}T\d{6}Z/);
     await expect(adminPage.getByTestId("delivery-cache-summary")).toContainText(`written by ${LOOKUPS}`);
-    await expect(adminPage.getByTestId("delivery-cache-records-value")).toHaveText(/^\d+$/);
+    await expect(adminPage.getByTestId("delivery-cache-records-value")).toHaveText(/^\d{1,3}(,\d{3})*$/);
     await expect(adminPage.getByTestId("delivery-cache-schedules-value")).toHaveText("on demand");
     await expect(adminPage.getByTestId("delivery-cache-approval-value")).toHaveText("automatic", { timeout: 30_000 });
     await expect(adminPage.getByTestId("delivery-cache-pending-banner")).toHaveCount(0);

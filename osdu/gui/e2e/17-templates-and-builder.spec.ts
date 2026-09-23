@@ -425,8 +425,8 @@ test.describe.serial("templates and the mapping builder", () => {
     await properties.getByTestId("templates-view-variable-osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID").click();
     const modifiers = entry.getByTestId("delivery-mapping-property-detail-modifiers");
     await expect(modifiers).toContainText("split on ' ', part 2");
-    // The unit spelling is translated through the unit dictionary the partition's cache holds, not a list in the mapping.
-    await expect(modifiers).toContainText("replace from cache.RecallUnits");
+    // The unit spelling is translated through the depth unit map the partition's cache holds, not a list in the mapping.
+    await expect(modifiers).toContainText("replace from cache.RecallDepthUnits");
     await expect(modifiers).toContainText("the value the lookup compares");
 
     // The search reads what fills a variable too, so a source column answers with every variable it reaches: the

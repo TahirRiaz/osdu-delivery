@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E, connectionParts, connectionValue, hostRun } from "../playwright.config";
-import { CACHE, FixtureMeta, LOADING_FLOWS, LOOKUPS, REPO_NAME, SOURCE } from "./global-setup";
+import { CACHE, FixtureMeta, LOADING_FLOWS, LOOKUPS, REPO_NAME, SOURCE, folderOf } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
 // Seeds the estate THROUGH the product: saves the templates the sample mappings pin, imports the sample cache records as the
@@ -204,7 +204,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
         "dotnet",
         [
           ...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--",
-          "run", `${meta.sourceDir}/flows/${flow}.yaml`,
+          "run", `${meta.sourceDir}/${folderOf(flow)}/${flow}.yaml`,
           "--db", "${env:SQLFLOW_E2E_CATALOG_CONNECTION}", "--repo", REPO_NAME,
         ],
         {

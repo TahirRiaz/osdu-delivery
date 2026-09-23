@@ -18,7 +18,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   curve unit map (78 entries), the depth and vertical unit map (8) and the curve dictionary (498 mnemonics) are CSV files
   in `samples/wells/cache/data/`, each loaded into an ingestion table by a pre and an ing flow of its own
   (`wells-units-01/02-curve`, `wells-units-01/02-depth`, `wells-curvedictionary-01/02`) and captured by the lookups
-  cache flow as `RecallUnits`, `RecallDepthUnits` and `CurveDictionary`. petrodb-api matches a unit spelling ignoring
+  cache flow as `RecallUnits`, `RecallDepthUnits` and `CurveDictionary`. Being static data, the files and the flows that
+  load them sit in the source's cache folder beside the cache flows, and `flows/` holds only the flows of its data. petrodb-api matches a unit spelling ignoring
   case, so its spellings that differ only by case (`MPA` and `mpa`) are one row, as the tables' keys hold them. The well
   log mapping renders what petrodb-api renders from them: curve units through the curve map, depth and vertical units
   through the depth map, each resolved against the partition's units by `ID`, `Code`, then `Name`, and every curve's
