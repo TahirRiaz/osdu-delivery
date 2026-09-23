@@ -195,4 +195,135 @@ public class OsduQueryTests
             "at most",
             Assert.Throws<OsduQueryException>(() => OsduPath.Of("d." + new string('x', OsduPath.MaxLength))).Message,
             StringComparison.Ordinal);
+
+    [Fact]
+    public void A_keyword_property_is_asked_for_itself_because_it_has_no_sub_field()
+    {
+        // A legacy ^srn link is mapped as a bare keyword (TypeMapper.getKeywordIndexerMapping): asking its keyword
+        // sub-field would ask for a field that does not exist, and match nothing.
+        Assert.Equal(
+            "data.LegacyRef:\"srn:master-data/Well:1:\"",
+            OsduQuery.Equal(OsduField.Keyword("data.LegacyRef"), "srn:master-data/Well:1:").Text);
+    }
+
+    [Fact]
+    public void A_property_of_a_nested_array_is_asked_through_the_nested_form_by_its_path_inside_the_array()
+        => Assert.Equal(
+            "nested(data.NameAliases, (AliasName.keyword:\"WB-A\"))",
+            OsduQuery.Equal(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"), "WB-A").Text);
+
+    [Fact]
+    public void A_nested_array_must_hold_the_property_it_is_named_for()
+    {
+        Assert.Throws<OsduQueryException>(() => OsduField.Text("data.FacilityName", "data.NameAliases"));
+        Assert.Throws<OsduQueryException>(() => OsduField.Text("data.NameAliases", "data.NameAliases"));
+        Assert.Throws<OsduQueryException>(() => OsduField.Text("data.NameAliasesX.AliasName", "data.NameAliases"));
+        Assert.Equal("AliasName", OsduField.Text("data.NameAliases.AliasName", "data.NameAliases").QueryPath);
+    }
+
+    [Fact]
+    public void The_text_the_indexer_stores_for_a_null_property_is_refused_rather_than_matching_every_record_without_a_value()
+    {
+        // The keyword sub-field is mapped with null_value: "null" (TypeMapper.getKeywordMap).
+        var refused = Assert.Throws<OsduQueryException>(() => OsduQuery.Exact("data.FacilityName", "null"));
+        Assert.Contains("null_value", refused.Message, StringComparison.Ordinal);
+
+        // Case-insensitively, every spelling of it is the same indexed text.
+        Assert.Throws<OsduQueryException>(() => OsduQuery.Exact("data.FacilityName", "NULL", caseInsensitive: true));
+
+        // Case-sensitively, only the exact text is: NULL is a value like any other.
+        Assert.Equal("data.FacilityName.keyword:\"NULL\"", OsduQuery.Exact("data.FacilityName", "NULL").Text);
+
+        // A bare keyword has no null_value, so there it is a value like any other.
+        Assert.Equal("data.LegacyRef:\"null\"", OsduQuery.Equal(OsduField.Keyword("data.LegacyRef"), "null").Text);
+    }
+
+    [Fact]
+    public void A_keyword_cannot_be_compared_regardless_of_case_because_it_has_no_lowercase_sub_field()
+        => Assert.Contains(
+            OsduQuery.KeywordLowerSubField,
+            Assert.Throws<OsduQueryException>(() => OsduQuery.Equal(OsduField.Keyword("data.LegacyRef"), "x", caseInsensitive: true)).Message,
+            StringComparison.Ordinal);
+
+    [Fact]
+    public void A_keyword_value_no_term_could_hold_is_refused_by_its_bytes_not_its_characters()
+    {
+        // Three bytes of UTF-8 each: under the limit in characters, over it in bytes.
+        var wide = new string('\u20AC', (OsduQuery.MaxTermBytes / 3) + 1);
+        Assert.Throws<OsduQueryException>(() => OsduQuery.Equal(OsduField.Keyword("data.LegacyRef"), wide));
+
+        var fits = new string('x', OsduQuery.MaxTermBytes);
+        Assert.Contains(fits, OsduQuery.Equal(OsduField.Keyword("data.LegacyRef"), fits).Text, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("WB nested(1")]
+    [InlineData("WB nested (1")]
+    public void A_value_the_service_would_read_as_nested_syntax_is_refused_in_any_query(string value)
+    {
+        // QueryParserUtil switches to its nested parser when the query contains either text, quoted or not.
+        var refused = Assert.Throws<OsduQueryException>(() => OsduQuery.Exact("data.FacilityName", value));
+        Assert.Contains("nested", refused.Message, StringComparison.Ordinal);
+        Assert.Throws<OsduQueryException>(() => OsduQuery.Phrase("data.FacilityName", value));
+    }
+
+    [Fact]
+    public void The_nested_marker_is_matched_as_the_service_matches_it_with_case()
+        => Assert.Equal("data.FacilityName.keyword:\"Nested(1\"", OsduQuery.Exact("data.FacilityName", "Nested(1").Text);
+
+    [Theory]
+    [InlineData("WB (A")]
+    [InlineData("WB A)")]
+    [InlineData("WB )(A")]
+    public void A_value_with_unbalanced_parentheses_is_refused_inside_a_nested_query(string value)
+    {
+        // trimTrailingBrackets balances the inner query by counting every parenthesis, quoted ones included.
+        var refused = Assert.Throws<OsduQueryException>(
+            () => OsduQuery.Equal(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"), value));
+        Assert.Contains("parentheses", refused.Message, StringComparison.Ordinal);
+
+        // Outside a nested query nothing counts them, and the quoted phrase carries them.
+        Assert.Contains(value, OsduQuery.Exact("data.FacilityName", value).Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_value_with_balanced_parentheses_is_carried_inside_a_nested_query()
+        => Assert.Equal(
+            "nested(data.NameAliases, (AliasName.keyword:\"WB (A)\"))",
+            OsduQuery.Equal(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"), "WB (A)").Text);
+
+    [Theory]
+    [InlineData("A AND B:1")]
+    [InlineData("A OR B:1")]
+    [InlineData("NOT B:1")]
+    // The service's pattern has no word boundary, so a word ending in AND or OR is read the same way.
+    [InlineData("BRAND X:1")]
+    [InlineData("FLOOR X:1")]
+    public void A_value_the_service_would_rewrite_as_a_property_is_refused_inside_a_nested_query(string value)
+    {
+        // intermediateStringQueryNestedPattern: (AND|OR|NOT)\s(\S+?):, applied to the raw inner query.
+        var refused = Assert.Throws<OsduQueryException>(
+            () => OsduQuery.Equal(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"), value));
+        Assert.Contains("rewrites", refused.Message, StringComparison.Ordinal);
+
+        // A plain query is not rewritten, so there the value is asked for as it is.
+        Assert.Contains(value, OsduQuery.Exact("data.FacilityName", value).Text, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("A AND B")]
+    [InlineData("SAND:1")]
+    [InlineData("NO 15/9-F-1")]
+    public void A_value_the_service_leaves_alone_is_carried_inside_a_nested_query(string value)
+        => Assert.Contains(
+            LuceneText.Phrase(value),
+            OsduQuery.Equal(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"), value).Text,
+            StringComparison.Ordinal);
+
+    [Fact]
+    public void A_nested_query_holds_one_comparison_because_a_group_does_not_survive_the_services_rewriting()
+    {
+        var group = OsduQuery.All(OsduQuery.Exact("AliasName", "A"), OsduQuery.Exact("AliasNameTypeID", "B"));
+        Assert.Contains("one comparison", Assert.Throws<OsduQueryException>(() => OsduQuery.Nested("data.NameAliases", group)).Message, StringComparison.Ordinal);
+    }
 }
