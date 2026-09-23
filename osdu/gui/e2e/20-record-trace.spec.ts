@@ -51,7 +51,9 @@ test.describe.serial("record trace", () => {
     await expect(table.getByText(/No record starts with that/)).toBeVisible({ timeout: 30_000 });
     await adminPage.getByTestId("delivery-lookup-status").click();
     await adminPage.getByRole("option", { name: "pending" }).click();
-    await expect(rows.first()).toBeVisible({ timeout: 30_000 });
+    // The empty answer to the last state stays on screen until this one arrives, so the row is waited for by what it holds.
+    await expect(adminPage).toHaveURL(/status=pending/);
+    await expect(rows.first()).toContainText("NO_15_9", { timeout: 30_000 });
 
     // A row opens the record, whose journey starts with the row the intake staged it from and ends with the queued
     // document: planned, never dispatched, nothing landed.
