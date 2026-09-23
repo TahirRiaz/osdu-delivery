@@ -67,13 +67,20 @@ export async function seedSession(page: Page, session: SessionSeed): Promise<voi
   }, session);
 }
 
+/**
+ * How long the first page of a test may take to appear. Each test opens a new browser context, which loads the whole
+ * app from the GUI's dev server and renews its session against the control plane; on a busy machine that takes longer
+ * than the default wait, and a test failing there has tested nothing.
+ */
+const FIRST_PAGE_MS = 30_000;
+
 /** A page already signed in as the bootstrap-provisioned admin, parked on the dashboard. */
 export const test = base.extend<{ adminPage: Page }>({
   adminPage: async ({ page, request }, use) => {
     const session = await adminSession(request);
     await seedSession(page, session);
     await page.goto("/");
-    await expect(page.getByTestId("page-dashboard")).toBeVisible();
+    await expect(page.getByTestId("page-dashboard")).toBeVisible({ timeout: FIRST_PAGE_MS });
     await use(page);
   },
 });
