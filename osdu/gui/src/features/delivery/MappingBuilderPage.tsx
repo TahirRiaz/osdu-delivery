@@ -701,7 +701,7 @@ export default function MappingBuilderPage() {
                   <span className="font-mono">mappings/{reference}.yaml</span>
                 </div>
                 {result !== undefined
-                  ? <CodeView value={result.yaml} language="yaml" lsp={false} height={560} data-testid="mapping-builder-yaml" />
+                  ? <CodeView value={result.yaml} language="yaml" height={560} data-testid="mapping-builder-yaml" />
                   : compose.isError
                     ? <EmptyState title="The YAML is written once the check answers." data-testid="mapping-builder-yaml-unavailable" />
                     : <Skeleton className="h-[560px] w-full rounded-lg" />}

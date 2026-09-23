@@ -203,7 +203,7 @@ export default function DeliveryDocumentsPage() {
                     />
                   </TabsContent>
                   <TabsContent value="yaml" className="flex min-h-0 flex-col">
-                    <CodeView value={detail.yaml} language="yaml" lsp={false} fill data-testid="delivery-mapping-yaml" />
+                    <CodeView value={detail.yaml} language="yaml" fill data-testid="delivery-mapping-yaml" />
                   </TabsContent>
                   <TabsContent value="shape" className="flex min-h-0 flex-col">
                     <MappingShapeView yaml={detail.yaml} path={detail.mapping.relativePath} contentHash={detail.mapping.contentHash} />

@@ -43,6 +43,19 @@ const RecordSearchHits = lazyRoute(
   () => import("./features/delivery/RecordSearchHits").then((loaded) => ({ default: loaded.RecordSearchHits })),
 );
 
+/**
+ * The key census of every document this module adds, so the YAML editor documents, colours and checks them as it does
+ * SQLFlow's own flows: the delivery, retrieval and cache flows by their flowType, the mapping and the dictionary by their
+ * documentType. Each file loads when the editor first starts, not with the page.
+ */
+const census: GuiModule["census"] = [
+  { flowType: "delivery", load: () => import("../../docs/census/keys.delivery.json?raw").then((file) => file.default) },
+  { flowType: "retrieval", load: () => import("../../docs/census/keys.retrieval.json?raw").then((file) => file.default) },
+  { flowType: "cache", load: () => import("../../docs/census/keys.cache.json?raw").then((file) => file.default) },
+  { documentType: "mapping", load: () => import("../../docs/census/keys.mapping.json?raw").then((file) => file.default) },
+  { documentType: "dictionary", load: () => import("../../docs/census/keys.dictionary.json?raw").then((file) => file.default) },
+];
+
 /** The module's own navigation group: one home for every surface this product adds. */
 const OSDU_GROUP = "osdu";
 
@@ -179,6 +192,7 @@ export const osduDeliveryModule: GuiModule = {
       render: ({ category }) => <Deferred placeholder={false}><RecordSearchHits category={category} /></Deferred>,
     },
   ],
+  census,
   branding: {
     productName: "OSDU Delivery",
     attribution: "powered by SQLFlow",

@@ -1,0 +1,515 @@
+{
+  "version": 1,
+  "product": "OSDU Delivery",
+  "flowType": "cache",
+  "strictKeys": true,
+  "includeEnvelope": true,
+  "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
+  "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
+  "keyCount": 71,
+  "keys": [
+    {
+      "path": "batch",
+      "type": "string",
+      "required": false,
+      "description": "Optional grouping label (the source system) the platform files the flow's pipeline and runs under, such as `wells`. A blank value counts as none."
+    },
+    {
+      "path": "description",
+      "type": "string",
+      "required": false,
+      "description": "Optional text describing the cache."
+    },
+    {
+      "path": "flowType",
+      "type": "enum(cache)",
+      "required": true,
+      "description": "The document kind: `cache`, a cache flow that fills a partition's cache with the reference data mappings resolve against. The loader chooses the reader by it and refuses a document that declares no `flowType` or `documentType`.",
+      "enumValues": [
+        "cache"
+      ]
+    },
+    {
+      "path": "makeCurrent",
+      "type": "boolean",
+      "required": false,
+      "description": "Removed. Every version a refresh writes becomes the current version of its partition's cache, so a cache flow that still declares `makeCurrent` is refused when it loads. A delivery flow that has to stay on an earlier version pins it with `render.cacheVersion`."
+    },
+    {
+      "path": "name",
+      "type": "string",
+      "required": true,
+      "description": "The cache flow's name: its pipeline identity, and the name the versions it writes and the records it holds in the partition's cache are recorded under. A cache flow is named globally: the sync warns when a second file, in this repository or another, declares the same name."
+    },
+    {
+      "path": "onChange",
+      "type": "enum(auto|approve)",
+      "required": false,
+      "description": "What a changed cached value does to the records already built from it. `auto` tags them and lets the next run carry the new document; `approve` tags them and holds them back until someone approves the update on the OSDU cache page. A type can override it with `types[].onChange`.",
+      "enumValues": [
+        "auto",
+        "approve"
+      ],
+      "default": "auto"
+    },
+    {
+      "path": "parameters",
+      "type": "map",
+      "required": false,
+      "description": "Optional: the flow's parameters, by name. `{name}` tokens are usable in a type's `query`; a token no parameter declares is refused. Values come from `--set name=value`, the run's values, or the schedule's `values`."
+    },
+    {
+      "path": "parameters.<name>",
+      "type": "object",
+      "required": false,
+      "description": "One parameter; `<name>` is the name its `{name}` tokens use. A run supplying a value for a name the flow does not declare is refused."
+    },
+    {
+      "path": "parameters.<name>.default",
+      "type": "string",
+      "required": false,
+      "description": "The value used when a run supplies none."
+    },
+    {
+      "path": "parameters.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "Text describing what the parameter is for."
+    },
+    {
+      "path": "parameters.<name>.required",
+      "type": "boolean",
+      "required": false,
+      "description": "When true, a run that supplies no value, for a parameter without a default, fails with \"parameter 'name' is required\". A scheduled fire supplies only the schedule's `values`, so give it one there.",
+      "default": "false"
+    },
+    {
+      "path": "reliability",
+      "type": "object",
+      "required": false,
+      "description": "The HTTP settings for the platform's searches, as on a delivery flow: timeout, retry, rate limit, TLS, URL allowlist and response size. `reliability.parallelInterfaces` is refused."
+    },
+    {
+      "path": "reliability.batchRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: rendered documents per work batch file. The loader accepts it as on a delivery flow; a cache flow does not use it.",
+      "default": "500"
+    },
+    {
+      "path": "reliability.batchSize",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: records claimed per ledger round trip when retrying records. The loader accepts it as on a delivery flow; a cache flow does not use it.",
+      "default": "50"
+    },
+    {
+      "path": "reliability.concurrency",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: how many record batches its worker sends at once. The loader accepts it as on a delivery flow; a cache flow does not use it.",
+      "default": "8"
+    },
+    {
+      "path": "reliability.fanOut",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the member runs a large submission spreads over. The loader accepts it as on a delivery flow; a cache flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.fanOutMinRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: below this many records a submission never fans out. The loader accepts it as on a delivery flow; a cache flow does not use it.",
+      "default": "1000"
+    },
+    {
+      "path": "reliability.leaseSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: how long a worker's lease on a record lasts. The loader accepts it as on a delivery flow; a cache flow does not use it.",
+      "default": "300"
+    },
+    {
+      "path": "reliability.maxRequestBodyBytes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the target's declared request body ceiling (0 = not declared). The loader accepts it as on a delivery flow; a cache flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.maxResponseBytes",
+      "type": "integer",
+      "required": false,
+      "description": "The largest response body read, in bytes. A larger response fails the request with a message naming this setting.",
+      "default": "67108864"
+    },
+    {
+      "path": "reliability.parallelInterfaces",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery source's setting: how many of its interfaces run at once. A cache flow runs no interfaces, so the loader refuses it here."
+    },
+    {
+      "path": "reliability.rateLimitRps",
+      "type": "number",
+      "required": false,
+      "description": "The most requests per second the flow sends to the platform; 0 means unlimited. Token requests are not limited.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.renderParallelism",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: renderers in the intake pipeline (0 = the machine's cores). The loader accepts it as on a delivery flow; a cache flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.retry",
+      "type": "object",
+      "required": false,
+      "description": "How one request is repeated inline. Only requests that are safe to repeat are repeated, on 408, 425, 429, 503 and 504 and on a transport failure; 500 and 502 are not replayed."
+    },
+    {
+      "path": "reliability.retry.attempts",
+      "type": "integer",
+      "required": false,
+      "description": "The most attempts one request gets, the first included.",
+      "default": "4"
+    },
+    {
+      "path": "reliability.retry.backoff",
+      "type": "enum(exponential|fixed)",
+      "required": false,
+      "description": "The wait between attempts: `exponential` doubles `baseDelayMs` per attempt, `fixed` waits `baseDelayMs` each time; both are capped at `maxDelayMs`.",
+      "enumValues": [
+        "exponential",
+        "fixed"
+      ],
+      "default": "exponential"
+    },
+    {
+      "path": "reliability.retry.baseDelayMs",
+      "type": "integer",
+      "required": false,
+      "description": "The first wait between attempts, in milliseconds.",
+      "default": "500"
+    },
+    {
+      "path": "reliability.retry.honorRetryAfter",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether a `Retry-After` the service sends is honoured. A requested wait within `maxDelayMs` becomes the floor of the backoff; a longer one is never shortened, so the request stops instead of waiting it out.",
+      "default": "true"
+    },
+    {
+      "path": "reliability.retry.maxDelayMs",
+      "type": "integer",
+      "required": false,
+      "description": "The longest wait between attempts, in milliseconds.",
+      "default": "30000"
+    },
+    {
+      "path": "reliability.retry.recordBaseDelayMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the first wait between a record's attempts across worker passes, in minutes. The loader accepts it as on a delivery flow; a cache flow does not use it.",
+      "default": "1"
+    },
+    {
+      "path": "reliability.retry.recordMaxDelayMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the longest wait between a record's attempts across worker passes, in minutes. The loader accepts it as on a delivery flow; a cache flow does not use it.",
+      "default": "60"
+    },
+    {
+      "path": "reliability.skipStatusCodes",
+      "type": "list",
+      "required": false,
+      "description": "A delivery flow's setting: statuses that hold a record instead of retrying it. The loader accepts it as on a delivery flow; a cache flow does not use it."
+    },
+    {
+      "path": "reliability.skipStatusCodes[]",
+      "type": "integer",
+      "required": false,
+      "description": "One HTTP status code."
+    },
+    {
+      "path": "reliability.timeoutSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "How long one HTTP request may take, in seconds.",
+      "default": "100"
+    },
+    {
+      "path": "reliability.urlAllowlist",
+      "type": "list",
+      "required": false,
+      "description": "The hosts requests may reach (an SSRF guard), checked on every request and every redirect hop. Empty allows any host the deployment's network policy reaches; token requests are not checked against it."
+    },
+    {
+      "path": "reliability.urlAllowlist[]",
+      "type": "string",
+      "required": false,
+      "description": "A host name, or `*.suffix` to match the bare domain and any subdomain of it. Compared ignoring case."
+    },
+    {
+      "path": "reliability.verifyTls",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether the platform's TLS certificate is verified. `false` also needs `SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS=true` on the node, or the run is refused.",
+      "default": "true"
+    },
+    {
+      "path": "source",
+      "type": "object",
+      "required": true,
+      "description": "Where the flow reads from: the OSDU platform its OSDU types are searched on (`endpoint`, `auth`, `headers`) and the ingestion database its table types are read from (`connection`). `source.headers` names the partition whose cache the flow fills, so the block is always required."
+    },
+    {
+      "path": "source.auth",
+      "type": "object",
+      "required": false,
+      "description": "How requests to the OSDU platform authenticate, written as `target.auth` is on a delivery flow. Secrets are references only: ${env:NAME} or ${keyvault:vault/secret}. Left out, requests carry no credentials (type `none`).",
+      "appliesWhen": "Only with `source.endpoint`, when a type declares `kind`; refused when every type is a table or dictionary type."
+    },
+    {
+      "path": "source.auth.headerName",
+      "type": "string",
+      "required": false,
+      "description": "The header an `apiKeyHeader` auth sends the key in.",
+      "appliesWhen": "source.auth.type is apiKeyHeader, which needs it."
+    },
+    {
+      "path": "source.auth.secondarySecretRef",
+      "type": "string",
+      "required": false,
+      "description": "The secondary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}): the username for `basic`, the client id for `oauth2ClientCredentials` (sent as `client_id` unless the token body names one).",
+      "appliesWhen": "source.auth.type is basic or oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.secretRef",
+      "type": "string",
+      "required": false,
+      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one).",
+      "appliesWhen": "Needed by bearer, apiKeyHeader and basic; used by oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token",
+      "type": "object",
+      "required": false,
+      "description": "The OAuth2 token endpoint: where a token is requested and how it is read from the answer. One token serves the run and is requested again shortly before it expires.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials, which needs it."
+    },
+    {
+      "path": "source.auth.token.applyPrefix",
+      "type": "string",
+      "required": false,
+      "description": "The text put before the access token in the `Authorization` header.",
+      "default": "\"Bearer \"",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.basicAuthClient",
+      "type": "boolean",
+      "required": false,
+      "description": "When true, the client id and secret are sent as an HTTP Basic `Authorization` header on the token request instead of in its form body.",
+      "default": "false",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.body",
+      "type": "map",
+      "required": false,
+      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.body.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.discoveryUrl",
+      "type": "string",
+      "required": false,
+      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or url."
+    },
+    {
+      "path": "source.auth.token.tokenPath",
+      "type": "string",
+      "required": false,
+      "description": "The path of the access token in the token endpoint's JSON answer.",
+      "default": "access_token",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.url",
+      "type": "string",
+      "required": false,
+      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or discoveryUrl."
+    },
+    {
+      "path": "source.auth.type",
+      "type": "enum(none|bearer|apiKeyHeader|basic|oauth2ClientCredentials)",
+      "required": false,
+      "description": "The auth scheme: `none`, `bearer` (a token as a reference), `apiKeyHeader` (a key in a named header), `basic` (username and password) or `oauth2ClientCredentials` (a token requested from `token`). Read ignoring case.",
+      "enumValues": [
+        "none",
+        "bearer",
+        "apiKeyHeader",
+        "basic",
+        "oauth2ClientCredentials"
+      ],
+      "default": "none"
+    },
+    {
+      "path": "source.auth.valuePrefix",
+      "type": "string",
+      "required": false,
+      "description": "The text put before the secret in the header value of a `bearer` or `apiKeyHeader` auth. An OAuth2 token takes `token.applyPrefix` instead.",
+      "default": "\"Bearer \" for bearer; nothing for apiKeyHeader",
+      "appliesWhen": "source.auth.type is bearer or apiKeyHeader."
+    },
+    {
+      "path": "source.connection",
+      "type": "string",
+      "required": false,
+      "description": "The ingestion database the flow's table types are read from, declared as a delivery flow's `source.connection` is: a whole ${env:NAME} or ${keyvault:vault/secret} reference, or a SQL Server connection string whose secrets are references. A literal password is refused.",
+      "appliesWhen": "Required when a type declares `table`; refused when none does."
+    },
+    {
+      "path": "source.endpoint",
+      "type": "string",
+      "required": false,
+      "description": "The base URL of the OSDU platform the OSDU types are searched on, usually a reference such as `${env:OSDU_URL}`. The cache flows of one partition should search the same platform: the sync warns when they declare different endpoints.",
+      "appliesWhen": "Required when a type declares `kind`; refused, with `source.auth`, when every type is a table or dictionary type."
+    },
+    {
+      "path": "source.headers",
+      "type": "map",
+      "required": true,
+      "description": "Headers sent with every request to the platform. `data-partition-id` is always required: it names the partition whose cache the flow fills, and every search carries it."
+    },
+    {
+      "path": "source.headers.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One header; `<name>` is the header name. `data-partition-id` is an id segment (letters, digits, underscore, hyphen and dot, at most 200 characters) or a `${env:...}` or `${keyvault:...}` reference; a cache is keyed by what it resolves to."
+    },
+    {
+      "path": "types",
+      "type": "list",
+      "required": true,
+      "description": "The types the flow caches, at least one. Each has exactly one origin: `kind` (searched on OSDU), `table` (an ingestion table) or `dictionary` (a dictionary document in the repository). Type names are unique within the flow, because a mapping reads a type by its name (`cache.<Type>.<field>`)."
+    },
+    {
+      "path": "types[]",
+      "type": "object",
+      "required": false,
+      "description": "One cached type. Another cache flow of the same partition may declare the same OSDU type, and the cache then holds one type under that name; a lookup table (a table or dictionary type) is declared by one cache flow of a partition."
+    },
+    {
+      "path": "types[].dictionary",
+      "type": "string",
+      "required": false,
+      "description": "The name of the dictionary document the type holds: `dictionaries/<name>.yaml` in the nearest `dictionaries/` folder above the flow. The type is named after the dictionary unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query` or `fields`, since the document names its key and values. The run reads the file at its commit, so it needs the repository's tree.",
+      "appliesWhen": "Dictionary origin only: a type with `dictionary`, held from the repository's dictionaries/ folder. Not combined with `kind` or `table`."
+    },
+    {
+      "path": "types[].entityType",
+      "type": "string",
+      "required": false,
+      "description": "The OSDU entity type of the records (`reference-data--UnitOfMeasure`). Derived from the kind when left out; a kind that names no entity type needs it.",
+      "appliesWhen": "OSDU origin only: a type with `kind`, searched on OSDU. Refused on a table or dictionary type."
+    },
+    {
+      "path": "types[].fields",
+      "type": "list",
+      "required": false,
+      "description": "What the cache keeps of each record. For an OSDU type: the paths to keep. For a table type: the columns to keep beside the key. A path that yields nothing on every record is reported at capture.",
+      "appliesWhen": "Required for an OSDU type (`kind`) and a table type (`table`); refused for a dictionary type (`dictionary`)."
+    },
+    {
+      "path": "types[].fields[]",
+      "type": "object",
+      "required": false,
+      "description": "One kept value. For an OSDU type: a path such as `data.Code` (cached as `Code`), or `{ path: ..., as: ... }`. For a table type: a column name (kept under its own name), or `{ column: ..., as: ... }`. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object.",
+      "appliesWhen": "OSDU and table origins; a dictionary type lists none.",
+      "freeForm": true
+    },
+    {
+      "path": "types[].fields[].path",
+      "type": "string",
+      "required": false,
+      "description": "The path into the OSDU record, from its root (`data.Code`, `legal.legaltags`). A path crosses arrays implicitly, so `data.NameAliases.AliasName` reaches through an array of objects and caches the set of aliases it finds.",
+      "appliesWhen": "OSDU origin only: a type with `kind`, searched on OSDU. Required in the `{ path: ..., as: ... }` form."
+    },
+    {
+      "path": "types[].fields[].as",
+      "type": "string",
+      "required": false,
+      "description": "The name the value is kept under, and the name a mapping reads it by. For an OSDU type a bare path is kept under the path without its leading `data.`; the name `id` is refused, and no two values of a type share a name. For a table type a column is kept under its own name; neither the key nor a field may be called `id` in any casing.",
+      "appliesWhen": "OSDU origin (with `path`) or table origin (with `column`)."
+    },
+    {
+      "path": "types[].fields[].column",
+      "type": "string",
+      "required": false,
+      "description": "A column of the table to keep beside the key: 1 to 128 characters, without brackets, control characters or surrounding space. The key column is not listed among the fields, since it is kept under its own name already.",
+      "appliesWhen": "Table origin only: a type with `table`, read from an ingestion table. Required in the `{ column: ..., as: ... }` form."
+    },
+    {
+      "path": "types[].key",
+      "type": "string",
+      "required": false,
+      "description": "The column each row of the table is keyed by, and the one a mapping finds the row by. A key is trimmed, and a key that is empty, longer than 256 characters, or held by two rows once trimmed refuses the capture, naming the rows.",
+      "appliesWhen": "Table origin only: a type with `table`, read from an ingestion table. Required there; refused on an OSDU type, whose records are kept under their id, and on a dictionary type, whose document names its own key."
+    },
+    {
+      "path": "types[].kind",
+      "type": "string",
+      "required": false,
+      "description": "The OSDU kind searched, `authority:source:entityType:version` with wildcards per segment (`osdu:wks:reference-data--UnitOfMeasure:*`). A refresh sweeps every record the search matches through the search cursor.",
+      "appliesWhen": "OSDU origin only: a type with `kind`, searched on OSDU. Not combined with `table` or `dictionary`; it makes `source.endpoint` required."
+    },
+    {
+      "path": "types[].name",
+      "type": "string",
+      "required": false,
+      "description": "The name a mapping reads the type by (`cache.<Type>.<field>`), unique within the flow ignoring case. Derived when left out: from the entity type for an OSDU type (`reference-data--UnitOfMeasure` gives `UnitOfMeasure`), from the table name for a table type, and from the dictionary name for a dictionary type."
+    },
+    {
+      "path": "types[].onChange",
+      "type": "enum(auto|approve)",
+      "required": false,
+      "description": "Overrides the flow's `onChange` for this type: `auto` lets the next run carry a changed value, `approve` holds the affected records until someone approves the update on the OSDU cache page. When several cache flows of a partition declare a type, its changes wait for approval when any of them says `approve`.",
+      "enumValues": [
+        "auto",
+        "approve"
+      ],
+      "default": "the flow's onChange"
+    },
+    {
+      "path": "types[].query",
+      "type": "string",
+      "required": false,
+      "description": "A Lucene query narrowing the records the type's search matches. `{name}` tokens are substituted from the flow's parameters; a token no parameter declares is refused.",
+      "default": "*",
+      "appliesWhen": "OSDU origin only: a type with `kind`, searched on OSDU. Refused on a table or dictionary type, which holds every row."
+    },
+    {
+      "path": "types[].table",
+      "type": "string",
+      "required": false,
+      "description": "The three-part name (`[database].[schema].[table]`) of an ingestion table an ingestion flow loads, read over `source.connection`. The type is named after the table unless `name` says otherwise, is kept as `lookup--<name>`, and holds every row its ingestion flow has not marked deleted (`DeletedDate_DW`, when the table has it); a table over 100,000 rows refuses the capture. Lineage orders the flow after the ingestion flow that loads the table.",
+      "appliesWhen": "Table origin only: a type with `table`, read from an ingestion table. Not combined with `kind` or `dictionary`; needs `key` and `fields`, and makes `source.connection` required."
+    }
+  ]
+}

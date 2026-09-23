@@ -463,6 +463,16 @@ accepts.
 **Closes when** the Rust workspace tests pass, the WebAssembly package is rebuilt, and the mapping and cache views
 complete and flag keys in the GUI.
 
+**As built.** The generic registry is `ca779a3` (`census::register`, `initializationOptions.censusDirectories`,
+`register_census`, `GuiModule.census`), with `strictKeys`, `includeEnvelope`, `includeShared` and `freeForm`. The census
+covers every document the module adds, not only the three the plan named: the delivery and retrieval flows too, since
+their pipeline pages had the editor's analysis off as well. The files are in `osdu/docs/census`, and `EditorCensusTests`
+reads the accepted keys off the loaders' YAML models by reflection and the modifier and dictionary keys off the names
+`MappingMapper` and `DictionaryMapper` accept. Every sample flow, cache flow, mapping and dictionary analyses clean. Found
+on the way: SQLFlow's file flow census did not document `schedule.operation` and `schedule.values`, which the envelope
+schedule reads, and the cache loader dropped a `key` written on a dictionary type without a word; the first is fixed in
+the same `sqlflow:` commit, the second refuses the key now.
+
 ## Close-out
 
 - A clean rebuild with zero warnings; the GUI build and lint; every suite, SQL Server included.

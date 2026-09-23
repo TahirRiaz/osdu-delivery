@@ -1,0 +1,449 @@
+{
+  "version": 1,
+  "product": "OSDU Delivery",
+  "documentType": "mapping",
+  "strictKeys": true,
+  "generatedFrom": "osdu/docs/documents.md, osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs, MappingMapper.cs and DictionaryMapper.cs",
+  "naming": "The loader reads the document with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
+  "keyCount": 69,
+  "keys": [
+    {
+      "path": "documentType",
+      "type": "enum(mapping)",
+      "required": true,
+      "description": "Always mapping: this document fills one OSDU template.",
+      "enumValues": [
+        "mapping"
+      ]
+    },
+    {
+      "path": "name",
+      "type": "string",
+      "required": true,
+      "description": "The mapping's name. With version it makes the reference Name@version a delivery flow pins under render.mapping, and the file is mappings/Name@version.yaml."
+    },
+    {
+      "path": "version",
+      "type": "string",
+      "required": true,
+      "description": "The mapping's version. It is part of the reference Name@version and of every rendered record's render context, so a new version re-renders the records that use it."
+    },
+    {
+      "path": "description",
+      "type": "string",
+      "required": false,
+      "description": "Free text describing what the mapping delivers."
+    },
+    {
+      "path": "template",
+      "type": "object",
+      "required": true,
+      "description": "The saved template version the mapping fills. A run refuses to render against any other, and one the catalog does not hold stops the run."
+    },
+    {
+      "path": "template.kind",
+      "type": "string",
+      "required": true,
+      "description": "The OSDU kind of the records the mapping renders, authority:source:entityType:major.minor.patch, such as osdu:wks:work-product-component--WellLog:1.4.0."
+    },
+    {
+      "path": "template.version",
+      "type": "string",
+      "required": true,
+      "description": "The saved template version: the 16 hexadecimal characters the Templates page and 'sqlflow template list' show for the kind."
+    },
+    {
+      "path": "dataset",
+      "type": "object",
+      "required": true,
+      "description": "The rows the mapping renders: the source system, the key the delivery key and the OSDU id are derived from, and what identifies a record to a person."
+    },
+    {
+      "path": "dataset.system",
+      "type": "string",
+      "required": true,
+      "description": "The source system. It enters the delivery key, and so the OSDU id: two mappings that deliver the same rows into the same entity type and partition need different systems or keys."
+    },
+    {
+      "path": "dataset.key",
+      "type": "list",
+      "required": true,
+      "description": "The columns of the dataset's row that identify a record, in order, each written dataset.<column>. The delivery key, and so the OSDU id, is derived from them; a key column need not be written into the record."
+    },
+    {
+      "path": "dataset.key[]",
+      "type": "string",
+      "required": false,
+      "description": "A key column, written dataset.<column>."
+    },
+    {
+      "path": "dataset.label",
+      "type": "string",
+      "required": false,
+      "description": "Optional display text for the ledger and the GUI, with {dataset.<column>} tokens, cut at 400 characters. It never enters the record."
+    },
+    {
+      "path": "dataset.identity",
+      "type": "list",
+      "required": false,
+      "description": "Optional columns whose values identify the record to a person (a wellbore id, a log id). The ledger indexes every value, so the Records page finds the record by any of them. Search only: never in the record."
+    },
+    {
+      "path": "dataset.identity[]",
+      "type": "string",
+      "required": false,
+      "description": "An identifying column, written dataset.<column>."
+    },
+    {
+      "path": "parameters",
+      "type": "map",
+      "required": false,
+      "description": "Values the flow supplies under render.parameters, each declared here. dataPartition is always declared, and a flow value for a parameter the mapping does not declare is refused."
+    },
+    {
+      "path": "parameters.<name>",
+      "type": "object",
+      "required": false,
+      "description": "One parameter, read in static values as {param.<name>}."
+    },
+    {
+      "path": "parameters.<name>.required",
+      "type": "boolean",
+      "required": false,
+      "description": "True when the flow has to supply the parameter (or it has a default)."
+    },
+    {
+      "path": "parameters.<name>.default",
+      "type": "string",
+      "required": false,
+      "description": "The value used when the flow supplies none. It is mapping content and is not expanded as a reference."
+    },
+    {
+      "path": "parameters.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "Free text describing the parameter."
+    },
+    {
+      "path": "searches",
+      "type": "map",
+      "required": false,
+      "description": "The record sets the mapping's search.<name> sources look in on the platform, as each record needs one, rather than capturing them into the cache. One search per kind, each read by an entry."
+    },
+    {
+      "path": "searches.<name>",
+      "type": "object",
+      "required": false,
+      "description": "One search, read by entries as search.<name>.id."
+    },
+    {
+      "path": "searches.<name>.kind",
+      "type": "string",
+      "required": true,
+      "description": "The kind searched: one entity type, at one version or every version, such as osdu:wks:master-data--Wellbore:*."
+    },
+    {
+      "path": "searches.<name>.schema",
+      "type": "object",
+      "required": true,
+      "description": "The saved template whose schema says how the searched kind's properties are indexed, so a findBy line is asked the way the platform answers it."
+    },
+    {
+      "path": "searches.<name>.schema.kind",
+      "type": "string",
+      "required": true,
+      "description": "The kind of the saved template, such as osdu:wks:master-data--Wellbore:1.3.0."
+    },
+    {
+      "path": "searches.<name>.schema.version",
+      "type": "string",
+      "required": true,
+      "description": "The saved template version: 16 hexadecimal characters."
+    },
+    {
+      "path": "searches.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "Free text describing the search."
+    },
+    {
+      "path": "mappings",
+      "type": "list",
+      "required": true,
+      "description": "The entries, at least one: each names a template variable and where its value comes from. A variable without an entry is left out of the record, and no two entries fill the same variable."
+    },
+    {
+      "path": "mappings[]",
+      "type": "object",
+      "required": false,
+      "description": "One entry: the variable it fills (target) and where the value comes from (source or static), with the lookup, modifiers and condition that apply."
+    },
+    {
+      "path": "mappings[].target",
+      "type": "string",
+      "required": true,
+      "description": "The template variable to fill: osdu. and the property's path in the record, with [] after an array of objects (osdu.data.Curves[].CurveID). A path steps into at most one array."
+    },
+    {
+      "path": "mappings[].source",
+      "type": "string",
+      "required": false,
+      "description": "Where the value comes from: dataset.<column>, dataset.<child>.<column>, dataset.<child> (a repeater), cache.<Type>.id, cache.<Type>.<field>, or search.<name>.id. An entry has source or static, never both."
+    },
+    {
+      "path": "mappings[].static",
+      "type": "any",
+      "required": false,
+      "description": "A fixed value: text, a number, a boolean, a list or an object. {param.name} tokens in its text are replaced with the flow's parameter values. A static entry takes only appliesWhen and description besides.",
+      "freeForm": true
+    },
+    {
+      "path": "mappings[].findBy",
+      "type": "string or list",
+      "required": false,
+      "description": "With a cache or a search source, and required there: which record to read. One line or a list, such as cache.UnitOfMeasure.Code = dataset.unit; the lines are tried in order and the first that finds exactly one record wins.",
+      "freeForm": true
+    },
+    {
+      "path": "mappings[].modifiers",
+      "type": "list",
+      "required": false,
+      "description": "Changes to the incoming dataset value, applied top to bottom. On a cache or search source they change the value findBy compares; cached values and platform records are never modified."
+    },
+    {
+      "path": "mappings[].modifiers[]",
+      "type": "string or object",
+      "required": false,
+      "description": "A modifier: a name (trim, upper, lower, date, number) or one setting (split, replace, equals, date, number) written as a one-key mapping. Only replace takes settings beside it: otherwise, and for a cached table match and field.",
+      "enumValues": [
+        "trim",
+        "upper",
+        "lower",
+        "split",
+        "replace",
+        "equals",
+        "date",
+        "number"
+      ]
+    },
+    {
+      "path": "mappings[].modifiers[].split",
+      "type": "object",
+      "required": false,
+      "description": "Splits the value and keeps one part: split: { separator: \",\", part: 1 }. A part the value does not have, or an empty one, gives an empty value."
+    },
+    {
+      "path": "mappings[].modifiers[].split.separator",
+      "type": "string",
+      "required": true,
+      "description": "The text the value is split on. A single space splits on any run of whitespace."
+    },
+    {
+      "path": "mappings[].modifiers[].split.part",
+      "type": "integer",
+      "required": true,
+      "description": "The part to keep, counting from one."
+    },
+    {
+      "path": "mappings[].modifiers[].replace",
+      "type": "map or string",
+      "required": false,
+      "description": "Replaces the trimmed value. Written as a table ({ M: m, NONE: ~ }) it lists incoming values and what each becomes, ~ being no value. Written as cache.<Type> it reads the table from the partition's cache: a dictionary, an ingestion table or OSDU reference data. A value is matched exactly first, then ignoring case when that finds one row."
+    },
+    {
+      "path": "mappings[].modifiers[].replace.<value>",
+      "type": "string",
+      "required": false,
+      "description": "An incoming value, and what it becomes: text, or ~ for no value, so the entry's required flag decides."
+    },
+    {
+      "path": "mappings[].modifiers[].otherwise",
+      "type": "string",
+      "required": false,
+      "description": "What a value the table does not list becomes: left out, it passes on unchanged; ~ gives no value; any other text replaces it. Written beside replace, never inside its table.",
+      "appliesWhen": "replace"
+    },
+    {
+      "path": "mappings[].modifiers[].match",
+      "type": "string",
+      "required": false,
+      "description": "For a table read from the cache: the cached field the incoming value is compared with. It defaults to the table's key; a type of OSDU records has none, so it is named there.",
+      "appliesWhen": "replace: cache.<Type>"
+    },
+    {
+      "path": "mappings[].modifiers[].field",
+      "type": "string",
+      "required": false,
+      "description": "For a table read from the cache: the cached field that replaces the value. It defaults to the one field a lookup table holds beside its key (value, for a dictionary of pairs); a table with several fields, and a type of OSDU records, names it. A row with nothing there gives no value.",
+      "appliesWhen": "replace: cache.<Type>"
+    },
+    {
+      "path": "mappings[].modifiers[].equals",
+      "type": "string",
+      "required": false,
+      "description": "Gives true when the trimmed value equals this text, ignoring case, and false otherwise. The entry's last modifier being equals, it must fill a boolean."
+    },
+    {
+      "path": "mappings[].modifiers[].date",
+      "type": "string",
+      "required": false,
+      "description": "Reads the value as a date in this .NET format (dd.MM.yyyy) and writes it in the form the template's format names: a full-date for a date, a UTC date-time otherwise. Without a format (- date) it reads ISO 8601 only."
+    },
+    {
+      "path": "mappings[].modifiers[].number",
+      "type": "object",
+      "required": false,
+      "description": "Reads the value as a number written with these separators: number: { decimal: \",\", group: \" \" }. Without settings (- number) the decimal separator is a point and there is no group separator."
+    },
+    {
+      "path": "mappings[].modifiers[].number.decimal",
+      "type": "string",
+      "required": false,
+      "description": "The separator before the decimals: . or ,.",
+      "enumValues": [
+        ".",
+        ","
+      ]
+    },
+    {
+      "path": "mappings[].modifiers[].number.group",
+      "type": "string",
+      "required": false,
+      "description": "The separator between groups of three digits, when the value is written with one."
+    },
+    {
+      "path": "mappings[].appliesWhen",
+      "type": "string",
+      "required": false,
+      "description": "When the entry applies to a row: dataset.<column> is <text>, is not <text>, is empty or is not empty (trimmed text, ignoring case). When it does not, the variable is left out for that row."
+    },
+    {
+      "path": "mappings[].required",
+      "type": "boolean",
+      "required": false,
+      "description": "What an empty value does: true (the default) holds the record, false leaves the variable out.",
+      "default": "true"
+    },
+    {
+      "path": "mappings[].ignoreSeparators",
+      "type": "boolean",
+      "required": false,
+      "description": "With a cache source: a last matching attempt with punctuation and spacing folded away on both sides, for names rather than codes.",
+      "default": "false"
+    },
+    {
+      "path": "mappings[].description",
+      "type": "string",
+      "required": false,
+      "description": "Free text describing the entry."
+    },
+    {
+      "path": "fixtures",
+      "type": "list",
+      "required": false,
+      "description": "Example rows and the exact record each must render to under the pinned template and cache. The preflight gate renders them before every run: the mapping's regression suite."
+    },
+    {
+      "path": "fixtures[]",
+      "type": "object",
+      "required": false,
+      "description": "One fixture: a row, the parameters and search answers it renders with, and the record it must render to."
+    },
+    {
+      "path": "fixtures[].name",
+      "type": "string",
+      "required": true,
+      "description": "What the fixture shows."
+    },
+    {
+      "path": "fixtures[].parameters",
+      "type": "map",
+      "required": false,
+      "description": "The render parameters the fixture renders with."
+    },
+    {
+      "path": "fixtures[].parameters.<name>",
+      "type": "string",
+      "required": false,
+      "description": "A parameter's value."
+    },
+    {
+      "path": "fixtures[].record",
+      "type": "map",
+      "required": false,
+      "description": "The dataset's row: its columns and values."
+    },
+    {
+      "path": "fixtures[].record.<name>",
+      "type": "string",
+      "required": false,
+      "description": "A column's value."
+    },
+    {
+      "path": "fixtures[].datasets",
+      "type": "map",
+      "required": false,
+      "description": "Child dataset rows, by child dataset name."
+    },
+    {
+      "path": "fixtures[].datasets.<name>",
+      "type": "list",
+      "required": false,
+      "description": "The rows of one child dataset."
+    },
+    {
+      "path": "fixtures[].datasets.<name>[]",
+      "type": "map",
+      "required": false,
+      "description": "One child row: its columns and values."
+    },
+    {
+      "path": "fixtures[].datasets.<name>[].<name>",
+      "type": "string",
+      "required": false,
+      "description": "A column's value."
+    },
+    {
+      "path": "fixtures[].searches",
+      "type": "list",
+      "required": false,
+      "description": "What the platform is assumed to answer to each search the render asks; a fixture never asks it."
+    },
+    {
+      "path": "fixtures[].searches[]",
+      "type": "object",
+      "required": false,
+      "description": "One answer the platform is assumed to give: the search, the property and value asked for, and the record found."
+    },
+    {
+      "path": "fixtures[].searches[].search",
+      "type": "string",
+      "required": true,
+      "description": "The search, by its name under searches."
+    },
+    {
+      "path": "fixtures[].searches[].field",
+      "type": "string",
+      "required": true,
+      "description": "The property the findBy line compares, such as data.FacilityName."
+    },
+    {
+      "path": "fixtures[].searches[].value",
+      "type": "string",
+      "required": true,
+      "description": "The value asked for."
+    },
+    {
+      "path": "fixtures[].searches[].id",
+      "type": "string",
+      "required": false,
+      "description": "The one record found; left out when the platform holds no such record."
+    },
+    {
+      "path": "fixtures[].expected",
+      "type": "string",
+      "required": true,
+      "description": "The exact record the row renders to, as JSON, compared canonically."
+    }
+  ]
+}

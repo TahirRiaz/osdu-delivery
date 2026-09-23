@@ -59,7 +59,10 @@ test.describe.serial("osdu cache", () => {
     await expect(definition).toContainText("goes out on the next run");
     const rows = definition.getByTestId("delivery-cache-definition-types").getByTestId("table-row");
     await expect(rows).toHaveCount(7);
-    await expect(rows.filter({ hasText: "reference-data--UnitOfMeasure" })).toContainText("data.Code");
+    // Each kept path shows by the name a mapping reads it by, with the path it reads on hover.
+    const units = rows.filter({ hasText: "reference-data--UnitOfMeasure" });
+    await expect(units).toContainText("Code");
+    await expect(units.getByTitle("cache.UnitOfMeasure.Code reads data.Code")).toBeVisible();
     await expect(rows.filter({ hasText: "master-data--Wellbore" })).toHaveCount(0);
     // A lookup table says where its rows come from and what they are kept under.
     await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("dictionaries/RecallUnits.yaml");
@@ -103,6 +106,12 @@ test.describe.serial("osdu cache", () => {
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
     await adminPage.getByTestId("pipeline-tab-yaml").click();
     await expect(adminPage.getByTestId("pipeline-yaml")).toContainText("flowType: cache", { timeout: 15_000 });
+    // A cache flow is analysed like SQLFlow's own flows: its keys are documented on hover, and nothing in it is flagged.
+    // The editor draws only the lines in view, so the key hovered is one near the top.
+    const cacheYaml = adminPage.getByTestId("pipeline-yaml");
+    await cacheYaml.locator(".view-lines").getByText("source", { exact: true }).first().hover();
+    await expect(adminPage.locator(".monaco-hover:not(.hidden)")).toContainText("Where the flow reads from", { timeout: 15_000 });
+    await expect(cacheYaml.locator(".squiggly-error, .squiggly-warning")).toHaveCount(0);
 
     // The cache flow's own page lists its versions and links back to the cache.
     await adminPage.getByTestId("pipeline-tab-versions").click();
@@ -135,7 +144,12 @@ test.describe.serial("osdu cache", () => {
     // captured name, plus an entry that finds the record by one of its values.
     const mapping = adminPage.getByTestId("delivery-cache-item-mapping");
     const references = mapping.getByTestId("delivery-cache-item-reference");
-    await expect(references.filter({ hasText: "cache.UnitOfMeasure.id" })).toContainText("reference-data--UnitOfMeasure:dega:");
+    // The unit caches its own data.ID as well, a field distinct from the record id: `id` reads the record's id, `ID` the
+    // value the record holds. A text filter ignores case, so each row is found by its reference cell, matched exactly.
+    const reference = (name: string) => references.filter({ has: adminPage.getByRole("cell", { name, exact: true }) });
+    await expect(reference("cache.UnitOfMeasure.id")).toContainText("reference-data--UnitOfMeasure:dega:");
+    await expect(reference("cache.UnitOfMeasure.ID")).toContainText("dega");
+    await expect(reference("cache.UnitOfMeasure.ID")).not.toContainText("reference-data--UnitOfMeasure");
     await expect(references.filter({ hasText: "cache.UnitOfMeasure.Code" })).toBeVisible();
     await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("source: cache.UnitOfMeasure.id");
     await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("findBy: cache.UnitOfMeasure.");

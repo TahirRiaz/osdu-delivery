@@ -184,7 +184,7 @@ internal static class CacheMapper
     private static ReferenceTypeSpec DictionaryType(CachedTypeYaml type, CacheChangeMode defaultMode, string where, string source)
     {
         var dictionary = type.Dictionary!.Trim();
-        foreach (var (setting, value) in new (string, object?)[] { ("kind", type.Kind), ("entityType", type.EntityType), ("query", type.Query), ("fields", type.Fields) })
+        foreach (var (setting, value) in new (string, object?)[] { ("kind", type.Kind), ("entityType", type.EntityType), ("query", type.Query), ("fields", type.Fields), ("key", type.Key) })
         {
             if (value is not null)
             {

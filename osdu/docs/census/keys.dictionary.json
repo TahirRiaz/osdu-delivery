@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "product": "OSDU Delivery",
+  "documentType": "dictionary",
+  "strictKeys": true,
+  "generatedFrom": "osdu/docs/documents.md, osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs, MappingMapper.cs and DictionaryMapper.cs",
+  "naming": "The loader reads the document with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
+  "keyCount": 9,
+  "keys": [
+    {
+      "path": "documentType",
+      "type": "enum(dictionary)",
+      "required": true,
+      "description": "Always dictionary: one lookup table kept in the repository, held in the partition's cache by a cache flow (types: [{ dictionary: <name> }]).",
+      "enumValues": [
+        "dictionary"
+      ]
+    },
+    {
+      "path": "name",
+      "type": "string",
+      "required": true,
+      "description": "The dictionary's name: letters, digits, _ and -, starting with a letter. The file is dictionaries/<name>.yaml, and a cache flow names the dictionary by it."
+    },
+    {
+      "path": "description",
+      "type": "string",
+      "required": false,
+      "description": "Free text describing the dictionary."
+    },
+    {
+      "path": "key",
+      "type": "string",
+      "required": false,
+      "description": "The name each entry's key is kept under in the cache, which a replace matches on by default and a findBy line compares. Defaults to key.",
+      "default": "key"
+    },
+    {
+      "path": "fields",
+      "type": "list",
+      "required": false,
+      "description": "The names of the values each entry gives. Left out, the dictionary is one of pairs: each key gives one value, kept as value."
+    },
+    {
+      "path": "fields[]",
+      "type": "string",
+      "required": false,
+      "description": "A value's name: letters, digits and _, starting with a letter or _."
+    },
+    {
+      "path": "entries",
+      "type": "map",
+      "required": true,
+      "description": "The table: every key once, as text exactly as written; keys that are the same once trimmed are refused. In a dictionary of pairs each key gives one text, ~ being no value; with fields, each key gives a mapping of those fields. At most 100,000 entries."
+    },
+    {
+      "path": "entries.<key>",
+      "type": "string or map",
+      "required": false,
+      "description": "One entry: its value (a dictionary of pairs, ~ for no value), or its values by field name."
+    },
+    {
+      "path": "entries.<key>.<field>",
+      "type": "string",
+      "required": false,
+      "description": "One value of the entry, under a name its fields list; ~ or left out for no value."
+    }
+  ]
+}

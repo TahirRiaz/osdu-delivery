@@ -84,7 +84,7 @@ test.describe.serial("lineage", () => {
     const graph = adminPage.getByTestId("page-lineage-graph");
     await expect(graph).toBeVisible();
     await expect(graph.getByText(WELL_LOG, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
-    await expect(graph.getByText(/^osdu type · dev\.work-product-component/).first()).toBeVisible();
+    await expect(graph.getByText(`osdu type · ${PARTITION}.work-product-component`).first()).toBeVisible();
     await expect(graph.getByText("wells-welllog-03-header-delivery", { exact: true }).first()).toBeVisible();
   });
 
@@ -93,7 +93,7 @@ test.describe.serial("lineage", () => {
     const tree = adminPage.getByRole("tree", { name: "Catalog tree" });
     await tree.getByRole("treeitem", { name: /^Datasets/ }).click();
     await tree.getByRole("treeitem", { name: /^osdu cache/ }).click();
-    await tree.getByRole("treeitem", { name: /^dev/ }).first().click();
+    await tree.getByRole("treeitem", { name: new RegExp(`^${PARTITION.replace(/[$.{}]/g, "\\$&")}`) }).first().click();
     await tree.getByRole("treeitem", { name: /^cache/ }).click();
     await expect(tree.getByRole("treeitem", { name: /^UnitOfMeasure/ })).toBeVisible();
   });

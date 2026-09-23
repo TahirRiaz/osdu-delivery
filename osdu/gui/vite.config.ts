@@ -17,6 +17,9 @@ const guiRoot = fileURLToPath(new URL(".", import.meta.url));
 const moduleSrc = path.resolve(guiRoot, "src");
 const sqlflowGui = path.resolve(guiRoot, "../../sqlflow/gui");
 const sqlflowSrc = path.resolve(sqlflowGui, "src");
+// The key census files the YAML editor analyses the module's documents with. They sit beside the documentation they are
+// written from, and the suites check them against the loaders there.
+const censusDir = path.resolve(guiRoot, "../docs/census");
 
 const forwardSlashes = (value: string) => value.replace(/\\/g, "/");
 
@@ -74,8 +77,8 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     fs: {
-      // The vendored SQLFlow sources live outside this folder.
-      allow: [guiRoot, sqlflowGui],
+      // The vendored SQLFlow sources, and the module's census files, live outside this folder.
+      allow: [guiRoot, sqlflowGui, censusDir],
     },
     watch: {
       // The e2e suite builds its fixture repository under e2e/.fixtures and runs flows that write work files there while

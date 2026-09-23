@@ -1,0 +1,548 @@
+{
+  "version": 1,
+  "product": "OSDU Delivery",
+  "flowType": "retrieval",
+  "strictKeys": true,
+  "includeEnvelope": true,
+  "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
+  "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
+  "keyCount": 76,
+  "keys": [
+    {
+      "path": "batch",
+      "type": "string",
+      "required": false,
+      "description": "Optional grouping label (the source system) the platform files the flow's pipeline and runs under. A blank value counts as none."
+    },
+    {
+      "path": "description",
+      "type": "string",
+      "required": false,
+      "description": "Optional text describing the retrieval."
+    },
+    {
+      "path": "flowType",
+      "type": "enum(retrieval)",
+      "required": true,
+      "description": "The document kind: `retrieval`, the reverse direction, which lands OSDU's search index as JSON Lines files on the lake. The loader chooses the reader by it and refuses a document that declares no `flowType` or `documentType`.",
+      "enumValues": [
+        "retrieval"
+      ]
+    },
+    {
+      "path": "name",
+      "type": "string",
+      "required": true,
+      "description": "The retrieval flow's name: its pipeline identity. The flow id is derived from it the same way a delivery flow's is."
+    },
+    {
+      "path": "parameters",
+      "type": "map",
+      "required": false,
+      "description": "Optional: the flow's parameters, by name. `{name}` tokens are usable in `source.query` and `target.location`; a `target.location` token that is neither `{run}`, `{date}` nor a declared parameter is refused. Values come from `--set name=value`, the run's values, or the schedule's `values`."
+    },
+    {
+      "path": "parameters.<name>",
+      "type": "object",
+      "required": false,
+      "description": "One parameter; `<name>` is the name its `{name}` tokens use. A run supplying a value for a name the flow does not declare is refused."
+    },
+    {
+      "path": "parameters.<name>.default",
+      "type": "string",
+      "required": false,
+      "description": "The value used when a run supplies none."
+    },
+    {
+      "path": "parameters.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "Text describing what the parameter is for."
+    },
+    {
+      "path": "parameters.<name>.required",
+      "type": "boolean",
+      "required": false,
+      "description": "When true, a run that supplies no value, for a parameter without a default, fails with \"parameter 'name' is required\". A scheduled fire supplies only the schedule's `values`, so give it one there.",
+      "default": "false"
+    },
+    {
+      "path": "reliability",
+      "type": "object",
+      "required": false,
+      "description": "The HTTP settings, as on a delivery flow (timeout, retry, rate limit, TLS, URL allowlist and response size), and `concurrency`: the kinds retrieved at once. `reliability.parallelInterfaces` is refused."
+    },
+    {
+      "path": "reliability.batchRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: rendered documents per work batch file. The loader accepts it as on a delivery flow; a retrieval flow does not use it.",
+      "default": "500"
+    },
+    {
+      "path": "reliability.batchSize",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: records claimed per ledger round trip when retrying records. The loader accepts it as on a delivery flow; a retrieval flow does not use it.",
+      "default": "50"
+    },
+    {
+      "path": "reliability.concurrency",
+      "type": "integer",
+      "required": false,
+      "description": "The kinds retrieved at once, each on its own search cursor. At least 1; at most 64 run at once.",
+      "default": "8"
+    },
+    {
+      "path": "reliability.fanOut",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the member runs a large submission spreads over. The loader accepts it as on a delivery flow; a retrieval flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.fanOutMinRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: below this many records a submission never fans out. The loader accepts it as on a delivery flow; a retrieval flow does not use it.",
+      "default": "1000"
+    },
+    {
+      "path": "reliability.leaseSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: how long a worker's lease on a record lasts. The loader accepts it as on a delivery flow; a retrieval flow does not use it.",
+      "default": "300"
+    },
+    {
+      "path": "reliability.maxRequestBodyBytes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the target's declared request body ceiling (0 = not declared). The loader accepts it as on a delivery flow; a retrieval flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.maxResponseBytes",
+      "type": "integer",
+      "required": false,
+      "description": "The largest response body read, in bytes. A larger response fails the request with a message naming this setting.",
+      "default": "67108864"
+    },
+    {
+      "path": "reliability.parallelInterfaces",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery source's setting: how many of its interfaces run at once. A retrieval flow runs no interfaces, so the loader refuses it here."
+    },
+    {
+      "path": "reliability.rateLimitRps",
+      "type": "number",
+      "required": false,
+      "description": "The most requests per second the flow sends to the platform; 0 means unlimited. Token requests are not limited.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.renderParallelism",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: renderers in the intake pipeline (0 = the machine's cores). The loader accepts it as on a delivery flow; a retrieval flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.retry",
+      "type": "object",
+      "required": false,
+      "description": "How one request is repeated inline. Only requests that are safe to repeat are repeated, on 408, 425, 429, 503 and 504 and on a transport failure; 500 and 502 are not replayed."
+    },
+    {
+      "path": "reliability.retry.attempts",
+      "type": "integer",
+      "required": false,
+      "description": "The most attempts one request gets, the first included.",
+      "default": "4"
+    },
+    {
+      "path": "reliability.retry.backoff",
+      "type": "enum(exponential|fixed)",
+      "required": false,
+      "description": "The wait between attempts: `exponential` doubles `baseDelayMs` per attempt, `fixed` waits `baseDelayMs` each time; both are capped at `maxDelayMs`.",
+      "enumValues": [
+        "exponential",
+        "fixed"
+      ],
+      "default": "exponential"
+    },
+    {
+      "path": "reliability.retry.baseDelayMs",
+      "type": "integer",
+      "required": false,
+      "description": "The first wait between attempts, in milliseconds.",
+      "default": "500"
+    },
+    {
+      "path": "reliability.retry.honorRetryAfter",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether a `Retry-After` the service sends is honoured. A requested wait within `maxDelayMs` becomes the floor of the backoff; a longer one is never shortened, so the request stops instead of waiting it out.",
+      "default": "true"
+    },
+    {
+      "path": "reliability.retry.maxDelayMs",
+      "type": "integer",
+      "required": false,
+      "description": "The longest wait between attempts, in milliseconds.",
+      "default": "30000"
+    },
+    {
+      "path": "reliability.retry.recordBaseDelayMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the first wait between a record's attempts across worker passes, in minutes. The loader accepts it as on a delivery flow; a retrieval flow does not use it.",
+      "default": "1"
+    },
+    {
+      "path": "reliability.retry.recordMaxDelayMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the longest wait between a record's attempts across worker passes, in minutes. The loader accepts it as on a delivery flow; a retrieval flow does not use it.",
+      "default": "60"
+    },
+    {
+      "path": "reliability.skipStatusCodes",
+      "type": "list",
+      "required": false,
+      "description": "A delivery flow's setting: statuses that hold a record instead of retrying it. The loader accepts it as on a delivery flow; a retrieval flow does not use it."
+    },
+    {
+      "path": "reliability.skipStatusCodes[]",
+      "type": "integer",
+      "required": false,
+      "description": "One HTTP status code."
+    },
+    {
+      "path": "reliability.timeoutSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "How long one HTTP request may take, in seconds.",
+      "default": "100"
+    },
+    {
+      "path": "reliability.urlAllowlist",
+      "type": "list",
+      "required": false,
+      "description": "The hosts requests may reach (an SSRF guard), checked on every request and every redirect hop. Empty allows any host the deployment's network policy reaches; token requests are not checked against it."
+    },
+    {
+      "path": "reliability.urlAllowlist[]",
+      "type": "string",
+      "required": false,
+      "description": "A host name, or `*.suffix` to match the bare domain and any subdomain of it. Compared ignoring case."
+    },
+    {
+      "path": "reliability.verifyTls",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether the platform's TLS certificate is verified. `false` also needs `SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS=true` on the node, or the run is refused.",
+      "default": "true"
+    },
+    {
+      "path": "source",
+      "type": "object",
+      "required": true,
+      "description": "The OSDU side: the platform, the kinds and query, how the index is paged, the optional watermark, and whether full records are read back from storage."
+    },
+    {
+      "path": "source.auth",
+      "type": "object",
+      "required": false,
+      "description": "How requests to the OSDU platform authenticate, written as `target.auth` is on a delivery flow. Secrets are references only: ${env:NAME} or ${keyvault:vault/secret}. Left out, requests carry no credentials (type `none`).",
+      "appliesWhen": "Optional; written as `target.auth` on a delivery flow."
+    },
+    {
+      "path": "source.auth.headerName",
+      "type": "string",
+      "required": false,
+      "description": "The header an `apiKeyHeader` auth sends the key in.",
+      "appliesWhen": "source.auth.type is apiKeyHeader, which needs it."
+    },
+    {
+      "path": "source.auth.secondarySecretRef",
+      "type": "string",
+      "required": false,
+      "description": "The secondary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}): the username for `basic`, the client id for `oauth2ClientCredentials` (sent as `client_id` unless the token body names one).",
+      "appliesWhen": "source.auth.type is basic or oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.secretRef",
+      "type": "string",
+      "required": false,
+      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one).",
+      "appliesWhen": "Needed by bearer, apiKeyHeader and basic; used by oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token",
+      "type": "object",
+      "required": false,
+      "description": "The OAuth2 token endpoint: where a token is requested and how it is read from the answer. One token serves the run and is requested again shortly before it expires.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials, which needs it."
+    },
+    {
+      "path": "source.auth.token.applyPrefix",
+      "type": "string",
+      "required": false,
+      "description": "The text put before the access token in the `Authorization` header.",
+      "default": "\"Bearer \"",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.basicAuthClient",
+      "type": "boolean",
+      "required": false,
+      "description": "When true, the client id and secret are sent as an HTTP Basic `Authorization` header on the token request instead of in its form body.",
+      "default": "false",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.body",
+      "type": "map",
+      "required": false,
+      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.body.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.discoveryUrl",
+      "type": "string",
+      "required": false,
+      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or url."
+    },
+    {
+      "path": "source.auth.token.tokenPath",
+      "type": "string",
+      "required": false,
+      "description": "The path of the access token in the token endpoint's JSON answer.",
+      "default": "access_token",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.url",
+      "type": "string",
+      "required": false,
+      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or discoveryUrl."
+    },
+    {
+      "path": "source.auth.type",
+      "type": "enum(none|bearer|apiKeyHeader|basic|oauth2ClientCredentials)",
+      "required": false,
+      "description": "The auth scheme: `none`, `bearer` (a token as a reference), `apiKeyHeader` (a key in a named header), `basic` (username and password) or `oauth2ClientCredentials` (a token requested from `token`). Read ignoring case.",
+      "enumValues": [
+        "none",
+        "bearer",
+        "apiKeyHeader",
+        "basic",
+        "oauth2ClientCredentials"
+      ],
+      "default": "none"
+    },
+    {
+      "path": "source.auth.valuePrefix",
+      "type": "string",
+      "required": false,
+      "description": "The text put before the secret in the header value of a `bearer` or `apiKeyHeader` auth. An OAuth2 token takes `token.applyPrefix` instead.",
+      "default": "\"Bearer \" for bearer; nothing for apiKeyHeader",
+      "appliesWhen": "source.auth.type is bearer or apiKeyHeader."
+    },
+    {
+      "path": "source.endpoint",
+      "type": "string",
+      "required": true,
+      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`."
+    },
+    {
+      "path": "source.fetchParallelism",
+      "type": "integer",
+      "required": false,
+      "description": "Storage read-backs in flight per page, each for a hundred ids. Between 1 and 64.",
+      "default": "4",
+      "appliesWhen": "source.fetchRecords is true."
+    },
+    {
+      "path": "source.fetchRecords",
+      "type": "boolean",
+      "required": false,
+      "description": "The index holds a projection; set this to read every hit's full record back from storage and land it as storage holds it. Ids storage cannot return are counted and listed in the manifest.",
+      "default": "false"
+    },
+    {
+      "path": "source.headers",
+      "type": "map",
+      "required": true,
+      "description": "Headers sent with every request, as on a delivery flow's target. `data-partition-id` is required: every OSDU service rejects a request without it."
+    },
+    {
+      "path": "source.headers.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret})."
+    },
+    {
+      "path": "source.incremental",
+      "type": "object",
+      "required": false,
+      "description": "The watermark: a run covers `[last completed run's upper bound, now minus lagMinutes)` on `field`, appended to the query. Only a completed run advances it, and `--force` restarts at `since`. Without this block every run takes everything the query matches."
+    },
+    {
+      "path": "source.incremental.field",
+      "type": "string",
+      "required": false,
+      "description": "The record field the window is taken on: a field path without whitespace.",
+      "default": "modifyTime",
+      "appliesWhen": "source.incremental is declared."
+    },
+    {
+      "path": "source.incremental.lagMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "How far behind now the window ends, in minutes, so records the indexer has not caught up with are left for the next run. Must not be negative.",
+      "default": "5",
+      "appliesWhen": "source.incremental is declared."
+    },
+    {
+      "path": "source.incremental.since",
+      "type": "string",
+      "required": false,
+      "description": "Where the first run, and a forced run, starts: an RFC 3339 date and time such as `2026-01-01T00:00:00Z`. Left out, the first run starts from the beginning.",
+      "appliesWhen": "source.incremental is declared."
+    },
+    {
+      "path": "source.kind",
+      "type": "string",
+      "required": false,
+      "description": "One kind to retrieve, `authority:source:entityType:version` with wildcards per segment. Each kind is one search cursor.",
+      "appliesWhen": "Give `source.kind` (one kind) or `source.kinds` (a list); at least one kind is required, and none may repeat."
+    },
+    {
+      "path": "source.kinds",
+      "type": "list",
+      "required": false,
+      "description": "The kinds to retrieve. Each is one search cursor, and they run concurrently up to `reliability.concurrency`. The same kind listed twice is refused.",
+      "appliesWhen": "Give `source.kind` (one kind) or `source.kinds` (a list); at least one kind is required."
+    },
+    {
+      "path": "source.kinds[]",
+      "type": "string",
+      "required": false,
+      "description": "A kind, `authority:source:entityType:version` with wildcards per segment (`osdu:wks:master-data--Wellbore:1.*.*`)."
+    },
+    {
+      "path": "source.pageSize",
+      "type": "integer",
+      "required": false,
+      "description": "Records per search page, between 1 and 1000 (the search service's cap).",
+      "default": "1000"
+    },
+    {
+      "path": "source.probePath",
+      "type": "string",
+      "required": false,
+      "description": "The search service's info path under the endpoint. It must start with `/`.",
+      "default": "/api/search/v2/info"
+    },
+    {
+      "path": "source.query",
+      "type": "string",
+      "required": false,
+      "description": "A Lucene query narrowing the kinds, with `{parameter}` tokens substituted from the flow's parameters. An incremental flow's window is appended as `AND field:[from TO to}`. Left out, every record of the kinds is taken."
+    },
+    {
+      "path": "source.queryPath",
+      "type": "string",
+      "required": false,
+      "description": "The search path the `plan` operation counts with. It must start with `/`.",
+      "default": "/api/search/v2/query"
+    },
+    {
+      "path": "source.recordQueryPath",
+      "type": "string",
+      "required": false,
+      "description": "The storage path that reads records back by id. It must start with `/`.",
+      "default": "/api/storage/v2/query/records",
+      "appliesWhen": "source.fetchRecords is true."
+    },
+    {
+      "path": "source.returnedFields",
+      "type": "list",
+      "required": false,
+      "description": "The fields to project the hits on. Empty returns whole hits.",
+      "default": "[] (whole hits)"
+    },
+    {
+      "path": "source.returnedFields[]",
+      "type": "string",
+      "required": false,
+      "description": "One field of a hit to return."
+    },
+    {
+      "path": "source.searchPath",
+      "type": "string",
+      "required": false,
+      "description": "The cursor search path the retrieve operation pages through. It must start with `/`.",
+      "default": "/api/search/v2/query_with_cursor"
+    },
+    {
+      "path": "target",
+      "type": "object",
+      "required": true,
+      "description": "The lake side: where a run's files and manifest go and how the files are cut. A run's directory holds a directory per kind and the manifest."
+    },
+    {
+      "path": "target.compression",
+      "type": "enum(none|gzip)",
+      "required": false,
+      "description": "How the files are compressed: `none` writes `part-00001.jsonl`, `gzip` writes `part-00001.jsonl.gz`.",
+      "enumValues": [
+        "none",
+        "gzip"
+      ],
+      "default": "none"
+    },
+    {
+      "path": "target.format",
+      "type": "enum(jsonl)",
+      "required": false,
+      "description": "The file format. A retrieval writes JSON Lines; any other value is refused.",
+      "enumValues": [
+        "jsonl"
+      ],
+      "default": "jsonl"
+    },
+    {
+      "path": "target.location",
+      "type": "string",
+      "required": true,
+      "description": "The run's directory root: a local path or a storage URI, with `{parameter}`, `{run}` and `{date}` tokens; any other token is refused. Without a `{run}` token every run gets a timestamped directory beneath it, so runs never overwrite each other. A relative local path is resolved against the working directory of the process running the flow, so the repository sync warns about one: use an absolute path or a storage URI."
+    },
+    {
+      "path": "target.manifest",
+      "type": "string",
+      "required": false,
+      "description": "The manifest's file name inside the run's directory, not a path (`/` and `\\` are refused). The manifest names the flow, the run, the window, every file with its record count and uncompressed bytes, and per kind the records storage could not read back.",
+      "default": "manifest.json"
+    },
+    {
+      "path": "target.rollRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A new file every this many records (`part-00001`, `part-00002`, ...) under a directory named after the kind. At least 1.",
+      "default": "100000"
+    }
+  ]
+}

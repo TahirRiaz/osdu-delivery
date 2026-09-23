@@ -688,6 +688,24 @@ internal static partial class MappingMapper
         return new EntryCondition(column, negated ? ConditionOperator.IsNot : ConditionOperator.Is, value);
     }
 
+    /// <summary>The modifiers a mapping entry takes, by the name it writes them with.</summary>
+    internal static readonly IReadOnlyList<string> ModifierNames = ["trim", "upper", "lower", "split", "replace", "equals", "date", "number"];
+
+    /// <summary>The settings a replace takes beside its table: what an unlisted value becomes, and a cached table's fields.</summary>
+    internal static readonly IReadOnlyList<string> ReplaceSettings = ["otherwise", "match", "field"];
+
+    /// <summary>The settings of split.</summary>
+    internal static readonly IReadOnlyList<string> SplitSettings = ["separator", "part"];
+
+    /// <summary>The settings of number.</summary>
+    internal static readonly IReadOnlyList<string> NumberSettings = ["decimal", "group"];
+
+    /// <summary>The modifiers, as a message lists them.</summary>
+    private static string ModifierList => string.Join(", ", ModifierNames.Take(ModifierNames.Count - 1)) + " and " + ModifierNames[^1];
+
+    private static string SettingList(IReadOnlyList<string> settings)
+        => string.Join(", ", settings.Take(settings.Count - 1).Select(s => $"'{s}'")) + $" and '{settings[^1]}'";
+
     private static Modifier ParseModifier(object value, string where)
     {
         switch (value)
@@ -702,7 +720,7 @@ internal static partial class MappingMapper
                     "number" => new Modifier { Kind = ModifierKind.Number, DecimalSeparator = Rendering.NumberValues.DecimalPoint },
                     "split" or "equals" => throw new FlowValidationException($"{where}: '{name}' needs settings, such as {Example(name)}."),
                     "replace" => throw new FlowValidationException($"{where}: 'replace' needs a table, such as {Example(name)}."),
-                    _ => throw new FlowValidationException($"{where}: '{name}' is not a modifier. The modifiers are trim, upper, lower, split, replace, equals, date and number."),
+                    _ => throw new FlowValidationException($"{where}: '{name}' is not a modifier. The modifiers are {ModifierList}."),
                 };
 
             // A replace takes its settings beside it rather than inside its table, so no incoming value is ever read as a
@@ -722,7 +740,7 @@ internal static partial class MappingMapper
                             : new Modifier { Kind = ModifierKind.Equals, Text = Convert.ToString(settings, CultureInfo.InvariantCulture) },
                         "date" => Date(settings, where),
                         "number" => Number(settings, where),
-                        _ => throw new FlowValidationException($"{where}: '{modifier}' is not a modifier. The modifiers are trim, upper, lower, split, replace, equals, date and number."),
+                        _ => throw new FlowValidationException($"{where}: '{modifier}' is not a modifier. The modifiers are {ModifierList}."),
                     };
                 }
 
@@ -781,9 +799,9 @@ internal static partial class MappingMapper
             ?? throw new FlowValidationException($"{where}: number takes its separators, such as {Example("number")}.");
         foreach (var option in options.Keys.Select(o => Convert.ToString(o, CultureInfo.InvariantCulture)))
         {
-            if (option is not ("decimal" or "group"))
+            if (option is null || !NumberSettings.Contains(option))
             {
-                throw new FlowValidationException($"{where}: number takes 'decimal' and 'group', not '{option}'.");
+                throw new FlowValidationException($"{where}: number takes {SettingList(NumberSettings)}, not '{option}'.");
             }
         }
 
@@ -805,9 +823,9 @@ internal static partial class MappingMapper
             ?? throw new FlowValidationException($"{where}: split takes a separator and a part, such as {Example("split")}.");
         foreach (var option in options.Keys.Select(o => Convert.ToString(o, CultureInfo.InvariantCulture)))
         {
-            if (option is not ("separator" or "part"))
+            if (option is null || !SplitSettings.Contains(option))
             {
-                throw new FlowValidationException($"{where}: split takes 'separator' and 'part', not '{option}'.");
+                throw new FlowValidationException($"{where}: split takes {SettingList(SplitSettings)}, not '{option}'.");
             }
         }
 
@@ -861,7 +879,7 @@ internal static partial class MappingMapper
                     field = ReplaceField(value, "field", where);
                     break;
                 case var other:
-                    throw new FlowValidationException($"{where}: replace takes 'otherwise', 'match' and 'field' beside it, not '{other}'.");
+                    throw new FlowValidationException($"{where}: replace takes {SettingList(ReplaceSettings)} beside it, not '{other}'.");
             }
         }
 

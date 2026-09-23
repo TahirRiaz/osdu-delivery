@@ -15,7 +15,8 @@ namespace SqlFlow.Delivery.Documents;
 /// </summary>
 internal static partial class DictionaryMapper
 {
-    private static readonly string[] Keys = ["documentType", "name", "description", "key", "fields", "entries"];
+    /// <summary>The top-level keys a dictionary document takes.</summary>
+    internal static readonly IReadOnlyList<string> Keys = ["documentType", "name", "description", "key", "fields", "entries"];
 
     public static DictionaryDefinition Map(string yaml, string source)
     {

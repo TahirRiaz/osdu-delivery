@@ -13,6 +13,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The YAML editor documents and checks every OSDU Delivery document.** Delivery, retrieval and cache flows, mappings
+  and dictionaries had the editor's analysis switched off, because SQLFlow's engine knew only its own flow kinds. The
+  engine now takes a module's key census files (a generic extension point, `ca779a3`), and the module ships one for
+  each of its documents (`osdu/docs/census`): hovering a key shows its documentation, allowed values and defaults, and
+  an unknown key is flagged as the error the loader would raise. The pipeline, run, mapping and builder views turn the
+  analysis on. `EditorCensusTests` keeps the census and the loaders in step, key for key.
 - **A cached field holding OSDU record ids is written to a relationship.** OSDU's own translations
   (`ExternalUnitOfMeasure.UnitOfMeasureID`, `ExternalReferenceValueMapping.SimpleMap.ReferenceValueID`) cache the id of
   the platform record a source value stands for, and a mapping can now write that field as the reference. The gate
@@ -376,6 +382,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **A flow run from the CLI into a registered repository keeps its folder on the Pipelines page.** A run recorded
+  with `--db` and `--repo` took the flow file's folder as the repository root, so the pipeline moved to the repository's
+  top level, and the repo's root with it, until the next sync. It now records the path the sync gives the flow (SQLFlow
+  `0ed0bda`).
+- **A dictionary type in a cache flow refuses a `key`.** The dictionary document names its own key, and a `key` written
+  beside `dictionary:` was dropped without a word; the loader now refuses it, as it refuses `kind`, `query` and
+  `fields` there.
 - **A record id is looked for by the id, even on a type that caches a field called `ID`.** OSDU reference data caches
   its own `data.ID` (the sample's `UnitOfMeasure` does), and a record-id lookup read that field instead: a static
   reference to a cached unit was refused by the gate as not in the cache, a value that already was a unit's id was

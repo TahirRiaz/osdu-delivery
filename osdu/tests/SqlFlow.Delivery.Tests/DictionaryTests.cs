@@ -194,6 +194,8 @@ public sealed class DictionaryTests : IDisposable
         string Refused(string yaml) => Assert.Throws<FlowValidationException>(() => loader.ParseCache(yaml, "cache/lookups.yaml")).Message;
         Assert.Contains("names more than one origin", Refused(Lookups.Replace("- dictionary: RecallUnits", "- { dictionary: RecallUnits, kind: \"osdu:wks:x--Y:*\" }", StringComparison.Ordinal)), StringComparison.Ordinal);
         Assert.Contains("which takes no 'fields'", Refused(Lookups.Replace("- dictionary: RecallUnits", "- { dictionary: RecallUnits, fields: [value] }", StringComparison.Ordinal)), StringComparison.Ordinal);
+        // The dictionary document names its own key, so a key written beside it would be one nothing reads.
+        Assert.Contains("which takes no 'key'", Refused(Lookups.Replace("- dictionary: RecallUnits", "- { dictionary: RecallUnits, key: code }", StringComparison.Ordinal)), StringComparison.Ordinal);
         Assert.Contains("every type it declares is a lookup table. Remove them", Refused(Lookups.Replace("  headers:", "  endpoint: https://osdu.example.com\n  headers:", StringComparison.Ordinal)), StringComparison.Ordinal);
         Assert.Contains("source.endpoint is required", Refused(Lookups + "\n  - kind: \"osdu:wks:reference-data--UnitOfMeasure:*\"\n    fields: [data.Code]\n"), StringComparison.Ordinal);
         Assert.Contains("needs a kind", Refused(Lookups.Replace("- dictionary: RecallUnits", "- name: Nothing", StringComparison.Ordinal)), StringComparison.Ordinal);

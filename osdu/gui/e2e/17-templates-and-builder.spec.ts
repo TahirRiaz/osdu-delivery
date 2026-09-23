@@ -365,10 +365,13 @@ test.describe.serial("templates and the mapping builder", () => {
     await adminPage.getByTestId("mapping-builder-system").fill("wells");
     await adminPage.getByTestId("mapping-builder-start").click();
 
-    // A well log points at its wellbore, which the cache holds, so that entry starts filled from the cache.
+    // A well log points at the kind of its vertical measurement, reference data the cache holds, so that entry starts
+    // filled from the cache. Its wellbore is searched for on the platform, so nothing prefills that one.
+    const measurement = rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.VerticalMeasurement.VerticalMeasurementTypeID");
+    await expect(measurement).toBeVisible({ timeout: 15_000 });
+    await expect(measurement.getByTestId("mapping-builder-prefilled")).toBeVisible();
     const wellbore = rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.WellboreID");
-    await expect(wellbore).toBeVisible({ timeout: 15_000 });
-    await expect(wellbore.getByTestId("mapping-builder-prefilled")).toBeVisible();
+    await expect(wellbore.getByTestId("mapping-builder-prefilled")).toHaveCount(0);
 
     // The check writes the YAML and refuses the draft as it stands: it has no key, and the cache entry finds by no column.
     await expect(adminPage.getByTestId("mapping-builder-invalid")).toBeVisible({ timeout: 30_000 });
@@ -447,6 +450,14 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(properties.getByTestId("templates-view-coverage-osdu.data.Curves[].LogCurveBusinessValueID")).toHaveCount(0);
     await properties.getByTestId("templates-view-show-gaps").click();
     await expect(properties.getByTestId("templates-view-coverage-osdu.acl")).toHaveAttribute("data-coverage", "Always");
+
+    // The mapping's YAML is analysed as the flows are: a key's documentation on hover, and nothing flagged in the sample.
+    // The editor draws only the lines in view, so the key hovered is one near the top.
+    await detail.getByTestId("delivery-mapping-tab-yaml").click();
+    const yaml = detail.getByTestId("delivery-mapping-yaml");
+    await yaml.locator(".view-lines").getByText("template", { exact: true }).first().hover();
+    await expect(adminPage.locator(".monaco-hover:not(.hidden)")).toContainText("The saved template version the mapping fills", { timeout: 15_000 });
+    await expect(yaml.locator(".squiggly-error, .squiggly-warning")).toHaveCount(0);
 
     // The record shape: the renderer's layout with placeholders, and the partition filled into the id once it is given.
     await detail.getByTestId("delivery-mapping-tab-shape").click();
