@@ -149,13 +149,13 @@ public sealed class RecordSearchContributor : ISearchContributor
         var skip = (request.Page - 1) * request.PageSize;
         var found = skip >= RecordListing.LookupCandidateLimit
             ? []
-            : await _ledger.LookupAsync(request.Phrase, take, null, ct).ConfigureAwait(false);
+            : await _ledger.LookupAsync(request.Phrase, take, ct: ct).ConfigureAwait(false);
         var page = found.Skip(skip).Take(request.PageSize).ToList();
 
         // Fewer hits than asked for means no identity index ran into its bound, so that count is exact.
         var total = found.Count < take
             ? new BoundedCount(found.Count, Exact: true)
-            : await _ledger.CountLookupAsync(request.Phrase, RecordListing.LookupCandidateLimit, null, ct).ConfigureAwait(false);
+            : await _ledger.CountLookupAsync(request.Phrase, RecordListing.LookupCandidateLimit, ct: ct).ConfigureAwait(false);
 
         var pipelines = await DeliveryPipelines.ForLedgersAsync(_catalog, _osdu, page.Select(r => r.FlowId).Distinct().ToList(), ct).ConfigureAwait(false);
         var items = page

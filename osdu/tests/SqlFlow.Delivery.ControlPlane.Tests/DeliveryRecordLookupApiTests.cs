@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Delivery.ControlPlane;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
@@ -185,6 +186,122 @@ public sealed class DeliveryRecordLookupApiTests
             await osdu.DeliveryRecords.Where(r => ids.Contains(r.DeliveryKey)).ExecuteDeleteAsync();
         }
     }
+
+    [SkippableFact]
+    public async Task The_listing_and_the_lookup_narrow_to_one_flow_the_page_offers()
+    {
+        var cs = CatalogTestDb.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.MigrateModuleAsync(cs);
+
+        var marker = "FL" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        var single = $"{marker}-wells";
+        var source = $"{marker}-logs";
+        var singleFlow = FlowId.Of(single);
+        var headerFlow = FlowId.Of($"{source}/header");
+        var unsynced = FlowId.Of($"{marker}-gone");
+        var repoId = Guid.NewGuid();
+        var singlePipeline = Guid.NewGuid();
+        var sourcePipeline = Guid.NewGuid();
+        var keys = new[] { new DeliveryKey(Guid.NewGuid()), new DeliveryKey(Guid.NewGuid()), new DeliveryKey(Guid.NewGuid()) };
+        var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+
+        try
+        {
+            await ledger.UpsertPendingAsync(singleFlow, [Record(singleFlow, keys[0], $"{marker}-W1", $"dev:master-data--Well:{marker}-W1", marker + "_wells.csv", 1)]);
+            await ledger.UpsertPendingAsync(headerFlow,
+            [
+                Record(headerFlow, keys[1], $"{marker}-H1", $"dev:work-product-component--WellLog:{marker}-H1", marker + "_logs.csv", 1),
+                Record(headerFlow, keys[2], $"{marker}-H2", $"dev:work-product-component--WellLog:{marker}-H2", marker + "_logs.csv", 2),
+            ]);
+
+            // What the repository sync records: a flow in the single form, a source of two interfaces, and a ledger
+            // whose pipeline the catalog no longer holds.
+            await using (var osdu = SampleEstate.Context(cs))
+            {
+                osdu.DeliveryInterfaces.AddRange(
+                    Interface(repoId, single, "", singleFlow),
+                    Interface(repoId, source, "header", headerFlow),
+                    Interface(repoId, source, "curves", FlowId.Of($"{source}/curves")),
+                    Interface(repoId, $"{marker}-gone", "", unsynced));
+                await osdu.SaveChangesAsync();
+            }
+
+            await using (var catalog = new CatalogDbContext(CatalogDatabase.BuildOptions(cs)))
+            {
+                catalog.Pipelines.AddRange(Pipeline(singlePipeline, repoId, single), Pipeline(sourcePipeline, repoId, source));
+                await catalog.SaveChangesAsync();
+            }
+
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+
+            // The choices: one per ledger identity, named by pipeline and interface as a hit is, and none for a ledger
+            // no synced pipeline holds.
+            using var flowsResponse = await GetAsync(client, token, "/api/v1/delivery/records/flows");
+            Assert.Equal(HttpStatusCode.OK, flowsResponse.StatusCode);
+            using var flowsJson = JsonDocument.Parse(await flowsResponse.Content.ReadAsStringAsync());
+            var ours = flowsJson.RootElement.EnumerateArray().Where(f => f.GetProperty("flowName").GetString()!.StartsWith(marker, StringComparison.Ordinal)).ToList();
+            Assert.Equal(
+                [(source, "curves", FlowId.Of($"{source}/curves")), (source, "header", headerFlow), (single, (string?)null, singleFlow)],
+                ours.Select(f => (f.GetProperty("flowName").GetString()!, f.GetProperty("interface").GetString(), f.GetProperty("flowId").GetGuid())).ToList());
+            Assert.Equal([sourcePipeline, sourcePipeline, singlePipeline], ours.Select(f => f.GetProperty("pipelineId").GetGuid()).ToList());
+            Assert.DoesNotContain(flowsJson.RootElement.EnumerateArray(), f => f.GetProperty("flowId").GetGuid() == unsynced);
+
+            // The recency listing of one flow is that flow's records alone.
+            var header = await LookupAsync(client, token, $"flowId={headerFlow:D}&pageSize=200");
+            Assert.Equal(2, header.GetProperty("total").GetInt64());
+            Assert.All(header.GetProperty("items").EnumerateArray(), h => Assert.Equal(headerFlow, h.GetProperty("flowId").GetGuid()));
+            Assert.All(header.GetProperty("items").EnumerateArray(), h => Assert.Equal("header", h.GetProperty("interface").GetString()));
+
+            // A term matching both flows' records finds the chosen flow's only, and a status narrows it further.
+            Assert.Equal(3, (await LookupAsync(client, token, $"search={marker}-")).GetProperty("total").GetInt64());
+            var wells = await LookupAsync(client, token, $"search={marker}-&flowId={singleFlow:D}");
+            Assert.Equal(keys[0].Value, Assert.Single(wells.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
+            Assert.Equal(0, (await LookupAsync(client, token, $"search={marker}-&flowId={singleFlow:D}&status=held")).GetProperty("total").GetInt64());
+            Assert.Equal(0, (await LookupAsync(client, token, $"search={marker}-W&flowId={headerFlow:D}")).GetProperty("total").GetInt64());
+
+            using var badFlow = await GetAsync(client, token, "/api/v1/delivery/records?flowId=not-a-flow");
+            Assert.Equal(HttpStatusCode.BadRequest, badFlow.StatusCode);
+        }
+        finally
+        {
+            await using var osdu = SampleEstate.Context(cs);
+            var ids = keys.Select(k => k.Value).ToArray();
+            await osdu.DeliveryInterfaces.Where(i => i.RepoId == repoId).ExecuteDeleteAsync();
+            await osdu.DeliveryRecordIdentities.Where(i => ids.Contains(i.DeliveryKey)).ExecuteDeleteAsync();
+            await osdu.DeliveryRecords.Where(r => ids.Contains(r.DeliveryKey)).ExecuteDeleteAsync();
+            await using var catalog = new CatalogDbContext(CatalogDatabase.BuildOptions(cs));
+            await catalog.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+        }
+    }
+
+    private static DeliveryInterface Interface(Guid repoId, string flowName, string name, Guid ledgerFlowId) => new()
+    {
+        Id = Guid.NewGuid(),
+        RepoId = repoId,
+        FlowName = flowName,
+        Interface = name,
+        LedgerFlowId = ledgerFlowId,
+        LedgerName = name.Length == 0 ? flowName : $"{flowName}/{name}",
+        Route = "storage",
+        MappingReference = SampleEstate.WellboreMapping,
+        RelativePath = $"flows/{flowName}.yaml",
+        FirstSeenUtc = DateTime.UtcNow,
+        LastSeenUtc = DateTime.UtcNow,
+        Active = true,
+    };
+
+    private static CatalogPipeline Pipeline(Guid id, Guid repoId, string name) => new()
+    {
+        Id = id,
+        RepoId = repoId,
+        Name = name,
+        Kind = FlowDefinition.FlowTypeName,
+        RelativePath = $"flows/{name}.yaml",
+        Active = true,
+    };
 
     private static RecordState Record(Guid flowId, DeliveryKey key, string sourceKey, string targetId, string file, long row) => new()
     {

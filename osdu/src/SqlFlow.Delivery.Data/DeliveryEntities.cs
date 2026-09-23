@@ -1240,6 +1240,10 @@ public static class DeliveryModel
             //
             // The other direction: a record's own tokens, to rewrite or delete them when its identity changes.
             e.HasIndex(i => new { i.FlowId, i.DeliveryKey });
+
+            // The same lookup narrowed to one flow (the Records page's flow filter): its candidates are that flow's own
+            // tokens, so a prefix many other flows share cannot use up the candidate bound before this flow is reached.
+            e.HasIndex(i => new { i.FlowId, i.Token });
         });
 
         modelBuilder.Entity<DeliveryAttempt>(e =>

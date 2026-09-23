@@ -1256,21 +1256,22 @@ public interface ILedger
     /// <summary>Records matching a lookup across every flow: an exact delivery key (one record per flow that reads the
     /// row), or a prefix over the OSDU id, the source key, the label and the origin file name. At most
     /// <see cref="RecordListing.LookupCandidateLimit"/> candidates are read from each identity index, and the most recently
-    /// updated of them are returned. With <paramref name="status"/>, only the candidates in that state.</summary>
-    Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, RecordStatus? status = null, CancellationToken ct = default);
+    /// updated of them are returned. With <paramref name="status"/>, only the candidates in that state. With
+    /// <paramref name="flowId"/>, the records of that ledger identity alone, its candidates read from its own tokens.</summary>
+    Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default);
 
     /// <summary>How many records a lookup matches, counting no further than <paramref name="limit"/>.</summary>
-    Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, CancellationToken ct = default);
+    Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default);
 
     /// <summary>The ledger's most recently updated records across every flow, at most <paramref name="max"/> of them,
     /// newest first and ties broken by key: what the delivery system last took in, sent or was answered about, without a
-    /// term to seek. With <paramref name="status"/>, only the records in that state. It reads the end of a recency index,
-    /// so it costs the same however many records the ledger holds, and it reaches no further back than
-    /// <see cref="RecordListing.LookupCandidateLimit"/> records.</summary>
-    Task<IReadOnlyList<RecordState>> ListRecentAsync(int max, RecordStatus? status = null, CancellationToken ct = default);
+    /// term to seek. With <paramref name="status"/>, only the records in that state; with <paramref name="flowId"/>, only
+    /// the records of that ledger identity. It reads the end of a recency index, so it costs the same however many records
+    /// the ledger holds, and it reaches no further back than <see cref="RecordListing.LookupCandidateLimit"/> records.</summary>
+    Task<IReadOnlyList<RecordState>> ListRecentAsync(int max, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default);
 
     /// <summary>How many records the recency listing has to show, counting no further than <paramref name="limit"/>.</summary>
-    Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, CancellationToken ct = default);
+    Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default);
 
     /// <summary>Delivered records due for the drift pass, oldest verification first.</summary>
     Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default);

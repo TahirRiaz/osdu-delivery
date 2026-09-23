@@ -986,13 +986,13 @@ public sealed partial class OsduLedger : ILedger
         return keys.Select(k => new DeliveryKey(k)).ToList();
     }
 
-    public async Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, RecordStatus? status = null, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
         return await ReadAsync(
             async db =>
             {
-                var page = LookupFilter(db, term, RecordListing.LookupCandidateLimit, status)
+                var page = LookupFilter(db, term, RecordListing.LookupCandidateLimit, status, flowId)
                     .OrderByDescending(r => r.UpdatedUtc)
                     .ThenByDescending(r => r.DeliveryKey)
                     .Take(Math.Clamp(max, 1, 200));
@@ -1001,21 +1001,21 @@ public sealed partial class OsduLedger : ILedger
             ct).ConfigureAwait(false);
     }
 
-    public async Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, CancellationToken ct = default)
+    public async Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        var count = await ReadAsync(db => LookupFilter(db, term, limit, status).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
+        var count = await ReadAsync(db => LookupFilter(db, term, limit, status, flowId).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
         return new BoundedCount(count, Exact: count < limit);
     }
 
-    public async Task<IReadOnlyList<RecordState>> ListRecentAsync(int max, RecordStatus? status = null, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RecordState>> ListRecentAsync(int max, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default)
     {
         return await ReadAsync(
             async db =>
             {
                 // Ties broken by key: a bulk write stamps a whole batch with one update time, and the pages must still partition it.
-                var page = RecentFilter(db, status)
+                var page = RecentFilter(db, status, flowId)
                     .OrderByDescending(r => r.UpdatedUtc)
                     .ThenByDescending(r => r.DeliveryKey)
                     .Take(Math.Clamp(max, 1, RecordListing.LookupCandidateLimit));
@@ -1024,28 +1024,34 @@ public sealed partial class OsduLedger : ILedger
             ct).ConfigureAwait(false);
     }
 
-    public async Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, CancellationToken ct = default)
+    public async Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        var count = await ReadAsync(db => RecentFilter(db, status).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
+        var count = await ReadAsync(db => RecentFilter(db, status, flowId).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
         return new BoundedCount(count, Exact: count < limit);
     }
 
     /// <summary>
-    /// The records the recency listing orders: every record, or those in one custody state. Both read an index that ends
-    /// with the update time ([UpdatedUtc], or [Status, UpdatedUtc]), so the newest rows are the end of a range the server
-    /// walks backwards, and the listing costs what it shows rather than what the ledger holds.
+    /// The records the recency listing orders: every record, those in one custody state, those of one ledger identity, or
+    /// those of one identity in one state. Each reads an index that ends with the update time ([UpdatedUtc],
+    /// [Status, UpdatedUtc], [FlowId, UpdatedUtc] or [FlowId, Status, UpdatedUtc]), so the newest rows are the end of a
+    /// range the server walks backwards, and the listing costs what it shows rather than what the ledger holds.
     /// </summary>
-    private static IQueryable<DeliveryRecord> RecentFilter(OsduDbContext db, RecordStatus? status)
+    private static IQueryable<DeliveryRecord> RecentFilter(OsduDbContext db, RecordStatus? status, Guid? flowId)
     {
         var rows = db.DeliveryRecords.AsNoTracking();
-        if (status is not { } wanted)
+        if (flowId is { } flow)
         {
-            return rows;
+            rows = rows.Where(r => r.FlowId == flow);
         }
 
-        var text = StatusText.Of(wanted);
-        return rows.Where(r => r.Status == text);
+        if (status is { } wanted)
+        {
+            var text = StatusText.Of(wanted);
+            rows = rows.Where(r => r.Status == text);
+        }
+
+        return rows;
     }
 
     /// <summary>
@@ -1055,16 +1061,23 @@ public sealed partial class OsduLedger : ILedger
     /// folded to upper case. A candidate is a record, flow and key together, so a match in one flow never brings in
     /// another flow's record of the same row, and the records are read by joining from the few candidates to the primary
     /// key, so the read stays the size of the candidates however many records the ledger holds. A status narrows the
-    /// candidates after they are found, so it costs nothing more than reading them: the index is what bounds the read.
+    /// candidates after they are found, so it costs nothing more than reading them: the index is what bounds the read. A
+    /// flow is different: its candidates are its own tokens, read from the identity index in flow order, so the candidate
+    /// bound is spent on that flow's records rather than on every flow's.
     /// </summary>
-    private static IQueryable<DeliveryRecord> LookupFilter(OsduDbContext db, string term, int candidates, RecordStatus? status)
+    private static IQueryable<DeliveryRecord> LookupFilter(OsduDbContext db, string term, int candidates, RecordStatus? status, Guid? flowId)
     {
         var t = term.Trim();
         var rows = db.DeliveryRecords.AsNoTracking();
         var found = Guid.TryParse(t, out var key)
             ? rows.Where(r => r.DeliveryKey == key)
-            : IdentityCandidates(db, t, candidates)
+            : IdentityCandidates(db, t, candidates, flowId)
                 .Join(rows, m => new { m.FlowId, m.DeliveryKey }, r => new { r.FlowId, r.DeliveryKey }, (_, r) => r);
+        if (flowId is { } flow)
+        {
+            found = found.Where(r => r.FlowId == flow);
+        }
+
         if (status is { } wanted)
         {
             var text = StatusText.Of(wanted);
@@ -1075,14 +1088,21 @@ public sealed partial class OsduLedger : ILedger
     }
 
     /// <summary>
-    /// The records, of any flow, one of whose identity tokens starts with <paramref name="term"/>: a seek of the identity
-    /// index in its own order, at most <paramref name="candidates"/> of them. A record with several matching tokens is one
-    /// candidate, because the distinct is over the record, not the token.
+    /// The records, of any flow or of the one ledger identity <paramref name="flowId"/> names, one of whose identity tokens
+    /// starts with <paramref name="term"/>: a seek of the identity index in token order (the primary key, or
+    /// [FlowId, Token] for one flow), at most <paramref name="candidates"/> of them. A record with several matching tokens
+    /// is one candidate, because the distinct is over the record, not the token.
     /// </summary>
-    private static IQueryable<RecordIdentityRow> IdentityCandidates(OsduDbContext db, string term, int candidates)
+    private static IQueryable<RecordIdentityRow> IdentityCandidates(OsduDbContext db, string term, int candidates, Guid? flowId)
     {
         var folded = RecordIdentities.Fold(term);
-        return db.DeliveryRecordIdentities.AsNoTracking()
+        var tokens = db.DeliveryRecordIdentities.AsNoTracking();
+        if (flowId is { } flow)
+        {
+            tokens = tokens.Where(i => i.FlowId == flow);
+        }
+
+        return tokens
             .Where(i => i.Token.StartsWith(folded))
             .OrderBy(i => i.Token)
             .Select(i => new RecordIdentityRow { FlowId = i.FlowId, DeliveryKey = i.DeliveryKey })

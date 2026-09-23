@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { History } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +9,7 @@ import {
 } from "../../api/delivery";
 import type { Column } from "@/components/DataTable";
 import { FilterBar } from "@/components/FilterBar";
+import { FilterCombobox, type FilterOption } from "@/components/FilterCombobox";
 import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
 import { PagedTable } from "@/components/PagedTable";
@@ -150,22 +152,38 @@ export default function DeliveryRecordsPage() {
   const searching = term !== "";
   const columns = useMemo(() => columnsFor(searching), [searching]);
 
-  const selectStatus = (next: string) => setSearchParams((current) => {
+  // The flow is a ledger identity: one per interface of a source, named as the Flow column names it.
+  const flow = searchParams.get("flow") ?? "";
+  const flows = useQuery({ queryKey: ["delivery", "record-flows"], queryFn: deliveryApi.recordFlows });
+  const flowOptions = useMemo<FilterOption[]>(() => {
+    const options = (flows.data ?? []).map((f) => ({
+      value: f.flowId,
+      label: f.interface ? `${f.flowName} / ${f.interface}` : f.flowName,
+    }));
+    // A link can name a flow no synced pipeline holds any more; the filter still applies, and says so.
+    return flow !== "" && flows.isSuccess && !options.some((o) => o.value === flow)
+      ? [{ value: flow, label: "Flow no longer synced", hint: flow }, ...options]
+      : options;
+  }, [flows.data, flows.isSuccess, flow]);
+
+  const setParam = (name: string, next: string | null) => setSearchParams((current) => {
     const params = new URLSearchParams(current);
-    if (next === ALL) {
-      params.delete("status");
+    if (next === null) {
+      params.delete(name);
     } else {
-      params.set("status", next);
+      params.set(name, next);
     }
 
     return params;
   }, { replace: true });
+  const selectStatus = (next: string) => setParam("status", next === ALL ? null : next);
+  const selectFlow = (next: string) => setParam("flow", next === "" ? null : next);
 
   return (
     <Page data-testid="page-delivery-records">
       <PageHeader
         title="Records"
-        subtitle="The records of every flow, newest first, and a way back to any one of them: a wellbore id or well name the mapping declares, a source key or label, an OSDU id, a delivery key, or the ingestion file it came from. Every flow is searched, and each hit says which value matched."
+        subtitle="The records of every flow, newest first, and a way back to any one of them: a wellbore id or well name the mapping declares, a source key or label, an OSDU id, a delivery key, or the ingestion file it came from. Every flow is searched unless one is chosen, and each hit says which value matched."
       />
       <FilterBar>
         <SearchInput
@@ -185,6 +203,17 @@ export default function DeliveryRecordsPage() {
             {DELIVERY_RECORD_STATUSES.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
           </SelectContent>
         </Select>
+        <FilterCombobox
+          options={flowOptions}
+          value={flow}
+          onChange={selectFlow}
+          placeholder="All flows"
+          searchPlaceholder="Search flows"
+          emptyText="No flow matches."
+          ariaLabel="Filter by flow"
+          testId="delivery-lookup-flow"
+          className="w-64"
+        />
       </FilterBar>
       {!searching && (
         <p className="flex items-center gap-1.5 text-[12px] text-muted-foreground" data-testid="delivery-lookup-caption">
@@ -196,10 +225,11 @@ export default function DeliveryRecordsPage() {
         </p>
       )}
       <PagedTable
-        queryKey={["delivery", "lookup", term, status]}
+        queryKey={["delivery", "lookup", term, status, flow]}
         fetchPage={(page, pageSize) => deliveryApi.lookupRecords({
           search: searching ? term : undefined,
           status: status === ALL ? undefined : (status as DeliveryRecordStatus),
+          flowId: flow === "" ? undefined : flow,
           page,
           pageSize,
         })}

@@ -677,7 +677,7 @@ export interface DeliveryRecordChain {
   note: string | null;
 }
 
-/** What the Records page asks the ledger for: a term over every flow, and a custody state to narrow it to. */
+/** What the Records page asks the ledger for: a term over every flow, and a custody state and a flow to narrow it to. */
 export interface DeliveryRecordLookupQuery extends PageQuery {
   /**
    * A delivery key, or the start of an OSDU id, a source key, a label or an ingestion file name. Left out, the
@@ -685,6 +685,17 @@ export interface DeliveryRecordLookupQuery extends PageQuery {
    */
   search?: string;
   status?: DeliveryRecordStatus;
+  /** The ledger identity of one flow (a {@link DeliveryRecordFlow}'s `flowId`); left out, every flow. */
+  flowId?: string;
+}
+
+/** A flow the Records page can be narrowed to: the ledger identity its records carry, and the name the Flow column shows. */
+export interface DeliveryRecordFlow {
+  flowId: string;
+  pipelineId: string;
+  flowName: string;
+  /** The interface of a source that delivers several; null for a flow in the single form. */
+  interface: string | null;
 }
 
 /**
@@ -1304,6 +1315,8 @@ export const deliveryApi = {
    */
   lookupRecords: (query: DeliveryRecordLookupQuery) =>
     get<PagedResult<DeliveryRecordHit>>("/api/v1/delivery/records", query as unknown as QueryParams),
+  /** The flows the lookup can be narrowed to, one per interface of a source, ordered by flow. */
+  recordFlows: () => get<DeliveryRecordFlow[]>("/api/v1/delivery/records/flows"),
   /** A flow's submissions, newest first. */
   submissions: (pipelineId: string, max?: number, interfaceName?: string | null) =>
     get<DeliverySubmission[]>(`/api/v1/delivery/flows/${pipelineId}/submissions`, {

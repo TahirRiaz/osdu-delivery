@@ -144,6 +144,61 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task Recent_and_lookup_narrow_to_one_flow()
+    {
+        var submission = Guid.NewGuid();
+        var otherFlow = FlowId.Of("other-flow");
+        var ours = FlowId.Of("test-flow");
+        await Ledger.UpsertPendingAsync(otherFlow, new[] { "WELL-A1", "WELL-A2", "WELL-A3" }.Select(k => Pending(k, submission) with { FlowId = otherFlow }).ToList());
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        await Ledger.UpsertPendingAsync(ours, [Pending("WELL-B1", submission)]);
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        await Ledger.UpsertPendingAsync(otherFlow, [Pending("WELL-A4", submission) with { FlowId = otherFlow }]);
+
+        // The recency listing of one flow is that flow's records alone, newest first, however recently another flow wrote.
+        Assert.Equal("WELL-B1", Assert.Single(await Ledger.ListRecentAsync(10, flowId: ours)).SourceKey);
+        Assert.Equal(new BoundedCount(1, Exact: true), await Ledger.CountRecentAsync(10, flowId: ours));
+        var theirs = await Ledger.ListRecentAsync(10, flowId: otherFlow);
+        Assert.Equal(4, theirs.Count);
+        Assert.Equal("WELL-A4", theirs[0].SourceKey);
+        Assert.All(theirs, r => Assert.Equal(otherFlow, r.FlowId));
+        Assert.Equal(new BoundedCount(2, Exact: false), await Ledger.CountRecentAsync(2, flowId: otherFlow));
+        Assert.Empty(await Ledger.ListRecentAsync(10, flowId: FlowId.Of("no-such-flow")));
+
+        // A prefix both flows share finds the chosen flow's record only.
+        Assert.Equal(ours, Assert.Single(await Ledger.LookupAsync("WELL-", 10, flowId: ours)).FlowId);
+        Assert.Equal(4, (await Ledger.LookupAsync("WELL-", 10, flowId: otherFlow)).Count);
+
+        // The other flow's tokens sort first, so over every flow a bound of two is spent on them. Narrowed to one flow,
+        // the candidates are that flow's own tokens: its record is reached, and the count is exact.
+        Assert.Equal(new BoundedCount(2, Exact: false), await Ledger.CountLookupAsync("WELL-", 2));
+        Assert.Equal(new BoundedCount(1, Exact: true), await Ledger.CountLookupAsync("WELL-", 2, flowId: ours));
+
+        // The same row read by both flows is one record in each: its delivery key finds both, and the chosen flow's alone.
+        await Ledger.UpsertPendingAsync(otherFlow, [Pending("WELL-B1", submission) with { FlowId = otherFlow, TargetId = "dev:y:WELL-B1" }]);
+        var shared = DeliveryKey.Derive("test", ["WELL-B1"]);
+        Assert.Equal(2, (await Ledger.LookupAsync(shared.Value.ToString(), 10)).Count);
+        Assert.Equal(otherFlow, Assert.Single(await Ledger.LookupAsync(shared.Value.ToString(), 10, flowId: otherFlow)).FlowId);
+        Assert.Equal(new BoundedCount(1, Exact: true), await Ledger.CountLookupAsync(shared.Value.ToString(), 10, flowId: ours));
+
+        // A custody state and a flow narrow together.
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        await Ledger.CompleteAsync(ours, new RecordCompletion
+        {
+            DeliveryKey = shared,
+            Status = RecordStatus.Held,
+            Error = "held by the test",
+            Attempt = new AttemptRecord { DeliveryKey = shared, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Held, Phase = "metadata" },
+        });
+        Assert.Equal(ours, Assert.Single(await Ledger.ListRecentAsync(10, RecordStatus.Held, ours)).FlowId);
+        Assert.Empty(await Ledger.ListRecentAsync(10, RecordStatus.Held, otherFlow));
+        Assert.Equal(new BoundedCount(0, Exact: true), await Ledger.CountRecentAsync(10, RecordStatus.Held, otherFlow));
+        Assert.Single(await Ledger.LookupAsync("WELL-B", 10, RecordStatus.Held, ours));
+        Assert.Empty(await Ledger.LookupAsync("WELL-B", 10, RecordStatus.Held, otherFlow));
+        Assert.Equal(new BoundedCount(1, Exact: true), await Ledger.CountLookupAsync("WELL-B", 10, RecordStatus.Pending, otherFlow));
+    }
+
+    [Fact]
     public async Task Record_listings_count_to_a_limit_page_in_a_stable_order_and_bound_their_searches()
     {
         var s1 = Guid.NewGuid();

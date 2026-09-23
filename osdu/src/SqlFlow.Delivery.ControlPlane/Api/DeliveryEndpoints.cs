@@ -105,6 +105,12 @@ public sealed record DeliveryRecordLinkDto(
     Guid FlowId, Guid DeliveryKey, Guid? PipelineId, string? FlowName, string? Interface, string SourceKey, string? Label, string? TargetId, string Status);
 
 /// <summary>
+/// A flow the record lookup can be narrowed to: the ledger identity its records carry (<c>FlowId</c>, what the lookup's
+/// <c>flowId</c> takes), and the pipeline and interface (null for the single form) it is named by.
+/// </summary>
+public sealed record DeliveryRecordFlowDto(Guid FlowId, Guid PipelineId, string FlowName, string? Interface);
+
+/// <summary>
 /// A record with the pipeline (and, for a source, the interface) it belongs to. The pending document itself lives in the
 /// submission's work batches on storage, which the nodes read; its reference and batch are on the record. A waiting record
 /// names the record it waits for (<c>WaitsOn</c>), and every record lists the records waiting for it (<c>WaitedOnBy</c>,
@@ -341,6 +347,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/flows/{pipelineId:guid}/interfaces", ListInterfacesAsync).WithName("ListDeliveryInterfaces");
         delivery.MapGet("/flows/{pipelineId:guid}/records", ListRecordsAsync).WithName("ListDeliveryRecords");
         delivery.MapGet("/records", LookupRecordsAsync).WithName("LookupDeliveryRecords");
+        delivery.MapGet("/records/flows", ListRecordFlowsAsync).WithName("ListDeliveryRecordFlows");
         delivery.MapGet("/flows/{pipelineId:guid}/target", GetTargetAsync).WithName("GetDeliveryTarget");
         delivery.MapGet("/flows/{pipelineId:guid}/submissions", ListSubmissionsAsync).WithName("ListDeliverySubmissions");
         delivery.MapGet("/flows/{pipelineId:guid}/retrievals", ListRetrievalsAsync).WithName("ListDeliveryRetrievals");
@@ -599,14 +606,14 @@ public static class DeliveryEndpoints
     /// <summary>
     /// A record by what an operator holds, across every flow: the Records page's lookup. A delivery key lands on the
     /// record of every flow reading that row; anything else is a prefix over the OSDU id, the source key, the label and
-    /// the ingestion file name, narrowed to one custody state when asked. With no term it is the ledger's recency
-    /// listing instead: the records the delivery system last took in or sent, newest first, which is what the page shows
-    /// before anything is typed. Both are indexed reads, so they answer in milliseconds at production volume and reach
-    /// no further than the candidate bound; a page past that bound is empty rather than a scan, and the listing has to
-    /// be narrowed instead.
+    /// the ingestion file name, narrowed to one custody state and to one flow's ledger identity (<paramref name="flowId"/>,
+    /// one of <see cref="ListRecordFlowsAsync"/>) when asked. With no term it is the ledger's recency listing instead: the
+    /// records the delivery system last took in or sent, newest first, which is what the page shows before anything is
+    /// typed. Both are indexed reads, so they answer in milliseconds at production volume and reach no further than the
+    /// candidate bound; a page past that bound is empty rather than a scan, and the listing has to be narrowed instead.
     /// </summary>
     private static async Task<Results<Ok<PagedResult<DeliveryRecordHitDto>>, ProblemHttpResult>> LookupRecordsAsync(
-        string? search, string? status, int? page, int? pageSize, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
+        string? search, string? status, Guid? flowId, int? page, int? pageSize, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
     {
         var term = search?.Trim() is { Length: > 0 } typed ? typed : null;
         var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(status, null, null, null, null));
@@ -622,19 +629,41 @@ public static class DeliveryEndpoints
         var found = skip >= RecordListing.LookupCandidateLimit
             ? []
             : term is null
-                ? await ledger.ListRecentAsync(take, query.Status, ct).ConfigureAwait(false)
-                : await ledger.LookupAsync(term, take, query.Status, ct).ConfigureAwait(false);
+                ? await ledger.ListRecentAsync(take, query.Status, flowId, ct).ConfigureAwait(false)
+                : await ledger.LookupAsync(term, take, query.Status, flowId, ct).ConfigureAwait(false);
         var items = found.Skip(skip).Take(size).ToList();
 
         // Fewer records than asked for means neither the recency index nor an identity index ran into its bound, so that count is exact.
         var total = found.Count < take
             ? new BoundedCount(found.Count, Exact: true)
             : term is null
-                ? await ledger.CountRecentAsync(RecordListing.LookupCandidateLimit, query.Status, ct).ConfigureAwait(false)
-                : await ledger.CountLookupAsync(term, RecordListing.LookupCandidateLimit, query.Status, ct).ConfigureAwait(false);
+                ? await ledger.CountRecentAsync(RecordListing.LookupCandidateLimit, query.Status, flowId, ct).ConfigureAwait(false)
+                : await ledger.CountLookupAsync(term, RecordListing.LookupCandidateLimit, query.Status, flowId, ct).ConfigureAwait(false);
 
         var hits = await DeliveryRecordHits.DescribeAsync(db, osdu, items, ct, term).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<DeliveryRecordHitDto>(hits, p, size, total.Count, TotalCapped: !total.Exact));
+    }
+
+    /// <summary>
+    /// The flows the Records page can be narrowed to: every ledger identity the synced repositories name, with the
+    /// pipeline and interface a hit of it is named by, found the way a hit finds them, so the choice reads as the Flow
+    /// column does. A source that delivers several interfaces is one choice per interface, because its records are kept
+    /// per interface and never summed. A ledger no synced pipeline holds any more is not a choice; its records still
+    /// appear under every flow, as "no longer synced". Ordered by flow, then interface.
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<DeliveryRecordFlowDto>>> ListRecordFlowsAsync(
+        CatalogDbContext db, OsduDbContext osdu, CancellationToken ct)
+    {
+        var ledgers = await osdu.DeliveryInterfaces.AsNoTracking()
+            .Select(i => i.LedgerFlowId)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+        var found = await DeliveryPipelines.ForLedgersAsync(db, osdu, ledgers, ct).ConfigureAwait(false);
+        return TypedResults.Ok<IReadOnlyList<DeliveryRecordFlowDto>>(found
+            .Select(f => new DeliveryRecordFlowDto(f.Key, f.Value.Pipeline.Id, f.Value.Pipeline.Name, NamedInterface(f.Value)))
+            .OrderBy(f => f.FlowName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(f => f.Interface ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ToList());
     }
 
     private static async Task<Results<Ok<DeliveryTargetDto>, ProblemHttpResult>> GetTargetAsync(

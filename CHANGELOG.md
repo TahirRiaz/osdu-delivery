@@ -13,6 +13,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The Records page narrows to one flow.** A searchable flow picker beside the status filter lists every flow the
+  synced repositories name (a source that delivers several interfaces offers one choice per interface), named as the
+  Flow column names them (`GET /api/v1/delivery/records/flows`). The choice narrows both the recency listing and a
+  search, and travels in the URL with the term and the status (`flowId` on `GET /api/v1/delivery/records`). A search
+  narrowed to one flow reads that flow's own identity tokens (migration `RecordIdentityFlowToken`, module version
+  1.12.1: `IX_RecordIdentity_FlowId_Token`), so a prefix other flows share cannot use up the candidate bound before
+  its records are reached; the recency listing of one flow reads the existing per-flow recency indexes.
 - **The YAML editor documents and checks every OSDU Delivery document.** Delivery, retrieval and cache flows, mappings
   and dictionaries had the editor's analysis switched off, because SQLFlow's engine knew only its own flow kinds. The
   engine now takes a module's key census files (a generic extension point, `ca779a3`), and the module ships one for
