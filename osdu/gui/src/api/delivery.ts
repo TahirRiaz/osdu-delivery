@@ -424,6 +424,25 @@ export interface DeliveryCacheVersionType {
   items: number;
 }
 
+/** Whether a platform service reports a system property on for the partition. */
+export type DeliveryCacheSystemPropertyState = "Enabled" | "Disabled" | "Unknown";
+
+/**
+ * One of the partition's system properties as a cache version holds it: a setting of the platform for the partition, reported
+ * by one of its services, which is neither reference nor master data and has no record behind it.
+ */
+export interface DeliveryCacheSystemProperty {
+  /** The service that reports it: indexer or search. */
+  service: string;
+  /** The property as that service names it, such as featureFlag.keywordLower.enabled. */
+  name: string;
+  state: DeliveryCacheSystemPropertyState;
+  /** Where the service says it took the value from, when it says. */
+  source: string | null;
+  /** Why the state is unknown, or the last time it could not be read. */
+  detail: string | null;
+}
+
 /**
  * One version of a partition's cache: when it was written, whether it is the version deliveries render against, the version
  * that was current before it, the cache flow and the run that wrote it and who asked (no run for an import from files),
@@ -443,6 +462,8 @@ export interface DeliveryCacheVersion {
   origin: string;
   items: number;
   types: DeliveryCacheVersionType[];
+  /** The partition's system properties the capture found, kept apart from the types. */
+  systemProperties: DeliveryCacheSystemProperty[];
 }
 
 /** How one cached record differs between two versions of its cache. */

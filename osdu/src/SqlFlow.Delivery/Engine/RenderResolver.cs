@@ -66,7 +66,7 @@ public sealed class RenderResolver
             ?? throw new FlowValidationException(
                 $"{where}: mapping {mapping.Reference} pins template {mapping.Template}, which is not saved. Save it on the Templates page, or with 'sqlflow template import'.");
 
-        var (references, scope) = await CacheAsync(flow, mapping, where, ct).ConfigureAwait(false);
+        var (references, scope, systemProperties) = await CacheAsync(flow, mapping, where, ct).ConfigureAwait(false);
 
         var parameters = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (name, declared) in mapping.Parameters)
@@ -107,6 +107,7 @@ public sealed class RenderResolver
             CacheVersion = references.Version,
             SchemaSnapshotVersion = schema.Version,
             Parameters = parameters,
+            SystemProperties = systemProperties,
         };
 
         var searches = await SearchesAsync(_templates, mapping, ct).ConfigureAwait(false);
@@ -164,12 +165,25 @@ public sealed class RenderResolver
         return CacheScope.Normalize(await _secrets.ResolveAsync(declared, ct).ConfigureAwait(false), where);
     }
 
-    private async Task<(ReferenceSnapshot References, string? Scope)> CacheAsync(FlowDefinition flow, MappingDefinition mapping, string where, CancellationToken ct)
+    /// <summary>
+    /// The version of the partition's cache the mapping renders against, the partition, and the system properties its
+    /// searches are written under (<see cref="SystemProperties.Pinned"/>; none when it declares no searches).
+    /// </summary>
+    /// <remarks>
+    /// A mapping that reads the cache renders against a version, the current one or the one the flow pins, and its
+    /// searches under that version's properties. A mapping that only searches reads no cached record, so it renders
+    /// against no version and is pinned to the properties alone: those of the version the flow names, read without its
+    /// records. Pinning it to the version would render every one of its records again, and ask the platform every one of
+    /// their questions again, whenever a capture changed reference data it never reads.
+    /// </remarks>
+    private async Task<(ReferenceSnapshot References, string? Scope, IReadOnlyList<SystemProperty> SystemProperties)> CacheAsync(
+        FlowDefinition flow, MappingDefinition mapping, string where, CancellationToken ct)
     {
         var readsCache = mapping.Entries.Any(e => e.Source?.Kind == MappingSourceKind.Cache);
-        if (!readsCache)
+        var searches = mapping.Searches.Count > 0;
+        if (!readsCache && !searches)
         {
-            return (ReferenceSnapshot.Empty, null);
+            return (ReferenceSnapshot.Empty, null, []);
         }
 
         // The cache holds one partition's reference data, so it is keyed by the partition the flow actually reaches, not
@@ -177,6 +191,11 @@ public sealed class RenderResolver
         // cache by that text: the same reference in two estates delivering to two partitions would share one cache, and
         // two documents naming one partition different ways would each need their own capture of identical data.
         var scope = await PartitionAsync(flow, $"{where}: target", ct).ConfigureAwait(false);
+        if (!readsCache)
+        {
+            return (ReferenceSnapshot.Empty, null, SystemProperties.Pinned(await SearchPropertiesAsync(flow, scope, where, ct).ConfigureAwait(false)));
+        }
+
         if (_cache is null)
         {
             throw new FlowValidationException(
@@ -193,6 +212,31 @@ public sealed class RenderResolver
 
         var references = await _cache.LoadAsync(scope, version, ct).ConfigureAwait(false)
             ?? throw new FlowValidationException($"{where}: render.cacheVersion pins version {version} of the cache of partition '{scope}', which the catalog does not hold.");
-        return (references, scope);
+        return (references, scope, searches ? SystemProperties.Pinned(references.SystemProperties) : []);
+    }
+
+    /// <summary>
+    /// The system properties of the version of the partition's cache the flow names, read from the version's row alone:
+    /// none when it names the current version and the partition holds none yet, or when the host has no module database,
+    /// and a search then asks exact questions only. A version the flow pins that the catalog does not hold is refused, as
+    /// it is for a mapping that reads the cache.
+    /// </summary>
+    private async Task<IReadOnlyList<SystemProperty>> SearchPropertiesAsync(FlowDefinition flow, string scope, string where, CancellationToken ct)
+    {
+        if (_cache is null)
+        {
+            return [];
+        }
+
+        var pinned = flow.Render.CacheVersion.Equals(FlowRender.CurrentCacheVersion, StringComparison.OrdinalIgnoreCase) ? null : flow.Render.CacheVersion;
+        var version = await _cache.VersionAsync(scope, pinned, ct).ConfigureAwait(false);
+        if (version is not null)
+        {
+            return version.SystemProperties;
+        }
+
+        return pinned is null
+            ? []
+            : throw new FlowValidationException($"{where}: render.cacheVersion pins version {pinned} of the cache of partition '{scope}', which the catalog does not hold.");
     }
 }

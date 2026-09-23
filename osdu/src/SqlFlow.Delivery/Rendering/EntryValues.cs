@@ -373,11 +373,44 @@ internal static partial class EntryValues
                 case SearchOutcome.Found:
                     return WithVersionSeparator(answer.Id!);
                 case SearchOutcome.NotFound:
-                    outcomes.Add($"{find.Field} '{value}' {answer.Describe()}");
-                    continue;
+                    break;
                 default:
                     holds.Add(
                         $"{path}: searching {kind} for {find.Field} '{value}' {answer.Describe()}; a reference picked from several, or taken without an answer, would put a wrong document into OSDU, so the record is held. Make the incoming value name one record.");
+                    return null;
+            }
+
+            // Nothing holds the value exactly. Where the partition's indexer keeps a lowercased copy of text, the same value
+            // is asked for regardless of case, and taken only when that finds exactly one record, which is the rule a cache
+            // lookup keeps: codes that differ only by case are different records, so several answers select none of them.
+            if (Caseless(renderer, field!, value) is not { } loose)
+            {
+                outcomes.Add($"{find.Field} '{value}' {answer.Describe()}");
+                continue;
+            }
+
+            var looseQuestion = new SearchQuestion(kind, find.Field, value, loose.Text);
+            if (!renderer.Search.TryAnswer(looseQuestion, out var looseAnswer))
+            {
+                searched.Ask(looseQuestion);
+                return null;
+            }
+
+            searched.Use(looseQuestion, looseAnswer);
+            switch (looseAnswer.Outcome)
+            {
+                case SearchOutcome.Found:
+                    return WithVersionSeparator(looseAnswer.Id!);
+                case SearchOutcome.NotFound:
+                    outcomes.Add($"{find.Field} '{value}' found no record, exactly or once case is ignored");
+                    continue;
+                case SearchOutcome.Refused:
+                    holds.Add(
+                        $"{path}: searching {kind} for {find.Field} '{value}' found no record exactly, and once case is ignored it {looseAnswer.Describe()}; a reference taken without an answer would put a wrong document into OSDU, so the record is held.");
+                    return null;
+                default:
+                    holds.Add(
+                        $"{path}: searching {kind} for {find.Field} '{value}' found no record exactly, and once case is ignored it {looseAnswer.Describe()}; a reference picked from several would put a wrong document into OSDU, so the record is held. Make the incoming value exact with a replace modifier.");
                     return null;
             }
         }
@@ -402,6 +435,31 @@ internal static partial class EntryValues
         }
 
         return Missing(entry, reason, holds);
+    }
+
+    /// <summary>
+    /// The query that asks for <paramref name="value"/> regardless of case, or null when there is none to ask: the system
+    /// properties the render is pinned to do not say the partition's indexer keeps a lowercased copy of text, the property
+    /// is not text, or the value cannot be asked for that way. Only a system property known to be on changes how a lookup
+    /// is written, so a partition whose settings were never read is asked exact questions alone.
+    /// </summary>
+    private static OsduQuery? Caseless(MappingRenderer renderer, OsduField field, string value)
+    {
+        if (!renderer.Context.KeywordLower || field.Index != OsduFieldIndex.Text)
+        {
+            return null;
+        }
+
+        try
+        {
+            return OsduQuery.Equal(field, value, caseInsensitive: true);
+        }
+        catch (OsduQueryException)
+        {
+            // The exact question was asked and answered; the only value the lowercased copy refuses beyond it is a
+            // spelling of the text null, which that copy holds for every record with no value.
+            return null;
+        }
     }
 
     /// <summary>

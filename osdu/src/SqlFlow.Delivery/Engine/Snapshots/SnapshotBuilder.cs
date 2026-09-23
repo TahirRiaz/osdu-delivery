@@ -93,7 +93,7 @@ public sealed partial class SnapshotBuilder
         }
 
         CheckDeclared(types, declared, partition, directory);
-        return await WriteAsync(types, capture, ct).ConfigureAwait(false);
+        return await WriteAsync(types, capture, readings: [], ct).ConfigureAwait(false);
     }
 
     private void CheckDeclared(IReadOnlyList<ReferenceType> types, IReadOnlyList<ReferenceTypeSpec> declared, CacheDeclaration partition, string directory)
@@ -154,7 +154,11 @@ public sealed partial class SnapshotBuilder
         }
     }
 
-    /// <summary>Captures every type of <paramref name="spec"/> through the OSDU search service and merges them into the partition's cache.</summary>
+    /// <summary>
+    /// Captures every type of <paramref name="spec"/> through the OSDU search service, reads the partition's system
+    /// properties from the platform's services (<see cref="SystemPropertyCapture"/>), which every capture does whatever
+    /// the flow declares, and merges both into the partition's cache.
+    /// </summary>
     public async Task<CacheWrite> CaptureAsync(OsduConnection osdu, ReferenceCaptureSpec spec, CacheCapture capture, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(osdu);
@@ -166,7 +170,8 @@ public sealed partial class SnapshotBuilder
             types.Add(await CaptureTypeAsync(osdu, typeSpec, ct).ConfigureAwait(false));
         }
 
-        return await WriteAsync(types, capture, ct).ConfigureAwait(false);
+        var readings = await SystemPropertyCapture.ReadAsync(osdu, _scope, _logger, ct).ConfigureAwait(false);
+        return await WriteAsync(types, capture, readings, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -175,9 +180,10 @@ public sealed partial class SnapshotBuilder
     /// would change the metadata hash of every record built from the cache and deliver them all again for no reason.
     /// Comparing content makes refreshing a cache as often as anyone likes free.
     /// </summary>
-    private async Task<CacheWrite> WriteAsync(IReadOnlyList<ReferenceType> types, CacheCapture capture, CancellationToken ct)
+    private async Task<CacheWrite> WriteAsync(
+        IReadOnlyList<ReferenceType> types, CacheCapture capture, IReadOnlyList<SystemPropertyReading> readings, CancellationToken ct)
     {
-        var write = await _store.MergeAsync(_scope, _flow, types, capture, _time.GetUtcNow(), ct).ConfigureAwait(false);
+        var write = await _store.MergeAsync(_scope, _flow, types, capture, _time.GetUtcNow(), readings, ct).ConfigureAwait(false);
         if (write.Written)
         {
             _logger.LogInformation(

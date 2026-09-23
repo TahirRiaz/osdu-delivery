@@ -8,19 +8,25 @@ namespace SqlFlow.Delivery.Snapshots;
 
 /// <summary>
 /// A versioned, immutable capture of the OSDU reference and master data a mapping resolves against (design.md
-/// section 6.2). Replaces the per-replica in-memory cache: every render under one version sees the same items.
+/// section 6.2), with the partition's own system properties as the platform reported them at the capture. Replaces the
+/// per-replica in-memory cache: every render under one version sees the same items and the same properties.
 /// </summary>
 public sealed class ReferenceSnapshot
 {
     private readonly Dictionary<string, ReferenceType> _types;
 
-    public ReferenceSnapshot(string version, DateTimeOffset capturedUtc, IEnumerable<ReferenceType> types)
+    /// <param name="version">The version label.</param>
+    /// <param name="capturedUtc">When the capture was made.</param>
+    /// <param name="types">The cached types with their records.</param>
+    /// <param name="systemProperties">The partition's system properties; none for a cache no capture has asked the platform about.</param>
+    public ReferenceSnapshot(string version, DateTimeOffset capturedUtc, IEnumerable<ReferenceType> types, IEnumerable<SystemProperty>? systemProperties = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
         ArgumentNullException.ThrowIfNull(types);
         Version = version;
         CapturedUtc = capturedUtc;
         _types = types.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
+        SystemProperties = Snapshots.SystemProperties.Ordered(systemProperties ?? []);
     }
 
     public string Version { get; }
@@ -29,14 +35,29 @@ public sealed class ReferenceSnapshot
 
     public IReadOnlyCollection<ReferenceType> Types => _types.Values;
 
+    /// <summary>
+    /// The partition's system properties as the capture that wrote the version found them, by service and name. They are
+    /// kept apart from the types: they describe how the platform indexes and searches the partition, not any record of it.
+    /// </summary>
+    public IReadOnlyList<SystemProperty> SystemProperties { get; }
+
     public bool HasType(string name) => _types.ContainsKey(name);
 
     public ReferenceType? Type(string name) => _types.GetValueOrDefault(name);
 
+    /// <summary>The system property <paramref name="name"/> of <paramref name="service"/>, or null when the version does not name it.</summary>
+    public SystemProperty? SystemPropertyOf(string service, string name)
+        => SystemProperties.FirstOrDefault(p => string.Equals(p.Service, service, StringComparison.Ordinal) && string.Equals(p.Name, name, StringComparison.Ordinal));
+
     /// <summary>An empty snapshot, for mappings that resolve no references.</summary>
     public static ReferenceSnapshot Empty { get; } = new("none", DateTimeOffset.UnixEpoch, []);
 
-    /// <summary>Hash of the whole snapshot content, so a version label can be checked against what it holds.</summary>
+    /// <summary>
+    /// Hash of the whole snapshot content, so a version label can be checked against what it holds. The system properties
+    /// enter it by service, name and state, which is what a render reads of them, and not by the words a service or a
+    /// failed read explained them with, which change without the property changing. A version without system properties
+    /// hashes as every version did before a capture recorded them, so the versions written then still load.
+    /// </summary>
     public string ContentHash()
     {
         var doc = new JsonObject();
@@ -45,7 +66,23 @@ public sealed class ReferenceSnapshot
             doc[type.Name] = type.ToJson();
         }
 
-        return Hashing.ContentHash.Of(CanonicalJson.ToBytes(doc));
+        if (SystemProperties.Count == 0)
+        {
+            return Hashing.ContentHash.Of(CanonicalJson.ToBytes(doc));
+        }
+
+        var properties = new JsonArray();
+        foreach (var property in SystemProperties)
+        {
+            properties.Add(new JsonObject
+            {
+                ["service"] = property.Service,
+                ["name"] = property.Name,
+                ["state"] = property.State.ToString(),
+            });
+        }
+
+        return Hashing.ContentHash.Of(CanonicalJson.ToBytes(new JsonObject { ["types"] = doc, ["systemProperties"] = properties }));
     }
 
     /// <summary>
@@ -53,7 +90,11 @@ public sealed class ReferenceSnapshot
     /// in, so the content hash of what a capture found and of what the catalog holds for it can be compared.
     /// </summary>
     public ReferenceSnapshot Normalized()
-        => new(Version, CapturedUtc, _types.Values.Select(t => new ReferenceType(t.Name, t.EntityType, t.Items.OrderBy(i => i.Id, StringComparer.Ordinal))));
+        => new(
+            Version,
+            CapturedUtc,
+            _types.Values.Select(t => new ReferenceType(t.Name, t.EntityType, t.Items.OrderBy(i => i.Id, StringComparer.Ordinal))),
+            SystemProperties);
 }
 
 /// <summary>All items of one reference (or master-data) type, indexed on the fields a mapping may match by.</summary>

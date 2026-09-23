@@ -76,7 +76,8 @@ public sealed class CacheRefresher
         }
 
         var outcome = new CacheRefreshOutcome(
-            DeliveryOperations.Refresh, scope, flow.Name, snapshot.Version, previousVersion, write.Written, snapshot.CapturedUtc.UtcDateTime, types);
+            DeliveryOperations.Refresh, scope, flow.Name, snapshot.Version, previousVersion, write.Written, snapshot.CapturedUtc.UtcDateTime, types,
+            snapshot.SystemProperties);
         _logger.LogInformation(
             "Cache of partition {Scope} refreshed by {Flow}: {Outcome}, {Types} type(s), {Items} record(s). {Changed} cached record(s) moved, reaching {Records} delivered record(s) through {Changes} change(s).",
             scope, flow.Name, write.Written ? $"version {snapshot.Version} written and made current" : $"unchanged at version {snapshot.Version}",
@@ -84,15 +85,23 @@ public sealed class CacheRefresher
         return outcome;
     }
 
-    /// <summary>What a refresh would capture: how many records of each declared type the search matches. Writes nothing.</summary>
+    /// <summary>
+    /// What a refresh would capture: how many records of each declared type the search matches, and the partition's system
+    /// properties as the platform reports them now, merged onto what the current version holds. Writes nothing.
+    /// </summary>
     public async Task<CachePlanOutcome> PlanAsync(CacheDefinition flow, IReadOnlyDictionary<string, string> values, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(values);
-        var scope = flow.Scope;
+
+        // The partition the refresh would capture into, resolved as a refresh resolves it: the text a document spells it
+        // with names no cache.
+        var scope = CacheScope.Normalize(
+            await _context.Secrets.ResolveAsync(flow.Scope, ct).ConfigureAwait(false),
+            $"{flow.SourcePath ?? flow.Name}: source");
         var declaration = _context.Cache is { } store ? await store.DeclarationAsync(scope, ct).ConfigureAwait(false) : CacheDeclaration.None(scope);
         var spec = CaptureSpec(flow, values, declaration);
-        var currentVersion = _context.Cache is { } cache ? await cache.CurrentVersionAsync(scope, ct).ConfigureAwait(false) : null;
+        var current = _context.Cache is { } cache ? await cache.VersionAsync(scope, version: null, ct).ConfigureAwait(false) : null;
 
         using var osdu = await ConnectAsync(flow, ct).ConfigureAwait(false);
         var types = new List<CachePlanType>(spec.Types.Count);
@@ -107,7 +116,9 @@ public sealed class CacheRefresher
             types.Add(new CachePlanType(type.Name, type.Kind, type.Query, type.Fields.Select(f => f.Name).ToList(), total));
         }
 
-        return new CachePlanOutcome(DeliveryOperations.Plan, scope, flow.Name, currentVersion, types, types.Sum(t => t.Records));
+        var readings = await SystemPropertyCapture.ReadAsync(osdu, scope, _logger, ct).ConfigureAwait(false);
+        var properties = SystemProperties.Merge(current?.SystemProperties ?? [], readings);
+        return new CachePlanOutcome(DeliveryOperations.Plan, scope, flow.Name, current?.Version, types, types.Sum(t => t.Records), properties);
     }
 
     /// <summary>
@@ -131,7 +142,7 @@ public sealed class CacheRefresher
 /// </summary>
 public sealed record CacheRefreshOutcome(
     string Operation, string Scope, string Flow, string Version, string? PreviousVersion, bool Written, DateTime CapturedUtc,
-    IReadOnlyList<CachedTypeOutcome> Types)
+    IReadOnlyList<CachedTypeOutcome> Types, IReadOnlyList<SystemProperty> SystemProperties)
 {
     public long Items => Types.Sum(t => (long)t.Items);
 
@@ -147,5 +158,10 @@ public sealed record CachedTypeOutcome(
 /// <summary>One declared type as a plan counts it.</summary>
 public sealed record CachePlanType(string Name, string Kind, string Query, IReadOnlyList<string> Fields, long Records);
 
-/// <summary>The <c>result</c> of a plan run on a cache flow: what each type's search matches, and the version the partition's cache holds now.</summary>
-public sealed record CachePlanOutcome(string Operation, string Scope, string Flow, string? CurrentVersion, IReadOnlyList<CachePlanType> Types, long Records);
+/// <summary>
+/// The <c>result</c> of a plan run on a cache flow: what each type's search matches, the version the partition's cache
+/// holds now, and the system properties a refresh would record for the partition.
+/// </summary>
+public sealed record CachePlanOutcome(
+    string Operation, string Scope, string Flow, string? CurrentVersion, IReadOnlyList<CachePlanType> Types, long Records,
+    IReadOnlyList<SystemProperty> SystemProperties);

@@ -12,8 +12,11 @@ loads from the catalog (its current version, or the one `render.cacheVersion` pi
 and the mapping is checked against the template and the cache (the preflight gate,
 [mapping-templates.md](../../mapping-templates.md#checks)). A mapping that reads nothing from a cache is checked
 without one, and the output says so (`cache  none (the mapping reads nothing from a cache)`); otherwise it names
-what was read (`cache  partition <partition> version <version> (<n> type(s))`). Exit 0 on success, 1 on a
-validation failure, which names the file.
+what was read (`cache  partition <partition> version <version> (<n> type(s))`). A mapping that searches the platform
+gets a `searches` line saying how its lookups are written and the partition's system properties that decide it
+(`searches  exact, then regardless of case where one record answers (indexer featureFlag.keywordLower.enabled
+enabled)`, or `exact only (...)` when the setting is off or unknown). Exit 0 on success, 1 on a validation failure,
+which names the file.
 
 Templates and caches live in the catalog, so `check` needs the catalog connection: `--db <ref>`, or
 `SQLFLOW_CATALOG_DB`. Without one it fails saying so; the check that needs no catalog is `sqlflow validate`
@@ -55,7 +58,7 @@ forms need the catalog connection (`--db <ref>`, or `SQLFLOW_CATALOG_DB`); witho
 
 | Verb | What it does |
 | --- | --- |
-| `list` | Takes a partition (`dev`), or a cache flow's file, which names the partition the flow fills, and prints every version, newest first: its label, `current` against the current one, how many records in how many types, the cache flow that wrote it, when it was captured, for whom, and in which run. A value that is neither a partition id (letters, digits, underscore, hyphen and dot) nor a `${env:...}` or `${keyvault:...}` reference is refused. A partition whose cache has no version yet says to run a cache flow of the partition with the refresh operation. With `--json`, each version also carries its `partition`, its `flow`, its sequence, the version before it, where its content came from and the record count per type. |
+| `list` | Takes a partition (`dev`), or a cache flow's file, which names the partition the flow fills (its `data-partition-id` reference resolved), and prints every version, newest first: its label, `current` against the current one, how many records in how many types, the cache flow that wrote it, when it was captured, for whom, and in which run. Then the system properties the current version holds, which are settings of the platform rather than cached records: each one's service, name and state, what the service took it from, and why it is unknown ([documents.md](../../documents.md#cache-flow)). A value that is neither a partition id (letters, digits, underscore, hyphen and dot) nor a `${env:...}` or `${keyvault:...}` reference is refused. A partition whose cache has no version yet says to run a cache flow of the partition with the refresh operation. With `--json`, each version also carries its `partition`, its `flow`, its sequence, the version before it, where its content came from, the record count per type and its `systemProperties` (`service`, `name`, `state`, `source`, `detail`). |
 | `import` | Merges the type files in `--from-dir` into the cache of the flow's partition as that cache flow's capture, for work without an OSDU platform (the sample estate keeps such files in `osdu/samples/cache-records`, beside the source folders rather than in one, because a cache lives in the module database and never in a repository). A file is `{Name}.json`: the type's entity type and its records, each an `id` and the captured values. The files have to be exactly what the cache flow declares: a file for every declared type and none for a type it does not declare, each under the declared entity type, and no value under a name the type does not capture. Anything else is refused, naming every mismatch, and nothing is written. The merge is the one a refresh makes: a record in the files replaces what the cache held for it, a record the flow's last capture held that the files leave out goes only when no other cache flow's capture still holds it, and types the files do not cover are left as they are. When the merge changes the cached content, a version is written, recorded as written by the cache flow and captured by `cli:<user>` with no run, and it becomes current. |
 
 Files that add nothing the current version does not already hold write nothing, as a refresh that finds nothing new

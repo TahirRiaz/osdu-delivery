@@ -298,6 +298,18 @@ reaches through an array of objects and caches the set of aliases it found. Noth
 narrowed to text on the way in, because a cache that quietly drops what it cannot flatten
 looks, at render time, exactly like bad source data.
 
+**What else a version holds.** Every capture also reads the partition's system properties,
+the settings the platform's indexer and search service report for the partition, and keeps
+them with the version, apart from the cached records: they say how the partition is indexed
+and searched rather than anything about a record of it. They enter the version's content
+hash by state, so a changed setting is a new version, and a service that cannot be asked
+changes nothing the cache knew. The engine relies on one of them, whether the indexer keeps a
+lowercased copy of text, which decides whether a search may ask again regardless of case
+([0009](decisions/0009-searched-references.md)). The render context of a mapping that
+searches pins the states it relies on; a mapping that only searches is pinned to them in
+place of a version, so a new version of reference data it never reads renders none of its
+records again.
+
 **How it is matched and read.** A mapping entry selects a cached record with `findBy`. A
 field holding a set matches on any one of its values. Matching is trimmed; an exact match
 of one record wins, case is ignored only when that finds exactly one record, and a value
@@ -310,8 +322,8 @@ preflight gate rather than holding every record at run time.
 **Who fills it.** What is cached is defined by flows of their own, `flowType: cache`
 ([documents.md](documents.md#cache-flow)): the OSDU platform to search, the types to cache
 (each a kind, an optional query and the paths to keep), and what a changed value does.
-There is one cache per OSDU data partition, keyed by the partition as the flows declare it
-(`CacheScope`): a cache flow fills the cache of the partition in its
+There is one cache per OSDU data partition, keyed by the partition the flows reach, their
+declared `data-partition-id` with its references resolved (`CacheScope`): a cache flow fills the cache of the partition in its
 `source.headers.data-partition-id`, and a delivery flow reads the cache of the partition in
 its `target.headers.data-partition-id`, so no flow names a cache. A run of a cache flow, the
 `refresh` operation that its schedule fires, sweeps every declared type in full through the

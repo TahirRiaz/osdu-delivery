@@ -9,8 +9,8 @@ namespace SqlFlow.Delivery.Snapshots;
 
 /// <summary>
 /// The three non-source inputs pinned together for a render (design.md section 4.1), plus the mapping parameter
-/// values the flow supplied (section 9.5). Recorded in the ledger against every document and part of every
-/// content hash.
+/// values the flow supplied (section 9.5) and, for a mapping that searches, the partition's system properties its
+/// lookups were written under. Recorded in the ledger against every document and part of every content hash.
 /// </summary>
 public sealed partial record RenderContext
 {
@@ -28,6 +28,21 @@ public sealed partial record RenderContext
     public required string SchemaSnapshotVersion { get; init; }
 
     public IReadOnlyDictionary<string, string> Parameters { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The partition's system properties the render's searches were written under, by state alone
+    /// (<see cref="Snapshots.SystemProperties.Pinned"/>); none when the mapping declares no searches, which leaves the
+    /// context of every other mapping as it always was. They pin a mapping that only searches in place of a cache
+    /// version: a search reads nothing else of the cache, so a capture that changes reference data renders none of its
+    /// records again, and one that changes how the partition is searched renders all of them again.
+    /// </summary>
+    public IReadOnlyList<SystemProperty> SystemProperties { get; init; } = [];
+
+    /// <summary>
+    /// Whether a search that finds nothing exactly asks again regardless of case: the pinned properties say the
+    /// partition's indexer keeps a lowercased keyword of text (<see cref="Snapshots.SystemProperties.KeywordLowerOn"/>).
+    /// </summary>
+    public bool KeywordLower => Snapshots.SystemProperties.KeywordLowerOn(SystemProperties);
 
     /// <summary>
     /// The partition every record id is minted in. It is the first segment of the id, and the storage service
@@ -78,6 +93,23 @@ public sealed partial record RenderContext
             node["cache"] = CacheScope;
         }
 
+        if (SystemProperties.Count > 0)
+        {
+            var services = new JsonObject();
+            foreach (var property in SystemProperties)
+            {
+                if (services[property.Service] is not JsonObject names)
+                {
+                    names = new JsonObject();
+                    services[property.Service] = names;
+                }
+
+                names[property.Name] = property.State.ToString();
+            }
+
+            node["systemProperties"] = services;
+        }
+
         return CanonicalJson.ToString(node);
     }
 
@@ -102,7 +134,44 @@ public sealed partial record RenderContext
             CacheVersion = node["cacheVersion"]?.GetValue<string>() ?? string.Empty,
             SchemaSnapshotVersion = node["schema"]?.GetValue<string>() ?? string.Empty,
             Parameters = parameters,
+            SystemProperties = ParseSystemProperties(node["systemProperties"]),
         };
+    }
+
+    /// <summary>The pinned system properties of a canonical context; a state the context does not name is refused rather than guessed.</summary>
+    private static IReadOnlyList<SystemProperty> ParseSystemProperties(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return [];
+        }
+
+        if (node is not JsonObject services)
+        {
+            throw new DeliveryException("Render context systemProperties is not a JSON object of services.");
+        }
+
+        var properties = new List<SystemProperty>();
+        foreach (var (service, names) in services)
+        {
+            if (names is not JsonObject named)
+            {
+                throw new DeliveryException($"Render context systemProperties.{service} is not a JSON object of properties.");
+            }
+
+            foreach (var (name, value) in named)
+            {
+                var text = value is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+                if (Snapshots.SystemProperties.ParseState(text) is not { } state)
+                {
+                    throw new DeliveryException($"Render context pins system property {service} {name} to {value?.ToJsonString() ?? "null"}, which is not a state (Enabled, Disabled or Unknown).");
+                }
+
+                properties.Add(new SystemProperty(service, name, state, null, null));
+            }
+        }
+
+        return Snapshots.SystemProperties.Ordered(properties);
     }
 
     public override string ToString() => Canonical();

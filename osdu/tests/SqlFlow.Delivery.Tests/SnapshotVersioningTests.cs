@@ -198,7 +198,8 @@ public sealed class SnapshotVersioningTests : IDisposable
         var builder = new SnapshotBuilder(store, Scope, "project-a", new TestClock(), Samples.Logger<SnapshotBuilder>());
         var write = await builder.CaptureAsync(osdu, new ReferenceCaptureSpec { Types = [widened] }, Capture);
 
-        var search = Assert.Single(handler.Calls);
+        // The type's search, beside the two info requests every capture makes for the partition's system properties.
+        var search = Assert.Single(handler.Calls, c => c.Uri.AbsolutePath.EndsWith("/query_with_cursor", StringComparison.Ordinal));
         Assert.Contains("data.NameAlias.AliasName", search.Body, StringComparison.Ordinal);
         Assert.True(write.Written);
         var wellbore = (await _catalog.Caches().LoadAsync(Scope, write.Snapshot.Version))!.Type("Wellbore")!.Items.Single();

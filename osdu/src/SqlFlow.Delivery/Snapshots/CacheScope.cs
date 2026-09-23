@@ -6,8 +6,8 @@ namespace SqlFlow.Delivery.Snapshots;
 /// <summary>
 /// The partition a cache belongs to (design.md section 6.2). A catalog keeps one cache per OSDU data partition: every cache
 /// flow that searches a partition writes into it, and every delivery flow that delivers to the partition reads from it, so a
-/// record any flow captured is there for all of them and is stored once. The scope is the partition as the flows declare it
-/// in their <c>data-partition-id</c> header, trimmed.
+/// record any flow captured is there for all of them and is stored once. The scope is the partition the flows reach: their
+/// <c>data-partition-id</c> header with its references resolved, trimmed.
 /// </summary>
 public static partial class CacheScope
 {

@@ -170,6 +170,10 @@ public static class CacheMerge
     /// <param name="declaredTypes">The types synced flows declare for the partition; empty when none are synced, which removes no type.</param>
     /// <param name="version">The label of the version the merge would write.</param>
     /// <param name="capturedUtc">When the capture was made.</param>
+    /// <param name="readings">
+    /// What the platform's services said about the partition's system properties during the capture
+    /// (<see cref="SystemProperties.Merge"/>); none for an import from files, which keeps the current ones.
+    /// </param>
     public static CacheMergePlan Apply(
         ReferenceSnapshot? current,
         IReadOnlyDictionary<CacheMemberKey, IReadOnlySet<string>> members,
@@ -177,7 +181,8 @@ public static class CacheMerge
         IReadOnlyList<ReferenceType> captured,
         IReadOnlyCollection<string> declaredTypes,
         string version,
-        DateTimeOffset capturedUtc)
+        DateTimeOffset capturedUtc,
+        IReadOnlyList<SystemPropertyReading>? readings = null)
     {
         ArgumentNullException.ThrowIfNull(members);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
@@ -237,7 +242,8 @@ public static class CacheMerge
             }
         }
 
-        return new CacheMergePlan(new ReferenceSnapshot(version, capturedUtc, types.Values).Normalized(), removed);
+        var properties = SystemProperties.Merge(current?.SystemProperties ?? [], readings ?? []);
+        return new CacheMergePlan(new ReferenceSnapshot(version, capturedUtc, types.Values, properties).Normalized(), removed);
     }
 }
 

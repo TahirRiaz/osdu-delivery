@@ -82,6 +82,21 @@ public sealed class OsduCacheStore : ICacheStore
         return rows.Select(Info).ToList();
     }
 
+    public async Task<CacheVersionInfo?> VersionAsync(string scope, string? version, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        if (version is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(version);
+        }
+
+        await using var db = _factory();
+        var rows = db.DeliveryCacheVersions.AsNoTracking().Where(v => v.Scope == scope);
+        rows = version is null ? rows.Where(v => v.Current) : rows.Where(v => v.Version == version);
+        var row = await rows.FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        return row is null ? null : Info(row);
+    }
+
     public async Task<CacheDeclaration> DeclarationAsync(string scope, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
@@ -120,7 +135,13 @@ public sealed class OsduCacheStore : ICacheStore
     }
 
     public async Task<CacheWrite> MergeAsync(
-        string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheCapture capture, DateTimeOffset capturedUtc, CancellationToken ct = default)
+        string scope,
+        string flowName,
+        IReadOnlyList<ReferenceType> captured,
+        CacheCapture capture,
+        DateTimeOffset capturedUtc,
+        IReadOnlyList<SystemPropertyReading>? readings = null,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
@@ -185,7 +206,7 @@ public sealed class OsduCacheStore : ICacheStore
                     .Distinct()
                     .ToListAsync(ct).ConfigureAwait(false);
 
-                var plan = CacheMerge.Apply(current, members, flowName, captured, declared, label, capturedUtc);
+                var plan = CacheMerge.Apply(current, members, flowName, captured, declared, label, capturedUtc, readings);
                 var hash = plan.Snapshot.ContentHash();
                 if (current is not null && string.Equals(hash, current.ContentHash(), StringComparison.Ordinal))
                 {
@@ -202,7 +223,7 @@ public sealed class OsduCacheStore : ICacheStore
                     : label;
                 var snapshot = string.Equals(version, plan.Snapshot.Version, StringComparison.Ordinal)
                     ? plan.Snapshot
-                    : new ReferenceSnapshot(version, capturedUtc, plan.Snapshot.Types);
+                    : new ReferenceSnapshot(version, capturedUtc, plan.Snapshot.Types, plan.Snapshot.SystemProperties);
                 var types = snapshot.Types.OrderBy(t => t.Name, StringComparer.Ordinal).ToList();
 
                 // The row goes in first: the unique sequence is what a concurrent write of the same partition collides on.
@@ -221,6 +242,7 @@ public sealed class OsduCacheStore : ICacheStore
                     CapturedBy = Clip(capture.CapturedBy, 200),
                     Origin = Clip(capture.Origin, 1000),
                     TypesJson = TypesJson(types),
+                    SystemPropertiesJson = SystemPropertiesJson(snapshot.SystemProperties),
                     Items = types.Sum(t => (long)t.Items.Count),
                 };
                 db.DeliveryCacheVersions.Add(row);
@@ -261,7 +283,8 @@ public sealed class OsduCacheStore : ICacheStore
         ArgumentNullException.ThrowIfNull(row);
         return new CacheVersionInfo(
             row.Scope, row.Version, row.Sequence, DateTime.SpecifyKind(row.CapturedUtc, DateTimeKind.Utc), row.Current, row.PreviousVersion,
-            row.RunId, row.CapturedBy, row.Origin, row.FlowName, row.Items, ParseTypes(row.TypesJson, row.Scope, row.Version));
+            row.RunId, row.CapturedBy, row.Origin, row.FlowName, row.Items, ParseTypes(row.TypesJson, row.Scope, row.Version),
+            ParseSystemProperties(row.SystemPropertiesJson, row.Scope, row.Version));
     }
 
     /// <summary>The captured values of a record as the catalog stores them: names in ordinal order, each value as captured.</summary>
@@ -324,7 +347,11 @@ public sealed class OsduCacheStore : ICacheStore
                     .OrderBy(i => i.RecordId, StringComparer.Ordinal)
                     .Select(i => new ReferenceItem(i.RecordId, Fields(i.FieldsJson, scope, row.Version)))))
             .ToList();
-        var snapshot = new ReferenceSnapshot(row.Version, new DateTimeOffset(DateTime.SpecifyKind(row.CapturedUtc, DateTimeKind.Utc)), types);
+        var snapshot = new ReferenceSnapshot(
+            row.Version,
+            new DateTimeOffset(DateTime.SpecifyKind(row.CapturedUtc, DateTimeKind.Utc)),
+            types,
+            ParseSystemProperties(row.SystemPropertiesJson, scope, row.Version));
         if (!string.Equals(snapshot.ContentHash(), row.ContentHash, StringComparison.Ordinal))
         {
             throw new DeliveryException(
@@ -443,6 +470,62 @@ public sealed class OsduCacheStore : ICacheStore
         }
 
         return array.ToJsonString();
+    }
+
+    /// <summary>A version's system properties as the row stores them, in the order they are hashed.</summary>
+    private static string SystemPropertiesJson(IEnumerable<SystemProperty> properties)
+    {
+        var array = new JsonArray();
+        foreach (var property in SystemProperties.Ordered(properties))
+        {
+            var entry = new JsonObject
+            {
+                ["service"] = property.Service,
+                ["name"] = property.Name,
+                ["state"] = property.State.ToString(),
+            };
+            if (property.Source is { } source)
+            {
+                entry["source"] = source;
+            }
+
+            if (property.Detail is { } detail)
+            {
+                entry["detail"] = detail;
+            }
+
+            array.Add(entry);
+        }
+
+        return array.ToJsonString();
+    }
+
+    /// <summary>A version's system properties, read back; a state the row does not name is refused rather than guessed.</summary>
+    private static List<SystemProperty> ParseSystemProperties(string json, string scope, string version)
+    {
+        try
+        {
+            var properties = new List<SystemProperty>();
+            foreach (var entry in (JsonNode.Parse(string.IsNullOrWhiteSpace(json) ? "[]" : json) as JsonArray ?? []).OfType<JsonObject>())
+            {
+                var service = entry["service"]?.GetValue<string>();
+                var name = entry["name"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(service) || string.IsNullOrWhiteSpace(name)
+                    || SystemProperties.ParseState(entry["state"]?.GetValue<string>()) is not { } state)
+                {
+                    throw new DeliveryException(
+                        $"Version {version} of the cache of partition '{scope}' lists a system property without a service, a name or a known state ({entry.ToJsonString()}).");
+                }
+
+                properties.Add(new SystemProperty(service, name, state, entry["source"]?.GetValue<string>(), entry["detail"]?.GetValue<string>()));
+            }
+
+            return properties;
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+            throw new DeliveryException($"Version {version} of the cache of partition '{scope}' has system properties that are not valid JSON ({ex.Message}).", ex);
+        }
     }
 
     private static List<CacheVersionType> ParseTypes(string json, string scope, string version)

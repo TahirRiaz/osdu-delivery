@@ -242,7 +242,7 @@ existed, from the catalog's copies of their documents, so their records' pages w
 
 What a cache holds lives here and nowhere else ([design.md](design.md) section 6.2): nothing about it is written to a
 repository. There is one cache per OSDU data partition, keyed by the partition (`Scope`, the `data-partition-id` the
-cache flows declare), and every cache flow of the partition writes into it. A version is written by a refresh run whose
+cache flows declare, with its references resolved), and every cache flow of the partition writes into it. A version is written by a refresh run whose
 merge changed the cached content, or by `sqlflow cache import`, and never changes afterwards; the newest version of a
 partition is its current one. Every version is kept, because a delivered record's
 render context names the version it was rendered against.
@@ -256,6 +256,7 @@ render context names the version it was rendered against.
 | `ContentHash` | The hash of the whole content, checked on every load: a version whose records were altered after it was written is refused, and nothing renders against it. |
 | `PreviousVersion`, `Current` | The version that was current when this one was written, which the capture was merged onto, and whether this is the newest version, the one deliveries render against unless a flow pins another. |
 | `TypesJson`, `Items` | The types the version holds, each with its entity type and record count, and the records across them. |
+| `SystemPropertiesJson` | The partition's system properties the capture found: the settings the platform's indexer and search service report for the partition, each a `service`, `name` and `state` (`Enabled`, `Disabled` or `Unknown`), with the `source` the service took it from and the `detail` saying why it is unknown. They are not cached records and have no record id; they enter `ContentHash` by service, name and state, so a changed setting is a new version. `[]` for a version written before captures recorded them, which hashes as it always did ([documents.md](documents.md#cache-flow)). |
 
 `osdu.CacheItem` keeps the cached records by version range rather than by copy. A row is one record of one partition's cache
 (`Scope`, `TypeName`, `RecordId`) with its captured values (`FieldsJson`, with every scalar also in `Terms` for search)

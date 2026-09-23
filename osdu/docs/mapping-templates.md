@@ -279,12 +279,31 @@ OR or NOT before a colon.
 | Exactly one record | Renders its id. |
 | No record, on every line | Holds the record when required, and is left out otherwise, as a cache miss is. |
 | Several records | Holds the record whatever `required` says, naming the first five. |
+| No record exactly, and several once case is ignored | Holds the record whatever `required` says, naming them. |
 | The query is refused (400) | Holds the record whatever `required` says, quoting the service. |
 | A line could not be asked, and no other line found the record | Holds the record whatever `required` says: a value that cannot be searched for proves nothing about whether the record exists. |
 | Nothing: the platform is unreachable, refuses the credentials, or fails past the flow's retries | Fails the run. A missing answer is never taken for "no record". |
 
 A value that already is an OSDU id of the searched entity type names its record without a search; an id of another
 entity type holds the record.
+
+The `keyword` sub-field keeps the value as written, so an exact match respects case. A partition can also have its
+indexer keep a lowercased copy of every text property, the `keywordLower` sub-field. Whether it does is one of the
+partition's system properties, `featureFlag.keywordLower.enabled`, which every capture of the partition's cache reads
+from the platform (see [the partition cache](documents.md#the-partition-cache)). Where it is on, a line that finds no
+record exactly asks once more on the copy, `data.FacilityName.keywordLower:"NO 15/9-F-1"` (the platform lowercases the
+value it is asked for as it did the values it indexed), and:
+
+- an exact answer always wins: the copy is asked only when no record holds the value exactly;
+- one record once case is ignored renders its id;
+- several hold the record whatever `required` says, since codes that differ only by case are different records. Make the
+  incoming value exact with a `replace` modifier;
+- none is no record on that line, and the next line is asked.
+
+A partition whose setting is off, or unknown because no capture has read it or its services do not publish it, is asked
+exact questions alone, and so is a host without the module's database. A property kept as a keyword (a legacy link, or a
+value inside a flattened array) has no lowercased copy, and neither does the value `null` in any case, which the copy
+holds for every record without a value; those are asked exactly alone.
 
 The render itself does no I/O. A row whose lookup the run has not asked yet renders unfinished, naming the question; the
 plan collects a batch's questions, asks each distinct one once, and renders the waiting rows again, so a row whose first
@@ -296,8 +315,11 @@ the flow's identity may view in the partition it delivers to.
 - The search index is eventually consistent: a wellbore delivered moments ago is found once the platform's indexer has
   picked it up. A record held because its wellbore was not found stays held until it is released or its row changes,
   like any other held record.
-- The render context names the mapping version, which pins the searches and their schemas, but not the answers. A
-  delivered record is rendered again when its row or its mapping changes, not when the platform's wellbores do.
+- The render context names the mapping version, which pins the searches and their schemas, and the state of the
+  partition's system properties the lookups rely on, but not the answers. A delivered record is rendered again when its
+  row, its mapping or the partition's `keywordLower` setting changes, not when the platform's wellbores do. A mapping
+  that only searches renders against no version of the cache, so a capture that changes reference data it never reads
+  renders none of its records again.
 - In lineage the flow reads the searched kind, so the flow that delivers wellbores to the partition is ordered before a
   flow that searches for them.
 

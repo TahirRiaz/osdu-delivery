@@ -197,6 +197,7 @@ internal static class DeliveryVerbs
         var cacheLine = runtime.Mapping.Context.CacheScope is { } scope
             ? $"    cache       partition {scope} version {runtime.Mapping.References.Version} ({runtime.Mapping.References.Types.Count} type(s))"
             : "    cache       none (the mapping reads nothing from a cache)";
+        var searchLine = runtime.Mapping.Mapping.Searches.Count == 0 ? null : SearchLine(runtime.Mapping.Context);
         var contextHash = runtime.Mapping.Context.Hash()[..16];
         var mappings = runtime.Layout.MappingsDirectory;
 
@@ -233,6 +234,11 @@ internal static class DeliveryVerbs
             context.Out.WriteLine($"    mapping     {reference}");
             context.Out.WriteLine($"    template    {template} (saved {captured:u})");
             context.Out.WriteLine(cacheLine);
+            if (searchLine is not null)
+            {
+                context.Out.WriteLine(searchLine);
+            }
+
             context.Out.WriteLine($"    context     {contextHash}");
             context.Out.WriteLine($"    mappings    {mappings}");
             context.Out.WriteLine(
@@ -345,7 +351,10 @@ internal static class DeliveryVerbs
         {
             case "list":
             {
-                var scope = File.Exists(target) ? engine.Documents.LoadCache(target).Scope : CacheScope.Normalize(target, "sqlflow cache list");
+                // A partition is often named ${env:...}, by a cache flow or on the command line; the cache is keyed by
+                // what that resolves to, as a capture and an import key it, so the partition is resolved first.
+                var (declared, where) = File.Exists(target) ? (engine.Documents.LoadCache(target).Scope, target) : (target, "sqlflow cache list");
+                var scope = CacheScope.Normalize(await engine.Secrets.ResolveAsync(CacheScope.Normalize(declared, where), ct).ConfigureAwait(false), where);
                 var versions = await store.ListVersionsAsync(scope, ct).ConfigureAwait(false);
                 if (context.Json)
                 {
@@ -363,6 +372,25 @@ internal static class DeliveryVerbs
                     var run = v.RunId is { } runId ? $" in run {runId:D}" : string.Empty;
                     context.Out.WriteLine(
                         $"{v.Version}  {(v.Current ? "current" : "       ")}  {v.Items} record(s) in {v.Types.Count} type(s), written by cache flow {v.FlowName} at {v.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} for {v.CapturedBy}{run}");
+                }
+
+                if (versions.FirstOrDefault(v => v.Current) is { } current)
+                {
+                    context.Out.WriteLine();
+                    if (current.SystemProperties.Count == 0)
+                    {
+                        context.Out.WriteLine($"system properties: none read yet; refresh a cache flow of partition {scope} to read them");
+                    }
+                    else
+                    {
+                        context.Out.WriteLine($"system properties of partition {scope}, as version {current.Version} holds them (settings of the platform, not cached records):");
+                        foreach (var property in current.SystemProperties)
+                        {
+                            var source = property.Source is null ? string.Empty : $"  from {property.Source}";
+                            var detail = property.Detail is null ? string.Empty : $"  ({property.Detail})";
+                            context.Out.WriteLine($"  {property.Service,-8}  {property.Name}  {property.State.ToString().ToLowerInvariant()}{source}{detail}");
+                        }
+                    }
                 }
 
                 return 0;
@@ -425,6 +453,14 @@ internal static class DeliveryVerbs
         ["previousVersion"] = v.PreviousVersion,
         ["records"] = v.Items,
         ["types"] = new JsonArray(v.Types.Select(t => (JsonNode)new JsonObject { ["name"] = t.Name, ["entityType"] = t.EntityType, ["records"] = t.Items }).ToArray()),
+        ["systemProperties"] = new JsonArray(v.SystemProperties.Select(p => (JsonNode)new JsonObject
+        {
+            ["service"] = p.Service,
+            ["name"] = p.Name,
+            ["state"] = p.State.ToString(),
+            ["source"] = p.Source,
+            ["detail"] = p.Detail,
+        }).ToArray()),
     };
 
     public static async Task<int> TemplateAsync(CliVerbContext context)
@@ -645,4 +681,14 @@ internal static class DeliveryVerbs
         TemplateVariableShape.Whole => $"whole {v.Type}",
         _ => v.Type,
     };
+
+    /// <summary>How the flow's searches are written, and the system properties of the partition that decide it.</summary>
+    private static string SearchLine(RenderContext context)
+    {
+        var rule = context.KeywordLower
+            ? "exact, then regardless of case where one record answers"
+            : "exact only";
+        var properties = string.Join(", ", context.SystemProperties.Select(p => $"{p.Service} {p.Name} {p.State.ToString().ToLowerInvariant()}"));
+        return $"    searches    {rule} ({properties})";
+    }
 }

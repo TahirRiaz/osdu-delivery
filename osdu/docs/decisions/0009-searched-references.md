@@ -26,6 +26,14 @@ capture.
 - Exactly one record is the answer. No record is a miss, as a cache miss is. Several records, a query the service
   refuses, or a value that could not be asked for when nothing was found, hold the record whatever `required` says. A
   platform that cannot be asked fails the run: a missing answer is never taken for "no record".
+- Where the partition's indexer keeps a lowercased copy of text (`featureFlag.keywordLower.enabled`), a value no record
+  holds exactly is asked once more on the `keywordLower` sub-field, and that answer is taken only when it is one record.
+  An exact answer always wins, and several records that match once case is ignored hold the record: codes that differ
+  only by case are different records. A partition not known to keep the copy is asked exact questions alone.
+- Whether a partition keeps it is one of the partition's system properties, which every capture of its cache reads from
+  the indexer's and the search service's `GET /info` (`featureFlagStates`) and keeps with the version, apart from the
+  cached records. A service that cannot be asked fails nothing and changes nothing the cache knew of it; a property the
+  engine relies on that no service reports is recorded as unknown, with the reason.
 - Fixtures declare the answers they assume and never search.
 - The sample estate's WellLog and WellboreTrajectory mappings search for wellbores by name and then by alias, and the
   sample cache flow no longer captures wellbores.
@@ -37,6 +45,10 @@ capture.
   mapping that searches nothing.
 - What a search answered is not part of the render context. The mapping version pins the searches and their schemas, so
   a record is rendered again when its row or its mapping changes, not when the platform's wellbores do.
+- The render context of a mapping that searches pins the state of the system properties its lookups rely on. A mapping
+  that only searches pins them in place of a cache version: a capture that changes reference data renders none of its
+  records again and asks none of their questions again, while one that finds keywordLower turned on or off renders all
+  of them again under the new rule.
 - The cache holds vocabularies only; in `dev` a capture shrinks from 165,381 records to about 1,563.
 - In lineage a flow that searches reads the searched kind, so the flow delivering those records to the partition is
   ordered before it.
@@ -48,6 +60,3 @@ capture.
   log planned before then is held as not found, and like any held record stays held until it is released or its row
   changes. Whether a record held for a reference the platform did not hold should be planned again by the next run on
   its own is a policy question: the reference can appear later with nothing in the source changing.
-- A partition may enable case-insensitive exact matching (the `keywordLower` sub-field). The query library can ask for
-  it, and whether a partition has it is a setting the cache capture should record for the partition, which is still to
-  be built.

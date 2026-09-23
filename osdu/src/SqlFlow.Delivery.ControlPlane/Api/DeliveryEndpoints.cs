@@ -195,13 +195,20 @@ public sealed record DeliveryCachedItemDto(
 public sealed record DeliveryCacheVersionTypeDto(string Name, string EntityType, long Items);
 
 /// <summary>
+/// One of the partition's system properties as a cache version holds it: a setting of the platform for the partition,
+/// reported by one of its services (<c>indexer</c> or <c>search</c>), which is neither reference nor master data.
+/// <c>State</c> is <c>Enabled</c>, <c>Disabled</c> or <c>Unknown</c>; <c>Detail</c> says why when it is unknown.
+/// </summary>
+public sealed record DeliveryCacheSystemPropertyDto(string Service, string Name, string State, string? Source, string? Detail);
+
+/// <summary>
 /// One version of a partition's cache: when it was captured, whether it is the version deliveries render against, the version
 /// that was current before it, the cache flow and the run that wrote it and who asked (null run for an import from files),
-/// where the content came from, and what it holds.
+/// where the content came from, what it holds, and the partition's system properties the capture found.
 /// </summary>
 public sealed record DeliveryCacheVersionDto(
     string Scope, string Version, int Sequence, DateTime CapturedUtc, bool Current, string? PreviousVersion, string Flow, Guid? RunId, string CapturedBy,
-    string Origin, long Items, IReadOnlyList<DeliveryCacheVersionTypeDto> Types);
+    string Origin, long Items, IReadOnlyList<DeliveryCacheVersionTypeDto> Types, IReadOnlyList<DeliveryCacheSystemPropertyDto> SystemProperties);
 
 /// <summary>
 /// What changed in a partition's cache between two versions: counts per type and a page of the records that differ. The
@@ -1091,7 +1098,8 @@ public static class DeliveryEndpoints
     private static DeliveryCacheVersionDto ToVersionDto(CacheVersionInfo version)
         => new(
             version.Scope, version.Version, version.Sequence, version.CapturedUtc, version.Current, version.PreviousVersion, version.FlowName, version.RunId,
-            version.CapturedBy, version.Origin, version.Items, version.Types.Select(t => new DeliveryCacheVersionTypeDto(t.Name, t.EntityType, t.Items)).ToList());
+            version.CapturedBy, version.Origin, version.Items, version.Types.Select(t => new DeliveryCacheVersionTypeDto(t.Name, t.EntityType, t.Items)).ToList(),
+            version.SystemProperties.Select(p => new DeliveryCacheSystemPropertyDto(p.Service, p.Name, p.State.ToString(), p.Source, p.Detail)).ToList());
 
     private static ProblemHttpResult NoCacheNamed()
         => TypedResults.Problem(

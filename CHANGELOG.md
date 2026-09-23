@@ -13,6 +13,23 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Every capture of a partition's cache reads the partition's system properties, and a search asks regardless of case
+  where the partition allows it.** A refresh, and a cache flow's plan, asks the indexer's and the search service's
+  `GET /info` for the feature flags they report for the partition (`featureFlagStates`), and the refresh keeps them with
+  the version (`[osdu].[CacheVersion].SystemPropertiesJson`, migration `CacheSystemProperties`, module version 1.11.0),
+  tagged as system properties apart from the cached records ([osdu/docs/documents.md](osdu/docs/documents.md#cache-flow)).
+  A service that cannot be asked fails nothing and changes nothing the cache knew of it; a property the engine relies on
+  that no service reports is recorded as unknown, with the reason; a changed state writes a version and a failed read
+  never does; an import keeps the current properties. Where the indexer reports `featureFlag.keywordLower.enabled` on,
+  a search that finds no record exactly asks the `keywordLower` sub-field once, and takes its answer only when it is one
+  record: an exact answer always wins, and several that match once case is ignored hold the record
+  ([osdu/docs/mapping-templates.md](osdu/docs/mapping-templates.md#searches)). The render context of a mapping that
+  searches pins the state of the properties its lookups rely on (`systemProperties`); a mapping that only searches pins
+  them in place of a cache version, read from the version's row without its records, so a capture that changes
+  reference data renders none of its records again. The OSDU cache page lists them on a System properties tab,
+  `sqlflow cache list` prints them with the current version, and `sqlflow check` prints how a flow's searches are
+  written.
+
 - **A mapping can search the platform for the record a reference names, instead of reading it out of the cache.** A
   `searches:` block declares the kind searched and pins the saved template whose schema says how that kind is indexed,
   and an entry reads `search.<name>.id` found by `findBy` lines tried in order
@@ -286,6 +303,14 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 - Manual submission: records reach OSDU only through the regular flows, and records delivered by hand are files
   placed where a pre-ingestion flow reads them. The SQLFlow extension point it alone used, a run group enqueued
   together with rows of its own, went with it.
+
+### Fixed
+
+- A cache flow's `plan` operation read the partition's cache under the text its `data-partition-id` is written with,
+  so a flow naming its partition `${env:...}` planned against a cache no capture writes to; it now resolves the
+  partition as a refresh does.
+- `sqlflow cache list` resolves the partition it is given, as a partition reference or through a cache flow's file,
+  before reading the versions, so it lists the cache a capture of that partition writes rather than none.
 
 ### Security
 

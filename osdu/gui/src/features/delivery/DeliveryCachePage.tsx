@@ -27,10 +27,11 @@ import { DeliveryCacheApprovals } from "./DeliveryCacheApprovals";
 import { DeliveryCacheDefinition } from "./DeliveryCacheDefinition";
 import { DeliveryCacheHistory } from "./DeliveryCacheHistory";
 import { DeliveryCacheRecords } from "./DeliveryCacheRecords";
+import { DeliveryCacheSystemProperties } from "./DeliveryCacheSystemProperties";
 
-type Tab = "records" | "versions" | "changes" | "definition";
+type Tab = "records" | "versions" | "changes" | "definition" | "system";
 
-const TABS: readonly string[] = ["records", "versions", "changes", "definition"];
+const TABS: readonly string[] = ["records", "versions", "changes", "definition", "system"];
 
 function isTab(value: string | null): value is Tab {
   return value !== null && TABS.includes(value);
@@ -40,8 +41,9 @@ function isTab(value: string | null): value is Tab {
  * The OSDU cache: the reference and master data every delivered document is built from, one cache per OSDU partition. The
  * header names the partition and the cache flow files that fill it, with Cache files and Refresh for them; a summary row says
  * which version deliveries read, how much it holds, how it is refreshed and whether anything waits for a decision. Below
- * are the working tabs: the records, the versions, the changes a refresh found, and the definition, with a searchable type
- * picker in the tab bar for the tabs a type narrows. The partition, the tab and the type live in the URL, so a link lands on
+ * are the working tabs: the records, the versions, the changes a refresh found, the definition, and the partition's system
+ * properties (its settings, as the platform reports them), with a searchable type picker in the tab bar for the tabs a
+ * type narrows. The partition, the tab and the type live in the URL, so a link lands on
  * the same view; a link naming a cache flow (?flow=) opens the partition that flow fills.
  */
 export default function DeliveryCachePage() {
@@ -373,6 +375,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
               )}
             </TabsTrigger>
             <TabsTrigger value="definition" data-testid="delivery-cache-tab-definition">Definition</TabsTrigger>
+            <TabsTrigger value="system" data-testid="delivery-cache-tab-system">System properties</TabsTrigger>
           </TabsList>
           {/* The type narrows the records and the versions; the changes and the definition always cover the whole cache. */}
           {(tab === "records" || tab === "versions") && (
@@ -409,6 +412,10 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
 
         <TabsContent value="definition">
           <DeliveryCacheDefinition cache={cache} onRefresh={onRefresh} />
+        </TabsContent>
+
+        <TabsContent value="system">
+          <DeliveryCacheSystemProperties version={current} />
         </TabsContent>
       </Tabs>
     </>

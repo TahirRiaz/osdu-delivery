@@ -190,7 +190,8 @@ verify: { reconcile: false }       # whether the verify pass re-queues drifted o
 
 Only `render.*`, and the template version the pinned mapping names, enter the render context. Everything else changes how a document gets there: raising
 `reliability.concurrency` or changing `target.endpoint` never redelivers a record. A moved render context (a new
-mapping version, template version or cache version) renders the record again, and whether it is sent is still
+mapping version, template version or cache version, or a changed system property a mapping's searches rely on) renders
+the record again, and whether it is sent is still
 decided by the hash of the rendered document alone, so a new cache version that renders the same document sends nothing.
 
 ### The cache a flow renders with
@@ -204,7 +205,14 @@ current when the run starts and records it in the render context; a version labe
 version. The render context records the partition under `cache` and the version under `cacheVersion`.
 
 A mapping that reads nothing from a cache renders against no cache, so refreshing a cache never moves the render
-context of records that never read it. A mapping that does read the cache fails before anything renders when the
+context of records that never read it. A mapping that searches the platform is pinned as well to the state of the
+partition's system properties its lookups rely on, recorded under `systemProperties`
+(`{"indexer":{"featureFlag.keywordLower.enabled":"Enabled"}}`): those of the version it renders against when it reads
+the cache, and when it only searches, those of the version `render.cacheVersion` names, read without its records, while
+`cacheVersion` stays `none`. So a refresh that changes reference data never renders a record that only searches again,
+and one that finds the partition's keywordLower setting changed renders all of them again under the new rule. When the
+partition's cache holds no version yet, or the host has no module database, the properties are unknown and a search
+asks exact questions alone. A mapping that does read the cache fails before anything renders when the
 partition's cache holds no version yet (run a cache flow whose `source.headers.data-partition-id` is that partition
 with the refresh operation), or when `render.cacheVersion` pins a version the catalog does not hold. Both the cache and
 the template are read from the catalog, so rendering needs the catalog connection.
@@ -1119,6 +1127,27 @@ of a delivered record names the version it was rendered against. A refresh there
 Nothing about a cache is written to the repository: the files define what is cached, and their runs fill the catalog
 ([ledger.md](ledger.md)).
 
+Every refresh also reads the partition's system properties: the settings the platform's indexer and search service
+report for the partition from `GET /api/indexer/v2/info` and `GET /api/search/v2/info` (their `featureFlagStates`),
+such as whether the indexer keeps a lowercased copy of every text property (`featureFlag.keywordLower.enabled`). They
+are tagged as system properties and kept with the version, apart from the cached records: they are neither reference
+nor master data, have no record id, and no mapping reads them with `cache.<Type>.<field>`. The engine relies on one of
+them: where keywordLower is on, a search that finds no record exactly asks again regardless of case
+([findBy and a search](#findby-and-a-search)).
+
+- A state a service reports for the partition wins over one it reports for no partition, and states for other
+  partitions are ignored.
+- A service that cannot be asked, or does not publish its settings, fails nothing: the refresh carries on, logs why,
+  and the version keeps what the cache knew of that service. A property the engine relies on that no service reports is
+  recorded as unknown, with the reason, and nothing relies on it being on.
+- A property whose state changed is a change of the cache, so the refresh writes a version even when every cached
+  record is the same. What a service explained a state with is not: the words change without the setting changing.
+  One read that fails never writes a version.
+- `sqlflow cache import` asks no platform and keeps the current properties.
+
+The OSDU cache page lists them on its System properties tab, with the service that reported each, its state, what it was
+taken from and why it is unknown, and `sqlflow cache list <partition>` prints those of the current version.
+
 A refresh does not only write a version. Every delivered record points at the set of cached values it was built
 from, so the refresh compares the new version against the one it replaces and raises one tag per changed value: the
 partition, the cached record, the path, the value the replaced version held and the one the new version holds, and how
@@ -1142,12 +1171,13 @@ partition as that flow's capture ([cli/delivery.md](reference/cli/delivery.md#ca
 
 ### The partition cache
 
-A catalog keeps one cache per OSDU data partition, keyed by the partition as the flows write it in their
+A catalog keeps one cache per OSDU data partition, keyed by the partition the flows reach through their
 `data-partition-id` header (its scope). A cache flow fills the cache of the partition in its
 `source.headers.data-partition-id`; a delivery flow reads the cache of the partition in its
-`target.headers.data-partition-id`. A partition is an id segment (letters, digits, underscore, hyphen and dot, at most
-200 characters) or a `${env:...}` or `${keyvault:...}` reference, and partitions compare as written: `dev` and a
-reference that resolves to `dev` are two different caches.
+`target.headers.data-partition-id`. A partition is written as an id segment (letters, digits, underscore, hyphen and
+dot, at most 200 characters) or a `${env:...}` or `${keyvault:...}` reference, and a cache is keyed by what it resolves
+to: `dev` and a reference that resolves to `dev` name the same cache, and a capture, an import, the repository sync and a
+render all resolve it the same way.
 
 Several cache flows may fill one partition, in the same repository or in different ones, so each project declares the
 reference data it needs without copying another project's file. What they capture is stored once per partition, and
@@ -1346,7 +1376,10 @@ findBy:
 Each line names a property under `data` as the searched kind's schema names it, and asks the platform, under the flow's
 own target, credentials and partition, for the records whose property is exactly the line's value. The query follows
 how the pinned schema has the platform index the property: the `keyword` sub-field of text, the property itself for a
-keyword, and the service's `nested(...)` form inside a nested array. Exactly one record found is the answer; none on any
+keyword, and the service's `nested(...)` form inside a nested array. Where the partition's system properties say its
+indexer keeps a lowercased copy of text (keywordLower, [Cache flow](#cache-flow)), a text property no record holds
+exactly is asked once more on that copy, and its answer is taken only when it is one record; several hold the record,
+since codes that differ only by case are different records. Exactly one record found is the answer; none on any
 line leaves the variable out or holds the record as `required` says; several records, a query the service refuses, or
 a value that cannot be asked for when no line found the record hold the record whatever `required` says; and a
 platform that cannot be asked fails the run. [mapping-templates.md](mapping-templates.md#searches) has the rules in

@@ -170,20 +170,28 @@ public sealed class FixedCacheStore : ICacheStore
         => Task.FromResult(scope == _scope && version == _snapshot.Version ? _snapshot : null);
 
     public Task<IReadOnlyList<CacheVersionInfo>> ListVersionsAsync(string scope, CancellationToken ct = default)
-        => Task.FromResult<IReadOnlyList<CacheVersionInfo>>(scope == _scope
-            ?
-            [
-                new CacheVersionInfo(
-                    _scope, _snapshot.Version, 1, _snapshot.CapturedUtc.UtcDateTime, true, null, null, "tests", "sample files", _flowName,
-                    _snapshot.Types.Sum(t => (long)t.Items.Count), _snapshot.Types.Select(t => new CacheVersionType(t.Name, t.EntityType, t.Items.Count)).ToList()),
-            ]
-            : []);
+        => Task.FromResult<IReadOnlyList<CacheVersionInfo>>(scope == _scope ? [Info()] : []);
+
+    public Task<CacheVersionInfo?> VersionAsync(string scope, string? version, CancellationToken ct = default)
+        => Task.FromResult(scope == _scope && (version is null || version == _snapshot.Version) ? Info() : null);
+
+    private CacheVersionInfo Info()
+        => new(
+            _scope, _snapshot.Version, 1, _snapshot.CapturedUtc.UtcDateTime, true, null, null, "tests", "sample files", _flowName,
+            _snapshot.Types.Sum(t => (long)t.Items.Count), _snapshot.Types.Select(t => new CacheVersionType(t.Name, t.EntityType, t.Items.Count)).ToList(),
+            _snapshot.SystemProperties);
 
     public Task<CacheDeclaration> DeclarationAsync(string scope, CancellationToken ct = default)
         => Task.FromResult(scope == _scope ? _declaration : CacheDeclaration.None(scope));
 
     public Task<CacheWrite> MergeAsync(
-        string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheCapture capture, DateTimeOffset capturedUtc, CancellationToken ct = default)
+        string scope,
+        string flowName,
+        IReadOnlyList<ReferenceType> captured,
+        CacheCapture capture,
+        DateTimeOffset capturedUtc,
+        IReadOnlyList<SystemPropertyReading>? readings = null,
+        CancellationToken ct = default)
         => throw new InvalidOperationException("The fixed sample cache is read-only; write versions through the module's cache store.");
 }
 

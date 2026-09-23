@@ -745,6 +745,13 @@ public sealed class DeliveryCacheVersion
     /// <summary>The types the version holds, by name, each with its entity type and record count: <c>[{ "name", "entityType", "items" }]</c>.</summary>
     public string TypesJson { get; set; } = "[]";
 
+    /// <summary>
+    /// The partition's system properties the capture found, kept apart from the cached records because they describe the
+    /// platform rather than any record: <c>[{ "service", "name", "state", "source", "detail" }]</c>. Empty for a version
+    /// written before captures recorded them, or by an import onto a cache no capture had asked about.
+    /// </summary>
+    public string SystemPropertiesJson { get; set; } = "[]";
+
     /// <summary>How many cached records the version holds across its types.</summary>
     public long Items { get; set; }
 }
@@ -1392,6 +1399,7 @@ public static class DeliveryModel
             e.Property(v => v.CapturedBy).HasMaxLength(200).IsRequired();
             e.Property(v => v.Origin).HasMaxLength(1000).IsRequired();
             e.Property(v => v.TypesJson).IsRequired();
+            e.Property(v => v.SystemPropertiesJson).IsRequired().HasDefaultValue("[]");
             e.HasIndex(v => new { v.Scope, v.Version }).IsUnique();
             // The sequence is what a concurrent second write of the same partition collides on, so two captures can never
             // both claim the next version. It is the table's clustered key: a partition's versions in order.
